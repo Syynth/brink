@@ -1,0 +1,7 @@
+[package]
+name = "brink-cli"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/syynth/brink"
+description = "CLI for compiling and running ink stories"
