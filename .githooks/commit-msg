@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+commit_msg=$(head -1 "$1")
+
+pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?: .{1,}$'
+
+if ! echo "$commit_msg" | grep -qE "$pattern"; then
+    echo "ERROR: Commit message does not follow Conventional Commits format."
+    echo ""
+    echo "  Expected: <type>(<scope>): <subject>"
+    echo "  Example:  feat(compiler): add lexer for ink markup"
+    echo ""
+    echo "  Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+    exit 1
+fi

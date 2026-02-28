@@ -1,7 +1,13 @@
 [package]
 name = "brink-runtime"
-version = "0.0.1"
-edition = "2024"
-license = "MIT"
-repository = "https://github.com/syynth/brink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Runtime/VM for executing compiled ink stories"
+
+[lints]
+workspace = true

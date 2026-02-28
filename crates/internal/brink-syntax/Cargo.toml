@@ -1,5 +1,5 @@
 [package]
-name = "brink"
+name = "brink-syntax"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,8 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "A compiler and runtime for inkle's ink narrative scripting language"
+description = "Syntax types and parser for inkle's ink narrative scripting language"
+publish = false
 
 [lints]
 workspace = true
