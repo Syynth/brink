@@ -1,0 +1,11 @@
+description = "Nested pass by reference"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I096"
+
+[classification]
+tier = 2
+feature = "logic"
+tags = ["logic"]

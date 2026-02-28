@@ -1,0 +1,11 @@
+description = "blade-ink-rs: list_in_choice_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "list_in_choice_test"
+
+[classification]
+tier = 2
+feature = "variabletext"
+tags = []

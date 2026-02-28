@@ -1,0 +1,44 @@
+{
+  "inkVersion": 21,
+  "root": [
+    [{ "->": "one" }, ["done", { "#n": "g-0" }], null],
+    "done",
+    {
+      "one": [
+        "ev",
+        { "VAR?": "x" },
+        4,
+        "<",
+        "/ev",
+        [
+          { "->": ".^.b", "c": true },
+          { "b": ["\n", { "->": "two.s2" }, { "->": "one.7" }, null] }
+        ],
+        [
+          { "->": ".^.b" },
+          { "b": ["\n", { "->": "two" }, { "->": "one.7" }, null] }
+        ],
+        "nop",
+        "\n",
+        null
+      ],
+      "two": [
+        "end",
+        {
+          "s2": [
+            "ev",
+            { "VAR?": "x" },
+            1,
+            "+",
+            "/ev",
+            { "VAR=": "x", "re": true },
+            { "->": "one" },
+            null
+          ]
+        }
+      ],
+      "global decl": ["ev", 0, { "VAR=": "x" }, "/ev", "end", null]
+    }
+  ],
+  "listDefs": {}
+}

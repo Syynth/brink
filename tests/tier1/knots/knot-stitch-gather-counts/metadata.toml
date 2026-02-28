@@ -1,0 +1,14 @@
+description = "Tests.cs: TestKnotStitchGatherCounts"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestKnotStitchGatherCounts"
+
+[classification]
+tier = 1
+feature = "knots"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

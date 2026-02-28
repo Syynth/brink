@@ -1,0 +1,11 @@
+description = "blade-ink-rs: twolines_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "twolines_test"
+
+[classification]
+tier = 1
+feature = "basictext"
+tags = []

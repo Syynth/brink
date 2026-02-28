@@ -1,0 +1,11 @@
+description = "blade-ink-rs: external_function_zero_arguments"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "external_function_zero_arguments"
+
+[classification]
+tier = 3
+feature = "runtime"
+tags = []

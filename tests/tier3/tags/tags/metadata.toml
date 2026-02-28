@@ -1,0 +1,11 @@
+description = "blade-ink-rs: tags_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "tags_test"
+
+[classification]
+tier = 3
+feature = "tags"
+tags = []

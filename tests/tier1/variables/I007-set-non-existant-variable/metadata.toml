@@ -1,0 +1,11 @@
+description = "Set non existant variable"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I007"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = ["variables"]

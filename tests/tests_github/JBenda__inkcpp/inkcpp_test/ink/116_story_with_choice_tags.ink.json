@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[[{"->":"Entrance_cycle"},["done",{"#n":"g-0"}],null],"done",{"Entrance_cycle":[["ev","str","^look around ","#","^Type:Idle ","/#","/str","/ev",{"*":".^.c-0","flg":4},{"c-0":["\n","^While watching around you, ","<>","\n",{"->":".^.^.^"},null]}],null]}],"listDefs":{}}

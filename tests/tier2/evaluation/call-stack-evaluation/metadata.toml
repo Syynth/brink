@@ -1,0 +1,14 @@
+description = "Tests.cs: TestCallStackEvaluation"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestCallStackEvaluation"
+
+[classification]
+tier = 2
+feature = "evaluation"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

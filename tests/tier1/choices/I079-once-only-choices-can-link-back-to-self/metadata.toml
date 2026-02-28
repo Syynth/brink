@@ -1,0 +1,11 @@
+description = "Once only choices can link back to self"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I079"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = ["choices"]

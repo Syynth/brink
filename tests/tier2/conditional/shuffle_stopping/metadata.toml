@@ -1,0 +1,11 @@
+description = "blade-ink-rs: shuffle_stopping"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "shuffle_stopping"
+
+[classification]
+tier = 2
+feature = "conditional"
+tags = []

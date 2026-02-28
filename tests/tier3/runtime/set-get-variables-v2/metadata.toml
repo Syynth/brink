@@ -1,0 +1,11 @@
+description = "blade-ink-rs: set_non_existant_variable_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "set_non_existant_variable_test"
+
+[classification]
+tier = 3
+feature = "runtime"
+tags = []

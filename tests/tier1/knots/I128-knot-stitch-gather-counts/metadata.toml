@@ -1,0 +1,11 @@
+description = "Knot stitch gather counts"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I128"
+
+[classification]
+tier = 1
+feature = "knots"
+tags = ["knots"]

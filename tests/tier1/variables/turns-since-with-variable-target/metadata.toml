@@ -1,0 +1,11 @@
+description = "Tests.cs: TestTurnsSinceWithVariableTarget"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestTurnsSinceWithVariableTarget"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = []

@@ -1,0 +1,11 @@
+description = "Tests.cs: TestEmptySequenceContent"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestEmptySequenceContent"
+
+[classification]
+tier = 2
+feature = "sequences"
+tags = []

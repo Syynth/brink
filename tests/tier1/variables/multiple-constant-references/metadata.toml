@@ -1,0 +1,11 @@
+description = "Tests.cs: TestMultipleConstantReferences"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestMultipleConstantReferences"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = []

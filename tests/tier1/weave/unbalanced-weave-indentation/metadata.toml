@@ -1,0 +1,11 @@
+description = "Tests.cs: TestUnbalancedWeaveIndentation"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestUnbalancedWeaveIndentation"
+
+[classification]
+tier = 1
+feature = "weave"
+tags = []

@@ -1,0 +1,14 @@
+description = "blade-ink-rs: runtime/saving-loading"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "runtime/saving-loading"
+
+[classification]
+tier = 3
+feature = "runtime"
+tags = []
+
+[skip]
+reason = "No matching test found in blade-ink-rs test files"

@@ -1,0 +1,14 @@
+description = "Tests.cs: TestDivertInConditional"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestDivertInConditional"
+
+[classification]
+tier = 1
+feature = "diverts"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

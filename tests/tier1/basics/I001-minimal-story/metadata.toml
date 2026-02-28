@@ -1,0 +1,11 @@
+description = "Minimal story"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I001"
+
+[classification]
+tier = 1
+feature = "basics"
+tags = []

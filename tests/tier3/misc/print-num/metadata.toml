@@ -1,0 +1,11 @@
+description = "Tests.cs: TestPrintNum"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestPrintNum"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []

@@ -1,0 +1,11 @@
+description = "blade-ink-rs: has_left_right_glue_matching_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "has_left_right_glue_matching_test"
+
+[classification]
+tier = 1
+feature = "glue"
+tags = []

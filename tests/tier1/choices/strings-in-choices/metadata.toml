@@ -1,0 +1,11 @@
+description = "Tests.cs: TestStringsInChoices"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestStringsInChoices"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []

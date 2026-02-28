@@ -1,0 +1,14 @@
+description = "Tests.cs: TestVariableDeclarationInConditional"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestVariableDeclarationInConditional"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

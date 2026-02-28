@@ -1,0 +1,11 @@
+description = "Tests.cs: TestPathToSelf"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestPathToSelf"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []

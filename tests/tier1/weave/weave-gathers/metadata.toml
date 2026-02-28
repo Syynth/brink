@@ -1,0 +1,14 @@
+description = "Tests.cs: TestWeaveGathers"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestWeaveGathers"
+
+[classification]
+tier = 1
+feature = "weave"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

@@ -1,0 +1,11 @@
+description = "Float printing precision"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I133"
+
+[classification]
+tier = 3
+feature = "floats"
+tags = ["floats", "superficialities"]

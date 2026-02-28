@@ -1,0 +1,11 @@
+description = "List comparison"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I105"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = ["extra"]

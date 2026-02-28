@@ -1,0 +1,11 @@
+description = "Tests.cs: TestShouldntGatherDueToChoice"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestShouldntGatherDueToChoice"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []

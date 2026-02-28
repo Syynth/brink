@@ -1,0 +1,11 @@
+description = "Strings in choices"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I049"
+
+[classification]
+tier = 3
+feature = "strings"
+tags = ["strings"]

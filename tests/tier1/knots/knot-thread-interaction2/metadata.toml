@@ -1,0 +1,11 @@
+description = "Tests.cs: TestKnotThreadInteraction2"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestKnotThreadInteraction2"
+
+[classification]
+tier = 1
+feature = "knots"
+tags = []

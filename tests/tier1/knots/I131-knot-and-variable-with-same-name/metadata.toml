@@ -1,0 +1,11 @@
+description = "Knot and variable with same name"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I131"
+
+[classification]
+tier = 1
+feature = "knots"
+tags = ["knots"]

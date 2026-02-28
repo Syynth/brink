@@ -1,0 +1,11 @@
+description = "Tests.cs: TestBasicStringLiterals"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestBasicStringLiterals"
+
+[classification]
+tier = 3
+feature = "strings"
+tags = []

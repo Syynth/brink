@@ -1,0 +1,11 @@
+description = "Identifiers can start with numbers"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I021"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = ["misc"]

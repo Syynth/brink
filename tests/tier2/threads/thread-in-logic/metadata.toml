@@ -1,0 +1,14 @@
+description = "Tests.cs: TestThreadInLogic"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestThreadInLogic"
+
+[classification]
+tier = 2
+feature = "threads"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

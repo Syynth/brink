@@ -1,0 +1,11 @@
+description = "Variable divert target"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I013"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = ["variables"]

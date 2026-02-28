@@ -1,0 +1,11 @@
+description = "blade-ink-rs: evaluating_function_variable_state_bug_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "evaluating_function_variable_state_bug_test"
+
+[classification]
+tier = 2
+feature = "function"
+tags = []

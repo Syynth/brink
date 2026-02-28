@@ -1,0 +1,11 @@
+description = "Tests.cs: TestArgumentNameCollisions"
+mode = "compile_error"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestArgumentNameCollisions"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []

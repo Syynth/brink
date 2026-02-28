@@ -1,0 +1,11 @@
+description = "Knot do not gather"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I129"
+
+[classification]
+tier = 1
+feature = "knots"
+tags = ["knots"]

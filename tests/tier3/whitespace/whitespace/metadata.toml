@@ -1,0 +1,14 @@
+description = "Tests.cs: TestWhitespace"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestWhitespace"
+
+[classification]
+tier = 3
+feature = "whitespace"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

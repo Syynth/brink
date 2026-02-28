@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[[["done",{"#n":"g-0"}],null],"done",{"train":[{"->":".^.first_class"},{"first_class":["^first class","\n",{"->":".^.^.missed_train"},null],"second_class":["^second class","\n",{"->":".^.^.missed_train"},null],"missed_train":["^you missed the train","\n","end",null]}]}],"listDefs":{}}

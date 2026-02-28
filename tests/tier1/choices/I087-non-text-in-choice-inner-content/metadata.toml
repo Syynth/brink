@@ -1,0 +1,11 @@
+description = "Non text in choice inner content"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I087"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = ["choices"]

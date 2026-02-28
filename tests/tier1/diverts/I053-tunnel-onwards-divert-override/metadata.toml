@@ -1,0 +1,11 @@
+description = "Tunnel onwards divert override"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I053"
+
+[classification]
+tier = 1
+feature = "diverts"
+tags = ["diverts"]

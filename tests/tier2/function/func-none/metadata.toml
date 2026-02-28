@@ -1,0 +1,11 @@
+description = "blade-ink-rs: fun_none_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "fun_none_test"
+
+[classification]
+tier = 2
+feature = "function"
+tags = []

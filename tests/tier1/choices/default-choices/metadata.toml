@@ -1,0 +1,11 @@
+description = "Tests.cs: TestDefaultChoices"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestDefaultChoices"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []

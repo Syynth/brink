@@ -1,0 +1,14 @@
+description = "blade-ink-rs: TheIntercept"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "TheIntercept"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []
+
+[skip]
+reason = "Top-level example file, no automated test"

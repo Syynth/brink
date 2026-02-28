@@ -1,0 +1,14 @@
+description = "Tests.cs: TestChoiceThreadForking"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestChoiceThreadForking"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []
+
+[skip]
+reason = "Uses state serialization (save/load)"

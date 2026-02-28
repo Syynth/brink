@@ -1,0 +1,11 @@
+description = "Tests.cs: TestVariablePointerRefFromKnot"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestVariablePointerRefFromKnot"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = []

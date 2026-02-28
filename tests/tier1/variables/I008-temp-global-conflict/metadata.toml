@@ -1,0 +1,11 @@
+description = "Temp global conflict"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I008"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = ["variables"]

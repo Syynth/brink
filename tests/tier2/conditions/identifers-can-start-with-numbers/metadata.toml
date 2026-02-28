@@ -1,0 +1,11 @@
+description = "Tests.cs: TestIdentifersCanStartWithNumbers"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestIdentifersCanStartWithNumbers"
+
+[classification]
+tier = 2
+feature = "conditions"
+tags = []

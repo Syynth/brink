@@ -1,0 +1,14 @@
+description = "All sequence types"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I106"
+
+[classification]
+tier = 2
+feature = "sequences"
+tags = ["sequences"]
+
+[skip]
+reason = "Uses randomness"

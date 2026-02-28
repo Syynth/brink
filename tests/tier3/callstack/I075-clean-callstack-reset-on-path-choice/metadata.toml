@@ -1,0 +1,11 @@
+description = "Clean callstack reset on path choice"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I075"
+
+[classification]
+tier = 3
+feature = "callstack"
+tags = ["callstack"]

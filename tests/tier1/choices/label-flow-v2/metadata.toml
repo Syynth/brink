@@ -1,0 +1,11 @@
+description = "blade-ink-rs: label_flow2_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "label_flow2_test"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []

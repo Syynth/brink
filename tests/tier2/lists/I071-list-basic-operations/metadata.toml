@@ -1,0 +1,11 @@
+description = "List basic operations"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I071"
+
+[classification]
+tier = 2
+feature = "lists"
+tags = ["lists"]

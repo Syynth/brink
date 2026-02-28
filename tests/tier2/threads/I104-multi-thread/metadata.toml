@@ -1,0 +1,11 @@
+description = "Multi thread"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I104"
+
+[classification]
+tier = 2
+feature = "threads"
+tags = ["threads"]

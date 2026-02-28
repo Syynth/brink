@@ -1,0 +1,14 @@
+description = "Tests.cs: TestCharacterRangeIdentifiersForDivertNamesWithAsciiSuffix"
+mode = "compile_error"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestCharacterRangeIdentifiersForDivertNamesWithAsciiSuffix"
+
+[classification]
+tier = 1
+feature = "diverts"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

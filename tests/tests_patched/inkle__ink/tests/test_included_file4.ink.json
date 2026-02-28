@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["^﻿VAR t2 = 5","\n","^The value of a variable in test file 2 is ","ev",{"VAR?":"t2"},"out","/ev","^.","\n",["done",{"#n":"g-0"}],null],"done",{"knot_in_2":["^The value when accessed from knot_in_2 is ","ev",{"VAR?":"t2"},"out","/ev","^.","\n","end",null],"global decl":["ev",false,{"VAR=":"t2"},"/ev","end",null]}],"listDefs":{}}

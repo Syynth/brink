@@ -1,0 +1,11 @@
+description = "Implicit inline glue b"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I045"
+
+[classification]
+tier = 1
+feature = "glue"
+tags = ["glue"]

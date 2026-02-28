@@ -1,0 +1,11 @@
+description = "Evaluating ink functions from game"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I120"
+
+[classification]
+tier = 2
+feature = "evaluation"
+tags = ["evaluation"]

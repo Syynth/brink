@@ -1,0 +1,11 @@
+description = "Knot thread interaction 2"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I098"
+
+[classification]
+tier = 1
+feature = "knots"
+tags = ["knots"]

@@ -1,0 +1,11 @@
+description = "Tests.cs: TestKnotTerminationSkipsGlobalObjects"
+mode = "compile_error"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestKnotTerminationSkipsGlobalObjects"
+
+[classification]
+tier = 1
+feature = "knots"
+tags = []

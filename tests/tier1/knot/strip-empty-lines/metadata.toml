@@ -1,0 +1,11 @@
+description = "blade-ink-rs: strip_empty_lines_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "strip_empty_lines_test"
+
+[classification]
+tier = 1
+feature = "knot"
+tags = []

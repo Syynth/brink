@@ -1,0 +1,11 @@
+description = "Tests.cs: TestArgumentShouldntConflictWithGatherElsewhere"
+mode = "compile_error"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestArgumentShouldntConflictWithGatherElsewhere"
+
+[classification]
+tier = 1
+feature = "weave"
+tags = []

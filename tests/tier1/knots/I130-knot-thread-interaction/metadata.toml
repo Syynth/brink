@@ -1,0 +1,11 @@
+description = "Knot thread interaction"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I130"
+
+[classification]
+tier = 1
+feature = "knots"
+tags = ["knots"]

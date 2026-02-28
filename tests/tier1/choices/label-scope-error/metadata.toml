@@ -1,0 +1,14 @@
+description = "blade-ink-rs: choices/label-scope-error"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "choices/label-scope-error"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []
+
+[skip]
+reason = "No matching test found in blade-ink-rs test files"

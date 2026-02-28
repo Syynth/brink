@@ -1,0 +1,11 @@
+description = "Leading newline multiline sequence"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I110"
+
+[classification]
+tier = 2
+feature = "sequences"
+tags = ["sequences"]

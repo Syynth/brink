@@ -1,0 +1,11 @@
+description = "Tests.cs: TestChoiceCount"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestChoiceCount"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []

@@ -1,0 +1,11 @@
+description = "Tests.cs: TestIncrement"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestIncrement"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []

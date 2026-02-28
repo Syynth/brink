@@ -1,0 +1,11 @@
+description = "Factorial by reference"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I123"
+
+[classification]
+tier = 2
+feature = "evaluation"
+tags = ["evaluation"]

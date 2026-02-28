@@ -1,0 +1,11 @@
+description = "Tests.cs: TestLeadingNewlineMultilineSequence"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestLeadingNewlineMultilineSequence"
+
+[classification]
+tier = 2
+feature = "sequences"
+tags = []

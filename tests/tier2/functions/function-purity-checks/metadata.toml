@@ -1,0 +1,11 @@
+description = "Tests.cs: TestFunctionPurityChecks"
+mode = "compile_error"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestFunctionPurityChecks"
+
+[classification]
+tier = 2
+feature = "functions"
+tags = []

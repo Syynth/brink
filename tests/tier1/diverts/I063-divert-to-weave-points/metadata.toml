@@ -1,0 +1,11 @@
+description = "Divert to weave points"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I063"
+
+[classification]
+tier = 1
+feature = "diverts"
+tags = ["diverts"]

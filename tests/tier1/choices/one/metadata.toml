@@ -1,0 +1,14 @@
+description = "blade-ink-rs: one_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "one_test"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []
+
+[skip]
+reason = "Uses random choices (no deterministic input)"

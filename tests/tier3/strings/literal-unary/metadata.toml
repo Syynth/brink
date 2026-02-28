@@ -1,0 +1,11 @@
+description = "Tests.cs: TestLiteralUnary"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestLiteralUnary"
+
+[classification]
+tier = 3
+feature = "strings"
+tags = []

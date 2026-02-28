@@ -1,0 +1,14 @@
+description = "Tests.cs: TestCompareDivertTargets"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestCompareDivertTargets"
+
+[classification]
+tier = 1
+feature = "diverts"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

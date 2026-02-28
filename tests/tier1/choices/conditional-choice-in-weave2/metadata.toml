@@ -1,0 +1,14 @@
+description = "Tests.cs: TestConditionalChoiceInWeave2"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestConditionalChoiceInWeave2"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

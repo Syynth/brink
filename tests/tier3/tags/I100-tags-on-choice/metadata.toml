@@ -1,0 +1,11 @@
+description = "Tags on choice"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I100"
+
+[classification]
+tier = 3
+feature = "tags"
+tags = ["tags"]

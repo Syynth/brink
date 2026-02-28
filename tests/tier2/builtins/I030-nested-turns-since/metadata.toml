@@ -1,0 +1,11 @@
+description = "Nested turns since"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I030"
+
+[classification]
+tier = 2
+feature = "builtins"
+tags = ["builtins"]

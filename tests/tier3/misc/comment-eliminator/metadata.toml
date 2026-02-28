@@ -1,0 +1,14 @@
+description = "Tests.cs: TestCommentEliminator"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestCommentEliminator"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

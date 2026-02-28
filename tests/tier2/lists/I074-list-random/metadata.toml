@@ -1,0 +1,14 @@
+description = "List random"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I074"
+
+[classification]
+tier = 2
+feature = "lists"
+tags = ["lists"]
+
+[skip]
+reason = "Uses randomness"

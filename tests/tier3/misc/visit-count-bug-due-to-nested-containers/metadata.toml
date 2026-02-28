@@ -1,0 +1,14 @@
+description = "Tests.cs: TestVisitCountBugDueToNestedContainers"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestVisitCountBugDueToNestedContainers"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

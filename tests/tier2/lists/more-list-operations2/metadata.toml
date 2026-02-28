@@ -1,0 +1,11 @@
+description = "blade-ink-rs: more_list_operations2_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "more_list_operations2_test"
+
+[classification]
+tier = 2
+feature = "lists"
+tags = []

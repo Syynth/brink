@@ -1,0 +1,11 @@
+description = "Tests.cs: TestEnd"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestEnd"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []

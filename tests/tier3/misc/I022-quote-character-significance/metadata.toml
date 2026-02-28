@@ -1,0 +1,11 @@
+description = "Quote character significance"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I022"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = ["misc"]

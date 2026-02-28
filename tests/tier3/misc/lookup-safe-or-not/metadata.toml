@@ -1,0 +1,14 @@
+description = "Tests.cs: TestLookupSafeOrNot"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestLookupSafeOrNot"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []
+
+[skip]
+reason = "Uses external function bindings"

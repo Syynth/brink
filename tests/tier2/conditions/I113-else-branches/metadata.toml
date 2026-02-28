@@ -1,0 +1,11 @@
+description = "Else branches"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I113"
+
+[classification]
+tier = 2
+feature = "conditions"
+tags = ["conditions"]

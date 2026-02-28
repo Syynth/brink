@@ -1,0 +1,11 @@
+description = "blade-ink-rs: rnd"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "rnd"
+
+[classification]
+tier = 2
+feature = "function"
+tags = []

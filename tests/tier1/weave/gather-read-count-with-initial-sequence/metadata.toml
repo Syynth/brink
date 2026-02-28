@@ -1,0 +1,11 @@
+description = "Tests.cs: TestGatherReadCountWithInitialSequence"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestGatherReadCountWithInitialSequence"
+
+[classification]
+tier = 1
+feature = "weave"
+tags = []

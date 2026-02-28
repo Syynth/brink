@@ -1,0 +1,14 @@
+description = "Tests.cs: TestVisitCountsWhenChoosing"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestVisitCountsWhenChoosing"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []
+
+[skip]
+reason = "Uses ChoosePathString (manual path navigation)"

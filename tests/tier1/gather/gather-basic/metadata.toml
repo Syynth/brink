@@ -1,0 +1,11 @@
+description = "blade-ink-rs: gather_basic_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "gather_basic_test"
+
+[classification]
+tier = 1
+feature = "gather"
+tags = []

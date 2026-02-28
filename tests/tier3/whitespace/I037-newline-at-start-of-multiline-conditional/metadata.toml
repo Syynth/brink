@@ -1,0 +1,11 @@
+description = "Newline at start of multiline conditional"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I037"
+
+[classification]
+tier = 3
+feature = "whitespace"
+tags = ["whitespace", "newline"]

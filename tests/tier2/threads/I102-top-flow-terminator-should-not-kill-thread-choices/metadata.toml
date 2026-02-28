@@ -1,0 +1,11 @@
+description = "Top flow terminator should not kill thread choices"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I102"
+
+[classification]
+tier = 2
+feature = "threads"
+tags = ["threads"]

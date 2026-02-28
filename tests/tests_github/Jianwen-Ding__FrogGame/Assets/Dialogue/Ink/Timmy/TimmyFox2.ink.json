@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["^Hahaha, you did it, rookie! ","#","^speaker:Timmy","/#","\n","ev","str","^Oh my god, that was crazy.","/str","/ev",{"*":"0.c-0","flg":20},{"c-0":["\n","^We got you, you frog murderer. Hey, let’s get back to HQ. ","#","^speaker:Timmy","/#","\n","end",{"->":"0.g-0"},{"#f":5}],"g-0":["done",null]}],"done",null],"listDefs":{}}

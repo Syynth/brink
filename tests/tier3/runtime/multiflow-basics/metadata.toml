@@ -1,0 +1,11 @@
+description = "blade-ink-rs: basics_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "basics_test"
+
+[classification]
+tier = 3
+feature = "runtime"
+tags = []

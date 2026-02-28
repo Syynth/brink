@@ -1,0 +1,11 @@
+description = "blade-ink-rs: read_counts_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "read_counts_test"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []

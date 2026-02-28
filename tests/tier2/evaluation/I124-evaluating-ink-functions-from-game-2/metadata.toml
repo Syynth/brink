@@ -1,0 +1,11 @@
+description = "Evaluating ink functions from game 2"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I124"
+
+[classification]
+tier = 2
+feature = "evaluation"
+tags = ["evaluation"]

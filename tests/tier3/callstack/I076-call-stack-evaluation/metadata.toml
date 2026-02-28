@@ -1,0 +1,11 @@
+description = "Call stack evaluation"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I076"
+
+[classification]
+tier = 3
+feature = "callstack"
+tags = ["callstack"]

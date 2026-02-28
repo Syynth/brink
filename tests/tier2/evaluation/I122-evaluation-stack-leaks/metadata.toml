@@ -1,0 +1,11 @@
+description = "Evaluation stack leaks"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I122"
+
+[classification]
+tier = 2
+feature = "evaluation"
+tags = ["evaluation"]

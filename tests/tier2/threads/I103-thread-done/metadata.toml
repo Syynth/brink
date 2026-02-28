@@ -1,0 +1,11 @@
+description = "Thread done"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I103"
+
+[classification]
+tier = 2
+feature = "threads"
+tags = ["threads"]

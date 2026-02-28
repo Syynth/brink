@@ -53,3 +53,4 @@ tokio = { version = "1", features = ["full"] }
 tower-lsp = "0.20"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rowan = "0.16.1"

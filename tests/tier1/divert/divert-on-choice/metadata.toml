@@ -1,0 +1,11 @@
+description = "blade-ink-rs: divert_on_choice_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "divert_on_choice_test"
+
+[classification]
+tier = 1
+feature = "divert"
+tags = []

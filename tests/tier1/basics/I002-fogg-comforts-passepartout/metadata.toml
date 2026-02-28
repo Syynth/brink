@@ -1,0 +1,11 @@
+description = "Fogg comforts Passepartout"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I002"
+
+[classification]
+tier = 1
+feature = "basics"
+tags = []

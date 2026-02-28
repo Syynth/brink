@@ -1,0 +1,11 @@
+description = "Tests.cs: TestThreadDone"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestThreadDone"
+
+[classification]
+tier = 2
+feature = "threads"
+tags = []

@@ -1,0 +1,14 @@
+description = "Tests.cs: TestAllSequenceTypes"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestAllSequenceTypes"
+
+[classification]
+tier = 2
+feature = "sequences"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

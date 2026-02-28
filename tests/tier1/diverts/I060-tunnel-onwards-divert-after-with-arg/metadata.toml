@@ -1,0 +1,11 @@
+description = "Tunnel onwards divert after with arg"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I060"
+
+[classification]
+tier = 1
+feature = "diverts"
+tags = ["diverts"]

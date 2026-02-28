@@ -1,0 +1,21 @@
+King of Spades.
+
+1: Try again
+?> 
+Ace of Hearts.
+
+1: Try again
+?> 
+2 of Diamonds.
+
+1: Try again
+?> 
+2 of Diamonds.
+
+1: Try again
+?> 
+Ace of Hearts.
+
+1: Try again
+?> 
+King of Spades.

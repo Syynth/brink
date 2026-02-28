@@ -1,0 +1,11 @@
+description = "Temp usage in options"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I009"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = ["variables"]

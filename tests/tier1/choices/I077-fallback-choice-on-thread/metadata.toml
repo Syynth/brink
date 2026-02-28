@@ -1,0 +1,11 @@
+description = "Fallback choice on thread"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I077"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = ["choices"]

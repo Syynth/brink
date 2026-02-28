@@ -1,0 +1,14 @@
+description = "Tests.cs: TestEmpty"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestEmpty"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

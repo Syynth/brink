@@ -1,0 +1,11 @@
+description = "Tests.cs: TestRequireVariableTargetsTyped"
+mode = "compile_error"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestRequireVariableTargetsTyped"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = []

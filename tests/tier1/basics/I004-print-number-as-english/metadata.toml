@@ -1,0 +1,11 @@
+description = "Print number as English"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I004"
+
+[classification]
+tier = 1
+feature = "basics"
+tags = []

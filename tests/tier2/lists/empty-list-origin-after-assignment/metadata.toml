@@ -1,0 +1,11 @@
+description = "blade-ink-rs: empty_list_origin_after_assinment_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "empty_list_origin_after_assinment_test"
+
+[classification]
+tier = 2
+feature = "lists"
+tags = []

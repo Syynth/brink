@@ -1,0 +1,11 @@
+description = "Tests.cs: TestArithmetic"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestArithmetic"
+
+[classification]
+tier = 2
+feature = "evaluation"
+tags = []

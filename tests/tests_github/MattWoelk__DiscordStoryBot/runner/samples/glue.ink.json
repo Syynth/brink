@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["^no newline ","<>","\n",{"->":"one"},["done",{"#n":"g-0"}],null],"done",{"one":["^normal","\n",{"->":"two"},null],"two":["<>","^ steals newline from previous, somehow","\n","end",null]}],"listDefs":{}}

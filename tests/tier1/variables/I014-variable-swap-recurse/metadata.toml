@@ -1,0 +1,11 @@
+description = "Variable swap recurse"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I014"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = ["variables"]

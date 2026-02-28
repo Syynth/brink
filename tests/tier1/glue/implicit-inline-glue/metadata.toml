@@ -1,0 +1,11 @@
+description = "Tests.cs: TestImplicitInlineGlue"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestImplicitInlineGlue"
+
+[classification]
+tier = 1
+feature = "glue"
+tags = []

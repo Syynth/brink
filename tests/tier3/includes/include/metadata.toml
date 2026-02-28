@@ -1,0 +1,14 @@
+description = "Tests.cs: TestInclude"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestInclude"
+
+[classification]
+tier = 3
+feature = "includes"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

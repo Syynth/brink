@@ -1,0 +1,11 @@
+description = "Empty"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I016"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = ["misc"]

@@ -1,0 +1,11 @@
+description = "Once only choices with own content"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I089"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = ["choices"]

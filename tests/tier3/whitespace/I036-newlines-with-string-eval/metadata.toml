@@ -1,0 +1,11 @@
+description = "Newlines with string eval"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I036"
+
+[classification]
+tier = 3
+feature = "whitespace"
+tags = ["whitespace", "newline"]

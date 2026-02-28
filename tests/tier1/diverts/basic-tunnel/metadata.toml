@@ -1,0 +1,11 @@
+description = "Tests.cs: TestBasicTunnel"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestBasicTunnel"
+
+[classification]
+tier = 1
+feature = "diverts"
+tags = []

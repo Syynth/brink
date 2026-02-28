@@ -1,0 +1,14 @@
+description = "blade-ink-rs: gather/nested-gather"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "gather/nested-gather"
+
+[classification]
+tier = 1
+feature = "gather"
+tags = []
+
+[skip]
+reason = "No matching test found in blade-ink-rs test files"

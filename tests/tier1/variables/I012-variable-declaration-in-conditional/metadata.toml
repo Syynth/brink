@@ -1,0 +1,11 @@
+description = "Variable declaration in conditional"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I012"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = ["variables"]

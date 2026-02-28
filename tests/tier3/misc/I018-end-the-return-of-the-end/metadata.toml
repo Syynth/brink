@@ -1,0 +1,11 @@
+description = "End, the return of the end"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I018"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = ["misc"]

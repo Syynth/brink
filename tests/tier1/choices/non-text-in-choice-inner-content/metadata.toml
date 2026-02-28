@@ -1,0 +1,14 @@
+description = "Tests.cs: TestNonTextInChoiceInnerContent"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestNonTextInChoiceInnerContent"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

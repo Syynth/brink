@@ -1,0 +1,11 @@
+description = "Conditional choices"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I088"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = ["choices"]

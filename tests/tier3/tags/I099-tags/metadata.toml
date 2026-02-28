@@ -1,0 +1,11 @@
+description = "Tags"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I099"
+
+[classification]
+tier = 3
+feature = "tags"
+tags = ["tags"]

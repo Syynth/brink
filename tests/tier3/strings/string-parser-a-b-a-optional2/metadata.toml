@@ -1,0 +1,14 @@
+description = "Tests.cs: TestStringParserABAOptional2"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestStringParserABAOptional2"
+
+[classification]
+tier = 3
+feature = "strings"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

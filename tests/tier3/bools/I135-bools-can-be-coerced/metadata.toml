@@ -1,0 +1,11 @@
+description = "Bools can be coerced"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I135"
+
+[classification]
+tier = 3
+feature = "bools"
+tags = ["bools"]

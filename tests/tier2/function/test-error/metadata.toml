@@ -1,0 +1,14 @@
+description = "blade-ink-rs: function/test-error"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "function/test-error"
+
+[classification]
+tier = 2
+feature = "function"
+tags = []
+
+[skip]
+reason = "No matching test found in blade-ink-rs test files"

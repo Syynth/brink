@@ -1,0 +1,11 @@
+description = "Tests.cs: TestStringTypeCoersion"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestStringTypeCoersion"
+
+[classification]
+tier = 3
+feature = "strings"
+tags = []

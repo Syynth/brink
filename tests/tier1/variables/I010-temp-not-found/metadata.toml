@@ -1,0 +1,14 @@
+description = "Temp not found"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I010"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = ["variables"]
+
+[skip]
+reason = "Hidden in ink-proof (likely tests runtime internals)"

@@ -1,0 +1,11 @@
+description = "Tests.cs: TestSameLineDivertIsInline"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestSameLineDivertIsInline"
+
+[classification]
+tier = 1
+feature = "diverts"
+tags = []

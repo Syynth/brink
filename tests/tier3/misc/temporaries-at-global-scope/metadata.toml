@@ -1,0 +1,11 @@
+description = "Tests.cs: TestTemporariesAtGlobalScope"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestTemporariesAtGlobalScope"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []

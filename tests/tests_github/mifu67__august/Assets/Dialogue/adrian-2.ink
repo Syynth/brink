@@ -1,0 +1,116 @@
+VAR num_reasons_explored = 0
+
+===intro===
+Adrian? #speaking:erika #portrait:adrian-neutral
+Oh, Erika. You're back. #speaking:npc
+How are you holding up?
+Still terrible. But.... #speaking:erika
+You found something. #speaking:npc #portrait:adrian-angry
+Yes. I did. #speaking:erika
+So tell me. Did August commit suicide? #speaking:npc #portrait:adrian-neutral
+-> END
+
+===yes_suicide===
+I— #speaking:npc #portrait:adrian-angry
+I see.
+I never even knew that he was struggling. God damn it. August....Erika, I am so, so sorry.
+... #speaking:erika
+I don’t know what to say. I'm sorry. If there’s anything I can do for you, let me know. #speaking:npc
+It's okay, Adrian. #speaking:erika
+I'm going to leave now, if that's alright.
+Of course. Goodbye, Erika. #speaking:npc
+-> END
+
+===no_suicide===
+Damn it. I had a suspicion that was the case. #speaking:npc #portrait:adrian-angry
+What did you find?
+-> END
+
+===reason_1===
+{reason_1 <= 1:
+    ~ num_reasons_explored += 1
+}
+August is left handed, but the report says he died of a gunshot wound to the right side of his head. #speaking:erika
+What? The wound was on the right side of his head? Let me see that. #speaking:npc #portrait:adrian-angry
+Oh my God. You’re right. 
+This has to have been intentional. Not knowing that he was left handed, someone shot August at close range and manipulated the scene to make it look like a suicide.
+-> END
+
+===reason_2===
+{reason_2 <= 1:
+    ~ num_reasons_explored += 1
+}
+
+{ num_reasons_explored == 1:
+I found August's revolver in his desk. He didn't have it with him when he died. #speaking:erika #portrait:adrian-neutral
+Of course he left the gun. He never brought it anywhere. He was always a lousy shot.... #speaking:npc 
+That’s a good point. If he was going to kill himself, he probably would have used his own gun... but that argument alone isn’t enough for me to disobey the chief’s orders against investigating his death.
+There's a possibility that he bought a different gun, or that he used someone else’s gun. 
+Have you discovered anything else that suggests that August didn’t commit suicide?
+- else:
+I found August's revolver in his desk. He didn't have it with him when he died. #speaking:erika #portrait:adrian-neutral
+Of course he left the gun. He never brought it anywhere. He was always a lousy shot.... #speaking:npc 
+That’s a good point. If he was going to kill himself, he would have used his own gun.
+I suppose he could have bought a different gun or used someone else's gun, but with the other information you've given me, it's too suspicious. 
+I believe you, Erika. I think that someone shot August at close range and manipulated the scene to make it look like a suicide. #portrait:adrian-angry
+}
+-> END
+
+===reason_3===
+{reason_3 <= 1:
+    ~ num_reasons_explored += 1
+}
+
+{ num_reasons_explored == 1:
+August was investigating the suicide of a woman named Karen Wang. He died in the same manner as her. #speaking:erika #portrait:adrian-neutral
+Karen Wang... that sounds familiar. Let me look at her file.... Okay, here it is. #speaking:npc
+“Karen Wang. Age: 25. Cause of death: direct shot to the right temple with a 0.44 caliber pistol. Presumed to be self-inflicted.” #portrait:adrian-angry
+It’s troubling, but that argument alone isn’t enough for me to disobey the chief’s orders against investigating his death. 0.44 caliber pistols are the most common make used by the Larsen Police Force—we can’t rule out sheer coincidence here. 
+Have you discovered anything else that suggests that August didn’t commit suicide? #portrait:adrian-neutral
+- else:
+August was investigating the suicide of a woman named Karen Wang. He died in the same manner as her. #speaking:erika #portrait:adrian-neutral
+Karen Wang... that sounds familiar. Let me look at her file.... Okay, here it is. #speaking:npc
+“Karen Wang. Age: 25. Cause of death: direct shot to the right temple with a 0.44 caliber pistol. Presumed to be self-inflicted.”  #portrait:adrian-angry
+I suppose it could have been sheer coincidence, but with the other information you've given me, it's too suspicious.
+I believe you, Erika. I think that someone shot August at close range and manipulated the scene to make it look like a suicide.
+}
+-> END
+
+===reason_4===
+{reason_4 <= 1:
+    ~ num_reasons_explored += 1
+}
+{ num_reasons_explored == 1:
+August had made future plans with Julian and our neighbor, Mr. Palomino, before he died. #speaking:erika #portrait:adrian-neutral
+Hmm. It is suspicious that he would make plans if he knew he would be dead. Couple that with the fact that none of us thought that August was suicidal.... #speaking:npc
+It’s troubling, but that argument alone isn’t enough for me to disobey the chief’s orders against investigating his death. As much as I hate to admit it, there's a possibility that he could have deceived us all. #portrait:adrian-angry
+Have you discovered anything else that suggests that August didn’t commit suicide? #portrait:adrian-neutral
+- else:
+August had made future plans with Julian and our neighbor, Mr. Palomino, before he died. #speaking:erika #portrait:adrian-neutral
+It is suspicious that he would make plans if he knew he would be dead. Couple that with the fact that none of us thought that August was suicidal.... #speaking:npc
+I suppose there's a possibility that he deceived us all, but with the other information you've given me, it's all too strange. 
+I believe you, Erika. I think that someone shot August at close range and manipulated the scene to make it look like a suicide. #portrait:adrian-angry
+}
+-> END
+
+===red_herring_1===
+I found a wedding ring in August's desk. I think that— I think that he was going to propose to me soon. #speaking:erika #portrait:adrian-neutral
+Oh, Erika, I'm so sorry. #speaking:npc
+But there's not enough of an argument here. We don't know when he was planning to propose. 
+If you learned about any plans with a concrete timeframe, that could be helpful.
+-> END
+
+===bad_outro===
+I'm sorry, Erika. But I just don't have enough evidence to conclusively say that August didn't commit suicide. #speaking:npc #portrait:adrian-angry
+I'll try to persuade the chief to open an investigation. But if she says no, there's not much I can do....
+...I understand. Goodbye, Adrian. #speaking:erika
+-> END
+
+===outro===
+But this is disturbing. #speaking:npc #portrait:adrian-angry
+Why would the chief rule August’s death a suicide? It obviously isn’t. And why would she prevent us from investigating further?
+And finally, who killed August?
+Meet me at Snail Trails tomorrow, Erika. We need to get to the bottom of this.
+Yes. I will. #speaking:erika
+Thank you, Adrian.
+-> END

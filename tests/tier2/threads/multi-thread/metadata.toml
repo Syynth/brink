@@ -1,0 +1,11 @@
+description = "Tests.cs: TestMultiThread"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestMultiThread"
+
+[classification]
+tier = 2
+feature = "threads"
+tags = []

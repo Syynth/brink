@@ -1,0 +1,14 @@
+description = "Tests.cs: TestEndOfContent"
+mode = "compile_error"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestEndOfContent"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

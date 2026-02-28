@@ -1,0 +1,11 @@
+description = "Trivial condition"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I116"
+
+[classification]
+tier = 2
+feature = "conditions"
+tags = ["conditions"]

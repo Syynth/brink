@@ -1,0 +1,11 @@
+description = "blade-ink-rs: ifelse_ext_text1_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "ifelse_ext_text1_test"
+
+[classification]
+tier = 2
+feature = "conditional"
+tags = []

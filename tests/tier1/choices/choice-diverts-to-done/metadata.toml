@@ -1,0 +1,11 @@
+description = "Tests.cs: TestChoiceDivertsToDone"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestChoiceDivertsToDone"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []

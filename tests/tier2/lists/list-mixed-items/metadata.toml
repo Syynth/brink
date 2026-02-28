@@ -1,0 +1,11 @@
+description = "blade-ink-rs: list_mixed_items_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "list_mixed_items_test"
+
+[classification]
+tier = 2
+feature = "lists"
+tags = []

@@ -1,0 +1,11 @@
+description = "Tests.cs: TestVariableGetSetAPI"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestVariableGetSetAPI"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = []

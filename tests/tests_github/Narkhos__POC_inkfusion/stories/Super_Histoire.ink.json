@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["^Mais attendez, je ne l'ai pas déjà faite cette histoire ?","\n",{"->":"TWO_indice"},["done",{"#n":"g-0"}],null],"done",{"TWO_indice":["ev",true,"/ev",{"VAR=":"TWO_variable","re":true},"^Il y avait une histoire d'indice, mais là je ne le trouve plus.","\n","end",null],"global decl":["ev",false,{"VAR=":"TWO_variable"},"/ev","end",null]}],"listDefs":{}}

@@ -1,0 +1,11 @@
+description = "Simple glue"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I048"
+
+[classification]
+tier = 1
+feature = "glue"
+tags = ["glue"]

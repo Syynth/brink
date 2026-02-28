@@ -1,0 +1,11 @@
+description = "Tests.cs: TestTurnsSinceNested"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestTurnsSinceNested"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []

@@ -1,0 +1,11 @@
+description = "Tests.cs: TestDefaultSimpleGather"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestDefaultSimpleGather"
+
+[classification]
+tier = 1
+feature = "weave"
+tags = []

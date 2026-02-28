@@ -1,0 +1,11 @@
+description = "Native bools"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I134"
+
+[classification]
+tier = 3
+feature = "bools"
+tags = ["bools"]

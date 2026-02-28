@@ -1,0 +1,14 @@
+description = "Tests.cs: TestNestedChoiceError"
+mode = "compile_error"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestNestedChoiceError"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

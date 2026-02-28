@@ -1,0 +1,11 @@
+description = "blade-ink-rs: once_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "once_test"
+
+[classification]
+tier = 2
+feature = "conditional"
+tags = []

@@ -1,0 +1,11 @@
+description = "Variable observer"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I127"
+
+[classification]
+tier = 3
+feature = "bindings"
+tags = ["bindings"]

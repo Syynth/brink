@@ -1,0 +1,11 @@
+description = "Empty list origin"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I073"
+
+[classification]
+tier = 2
+feature = "lists"
+tags = ["lists"]

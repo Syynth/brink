@@ -1,0 +1,14 @@
+description = "Tests.cs: TestCleanCallstackResetOnPathChoice"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestCleanCallstackResetOnPathChoice"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = []
+
+[skip]
+reason = "Uses ChoosePathString (manual path navigation)"

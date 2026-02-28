@@ -1,0 +1,11 @@
+description = "blade-ink-rs: complex_func2_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "complex_func2_test"
+
+[classification]
+tier = 2
+feature = "function"
+tags = []

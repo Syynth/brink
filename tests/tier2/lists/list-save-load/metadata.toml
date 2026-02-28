@@ -1,0 +1,11 @@
+description = "blade-ink-rs: list_save_load_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "list_save_load_test"
+
+[classification]
+tier = 2
+feature = "lists"
+tags = []

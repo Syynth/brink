@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[[{"->":"start"},["done",{"#n":"g-0"}],null],"done",{"foo":["ev",5,"/ev",{"temp=":"x"},null],"start":["ev",{"x()":"foo"},"pop","/ev","\n","^Call1","\n","ev",{"x()":"foo"},"pop","/ev","\n","<>","^ glued to Call 2","\n","ev",{"x()":"foo"},"pop","/ev","\n","^Call 3 is separated","\n","done",null]}],"listDefs":{}}

@@ -1,0 +1,14 @@
+description = "Tests.cs: TestMultiFlowBasics"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestMultiFlowBasics"
+
+[classification]
+tier = 2
+feature = "conditions"
+tags = []
+
+[skip]
+reason = "Uses ChoosePathString (manual path navigation)"

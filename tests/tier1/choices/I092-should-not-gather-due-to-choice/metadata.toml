@@ -1,0 +1,14 @@
+description = "Should not gather due to choice"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I092"
+
+[classification]
+tier = 1
+feature = "choices"
+tags = ["choices"]
+
+[skip]
+reason = "Hidden in ink-proof (likely tests runtime internals)"

@@ -1,0 +1,11 @@
+description = "Tunnel to death"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I003"
+
+[classification]
+tier = 1
+feature = "basics"
+tags = []

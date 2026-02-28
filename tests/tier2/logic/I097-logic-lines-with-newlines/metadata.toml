@@ -1,0 +1,11 @@
+description = "Logic lines with newlines"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I097"
+
+[classification]
+tier = 2
+feature = "logic"
+tags = ["logic"]

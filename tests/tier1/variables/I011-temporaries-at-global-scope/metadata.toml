@@ -1,0 +1,11 @@
+description = "Temporaries at global scope"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I011"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = ["variables"]

@@ -1,0 +1,11 @@
+description = "blade-ink-rs: variable_observers_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "variable_observers_test"
+
+[classification]
+tier = 3
+feature = "runtime"
+tags = []

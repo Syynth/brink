@@ -1,0 +1,2 @@
+name has already been used for a function
+name has already been used for a var

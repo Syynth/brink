@@ -1,0 +1,11 @@
+description = "String contains"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I050"
+
+[classification]
+tier = 3
+feature = "strings"
+tags = ["strings"]

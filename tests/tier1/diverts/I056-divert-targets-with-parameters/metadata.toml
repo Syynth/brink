@@ -1,0 +1,11 @@
+description = "Divert targets with parameters"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I056"
+
+[classification]
+tier = 1
+feature = "diverts"
+tags = ["diverts"]

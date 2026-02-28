@@ -1,0 +1,11 @@
+description = "blade-ink-rs: external_function_coerce_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "external_function_coerce_test"
+
+[classification]
+tier = 3
+feature = "runtime"
+tags = []

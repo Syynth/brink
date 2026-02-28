@@ -1,0 +1,11 @@
+description = "blade-ink-rs: newlines_with_string_eval_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "newlines_with_string_eval_test"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []

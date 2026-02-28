@@ -1,0 +1,11 @@
+description = "blade-ink-rs: i18n"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "i18n"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = []

@@ -1,0 +1,14 @@
+description = "Tests.cs: TestCharacterRangeIdentifiersForSimpleVariableNamesWithAsciiSuffix"
+mode = "compile_error"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestCharacterRangeIdentifiersForSimpleVariableNamesWithAsciiSuffix"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

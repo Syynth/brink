@@ -1,0 +1,11 @@
+description = "Tests.cs: TestConst"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestConst"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = []

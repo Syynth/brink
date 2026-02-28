@@ -1,0 +1,11 @@
+description = "Whitespace"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I023"
+
+[classification]
+tier = 3
+feature = "misc"
+tags = ["misc"]

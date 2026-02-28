@@ -1,0 +1,11 @@
+Here is some gold. Do you want it?
+
+1: No
+2: Yes
+?> No
+Try again!
+
+1: No
+2: Yes
+?> Yes
+You win!

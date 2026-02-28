@@ -1,0 +1,11 @@
+description = "Basic tunnel"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I054"
+
+[classification]
+tier = 1
+feature = "diverts"
+tags = ["diverts"]

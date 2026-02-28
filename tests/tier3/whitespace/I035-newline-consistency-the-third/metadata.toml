@@ -1,0 +1,11 @@
+description = "Newline consistency, the third"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I035"
+
+[classification]
+tier = 3
+feature = "whitespace"
+tags = ["whitespace", "newline"]

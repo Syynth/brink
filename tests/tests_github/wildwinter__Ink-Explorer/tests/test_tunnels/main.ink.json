@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[[{"->":"Main"},["done",{"#n":"g-0"}],null],"done",{"Main":["^This is main.","\n",{"->t->":"Tunnel"},"done",null],"Tunnel":["^This is a tunnel.","\n",{"->t->":"Tunnel2"},"ev","void","/ev","->->",null],"Tunnel2":["^Tunnel2.","\n","ev","void","/ev","->->",null]}],"listDefs":{}}

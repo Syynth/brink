@@ -1,0 +1,11 @@
+description = "blade-ink-rs: load_save_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "load_save_test"
+
+[classification]
+tier = 3
+feature = "runtime"
+tags = []

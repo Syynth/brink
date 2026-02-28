@@ -1,0 +1,14 @@
+description = "blade-ink-rs: runtime/external-function-3-arg"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "runtime/external-function-3-arg"
+
+[classification]
+tier = 3
+feature = "runtime"
+tags = []
+
+[skip]
+reason = "No matching test found in blade-ink-rs test files"

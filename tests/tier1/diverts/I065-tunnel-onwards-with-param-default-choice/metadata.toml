@@ -1,0 +1,11 @@
+description = "Tunnel onwards with param default choice"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I065"
+
+[classification]
+tier = 1
+feature = "diverts"
+tags = ["diverts"]

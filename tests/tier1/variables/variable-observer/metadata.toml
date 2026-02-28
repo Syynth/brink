@@ -1,0 +1,11 @@
+description = "Tests.cs: TestVariableObserver"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestVariableObserver"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = []

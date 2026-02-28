@@ -1,0 +1,11 @@
+description = "blade-ink-rs: thread_test_bug"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "thread_test_bug"
+
+[classification]
+tier = 2
+feature = "threads"
+tags = []

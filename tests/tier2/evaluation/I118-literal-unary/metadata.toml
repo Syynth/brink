@@ -1,0 +1,11 @@
+description = "Literal unary"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I118"
+
+[classification]
+tier = 2
+feature = "evaluation"
+tags = ["evaluation"]

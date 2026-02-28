@@ -1,0 +1,2 @@
+Return statements can only be used in knots that are declared as functions
+Functions may not contain diverts

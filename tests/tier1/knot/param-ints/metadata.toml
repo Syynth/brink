@@ -1,0 +1,11 @@
+description = "blade-ink-rs: param_ints_test"
+mode = "runtime"
+
+[source]
+origin = "blade-ink-rs"
+original_id = "param_ints_test"
+
+[classification]
+tier = 1
+feature = "knot"
+tags = []

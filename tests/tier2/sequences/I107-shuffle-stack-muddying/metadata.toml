@@ -1,0 +1,14 @@
+description = "Shuffle stack muddying"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I107"
+
+[classification]
+tier = 2
+feature = "sequences"
+tags = ["sequences"]
+
+[skip]
+reason = "Uses randomness"

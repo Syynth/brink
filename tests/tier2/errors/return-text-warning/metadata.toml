@@ -1,0 +1,14 @@
+description = "Tests.cs: TestReturnTextWarning"
+mode = "runtime"
+
+[source]
+origin = "inkle-tests-cs"
+original_id = "TestReturnTextWarning"
+
+[classification]
+tier = 2
+feature = "errors"
+tags = []
+
+[skip]
+reason = "Could not extract ink source"

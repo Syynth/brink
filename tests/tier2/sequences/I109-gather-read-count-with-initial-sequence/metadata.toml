@@ -1,0 +1,11 @@
+description = "Gather read count with initial sequence"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I109"
+
+[classification]
+tier = 2
+feature = "sequences"
+tags = ["sequences"]

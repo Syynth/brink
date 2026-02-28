@@ -1,0 +1,11 @@
+description = "Conditional choice in weave, the second"
+mode = "runtime"
+
+[source]
+origin = "ink-proof"
+original_id = "I039"
+
+[classification]
+tier = 1
+feature = "weave"
+tags = ["weave"]
