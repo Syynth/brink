@@ -1,0 +1,9 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/mod.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..2
+  EMPTY_LINE@0..1
+    NEWLINE@0..1 "\n"
+  EMPTY_LINE@1..2
+    NEWLINE@1..2 "\n"

@@ -1,0 +1,22 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/choice.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..23
+  CHOICE@0..23
+    CHOICE_BULLETS@0..2
+      STAR@0..1 "*"
+      WHITESPACE@1..2 " "
+    CHOICE_CONDITION@2..11
+      L_BRACE@2..3 "{"
+      DOTTED_IDENTIFIER@3..10
+        IDENT@3..10 "visited"
+      R_BRACE@10..11 "}"
+    WHITESPACE@11..12 " "
+    CHOICE_START_CONTENT@12..22
+      CHOICE_TEXT@12..22
+        IDENT@12..16 "Been"
+        WHITESPACE@16..17 " "
+        IDENT@17..21 "here"
+        DOT@21..22 "."
+    NEWLINE@22..23 "\n"

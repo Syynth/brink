@@ -1,0 +1,17 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/declaration.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..22
+  EXTERNAL_DECL@0..22
+    KW_EXTERNAL@0..8 "EXTERNAL"
+    WHITESPACE@8..9 " "
+    IDENT@9..15 "myFunc"
+    L_PAREN@15..16 "("
+    FUNCTION_PARAM_LIST@16..20
+      IDENT@16..17 "a"
+      COMMA@17..18 ","
+      WHITESPACE@18..19 " "
+      IDENT@19..20 "b"
+    R_PAREN@20..21 ")"
+    NEWLINE@21..22 "\n"

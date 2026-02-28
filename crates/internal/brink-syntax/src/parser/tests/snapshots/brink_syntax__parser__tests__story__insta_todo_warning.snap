@@ -1,0 +1,15 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/story.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..21
+  AUTHOR_WARNING@0..21
+    KW_TODO@0..4 "TODO"
+    COLON@4..5 ":"
+    WHITESPACE@5..6 " "
+    IDENT@6..9 "fix"
+    WHITESPACE@9..10 " "
+    IDENT@10..14 "this"
+    WHITESPACE@14..15 " "
+    IDENT@15..20 "later"
+    NEWLINE@20..21 "\n"

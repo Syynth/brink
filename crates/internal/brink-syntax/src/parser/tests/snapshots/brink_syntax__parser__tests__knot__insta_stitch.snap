@@ -1,0 +1,27 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/knot.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..33
+  KNOT_DEF@0..33
+    KNOT_HEADER@0..12
+      EQ_EQ@0..2 "=="
+      WHITESPACE@2..3 " "
+      IDENT@3..9 "myKnot"
+      WHITESPACE@9..10 " "
+      EQ_EQ@10..12 "=="
+    NEWLINE@12..13 "\n"
+    KNOT_BODY@13..33
+      STITCH_DEF@13..33
+        STITCH_HEADER@13..23
+          EQ@13..14 "="
+          WHITESPACE@14..15 " "
+          IDENT@15..23 "myStitch"
+        NEWLINE@23..24 "\n"
+        STITCH_BODY@24..33
+          CONTENT_LINE@24..33
+            MIXED_CONTENT@24..32
+              TEXT_CONTENT@24..32
+                IDENT@24..31 "Content"
+                DOT@31..32 "."
+            NEWLINE@32..33 "\n"

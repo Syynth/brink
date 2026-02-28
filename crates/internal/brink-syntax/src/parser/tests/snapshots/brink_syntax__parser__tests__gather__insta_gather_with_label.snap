@@ -1,0 +1,21 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/gather.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..17
+  GATHER@0..17
+    GATHER_DASHES@0..2
+      MINUS@0..1 "-"
+      WHITESPACE@1..2 " "
+    CHOICE_LABEL@2..7
+      L_PAREN@2..3 "("
+      IDENT@3..6 "end"
+      R_PAREN@6..7 ")"
+    WHITESPACE@7..8 " "
+    MIXED_CONTENT@8..16
+      TEXT_CONTENT@8..16
+        IDENT@8..11 "The"
+        WHITESPACE@11..12 " "
+        IDENT@12..15 "end"
+        DOT@15..16 "."
+    NEWLINE@16..17 "\n"

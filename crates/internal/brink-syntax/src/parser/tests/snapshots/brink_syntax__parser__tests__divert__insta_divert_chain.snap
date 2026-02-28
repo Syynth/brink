@@ -1,0 +1,22 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/divert.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..25
+  CONTENT_LINE@0..25
+    DIVERT_NODE@0..24
+      DIVERT_CHAIN@0..24
+        DIVERT@0..2 "->"
+        WHITESPACE@2..3 " "
+        DIVERT_TARGET_WITH_ARGS@3..10
+          DOTTED_IDENTIFIER@3..9
+            IDENT@3..9 "tunnel"
+          WHITESPACE@9..10 " "
+        DIVERT@10..12 "->"
+        WHITESPACE@12..13 " "
+        DIVERT_TARGET_WITH_ARGS@13..24
+          DOTTED_IDENTIFIER@13..24
+            IDENT@13..17 "knot"
+            DOT@17..18 "."
+            IDENT@18..24 "stitch"
+    NEWLINE@24..25 "\n"

@@ -13,5 +13,8 @@ publish = false
 [dependencies]
 rowan.workspace = true
 
+[dev-dependencies]
+insta.workspace = true
+
 [lints]
 workspace = true

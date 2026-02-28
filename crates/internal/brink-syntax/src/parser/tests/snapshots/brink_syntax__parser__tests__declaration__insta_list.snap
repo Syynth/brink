@@ -1,0 +1,28 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/declaration.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..33
+  LIST_DECL@0..33
+    KW_LIST@0..4 "LIST"
+    WHITESPACE@4..5 " "
+    IDENT@5..10 "items"
+    WHITESPACE@10..11 " "
+    EQ@11..12 "="
+    WHITESPACE@12..13 " "
+    LIST_DEF@13..32
+      LIST_MEMBER@13..24
+        LIST_MEMBER_ON@13..24
+          L_PAREN@13..14 "("
+          IDENT@14..19 "sword"
+          WHITESPACE@19..20 " "
+          EQ@20..21 "="
+          WHITESPACE@21..22 " "
+          INTEGER@22..23 "1"
+          R_PAREN@23..24 ")"
+      COMMA@24..25 ","
+      WHITESPACE@25..26 " "
+      LIST_MEMBER@26..32
+        LIST_MEMBER_OFF@26..32
+          IDENT@26..32 "shield"
+    NEWLINE@32..33 "\n"

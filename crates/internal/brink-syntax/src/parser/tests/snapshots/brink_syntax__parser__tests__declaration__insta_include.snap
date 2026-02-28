@@ -1,0 +1,13 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/declaration.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..18
+  INCLUDE_STMT@0..18
+    KW_INCLUDE@0..7 "INCLUDE"
+    WHITESPACE@7..8 " "
+    FILE_PATH@8..17
+      IDENT@8..13 "story"
+      DOT@13..14 "."
+      IDENT@14..17 "ink"
+    NEWLINE@17..18 "\n"

@@ -1,0 +1,17 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/divert.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..18
+  CONTENT_LINE@0..18
+    DIVERT_NODE@0..17
+      TUNNEL_CALL_NODE@0..17
+        DIVERT_CHAIN@0..17
+          DIVERT@0..2 "->"
+          WHITESPACE@2..3 " "
+          DIVERT_TARGET_WITH_ARGS@3..15
+            DOTTED_IDENTIFIER@3..14
+              IDENT@3..14 "tunnel_test"
+            WHITESPACE@14..15 " "
+          DIVERT@15..17 "->"
+    NEWLINE@17..18 "\n"
