@@ -10,7 +10,7 @@ mod logic;
 mod story;
 mod tag;
 
-use crate::SyntaxKind::{self, EOF, ERROR, IDENT, WHITESPACE};
+use crate::SyntaxKind::{self, EOF, ERROR, IDENT};
 use crate::lexer;
 use rowan::GreenNode;
 
@@ -189,15 +189,8 @@ impl<'t> Parser<'t> {
         }
     }
 
-    /// Consume `WHITESPACE` tokens (NOT newlines, NOT comments).
-    fn skip_ws(&mut self) {
-        while self.pos < self.tokens.len() && self.tokens[self.pos].0 == WHITESPACE {
-            self.bump();
-        }
-    }
-
     /// Consume all trivia (`WHITESPACE`, `LINE_COMMENT`, `BLOCK_COMMENT`).
-    fn skip_trivia(&mut self) {
+    fn skip_ws(&mut self) {
         while self.pos < self.tokens.len() && self.tokens[self.pos].0.is_trivia() {
             self.bump();
         }

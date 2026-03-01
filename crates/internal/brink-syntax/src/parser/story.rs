@@ -10,7 +10,7 @@ pub(crate) fn source_file(p: &mut Parser<'_>) {
     p.start_node(SOURCE_FILE);
 
     while !p.at_eof() {
-        p.skip_trivia();
+        p.skip_ws();
 
         if p.at_eof() {
             break;

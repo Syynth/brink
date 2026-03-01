@@ -86,7 +86,7 @@ fn expression_bp(p: &mut Parser<'_>, min_bp: Prec) {
     }
 
     loop {
-        p.skip_trivia();
+        p.skip_ws();
 
         // -- Postfix --
         // Both `++` and `--` are two adjacent tokens (no whitespace between them).
@@ -115,7 +115,7 @@ fn expression_bp(p: &mut Parser<'_>, min_bp: Prec) {
             p.start_node_at(checkpoint, INFIX_EXPR);
             p.bump(); // first |
             p.bump(); // second |
-            p.skip_trivia();
+            p.skip_ws();
             expression_bp(p, Prec::Or);
             p.finish_node();
             continue;

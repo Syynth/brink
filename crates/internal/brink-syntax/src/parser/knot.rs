@@ -128,7 +128,7 @@ fn knot_param_decl(p: &mut Parser<'_>) {
 fn knot_body(p: &mut Parser<'_>) {
     p.start_node(KNOT_BODY);
     loop {
-        p.skip_trivia();
+        p.skip_ws();
         if p.at_eof() || at_knot(p) {
             break;
         }
@@ -193,7 +193,7 @@ fn stitch_header(p: &mut Parser<'_>) {
 fn stitch_body(p: &mut Parser<'_>) {
     p.start_node(STITCH_BODY);
     loop {
-        p.skip_trivia();
+        p.skip_ws();
         if p.at_eof() || at_knot(p) || at_stitch(p) {
             break;
         }
