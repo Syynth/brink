@@ -1,0 +1,22 @@
+[package]
+name = "brink-syntax-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+brink-syntax = { path = ".." }
+
+[[bin]]
+name = "parse_no_panic"
+path = "fuzz_targets/parse_no_panic.rs"
+doc = false
+
+[[bin]]
+name = "parse_lossless"
+path = "fuzz_targets/parse_lossless.rs"
+doc = false
