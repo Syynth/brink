@@ -524,7 +524,7 @@ fn infix_pipe_pipe() {
             LOGIC_LINE {
                 ASSIGNMENT [EQ] {
                     PATH
-                    INFIX_EXPR [PIPE_PIPE] {
+                    INFIX_EXPR [PIPE, PIPE] {
                         PATH
                         PATH
                     }
@@ -733,7 +733,7 @@ fn prec_and_over_or() {
             LOGIC_LINE {
                 ASSIGNMENT [EQ] {
                     PATH
-                    INFIX_EXPR [PIPE_PIPE] {
+                    INFIX_EXPR [PIPE, PIPE] {
                         INFIX_EXPR [AMP_AMP] {
                             PATH
                             PATH

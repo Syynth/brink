@@ -8,7 +8,7 @@ use crate::SyntaxKind::{
     self, AMP_AMP, BANG, BANG_EQ, BANG_QUESTION, CARET, COLON, DIVERT, EQ, EQ_EQ, FLOAT, GT, GT_EQ,
     HASH, IDENT, INTEGER, KW_AND, KW_DONE, KW_ELSE, KW_END, KW_FALSE, KW_FUNCTION, KW_HAS,
     KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_REF, KW_TODO, KW_TRUE, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE,
-    PERCENT, PIPE_PIPE, PLUS, PLUS_EQ, QUESTION, SLASH, STAR,
+    PERCENT, PIPE, PLUS, PLUS_EQ, QUESTION, SLASH, STAR,
 };
 use crate::ast::AstNode as _;
 use crate::ast::ast_node;
@@ -957,7 +957,7 @@ impl InfixExpr {
                         | KW_AND
                         | AMP_AMP
                         | KW_OR
-                        | PIPE_PIPE
+                        | PIPE
                         | KW_MOD
                         | KW_HAS
                         | KW_HASNT

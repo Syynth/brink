@@ -67,8 +67,6 @@ pub enum SyntaxKind {
     AMP,
     /// `&&`
     AMP_AMP,
-    /// `||`
-    PIPE_PIPE,
     /// `+`
     PLUS,
     /// `-`
@@ -281,7 +279,6 @@ impl SyntaxKind {
                 | Self::GT_EQ
                 | Self::AMP
                 | Self::AMP_AMP
-                | Self::PIPE_PIPE
                 | Self::PLUS
                 | Self::MINUS
                 | Self::STAR

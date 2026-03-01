@@ -3,8 +3,8 @@ use crate::SyntaxKind::{
     DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FLOAT, FLOAT_LIT, FUNCTION_CALL, GT, GT_EQ, IDENT,
     IDENTIFIER, INFIX_EXPR, INTEGER, INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD,
     KW_NOT, KW_OR, KW_TRUE, L_BRACE, L_PAREN, LIST_EXPR, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE,
-    PAREN_EXPR, PERCENT, PIPE_PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE,
-    R_PAREN, SLASH, STAR, STRING_LIT,
+    PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE, R_PAREN,
+    SLASH, STAR, STRING_LIT,
 };
 
 use super::Parser;
@@ -35,7 +35,7 @@ fn infix_binding_power(kind: SyntaxKind) -> Option<(Prec, bool)> {
         // Assignment compound ops
         PLUS_EQ | MINUS_EQ => (Prec::Assign, true),
         // Logical or
-        PIPE_PIPE | KW_OR => (Prec::Or, false),
+        KW_OR => (Prec::Or, false),
         // Logical and
         AMP_AMP | KW_AND => (Prec::And, false),
         // Equality
@@ -102,6 +102,20 @@ fn expression_bp(p: &mut Parser<'_>, min_bp: Prec) {
             p.start_node_at(checkpoint, POSTFIX_EXPR);
             p.bump(); // first -
             p.bump(); // second -
+            p.finish_node();
+            continue;
+        }
+
+        // `||` — two adjacent PIPE tokens = logical OR
+        if p.current() == PIPE && p.nth_raw(1) == PIPE {
+            let (prec, right_assoc) = (Prec::Or, false);
+            if prec < min_bp || (prec == min_bp && !right_assoc) {
+                break;
+            }
+            p.start_node_at(checkpoint, INFIX_EXPR);
+            p.bump(); // first |
+            p.bump(); // second |
+            expression_bp(p, Prec::Or);
             p.finish_node();
             continue;
         }

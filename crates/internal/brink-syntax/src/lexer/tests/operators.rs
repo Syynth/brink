@@ -36,7 +36,7 @@ fn bang_disambiguation() {
 
 #[test]
 fn pipe_disambiguation() {
-    assert_eq!(kinds("||"), vec![PIPE_PIPE]);
+    assert_eq!(kinds("||"), vec![PIPE, PIPE]);
     assert_eq!(kinds("|"), vec![PIPE]);
 }
 

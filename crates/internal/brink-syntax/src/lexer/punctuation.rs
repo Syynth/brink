@@ -10,8 +10,8 @@ pub fn lex_punctuation(bytes: &[u8], pos: usize) -> Option<(SyntaxKind, usize)> 
     use SyntaxKind::{
         AMP, AMP_AMP, BACKSLASH, BANG, BANG_EQ, BANG_QUESTION, CARET, COLON, COMMA, DIVERT, DOLLAR,
         DOT, EQ, EQ_EQ, GLUE, GT, GT_EQ, HASH, L_BRACE, L_BRACKET, L_PAREN, LT, LT_EQ, MINUS,
-        MINUS_EQ, PERCENT, PIPE, PIPE_PIPE, PLUS, PLUS_EQ, QUESTION, QUOTE, R_BRACE, R_BRACKET,
-        R_PAREN, SLASH, STAR, THREAD, TILDE, TUNNEL_ONWARDS,
+        MINUS_EQ, PERCENT, PIPE, PLUS, PLUS_EQ, QUESTION, QUOTE, R_BRACE, R_BRACKET, R_PAREN,
+        SLASH, STAR, THREAD, TILDE, TUNNEL_ONWARDS,
     };
 
     let b = bytes[pos];
@@ -77,14 +77,9 @@ pub fn lex_punctuation(bytes: &[u8], pos: usize) -> Option<(SyntaxKind, usize)> 
                 (BANG, 1)
             }
         }
-        // `||` before `|`
-        b'|' => {
-            if b1 == Some(b'|') {
-                (PIPE_PIPE, 2)
-            } else {
-                (PIPE, 1)
-            }
-        }
+        // `||` is NOT a compound token — two consecutive PIPE tokens let the
+        // parser decide: sequence separator vs logical OR (like `++`/`--`).
+        b'|' => (PIPE, 1),
         // `&&` before `&`
         b'&' => {
             if b1 == Some(b'&') {
