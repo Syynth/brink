@@ -4,6 +4,7 @@ use crate::{Parse, SyntaxKind, SyntaxNode, parse};
 
 pub struct ExpectedNode {
     pub kind: SyntaxKind,
+    pub tokens: Vec<SyntaxKind>,
     pub children: Vec<ExpectedNode>,
 }
 
@@ -11,49 +12,87 @@ pub struct ExpectedNode {
 
 /// Build an [`ExpectedNode`] tree using nested braces.
 ///
+/// Composite node children are listed inside `{ }`. Token assertions
+/// can be added in `[ ]` after the node kind — these assert that the
+/// listed token kinds appear as direct token children of that node.
+///
 /// ```ignore
 /// cst!(SOURCE_FILE {
-///     CONTENT_LINE {
-///         MIXED_CONTENT {
-///             TEXT
-///         }
-///         DIVERT_NODE {
-///             SIMPLE_DIVERT {
-///                 DIVERT_TARGET_WITH_ARGS {
-///                     PATH
-///                 }
+///     LOGIC_LINE {
+///         ASSIGNMENT [EQ] {
+///             PATH
+///             INFIX_EXPR [PLUS] {
+///                 INTEGER_LIT
+///                 INTEGER_LIT
 ///             }
 ///         }
 ///     }
 /// })
 /// ```
 macro_rules! cst {
-    // Root node with children.
-    ($kind:ident { $($inner:tt)* }) => {
+    // ── Root arms ────────────────────────────────────────────────────
+    // Root node with tokens and children.
+    ($kind:ident [$($token:ident),* $(,)?] { $($inner:tt)* }) => {
         ExpectedNode {
             kind: SyntaxKind::$kind,
+            tokens: vec![$(SyntaxKind::$token),*],
             children: cst!(@list [] $($inner)*),
         }
     };
-    // Root leaf node.
+    // Root node with children (no tokens).
+    ($kind:ident { $($inner:tt)* }) => {
+        ExpectedNode {
+            kind: SyntaxKind::$kind,
+            tokens: vec![],
+            children: cst!(@list [] $($inner)*),
+        }
+    };
+    // Root leaf with tokens.
+    ($kind:ident [$($token:ident),* $(,)?]) => {
+        ExpectedNode {
+            kind: SyntaxKind::$kind,
+            tokens: vec![$(SyntaxKind::$token),*],
+            children: vec![],
+        }
+    };
+    // Root leaf node (no tokens).
     ($kind:ident) => {
         ExpectedNode {
             kind: SyntaxKind::$kind,
+            tokens: vec![],
             children: vec![],
         }
     };
     // ── List builder (TT muncher) ────────────────────────────────────
-    // Node with children, followed by more siblings.
-    (@list [$($acc:expr),*] $kind:ident { $($inner:tt)* } $($rest:tt)*) => {
+    // Node with tokens and children, followed by more siblings.
+    (@list [$($acc:expr),*] $kind:ident [$($token:ident),* $(,)?] { $($inner:tt)* } $($rest:tt)*) => {
         cst!(@list [$($acc,)* ExpectedNode {
             kind: SyntaxKind::$kind,
+            tokens: vec![$(SyntaxKind::$token),*],
             children: cst!(@list [] $($inner)*),
         }] $($rest)*)
     };
-    // Leaf node, followed by more siblings.
+    // Node with children (no tokens), followed by more siblings.
+    (@list [$($acc:expr),*] $kind:ident { $($inner:tt)* } $($rest:tt)*) => {
+        cst!(@list [$($acc,)* ExpectedNode {
+            kind: SyntaxKind::$kind,
+            tokens: vec![],
+            children: cst!(@list [] $($inner)*),
+        }] $($rest)*)
+    };
+    // Leaf with tokens, followed by more siblings.
+    (@list [$($acc:expr),*] $kind:ident [$($token:ident),* $(,)?] $($rest:tt)*) => {
+        cst!(@list [$($acc,)* ExpectedNode {
+            kind: SyntaxKind::$kind,
+            tokens: vec![$(SyntaxKind::$token),*],
+            children: vec![],
+        }] $($rest)*)
+    };
+    // Leaf node (no tokens), followed by more siblings.
     (@list [$($acc:expr),*] $kind:ident $($rest:tt)*) => {
         cst!(@list [$($acc,)* ExpectedNode {
             kind: SyntaxKind::$kind,
+            tokens: vec![],
             children: vec![],
         }] $($rest)*)
     };
@@ -66,7 +105,9 @@ macro_rules! cst {
 // ── Assertion ────────────────────────────────────────────────────────
 
 /// Assert that parsing `src` produces a CST whose node structure matches
-/// `expected`. Tokens are skipped — only composite nodes are compared.
+/// `expected`. Only composite node children are compared by default.
+/// When `[TOKEN]` annotations are present on a node, the listed token
+/// kinds are asserted to exist as direct token children of that node.
 ///
 /// Also asserts lossless round-trip and no parse errors.
 #[expect(
@@ -101,6 +142,25 @@ fn compare_nodes(
         actual.kind(),
         format_tree(root, 0),
     );
+
+    // Check expected token children (if any).
+    if !expected.tokens.is_empty() {
+        let actual_tokens: Vec<SyntaxKind> = actual
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .map(|t| t.kind())
+            .collect();
+
+        for expected_token in &expected.tokens {
+            assert!(
+                actual_tokens.contains(expected_token),
+                "missing expected token {expected_token:?} at {} > {:?}\n  actual tokens: {actual_tokens:?}\n\nactual tree:\n{}",
+                format_path(path),
+                expected.kind,
+                format_tree(root, 0),
+            );
+        }
+    }
 
     let actual_children: Vec<SyntaxKind> = actual.children().map(|c| c.kind()).collect();
     let expected_children: Vec<SyntaxKind> = expected.children.iter().map(|c| c.kind).collect();
