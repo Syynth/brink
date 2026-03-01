@@ -1,0 +1,23 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/content/mod.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..19
+  CONTENT_LINE@0..19
+    MIXED_CONTENT@0..6
+      TEXT@0..6
+        IDENT@0..5 "Hello"
+        WHITESPACE@5..6 " "
+    DIVERT_NODE@6..14
+      SIMPLE_DIVERT@6..14
+        DIVERT@6..8 "->"
+        WHITESPACE@8..9 " "
+        DIVERT_TARGET_WITH_ARGS@9..14
+          PATH@9..13
+            IDENT@9..13 "knot"
+          WHITESPACE@13..14 " "
+    TAGS@14..18
+      TAG@14..18
+        HASH@14..15 "#"
+        IDENT@15..18 "tag"
+    NEWLINE@18..19 "\n"

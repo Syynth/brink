@@ -1,7 +1,7 @@
-mod choice;
-mod content;
 #[macro_use]
 mod cst;
+mod choice;
+mod content;
 mod declaration;
 mod divert;
 mod expression;
