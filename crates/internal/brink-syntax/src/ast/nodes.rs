@@ -5,10 +5,11 @@
 //! below their definition.
 
 use crate::SyntaxKind::{
-    self, AMP_AMP, BANG, BANG_EQ, BANG_QUESTION, CARET, COLON, DIVERT, EQ, EQ_EQ, FLOAT, GT, GT_EQ,
-    HASH, IDENT, INTEGER, KW_AND, KW_DONE, KW_ELSE, KW_END, KW_FALSE, KW_FUNCTION, KW_HAS,
-    KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_REF, KW_TODO, KW_TRUE, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE,
-    PERCENT, PIPE, PLUS, PLUS_EQ, QUESTION, SLASH, STAR,
+    self, AMP, AMP_AMP, BANG, BANG_EQ, BANG_QUESTION, CARET, COLON, DIVERT, DOLLAR, EQ, EQ_EQ,
+    FLOAT, GT, GT_EQ, HASH, IDENT, INTEGER, KW_AND, KW_CYCLE, KW_DONE, KW_ELSE, KW_END, KW_FALSE,
+    KW_FUNCTION, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_ONCE, KW_OR, KW_REF, KW_SHUFFLE, KW_STOPPING,
+    KW_TODO, KW_TRUE, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE, PERCENT, PIPE, PLUS, PLUS_EQ, QUESTION,
+    SLASH, STAR, TILDE,
 };
 use crate::ast::AstNode as _;
 use crate::ast::ast_node;
@@ -554,6 +555,11 @@ impl TempDecl {
     pub fn eq_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, EQ)
     }
+
+    /// Returns the initializer expression after `=`.
+    pub fn value(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
 }
 
 // ── Assignment ───────────────────────────────────────────────────────
@@ -569,6 +575,11 @@ impl Assignment {
             .children_with_tokens()
             .filter_map(rowan::NodeOrToken::into_token)
             .find(|tok| matches!(tok.kind(), EQ | PLUS_EQ | MINUS_EQ))
+    }
+
+    /// Returns the right-hand side value expression (the second `Expr` child).
+    pub fn value(&self) -> Option<Expr> {
+        self.syntax.children().filter_map(Expr::cast).nth(1)
     }
 }
 
@@ -805,6 +816,46 @@ impl SequenceWithAnnotation {
     }
 }
 
+// ── SequenceSymbolAnnotation ──────────────────────────────────────────
+
+impl SequenceSymbolAnnotation {
+    pub fn amp_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, AMP)
+    }
+
+    pub fn bang_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, BANG)
+    }
+
+    pub fn tilde_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, TILDE)
+    }
+
+    pub fn dollar_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, DOLLAR)
+    }
+}
+
+// ── SequenceWordAnnotation ───────────────────────────────────────────
+
+impl SequenceWordAnnotation {
+    pub fn stopping_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, KW_STOPPING)
+    }
+
+    pub fn cycle_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, KW_CYCLE)
+    }
+
+    pub fn shuffle_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, KW_SHUFFLE)
+    }
+
+    pub fn once_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, KW_ONCE)
+    }
+}
+
 // ── InlineBranchesSeq ────────────────────────────────────────────────
 
 impl InlineBranchesSeq {
@@ -848,6 +899,11 @@ impl MultilineBranchSeq {
 // ── MultilineBranchCond ──────────────────────────────────────────────
 
 impl MultilineBranchCond {
+    /// Returns the branch condition expression (if not an else branch).
+    pub fn condition(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+
     pub fn body(&self) -> Option<MultilineBranchBody> {
         support::child(&self.syntax)
     }
@@ -864,6 +920,11 @@ impl MultilineBranchCond {
 // ── ConditionalWithExpr ──────────────────────────────────────────────
 
 impl ConditionalWithExpr {
+    /// Returns the condition expression.
+    pub fn condition(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+
     pub fn inline_branches(&self) -> Option<InlineBranchesCond> {
         support::child(&self.syntax)
     }
@@ -880,6 +941,34 @@ impl ConditionalWithExpr {
 // ── BranchlessCondBody ───────────────────────────────────────────────
 
 impl BranchlessCondBody {
+    pub fn texts(&self) -> impl Iterator<Item = Text> {
+        support::children(&self.syntax)
+    }
+
+    pub fn inline_logics(&self) -> impl Iterator<Item = InlineLogic> {
+        support::children(&self.syntax)
+    }
+
+    pub fn glue_nodes(&self) -> impl Iterator<Item = GlueNode> {
+        support::children(&self.syntax)
+    }
+
+    pub fn escapes(&self) -> impl Iterator<Item = Escape> {
+        support::children(&self.syntax)
+    }
+
+    pub fn logic_lines(&self) -> impl Iterator<Item = LogicLine> {
+        support::children(&self.syntax)
+    }
+
+    pub fn divert(&self) -> Option<DivertNode> {
+        support::child(&self.syntax)
+    }
+
+    pub fn content_lines(&self) -> impl Iterator<Item = ContentLine> {
+        support::children(&self.syntax)
+    }
+
     pub fn else_branch(&self) -> Option<ElseBranch> {
         support::child(&self.syntax)
     }
@@ -918,6 +1007,11 @@ impl PrefixExpr {
             .filter_map(rowan::NodeOrToken::into_token)
             .find(|tok| matches!(tok.kind(), MINUS | BANG | KW_NOT))
     }
+
+    /// Returns the operand expression.
+    pub fn operand(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
 }
 
 // ── PostfixExpr ──────────────────────────────────────────────────────
@@ -930,6 +1024,11 @@ impl PostfixExpr {
             .children_with_tokens()
             .filter_map(rowan::NodeOrToken::into_token)
             .find(|tok| matches!(tok.kind(), PLUS | MINUS))
+    }
+
+    /// Returns the operand expression.
+    pub fn operand(&self) -> Option<Expr> {
+        support::child(&self.syntax)
     }
 }
 
@@ -1004,6 +1103,11 @@ impl ArgList {
             .filter(|child| child.kind() != SyntaxKind::ERROR)
             .count()
     }
+
+    /// Iterator over the argument expressions.
+    pub fn args(&self) -> impl Iterator<Item = Expr> {
+        support::children(&self.syntax)
+    }
 }
 
 // ── DivertTargetExpr ─────────────────────────────────────────────────
@@ -1073,7 +1177,11 @@ impl DivertTargetWithArgs {
 // ── ThreadStart ──────────────────────────────────────────────────────
 
 impl ThreadStart {
-    pub fn target(&self) -> Option<DivertTargetWithArgs> {
+    /// Returns the target path.
+    ///
+    /// The parser produces a `PATH` child directly (not wrapped in
+    /// `DivertTargetWithArgs`), so this returns `Option<Path>`.
+    pub fn target(&self) -> Option<Path> {
         support::child(&self.syntax)
     }
 
@@ -1141,6 +1249,11 @@ impl VarDecl {
     pub fn name(&self) -> Option<String> {
         self.identifier().and_then(|id| id.name())
     }
+
+    /// Returns the initializer expression after `=`.
+    pub fn value(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
 }
 
 // ── ConstDecl ────────────────────────────────────────────────────────
@@ -1152,6 +1265,11 @@ impl ConstDecl {
 
     pub fn name(&self) -> Option<String> {
         self.identifier().and_then(|id| id.name())
+    }
+
+    /// Returns the initializer expression after `=`.
+    pub fn value(&self) -> Option<Expr> {
+        support::child(&self.syntax)
     }
 }
 
@@ -1206,6 +1324,12 @@ impl ListMemberOn {
     pub fn value_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, INTEGER)
     }
+
+    /// Returns the explicit integer value assigned to this member, if any.
+    pub fn value(&self) -> Option<i64> {
+        self.value_token()
+            .and_then(|t| t.text().parse::<i64>().ok())
+    }
 }
 
 // ── ListMemberOff ────────────────────────────────────────────────────
@@ -1222,6 +1346,12 @@ impl ListMemberOff {
 
     pub fn value_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, INTEGER)
+    }
+
+    /// Returns the explicit integer value assigned to this member, if any.
+    pub fn value(&self) -> Option<i64> {
+        self.value_token()
+            .and_then(|t| t.text().parse::<i64>().ok())
     }
 }
 

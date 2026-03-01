@@ -174,6 +174,82 @@ fn temp_decl_eq_token() {
     assert!(temp.eq_token().is_some());
 }
 
+#[test]
+fn temp_decl_value() {
+    let temp = parse_first::<TempDecl>("=== k ===\n~ temp x = 42\n");
+    let val = temp.value().unwrap();
+    assert!(matches!(val, Expr::IntegerLit(_)));
+}
+
+#[test]
+fn temp_decl_value_expr() {
+    let temp = parse_first::<TempDecl>("=== k ===\n~ temp x = 1 + 2\n");
+    let val = temp.value().unwrap();
+    assert!(matches!(val, Expr::Infix(_)));
+}
+
+// ── VarDecl value ────────────────────────────────────────────────────
+
+#[test]
+fn var_decl_value_integer() {
+    let tree = parse_tree("VAR x = 5\n");
+    let decl = tree.var_decls().next().unwrap();
+    let val = decl.value().unwrap();
+    assert!(matches!(val, Expr::IntegerLit(_)));
+}
+
+#[test]
+fn var_decl_value_string() {
+    let tree = parse_tree("VAR x = \"hello\"\n");
+    let decl = tree.var_decls().next().unwrap();
+    let val = decl.value().unwrap();
+    assert!(matches!(val, Expr::StringLit(_)));
+}
+
+// ── ConstDecl value ──────────────────────────────────────────────────
+
+#[test]
+fn const_decl_value_integer() {
+    let tree = parse_tree("CONST pi = 3\n");
+    let decl = tree.const_decls().next().unwrap();
+    let val = decl.value().unwrap();
+    assert!(matches!(val, Expr::IntegerLit(_)));
+}
+
+#[test]
+fn const_decl_value_float() {
+    let tree = parse_tree("CONST pi = 3.14\n");
+    let decl = tree.const_decls().next().unwrap();
+    let val = decl.value().unwrap();
+    assert!(matches!(val, Expr::FloatLit(_)));
+}
+
+// ── ListMemberOn / ListMemberOff value ──────────────────────────────
+
+#[test]
+fn list_member_on_value() {
+    let member = parse_first::<ListMemberOn>("LIST mood = (happy = 3)\n");
+    assert_eq!(member.value(), Some(3));
+}
+
+#[test]
+fn list_member_on_no_value() {
+    let member = parse_first::<ListMemberOn>("LIST items = (sword), shield\n");
+    assert_eq!(member.value(), None);
+}
+
+#[test]
+fn list_member_off_value() {
+    let member = parse_first::<ListMemberOff>("LIST mood = sad = 1, happy\n");
+    assert_eq!(member.value(), Some(1));
+}
+
+#[test]
+fn list_member_off_no_value() {
+    let member = parse_first::<ListMemberOff>("LIST items = sword, shield\n");
+    assert_eq!(member.value(), None);
+}
+
 // ── ExternalDecl ─────────────────────────────────────────────────────
 
 #[test]

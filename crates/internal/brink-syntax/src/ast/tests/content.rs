@@ -191,3 +191,118 @@ fn inline_logic_conditional() {
     let il: InlineLogic = first(tree.syntax());
     assert!(il.conditional().is_some());
 }
+
+// ── ConditionalWithExpr ──────────────────────────────────────────────
+
+#[test]
+fn conditional_with_expr_condition() {
+    let tree = parse_tree("=== k ===\n{x: hello}\n");
+    let cond: ConditionalWithExpr = first(tree.syntax());
+    let expr = cond.condition().unwrap();
+    assert!(matches!(expr, Expr::Path(_)));
+}
+
+#[test]
+fn conditional_with_expr_condition_infix() {
+    let tree = parse_tree("=== k ===\n{x > 0: big}\n");
+    let cond: ConditionalWithExpr = first(tree.syntax());
+    let expr = cond.condition().unwrap();
+    assert!(matches!(expr, Expr::Infix(_)));
+}
+
+// ── MultilineBranchCond condition ────────────────────────────────────
+
+#[test]
+fn multiline_branch_cond_condition() {
+    let tree = parse_tree("=== k ===\n{\n- x > 0:\n    Hello\n}\n");
+    let branch: MultilineBranchCond = first(tree.syntax());
+    let cond = branch.condition().unwrap();
+    assert!(matches!(cond, Expr::Infix(_)));
+}
+
+#[test]
+fn multiline_branch_cond_else_no_condition() {
+    let tree = parse_tree("=== k ===\n{\n- x > 0:\n    Hello\n- else:\n    Bye\n}\n");
+    let branches: Vec<MultilineBranchCond> = tree
+        .syntax()
+        .descendants()
+        .filter_map(MultilineBranchCond::cast)
+        .collect();
+    let else_branch = branches.iter().find(|b| b.is_else()).unwrap();
+    assert!(else_branch.condition().is_none());
+}
+
+// ── BranchlessCondBody ───────────────────────────────────────────────
+
+#[test]
+fn branchless_cond_body_texts() {
+    let tree = parse_tree("{\n  x:\n  Content here.\n}\n");
+    let body: BranchlessCondBody = first(tree.syntax());
+    assert!(body.texts().next().is_some());
+}
+
+#[test]
+fn branchless_cond_body_else_branch() {
+    let tree = parse_tree("{\n  x:\n  Content.\n- else:\n  Other.\n}\n");
+    let body: BranchlessCondBody = first(tree.syntax());
+    assert!(body.else_branch().is_some());
+}
+
+// ── Sequences ────────────────────────────────────────────────────────
+
+#[test]
+fn sequence_symbol_annotation_amp() {
+    let tree = parse_tree("=== k ===\n{&a|b|c}\n");
+    let ann: SequenceSymbolAnnotation = first(tree.syntax());
+    assert!(ann.amp_token().is_some());
+    assert!(ann.bang_token().is_none());
+}
+
+#[test]
+fn sequence_symbol_annotation_bang() {
+    let tree = parse_tree("=== k ===\n{!a|b|c}\n");
+    let ann: SequenceSymbolAnnotation = first(tree.syntax());
+    assert!(ann.bang_token().is_some());
+}
+
+#[test]
+fn sequence_symbol_annotation_tilde() {
+    let tree = parse_tree("=== k ===\n{~a|b|c}\n");
+    let ann: SequenceSymbolAnnotation = first(tree.syntax());
+    assert!(ann.tilde_token().is_some());
+}
+
+#[test]
+fn sequence_symbol_annotation_dollar() {
+    let tree = parse_tree("=== k ===\n{$a|b|c}\n");
+    let ann: SequenceSymbolAnnotation = first(tree.syntax());
+    assert!(ann.dollar_token().is_some());
+}
+
+#[test]
+fn sequence_word_annotation_stopping() {
+    let tree = parse_tree("=== k ===\n{stopping:a|b|c}\n");
+    let ann: SequenceWordAnnotation = first(tree.syntax());
+    assert!(ann.stopping_kw().is_some());
+}
+
+#[test]
+fn sequence_word_annotation_cycle() {
+    let tree = parse_tree("=== k ===\n{cycle:a|b|c}\n");
+    let ann: SequenceWordAnnotation = first(tree.syntax());
+    assert!(ann.cycle_kw().is_some());
+}
+
+#[test]
+fn sequence_word_annotation_shuffle() {
+    let tree = parse_tree("=== k ===\n{shuffle:a|b|c}\n");
+    let ann: SequenceWordAnnotation = first(tree.syntax());
+    assert!(ann.shuffle_kw().is_some());
+}
+
+#[test]
+fn sequence_word_annotation_once() {
+    let tree = parse_tree("=== k ===\n{once:a|b|c}\n");
+    let ann: SequenceWordAnnotation = first(tree.syntax());
+    assert!(ann.once_kw().is_some());
+}

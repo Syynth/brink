@@ -84,6 +84,33 @@ fn divert_node_simple() {
     assert!(dn.tunnel_onwards().is_none());
 }
 
+// ── ThreadStart ──────────────────────────────────────────────────────
+
+#[test]
+fn thread_start_target() {
+    let tree = parse_tree("=== k ===\n<- myThread\n");
+    let ts: ThreadStart = first(tree.syntax());
+    let path = ts.target().unwrap();
+    assert_eq!(path.full_name(), "myThread");
+}
+
+#[test]
+fn thread_start_target_dotted() {
+    let tree = parse_tree("=== k ===\n<- knot.stitch\n");
+    let ts: ThreadStart = first(tree.syntax());
+    let path = ts.target().unwrap();
+    assert_eq!(path.full_name(), "knot.stitch");
+}
+
+// ── TunnelCallNode ──────────────────────────────────────────────────
+
+#[test]
+fn tunnel_call_targets() {
+    let tree = parse_tree("=== k ===\n-> tunnel ->\n");
+    let tc: TunnelCallNode = first(tree.syntax());
+    assert!(tc.targets().next().is_some());
+}
+
 // ── DivertTargetExpr ─────────────────────────────────────────────────
 
 #[test]

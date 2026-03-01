@@ -237,6 +237,84 @@ fn inner_expression_infix() {
     assert!(matches!(expr, Expr::Infix(_)));
 }
 
+// ── Assignment value ──────────────────────────────────────────────────
+
+#[test]
+fn assignment_value_integer() {
+    let assignment = parse_first::<Assignment>("=== k ===\n~ x = 42\n");
+    let val = assignment.value().unwrap();
+    assert!(matches!(val, Expr::IntegerLit(_)));
+}
+
+#[test]
+fn assignment_value_expr() {
+    let assignment = parse_first::<Assignment>("=== k ===\n~ x = 1 + 2\n");
+    let val = assignment.value().unwrap();
+    assert!(matches!(val, Expr::Infix(_)));
+}
+
+#[test]
+fn assignment_plus_eq_value() {
+    let assignment = parse_first::<Assignment>("=== k ===\n~ x += 5\n");
+    let val = assignment.value().unwrap();
+    assert!(matches!(val, Expr::IntegerLit(_)));
+}
+
+// ── PrefixExpr operand ──────────────────────────────────────────────
+
+#[test]
+fn prefix_expr_operand_integer() {
+    let prefix = parse_first::<PrefixExpr>("VAR x = -5\n");
+    let operand = prefix.operand().unwrap();
+    assert!(matches!(operand, Expr::IntegerLit(_)));
+}
+
+#[test]
+fn prefix_expr_operand_path() {
+    let prefix = parse_first::<PrefixExpr>("VAR x = not flag\n");
+    let operand = prefix.operand().unwrap();
+    assert!(matches!(operand, Expr::Path(_)));
+}
+
+// ── PostfixExpr ──────────────────────────────────────────────────────
+
+#[test]
+fn postfix_expr_increment() {
+    let postfix = parse_first::<PostfixExpr>("=== k ===\n~ x++\n");
+    let op = postfix.op_token().unwrap();
+    assert_eq!(op.kind(), crate::SyntaxKind::PLUS);
+    let operand = postfix.operand().unwrap();
+    assert!(matches!(operand, Expr::Path(_)));
+}
+
+#[test]
+fn postfix_expr_decrement() {
+    let postfix = parse_first::<PostfixExpr>("=== k ===\n~ x--\n");
+    let op = postfix.op_token().unwrap();
+    assert_eq!(op.kind(), crate::SyntaxKind::MINUS);
+    let operand = postfix.operand().unwrap();
+    assert!(matches!(operand, Expr::Path(_)));
+}
+
+// ── ArgList args ─────────────────────────────────────────────────────
+
+#[test]
+fn arg_list_args_iterator() {
+    let fc = parse_first::<FunctionCall>("=== k ===\n~ temp x = foo(1, 2, 3)\n");
+    let args: Vec<_> = fc.arg_list().unwrap().args().collect();
+    assert_eq!(args.len(), 3);
+    assert!(args.iter().all(|a| matches!(a, Expr::IntegerLit(_))));
+}
+
+#[test]
+fn arg_list_args_mixed_types() {
+    let fc = parse_first::<FunctionCall>("=== k ===\n~ temp x = foo(1, true)\n");
+    let args: Vec<_> = fc.arg_list().unwrap().args().collect();
+    assert_eq!(args.len(), 2);
+    assert!(matches!(args[0], Expr::IntegerLit(_)));
+    assert!(matches!(args[1], Expr::BooleanLit(_)));
+}
+
 // ── ChoiceCondition expr ─────────────────────────────────────────────
 
 #[test]
