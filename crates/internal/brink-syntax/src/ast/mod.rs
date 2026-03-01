@@ -46,6 +46,12 @@ macro_rules! ast_node {
             }
         }
 
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Display::fmt(&self.syntax.text(), f)
+            }
+        }
+
         impl $crate::ast::AstNode for $name {
             fn can_cast(kind: $crate::SyntaxKind) -> bool {
                 kind == $crate::SyntaxKind::$kind

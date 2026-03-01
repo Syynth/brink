@@ -5,11 +5,12 @@
 //! below their definition.
 
 use crate::SyntaxKind::{
-    self, AMP_AMP, BANG, BANG_EQ, BANG_QUESTION, CARET, DIVERT, EQ, EQ_EQ, FLOAT, GT, GT_EQ, IDENT,
-    INTEGER, KW_AND, KW_DONE, KW_ELSE, KW_END, KW_FALSE, KW_FUNCTION, KW_HAS, KW_HASNT, KW_MOD,
-    KW_NOT, KW_OR, KW_REF, KW_RETURN, KW_TRUE, LT, LT_EQ, MINUS, MINUS_EQ, PERCENT, PIPE_PIPE,
-    PLUS, PLUS_EQ, QUESTION, SLASH, STAR,
+    self, AMP_AMP, BANG, BANG_EQ, BANG_QUESTION, CARET, COLON, DIVERT, EQ, EQ_EQ, FLOAT, GT, GT_EQ,
+    HASH, IDENT, INTEGER, KW_AND, KW_DONE, KW_ELSE, KW_END, KW_FALSE, KW_FUNCTION, KW_HAS,
+    KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_REF, KW_TODO, KW_TRUE, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE,
+    PERCENT, PIPE_PIPE, PLUS, PLUS_EQ, QUESTION, SLASH, STAR,
 };
+use crate::ast::AstNode as _;
 use crate::ast::ast_node;
 use crate::ast::support;
 use crate::{SyntaxNode, SyntaxToken};
@@ -145,6 +146,125 @@ ast_node!(BooleanLit, BOOLEAN_LIT);
 // ── Error recovery ───────────────────────────────────────────────────
 
 ast_node!(Error, ERROR);
+
+// ── Expression enum ──────────────────────────────────────────────────
+
+/// A typed expression node.
+///
+/// Covers every node kind the Pratt expression parser can produce.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum Expr {
+    Prefix(PrefixExpr),
+    Postfix(PostfixExpr),
+    Infix(InfixExpr),
+    Paren(ParenExpr),
+    FunctionCall(FunctionCall),
+    IntegerLit(IntegerLit),
+    FloatLit(FloatLit),
+    StringLit(StringLit),
+    BooleanLit(BooleanLit),
+    Path(Path),
+    ListExpr(ListExpr),
+    DivertTarget(DivertTargetExpr),
+}
+
+impl std::fmt::Debug for Expr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.syntax(), f)
+    }
+}
+
+impl std::fmt::Display for Expr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.syntax().text(), f)
+    }
+}
+
+impl crate::ast::AstNode for Expr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::PREFIX_EXPR
+                | SyntaxKind::POSTFIX_EXPR
+                | SyntaxKind::INFIX_EXPR
+                | SyntaxKind::PAREN_EXPR
+                | SyntaxKind::FUNCTION_CALL
+                | SyntaxKind::INTEGER_LIT
+                | SyntaxKind::FLOAT_LIT
+                | SyntaxKind::STRING_LIT
+                | SyntaxKind::BOOLEAN_LIT
+                | SyntaxKind::PATH
+                | SyntaxKind::LIST_EXPR
+                | SyntaxKind::DIVERT_TARGET_EXPR
+        )
+    }
+
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::PREFIX_EXPR => PrefixExpr::cast(node).map(Expr::Prefix),
+            SyntaxKind::POSTFIX_EXPR => PostfixExpr::cast(node).map(Expr::Postfix),
+            SyntaxKind::INFIX_EXPR => InfixExpr::cast(node).map(Expr::Infix),
+            SyntaxKind::PAREN_EXPR => ParenExpr::cast(node).map(Expr::Paren),
+            SyntaxKind::FUNCTION_CALL => FunctionCall::cast(node).map(Expr::FunctionCall),
+            SyntaxKind::INTEGER_LIT => IntegerLit::cast(node).map(Expr::IntegerLit),
+            SyntaxKind::FLOAT_LIT => FloatLit::cast(node).map(Expr::FloatLit),
+            SyntaxKind::STRING_LIT => StringLit::cast(node).map(Expr::StringLit),
+            SyntaxKind::BOOLEAN_LIT => BooleanLit::cast(node).map(Expr::BooleanLit),
+            SyntaxKind::PATH => Path::cast(node).map(Expr::Path),
+            SyntaxKind::LIST_EXPR => ListExpr::cast(node).map(Expr::ListExpr),
+            SyntaxKind::DIVERT_TARGET_EXPR => DivertTargetExpr::cast(node).map(Expr::DivertTarget),
+            _ => None,
+        }
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            Expr::Prefix(n) => n.syntax(),
+            Expr::Postfix(n) => n.syntax(),
+            Expr::Infix(n) => n.syntax(),
+            Expr::Paren(n) => n.syntax(),
+            Expr::FunctionCall(n) => n.syntax(),
+            Expr::IntegerLit(n) => n.syntax(),
+            Expr::FloatLit(n) => n.syntax(),
+            Expr::StringLit(n) => n.syntax(),
+            Expr::BooleanLit(n) => n.syntax(),
+            Expr::Path(n) => n.syntax(),
+            Expr::ListExpr(n) => n.syntax(),
+            Expr::DivertTarget(n) => n.syntax(),
+        }
+    }
+}
+
+// ── Content node accessor macro ─────────────────────────────────────
+
+/// Generates shared content-element accessors for nodes that contain
+/// mixed inline content (`TEXT`, `INLINE_LOGIC`, `GLUE_NODE`, `ESCAPE`).
+macro_rules! content_node_accessors {
+    ($name:ident) => {
+        impl $name {
+            pub fn texts(&self) -> impl Iterator<Item = Text> {
+                support::children(&self.syntax)
+            }
+
+            pub fn inline_logics(&self) -> impl Iterator<Item = InlineLogic> {
+                support::children(&self.syntax)
+            }
+
+            pub fn glue_nodes(&self) -> impl Iterator<Item = GlueNode> {
+                support::children(&self.syntax)
+            }
+
+            pub fn escapes(&self) -> impl Iterator<Item = Escape> {
+                support::children(&self.syntax)
+            }
+        }
+    };
+}
+
+content_node_accessors!(ChoiceStartContent);
+content_node_accessors!(ChoiceBracketContent);
+content_node_accessors!(ChoiceInnerContent);
+content_node_accessors!(BranchContent);
 
 // ═══════════════════════════════════════════════════════════════════════
 // Accessors
@@ -406,17 +526,17 @@ impl TagLine {
 // ── ReturnStmt ───────────────────────────────────────────────────────
 
 impl ReturnStmt {
-    /// Returns `true` if the return has a value expression (any non-trivia,
-    /// non-NEWLINE child beyond the `return` keyword).
+    /// Returns the value expression, if any.
+    ///
+    /// A bare `return` has no child expression node; `return expr` always
+    /// wraps the expression in a typed node (the parser calls `expression()`).
+    pub fn value(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+
+    /// Returns `true` if the return has a value expression.
     pub fn has_value(&self) -> bool {
-        self.syntax
-            .children_with_tokens()
-            .filter_map(rowan::NodeOrToken::into_token)
-            .any(|tok| {
-                let kind = tok.kind();
-                kind != KW_RETURN && !kind.is_trivia() && kind != SyntaxKind::NEWLINE
-            })
-            || self.syntax.children().next().is_some()
+        self.value().is_some()
     }
 }
 
@@ -439,8 +559,8 @@ impl TempDecl {
 // ── Assignment ───────────────────────────────────────────────────────
 
 impl Assignment {
-    pub fn target(&self) -> Option<SyntaxNode> {
-        self.syntax.children().next()
+    pub fn target(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
     }
 
     /// The assignment operator token (`=`, `+=`, or `-=`).
@@ -521,11 +641,35 @@ impl ChoiceBullets {
     }
 
     /// Returns `true` if using `+` (sticky), `false` if using `*`.
+    ///
+    /// Determined by the first bullet token, matching the reference ink
+    /// compiler's behavior for degenerate mixed-bullet cases.
     pub fn is_sticky(&self) -> bool {
         self.syntax
             .children_with_tokens()
             .filter_map(rowan::NodeOrToken::into_token)
-            .any(|tok| tok.kind() == PLUS)
+            .find(|tok| matches!(tok.kind(), STAR | PLUS))
+            .is_some_and(|tok| tok.kind() == PLUS)
+    }
+
+    /// Returns `true` if bullets mix `*` and `+` (e.g. `*+`, `+*`).
+    ///
+    /// Mixed bullets are degenerate input — a diagnostic pass should flag them.
+    pub fn is_mixed(&self) -> bool {
+        let mut has_star = false;
+        let mut has_plus = false;
+        for tok in self
+            .syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+        {
+            match tok.kind() {
+                STAR => has_star = true,
+                PLUS => has_plus = true,
+                _ => {}
+            }
+        }
+        has_star && has_plus
     }
 }
 
@@ -586,13 +730,16 @@ impl Tags {
 
 impl Tag {
     /// Returns the tag value with the leading `#` stripped.
+    ///
+    /// Walks tokens directly rather than string-manipulating the full node text.
+    /// The parser guarantees a `HASH` token is always present.
     pub fn text(&self) -> String {
-        let raw = self.syntax.text().to_string();
-        // The HASH token is a direct child; skip it to get just the value text.
-        let trimmed = raw.trim();
-        trimmed
-            .strip_prefix('#')
-            .unwrap_or(trimmed)
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .filter(|tok| tok.kind() != HASH)
+            .map(|tok| tok.text().to_string())
+            .collect::<String>()
             .trim()
             .to_string()
     }
@@ -822,12 +969,12 @@ impl InfixExpr {
             })
     }
 
-    pub fn lhs(&self) -> Option<SyntaxNode> {
-        self.syntax.children().next()
+    pub fn lhs(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
     }
 
-    pub fn rhs(&self) -> Option<SyntaxNode> {
-        self.syntax.children().nth(1)
+    pub fn rhs(&self) -> Option<Expr> {
+        self.syntax.children().filter_map(Expr::cast).nth(1)
     }
 }
 
@@ -862,17 +1009,16 @@ impl ArgList {
 // ── DivertTargetExpr ─────────────────────────────────────────────────
 
 impl DivertTargetExpr {
-    pub fn target(&self) -> Option<SyntaxNode> {
-        // The target is the child after the DIVERT token
-        self.syntax.children().next()
+    pub fn target(&self) -> Option<Path> {
+        support::child(&self.syntax)
     }
 }
 
 // ── ListExpr ─────────────────────────────────────────────────────────
 
 impl ListExpr {
-    pub fn items(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
-        self.syntax.children()
+    pub fn items(&self) -> impl Iterator<Item = Path> {
+        support::children(&self.syntax)
     }
 }
 
@@ -1118,9 +1264,14 @@ impl FloatLit {
 
 impl StringLit {
     /// Returns the raw content between the quotes (excluding the quotes themselves).
+    ///
+    /// The opening quote is always present (the parser enters `string_literal`
+    /// only on a `QUOTE` token). The closing quote may be absent if the string
+    /// is unterminated — the parser emits an error and closes the node without
+    /// consuming a trailing `QUOTE`. The `strip_suffix` fallback handles that
+    /// error-recovery case.
     pub fn raw_text(&self) -> String {
         let full = self.syntax.text().to_string();
-        // Strip leading and trailing quotes
         let trimmed = full.strip_prefix('"').unwrap_or(&full);
         trimmed.strip_suffix('"').unwrap_or(trimmed).to_string()
     }
@@ -1146,16 +1297,86 @@ impl BooleanLit {
 // ── AuthorWarning ────────────────────────────────────────────────────
 
 impl AuthorWarning {
-    /// Returns the warning text with `TODO:` stripped.
+    /// Returns the warning text with the `TODO:` prefix stripped.
+    ///
+    /// Walks tokens directly — skips the `KW_TODO` token and the optional
+    /// `COLON`, then collects remaining content until `NEWLINE`.
     pub fn text(&self) -> String {
-        let raw = self.syntax.text().to_string();
-        let trimmed = raw.trim();
-        // Strip the leading TODO: prefix
-        trimmed
-            .strip_prefix("TODO:")
-            .or_else(|| trimmed.strip_prefix("TODO"))
-            .unwrap_or(trimmed)
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .skip_while(|tok| matches!(tok.kind(), KW_TODO | COLON) || tok.kind().is_trivia())
+            .take_while(|tok| tok.kind() != NEWLINE)
+            .map(|tok| tok.text().to_string())
+            .collect::<String>()
             .trim()
             .to_string()
+    }
+}
+
+// ── ChoiceCondition ──────────────────────────────────────────────────
+
+impl ChoiceCondition {
+    /// Returns the condition expression inside `{ expr }`.
+    pub fn expr(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── InnerExpression ──────────────────────────────────────────────────
+
+impl InnerExpression {
+    /// Returns the wrapped expression.
+    pub fn expr(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── ParenExpr ────────────────────────────────────────────────────────
+
+impl ParenExpr {
+    /// Returns the inner expression inside `( expr )`.
+    pub fn inner(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── BranchContent (extra) ────────────────────────────────────────────
+
+impl BranchContent {
+    pub fn divert(&self) -> Option<DivertNode> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── MultilineBranchBody ──────────────────────────────────────────────
+
+impl MultilineBranchBody {
+    pub fn texts(&self) -> impl Iterator<Item = Text> {
+        support::children(&self.syntax)
+    }
+
+    pub fn inline_logics(&self) -> impl Iterator<Item = InlineLogic> {
+        support::children(&self.syntax)
+    }
+
+    pub fn glue_nodes(&self) -> impl Iterator<Item = GlueNode> {
+        support::children(&self.syntax)
+    }
+
+    pub fn escapes(&self) -> impl Iterator<Item = Escape> {
+        support::children(&self.syntax)
+    }
+
+    pub fn logic_lines(&self) -> impl Iterator<Item = LogicLine> {
+        support::children(&self.syntax)
+    }
+
+    pub fn divert(&self) -> Option<DivertNode> {
+        support::child(&self.syntax)
+    }
+
+    pub fn content_lines(&self) -> impl Iterator<Item = ContentLine> {
+        support::children(&self.syntax)
     }
 }
