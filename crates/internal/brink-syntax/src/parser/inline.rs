@@ -1,13 +1,12 @@
 use crate::SyntaxKind::{
-    self, AMP, BACKSLASH, BANG, BLOCK_COMMENT, BRANCH_CONTENT, BRANCH_ESCAPE, BRANCH_TEXT,
-    BRANCHLESS_COND_BODY, COLON, CONDITIONAL_WITH_EXPR, DIVERT, DOLLAR, ELSE_BRANCH, EOF, GLUE,
-    GLUE_NODE, IMPLICIT_SEQUENCE, INLINE_BRANCHES_COND, INLINE_BRANCHES_SEQ, INLINE_LOGIC,
-    INNER_EXPRESSION, KW_CYCLE, KW_ELSE, KW_ONCE, KW_SHUFFLE, KW_STOPPING, L_BRACE, L_PAREN,
-    LINE_COMMENT, MINUS, ML_BRANCH_ESCAPE, MULTILINE_BLOCK, MULTILINE_BRANCH_BODY,
-    MULTILINE_BRANCH_COND, MULTILINE_BRANCH_SEQ, MULTILINE_BRANCH_TEXT, MULTILINE_BRANCHES_COND,
-    MULTILINE_BRANCHES_SEQ, MULTILINE_CONDITIONAL, NEWLINE, PIPE, R_BRACE, R_PAREN,
-    SEQUENCE_SYMBOL_ANNOTATION, SEQUENCE_WITH_ANNOTATION, SEQUENCE_WORD_ANNOTATION, THREAD, TILDE,
-    TUNNEL_ONWARDS, WHITESPACE,
+    self, AMP, BACKSLASH, BANG, BLOCK_COMMENT, BRANCH_CONTENT, BRANCHLESS_COND_BODY, COLON,
+    CONDITIONAL_WITH_EXPR, DIVERT, DOLLAR, ELSE_BRANCH, EOF, ESCAPE, GLUE, GLUE_NODE,
+    IMPLICIT_SEQUENCE, INLINE_BRANCHES_COND, INLINE_BRANCHES_SEQ, INLINE_LOGIC, INNER_EXPRESSION,
+    KW_CYCLE, KW_ELSE, KW_ONCE, KW_SHUFFLE, KW_STOPPING, L_BRACE, L_PAREN, LINE_COMMENT, MINUS,
+    MULTILINE_BLOCK, MULTILINE_BRANCH_BODY, MULTILINE_BRANCH_COND, MULTILINE_BRANCH_SEQ,
+    MULTILINE_BRANCHES_COND, MULTILINE_BRANCHES_SEQ, MULTILINE_CONDITIONAL, NEWLINE, PIPE, R_BRACE,
+    R_PAREN, SEQUENCE_SYMBOL_ANNOTATION, SEQUENCE_WITH_ANNOTATION, SEQUENCE_WORD_ANNOTATION, TEXT,
+    THREAD, TILDE, TUNNEL_ONWARDS, WHITESPACE,
 };
 
 use super::Parser;
@@ -432,7 +431,7 @@ fn branchless_cond_body(p: &mut Parser<'_>) {
             }
             TILDE => {
                 p.skip_ws();
-                super::logic::block_logic_line(p);
+                super::logic::logic_line(p);
             }
             L_BRACE => {
                 inline_logic(p);
@@ -447,11 +446,11 @@ fn branchless_cond_body(p: &mut Parser<'_>) {
             }
             BACKSLASH => {
                 if matches!(p.nth(1), NEWLINE | EOF) {
-                    p.start_node(MULTILINE_BRANCH_TEXT);
+                    p.start_node(TEXT);
                     p.bump();
                     p.finish_node();
                 } else {
-                    p.start_node(ML_BRANCH_ESCAPE);
+                    p.start_node(ESCAPE);
                     p.bump(); // backslash
                     p.bump(); // escaped char
                     p.finish_node();
@@ -513,7 +512,7 @@ fn multiline_branch_body(p: &mut Parser<'_>) {
             }
             TILDE => {
                 p.skip_ws();
-                super::logic::block_logic_line(p);
+                super::logic::logic_line(p);
             }
             L_BRACE => {
                 inline_logic(p);
@@ -526,11 +525,11 @@ fn multiline_branch_body(p: &mut Parser<'_>) {
             BACKSLASH => {
                 if matches!(p.nth(1), NEWLINE | EOF) {
                     // Backslash before newline/EOF — consume as text to avoid stall
-                    p.start_node(MULTILINE_BRANCH_TEXT);
+                    p.start_node(TEXT);
                     p.bump();
                     p.finish_node();
                 } else {
-                    p.start_node(ML_BRANCH_ESCAPE);
+                    p.start_node(ESCAPE);
                     p.bump(); // backslash
                     p.bump(); // escaped char
                     p.finish_node();
@@ -565,7 +564,7 @@ fn next_line_is_branch(p: &Parser<'_>) -> bool {
 
 /// Parse multiline branch text.
 fn multiline_branch_text(p: &mut Parser<'_>) {
-    p.start_node(MULTILINE_BRANCH_TEXT);
+    p.start_node(TEXT);
     loop {
         if p.at_eof() {
             break;
@@ -601,11 +600,11 @@ fn branch_content(p: &mut Parser<'_>) {
             BACKSLASH => {
                 if matches!(p.nth(1), NEWLINE | EOF) {
                     // Backslash before newline/EOF — consume as text to avoid stall
-                    p.start_node(BRANCH_TEXT);
+                    p.start_node(TEXT);
                     p.bump();
                     p.finish_node();
                 } else {
-                    p.start_node(BRANCH_ESCAPE);
+                    p.start_node(ESCAPE);
                     p.bump(); // backslash
                     p.bump(); // escaped char
                     p.finish_node();
@@ -625,7 +624,7 @@ fn branch_content(p: &mut Parser<'_>) {
 
 /// Parse a run of branch text characters.
 fn branch_text(p: &mut Parser<'_>) {
-    p.start_node(BRANCH_TEXT);
+    p.start_node(TEXT);
     loop {
         if p.at_eof() {
             break;

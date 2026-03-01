@@ -14,11 +14,11 @@ SOURCE_FILE@0..25
           WHITESPACE@10..11 " "
           INLINE_BRANCHES_SEQ@11..23
             BRANCH_CONTENT@11..16
-              BRANCH_TEXT@11..16
+              TEXT@11..16
                 IDENT@11..16 "first"
             PIPE@16..17 "|"
             BRANCH_CONTENT@17..23
-              BRANCH_TEXT@17..23
+              TEXT@17..23
                 IDENT@17..23 "second"
         R_BRACE@23..24 "}"
     NEWLINE@24..25 "\n"

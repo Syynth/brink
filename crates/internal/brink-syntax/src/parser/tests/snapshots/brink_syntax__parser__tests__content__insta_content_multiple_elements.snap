@@ -5,12 +5,12 @@ expression: "format!(\"{:#?}\", p.syntax())"
 SOURCE_FILE@0..34
   CONTENT_LINE@0..34
     MIXED_CONTENT@0..20
-      TEXT_CONTENT@0..6
+      TEXT@0..6
         IDENT@0..5 "Hello"
         WHITESPACE@5..6 " "
       GLUE_NODE@6..8
         GLUE@6..8 "<>"
-      TEXT_CONTENT@8..14
+      TEXT@8..14
         IDENT@8..13 "world"
         WHITESPACE@13..14 " "
       INLINE_LOGIC@14..20
@@ -20,13 +20,14 @@ SOURCE_FILE@0..34
             IDENT@15..19 "name"
         R_BRACE@19..20 "}"
     DIVERT_NODE@20..29
-      WHITESPACE@20..21 " "
-      DIVERT@21..23 "->"
-      WHITESPACE@23..24 " "
-      DIVERT_TARGET_WITH_ARGS@24..29
-        PATH@24..28
-          IDENT@24..28 "knot"
-        WHITESPACE@28..29 " "
+      SIMPLE_DIVERT@20..29
+        WHITESPACE@20..21 " "
+        DIVERT@21..23 "->"
+        WHITESPACE@23..24 " "
+        DIVERT_TARGET_WITH_ARGS@24..29
+          PATH@24..28
+            IDENT@24..28 "knot"
+          WHITESPACE@28..29 " "
     TAGS@29..33
       TAG@29..33
         HASH@29..30 "#"

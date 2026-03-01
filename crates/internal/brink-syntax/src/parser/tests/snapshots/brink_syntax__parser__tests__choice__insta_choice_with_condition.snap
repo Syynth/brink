@@ -14,7 +14,7 @@ SOURCE_FILE@0..23
       R_BRACE@10..11 "}"
     WHITESPACE@11..12 " "
     CHOICE_START_CONTENT@12..22
-      CHOICE_TEXT@12..22
+      TEXT@12..22
         IDENT@12..16 "Been"
         WHITESPACE@16..17 " "
         IDENT@17..21 "here"

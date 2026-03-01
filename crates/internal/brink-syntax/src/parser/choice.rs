@@ -1,8 +1,8 @@
 use crate::SyntaxKind::{
     BACKSLASH, BLOCK_COMMENT, CHOICE, CHOICE_BRACKET_CONTENT, CHOICE_BULLETS, CHOICE_CONDITION,
-    CHOICE_ESCAPE, CHOICE_INNER_CONTENT, CHOICE_LABEL, CHOICE_START_CONTENT, CHOICE_TEXT, DIVERT,
-    EOF, GLUE, GLUE_NODE, HASH, IDENT, L_BRACE, L_BRACKET, L_PAREN, LINE_COMMENT, MINUS, NEWLINE,
-    PIPE, PLUS, R_BRACE, R_BRACKET, R_PAREN, STAR, THREAD, TUNNEL_ONWARDS,
+    CHOICE_INNER_CONTENT, CHOICE_START_CONTENT, DIVERT, EOF, ESCAPE, GLUE, GLUE_NODE, HASH, IDENT,
+    IDENTIFIER, L_BRACE, L_BRACKET, L_PAREN, LABEL, LINE_COMMENT, MINUS, NEWLINE, PIPE, PLUS,
+    R_BRACE, R_BRACKET, R_PAREN, STAR, TEXT, THREAD, TUNNEL_ONWARDS,
 };
 
 use super::Parser;
@@ -12,7 +12,7 @@ use super::Parser;
 /// ```text
 /// choice = {
 ///     choice_bullets
-///   ~ choice_label?
+///   ~ label?
 ///   ~ (NEWLINE ~ &(!NEWLINE ~ ANY))?
 ///   ~ choice_condition*
 ///   ~ choice_start_content?
@@ -32,7 +32,7 @@ pub(crate) fn choice(p: &mut Parser<'_>) {
 
     // Optional label: (ident)
     if p.current() == L_PAREN && p.nth(1) == IDENT && p.nth(2) == R_PAREN {
-        choice_label(p);
+        label(p);
         p.skip_ws();
 
         // Optional newline after label (if next line has content)
@@ -93,13 +93,15 @@ fn choice_bullets(p: &mut Parser<'_>) {
     p.finish_node();
 }
 
-/// Parse choice label: `( ident )`.
-/// Also called by gather for optional labels.
-pub(crate) fn choice_label(p: &mut Parser<'_>) {
-    p.start_node(CHOICE_LABEL);
+/// Parse a label: `( ident )`.
+/// Used by both choices and gathers.
+pub(crate) fn label(p: &mut Parser<'_>) {
+    p.start_node(LABEL);
     p.bump(); // L_PAREN
     p.skip_ws();
+    p.start_node(IDENTIFIER);
     p.expect(IDENT);
+    p.finish_node();
     p.skip_ws();
     p.expect(R_PAREN);
     p.finish_node();
@@ -176,7 +178,7 @@ fn choice_content_element(p: &mut Parser<'_>) {
             p.finish_node();
         }
         BACKSLASH if !matches!(p.nth(1), NEWLINE | EOF) => {
-            p.start_node(CHOICE_ESCAPE);
+            p.start_node(ESCAPE);
             p.bump(); // backslash
             p.bump(); // escaped char
             p.finish_node();
@@ -189,7 +191,7 @@ fn choice_content_element(p: &mut Parser<'_>) {
 
 /// Parse a run of choice text characters.
 fn choice_text(p: &mut Parser<'_>) {
-    p.start_node(CHOICE_TEXT);
+    p.start_node(TEXT);
     loop {
         if p.at_eof() {
             break;

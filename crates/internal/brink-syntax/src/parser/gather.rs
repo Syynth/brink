@@ -8,7 +8,7 @@ use super::Parser;
 /// Parse a gather line.
 ///
 /// ```text
-/// gather_line = { gather_dashes ~ choice_label? ~ mixed_content? ~ tags? ~ NEWLINE }
+/// gather_line = { gather_dashes ~ label? ~ mixed_content? ~ tags? ~ NEWLINE }
 /// ```
 pub(crate) fn gather_line(p: &mut Parser<'_>) {
     p.start_node(GATHER);
@@ -19,7 +19,7 @@ pub(crate) fn gather_line(p: &mut Parser<'_>) {
 
     // Optional label: (ident)
     if p.current() == L_PAREN && p.nth(1) == IDENT && p.nth(2) == R_PAREN {
-        super::choice::choice_label(p);
+        super::choice::label(p);
         p.skip_ws();
     }
 

@@ -8,14 +8,14 @@ SOURCE_FILE@0..21
       STAR@0..1 "*"
       WHITESPACE@1..2 " "
     CHOICE_START_CONTENT@2..7
-      CHOICE_TEXT@2..7
+      TEXT@2..7
         IDENT@2..7 "Hello"
     CHOICE_BRACKET_CONTENT@7..15
       L_BRACKET@7..8 "["
-      CHOICE_TEXT@8..14
+      TEXT@8..14
         IDENT@8..14 "hidden"
       R_BRACKET@14..15 "]"
     CHOICE_INNER_CONTENT@15..20
-      CHOICE_TEXT@15..20
+      TEXT@15..20
         IDENT@15..20 "world"
     NEWLINE@20..21 "\n"

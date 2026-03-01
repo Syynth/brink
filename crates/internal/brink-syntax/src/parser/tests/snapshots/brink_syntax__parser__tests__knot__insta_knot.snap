@@ -17,7 +17,7 @@ SOURCE_FILE@0..22
     KNOT_BODY@15..22
       CONTENT_LINE@15..22
         MIXED_CONTENT@15..21
-          TEXT_CONTENT@15..21
+          TEXT@15..21
             IDENT@15..20 "Hello"
             DOT@20..21 "."
         NEWLINE@21..22 "\n"

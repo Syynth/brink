@@ -1,7 +1,6 @@
 use crate::SyntaxKind::{
-    BACKSLASH, BLOCK_COMMENT, CONTENT_ESCAPE, CONTENT_LINE, DIVERT, EOF, GLUE, GLUE_NODE, HASH,
-    L_BRACE, LINE_COMMENT, MIXED_CONTENT, NEWLINE, PIPE, R_BRACE, TEXT_CONTENT, THREAD,
-    TUNNEL_ONWARDS,
+    BACKSLASH, BLOCK_COMMENT, CONTENT_LINE, DIVERT, EOF, ESCAPE, GLUE, GLUE_NODE, HASH, L_BRACE,
+    LINE_COMMENT, MIXED_CONTENT, NEWLINE, PIPE, R_BRACE, TEXT, THREAD, TUNNEL_ONWARDS,
 };
 
 use super::Parser;
@@ -72,7 +71,7 @@ pub(crate) fn mixed_content(p: &mut Parser<'_>) {
 
             // Content escape: `\` followed by non-newline
             BACKSLASH if !matches!(p.nth(1), NEWLINE | EOF) => {
-                p.start_node(CONTENT_ESCAPE);
+                p.start_node(ESCAPE);
                 p.bump(); // backslash
                 p.bump(); // escaped char
                 p.finish_node();
@@ -97,16 +96,16 @@ pub(crate) fn mixed_content(p: &mut Parser<'_>) {
     p.finish_node();
 }
 
-/// Parse a run of text tokens into a `TEXT_CONTENT` node.
+/// Parse a run of text tokens into a `TEXT` node.
 ///
 /// The lexer emits fine-grained tokens for text (IDENT, WHITESPACE, DOT, etc.).
 /// The parser collects runs of non-structural tokens until hitting a stop
 /// character for the current text context.
 ///
-/// Stop characters for `text_content` (from pest `TEXT_CONTENT_CHAR`):
+/// Stop characters for `text_content` (from pest `TEXT_CHAR`):
 /// NEWLINE, `{`, `}`, `<>`, `->`, `->->`, `<-`, `//`, `/*`, `#`, `|`, `\`
 fn text_content(p: &mut Parser<'_>) {
-    p.start_node(TEXT_CONTENT);
+    p.start_node(TEXT);
 
     loop {
         if p.at_eof() {

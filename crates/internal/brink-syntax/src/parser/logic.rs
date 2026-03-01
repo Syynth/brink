@@ -1,14 +1,18 @@
 use crate::SyntaxKind::{
-    ASSIGNMENT, BLOCK_LOGIC_LINE, EOF, EQ, IDENT, IDENTIFIER, KW_RETURN, KW_TEMP, LOGIC_LINE,
-    MINUS_EQ, NEWLINE, PLUS_EQ, RETURN_STMT, TEMP_DECL,
+    ASSIGNMENT, EOF, EQ, IDENT, IDENTIFIER, KW_RETURN, KW_TEMP, LOGIC_LINE, MINUS_EQ, NEWLINE,
+    PLUS_EQ, RETURN_STMT, TEMP_DECL,
 };
 
 use super::Parser;
 
-/// Parse a logic line: `~ statement NEWLINE`.
+/// Parse a logic line: `~ statement NEWLINE?`.
+///
+/// Optionally consumes a trailing NEWLINE if present. Used both at the
+/// statement level (where a newline is expected) and inside multiline
+/// branch bodies (where the parent manages newlines).
 ///
 /// ```text
-/// logic_line = { "~" ~ (return_statement | temp_declaration | assignment | expression) ~ NEWLINE }
+/// logic_line = { "~" ~ (return_statement | temp_declaration | assignment | expression) ~ NEWLINE? }
 /// ```
 pub(crate) fn logic_line(p: &mut Parser<'_>) {
     p.start_node(LOGIC_LINE);
@@ -28,33 +32,7 @@ pub(crate) fn logic_line(p: &mut Parser<'_>) {
     p.skip_ws();
     if p.at(NEWLINE) {
         p.bump();
-    } else if !p.at_eof() {
-        p.error("expected newline after logic line".into());
     }
-    p.finish_node();
-}
-
-/// Parse a logic line inside a block (no trailing NEWLINE consumption).
-/// Used by multiline branches and branchless bodies.
-///
-/// ```text
-/// block_logic_line = { "~" ~ (return_statement | temp_declaration | assignment | expression) }
-/// ```
-pub(crate) fn block_logic_line(p: &mut Parser<'_>) {
-    p.start_node(BLOCK_LOGIC_LINE);
-    p.bump(); // TILDE
-    p.skip_ws();
-
-    match p.current() {
-        KW_RETURN => return_statement(p),
-        KW_TEMP => temp_declaration(p),
-        IDENT if is_assignment_ahead(p) => assignment(p),
-        _ => {
-            super::expression::expression(p);
-        }
-    }
-
-    p.skip_ws();
     p.finish_node();
 }
 

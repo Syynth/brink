@@ -1,6 +1,6 @@
 use crate::SyntaxKind::{
     ARG_LIST, COMMA, DIVERT, DIVERT_NODE, DIVERT_TARGET_WITH_ARGS, DOT, IDENT, KW_DONE, KW_END,
-    L_PAREN, PATH, R_PAREN, THREAD, THREAD_START, TUNNEL_CALL_NODE, TUNNEL_ONWARDS,
+    L_PAREN, PATH, R_PAREN, SIMPLE_DIVERT, THREAD, THREAD_START, TUNNEL_CALL_NODE, TUNNEL_ONWARDS,
     TUNNEL_ONWARDS_NODE,
 };
 
@@ -109,8 +109,12 @@ fn divert_chain(p: &mut Parser<'_>) {
 
     // If we had at least one target and ended with a trailing `->`,
     // this is a tunnel call — wrap everything in TUNNEL_CALL_NODE.
+    // Otherwise, wrap in SIMPLE_DIVERT.
     if has_target && (trailing_arrow || p.current() == TUNNEL_ONWARDS) {
         p.start_node_at(checkpoint, TUNNEL_CALL_NODE);
+        p.finish_node();
+    } else {
+        p.start_node_at(checkpoint, SIMPLE_DIVERT);
         p.finish_node();
     }
 }

@@ -25,7 +25,7 @@ SOURCE_FILE@0..35
     KNOT_BODY@31..35
       CONTENT_LINE@31..35
         MIXED_CONTENT@31..34
-          TEXT_CONTENT@31..34
+          TEXT@31..34
             IDENT@31..33 "Hi"
             BANG@33..34 "!"
         NEWLINE@34..35 "\n"

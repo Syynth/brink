@@ -23,7 +23,7 @@ SOURCE_FILE@0..33
         STITCH_BODY@24..33
           CONTENT_LINE@24..33
             MIXED_CONTENT@24..32
-              TEXT_CONTENT@24..32
+              TEXT@24..32
                 IDENT@24..31 "Content"
                 DOT@31..32 "."
             NEWLINE@32..33 "\n"

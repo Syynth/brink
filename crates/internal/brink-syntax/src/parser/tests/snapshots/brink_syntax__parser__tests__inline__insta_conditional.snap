@@ -20,11 +20,11 @@ SOURCE_FILE@0..19
           WHITESPACE@7..8 " "
           INLINE_BRANCHES_COND@8..17
             BRANCH_CONTENT@8..11
-              BRANCH_TEXT@8..11
+              TEXT@8..11
                 IDENT@8..11 "big"
             PIPE@11..12 "|"
             BRANCH_CONTENT@12..17
-              BRANCH_TEXT@12..17
+              TEXT@12..17
                 IDENT@12..17 "small"
         R_BRACE@17..18 "}"
     NEWLINE@18..19 "\n"
