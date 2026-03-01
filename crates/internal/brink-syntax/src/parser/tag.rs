@@ -38,7 +38,7 @@ pub(crate) fn tags(p: &mut Parser<'_>) {
 /// Parse a single tag: `# text-until-# or newline`.
 fn tag(p: &mut Parser<'_>) {
     p.start_node(TAG);
-    p.skip_ws();
+    p.skip_trivia();
     p.bump_assert(HASH); // the `#`
 
     // Consume everything until the next `#` or NEWLINE

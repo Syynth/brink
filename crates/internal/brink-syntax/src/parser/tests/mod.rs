@@ -1,5 +1,6 @@
 mod choice;
 mod content;
+mod cst;
 mod declaration;
 mod divert;
 mod expression;
@@ -8,6 +9,7 @@ mod inline;
 mod knot;
 mod logic;
 mod story;
+mod tag;
 
 use crate::parse;
 
