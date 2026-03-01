@@ -534,6 +534,54 @@ fn infix_pipe_pipe() {
     );
 }
 
+/// `0 || (0)` — the `||` handler must skip whitespace before bumping the
+/// two PIPE tokens, otherwise it consumes a whitespace token instead of `|`
+/// and the parenthesized RHS is double-wrapped.
+/// Regression: proptest seed cc 64aa27cf (input `~ return 0 || (0)\n`).
+#[test]
+fn infix_pipe_pipe_paren_rhs() {
+    assert_equivalent(
+        parse("~ x = 0 || (0)\n"),
+        cst!(SOURCE_FILE {
+            LOGIC_LINE {
+                ASSIGNMENT [EQ] {
+                    PATH
+                    INFIX_EXPR [PIPE, PIPE] {
+                        INTEGER_LIT
+                        PAREN_EXPR {
+                            INTEGER_LIT
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// `0 || (0)` — the `||` handler must skip whitespace before bumping the
+/// two PIPE tokens, otherwise it consumes a whitespace token instead of `|`
+/// and the parenthesized RHS is double-wrapped.
+/// Regression: proptest seed cc 64aa27cf (input `~ return 0 || (0)\n`).
+#[test]
+fn infix_pipe_pipe_paren_rhs_trivia() {
+    assert_equivalent(
+        parse("~ x = 0 /* haha */ || (0)\n"),
+        cst!(SOURCE_FILE {
+            LOGIC_LINE {
+                ASSIGNMENT [EQ] {
+                    PATH
+                    INFIX_EXPR [PIPE, PIPE] {
+                        INTEGER_LIT
+                        PAREN_EXPR {
+                            INTEGER_LIT
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
 #[test]
 fn infix_and() {
     assert_equivalent(
