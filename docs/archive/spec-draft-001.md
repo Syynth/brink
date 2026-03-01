@@ -9,7 +9,7 @@ brink is the ink compiler and bytecode runtime for s92-studio, extracted into it
 | Crate | Path | Purpose |
 |-------|------|---------|
 | `brink` | `crates/brink/` | Public API — re-exports from compiler and runtime |
-| `brink-compiler` | `crates/brink-compiler/` | Pipeline driver + codegen |
+| `brink-compiler` | `crates/brink-compiler/` | Pipeline driver + codegen backends |
 | `brink-runtime` | `crates/brink-runtime/` | Bytecode VM for executing compiled stories |
 | `brink-cli` | `crates/brink-cli/` | CLI for compiling and running ink stories |
 | `brink-lsp` | `crates/brink-lsp/` | Language server for ink files |
@@ -60,12 +60,12 @@ graph TD
 The pipeline is organized as a sequence of passes:
 
 ```
-Pass 1: Parse          (brink-syntax)     per-file       → AST
-Pass 2: Lower          (brink-hir)        per-file       → HIR + SymbolManifest + diagnostics
-Pass 3: Merge/Resolve  (brink-analyzer)   cross-file     → unified SymbolIndex + diagnostics
-Pass 4: Type-check     (brink-analyzer)   cross-file     → type annotations + diagnostics
-Pass 5: Validate       (brink-analyzer)   cross-file     → dead code, unused vars, etc.
-Pass 6: Codegen        (brink-compiler)   per-container  → bytecode + tables
+Pass 1: Parse          (brink-syntax)     per-file    → AST
+Pass 2: Lower          (brink-hir)        per-file    → HIR + SymbolManifest + diagnostics
+Pass 3: Merge/Resolve  (brink-analyzer)   cross-file  → unified SymbolIndex + diagnostics
+Pass 4: Type-check     (brink-analyzer)   cross-file  → type annotations + diagnostics
+Pass 5: Validate       (brink-analyzer)   cross-file  → dead code, unused vars, etc.
+Pass 6: Codegen        (brink-compiler)   per-knot    → bytecode + tables
 ```
 
 The LSP runs passes 1–5. The compiler runs all 6.
@@ -89,10 +89,9 @@ Covers all ink constructs: knots, stitches, choices, gathers, diverts, tunnels, 
 - **Input:** `ast::SourceFile` from brink-syntax
 - **Output:** `(HirTree, SymbolManifest, Vec<Diagnostic>)`
 - **Responsibilities:**
-  - Weave folding: flat choices/gathers (identified by bullet/dash count) → container tree with proper nesting and scope
-  - Implicit structure: top-level content before first knot → root container
-  - INCLUDE content merging: top-level content from included files is inlined at the INCLUDE location; knots are separated and appended to the story
-  - First-stitch auto-enter: the first stitch in a knot is entered via implicit divert; other stitches require explicit diverts
+  - Weave folding: flat choices/gathers (identified by bullet/dash count) → flow graph with proper nesting and scope
+  - Implicit structure: top-level content before first knot → implicit knot
+  - Fall-through diverts: content that falls through to the next stitch/knot → explicit diverts
   - Strip trivia and syntactic sugar
   - Collect declarations into symbol manifest (knots, stitches, variables, lists, externals, unresolved references)
   - Emit structural diagnostics (malformed weave nesting, orphaned gathers, etc.)
@@ -105,7 +104,7 @@ Covers all ink constructs: knots, stitches, choices, gathers, diverts, tunnels, 
 - **Responsibilities:**
   - Merge per-file symbol manifests into a unified symbol table
   - Resolve INCLUDE file graph
-  - Name resolution: paths → concrete symbols (ContainerIds)
+  - Name resolution: paths → concrete symbols
   - Scope analysis: temp is function-scoped, VAR/CONST are global
   - Type checking: expression types, assignment compatibility
   - Validation: undefined targets, duplicate declarations, dead code, unused variables
@@ -119,60 +118,16 @@ The analyzer also owns the **project database** — the stateful, long-lived cac
 ### Pass 6: Codegen (brink-compiler)
 
 - **Input:** HIR trees + resolved `SymbolIndex`
-- **Output:** bag of `ContainerBytecode` blobs + string table + metadata (written to `.inkb`)
+- **Output:** `Program` (defined in brink-format)
 - **Responsibilities:**
-  - Per-container bytecode emission
+  - Per-knot bytecode emission
   - Expression lowering → stack ops + jumps
-  - Choice lowering → choice point opcodes
+  - Choice lowering → choice set opcodes
   - Sequence lowering → sequence opcodes
   - Divert/tunnel/thread lowering → control flow opcodes
-  - Implicit diverts: end-of-root-story gets implicit gather + `-> DONE`
   - String table building (deduplication)
   - Message table building (interpolated text → templates with slot placeholders)
-  - All cross-container references use `ContainerId` (path hash) — no resolved indices in the output
-
-## Containers
-
-Containers are the fundamental unit in both the compiler and runtime, analogous to functions in a normal programming language. At the source level, ink has knots, stitches, gathers, and labeled choice targets. At the bytecode level, these are all **containers** — there is no distinction. This matches the reference ink runtime, which has a single `Container` type.
-
-### Container identity
-
-- **`ContainerId`** — hash of the fully qualified path (e.g., `hash("my_knot.my_stitch")`). Stable across recompilation as long as the path doesn't change. Used in the `.inkb` format, in bytecode instructions, and in all persistent runtime state (position, call stack, visit counts).
-- At load time, the runtime resolves ContainerIds to fast internal indices. These indices are a runtime-only optimization — never persisted, never in the file format.
-
-### Container hierarchy
-
-```
-Root container
-├── [top-level content]
-├── Knot A (container)
-│   ├── [knot content before first stitch]
-│   ├── Stitch X (container)
-│   │   ├── [stitch content]
-│   │   └── Gather (container, may be labeled)
-│   └── Stitch Y (container)
-└── Knot B (container)
-```
-
-- The first stitch in a knot is auto-entered via an implicit divert. Other stitches require explicit `-> stitch_name`.
-- Stitches do NOT fall through to each other.
-- The root story container gets an implicit final gather + `-> DONE` appended by the compiler.
-
-### Container properties
-
-Each container has:
-
-- **Bytecode** — its own instruction stream
-- **ContainerId** — stable path-based identity
-- **Content hash** — fingerprint of the bytecode, used during hot-reload to detect whether a container's implementation changed
-- **Counting flags:**
-  - `visits_should_be_counted` — track visit count
-  - `turn_index_should_be_counted` — record which turn it was visited on
-  - `counting_at_start_only` — only count when entering at the start, not when re-entering mid-container
-
-### Execution as a container stack
-
-The VM maintains a stack of container frames. Entering a container pushes a frame. Finishing a container (reaching end of its bytecode) pops the frame and resumes the parent. Diverts jump to a different container. Tunnels push/pop frames explicitly. Threads fork the frame stack.
+  - Knot directory construction (KnotId ↔ KnotRef mapping)
 
 ## Bytecode VM
 
@@ -181,9 +136,14 @@ The runtime is a stack-based bytecode VM.
 ### Design properties
 
 - Stack-based: operands on value stack
-- Jump offsets within a container are container-relative
-- Cross-container references use `ContainerId` in the file format, resolved to internal indices at load time
+- All jump offsets within a knot are **knot-relative** (not absolute) — changes to other knots don't affect the current knot's bytecode
+- Cross-knot jumps use symbolic `KnotRef` (resolved to concrete addresses at load time)
 - Short-circuit `and`/`or` handled by compiler (emits conditional jumps), not VM
+
+### Stable identifiers
+
+- **`KnotId(u64)`** — content-addressed hash of fully qualified knot path. Stable across recompilation as long as the knot path is unchanged. Used in all persistent state (position, call stack, visit counts).
+- **`KnotRef(u16)`** — compile-time index into the knot directory. Used in bytecode operands. Resolved to concrete addresses at load time. Differs from `KnotId` so bytecode is relocatable.
 
 ### Value type
 
@@ -199,8 +159,7 @@ The instruction set covers:
 - **Arithmetic:** add (including string concat), sub, mul, div, mod, negate
 - **Comparison & logic:** equal, not-equal, greater, less, etc., not, and, or
 - **Variables:** get/set local, get/set global
-- **Control flow:** jump, conditional jump, divert (cross-container), conditional divert
-- **Containers:** enter container, exit container
+- **Control flow:** jump, conditional jump, divert (cross-knot), conditional divert
 - **Functions & tunnels:** call (push frame + jump), return (pop frame)
 - **Threads:** thread start (fork call stack), thread done
 - **Output:** emit string, emit message (format template), emit newline, glue, emit tag
@@ -220,21 +179,22 @@ The exact opcode encoding is defined in `brink-format`.
 
 ### Contents
 
-- Container bytecode types and `ContainerId`
+- `Program` struct and all supporting types
 - Opcode definitions and encoding
-- ID types: `ContainerId`, `StringId`, `MessageId`, `VarId`, `GlobalVarId`, `ExternalFnId`, `ListDefId`
-- Serialization/deserialization for `.inkb` and `.inkt`
+- ID types: `KnotId`, `KnotRef`, `StringId`, `MessageId`, `VarId`, `GlobalVarId`, `ExternalFnId`, `ListDefId`
+- Serialization/deserialization
 
 ### File formats
 
-- **`.inkb`** — binary format. A bag of container bytecode blobs, each tagged with a `ContainerId`, plus string table and metadata. All cross-container references are symbolic (ContainerId). No resolved indices.
-- **`.inkt`** — textual format. Human-readable representation of the bytecode, like WAT is to WASM. Container paths as labels, opcodes as mnemonics. For debugging, inspection, and diffing.
+- **`.inkb`** — binary format. Mmap-friendly, sectioned. What the runtime loads.
+- **`.inkt`** — textual format. Human-readable representation of the bytecode, like WAT is to WASM. For debugging, inspection, and diffing.
 
-### `.inkb` sections
+### Binary format sections
 
-- Container blobs (each tagged with ContainerId + content hash)
-- String table
-- Message table
+- String table (offset-indexed, length-prefixed UTF-8)
+- Message table (pre-parsed message parts)
+- Bytecode (knot headers + packed opcodes)
+- Knot directory (KnotId ↔ KnotRef mapping)
 - Variable declarations (with defaults)
 - Global variable schema
 - External function directory
@@ -245,41 +205,22 @@ The exact opcode encoding is defined in `brink-format`.
 
 ### Core requirements
 
-- **Bytecode VM:** stack-based execution of compiled stories
-- **Multi-instance:** one linked program (immutable, shareable), many story instances with isolated per-instance state
+- **Bytecode VM:** stack-based execution of compiled programs
+- **Multi-instance:** one compiled program (immutable, shareable), many story instances with isolated per-instance state
 - **Hot-reload:** safe recompilation without invalidating running state
 - **Deterministic RNG:** per-instance seed/state for reproducible shuffle sequences
 
-### Two-layer architecture
+### Program (immutable after loading)
 
-The runtime maintains two layers:
-
-- **Unlinked layer:** `HashMap<ContainerId, ContainerBytecode>` — the raw container blobs with symbolic references. This is the source of truth, populated from `.inkb`.
-- **Linked layer:** the resolved `Program` with fast internal indices. Built by the linker step.
-
-Loading, hot-reload, and patching all flow through the same linker step:
-
-1. **Normal startup:** load `.inkb` → populate unlinked layer → link → run
-2. **Hot-reload (full):** replace entire unlinked layer → re-link → reconcile instances
-3. **Hot-reload (patch):** update changed containers in unlinked layer → re-link → reconcile instances
-
-### Linker step
-
-The linker reads all container blobs from the unlinked layer and:
-
-1. Assigns each container a fast runtime index
-2. Builds a resolution table: `ContainerId → runtime index`
-3. Resolves all `ContainerId` references in bytecode to runtime indices
-4. Builds string table, variable table, and other lookup structures
-5. Produces an immutable, shareable `Program`
+Loaded from `.inkb`. Contains string table, message table, knot bytecode, knot directory, variable declarations, global schema, external function directory, debug info. Lookup tables built at load time.
 
 ### Story instance (per-entity runtime state)
 
 Each story instance maintains:
 
-- **Position:** `(ContainerId, offset)` — symbolic container identity + bytecode offset within that container. Survives recompilation.
-- **Execution state:** call stack of `(ContainerId, offset)` frames, value stack
-- **Narrative state:** visit counts (per `ContainerId`), turn index, sequence states
+- **Position:** symbolic (`KnotId` + offset within knot) — survives recompilation
+- **Execution state:** call stack (symbolic frames), value stack
+- **Narrative state:** visit counts (per `KnotId`), turn index, sequence states
 - **Variables:** local variables
 - **RNG state:** per-instance seed + state for deterministic randomness
 - **Output buffer:** accumulated content, pending tags, pending choices (cleared each step)
@@ -292,7 +233,7 @@ Global variables shared by all instances of a program. Separate from per-instanc
 ### Execution model
 
 - Synchronous, non-blocking step function
-- Runs until a yield point (choice set, done, end, external call)
+- Runs until a yield point (choice set, done, end, external call) or budget exhaustion
 - Returns a `StepResult`:
   - `Continue` — produced text, keep running
   - `ChoicePoint` — waiting for player input (content + choices)
@@ -300,27 +241,25 @@ Global variables shared by all instances of a program. Separate from per-instanc
   - `Ended` — permanent finish
   - `Error` — runtime error with source location
 
-### Hot-reload reconciliation
+### Hot-reload
 
-All persistent references in story instances use `ContainerId`, not runtime indices. When a new program is linked:
+All persistent references in story instances are symbolic (content-addressed `KnotId`), not raw bytecode addresses. When a program is recompiled:
 
-1. For each running instance, check the position `(ContainerId, offset)`:
-   - **Container exists, content hash unchanged** → position is valid, do nothing
-   - **Container exists, content hash changed** → reset offset to 0 (container entry)
-   - **Container gone** → fall back up the call stack to deepest valid frame, or reset to entry point
-2. Same for every frame on the call stack
-3. Detect renames via content hashing (removed container with same content hash as added container = rename)
-4. Visit counts keyed by `ContainerId` — retain for containers that still exist, orphan the rest
-5. Sequence states keyed by `(ContainerId, sequence_index)` — invalidate if content hash changed
-6. Pending choices — invalidate (the choice set may no longer exist)
-7. Reconcile variables (keep existing, add new with defaults, flag removed/changed)
-8. Return a `ReconcileReport` with warnings for editor integration
+1. Build symbol table for new program
+2. Detect renames via content hashing (removed knot with same content hash as added knot = rename)
+3. For each running instance:
+   - Migrate renames through KnotId map
+   - Verify current position knot exists (reset offset if content hash changed)
+   - Unwind call stack to deepest valid frame
+   - Reconcile variables (keep existing, add new with defaults, flag removed/changed)
+   - Invalidate stale pending choices
+4. Return a `ReconcileReport` with warnings for editor integration
 
 ### Multi-instance management
 
 A `NarrativeRuntime` (or equivalent) host interface manages:
 
-- Loading/unloading programs (via the linker step)
+- Loading/unloading compiled programs
 - Spawning/destroying story instances
 - Stepping instances and collecting results
 - Routing external function calls to host
@@ -382,16 +321,6 @@ The following are real requirements but deferred to later phases:
 - **Content extensions** — pluggable compile-time text transforms (speaker attribution, parentheticals, styled text). Still wanted, but the architectural integration (opcode reservation, structured `ContentOutput` types) needs more thought before committing.
 - **Localization / message templates** — Fluent-inspired message format, `.inkl` locale overlay files, CLDR plural resolution.
 - **`no_std` runtime** — desirable for WASM targets but not an immediate constraint.
-
-## Ink semantics (reference behavior)
-
-Key semantics verified against the reference C# ink implementation:
-
-- **INCLUDE with top-level content:** top-level content from included files is merged inline at the INCLUDE location. Knots/stitches are separated and appended to the end of the story.
-- **Stitch fall-through:** stitches do NOT fall through. Only the first stitch in a knot is auto-entered (via implicit divert). Other stitches require explicit `-> stitch_name`. Stitches with parameters are never auto-entered.
-- **Root entry point:** all top-level content becomes an implicit root container. The compiler appends an implicit gather + `-> DONE` so the story terminates gracefully.
-- **Visit counting:** per-container granularity. Any container (knot, stitch, gather, choice target) can independently track visits and turn indices. `countingAtStartOnly` prevents overcounting on mid-container re-entry.
-- **Gathers:** not first-class objects. Implemented as unnamed containers that choice branches divert to.
 
 ## Test corpus
 
