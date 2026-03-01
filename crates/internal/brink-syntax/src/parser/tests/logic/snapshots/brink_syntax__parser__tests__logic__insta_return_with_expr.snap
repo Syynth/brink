@@ -1,0 +1,20 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/logic/mod.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..15
+  LOGIC_LINE@0..15
+    TILDE@0..1 "~"
+    WHITESPACE@1..2 " "
+    RETURN_STMT@2..14
+      KW_RETURN@2..8 "return"
+      WHITESPACE@8..9 " "
+      INFIX_EXPR@9..14
+        PATH@9..10
+          IDENT@9..10 "x"
+        WHITESPACE@10..11 " "
+        PLUS@11..12 "+"
+        WHITESPACE@12..13 " "
+        INTEGER_LIT@13..14
+          INTEGER@13..14 "1"
+    NEWLINE@14..15 "\n"
