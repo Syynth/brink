@@ -13,6 +13,7 @@ brink is the ink compiler and bytecode runtime for s92-studio, extracted into it
 | `brink-runtime` | `crates/brink-runtime/` | Bytecode VM for executing compiled stories |
 | `brink-cli` | `crates/brink-cli/` | CLI for compiling and running ink stories |
 | `brink-lsp` | `crates/brink-lsp/` | Language server for ink files |
+| `brink-intl` | `crates/brink-intl/` | Batteries-included plural resolution (ICU4X baked data) |
 
 ### Internal crates
 
@@ -45,6 +46,8 @@ graph TD
 
     runtime --> format
 
+    intl[brink-intl] --> format
+
     style format fill:#f9f,stroke:#333,stroke-width:3px
 ```
 
@@ -54,6 +57,7 @@ graph TD
 2. `brink-lsp` depends on `brink-analyzer`, NOT on `brink-compiler`.
 3. `brink-compiler` depends on `brink-format` (writes) and `brink-analyzer`/`brink-hir`/`brink-syntax` (reads).
 4. `brink-format` has no brink-internal dependencies.
+5. `brink-intl` depends ONLY on `brink-format` (for `PluralCategory` and `PluralResolver` trait).
 
 ## Compilation pipeline
 
@@ -119,16 +123,18 @@ The analyzer also owns the **project database** — the stateful, long-lived cac
 ### Pass 6: Codegen (brink-compiler)
 
 - **Input:** HIR trees + resolved `SymbolIndex`
-- **Output:** bag of `ContainerBytecode` blobs + string table + metadata (written to `.inkb`)
+- **Output:** bag of `ContainerBytecode` blobs + string table + message table + metadata (written to `.inkb`)
 - **Responsibilities:**
   - Per-container bytecode emission
   - Expression lowering → stack ops + jumps
-  - Choice lowering → choice point opcodes
+  - Choice lowering → choice point opcodes (see [Choice text decomposition](#choice-text-decomposition))
   - Sequence lowering → sequence opcodes
   - Divert/tunnel/thread lowering → control flow opcodes
   - Implicit diverts: end-of-root-story gets implicit gather + `-> DONE`
-  - String table building (deduplication)
-  - Message table building (interpolated text → templates with slot placeholders)
+  - Text decomposition: static text blocks → message templates with slot placeholders (see [Text decomposition](#text-decomposition))
+  - String table building (deduplication of plain text)
+  - Message table building (interpolated/structured text → `MessageTemplate` entries)
+  - Line ID generation for voice acting support (see [Voice acting](#voice-acting))
   - All cross-container references use `ContainerId` (path hash) — no resolved indices in the output
 
 ## Containers
@@ -204,7 +210,7 @@ The instruction set covers:
 - **Functions & tunnels:** call (push frame + jump), return (pop frame)
 - **Threads:** thread start (fork call stack), thread done
 - **Output:** emit string, emit message (format template), emit newline, glue, emit tag
-- **Choices:** begin/end choice set, begin/end choice (with sticky/fallback flags), choice condition, choice content markers
+- **Choices:** begin/end choice set, begin/end choice (with sticky/fallback flags), choice condition, choice display (MessageId), choice output (MessageId)
 - **Sequences:** sequence (with kind: cycle/stopping/once-only/shuffle), sequence branch
 - **Intrinsics:** visit count, turns since, turn index, choice count, random
 - **External functions:** call external (by ID + arg count)
@@ -222,24 +228,77 @@ The exact opcode encoding is defined in `brink-format`.
 
 - Container bytecode types and `ContainerId`
 - Opcode definitions and encoding
-- ID types: `ContainerId`, `StringId`, `MessageId`, `VarId`, `GlobalVarId`, `ExternalFnId`, `ListDefId`
-- Serialization/deserialization for `.inkb` and `.inkt`
+- ID types: `ContainerId`, `StringId`, `MessageId`, `LineId`, `VarId`, `GlobalVarId`, `ExternalFnId`, `ListDefId`
+- Message template types: `MessageTemplate`, `MessagePart`, `SelectKey`, `PluralCategory`
+- `PluralResolver` trait (implemented by host or `brink-intl`)
+- Serialization/deserialization for `.inkb`, `.inkl`, and `.inkt`
 
 ### File formats
 
-- **`.inkb`** — binary format. A bag of container bytecode blobs, each tagged with a `ContainerId`, plus string table and metadata. All cross-container references are symbolic (ContainerId). No resolved indices.
+- **`.inkb`** — binary format. Container bytecode blobs, string table, message table, and metadata. All cross-container references are symbolic (`ContainerId`). The string and message tables contain the base locale text. No resolved indices.
+- **`.inkl`** — locale overlay. Replacement string table, message table, and audio mapping table for a specific locale. Same `StringId`/`MessageId` indices as the base `.inkb` — drop-in replacement at load time.
 - **`.inkt`** — textual format. Human-readable representation of the bytecode, like WAT is to WASM. Container paths as labels, opcodes as mnemonics. For debugging, inspection, and diffing.
 
 ### `.inkb` sections
 
-- Container blobs (each tagged with ContainerId + content hash)
-- String table
-- Message table
-- Variable declarations (with defaults)
-- Global variable schema
-- External function directory
+- Container blobs (each tagged with `ContainerId` + content hash)
+- String table (`StringId` → text, for plain non-interpolated text)
+- Message table (`MessageId` → `MessageTemplate`, for interpolated/structured text)
+- Line table (`LineId` → `StringId`/`MessageId` mapping, for voice acting)
+- List definitions (name → item names + ordinals)
+- Variable declarations (name, type, default value)
+- External function directory (name, expected arg count)
 - Debug info (strippable, source maps)
-- Checksum
+- Format version + checksum
+
+### `.inkl` sections
+
+- Header: magic `b"INKL"`, format version, BCP 47 locale tag, base `.inkb` checksum (must match)
+- String table (same format and indices as `.inkb`, replacement text)
+- Message table (same format and indices as `.inkb`, replacement templates)
+- Audio table (`LineId` → audio asset reference)
+
+### Message template types
+
+```
+MessageTemplate = Vec<MessagePart>
+
+enum MessagePart {
+    Literal(StringId),
+    Slot(u8),
+    Select {
+        slot: u8,
+        variants: Vec<(SelectKey, Vec<MessagePart>)>,
+        default: Vec<MessagePart>,
+    },
+}
+
+enum SelectKey {
+    Plural(PluralCategory),      // CLDR: zero, one, two, few, many, other
+    Exact(i32),                  // exact numeric match
+    Keyword(StringId),           // for gender, custom categories
+}
+
+enum PluralCategory { Zero, One, Two, Few, Many, Other }
+```
+
+The runtime's message resolver walks the `MessagePart` tree, reads slot values from the VM stack, picks select variants (using the `PluralResolver` trait for plural categories), and appends formatted text to the output buffer.
+
+### Plural resolution
+
+The runtime defines a `PluralResolver` trait:
+
+```
+trait PluralResolver {
+    fn category(&self, number: i64, fraction: Option<&str>) -> PluralCategory;
+}
+```
+
+The runtime ships no locale data. Consumers provide a resolver via:
+
+- **`brink-intl`** — batteries-included crate backed by ICU4X baked data, pruned at build time to only the locales the consumer specifies.
+- **Custom implementation** — game engines with their own i18n system implement the trait directly.
+- **No resolver** — stories without localization don't need one. Fallback: everything maps to `Other`.
 
 ## Runtime (brink-runtime)
 
@@ -259,9 +318,10 @@ The runtime maintains two layers:
 
 Loading, hot-reload, and patching all flow through the same linker step:
 
-1. **Normal startup:** load `.inkb` → populate unlinked layer → link → run
+1. **Normal startup:** load `.inkb` → optionally overlay `.inkl` → populate unlinked layer → link → run
 2. **Hot-reload (full):** replace entire unlinked layer → re-link → reconcile instances
 3. **Hot-reload (patch):** update changed containers in unlinked layer → re-link → reconcile instances
+4. **Locale switch:** swap string/message/audio tables from a different `.inkl` → re-link
 
 ### Linker step
 
@@ -327,6 +387,118 @@ A `NarrativeRuntime` (or equivalent) host interface manages:
 - Hot-reloading programs and reconciling instances
 - Save/load for instances and global state
 
+## Localization
+
+Brink separates executable logic from localizable text. The bytecode is locale-independent — all user-visible text is referenced via `StringId` (plain text) or `MessageId` (interpolated/structured text). Locale-specific content lives in `.inkl` overlay files that replace the string and message tables at load time.
+
+### Text decomposition
+
+During codegen, the compiler decomposes text into string table entries and message templates:
+
+- **Plain text** (no interpolation, no inline logic) → `StringId` in the string table, emitted via `EmitString(string_id)`.
+- **Interpolated or structured text** (contains `{variables}`, inline conditionals, or inline sequences) → `MessageTemplate` in the message table, emitted via `EmitMessage(msg_id)`. The compiler pushes slot values onto the stack before the emit.
+
+Example: `I found {num_gems} {num_gems > 1: gems | gem} in the {cave_name}.` compiles to:
+
+```
+GetLocal(num_gems)          // push slot 0
+GetLocal(cave_name)         // push slot 1
+EmitMessage(msg_id: 42)     // format template with 2 slots from stack
+```
+
+Message table entry for `msg_id: 42`:
+
+```
+I found {0} {0 -> one: gem | other: gems} in the {1}.
+```
+
+The plural logic lives in the message template, not the bytecode. Translators can restructure sentences, reorder slots, and alter plural/gender forms per locale without touching the compiled program.
+
+### Scope of text decomposition
+
+The compiler can only build message templates for **static text blocks** — contiguous text where the full structure is visible at compile time within a single expression or line.
+
+**Can be one message template:**
+
+- A single line with interpolation: `Hello, {name}!`
+- A single line with inline conditionals: `{flag: yes|no}`
+- A single line with inline sequences: `{a|b|c}` (sequence index becomes a slot)
+- Statically glued lines (both sides are literals or simple interpolations)
+- Choice display / choice output text
+
+**Each fragment is its own string/message (cannot be merged):**
+
+- Text across container boundaries (diverts, tunnels, function calls, threads)
+- Text in dynamically bounded loops
+- Text produced by external function calls
+
+The boundary rule: if it crosses a container call, each side is independent.
+
+### Choice text decomposition
+
+Ink's bracket syntax splits choice text into three roles:
+
+```
+* Pick up the sword[.] You grab the sword.
+```
+
+- Before `[` → appears in both the choice list and the output
+- Inside `[...]` → appears only in the choice list
+- After `]` → appears only after selection
+
+This three-part split is a source-language authoring convenience. For localization, the compiler decomposes each choice into **two independent messages**:
+
+- **Choice display** (`MessageId`) — the complete text shown in the choice list (before + inside bracket)
+- **Choice output** (`MessageId`) — the complete text emitted after selection (before + after bracket)
+
+The bytecode references these as separate message IDs:
+
+```
+BeginChoice(flags)
+  ChoiceDisplay(msg_id: 42)
+  ChoiceOutput(msg_id: 43)
+EndChoice
+```
+
+Translators localize each independently with no structural coupling. This allows the target language to use completely different grammatical constructions for the choice prompt vs. the narrative output.
+
+### Voice acting
+
+Every text emission has a stable `LineId` for voice acting support. The line table in `.inkb` maps `LineId` → `StringId`/`MessageId`. Audio asset references live in the `.inkl` audio table, keyed by `LineId`.
+
+Line IDs are derived from the container path + position within the container, providing stability across recompilations that don't change the line's position. Authors can override derived IDs with explicit tags (`#voice:blacksmith_greeting_01`) for lines that have been recorded.
+
+The runtime's text output includes `LineId` so the host can look up audio:
+
+```
+struct TextOutput {
+    text: String,
+    line_id: LineId,
+    audio_ref: Option<AudioRef>,
+}
+```
+
+The host handles playback — brink provides the mapping.
+
+### Locale overlay loading
+
+At runtime, loading a `.inkl` overlay replaces the string table, message table, and adds the audio table. The bytecode is unchanged — `EmitString(5)` and `EmitMessage(12)` still reference the same indices, but the content behind those indices is now in the target locale.
+
+The `.inkl` header includes the base `.inkb` checksum. The runtime validates this on load — a mismatched `.inkl` (compiled against a different `.inkb` version) is rejected.
+
+### Localization authoring (XLIFF)
+
+Localization source files use **XLIFF 2.0** — one file per locale (e.g., `translations/ja-JP.xlf`). Containers are represented as `<file>` elements within the XLIFF document. Brink-specific metadata (content hashes, audio asset references) uses XLIFF's custom namespace extension mechanism.
+
+Workflow:
+
+1. **Generate:** `brink-cli generate-locale` reads a compiled `.inkb` and produces an XLIFF file with all translatable strings and messages, including context annotations for translators.
+2. **Translate:** Translators work in the XLIFF file directly or import it into a translation management platform (Lokalise, Crowdin, etc.). Audio asset references are added to the XLIFF via the `brink:audio` extension attribute. Translation state tracking uses XLIFF's built-in `state` attribute (`initial`/`translated`/`reviewed`/`final`).
+3. **Compile:** `brink-cli compile-locale` reads the translated XLIFF and produces a binary `.inkl` overlay.
+4. **Regenerate (on source changes):** `brink-cli generate-locale` diffs the new `.inkb` against the existing XLIFF, preserving human-edited fields (translations, audio refs), updating machine-managed fields (original text, context, content hashes), and flagging lines where the source text changed for re-review.
+
+XLIFF was chosen because every major translation management platform natively imports/exports it, and the spec requires tools to preserve unknown extensions — brink-specific metadata survives round-trips through external tooling.
+
 ## LSP (brink-lsp)
 
 Thin protocol adapter over `brink-analyzer`. Depends on analyzer, NOT on compiler.
@@ -380,7 +552,7 @@ The following are real requirements but deferred to later phases:
 - **Step budgeting** — `StepBudget::Instructions(n)` for cooperative scheduling, `BudgetExhausted` result variant. The VM will need this for game integration but it's not needed for initial implementation.
 - **JSON codegen backend** — inklecate-compatible `.ink.json` output for conformance testing. Decision on whether to build this is deferred.
 - **Content extensions** — pluggable compile-time text transforms (speaker attribution, parentheticals, styled text). Still wanted, but the architectural integration (opcode reservation, structured `ContentOutput` types) needs more thought before committing.
-- **Localization / message templates** — Fluent-inspired message format, `.inkl` locale overlay files, CLDR plural resolution.
+- **Localization implementation** — the localization architecture is specified (see [Localization](#localization)) but implementation is deferred to post-tier-3. Format types (`MessageTemplate`, `PluralCategory`, etc.) land with `brink-format`; the message resolver, `.inkl` loading, XLIFF tooling, and `brink-intl` come later.
 - **`no_std` runtime** — desirable for WASM targets but not an immediate constraint.
 
 ## Ink semantics (reference behavior)
