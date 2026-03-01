@@ -109,7 +109,7 @@ Covers all ink constructs: knots, stitches, choices, gathers, diverts, tunnels, 
 - **Responsibilities:**
   - Merge per-file symbol manifests into a unified symbol table
   - Resolve INCLUDE file graph
-  - Name resolution: paths → concrete symbols (ContainerIds)
+  - Name resolution: paths → concrete symbols (DefinitionIds)
   - Scope analysis: temp is function-scoped, VAR/CONST are global
   - Type checking: expression types, assignment compatibility
   - Validation: undefined targets, duplicate declarations, dead code, unused variables
@@ -135,18 +135,46 @@ The analyzer also owns the **project database** — the stateful, long-lived cac
   - String table building (deduplication of plain text)
   - Message table building (interpolated/structured text → `MessageTemplate` entries)
   - Line ID generation for voice acting support (see [Voice acting](#voice-acting))
-  - All cross-container references use `ContainerId` (path hash) — no resolved indices in the output
+  - All cross-definition references use `DefinitionId` — no resolved indices in the output
 
-## Containers
+## Definitions and DefinitionId
 
-Containers are the fundamental unit in both the compiler and runtime, analogous to functions in a normal programming language. At the source level, ink has knots, stitches, gathers, and labeled choice targets. At the bytecode level, these are all **containers** — there is no distinction. This matches the reference ink runtime, which has a single `Container` type.
+All named things in the format — containers, global variables, list definitions, list items, and external functions — use a single `DefinitionId(u64)` type. The high 8 bits are a type tag identifying which table the definition belongs to; the low 56 bits are a hash of the fully qualified name/path.
 
-### Container identity
+```
+DefinitionId (u64):
+┌──────────┬──────────────────────────────────────────────────┐
+│ tag (8)  │                  hash (56)                       │
+└──────────┴──────────────────────────────────────────────────┘
+```
 
-- **`ContainerId`** — hash of the fully qualified path (e.g., `hash("my_knot.my_stitch")`). Stable across recompilation as long as the path doesn't change. Used in the `.inkb` format, in bytecode instructions, and in all persistent runtime state (position, call stack, visit counts).
-- At load time, the runtime resolves ContainerIds to fast internal indices. These indices are a runtime-only optimization — never persisted, never in the file format.
+The linker resolves all `DefinitionId` references uniformly to compact runtime indices. The runtime never sees `DefinitionId` on the hot path — they're resolved at link time. Persistent state (save files, visit counts) stores `DefinitionId` for stability across recompilation.
 
-### Container hierarchy
+### Definition tags
+
+| Tag | Kind | Payload |
+|-----|------|---------|
+| `0x01` | Container | Bytecode blob, content hash, counting flags |
+| `0x02` | Global variable | Name, value type, default value, mutable flag |
+| `0x03` | List definition | Name, items (name + ordinal each) |
+| `0x04` | List item | Origin list `DefinitionId`, ordinal |
+| `0x05` | External function | Name, arg count, optional fallback `DefinitionId` |
+
+### Containers (tag `0x01`)
+
+Containers are the fundamental compilation and runtime unit, analogous to functions in a normal programming language. At the source level, ink has knots, stitches, gathers, and labeled choice targets. At the bytecode level, these are all **containers** — there is no distinction. This matches the reference ink runtime, which has a single `Container` type.
+
+Each container definition has:
+
+- **`DefinitionId`** — `0x01` tag + hash of fully qualified path (e.g., `hash("my_knot.my_stitch")`). Stable across recompilation as long as the path doesn't change.
+- **Bytecode** — its own instruction stream
+- **Content hash** — fingerprint of the bytecode, used during hot-reload to detect whether a container's implementation changed
+- **Counting flags** (bitmask):
+  - Bit 0: `visits_should_be_counted` — track visit count
+  - Bit 1: `turn_index_should_be_counted` — record which turn it was visited on
+  - Bit 2: `counting_at_start_only` — only count when entering at the start, not when re-entering mid-container
+
+#### Container hierarchy
 
 ```
 Root container
@@ -164,21 +192,90 @@ Root container
 - Stitches do NOT fall through to each other.
 - The root story container gets an implicit final gather + `-> DONE` appended by the compiler.
 
-### Container properties
-
-Each container has:
-
-- **Bytecode** — its own instruction stream
-- **ContainerId** — stable path-based identity
-- **Content hash** — fingerprint of the bytecode, used during hot-reload to detect whether a container's implementation changed
-- **Counting flags:**
-  - `visits_should_be_counted` — track visit count
-  - `turn_index_should_be_counted` — record which turn it was visited on
-  - `counting_at_start_only` — only count when entering at the start, not when re-entering mid-container
-
-### Execution as a container stack
+#### Execution as a container stack
 
 The VM maintains a stack of container frames. Entering a container pushes a frame. Finishing a container (reaching end of its bytecode) pops the frame and resumes the parent. Diverts jump to a different container. Tunnels push/pop frames explicitly. Threads fork the frame stack.
+
+### Global variables (tag `0x02`)
+
+Each variable definition has:
+
+- **`DefinitionId`** — `0x02` tag + hash of variable name
+- **Name** — `StringId` (for debugging/inspection)
+- **Value type** — the type of the default value
+- **Default value** — `Value` (same type as the VM stack)
+- **Mutable** — `bool` (`true` for `VAR`, `false` for `CONST`)
+
+`VAR` declarations are mutable globals. `CONST` declarations are immutable globals — they always exist in the format (visible, inspectable, debuggable). The compiler may inline CONST values as a build-time optimization controlled by a compiler flag, but the definition is always present. Attempting to `SetGlobal` on an immutable variable is a runtime error.
+
+Temporary variables (`temp`) have no format-level definition. They are stack-frame-local — created by a `DeclareTemp` opcode during execution, stored in the current call frame, and discarded when the frame pops.
+
+#### Bytecode instructions for variables
+
+```
+GetGlobal(DefinitionId)     // push global variable value
+SetGlobal(DefinitionId)     // pop stack → assign to global (runtime error if immutable)
+DeclareTemp(u16)            // declare temp at local slot index in current frame
+GetTemp(u16)                // push temp value from frame slot
+SetTemp(u16)                // pop stack → assign to frame slot
+```
+
+Globals use `DefinitionId` (resolved by linker to fast runtime index). Temps use frame-local slot indices assigned by the compiler — no `DefinitionId`, no linker involvement.
+
+### List definitions (tag `0x03`)
+
+Each list definition has:
+
+- **`DefinitionId`** — `0x03` tag + hash of list name
+- **Name** — `StringId`
+- **Items** — `Vec<(StringId, i32)>` (item name + ordinal)
+
+Ordinals can be non-contiguous and negative (e.g., `LIST foo = (Z = -1), (A = 2), (B = 3), (C = 5)`). The linker builds efficient runtime representations (bitset mappings, lookup tables) from this.
+
+### List items (tag `0x04`)
+
+Each list item is an independent definition, because bare item names are implicitly global in ink — `happy` resolves to a single-element list value `{Emotion.happy: 1}`.
+
+- **`DefinitionId`** — `0x04` tag + hash of qualified name (e.g., `hash("Emotion.happy")`)
+- **Origin** — `DefinitionId` of the parent list definition
+- **Ordinal** — `i32`
+
+#### List values
+
+A list value (for variable defaults and as literals in bytecode) is a set of items, potentially from multiple origin definitions:
+
+```
+ListValue {
+    items: Vec<DefinitionId>      // list item DefinitionIds that are "set"
+    origins: Vec<DefinitionId>    // list definition DefinitionIds (for typed empties)
+}
+```
+
+The `origins` field preserves type information for empty lists — needed for `LIST_ALL` and `LIST_INVERT` to know the full universe of possible items.
+
+### External functions (tag `0x05`)
+
+Each external function definition has:
+
+- **`DefinitionId`** — `0x05` tag + hash of function name
+- **Name** — `StringId`
+- **Arg count** — `u8`
+- **Fallback** — `Option<DefinitionId>` pointing to a container (tag `0x01`) with the ink-defined fallback body
+
+The linker resolves external function calls at load time:
+
+1. **Host provides a binding** → resolved to host call
+2. **No host binding, fallback exists** → resolved to the fallback container
+3. **Neither** → linker error: "external function 'X' has no host binding and no fallback"
+
+At runtime, calling an external is just a call — the linker already resolved it to the right target. No branching on the hot path. The separate tag gives better diagnostics and makes externals visually distinct in `.inkt` debug output.
+
+### What is NOT a definition
+
+- **Temporary variables** — stack-frame-local, created/destroyed per execution. No `DefinitionId`.
+- **Strings** — content, not named definitions. Indexed by `StringId(u16)`.
+- **Messages** — content, not named definitions. Indexed by `MessageId(u16)`.
+- **Lines** — voice acting mappings. Indexed by `LineId`.
 
 ## Bytecode VM
 
@@ -188,33 +285,36 @@ The runtime is a stack-based bytecode VM.
 
 - Stack-based: operands on value stack
 - Jump offsets within a container are container-relative
-- Cross-container references use `ContainerId` in the file format, resolved to internal indices at load time
+- Cross-definition references use `DefinitionId` in the file format, resolved to compact runtime indices at load time
 - Short-circuit `and`/`or` handled by compiler (emits conditional jumps), not VM
 
 ### Value type
 
 ```
-Int(i32) | Float(f32) | Bool(bool) | String | List | Null
+Int(i32) | Float(f32) | Bool(bool) | String | List | DivertTarget | Null
 ```
+
+`DivertTarget` holds a `DefinitionId` pointing to a container — used for variable divert targets (`VAR x = -> some_knot`).
 
 ### Opcode categories
 
 The instruction set covers:
 
-- **Stack & literals:** push int/float/bool/string/null, pop, duplicate
+- **Stack & literals:** push int/float/bool/string/list/divert-target/null, pop, duplicate
 - **Arithmetic:** add (including string concat), sub, mul, div, mod, negate
 - **Comparison & logic:** equal, not-equal, greater, less, etc., not, and, or
-- **Variables:** get/set local, get/set global
-- **Control flow:** jump, conditional jump, divert (cross-container), conditional divert
+- **Global variables:** get global (`DefinitionId`), set global (`DefinitionId`)
+- **Temp variables:** declare temp (slot), get temp (slot), set temp (slot)
+- **Control flow:** jump, conditional jump, divert (`DefinitionId`), conditional divert, variable divert
 - **Containers:** enter container, exit container
-- **Functions & tunnels:** call (push frame + jump), return (pop frame)
+- **Functions & tunnels:** call (push frame + jump), return (pop frame), tunnel call, tunnel return
 - **Threads:** thread start (fork call stack), thread done
-- **Output:** emit string, emit message (format template), emit newline, glue, emit tag
-- **Choices:** begin/end choice set, begin/end choice (with sticky/fallback flags), choice condition, choice display (MessageId), choice output (MessageId)
+- **Output:** emit string (`StringId`), emit message (`MessageId`), emit newline, glue, emit tag
+- **Choices:** begin/end choice set, begin/end choice (with sticky/fallback/once-only flags + condition flag), choice display (`MessageId`), choice output (`MessageId`)
 - **Sequences:** sequence (with kind: cycle/stopping/once-only/shuffle), sequence branch
-- **Intrinsics:** visit count, turns since, turn index, choice count, random
-- **External functions:** call external (by ID + arg count)
-- **List operations:** create, add, remove, contains, count, min, max, all, none, intersect, union, except, range, value
+- **Intrinsics:** visit count, turns since, turn index, choice count, random, seed random
+- **External functions:** call external (`DefinitionId` + arg count)
+- **List operations:** contains, not-contains, intersect, union, except, all, invert, count, min, max, value, range, list-from-int, random
 - **Lifecycle:** done (pause, can resume), end (permanent finish)
 - **Debug:** source location mapping (strippable)
 
@@ -226,30 +326,33 @@ The exact opcode encoding is defined in `brink-format`.
 
 ### Contents
 
-- Container bytecode types and `ContainerId`
+- `DefinitionId(u64)` — tagged definition identity type (8-bit type tag + 56-bit name hash)
 - Opcode definitions and encoding
-- ID types: `ContainerId`, `StringId`, `MessageId`, `LineId`, `VarId`, `GlobalVarId`, `ExternalFnId`, `ListDefId`
+- Content ID types: `StringId(u16)`, `MessageId(u16)`, `LineId`
+- Definition payloads for each tag type (container, variable, list def, list item, external fn)
+- `Value` type and encoding (int, float, bool, string, list, divert target, null)
 - Message template types: `MessageTemplate`, `MessagePart`, `SelectKey`, `PluralCategory`
 - `PluralResolver` trait (implemented by host or `brink-intl`)
 - Serialization/deserialization for `.inkb`, `.inkl`, and `.inkt`
 
 ### File formats
 
-- **`.inkb`** — binary format. Container bytecode blobs, string table, message table, and metadata. All cross-container references are symbolic (`ContainerId`). The string and message tables contain the base locale text. No resolved indices.
+- **`.inkb`** — binary format. Definition tables (containers, variables, lists, externals), content tables (strings, messages, lines), and metadata. All cross-definition references are symbolic (`DefinitionId`). No resolved indices.
 - **`.inkl`** — locale overlay. Replacement string table, message table, and audio mapping table for a specific locale. Same `StringId`/`MessageId` indices as the base `.inkb` — drop-in replacement at load time.
 - **`.inkt`** — textual format. Human-readable representation of the bytecode, like WAT is to WASM. Container paths as labels, opcodes as mnemonics. For debugging, inspection, and diffing.
 
 ### `.inkb` sections
 
-- Container blobs (each tagged with `ContainerId` + content hash)
+- Header (magic, format version, section offsets, checksum)
+- Container section (`DefinitionId` + bytecode blob + content hash + counting flags per entry)
+- Variable section (`DefinitionId` + name + type + default + mutable per entry)
+- List definition section (`DefinitionId` + name + items per entry)
+- List item section (`DefinitionId` + origin + ordinal per entry)
+- External function section (`DefinitionId` + name + arg count + optional fallback per entry)
 - String table (`StringId` → text, for plain non-interpolated text)
 - Message table (`MessageId` → `MessageTemplate`, for interpolated/structured text)
 - Line table (`LineId` → `StringId`/`MessageId` mapping, for voice acting)
-- List definitions (name → item names + ordinals)
-- Variable declarations (name, type, default value)
-- External function directory (name, expected arg count)
 - Debug info (strippable, source maps)
-- Format version + checksum
 
 ### `.inkl` sections
 
@@ -313,34 +416,39 @@ The runtime ships no locale data. Consumers provide a resolver via:
 
 The runtime maintains two layers:
 
-- **Unlinked layer:** `HashMap<ContainerId, ContainerBytecode>` — the raw container blobs with symbolic references. This is the source of truth, populated from `.inkb`.
+- **Unlinked layer:** the raw definition tables with symbolic `DefinitionId` references. This is the source of truth, populated from `.inkb`.
 - **Linked layer:** the resolved `Program` with fast internal indices. Built by the linker step.
 
 Loading, hot-reload, and patching all flow through the same linker step:
 
 1. **Normal startup:** load `.inkb` → optionally overlay `.inkl` → populate unlinked layer → link → run
 2. **Hot-reload (full):** replace entire unlinked layer → re-link → reconcile instances
-3. **Hot-reload (patch):** update changed containers in unlinked layer → re-link → reconcile instances
+3. **Hot-reload (patch):** update changed definitions in unlinked layer → re-link → reconcile instances
 4. **Locale switch:** swap string/message/audio tables from a different `.inkl` → re-link
 
 ### Linker step
 
-The linker reads all container blobs from the unlinked layer and:
+The linker reads all definitions from the unlinked layer and:
 
-1. Assigns each container a fast runtime index
-2. Builds a resolution table: `ContainerId → runtime index`
-3. Resolves all `ContainerId` references in bytecode to runtime indices
-4. Builds string table, variable table, and other lookup structures
-5. Produces an immutable, shareable `Program`
+1. For each `DefinitionId`, reads the tag and dispatches to the appropriate table
+2. Assigns each definition a fast runtime index within its table
+3. Builds resolution tables: `DefinitionId → runtime index` (one per tag type)
+4. Resolves all `DefinitionId` references in bytecode to runtime indices
+5. Resolves external functions: host binding → host call; no binding + fallback → fallback container; neither → error
+6. Initializes global variables from their default values
+7. Builds string table, message table, and other content structures
+8. Produces an immutable, shareable `Program`
+
+One codepath processes all definition types uniformly. The tag determines which table, but the resolution mechanism is the same.
 
 ### Story instance (per-entity runtime state)
 
 Each story instance maintains:
 
-- **Position:** `(ContainerId, offset)` — symbolic container identity + bytecode offset within that container. Survives recompilation.
-- **Execution state:** call stack of `(ContainerId, offset)` frames, value stack
-- **Narrative state:** visit counts (per `ContainerId`), turn index, sequence states
-- **Variables:** local variables
+- **Position:** `(DefinitionId, offset)` — symbolic container identity + bytecode offset within that container. Survives recompilation.
+- **Execution state:** call stack of `(DefinitionId, offset)` frames, value stack
+- **Narrative state:** visit counts (per container `DefinitionId`), turn index, sequence states
+- **Variables:** temp variables in call frame slots
 - **RNG state:** per-instance seed + state for deterministic randomness
 - **Output buffer:** accumulated content, pending tags, pending choices (cleared each step)
 - **Status:** active, waiting for choice, done, ended, error
@@ -362,19 +470,20 @@ Global variables shared by all instances of a program. Separate from per-instanc
 
 ### Hot-reload reconciliation
 
-All persistent references in story instances use `ContainerId`, not runtime indices. When a new program is linked:
+All persistent references in story instances use `DefinitionId`, not runtime indices. When a new program is linked, the reconciliation is a single pass over the old and new definition sets by `DefinitionId`, regardless of type:
 
-1. For each running instance, check the position `(ContainerId, offset)`:
+1. For each running instance, check the position `(DefinitionId, offset)`:
    - **Container exists, content hash unchanged** → position is valid, do nothing
    - **Container exists, content hash changed** → reset offset to 0 (container entry)
    - **Container gone** → fall back up the call stack to deepest valid frame, or reset to entry point
 2. Same for every frame on the call stack
 3. Detect renames via content hashing (removed container with same content hash as added container = rename)
-4. Visit counts keyed by `ContainerId` — retain for containers that still exist, orphan the rest
-5. Sequence states keyed by `(ContainerId, sequence_index)` — invalidate if content hash changed
+4. Visit counts keyed by container `DefinitionId` — retain for containers that still exist, orphan the rest
+5. Sequence states keyed by `(DefinitionId, sequence_index)` — invalidate if content hash changed
 6. Pending choices — invalidate (the choice set may no longer exist)
-7. Reconcile variables (keep existing, add new with defaults, flag removed/changed)
-8. Return a `ReconcileReport` with warnings for editor integration
+7. Reconcile variables: diff old and new variable definitions by `DefinitionId` (keep existing, add new with defaults, flag removed/type-changed)
+8. Reconcile list definitions: new items are added, removed items are orphaned
+9. Return a `ReconcileReport` with warnings for editor integration
 
 ### Multi-instance management
 
