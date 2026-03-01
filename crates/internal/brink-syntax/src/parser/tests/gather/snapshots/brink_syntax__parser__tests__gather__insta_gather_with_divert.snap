@@ -1,5 +1,5 @@
 ---
-source: crates/internal/brink-syntax/src/parser/tests/gather.rs
+source: crates/internal/brink-syntax/src/parser/tests/gather/mod.rs
 expression: "format!(\"{:#?}\", p.syntax())"
 ---
 SOURCE_FILE@0..10
