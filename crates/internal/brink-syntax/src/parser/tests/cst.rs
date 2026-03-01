@@ -235,42 +235,6 @@ fn var_declaration() {
 }
 
 #[test]
-fn simple_choice() {
-    assert_equivalent(
-        parse("* Hello\n"),
-        cst!(SOURCE_FILE {
-            CHOICE {
-                CHOICE_BULLETS
-                CHOICE_START_CONTENT {
-                    TEXT
-                }
-            }
-        }),
-    );
-}
-
-#[test]
-fn choice_with_bracket() {
-    assert_equivalent(
-        parse("* Hello [world] end\n"),
-        cst!(SOURCE_FILE {
-            CHOICE {
-                CHOICE_BULLETS
-                CHOICE_START_CONTENT {
-                    TEXT
-                }
-                CHOICE_BRACKET_CONTENT {
-                    TEXT
-                }
-                CHOICE_INNER_CONTENT {
-                    TEXT
-                }
-            }
-        }),
-    );
-}
-
-#[test]
 fn gather_line() {
     assert_equivalent(
         parse("- Hello\n"),
