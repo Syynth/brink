@@ -1,6 +1,6 @@
 use crate::SyntaxKind::{
-    ASSIGNMENT, BLOCK_LOGIC_LINE, EOF, EQ, IDENT, KW_RETURN, KW_TEMP, LOGIC_LINE, MINUS_EQ,
-    NEWLINE, PLUS_EQ, RETURN_STMT, TEMP_DECL,
+    ASSIGNMENT, BLOCK_LOGIC_LINE, EOF, EQ, IDENT, IDENTIFIER, KW_RETURN, KW_TEMP, LOGIC_LINE,
+    MINUS_EQ, NEWLINE, PLUS_EQ, RETURN_STMT, TEMP_DECL,
 };
 
 use super::Parser;
@@ -82,7 +82,9 @@ fn temp_declaration(p: &mut Parser<'_>) {
     p.start_node(TEMP_DECL);
     p.bump(); // KW_TEMP
     p.skip_ws();
+    p.start_node(IDENTIFIER);
     p.expect(IDENT);
+    p.finish_node();
     p.skip_ws();
     assignment_op(p);
     p.skip_ws();
@@ -93,7 +95,7 @@ fn temp_declaration(p: &mut Parser<'_>) {
 /// Parse `ident op= expr`.
 fn assignment(p: &mut Parser<'_>) {
     p.start_node(ASSIGNMENT);
-    super::divert::dotted_identifier(p);
+    super::divert::path(p);
     p.skip_ws();
     assignment_op(p);
     p.skip_ws();

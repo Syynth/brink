@@ -8,7 +8,8 @@ SOURCE_FILE@0..22
       EQ_EQ@0..2 "=="
       EQ@2..3 "="
       WHITESPACE@3..4 " "
-      IDENT@4..10 "myKnot"
+      IDENTIFIER@4..10
+        IDENT@4..10 "myKnot"
       WHITESPACE@10..11 " "
       EQ_EQ@11..13 "=="
       EQ@13..14 "="

@@ -8,10 +8,9 @@ SOURCE_FILE@0..10
       MINUS@0..1 "-"
       WHITESPACE@1..2 " "
     DIVERT_NODE@2..9
-      DIVERT_CHAIN@2..9
-        DIVERT@2..4 "->"
-        WHITESPACE@4..5 " "
-        DIVERT_TARGET_WITH_ARGS@5..9
-          DOTTED_IDENTIFIER@5..9
-            IDENT@5..9 "done"
+      DIVERT@2..4 "->"
+      WHITESPACE@4..5 " "
+      DIVERT_TARGET_WITH_ARGS@5..9
+        PATH@5..9
+          IDENT@5..9 "done"
     NEWLINE@9..10 "\n"

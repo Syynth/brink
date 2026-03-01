@@ -8,6 +8,6 @@ SOURCE_FILE@0..14
       THREAD_START@0..13
         THREAD@0..2 "<-"
         WHITESPACE@2..3 " "
-        DOTTED_IDENTIFIER@3..13
+        PATH@3..13
           IDENT@3..13 "background"
     NEWLINE@13..14 "\n"

@@ -9,7 +9,8 @@ SOURCE_FILE@0..13
     TEMP_DECL@2..12
       KW_TEMP@2..6 "temp"
       WHITESPACE@6..7 " "
-      IDENT@7..8 "x"
+      IDENTIFIER@7..8
+        IDENT@7..8 "x"
       WHITESPACE@8..9 " "
       EQ@9..10 "="
       WHITESPACE@10..11 " "

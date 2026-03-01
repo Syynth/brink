@@ -1,7 +1,7 @@
 use crate::SyntaxKind::{
-    COMMA, CONST_DECL, EQ, EXTERNAL_DECL, FILE_PATH, FUNCTION_PARAM_LIST, IDENT, INCLUDE_STMT,
-    INTEGER, KW_CONST, KW_EXTERNAL, KW_INCLUDE, KW_LIST, KW_VAR, L_PAREN, LIST_DECL, LIST_DEF,
-    LIST_MEMBER, LIST_MEMBER_OFF, LIST_MEMBER_ON, NEWLINE, R_PAREN, VAR_DECL,
+    COMMA, CONST_DECL, EQ, EXTERNAL_DECL, FILE_PATH, FUNCTION_PARAM_LIST, IDENT, IDENTIFIER,
+    INCLUDE_STMT, INTEGER, KW_CONST, KW_EXTERNAL, KW_INCLUDE, KW_LIST, KW_VAR, L_PAREN, LIST_DECL,
+    LIST_DEF, LIST_MEMBER, LIST_MEMBER_OFF, LIST_MEMBER_ON, NEWLINE, R_PAREN, VAR_DECL,
 };
 
 use super::Parser;
@@ -39,7 +39,9 @@ pub(crate) fn external_declaration(p: &mut Parser<'_>) {
     p.start_node(EXTERNAL_DECL);
     p.bump(); // KW_EXTERNAL
     p.skip_ws();
+    p.start_node(IDENTIFIER);
     p.expect(IDENT);
+    p.finish_node();
     p.skip_ws();
     p.expect(L_PAREN);
     p.skip_ws();
@@ -60,14 +62,18 @@ pub(crate) fn external_declaration(p: &mut Parser<'_>) {
 /// Parse `function_param_list = { identifier ~ ("," ~ identifier)* }`.
 fn function_param_list(p: &mut Parser<'_>) {
     p.start_node(FUNCTION_PARAM_LIST);
+    p.start_node(IDENTIFIER);
     p.bump(); // first identifier
+    p.finish_node();
     loop {
         p.skip_ws();
         if !p.eat(COMMA) {
             break;
         }
         p.skip_ws();
+        p.start_node(IDENTIFIER);
         p.expect(IDENT);
+        p.finish_node();
     }
     p.finish_node();
 }
@@ -81,7 +87,9 @@ pub(crate) fn var_declaration(p: &mut Parser<'_>) {
     p.start_node(VAR_DECL);
     p.bump(); // KW_VAR
     p.skip_ws();
+    p.start_node(IDENTIFIER);
     p.expect(IDENT);
+    p.finish_node();
     p.skip_ws();
     p.expect(EQ);
     p.skip_ws();
@@ -97,7 +105,9 @@ pub(crate) fn const_declaration(p: &mut Parser<'_>) {
     p.start_node(CONST_DECL);
     p.bump(); // KW_CONST
     p.skip_ws();
+    p.start_node(IDENTIFIER);
     p.expect(IDENT);
+    p.finish_node();
     p.skip_ws();
     p.expect(EQ);
     p.skip_ws();
@@ -121,7 +131,9 @@ pub(crate) fn list_declaration(p: &mut Parser<'_>) {
     p.start_node(LIST_DECL);
     p.bump(); // KW_LIST
     p.skip_ws();
+    p.start_node(IDENTIFIER);
     p.expect(IDENT);
+    p.finish_node();
     p.skip_ws();
     p.expect(EQ);
     p.skip_ws();

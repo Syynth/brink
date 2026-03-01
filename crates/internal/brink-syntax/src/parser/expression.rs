@@ -162,7 +162,7 @@ fn atom(p: &mut Parser<'_>) -> bool {
                 function_call(p);
             } else {
                 // dotted_identifier
-                super::divert::dotted_identifier(p);
+                super::divert::path(p);
             }
             true
         }
@@ -235,14 +235,14 @@ fn list_expr(p: &mut Parser<'_>) {
     p.bump(); // (
     p.skip_ws();
     if p.current() != R_PAREN {
-        super::divert::dotted_identifier(p);
+        super::divert::path(p);
         loop {
             p.skip_ws();
             if !p.eat(COMMA) {
                 break;
             }
             p.skip_ws();
-            super::divert::dotted_identifier(p);
+            super::divert::path(p);
         }
     }
     p.skip_ws();
@@ -255,7 +255,7 @@ fn divert_target_expr(p: &mut Parser<'_>) {
     p.start_node(DIVERT_TARGET_EXPR);
     p.bump(); // DIVERT `->`
     p.skip_ws();
-    super::divert::dotted_identifier(p);
+    super::divert::path(p);
     p.finish_node();
 }
 

@@ -16,18 +16,17 @@ SOURCE_FILE@0..34
       INLINE_LOGIC@14..20
         L_BRACE@14..15 "{"
         INNER_EXPRESSION@15..19
-          DOTTED_IDENTIFIER@15..19
+          PATH@15..19
             IDENT@15..19 "name"
         R_BRACE@19..20 "}"
     DIVERT_NODE@20..29
-      DIVERT_CHAIN@20..29
-        WHITESPACE@20..21 " "
-        DIVERT@21..23 "->"
-        WHITESPACE@23..24 " "
-        DIVERT_TARGET_WITH_ARGS@24..29
-          DOTTED_IDENTIFIER@24..28
-            IDENT@24..28 "knot"
-          WHITESPACE@28..29 " "
+      WHITESPACE@20..21 " "
+      DIVERT@21..23 "->"
+      WHITESPACE@23..24 " "
+      DIVERT_TARGET_WITH_ARGS@24..29
+        PATH@24..28
+          IDENT@24..28 "knot"
+        WHITESPACE@28..29 " "
     TAGS@29..33
       TAG@29..33
         HASH@29..30 "#"

@@ -9,7 +9,7 @@ SOURCE_FILE@0..23
       WHITESPACE@1..2 " "
     CHOICE_CONDITION@2..11
       L_BRACE@2..3 "{"
-      DOTTED_IDENTIFIER@3..10
+      PATH@3..10
         IDENT@3..10 "visited"
       R_BRACE@10..11 "}"
     WHITESPACE@11..12 " "

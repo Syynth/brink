@@ -1,7 +1,7 @@
 use crate::SyntaxKind::{
-    ARG_LIST, COMMA, DIVERT, DIVERT_CHAIN, DIVERT_NODE, DIVERT_TARGET_WITH_ARGS, DOT,
-    DOTTED_IDENTIFIER, IDENT, KW_DONE, KW_END, L_PAREN, R_PAREN, THREAD, THREAD_START,
-    TUNNEL_CALL_NODE, TUNNEL_ONWARDS, TUNNEL_ONWARDS_NODE,
+    ARG_LIST, COMMA, DIVERT, DIVERT_NODE, DIVERT_TARGET_WITH_ARGS, DOT, IDENT, KW_DONE, KW_END,
+    L_PAREN, PATH, R_PAREN, THREAD, THREAD_START, TUNNEL_CALL_NODE, TUNNEL_ONWARDS,
+    TUNNEL_ONWARDS_NODE,
 };
 
 use super::Parser;
@@ -32,13 +32,13 @@ pub(crate) fn divert(p: &mut Parser<'_>) {
 /// Parse `<- target(args?)`.
 ///
 /// ```text
-/// thread_start = { "<-" ~ dotted_identifier ~ ("(" ~ arg_list? ~ ")")? }
+/// thread_start = { "<-" ~ path ~ ("(" ~ arg_list? ~ ")")? }
 /// ```
 fn thread_start(p: &mut Parser<'_>) {
     p.start_node(THREAD_START);
     p.bump(); // THREAD token `<-`
     p.skip_ws();
-    dotted_identifier(p);
+    path(p);
     p.skip_ws();
     if p.current() == L_PAREN {
         p.bump(); // (
@@ -70,7 +70,7 @@ fn tunnel_onwards(p: &mut Parser<'_>) {
 /// Parse `-> target(args?) (-> target(args?))*`.
 ///
 /// Detects tunnel call syntax: if the chain ends with a trailing `->` after
-/// at least one target, wraps in `TUNNEL_CALL_NODE` instead of `DIVERT_CHAIN`.
+/// at least one target, wraps in `TUNNEL_CALL_NODE`.
 ///
 /// ```text
 /// divert_chain = { "->" ~ divert_target_with_args? ~ ("->" ~ divert_target_with_args?)* }
@@ -78,7 +78,6 @@ fn tunnel_onwards(p: &mut Parser<'_>) {
 /// ```
 fn divert_chain(p: &mut Parser<'_>) {
     let checkpoint = p.checkpoint();
-    p.start_node(DIVERT_CHAIN);
     p.bump(); // DIVERT token `->`
     p.skip_ws();
 
@@ -108,10 +107,8 @@ fn divert_chain(p: &mut Parser<'_>) {
         }
     }
 
-    p.finish_node(); // closes DIVERT_CHAIN
-
     // If we had at least one target and ended with a trailing `->`,
-    // this is a tunnel call — wrap the DIVERT_CHAIN in TUNNEL_CALL_NODE.
+    // this is a tunnel call — wrap everything in TUNNEL_CALL_NODE.
     if has_target && (trailing_arrow || p.current() == TUNNEL_ONWARDS) {
         p.start_node_at(checkpoint, TUNNEL_CALL_NODE);
         p.finish_node();
@@ -127,18 +124,18 @@ fn at_divert_target(p: &Parser<'_>) -> bool {
 ///
 /// ```text
 /// divert_target_with_args = { divert_path ~ ("(" ~ arg_list? ~ ")")? }
-/// divert_path = { "DONE" | "END" | dotted_identifier }
+/// divert_path = { "DONE" | "END" | path }
 /// ```
 fn divert_target_with_args(p: &mut Parser<'_>) {
     p.start_node(DIVERT_TARGET_WITH_ARGS);
 
-    // divert_path: DONE, END, or dotted_identifier
+    // divert_path: DONE, END, or path
     match p.current() {
         KW_DONE | KW_END => {
             p.bump();
         }
         IDENT => {
-            dotted_identifier(p);
+            path(p);
         }
         _ => {
             p.error("expected divert target".into());
@@ -160,9 +157,9 @@ fn divert_target_with_args(p: &mut Parser<'_>) {
     p.finish_node();
 }
 
-/// Parse a dotted identifier: `ident.ident.ident`.
-pub(crate) fn dotted_identifier(p: &mut Parser<'_>) {
-    p.start_node(DOTTED_IDENTIFIER);
+/// Parse a path: `ident.ident.ident`.
+pub(crate) fn path(p: &mut Parser<'_>) {
+    p.start_node(PATH);
     p.expect(IDENT);
     while p.current() == DOT && p.nth(1) == IDENT {
         p.bump(); // DOT

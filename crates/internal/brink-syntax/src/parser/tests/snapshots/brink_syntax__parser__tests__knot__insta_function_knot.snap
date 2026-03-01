@@ -9,13 +9,15 @@ SOURCE_FILE@0..35
       WHITESPACE@2..3 " "
       KW_FUNCTION@3..11 "function"
       WHITESPACE@11..12 " "
-      IDENT@12..17 "greet"
+      IDENTIFIER@12..17
+        IDENT@12..17 "greet"
       KNOT_PARAMS@17..27
         L_PAREN@17..18 "("
         KNOT_PARAM_DECL@18..26
           KW_REF@18..21 "ref"
           WHITESPACE@21..22 " "
-          IDENT@22..26 "name"
+          IDENTIFIER@22..26
+            IDENT@22..26 "name"
         R_PAREN@26..27 ")"
       WHITESPACE@27..28 " "
       EQ_EQ@28..30 "=="

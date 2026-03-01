@@ -1,7 +1,7 @@
 use crate::SyntaxKind::{
-    COMMA, DIVERT, EQ, EQ_EQ, GT, IDENT, KNOT_BODY, KNOT_DEF, KNOT_HEADER, KNOT_PARAM_DECL,
-    KNOT_PARAMS, KW_FUNCTION, KW_REF, L_PAREN, NEWLINE, R_PAREN, STITCH_BODY, STITCH_DEF,
-    STITCH_HEADER,
+    COMMA, DIVERT, EQ, EQ_EQ, GT, IDENT, IDENTIFIER, KNOT_BODY, KNOT_DEF, KNOT_HEADER,
+    KNOT_PARAM_DECL, KNOT_PARAMS, KW_FUNCTION, KW_REF, L_PAREN, NEWLINE, R_PAREN, STITCH_BODY,
+    STITCH_DEF, STITCH_HEADER,
 };
 
 use super::Parser;
@@ -55,7 +55,9 @@ fn knot_header(p: &mut Parser<'_>) {
     }
 
     // Knot name
+    p.start_node(IDENTIFIER);
     p.expect(IDENT);
+    p.finish_node();
     p.skip_ws();
 
     // Optional params
@@ -113,7 +115,9 @@ fn knot_param_decl(p: &mut Parser<'_>) {
         p.bump();
         p.skip_ws();
     }
+    p.start_node(IDENTIFIER);
     p.expect(IDENT);
+    p.finish_node();
     p.finish_node();
 }
 
@@ -171,7 +175,9 @@ fn stitch_header(p: &mut Parser<'_>) {
     p.start_node(STITCH_HEADER);
     p.bump(); // EQ (we already checked it's not `==` or `=>`)
     p.skip_ws();
+    p.start_node(IDENTIFIER);
     p.expect(IDENT);
+    p.finish_node();
     p.skip_ws();
 
     if p.current() == L_PAREN {

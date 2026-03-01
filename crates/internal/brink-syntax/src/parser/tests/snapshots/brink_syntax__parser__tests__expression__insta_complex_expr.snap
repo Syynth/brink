@@ -7,7 +7,7 @@ SOURCE_FILE@0..16
     TILDE@0..1 "~"
     WHITESPACE@1..2 " "
     ASSIGNMENT@2..15
-      DOTTED_IDENTIFIER@2..3
+      PATH@2..3
         IDENT@2..3 "x"
       WHITESPACE@3..4 " "
       EQ@4..5 "="

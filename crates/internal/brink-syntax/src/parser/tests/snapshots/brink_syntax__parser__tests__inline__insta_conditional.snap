@@ -9,7 +9,7 @@ SOURCE_FILE@0..19
         L_BRACE@0..1 "{"
         CONDITIONAL_WITH_EXPR@1..17
           INFIX_EXPR@1..6
-            DOTTED_IDENTIFIER@1..2
+            PATH@1..2
               IDENT@1..2 "x"
             WHITESPACE@2..3 " "
             GT@3..4 ">"

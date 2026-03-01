@@ -10,7 +10,7 @@ SOURCE_FILE@0..15
       KW_RETURN@2..8 "return"
       WHITESPACE@8..9 " "
       INFIX_EXPR@9..14
-        DOTTED_IDENTIFIER@9..10
+        PATH@9..10
           IDENT@9..10 "x"
         WHITESPACE@10..11 " "
         PLUS@11..12 "+"
