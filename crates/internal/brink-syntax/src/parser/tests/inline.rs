@@ -1,4 +1,4 @@
-use super::check;
+use super::{check, check_lossless};
 use crate::parse;
 
 #[test]
@@ -83,4 +83,14 @@ fn insta_conditional() {
 fn insta_sequence() {
     let p = parse("{stopping: first|second}\n");
     insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+/// Regression test for fuzzer-discovered infinite loop in `looks_like_condition`.
+/// An unclosed paren followed by an unterminated block comment caused the
+/// lookahead to spin forever because EOF was only checked when depth == 0.
+#[test]
+fn fuzz_looks_like_condition_eof_with_depth() {
+    // Exact bytes from the fuzzer artifact (as UTF-8 subset)
+    let src = "/[\x01\x00\x00\x02{\n-(/*{\n-(**{";
+    check_lossless(src);
 }

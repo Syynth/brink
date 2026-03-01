@@ -398,7 +398,8 @@ fn looks_like_condition(p: &Parser<'_>) -> bool {
         let kind = p.nth(i);
         match kind {
             COLON if depth == 0 => return true,
-            NEWLINE | EOF | R_BRACE if depth == 0 => return false,
+            EOF => return false,
+            NEWLINE | R_BRACE if depth == 0 => return false,
             L_BRACE | L_PAREN => depth += 1,
             R_BRACE | R_PAREN => depth = depth.saturating_sub(1),
             _ => {}
