@@ -282,6 +282,36 @@ Planned features:
 - Document/workspace symbols
 - Signature help (external function parameters)
 
+## Implementation order
+
+### Vertical spike
+
+The first implementation milestone is a vertical spike: a thin slice through every crate that runs a trivial ink story end-to-end. The spike validates that the crate boundaries and interfaces work together before investing heavily in any single crate.
+
+The spike covers: text output, simple choices, diverts between knots, `-> END`. No weave folding, no variables, no sequences, no cross-file includes.
+
+### Spike deliverables
+
+The spike's real output is **interfaces and tests**, not implementations.
+
+1. **Public API surfaces** — each crate gets its public types and function signatures defined first. These are the stable artifacts that survive rewrites.
+2. **Boundary tests** — integration tests at each crate boundary that describe what the pipeline produces for specific inputs (parse snapshots, HIR snapshots, bytecode disassembly, execution output). These are the source of truth.
+3. **Minimal implementations** — just enough to make the tests pass. These are explicitly disposable.
+
+### Disposability
+
+Spike implementations are v0. They exist to validate interfaces, not to be the final code. When building out a crate for real, **prefer rewriting over patching** if the existing implementation doesn't match the target design. The tests and public API signatures are what matter; everything behind them is throwaway.
+
+Keep spike implementations tiny — the smaller they are, the less inertia they carry.
+
+### Tiers (post-spike)
+
+- **Tier 1:** Full choice semantics (sticky, once-only, fallback, nesting, conditions), gathers, weave folding, variables (local, temp), arithmetic, conditionals, sequences, glue, tags.
+- **Tier 2:** Tunnels, threads, external functions, global variables, visit counts, `TURNS_SINCE`, multi-file (`INCLUDE`).
+- **Tier 3:** LIST type (definitions, bitset operations, full set operations).
+
+The analyzer grows with each tier — barely exists during the spike, picks up name resolution in tier 1, and gets the full pass suite by tier 2.
+
 ## Deferred
 
 The following are real requirements but deferred to later phases:
