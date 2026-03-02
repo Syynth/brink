@@ -1,0 +1,4 @@
+start
+
+1: go to a stitch
+?> result

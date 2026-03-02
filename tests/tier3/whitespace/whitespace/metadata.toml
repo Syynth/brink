@@ -10,5 +10,3 @@ tier = 3
 feature = "whitespace"
 tags = []
 
-[skip]
-reason = "Could not extract ink source"

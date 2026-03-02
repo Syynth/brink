@@ -9,6 +9,3 @@ original_id = "TestNonTextInChoiceInnerContent"
 tier = 1
 feature = "choices"
 tags = []
-
-[skip]
-reason = "Could not extract ink source"

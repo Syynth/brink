@@ -10,5 +10,3 @@ tier = 2
 feature = "functions"
 tags = []
 
-[skip]
-reason = "Could not extract ink source"

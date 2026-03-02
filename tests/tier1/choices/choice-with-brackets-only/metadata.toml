@@ -9,6 +9,3 @@ original_id = "TestChoiceWithBracketsOnly"
 tier = 1
 feature = "choices"
 tags = []
-
-[skip]
-reason = "Could not extract ink source"
