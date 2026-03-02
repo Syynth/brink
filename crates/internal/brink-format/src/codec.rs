@@ -135,3 +135,35 @@ pub(crate) fn read_str(buf: &[u8], offset: &mut usize) -> Result<String, DecodeE
     *offset += len;
     String::from_utf8(bytes.to_vec()).map_err(|_| DecodeError::InvalidUtf8)
 }
+
+// ── CRC-32 ─────────────────────────────────────────────────────────────────
+
+/// CRC-32 (ISO 3309 / ITU-T V.42) with the standard `0x04C1_1DB7` polynomial.
+pub(crate) fn crc32(data: &[u8]) -> u32 {
+    static TABLE: [u32; 256] = {
+        let mut table = [0u32; 256];
+        let mut i = 0u32;
+        while i < 256 {
+            let mut crc = i;
+            let mut j = 0;
+            while j < 8 {
+                if crc & 1 != 0 {
+                    crc = (crc >> 1) ^ 0xEDB8_8320;
+                } else {
+                    crc >>= 1;
+                }
+                j += 1;
+            }
+            table[i as usize] = crc;
+            i += 1;
+        }
+        table
+    };
+
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in data {
+        let idx = ((crc ^ u32::from(byte)) & 0xFF) as usize;
+        crc = (crc >> 8) ^ TABLE[idx];
+    }
+    crc ^ 0xFFFF_FFFF
+}

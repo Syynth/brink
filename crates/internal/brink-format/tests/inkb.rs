@@ -2,6 +2,13 @@
 
 use std::path::Path;
 
+use brink_format::{
+    DecodeError, SectionKind, assemble_inkb, read_inkb, read_inkb_index, read_section_containers,
+    read_section_externals, read_section_list_defs, read_section_list_items,
+    read_section_name_table, read_section_variables, write_inkb, write_section_containers,
+    write_section_externals, write_section_list_defs, write_section_list_items,
+    write_section_name_table, write_section_variables,
+};
 use brink_json::InkJson;
 
 #[test]
@@ -12,9 +19,9 @@ fn roundtrip_i001_minimal_story() {
     let data = brink_converter::convert(&story).unwrap();
 
     let mut buf = Vec::new();
-    brink_format::write_inkb(&data, &mut buf);
+    write_inkb(&data, &mut buf);
 
-    let recovered = brink_format::read_inkb(&buf).unwrap();
+    let recovered = read_inkb(&buf).unwrap();
     assert_eq!(data, recovered);
 }
 
@@ -26,7 +33,7 @@ fn snapshot_i001_inkb_bytes() {
     let data = brink_converter::convert(&story).unwrap();
 
     let mut buf = Vec::new();
-    brink_format::write_inkb(&data, &mut buf);
+    write_inkb(&data, &mut buf);
 
     insta::assert_snapshot!(format_hex(&buf));
 }
@@ -117,9 +124,9 @@ fn inkb_roundtrip_corpus_smoke() {
         };
 
         let mut buf = Vec::new();
-        brink_format::write_inkb(&data, &mut buf);
+        write_inkb(&data, &mut buf);
 
-        match brink_format::read_inkb(&buf) {
+        match read_inkb(&buf) {
             Ok(recovered) => {
                 if data != recovered {
                     failures.push(format!("MISMATCH {}", path.display()));
@@ -137,5 +144,192 @@ fn inkb_roundtrip_corpus_smoke() {
         failures.len(),
         files.len(),
         failures.join("\n")
+    );
+}
+
+// ── New tests for sectioned header ──────────────────────────────────────────
+
+fn make_test_data() -> brink_format::StoryData {
+    let json_text =
+        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
+    let story: InkJson = serde_json::from_str(json_text).unwrap();
+    brink_converter::convert(&story).unwrap()
+}
+
+#[test]
+fn index_parsing() {
+    let data = make_test_data();
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let index = read_inkb_index(&buf).unwrap();
+    assert_eq!(index.version, 1);
+    assert_eq!(index.file_size as usize, buf.len());
+    assert_eq!(index.sections.len(), 6);
+
+    // Sections are in canonical order.
+    assert_eq!(index.sections[0].kind, SectionKind::NameTable);
+    assert_eq!(index.sections[1].kind, SectionKind::Variables);
+    assert_eq!(index.sections[2].kind, SectionKind::ListDefs);
+    assert_eq!(index.sections[3].kind, SectionKind::ListItems);
+    assert_eq!(index.sections[4].kind, SectionKind::Externals);
+    assert_eq!(index.sections[5].kind, SectionKind::Containers);
+
+    // Header size is 16 + 6*8 = 64.
+    assert_eq!(index.header_size(), 64);
+
+    // First section starts right after header.
+    assert_eq!(index.sections[0].offset as usize, index.header_size());
+
+    // Offsets are monotonically increasing.
+    for w in index.sections.windows(2) {
+        assert!(
+            w[0].offset < w[1].offset,
+            "section {:?} offset {} >= {:?} offset {}",
+            w[0].kind,
+            w[0].offset,
+            w[1].kind,
+            w[1].offset
+        );
+    }
+}
+
+#[test]
+fn section_ranges() {
+    let data = make_test_data();
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let index = read_inkb_index(&buf).unwrap();
+
+    // All section ranges should cover the entire post-header region with no gaps.
+    let mut covered = u32::try_from(index.header_size()).unwrap();
+    for entry in &index.sections {
+        let (offset, len) = index.section_range(entry.kind).unwrap();
+        assert_eq!(offset, covered, "gap before section {:?}", entry.kind);
+        covered = offset + len;
+    }
+    assert_eq!(covered, index.file_size);
+}
+
+#[test]
+fn section_level_roundtrip() {
+    let data = make_test_data();
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let index = read_inkb_index(&buf).unwrap();
+
+    let names = read_section_name_table(&buf, &index).unwrap();
+    assert_eq!(names, data.name_table);
+
+    let vars = read_section_variables(&buf, &index).unwrap();
+    assert_eq!(vars, data.variables);
+
+    let list_defs = read_section_list_defs(&buf, &index).unwrap();
+    assert_eq!(list_defs, data.list_defs);
+
+    let list_items = read_section_list_items(&buf, &index).unwrap();
+    assert_eq!(list_items, data.list_items);
+
+    let exts = read_section_externals(&buf, &index).unwrap();
+    assert_eq!(exts, data.externals);
+
+    let containers = read_section_containers(&buf, &index).unwrap();
+    assert_eq!(containers, data.containers);
+}
+
+#[test]
+fn checksum_validation() {
+    let data = make_test_data();
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    // Corrupt a byte in the section data region.
+    let last = buf.len() - 1;
+    buf[last] ^= 0xFF;
+
+    let err = read_inkb(&buf).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::ChecksumMismatch { .. }),
+        "expected ChecksumMismatch, got {err:?}"
+    );
+}
+
+#[test]
+fn assemble_inkb_equivalence() {
+    let data = make_test_data();
+
+    // Write via write_inkb.
+    let mut direct = Vec::new();
+    write_inkb(&data, &mut direct);
+
+    // Write via individual section writers + assemble_inkb.
+    let mut name_buf = Vec::new();
+    write_section_name_table(&data.name_table, &mut name_buf);
+
+    let mut var_buf = Vec::new();
+    write_section_variables(&data.variables, &mut var_buf);
+
+    let mut ld_buf = Vec::new();
+    write_section_list_defs(&data.list_defs, &mut ld_buf);
+
+    let mut list_item_buf = Vec::new();
+    write_section_list_items(&data.list_items, &mut list_item_buf);
+
+    let mut ext_buf = Vec::new();
+    write_section_externals(&data.externals, &mut ext_buf);
+
+    let mut cont_buf = Vec::new();
+    write_section_containers(&data.containers, &mut cont_buf);
+
+    let mut assembled = Vec::new();
+    assemble_inkb(
+        &[
+            (SectionKind::NameTable, &name_buf),
+            (SectionKind::Variables, &var_buf),
+            (SectionKind::ListDefs, &ld_buf),
+            (SectionKind::ListItems, &list_item_buf),
+            (SectionKind::Externals, &ext_buf),
+            (SectionKind::Containers, &cont_buf),
+        ],
+        &mut assembled,
+    );
+
+    assert_eq!(
+        direct, assembled,
+        "write_inkb and assemble_inkb should produce identical output"
+    );
+
+    // Also verify the assembled version can be read back.
+    let recovered = read_inkb(&assembled).unwrap();
+    assert_eq!(data, recovered);
+}
+
+#[test]
+fn file_size_mismatch_detected() {
+    let data = make_test_data();
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    // Truncate the buffer — the file_size in the header will be larger than actual.
+    buf.truncate(buf.len() - 1);
+
+    let err = read_inkb_index(&buf).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::FileSizeMismatch { .. }),
+        "expected FileSizeMismatch, got {err:?}"
+    );
+}
+
+#[test]
+fn bad_magic_detected() {
+    let mut buf = vec![0x00; 64];
+    buf[0..4].copy_from_slice(b"XYZW");
+
+    let err = read_inkb_index(&buf).unwrap_err();
+    assert!(
+        matches!(err, DecodeError::BadMagic(..)),
+        "expected BadMagic, got {err:?}"
     );
 }

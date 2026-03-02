@@ -1,10 +1,31 @@
 //! Binary (.inkb) writer and reader for [`StoryData`].
 //!
 //! The `.inkb` format is a compact, little-endian binary encoding designed for
-//! fast loading by the runtime. See the plan/spec for the full format layout.
+//! fast loading by the runtime.
+//!
+//! ## Header layout
+//!
+//! ```text
+//! Offset  Size   Field
+//! ------  -----  ------
+//! 0       4      Magic: b"INKB"
+//! 4       2      Version: u16 LE (= 1)
+//! 6       1      Section count: u8 (N entries in offset table)
+//! 7       1      Reserved: 0x00
+//! 8       4      File size: u32 LE (total bytes)
+//! 12      4      Content checksum: u32 LE (CRC-32 of all bytes after header)
+//! 16      N*8    Offset table entries
+//! ```
+//!
+//! Each offset table entry (8 bytes):
+//! ```text
+//! 0       1      SectionKind: u8 tag
+//! 1       3      Reserved: 3 bytes of 0x00
+//! 4       4      Offset: u32 LE (byte offset from start of file)
+//! ```
 
 use crate::codec::{
-    read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64, write_def_id,
+    crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64, write_def_id,
     write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
 };
 use crate::counting::CountingFlags;
@@ -21,6 +42,12 @@ use crate::value::{ListValue, Value, ValueType};
 
 const MAGIC: &[u8; 4] = b"INKB";
 const VERSION: u16 = 1;
+/// Fixed-size preamble: magic + version + section count + reserved + file size + checksum.
+const HEADER_PREAMBLE: usize = 16;
+/// Each offset table entry: kind(1) + reserved(3) + offset(4)
+const SECTION_ENTRY_SIZE: usize = 8;
+/// Number of sections in the current format.
+const SECTION_COUNT: u8 = 6;
 
 // Value type tags
 const VAL_INT: u8 = 0x00;
@@ -54,52 +81,443 @@ const CAT_FEW: u8 = 0x03;
 const CAT_MANY: u8 = 0x04;
 const CAT_OTHER: u8 = 0x05;
 
-// ── Writer ──────────────────────────────────────────────────────────────────
+// ── Section types ───────────────────────────────────────────────────────────
 
-/// Encode a [`StoryData`] into the `.inkb` binary format.
+/// Identifies a section within an `.inkb` file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum SectionKind {
+    NameTable = 0x01,
+    Variables = 0x02,
+    ListDefs = 0x03,
+    ListItems = 0x04,
+    Externals = 0x05,
+    Containers = 0x06,
+}
+
+impl SectionKind {
+    fn from_u8(tag: u8) -> Result<Self, DecodeError> {
+        match tag {
+            0x01 => Ok(Self::NameTable),
+            0x02 => Ok(Self::Variables),
+            0x03 => Ok(Self::ListDefs),
+            0x04 => Ok(Self::ListItems),
+            0x05 => Ok(Self::Externals),
+            0x06 => Ok(Self::Containers),
+            _ => Err(DecodeError::InvalidSectionKind(tag)),
+        }
+    }
+}
+
+/// An entry in the `.inkb` offset table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SectionEntry {
+    pub kind: SectionKind,
+    pub offset: u32,
+}
+
+/// Parsed header + offset table from an `.inkb` file.
+///
+/// Allows selective reads without parsing section data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InkbIndex {
+    pub version: u16,
+    pub file_size: u32,
+    pub checksum: u32,
+    pub sections: Vec<SectionEntry>,
+}
+
+impl InkbIndex {
+    /// Total header size in bytes (preamble + offset table).
+    pub fn header_size(&self) -> usize {
+        HEADER_PREAMBLE + self.sections.len() * SECTION_ENTRY_SIZE
+    }
+
+    /// Returns `(offset, length)` for a section, computing length from the
+    /// next section's offset (or `file_size` for the last section).
+    pub fn section_range(&self, kind: SectionKind) -> Option<(u32, u32)> {
+        let idx = self.sections.iter().position(|e| e.kind == kind)?;
+        let start = self.sections[idx].offset;
+        let end = self
+            .sections
+            .get(idx + 1)
+            .map_or(self.file_size, |e| e.offset);
+        Some((start, end - start))
+    }
+}
+
+// ── Tier 1: Full story write/read ───────────────────────────────────────────
+
+/// Encode a [`StoryData`] into the `.inkb` binary format with sectioned header.
 #[expect(clippy::cast_possible_truncation)]
 pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
-    // Header
-    buf.extend_from_slice(MAGIC);
-    write_u16(buf, VERSION);
-    write_u16(buf, 0); // reserved
+    let base = buf.len();
+    let header_size = HEADER_PREAMBLE + SECTION_COUNT as usize * SECTION_ENTRY_SIZE;
 
-    // 1. Name table
-    write_u32(buf, story.name_table.len() as u32);
-    for name in &story.name_table {
-        write_str(buf, name);
-    }
+    // Write placeholder header (zeros) — we'll patch it after writing sections.
+    buf.resize(base + header_size, 0);
+
+    // Track section offsets as we write each section.
+    let section_kinds = [
+        SectionKind::NameTable,
+        SectionKind::Variables,
+        SectionKind::ListDefs,
+        SectionKind::ListItems,
+        SectionKind::Externals,
+        SectionKind::Containers,
+    ];
+    let mut section_offsets = [0u32; 6];
+
+    // 1. NameTable
+    section_offsets[0] = (buf.len() - base) as u32;
+    write_section_name_table(&story.name_table, buf);
 
     // 2. Variables
-    write_u32(buf, story.variables.len() as u32);
-    for var in &story.variables {
-        encode_global_var(var, buf);
-    }
+    section_offsets[1] = (buf.len() - base) as u32;
+    write_section_variables(&story.variables, buf);
 
-    // 3. List defs
-    write_u32(buf, story.list_defs.len() as u32);
-    for ld in &story.list_defs {
-        encode_list_def(ld, buf);
-    }
+    // 3. ListDefs
+    section_offsets[2] = (buf.len() - base) as u32;
+    write_section_list_defs(&story.list_defs, buf);
 
-    // 4. List items
-    write_u32(buf, story.list_items.len() as u32);
-    for li in &story.list_items {
-        encode_list_item(li, buf);
-    }
+    // 4. ListItems
+    section_offsets[3] = (buf.len() - base) as u32;
+    write_section_list_items(&story.list_items, buf);
 
     // 5. Externals
-    write_u32(buf, story.externals.len() as u32);
-    for ext in &story.externals {
-        encode_external(ext, buf);
-    }
+    section_offsets[4] = (buf.len() - base) as u32;
+    write_section_externals(&story.externals, buf);
 
     // 6. Containers
-    write_u32(buf, story.containers.len() as u32);
-    for c in &story.containers {
+    section_offsets[5] = (buf.len() - base) as u32;
+    write_section_containers(&story.containers, buf);
+
+    let file_size = (buf.len() - base) as u32;
+    let checksum = crc32(&buf[base + header_size..]);
+
+    // Patch header in-place.
+    let h = &mut buf[base..];
+    h[0..4].copy_from_slice(MAGIC);
+    h[4..6].copy_from_slice(&VERSION.to_le_bytes());
+    h[6] = SECTION_COUNT;
+    h[7] = 0; // reserved
+    h[8..12].copy_from_slice(&file_size.to_le_bytes());
+    h[12..16].copy_from_slice(&checksum.to_le_bytes());
+
+    for (i, kind) in section_kinds.iter().enumerate() {
+        let entry_base = HEADER_PREAMBLE + i * SECTION_ENTRY_SIZE;
+        h[entry_base] = *kind as u8;
+        h[entry_base + 1] = 0; // reserved
+        h[entry_base + 2] = 0;
+        h[entry_base + 3] = 0;
+        h[entry_base + 4..entry_base + 8].copy_from_slice(&section_offsets[i].to_le_bytes());
+    }
+}
+
+/// Decode a [`StoryData`] from `.inkb` binary format.
+pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
+    let index = read_inkb_index(buf)?;
+
+    // Validate checksum.
+    let header_size = index.header_size();
+    let computed = crc32(&buf[header_size..]);
+    if computed != index.checksum {
+        return Err(DecodeError::ChecksumMismatch {
+            expected: index.checksum,
+            actual: computed,
+        });
+    }
+
+    let name_table = read_section_name_table(buf, &index)?;
+    let variables = read_section_variables(buf, &index)?;
+    let list_defs = read_section_list_defs(buf, &index)?;
+    let list_items = read_section_list_items(buf, &index)?;
+    let externals = read_section_externals(buf, &index)?;
+    let containers = read_section_containers(buf, &index)?;
+
+    Ok(StoryData {
+        containers,
+        variables,
+        list_defs,
+        list_items,
+        externals,
+        name_table,
+    })
+}
+
+// ── Tier 2: Index-only parse ────────────────────────────────────────────────
+
+/// Parse the `.inkb` header and offset table without touching section data.
+pub fn read_inkb_index(buf: &[u8]) -> Result<InkbIndex, DecodeError> {
+    if buf.len() < HEADER_PREAMBLE {
+        return Err(DecodeError::UnexpectedEof);
+    }
+
+    let magic: [u8; 4] = [buf[0], buf[1], buf[2], buf[3]];
+    if &magic != MAGIC {
+        return Err(DecodeError::BadMagic(magic));
+    }
+
+    let mut off = 4;
+    let version = read_u16(buf, &mut off)?;
+    if version != VERSION {
+        return Err(DecodeError::UnsupportedVersion(version));
+    }
+
+    let section_count = read_u8(buf, &mut off)?;
+    let _reserved = read_u8(buf, &mut off)?;
+    let file_size = read_u32(buf, &mut off)?;
+    let checksum = read_u32(buf, &mut off)?;
+
+    // Validate file size.
+    if file_size as usize != buf.len() {
+        return Err(DecodeError::FileSizeMismatch {
+            expected: file_size,
+            actual: buf.len(),
+        });
+    }
+
+    let total_header = HEADER_PREAMBLE + section_count as usize * SECTION_ENTRY_SIZE;
+    if buf.len() < total_header {
+        return Err(DecodeError::UnexpectedEof);
+    }
+
+    let mut sections = Vec::with_capacity(section_count as usize);
+    for _ in 0..section_count {
+        let kind_tag = read_u8(buf, &mut off)?;
+        let kind = SectionKind::from_u8(kind_tag)?;
+        let _reserved0 = read_u8(buf, &mut off)?;
+        let _reserved1 = read_u8(buf, &mut off)?;
+        let _reserved2 = read_u8(buf, &mut off)?;
+        let offset = read_u32(buf, &mut off)?;
+        sections.push(SectionEntry { kind, offset });
+    }
+
+    Ok(InkbIndex {
+        version,
+        file_size,
+        checksum,
+        sections,
+    })
+}
+
+// ── Tier 3: Section-level read/write ────────────────────────────────────────
+
+// ── Section writers ─────────────────────────────────────────────────────────
+
+/// Write the name table section (no header framing).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_name_table(names: &[String], buf: &mut Vec<u8>) {
+    write_u32(buf, names.len() as u32);
+    for name in names {
+        write_str(buf, name);
+    }
+}
+
+/// Write the variables section (no header framing).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_variables(variables: &[GlobalVarDef], buf: &mut Vec<u8>) {
+    write_u32(buf, variables.len() as u32);
+    for var in variables {
+        encode_global_var(var, buf);
+    }
+}
+
+/// Write the list definitions section (no header framing).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_list_defs(list_defs: &[ListDef], buf: &mut Vec<u8>) {
+    write_u32(buf, list_defs.len() as u32);
+    for ld in list_defs {
+        encode_list_def(ld, buf);
+    }
+}
+
+/// Write the list items section (no header framing).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_list_items(list_items: &[ListItemDef], buf: &mut Vec<u8>) {
+    write_u32(buf, list_items.len() as u32);
+    for li in list_items {
+        encode_list_item(li, buf);
+    }
+}
+
+/// Write the externals section (no header framing).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_externals(externals: &[ExternalFnDef], buf: &mut Vec<u8>) {
+    write_u32(buf, externals.len() as u32);
+    for ext in externals {
+        encode_external(ext, buf);
+    }
+}
+
+/// Write the containers section (no header framing).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_containers(containers: &[ContainerDef], buf: &mut Vec<u8>) {
+    write_u32(buf, containers.len() as u32);
+    for c in containers {
         encode_container(c, buf);
     }
 }
+
+// ── Section readers ─────────────────────────────────────────────────────────
+
+/// Read the name table from a complete `.inkb` file using its index.
+pub fn read_section_name_table(buf: &[u8], index: &InkbIndex) -> Result<Vec<String>, DecodeError> {
+    let (offset, _len) =
+        index
+            .section_range(SectionKind::NameTable)
+            .ok_or(DecodeError::MissingSectionKind(
+                SectionKind::NameTable as u8,
+            ))?;
+    let mut off = offset as usize;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut names = Vec::with_capacity(count);
+    for _ in 0..count {
+        names.push(read_str(buf, &mut off)?);
+    }
+    Ok(names)
+}
+
+/// Read the variables from a complete `.inkb` file using its index.
+pub fn read_section_variables(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<GlobalVarDef>, DecodeError> {
+    let (offset, _len) =
+        index
+            .section_range(SectionKind::Variables)
+            .ok_or(DecodeError::MissingSectionKind(
+                SectionKind::Variables as u8,
+            ))?;
+    let mut off = offset as usize;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut vars = Vec::with_capacity(count);
+    for _ in 0..count {
+        vars.push(decode_global_var(buf, &mut off)?);
+    }
+    Ok(vars)
+}
+
+/// Read the list definitions from a complete `.inkb` file using its index.
+pub fn read_section_list_defs(buf: &[u8], index: &InkbIndex) -> Result<Vec<ListDef>, DecodeError> {
+    let (offset, _len) = index
+        .section_range(SectionKind::ListDefs)
+        .ok_or(DecodeError::MissingSectionKind(SectionKind::ListDefs as u8))?;
+    let mut off = offset as usize;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut defs = Vec::with_capacity(count);
+    for _ in 0..count {
+        defs.push(decode_list_def(buf, &mut off)?);
+    }
+    Ok(defs)
+}
+
+/// Read the list items from a complete `.inkb` file using its index.
+pub fn read_section_list_items(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<ListItemDef>, DecodeError> {
+    let (offset, _len) =
+        index
+            .section_range(SectionKind::ListItems)
+            .ok_or(DecodeError::MissingSectionKind(
+                SectionKind::ListItems as u8,
+            ))?;
+    let mut off = offset as usize;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut items = Vec::with_capacity(count);
+    for _ in 0..count {
+        items.push(decode_list_item(buf, &mut off)?);
+    }
+    Ok(items)
+}
+
+/// Read the externals from a complete `.inkb` file using its index.
+pub fn read_section_externals(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<ExternalFnDef>, DecodeError> {
+    let (offset, _len) =
+        index
+            .section_range(SectionKind::Externals)
+            .ok_or(DecodeError::MissingSectionKind(
+                SectionKind::Externals as u8,
+            ))?;
+    let mut off = offset as usize;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut exts = Vec::with_capacity(count);
+    for _ in 0..count {
+        exts.push(decode_external(buf, &mut off)?);
+    }
+    Ok(exts)
+}
+
+/// Read the containers from a complete `.inkb` file using its index.
+pub fn read_section_containers(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<ContainerDef>, DecodeError> {
+    let (offset, _len) =
+        index
+            .section_range(SectionKind::Containers)
+            .ok_or(DecodeError::MissingSectionKind(
+                SectionKind::Containers as u8,
+            ))?;
+    let mut off = offset as usize;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut containers = Vec::with_capacity(count);
+    for _ in 0..count {
+        containers.push(decode_container(buf, &mut off)?);
+    }
+    Ok(containers)
+}
+
+// ── Assembly ────────────────────────────────────────────────────────────────
+
+/// Assemble a complete `.inkb` file from pre-encoded section buffers.
+///
+/// Sections should be provided in the canonical order matching [`SectionKind`]
+/// tags. The header (with offsets and checksum) is computed automatically.
+#[expect(clippy::cast_possible_truncation)]
+pub fn assemble_inkb(sections: &[(SectionKind, &[u8])], out: &mut Vec<u8>) {
+    let base = out.len();
+    let section_count = sections.len() as u8;
+    let header_size = HEADER_PREAMBLE + sections.len() * SECTION_ENTRY_SIZE;
+
+    // Placeholder header.
+    out.resize(base + header_size, 0);
+
+    // Append section data and record offsets.
+    let mut entries: Vec<(SectionKind, u32)> = Vec::with_capacity(sections.len());
+    for (kind, data) in sections {
+        let offset = (out.len() - base) as u32;
+        entries.push((*kind, offset));
+        out.extend_from_slice(data);
+    }
+
+    let file_size = (out.len() - base) as u32;
+    let checksum = crc32(&out[base + header_size..]);
+
+    // Patch header.
+    let h = &mut out[base..];
+    h[0..4].copy_from_slice(MAGIC);
+    h[4..6].copy_from_slice(&VERSION.to_le_bytes());
+    h[6] = section_count;
+    h[7] = 0;
+    h[8..12].copy_from_slice(&file_size.to_le_bytes());
+    h[12..16].copy_from_slice(&checksum.to_le_bytes());
+
+    for (i, (kind, offset)) in entries.iter().enumerate() {
+        let entry_base = HEADER_PREAMBLE + i * SECTION_ENTRY_SIZE;
+        h[entry_base] = *kind as u8;
+        h[entry_base + 1] = 0;
+        h[entry_base + 2] = 0;
+        h[entry_base + 3] = 0;
+        h[entry_base + 4..entry_base + 8].copy_from_slice(&offset.to_le_bytes());
+    }
+}
+
+// ── Encode helpers (private) ────────────────────────────────────────────────
 
 fn encode_global_var(v: &GlobalVarDef, buf: &mut Vec<u8>) {
     write_def_id(buf, v.id);
@@ -290,76 +708,7 @@ fn encode_plural_category(cat: PluralCategory, buf: &mut Vec<u8>) {
     write_u8(buf, tag);
 }
 
-// ── Reader ──────────────────────────────────────────────────────────────────
-
-/// Decode a [`StoryData`] from `.inkb` binary format.
-pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
-    // Header
-    if buf.len() < 8 {
-        return Err(DecodeError::UnexpectedEof);
-    }
-    let magic: [u8; 4] = [buf[0], buf[1], buf[2], buf[3]];
-    let mut off = 4;
-    if &magic != MAGIC {
-        return Err(DecodeError::BadMagic(magic));
-    }
-    let version = read_u16(buf, &mut off)?;
-    if version != VERSION {
-        return Err(DecodeError::UnsupportedVersion(version));
-    }
-    let _reserved = read_u16(buf, &mut off)?;
-
-    // 1. Name table
-    let name_count = read_u32(buf, &mut off)? as usize;
-    let mut name_table = Vec::with_capacity(name_count);
-    for _ in 0..name_count {
-        name_table.push(read_str(buf, &mut off)?);
-    }
-
-    // 2. Variables
-    let var_count = read_u32(buf, &mut off)? as usize;
-    let mut variables = Vec::with_capacity(var_count);
-    for _ in 0..var_count {
-        variables.push(decode_global_var(buf, &mut off)?);
-    }
-
-    // 3. List defs
-    let list_def_count = read_u32(buf, &mut off)? as usize;
-    let mut list_defs = Vec::with_capacity(list_def_count);
-    for _ in 0..list_def_count {
-        list_defs.push(decode_list_def(buf, &mut off)?);
-    }
-
-    // 4. List items
-    let list_item_count = read_u32(buf, &mut off)? as usize;
-    let mut list_items = Vec::with_capacity(list_item_count);
-    for _ in 0..list_item_count {
-        list_items.push(decode_list_item(buf, &mut off)?);
-    }
-
-    // 5. Externals
-    let ext_count = read_u32(buf, &mut off)? as usize;
-    let mut externals = Vec::with_capacity(ext_count);
-    for _ in 0..ext_count {
-        externals.push(decode_external(buf, &mut off)?);
-    }
-
-    // 6. Containers
-    let container_count = read_u32(buf, &mut off)? as usize;
-    let mut containers = Vec::with_capacity(container_count);
-    for _ in 0..container_count {
-        containers.push(decode_container(buf, &mut off)?);
-    }
-
-    Ok(StoryData {
-        containers,
-        variables,
-        list_defs,
-        list_items,
-        externals,
-        name_table,
-    })
-}
+// ── Decode helpers (private) ────────────────────────────────────────────────
 
 fn decode_global_var(buf: &[u8], off: &mut usize) -> Result<GlobalVarDef, DecodeError> {
     let id = read_def_id(buf, off)?;

@@ -229,6 +229,14 @@ pub enum DecodeError {
     InvalidLineContent(u8),
     /// Unknown plural category discriminant.
     InvalidPluralCategory(u8),
+    /// Unknown section kind tag in .inkb offset table.
+    InvalidSectionKind(u8),
+    /// Required section kind missing from .inkb offset table.
+    MissingSectionKind(u8),
+    /// File size field doesn't match actual buffer length.
+    FileSizeMismatch { expected: u32, actual: usize },
+    /// CRC-32 checksum of section data doesn't match header.
+    ChecksumMismatch { expected: u32, actual: u32 },
 }
 
 impl fmt::Display for DecodeError {
@@ -248,6 +256,20 @@ impl fmt::Display for DecodeError {
             Self::InvalidLinePart(b) => write!(f, "invalid line part: {b:#04x}"),
             Self::InvalidLineContent(b) => write!(f, "invalid line content: {b:#04x}"),
             Self::InvalidPluralCategory(b) => write!(f, "invalid plural category: {b:#04x}"),
+            Self::InvalidSectionKind(b) => write!(f, "invalid section kind: {b:#04x}"),
+            Self::MissingSectionKind(b) => write!(f, "missing required section kind: {b:#04x}"),
+            Self::FileSizeMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "file size mismatch: header says {expected}, actual {actual}"
+                )
+            }
+            Self::ChecksumMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "checksum mismatch: header {expected:#010x}, computed {actual:#010x}"
+                )
+            }
         }
     }
 }
