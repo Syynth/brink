@@ -1,0 +1,17 @@
+[package]
+name = "brink-format"
+description = "Binary interface between brink compiler and runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "brink-converter"
+description = "Converts inklecate .ink.json to brink .inkb format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+brink-format = { path = "../brink-format" }
+brink-json = { path = "../brink-json" }
+
+[dev-dependencies]
+insta = { workspace = true }
+
+[lints]
+workspace = true

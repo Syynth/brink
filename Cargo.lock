@@ -140,6 +140,32 @@ name = "brink-compiler"
 version = "0.0.1"
 
 [[package]]
+name = "brink-converter"
+version = "0.0.1"
+dependencies = [
+ "brink-format",
+ "brink-json",
+ "insta",
+]
+
+[[package]]
+name = "brink-format"
+version = "0.0.1"
+dependencies = [
+ "insta",
+ "serde",
+]
+
+[[package]]
+name = "brink-json"
+version = "0.0.1"
+dependencies = [
+ "insta",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "brink-lsp"
 version = "0.0.1"
 dependencies = [
