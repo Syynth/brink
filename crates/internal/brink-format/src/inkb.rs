@@ -24,6 +24,8 @@
 //! 4       4      Offset: u32 LE (byte offset from start of file)
 //! ```
 
+use std::ops::Range;
+
 use crate::codec::{
     crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64, write_def_id,
     write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
@@ -37,6 +39,19 @@ use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::DecodeError;
 use crate::story::StoryData;
 use crate::value::{ListValue, Value, ValueType};
+
+/// Cap `Vec::with_capacity` allocations against remaining buffer bytes to avoid
+/// OOM on crafted inputs with huge count fields. Each element occupies at least
+/// `min_element_size` bytes, so the count can't exceed `remaining / min`.
+fn safe_capacity(count: usize, buf_len: usize, offset: usize, min_element_size: usize) -> usize {
+    let remaining = buf_len.saturating_sub(offset);
+    let max_possible = if min_element_size > 0 {
+        remaining / min_element_size
+    } else {
+        remaining
+    };
+    count.min(max_possible)
+}
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -135,14 +150,17 @@ impl InkbIndex {
 
     /// Returns `(offset, length)` for a section, computing length from the
     /// next section's offset (or `file_size` for the last section).
-    pub fn section_range(&self, kind: SectionKind) -> Option<(u32, u32)> {
+    ///
+    /// Subtraction is safe because `read_inkb_index` validates that offsets
+    /// are monotonically increasing and within `[header_size, file_size]`.
+    pub fn section_range(&self, kind: SectionKind) -> Option<Range<usize>> {
         let idx = self.sections.iter().position(|e| e.kind == kind)?;
-        let start = self.sections[idx].offset;
+        let start = self.sections[idx].offset as usize;
         let end = self
             .sections
             .get(idx + 1)
-            .map_or(self.file_size, |e| e.offset);
-        Some((start, end - start))
+            .map_or(self.file_size, |e| e.offset) as usize;
+        Some(start..end)
     }
 }
 
@@ -293,6 +311,24 @@ pub fn read_inkb_index(buf: &[u8]) -> Result<InkbIndex, DecodeError> {
         sections.push(SectionEntry { kind, offset });
     }
 
+    // Validate structural invariants so downstream code can trust the index:
+    //   1. Every offset >= header size (sections live after the header)
+    //   2. Offsets are strictly monotonically increasing
+    //   3. Every offset <= file_size (sections live within the file)
+    // Max value: 16 + 255*8 = 2056, always fits in u32.
+    #[expect(clippy::cast_possible_truncation)]
+    let header_size = total_header as u32;
+    let mut prev_offset = header_size;
+    for entry in &sections {
+        if entry.offset < header_size || entry.offset > file_size || entry.offset < prev_offset {
+            return Err(DecodeError::InvalidSectionOffset {
+                kind: entry.kind as u8,
+                offset: entry.offset,
+            });
+        }
+        prev_offset = entry.offset;
+    }
+
     Ok(InkbIndex {
         version,
         file_size,
@@ -363,15 +399,15 @@ pub fn write_section_containers(containers: &[ContainerDef], buf: &mut Vec<u8>) 
 
 /// Read the name table from a complete `.inkb` file using its index.
 pub fn read_section_name_table(buf: &[u8], index: &InkbIndex) -> Result<Vec<String>, DecodeError> {
-    let (offset, _len) =
+    let range =
         index
             .section_range(SectionKind::NameTable)
             .ok_or(DecodeError::MissingSectionKind(
                 SectionKind::NameTable as u8,
             ))?;
-    let mut off = offset as usize;
+    let mut off = range.start;
     let count = read_u32(buf, &mut off)? as usize;
-    let mut names = Vec::with_capacity(count);
+    let mut names = Vec::with_capacity(safe_capacity(count, buf.len(), off, 4));
     for _ in 0..count {
         names.push(read_str(buf, &mut off)?);
     }
@@ -383,15 +419,15 @@ pub fn read_section_variables(
     buf: &[u8],
     index: &InkbIndex,
 ) -> Result<Vec<GlobalVarDef>, DecodeError> {
-    let (offset, _len) =
+    let range =
         index
             .section_range(SectionKind::Variables)
             .ok_or(DecodeError::MissingSectionKind(
                 SectionKind::Variables as u8,
             ))?;
-    let mut off = offset as usize;
+    let mut off = range.start;
     let count = read_u32(buf, &mut off)? as usize;
-    let mut vars = Vec::with_capacity(count);
+    let mut vars = Vec::with_capacity(safe_capacity(count, buf.len(), off, 12));
     for _ in 0..count {
         vars.push(decode_global_var(buf, &mut off)?);
     }
@@ -400,12 +436,12 @@ pub fn read_section_variables(
 
 /// Read the list definitions from a complete `.inkb` file using its index.
 pub fn read_section_list_defs(buf: &[u8], index: &InkbIndex) -> Result<Vec<ListDef>, DecodeError> {
-    let (offset, _len) = index
+    let range = index
         .section_range(SectionKind::ListDefs)
         .ok_or(DecodeError::MissingSectionKind(SectionKind::ListDefs as u8))?;
-    let mut off = offset as usize;
+    let mut off = range.start;
     let count = read_u32(buf, &mut off)? as usize;
-    let mut defs = Vec::with_capacity(count);
+    let mut defs = Vec::with_capacity(safe_capacity(count, buf.len(), off, 14));
     for _ in 0..count {
         defs.push(decode_list_def(buf, &mut off)?);
     }
@@ -417,15 +453,15 @@ pub fn read_section_list_items(
     buf: &[u8],
     index: &InkbIndex,
 ) -> Result<Vec<ListItemDef>, DecodeError> {
-    let (offset, _len) =
+    let range =
         index
             .section_range(SectionKind::ListItems)
             .ok_or(DecodeError::MissingSectionKind(
                 SectionKind::ListItems as u8,
             ))?;
-    let mut off = offset as usize;
+    let mut off = range.start;
     let count = read_u32(buf, &mut off)? as usize;
-    let mut items = Vec::with_capacity(count);
+    let mut items = Vec::with_capacity(safe_capacity(count, buf.len(), off, 20));
     for _ in 0..count {
         items.push(decode_list_item(buf, &mut off)?);
     }
@@ -437,15 +473,15 @@ pub fn read_section_externals(
     buf: &[u8],
     index: &InkbIndex,
 ) -> Result<Vec<ExternalFnDef>, DecodeError> {
-    let (offset, _len) =
+    let range =
         index
             .section_range(SectionKind::Externals)
             .ok_or(DecodeError::MissingSectionKind(
                 SectionKind::Externals as u8,
             ))?;
-    let mut off = offset as usize;
+    let mut off = range.start;
     let count = read_u32(buf, &mut off)? as usize;
-    let mut exts = Vec::with_capacity(count);
+    let mut exts = Vec::with_capacity(safe_capacity(count, buf.len(), off, 12));
     for _ in 0..count {
         exts.push(decode_external(buf, &mut off)?);
     }
@@ -457,15 +493,15 @@ pub fn read_section_containers(
     buf: &[u8],
     index: &InkbIndex,
 ) -> Result<Vec<ContainerDef>, DecodeError> {
-    let (offset, _len) =
+    let range =
         index
             .section_range(SectionKind::Containers)
             .ok_or(DecodeError::MissingSectionKind(
                 SectionKind::Containers as u8,
             ))?;
-    let mut off = offset as usize;
+    let mut off = range.start;
     let count = read_u32(buf, &mut off)? as usize;
-    let mut containers = Vec::with_capacity(count);
+    let mut containers = Vec::with_capacity(safe_capacity(count, buf.len(), off, 21));
     for _ in 0..count {
         containers.push(decode_container(buf, &mut off)?);
     }
@@ -755,12 +791,12 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, DecodeError> {
         VAL_STRING => Ok(Value::String(read_str(buf, off)?)),
         VAL_LIST => {
             let item_count = read_u32(buf, off)? as usize;
-            let mut items = Vec::with_capacity(item_count);
+            let mut items = Vec::with_capacity(safe_capacity(item_count, buf.len(), *off, 8));
             for _ in 0..item_count {
                 items.push(read_def_id(buf, off)?);
             }
             let origin_count = read_u32(buf, off)? as usize;
-            let mut origins = Vec::with_capacity(origin_count);
+            let mut origins = Vec::with_capacity(safe_capacity(origin_count, buf.len(), *off, 8));
             for _ in 0..origin_count {
                 origins.push(read_def_id(buf, off)?);
             }
@@ -776,7 +812,7 @@ fn decode_list_def(buf: &[u8], off: &mut usize) -> Result<ListDef, DecodeError> 
     let id = read_def_id(buf, off)?;
     let name = NameId(read_u16(buf, off)?);
     let item_count = read_u32(buf, off)? as usize;
-    let mut items = Vec::with_capacity(item_count);
+    let mut items = Vec::with_capacity(safe_capacity(item_count, buf.len(), *off, 6));
     for _ in 0..item_count {
         let name_id = NameId(read_u16(buf, off)?);
         let ordinal = read_i32(buf, off)?;
@@ -828,7 +864,7 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
     *off += bytecode_len;
 
     let line_count = read_u32(buf, off)? as usize;
-    let mut line_table = Vec::with_capacity(line_count);
+    let mut line_table = Vec::with_capacity(safe_capacity(line_count, buf.len(), *off, 9));
     for _ in 0..line_count {
         line_table.push(decode_line_entry(buf, off)?);
     }
@@ -857,7 +893,7 @@ fn decode_line_content(buf: &[u8], off: &mut usize) -> Result<LineContent, Decod
         LINE_PLAIN => Ok(LineContent::Plain(read_str(buf, off)?)),
         LINE_TEMPLATE => {
             let part_count = read_u32(buf, off)? as usize;
-            let mut parts = Vec::with_capacity(part_count);
+            let mut parts = Vec::with_capacity(safe_capacity(part_count, buf.len(), *off, 2));
             for _ in 0..part_count {
                 parts.push(decode_line_part(buf, off)?);
             }
@@ -875,7 +911,7 @@ fn decode_line_part(buf: &[u8], off: &mut usize) -> Result<LinePart, DecodeError
         PART_SELECT => {
             let slot = read_u8(buf, off)?;
             let variant_count = read_u32(buf, off)? as usize;
-            let mut variants = Vec::with_capacity(variant_count);
+            let mut variants = Vec::with_capacity(safe_capacity(variant_count, buf.len(), *off, 6));
             for _ in 0..variant_count {
                 let key = decode_select_key(buf, off)?;
                 let text = read_str(buf, off)?;

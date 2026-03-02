@@ -237,6 +237,8 @@ pub enum DecodeError {
     FileSizeMismatch { expected: u32, actual: usize },
     /// CRC-32 checksum of section data doesn't match header.
     ChecksumMismatch { expected: u32, actual: u32 },
+    /// Section offset table is structurally invalid (out of bounds or not monotonic).
+    InvalidSectionOffset { kind: u8, offset: u32 },
 }
 
 impl fmt::Display for DecodeError {
@@ -268,6 +270,12 @@ impl fmt::Display for DecodeError {
                 write!(
                     f,
                     "checksum mismatch: header {expected:#010x}, computed {actual:#010x}"
+                )
+            }
+            Self::InvalidSectionOffset { kind, offset } => {
+                write!(
+                    f,
+                    "invalid section offset: kind {kind:#04x} at offset {offset}"
                 )
             }
         }

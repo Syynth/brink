@@ -1,0 +1,32 @@
+[package]
+name = "brink-format-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+brink-format = { path = ".." }
+
+[[bin]]
+name = "read_no_panic"
+path = "fuzz_targets/read_no_panic.rs"
+doc = false
+
+[[bin]]
+name = "write_read_roundtrip"
+path = "fuzz_targets/write_read_roundtrip.rs"
+doc = false
+
+[[bin]]
+name = "read_index_no_panic"
+path = "fuzz_targets/read_index_no_panic.rs"
+doc = false
+
+[[bin]]
+name = "section_reads_no_panic"
+path = "fuzz_targets/section_reads_no_panic.rs"
+doc = false

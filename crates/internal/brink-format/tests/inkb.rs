@@ -203,13 +203,13 @@ fn section_ranges() {
     let index = read_inkb_index(&buf).unwrap();
 
     // All section ranges should cover the entire post-header region with no gaps.
-    let mut covered = u32::try_from(index.header_size()).unwrap();
+    let mut covered = index.header_size();
     for entry in &index.sections {
-        let (offset, len) = index.section_range(entry.kind).unwrap();
-        assert_eq!(offset, covered, "gap before section {:?}", entry.kind);
-        covered = offset + len;
+        let range = index.section_range(entry.kind).unwrap();
+        assert_eq!(range.start, covered, "gap before section {:?}", entry.kind);
+        covered = range.end;
     }
-    assert_eq!(covered, index.file_size);
+    assert_eq!(covered, index.file_size as usize);
 }
 
 #[test]

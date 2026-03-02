@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/brink-*", "crates/brink", "crates/internal/*"]
-exclude = ["crates/internal/brink-syntax/fuzz"]
+exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-format/fuzz"]
 resolver = "2"
 
 [workspace.package]
