@@ -61,13 +61,25 @@ pub struct InkJson {
     pub root: Container,
 }
 
+/// An ink list value: a set of named items, each with an integer value,
+/// and optionally the origin list names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InkList {
+    /// Map of "ListName.ItemName" to integer value
+    pub items: std::collections::HashMap<String, i64>,
+    /// Origin list names (present when the list is empty to preserve type info)
+    pub origins: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum InkValue {
     String(String),
     Integer(i64),
     Float(f64),
+    Bool(bool),
     DivertTarget(Path),
     VariablePointer(Variable),
+    List(InkList),
 }
 
 impl Serialize for InkValue {
@@ -77,6 +89,7 @@ impl Serialize for InkValue {
             InkValue::String(s) => serializer.serialize_str(&format!("^{s}")),
             InkValue::Integer(i) => serializer.serialize_i64(*i),
             InkValue::Float(f) => serializer.serialize_f64(*f),
+            InkValue::Bool(b) => serializer.serialize_bool(*b),
             InkValue::DivertTarget(path) => {
                 let mut map = serializer.serialize_map(Some(1))?;
                 map.serialize_entry("^->", path)?;
@@ -86,6 +99,15 @@ impl Serialize for InkValue {
                 let mut map = serializer.serialize_map(Some(2))?;
                 map.serialize_entry("^var", var)?;
                 map.serialize_entry("ci", &0)?;
+                map.end()
+            }
+            InkValue::List(list) => {
+                let len = 1 + usize::from(!list.origins.is_empty());
+                let mut map = serializer.serialize_map(Some(len))?;
+                map.serialize_entry("list", &list.items)?;
+                if !list.origins.is_empty() {
+                    map.serialize_entry("origins", &list.origins)?;
+                }
                 map.end()
             }
         }

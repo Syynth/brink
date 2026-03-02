@@ -2,8 +2,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use super::{
-    ChoicePoint, Container, ControlCommand, Divert, InkValue, NativeFunction, ReadCountReference,
-    VariableAssignment, VariableReference,
+    ChoicePoint, Container, ControlCommand, Divert, InkList, InkValue, NativeFunction,
+    ReadCountReference, VariableAssignment, VariableReference,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,130 +43,134 @@ impl<'de> Deserialize<'de> for Element {
         D: Deserializer<'de>,
     {
         let value = Value::deserialize(deserializer)?;
-
-        // Handle arrays (containers)
-        if let Some(arr) = value.as_array() {
-            let container: Container = serde_json::from_value(Value::Array(arr.clone()))
-                .map_err(serde::de::Error::custom)?;
-            return Ok(Element::Container(container));
-        }
-
-        // Handle strings
-        if let Some(s) = value.as_str() {
-            // Check for control commands first
-            if let Ok(cmd) = s.parse::<ControlCommand>() {
-                return Ok(Element::ControlCommand(cmd));
-            }
-
-            // Check for native functions
-            if let Ok(func) = s.parse::<NativeFunction>() {
-                return Ok(Element::NativeFunction(func));
-            }
-
-            // Check for "void"
-            if s == "void" {
-                return Ok(Element::Void);
-            }
-
-            // Check for string values (starting with ^)
-            if let Some(text) = s.strip_prefix('^') {
-                return Ok(Element::Value(InkValue::String(text.to_string())));
-            }
-
-            // Handle special case: newline
-            if s == "\n" {
-                return Ok(Element::Value(InkValue::String("\n".to_string())));
-            }
-
-            return Err(serde::de::Error::custom(format!(
-                "Unknown string element: {s}"
-            )));
-        }
-
-        // Handle numbers
-        if let Some(i) = value.as_i64() {
-            return Ok(Element::Value(InkValue::Integer(i)));
-        }
-        if let Some(f) = value.as_f64() {
-            return Ok(Element::Value(InkValue::Float(f)));
-        }
-
-        // Handle objects
-        if let Some(obj) = value.as_object() {
-            // Check for divert target value {"^->": "path"}
-            if let Some(target) = obj.get("^->")
-                && let Some(path) = target.as_str()
-            {
-                return Ok(Element::Value(InkValue::DivertTarget(path.to_string())));
-            }
-
-            // Check for variable pointer value {"^var": "varname", "ci": 0}
-            if let Some(varname) = obj.get("^var")
-                && let Some(name) = varname.as_str()
-            {
-                return Ok(Element::Value(InkValue::VariablePointer(name.to_string())));
-            }
-
-            // Check for diverts
-            if obj.contains_key("->") {
-                let divert: Divert =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                return Ok(Element::Divert(divert));
-            }
-
-            if obj.contains_key("f()") {
-                let divert: Divert =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                return Ok(Element::Divert(divert));
-            }
-
-            if obj.contains_key("->t->") {
-                let divert: Divert =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                return Ok(Element::Divert(divert));
-            }
-
-            if obj.contains_key("x()") {
-                let divert: Divert =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                return Ok(Element::Divert(divert));
-            }
-
-            // Check for variable assignment
-            if obj.contains_key("VAR=") || obj.contains_key("temp=") {
-                let assignment: VariableAssignment =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                return Ok(Element::VariableAssignment(assignment));
-            }
-
-            // Check for variable reference
-            if obj.contains_key("VAR?") {
-                let reference: VariableReference =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                return Ok(Element::VariableReference(reference));
-            }
-
-            // Check for read count
-            if obj.contains_key("CNT?") {
-                let read_count: ReadCountReference =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                return Ok(Element::ReadCount(read_count));
-            }
-
-            // Check for choice point
-            if obj.contains_key("*") {
-                let choice_point: ChoicePoint =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                return Ok(Element::ChoicePoint(choice_point));
-            }
-
-            return Err(serde::de::Error::custom(format!(
-                "Unknown object element: {obj:?}"
-            )));
-        }
-
-        Err(serde::de::Error::custom(format!(
-            "Unknown element type: {value:?}"
-        )))
+        deserialize_value(value).map_err(serde::de::Error::custom)
     }
+}
+
+fn deserialize_value(value: Value) -> Result<Element, String> {
+    // Handle arrays (containers)
+    if value.is_array() {
+        let container: Container = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        return Ok(Element::Container(container));
+    }
+
+    // Handle strings
+    if let Some(s) = value.as_str() {
+        return deserialize_string(s);
+    }
+
+    // Handle booleans (used in global variable declarations)
+    if let Some(b) = value.as_bool() {
+        return Ok(Element::Value(InkValue::Bool(b)));
+    }
+
+    // Handle numbers
+    if let Some(i) = value.as_i64() {
+        return Ok(Element::Value(InkValue::Integer(i)));
+    }
+    if let Some(f) = value.as_f64() {
+        return Ok(Element::Value(InkValue::Float(f)));
+    }
+
+    // Handle objects
+    if value.is_object() {
+        return deserialize_object(value);
+    }
+
+    Err(format!("Unknown element type: {value:?}"))
+}
+
+fn deserialize_string(s: &str) -> Result<Element, String> {
+    if let Ok(cmd) = s.parse::<ControlCommand>() {
+        return Ok(Element::ControlCommand(cmd));
+    }
+    if let Ok(func) = s.parse::<NativeFunction>() {
+        return Ok(Element::NativeFunction(func));
+    }
+    if s == "void" {
+        return Ok(Element::Void);
+    }
+    if let Some(text) = s.strip_prefix('^') {
+        return Ok(Element::Value(InkValue::String(text.to_string())));
+    }
+    if s == "\n" {
+        return Ok(Element::Value(InkValue::String("\n".to_string())));
+    }
+    Err(format!("Unknown string element: {s}"))
+}
+
+fn deserialize_object(value: Value) -> Result<Element, String> {
+    let obj = value.as_object().ok_or("expected object")?;
+
+    // Divert target value {"^->": "path"}
+    if let Some(target) = obj.get("^->").and_then(Value::as_str) {
+        return Ok(Element::Value(InkValue::DivertTarget(target.to_string())));
+    }
+
+    // Variable pointer value {"^var": "varname", "ci": 0}
+    if let Some(name) = obj.get("^var").and_then(Value::as_str) {
+        return Ok(Element::Value(InkValue::VariablePointer(name.to_string())));
+    }
+
+    // Diverts
+    if obj.contains_key("->")
+        || obj.contains_key("f()")
+        || obj.contains_key("->t->")
+        || obj.contains_key("x()")
+    {
+        let divert: Divert = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        return Ok(Element::Divert(divert));
+    }
+
+    // Variable assignment
+    if obj.contains_key("VAR=") || obj.contains_key("temp=") {
+        let assignment: VariableAssignment =
+            serde_json::from_value(value).map_err(|e| e.to_string())?;
+        return Ok(Element::VariableAssignment(assignment));
+    }
+
+    // Variable reference
+    if obj.contains_key("VAR?") {
+        let reference: VariableReference =
+            serde_json::from_value(value).map_err(|e| e.to_string())?;
+        return Ok(Element::VariableReference(reference));
+    }
+
+    // Read count
+    if obj.contains_key("CNT?") {
+        let read_count: ReadCountReference =
+            serde_json::from_value(value).map_err(|e| e.to_string())?;
+        return Ok(Element::ReadCount(read_count));
+    }
+
+    // Choice point
+    if obj.contains_key("*") {
+        let choice_point: ChoicePoint = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        return Ok(Element::ChoicePoint(choice_point));
+    }
+
+    // List value {"list": {...}, "origins": [...]}
+    if obj.contains_key("list") {
+        let mut items = std::collections::HashMap::new();
+        if let Some(list_obj) = obj.get("list").and_then(Value::as_object) {
+            for (k, v) in list_obj {
+                if let Some(n) = v.as_i64() {
+                    items.insert(k.clone(), n);
+                }
+            }
+        }
+        let origins = obj
+            .get("origins")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Ok(Element::Value(InkValue::List(InkList { items, origins })));
+    }
+
+    Err(format!("Unknown object element: {obj:?}"))
 }

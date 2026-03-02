@@ -116,6 +116,20 @@ pub enum ControlCommand {
     /// Ends the story flow immediately, closes all active threads, unwinds the
     /// callstack, and removes any choices that were previously created.
     End,
+
+    /// "#"
+    /// Marks the beginning of a tag. The tag text is built up on the output
+    /// stream and then popped as a tag value.
+    Tag,
+
+    /// "<>"
+    /// Glue. Joins text on either side, removing any newlines between them.
+    Glue,
+
+    /// "/#"
+    /// End tag. Pops content from the output stream back to the last tag
+    /// marker and creates a tag.
+    EndTag,
 }
 
 impl fmt::Display for ControlCommand {
@@ -139,6 +153,9 @@ impl fmt::Display for ControlCommand {
             Self::Thread => "thread",
             Self::Done => "done",
             Self::End => "end",
+            Self::Tag => "#",
+            Self::Glue => "<>",
+            Self::EndTag => "/#",
         })
     }
 }
@@ -172,6 +189,9 @@ impl FromStr for ControlCommand {
             "thread" => Ok(ControlCommand::Thread),
             "done" => Ok(ControlCommand::Done),
             "end" => Ok(ControlCommand::End),
+            "#" => Ok(ControlCommand::Tag),
+            "<>" => Ok(ControlCommand::Glue),
+            "/#" => Ok(ControlCommand::EndTag),
             _ => Err(ControlCommandParseError::InvalidCommand(s.to_string())),
         }
     }
