@@ -96,3 +96,55 @@ fn fuzz_looks_like_condition_eof_with_depth() {
     let src = "/[\x01\x00\x00\x02{\n-(/*{\n-(**{";
     check_lossless(src);
 }
+
+// ── Choices inside multiline conditional branches ───────────────────
+
+#[test]
+fn multiline_cond_single_choice() {
+    check("{\n- x:\n  * Go outside\n}\n");
+}
+
+#[test]
+fn multiline_cond_multiple_choices() {
+    check("{\n- x:\n  * Option A\n  * Option B\n}\n");
+}
+
+#[test]
+fn multiline_cond_choices_both_branches() {
+    check("{\n- door_open:\n  * Go outside\n- else:\n  * Ask permission\n  * Open the door\n}\n");
+}
+
+#[test]
+fn multiline_cond_choice_with_divert() {
+    check("{\n- x:\n  * Go outside -> garden\n}\n");
+}
+
+#[test]
+fn multiline_cond_choice_with_brackets() {
+    check("{\n- x:\n  * [hidden]shown\n}\n");
+}
+
+#[test]
+fn multiline_cond_choice_with_label() {
+    check("{\n- x:\n  * (my_label) Go outside\n}\n");
+}
+
+#[test]
+fn multiline_cond_text_then_choice() {
+    check("{\n- x:\n  Some text.\n  * A choice\n}\n");
+}
+
+#[test]
+fn multiline_cond_sticky_choice() {
+    check("{\n- x:\n  + Sticky option\n}\n");
+}
+
+#[test]
+fn multiline_cond_nested_choice() {
+    check("{\n- x:\n  * * Nested choice\n}\n");
+}
+
+#[test]
+fn multiline_cond_choice_with_condition() {
+    check("{\n- x:\n  * {flag} Conditional choice\n}\n");
+}

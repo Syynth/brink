@@ -4,9 +4,9 @@ use crate::SyntaxKind::{
     IMPLICIT_SEQUENCE, INLINE_BRANCHES_COND, INLINE_BRANCHES_SEQ, INLINE_LOGIC, INNER_EXPRESSION,
     KW_CYCLE, KW_ELSE, KW_ONCE, KW_SHUFFLE, KW_STOPPING, L_BRACE, L_PAREN, LINE_COMMENT, MINUS,
     MULTILINE_BLOCK, MULTILINE_BRANCH_BODY, MULTILINE_BRANCH_COND, MULTILINE_BRANCH_SEQ,
-    MULTILINE_BRANCHES_COND, MULTILINE_BRANCHES_SEQ, MULTILINE_CONDITIONAL, NEWLINE, PIPE, R_BRACE,
-    R_PAREN, SEQUENCE_SYMBOL_ANNOTATION, SEQUENCE_WITH_ANNOTATION, SEQUENCE_WORD_ANNOTATION, TEXT,
-    THREAD, TILDE, TUNNEL_ONWARDS, WHITESPACE,
+    MULTILINE_BRANCHES_COND, MULTILINE_BRANCHES_SEQ, MULTILINE_CONDITIONAL, NEWLINE, PIPE, PLUS,
+    R_BRACE, R_PAREN, SEQUENCE_SYMBOL_ANNOTATION, SEQUENCE_WITH_ANNOTATION,
+    SEQUENCE_WORD_ANNOTATION, STAR, TEXT, THREAD, TILDE, TUNNEL_ONWARDS, WHITESPACE,
 };
 
 use super::Parser;
@@ -498,17 +498,25 @@ fn at_multiline_branch_start(p: &Parser<'_>) -> bool {
 /// ```text
 /// multiline_branch_body = { (multiline_branch_body_item | body_newline)* }
 /// ```
+///
+/// NOTE: Gathers (`-`) inside inner blocks are forbidden by the ink spec
+/// but we don't yet emit a diagnostic for them — the MINUS arm just breaks
+/// out of the body loop (same as a branch separator).
 fn multiline_branch_body(p: &mut Parser<'_>) {
     p.start_node(MULTILINE_BRANCH_BODY);
     loop {
         match p.current() {
-            EOF | R_BRACE => break,
+            EOF | R_BRACE | MINUS => break, // MINUS = branch separator; gathers forbidden in inner blocks
             NEWLINE => {
                 // body_newline: NEWLINE not followed by branch start
                 if next_line_is_branch(p) {
                     break;
                 }
                 p.bump();
+            }
+            STAR | PLUS => {
+                // Choices participate in the outer weave structure.
+                super::choice::choice(p);
             }
             TILDE => {
                 p.skip_ws();

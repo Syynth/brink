@@ -2130,3 +2130,296 @@ fn error_empty_braces() {
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
 }
+
+// ── Section P: Choices inside multiline conditional branches ────────
+
+/// Single choice inside a conditional branch.
+#[test]
+fn multiline_cond_choice_single() {
+    assert_equivalent(
+        parse("{\n- x:\n  * Go outside\n}\n"),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                MULTILINE_BRANCHES_COND {
+                    MULTILINE_BRANCH_COND {
+                        PATH
+                        MULTILINE_BRANCH_BODY {
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Multiple choices inside a conditional branch.
+#[test]
+fn multiline_cond_choice_multiple() {
+    assert_equivalent(
+        parse("{\n- x:\n  * Option A\n  * Option B\n}\n"),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                MULTILINE_BRANCHES_COND {
+                    MULTILINE_BRANCH_COND {
+                        PATH
+                        MULTILINE_BRANCH_BODY {
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                            }
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Choices in both branches (condition + else).
+#[test]
+fn multiline_cond_choices_both_branches() {
+    assert_equivalent(
+        parse(
+            "{\n- door_open:\n  * Go outside\n- else:\n  * Ask permission\n  * Open the door\n}\n",
+        ),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                MULTILINE_BRANCHES_COND {
+                    MULTILINE_BRANCH_COND {
+                        PATH
+                        MULTILINE_BRANCH_BODY {
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                    MULTILINE_BRANCH_COND {
+                        MULTILINE_BRANCH_BODY {
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                            }
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Choice with divert inside a conditional branch.
+#[test]
+fn multiline_cond_choice_with_divert() {
+    assert_equivalent(
+        parse("{\n- x:\n  * Go outside -> garden\n}\n"),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                MULTILINE_BRANCHES_COND {
+                    MULTILINE_BRANCH_COND {
+                        PATH
+                        MULTILINE_BRANCH_BODY {
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                                DIVERT_NODE {
+                                    SIMPLE_DIVERT {
+                                        DIVERT_TARGET_WITH_ARGS {
+                                            PATH
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Choice with bracket content inside a conditional branch.
+#[test]
+fn multiline_cond_choice_with_brackets() {
+    assert_equivalent(
+        parse("{\n- x:\n  * [hidden]shown\n}\n"),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                MULTILINE_BRANCHES_COND {
+                    MULTILINE_BRANCH_COND {
+                        PATH
+                        MULTILINE_BRANCH_BODY {
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_BRACKET_CONTENT {
+                                    TEXT
+                                }
+                                CHOICE_INNER_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Choice with label inside a conditional branch.
+#[test]
+fn multiline_cond_choice_with_label() {
+    assert_equivalent(
+        parse("{\n- x:\n  * (my_label) Go outside\n}\n"),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                MULTILINE_BRANCHES_COND {
+                    MULTILINE_BRANCH_COND {
+                        PATH
+                        MULTILINE_BRANCH_BODY {
+                            CHOICE {
+                                CHOICE_BULLETS
+                                LABEL {
+                                    IDENTIFIER
+                                }
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Mixed text and choices in a branch body.
+#[test]
+fn multiline_cond_text_then_choice() {
+    assert_equivalent(
+        parse("{\n- x:\n  Some text.\n  * A choice\n}\n"),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                MULTILINE_BRANCHES_COND {
+                    MULTILINE_BRANCH_COND {
+                        PATH
+                        MULTILINE_BRANCH_BODY {
+                            TEXT
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Sticky choice (+) inside a conditional branch.
+#[test]
+fn multiline_cond_sticky_choice() {
+    assert_equivalent(
+        parse("{\n- x:\n  + Sticky option\n}\n"),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                MULTILINE_BRANCHES_COND {
+                    MULTILINE_BRANCH_COND {
+                        PATH
+                        MULTILINE_BRANCH_BODY {
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Nested choice depth inside a conditional branch.
+#[test]
+fn multiline_cond_nested_choice() {
+    assert_equivalent(
+        parse("{\n- x:\n  * * Nested choice\n}\n"),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                MULTILINE_BRANCHES_COND {
+                    MULTILINE_BRANCH_COND {
+                        PATH
+                        MULTILINE_BRANCH_BODY {
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Choice with inline condition inside a conditional branch.
+#[test]
+fn multiline_cond_choice_with_condition() {
+    assert_equivalent(
+        parse("{\n- x:\n  * {flag} Conditional choice\n}\n"),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                MULTILINE_BRANCHES_COND {
+                    MULTILINE_BRANCH_COND {
+                        PATH
+                        MULTILINE_BRANCH_BODY {
+                            CHOICE {
+                                CHOICE_BULLETS
+                                CHOICE_CONDITION {
+                                    PATH
+                                }
+                                CHOICE_START_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}

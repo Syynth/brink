@@ -1509,4 +1509,8 @@ impl MultilineBranchBody {
     pub fn content_lines(&self) -> impl Iterator<Item = ContentLine> {
         support::children(&self.syntax)
     }
+
+    pub fn choices(&self) -> impl Iterator<Item = Choice> {
+        support::children(&self.syntax)
+    }
 }
