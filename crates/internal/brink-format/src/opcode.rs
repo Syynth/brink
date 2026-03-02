@@ -1,0 +1,1143 @@
+use core::fmt;
+
+use crate::id::DefinitionId;
+
+// ── Discriminant bytes ──────────────────────────────────────────────────────
+
+// Stack & literals
+const PUSH_INT: u8 = 0x01;
+const PUSH_FLOAT: u8 = 0x02;
+const PUSH_BOOL: u8 = 0x03;
+const PUSH_STRING: u8 = 0x04;
+const PUSH_LIST: u8 = 0x05;
+const PUSH_DIVERT_TARGET: u8 = 0x06;
+const PUSH_NULL: u8 = 0x07;
+const POP: u8 = 0x08;
+const DUPLICATE: u8 = 0x09;
+
+// Arithmetic
+const ADD: u8 = 0x10;
+const SUBTRACT: u8 = 0x11;
+const MULTIPLY: u8 = 0x12;
+const DIVIDE: u8 = 0x13;
+const MODULO: u8 = 0x14;
+const NEGATE: u8 = 0x15;
+
+// Comparison
+const EQUAL: u8 = 0x20;
+const NOT_EQUAL: u8 = 0x21;
+const GREATER: u8 = 0x22;
+const GREATER_OR_EQUAL: u8 = 0x23;
+const LESS: u8 = 0x24;
+const LESS_OR_EQUAL: u8 = 0x25;
+
+// Logic
+const NOT: u8 = 0x28;
+const AND: u8 = 0x29;
+const OR: u8 = 0x2A;
+
+// Global vars
+const GET_GLOBAL: u8 = 0x30;
+const SET_GLOBAL: u8 = 0x31;
+
+// Temp vars
+const DECLARE_TEMP: u8 = 0x34;
+const GET_TEMP: u8 = 0x35;
+const SET_TEMP: u8 = 0x36;
+
+// Control flow
+const JUMP: u8 = 0x40;
+const JUMP_IF_FALSE: u8 = 0x41;
+const DIVERT: u8 = 0x42;
+const DIVERT_CONDITIONAL: u8 = 0x43;
+const DIVERT_VARIABLE: u8 = 0x44;
+
+// Container flow
+const ENTER_CONTAINER: u8 = 0x48;
+const EXIT_CONTAINER: u8 = 0x49;
+
+// Functions / tunnels
+const CALL: u8 = 0x50;
+const RETURN: u8 = 0x51;
+const TUNNEL_CALL: u8 = 0x52;
+const TUNNEL_RETURN: u8 = 0x53;
+
+// Threads
+const THREAD_START: u8 = 0x58;
+const THREAD_DONE: u8 = 0x59;
+
+// Output
+const EMIT_LINE: u8 = 0x60;
+const EMIT_VALUE: u8 = 0x61;
+const EMIT_NEWLINE: u8 = 0x62;
+const GLUE: u8 = 0x63;
+const BEGIN_TAG: u8 = 0x64;
+const END_TAG: u8 = 0x65;
+
+// Choices
+const BEGIN_CHOICE_SET: u8 = 0x70;
+const END_CHOICE_SET: u8 = 0x71;
+const BEGIN_CHOICE: u8 = 0x72;
+const END_CHOICE: u8 = 0x73;
+const CHOICE_DISPLAY: u8 = 0x74;
+const CHOICE_OUTPUT: u8 = 0x75;
+
+// Sequences
+const SEQUENCE: u8 = 0x78;
+const SEQUENCE_BRANCH: u8 = 0x79;
+
+// Intrinsics
+const VISIT_COUNT: u8 = 0x80;
+const TURNS_SINCE: u8 = 0x81;
+const TURN_INDEX: u8 = 0x82;
+const CHOICE_COUNT: u8 = 0x83;
+const RANDOM: u8 = 0x84;
+const SEED_RANDOM: u8 = 0x85;
+
+// Casts / math
+const CAST_TO_INT: u8 = 0x90;
+const CAST_TO_FLOAT: u8 = 0x91;
+const FLOOR: u8 = 0x92;
+const CEILING: u8 = 0x93;
+const POW: u8 = 0x94;
+const MIN: u8 = 0x95;
+const MAX: u8 = 0x96;
+
+// External fns
+const CALL_EXTERNAL: u8 = 0xA0;
+
+// List ops
+const LIST_CONTAINS: u8 = 0xB0;
+const LIST_NOT_CONTAINS: u8 = 0xB1;
+const LIST_INTERSECT: u8 = 0xB2;
+const LIST_UNION: u8 = 0xB3;
+const LIST_EXCEPT: u8 = 0xB4;
+const LIST_ALL: u8 = 0xB5;
+const LIST_INVERT: u8 = 0xB6;
+const LIST_COUNT: u8 = 0xB7;
+const LIST_MIN: u8 = 0xB8;
+const LIST_MAX: u8 = 0xB9;
+const LIST_VALUE: u8 = 0xBA;
+const LIST_RANGE: u8 = 0xBB;
+const LIST_FROM_INT: u8 = 0xBC;
+const LIST_RANDOM: u8 = 0xBD;
+
+// Lifecycle
+const DONE: u8 = 0xF0;
+const END: u8 = 0xF1;
+const NOP: u8 = 0xF2;
+
+// String eval
+const BEGIN_STRING_EVAL: u8 = 0xE0;
+const END_STRING_EVAL: u8 = 0xE1;
+
+// Debug
+const SOURCE_LOCATION: u8 = 0xFE;
+
+// ── Types ───────────────────────────────────────────────────────────────────
+
+/// The kind of sequence/shuffle container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SequenceKind {
+    Cycle,
+    Stopping,
+    OnceOnly,
+    Shuffle,
+}
+
+impl SequenceKind {
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::Cycle => 0,
+            Self::Stopping => 1,
+            Self::OnceOnly => 2,
+            Self::Shuffle => 3,
+        }
+    }
+
+    fn from_byte(b: u8) -> Result<Self, DecodeError> {
+        match b {
+            0 => Ok(Self::Cycle),
+            1 => Ok(Self::Stopping),
+            2 => Ok(Self::OnceOnly),
+            3 => Ok(Self::Shuffle),
+            _ => Err(DecodeError::InvalidSequenceKind(b)),
+        }
+    }
+}
+
+/// Flags packed into a `BeginChoice` instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ChoiceFlags {
+    pub has_condition: bool,
+    pub once_only: bool,
+    pub is_invisible_default: bool,
+}
+
+impl ChoiceFlags {
+    fn to_byte(self) -> u8 {
+        let mut b = 0u8;
+        if self.has_condition {
+            b |= 0x01;
+        }
+        if self.once_only {
+            b |= 0x02;
+        }
+        if self.is_invisible_default {
+            b |= 0x04;
+        }
+        b
+    }
+
+    fn from_byte(b: u8) -> Self {
+        Self {
+            has_condition: b & 0x01 != 0,
+            once_only: b & 0x02 != 0,
+            is_invisible_default: b & 0x04 != 0,
+        }
+    }
+}
+
+/// Errors that can occur when decoding an opcode from bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    /// Not enough bytes remaining for the expected operand.
+    UnexpectedEof,
+    /// Unknown opcode discriminant byte.
+    UnknownOpcode(u8),
+    /// Invalid definition id (bad tag byte).
+    InvalidDefinitionId(u64),
+    /// Invalid sequence kind byte.
+    InvalidSequenceKind(u8),
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnexpectedEof => write!(f, "unexpected end of bytecode"),
+            Self::UnknownOpcode(b) => write!(f, "unknown opcode: {b:#04x}"),
+            Self::InvalidDefinitionId(raw) => {
+                write!(f, "invalid definition id: {raw:#018x}")
+            }
+            Self::InvalidSequenceKind(b) => write!(f, "invalid sequence kind: {b}"),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+/// A single VM instruction with its operands.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Opcode {
+    // ── Stack & literals ────────────────────────────────────────────────
+    PushInt(i32),
+    PushFloat(f32),
+    PushBool(bool),
+    PushString(u16),
+    PushList(u16),
+    PushDivertTarget(DefinitionId),
+    PushNull,
+    Pop,
+    Duplicate,
+
+    // ── Arithmetic ──────────────────────────────────────────────────────
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+    Negate,
+
+    // ── Comparison ──────────────────────────────────────────────────────
+    Equal,
+    NotEqual,
+    Greater,
+    GreaterOrEqual,
+    Less,
+    LessOrEqual,
+
+    // ── Logic ───────────────────────────────────────────────────────────
+    Not,
+    And,
+    Or,
+
+    // ── Global vars ─────────────────────────────────────────────────────
+    GetGlobal(DefinitionId),
+    SetGlobal(DefinitionId),
+
+    // ── Temp vars ───────────────────────────────────────────────────────
+    DeclareTemp(u16),
+    GetTemp(u16),
+    SetTemp(u16),
+
+    // ── Control flow ────────────────────────────────────────────────────
+    Jump(i32),
+    JumpIfFalse(i32),
+    Divert(DefinitionId),
+    DivertConditional(DefinitionId),
+    DivertVariable,
+
+    // ── Container flow ──────────────────────────────────────────────────
+    EnterContainer(DefinitionId),
+    ExitContainer,
+
+    // ── Functions / tunnels ─────────────────────────────────────────────
+    Call(DefinitionId),
+    Return,
+    TunnelCall(DefinitionId),
+    TunnelReturn,
+
+    // ── Threads ─────────────────────────────────────────────────────────
+    ThreadStart,
+    ThreadDone,
+
+    // ── Output ──────────────────────────────────────────────────────────
+    EmitLine(u16),
+    EmitValue,
+    EmitNewline,
+    Glue,
+    BeginTag,
+    EndTag,
+
+    // ── Choices ─────────────────────────────────────────────────────────
+    BeginChoiceSet,
+    EndChoiceSet,
+    BeginChoice(ChoiceFlags),
+    EndChoice,
+    ChoiceDisplay(u16),
+    ChoiceOutput(u16),
+
+    // ── Sequences ───────────────────────────────────────────────────────
+    Sequence(SequenceKind, u8),
+    SequenceBranch(i32),
+
+    // ── Intrinsics ──────────────────────────────────────────────────────
+    VisitCount,
+    TurnsSince,
+    TurnIndex,
+    ChoiceCount,
+    Random,
+    SeedRandom,
+
+    // ── Casts / math ────────────────────────────────────────────────────
+    CastToInt,
+    CastToFloat,
+    Floor,
+    Ceiling,
+    Pow,
+    Min,
+    Max,
+
+    // ── External fns ────────────────────────────────────────────────────
+    CallExternal(DefinitionId, u8),
+
+    // ── List ops ────────────────────────────────────────────────────────
+    ListContains,
+    ListNotContains,
+    ListIntersect,
+    ListUnion,
+    ListExcept,
+    ListAll,
+    ListInvert,
+    ListCount,
+    ListMin,
+    ListMax,
+    ListValue,
+    ListRange,
+    ListFromInt,
+    ListRandom,
+
+    // ── Lifecycle ───────────────────────────────────────────────────────
+    Done,
+    End,
+    Nop,
+
+    // ── String eval ─────────────────────────────────────────────────────
+    BeginStringEval,
+    EndStringEval,
+
+    // ── Debug ───────────────────────────────────────────────────────────
+    SourceLocation(u32, u32),
+}
+
+// ── Encoding helpers ────────────────────────────────────────────────────────
+
+fn write_u8(buf: &mut Vec<u8>, v: u8) {
+    buf.push(v);
+}
+
+fn write_u16(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_i32(buf: &mut Vec<u8>, v: i32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_f32(buf: &mut Vec<u8>, v: f32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_def_id(buf: &mut Vec<u8>, id: DefinitionId) {
+    write_u64(buf, id.to_raw());
+}
+
+// ── Decoding helpers ────────────────────────────────────────────────────────
+
+fn read_u8(buf: &[u8], offset: &mut usize) -> Result<u8, DecodeError> {
+    if *offset >= buf.len() {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    let v = buf[*offset];
+    *offset += 1;
+    Ok(v)
+}
+
+fn read_u16(buf: &[u8], offset: &mut usize) -> Result<u16, DecodeError> {
+    if *offset + 2 > buf.len() {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    let v = u16::from_le_bytes([buf[*offset], buf[*offset + 1]]);
+    *offset += 2;
+    Ok(v)
+}
+
+fn read_i32(buf: &[u8], offset: &mut usize) -> Result<i32, DecodeError> {
+    if *offset + 4 > buf.len() {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    let v = i32::from_le_bytes([
+        buf[*offset],
+        buf[*offset + 1],
+        buf[*offset + 2],
+        buf[*offset + 3],
+    ]);
+    *offset += 4;
+    Ok(v)
+}
+
+fn read_u32(buf: &[u8], offset: &mut usize) -> Result<u32, DecodeError> {
+    if *offset + 4 > buf.len() {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    let v = u32::from_le_bytes([
+        buf[*offset],
+        buf[*offset + 1],
+        buf[*offset + 2],
+        buf[*offset + 3],
+    ]);
+    *offset += 4;
+    Ok(v)
+}
+
+fn read_f32(buf: &[u8], offset: &mut usize) -> Result<f32, DecodeError> {
+    if *offset + 4 > buf.len() {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    let v = f32::from_le_bytes([
+        buf[*offset],
+        buf[*offset + 1],
+        buf[*offset + 2],
+        buf[*offset + 3],
+    ]);
+    *offset += 4;
+    Ok(v)
+}
+
+fn read_u64(buf: &[u8], offset: &mut usize) -> Result<u64, DecodeError> {
+    if *offset + 8 > buf.len() {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    let v = u64::from_le_bytes([
+        buf[*offset],
+        buf[*offset + 1],
+        buf[*offset + 2],
+        buf[*offset + 3],
+        buf[*offset + 4],
+        buf[*offset + 5],
+        buf[*offset + 6],
+        buf[*offset + 7],
+    ]);
+    *offset += 8;
+    Ok(v)
+}
+
+fn read_def_id(buf: &[u8], offset: &mut usize) -> Result<DefinitionId, DecodeError> {
+    let raw = read_u64(buf, offset)?;
+    DefinitionId::from_raw(raw).ok_or(DecodeError::InvalidDefinitionId(raw))
+}
+
+// ── Opcode encode / decode ──────────────────────────────────────────────────
+
+impl Opcode {
+    /// Encode this instruction into the byte buffer.
+    #[expect(clippy::too_many_lines)]
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        match *self {
+            // Stack & literals
+            Self::PushInt(v) => {
+                write_u8(buf, PUSH_INT);
+                write_i32(buf, v);
+            }
+            Self::PushFloat(v) => {
+                write_u8(buf, PUSH_FLOAT);
+                write_f32(buf, v);
+            }
+            Self::PushBool(v) => {
+                write_u8(buf, PUSH_BOOL);
+                write_u8(buf, u8::from(v));
+            }
+            Self::PushString(idx) => {
+                write_u8(buf, PUSH_STRING);
+                write_u16(buf, idx);
+            }
+            Self::PushList(idx) => {
+                write_u8(buf, PUSH_LIST);
+                write_u16(buf, idx);
+            }
+            Self::PushDivertTarget(id) => {
+                write_u8(buf, PUSH_DIVERT_TARGET);
+                write_def_id(buf, id);
+            }
+            Self::PushNull => write_u8(buf, PUSH_NULL),
+            Self::Pop => write_u8(buf, POP),
+            Self::Duplicate => write_u8(buf, DUPLICATE),
+
+            // Arithmetic
+            Self::Add => write_u8(buf, ADD),
+            Self::Subtract => write_u8(buf, SUBTRACT),
+            Self::Multiply => write_u8(buf, MULTIPLY),
+            Self::Divide => write_u8(buf, DIVIDE),
+            Self::Modulo => write_u8(buf, MODULO),
+            Self::Negate => write_u8(buf, NEGATE),
+
+            // Comparison
+            Self::Equal => write_u8(buf, EQUAL),
+            Self::NotEqual => write_u8(buf, NOT_EQUAL),
+            Self::Greater => write_u8(buf, GREATER),
+            Self::GreaterOrEqual => write_u8(buf, GREATER_OR_EQUAL),
+            Self::Less => write_u8(buf, LESS),
+            Self::LessOrEqual => write_u8(buf, LESS_OR_EQUAL),
+
+            // Logic
+            Self::Not => write_u8(buf, NOT),
+            Self::And => write_u8(buf, AND),
+            Self::Or => write_u8(buf, OR),
+
+            // Global vars
+            Self::GetGlobal(id) => {
+                write_u8(buf, GET_GLOBAL);
+                write_def_id(buf, id);
+            }
+            Self::SetGlobal(id) => {
+                write_u8(buf, SET_GLOBAL);
+                write_def_id(buf, id);
+            }
+
+            // Temp vars
+            Self::DeclareTemp(idx) => {
+                write_u8(buf, DECLARE_TEMP);
+                write_u16(buf, idx);
+            }
+            Self::GetTemp(idx) => {
+                write_u8(buf, GET_TEMP);
+                write_u16(buf, idx);
+            }
+            Self::SetTemp(idx) => {
+                write_u8(buf, SET_TEMP);
+                write_u16(buf, idx);
+            }
+
+            // Control flow
+            Self::Jump(offset) => {
+                write_u8(buf, JUMP);
+                write_i32(buf, offset);
+            }
+            Self::JumpIfFalse(offset) => {
+                write_u8(buf, JUMP_IF_FALSE);
+                write_i32(buf, offset);
+            }
+            Self::Divert(id) => {
+                write_u8(buf, DIVERT);
+                write_def_id(buf, id);
+            }
+            Self::DivertConditional(id) => {
+                write_u8(buf, DIVERT_CONDITIONAL);
+                write_def_id(buf, id);
+            }
+            Self::DivertVariable => write_u8(buf, DIVERT_VARIABLE),
+
+            // Container flow
+            Self::EnterContainer(id) => {
+                write_u8(buf, ENTER_CONTAINER);
+                write_def_id(buf, id);
+            }
+            Self::ExitContainer => write_u8(buf, EXIT_CONTAINER),
+
+            // Functions / tunnels
+            Self::Call(id) => {
+                write_u8(buf, CALL);
+                write_def_id(buf, id);
+            }
+            Self::Return => write_u8(buf, RETURN),
+            Self::TunnelCall(id) => {
+                write_u8(buf, TUNNEL_CALL);
+                write_def_id(buf, id);
+            }
+            Self::TunnelReturn => write_u8(buf, TUNNEL_RETURN),
+
+            // Threads
+            Self::ThreadStart => write_u8(buf, THREAD_START),
+            Self::ThreadDone => write_u8(buf, THREAD_DONE),
+
+            // Output
+            Self::EmitLine(idx) => {
+                write_u8(buf, EMIT_LINE);
+                write_u16(buf, idx);
+            }
+            Self::EmitValue => write_u8(buf, EMIT_VALUE),
+            Self::EmitNewline => write_u8(buf, EMIT_NEWLINE),
+            Self::Glue => write_u8(buf, GLUE),
+            Self::BeginTag => write_u8(buf, BEGIN_TAG),
+            Self::EndTag => write_u8(buf, END_TAG),
+
+            // Choices
+            Self::BeginChoiceSet => write_u8(buf, BEGIN_CHOICE_SET),
+            Self::EndChoiceSet => write_u8(buf, END_CHOICE_SET),
+            Self::BeginChoice(flags) => {
+                write_u8(buf, BEGIN_CHOICE);
+                write_u8(buf, flags.to_byte());
+            }
+            Self::EndChoice => write_u8(buf, END_CHOICE),
+            Self::ChoiceDisplay(idx) => {
+                write_u8(buf, CHOICE_DISPLAY);
+                write_u16(buf, idx);
+            }
+            Self::ChoiceOutput(idx) => {
+                write_u8(buf, CHOICE_OUTPUT);
+                write_u16(buf, idx);
+            }
+
+            // Sequences
+            Self::Sequence(kind, count) => {
+                write_u8(buf, SEQUENCE);
+                write_u8(buf, kind.to_byte());
+                write_u8(buf, count);
+            }
+            Self::SequenceBranch(offset) => {
+                write_u8(buf, SEQUENCE_BRANCH);
+                write_i32(buf, offset);
+            }
+
+            // Intrinsics
+            Self::VisitCount => write_u8(buf, VISIT_COUNT),
+            Self::TurnsSince => write_u8(buf, TURNS_SINCE),
+            Self::TurnIndex => write_u8(buf, TURN_INDEX),
+            Self::ChoiceCount => write_u8(buf, CHOICE_COUNT),
+            Self::Random => write_u8(buf, RANDOM),
+            Self::SeedRandom => write_u8(buf, SEED_RANDOM),
+
+            // Casts / math
+            Self::CastToInt => write_u8(buf, CAST_TO_INT),
+            Self::CastToFloat => write_u8(buf, CAST_TO_FLOAT),
+            Self::Floor => write_u8(buf, FLOOR),
+            Self::Ceiling => write_u8(buf, CEILING),
+            Self::Pow => write_u8(buf, POW),
+            Self::Min => write_u8(buf, MIN),
+            Self::Max => write_u8(buf, MAX),
+
+            // External fns
+            Self::CallExternal(id, argc) => {
+                write_u8(buf, CALL_EXTERNAL);
+                write_def_id(buf, id);
+                write_u8(buf, argc);
+            }
+
+            // List ops
+            Self::ListContains => write_u8(buf, LIST_CONTAINS),
+            Self::ListNotContains => write_u8(buf, LIST_NOT_CONTAINS),
+            Self::ListIntersect => write_u8(buf, LIST_INTERSECT),
+            Self::ListUnion => write_u8(buf, LIST_UNION),
+            Self::ListExcept => write_u8(buf, LIST_EXCEPT),
+            Self::ListAll => write_u8(buf, LIST_ALL),
+            Self::ListInvert => write_u8(buf, LIST_INVERT),
+            Self::ListCount => write_u8(buf, LIST_COUNT),
+            Self::ListMin => write_u8(buf, LIST_MIN),
+            Self::ListMax => write_u8(buf, LIST_MAX),
+            Self::ListValue => write_u8(buf, LIST_VALUE),
+            Self::ListRange => write_u8(buf, LIST_RANGE),
+            Self::ListFromInt => write_u8(buf, LIST_FROM_INT),
+            Self::ListRandom => write_u8(buf, LIST_RANDOM),
+
+            // Lifecycle
+            Self::Done => write_u8(buf, DONE),
+            Self::End => write_u8(buf, END),
+            Self::Nop => write_u8(buf, NOP),
+
+            // String eval
+            Self::BeginStringEval => write_u8(buf, BEGIN_STRING_EVAL),
+            Self::EndStringEval => write_u8(buf, END_STRING_EVAL),
+
+            // Debug
+            Self::SourceLocation(line, col) => {
+                write_u8(buf, SOURCE_LOCATION);
+                write_u32(buf, line);
+                write_u32(buf, col);
+            }
+        }
+    }
+
+    /// Decode a single instruction from `buf` starting at `*offset`.
+    ///
+    /// On success, `*offset` is advanced past the consumed bytes.
+    #[expect(clippy::too_many_lines)]
+    pub fn decode(buf: &[u8], offset: &mut usize) -> Result<Self, DecodeError> {
+        let disc = read_u8(buf, offset)?;
+
+        let op = match disc {
+            // Stack & literals
+            PUSH_INT => Self::PushInt(read_i32(buf, offset)?),
+            PUSH_FLOAT => Self::PushFloat(read_f32(buf, offset)?),
+            PUSH_BOOL => Self::PushBool(read_u8(buf, offset)? != 0),
+            PUSH_STRING => Self::PushString(read_u16(buf, offset)?),
+            PUSH_LIST => Self::PushList(read_u16(buf, offset)?),
+            PUSH_DIVERT_TARGET => Self::PushDivertTarget(read_def_id(buf, offset)?),
+            PUSH_NULL => Self::PushNull,
+            POP => Self::Pop,
+            DUPLICATE => Self::Duplicate,
+
+            // Arithmetic
+            ADD => Self::Add,
+            SUBTRACT => Self::Subtract,
+            MULTIPLY => Self::Multiply,
+            DIVIDE => Self::Divide,
+            MODULO => Self::Modulo,
+            NEGATE => Self::Negate,
+
+            // Comparison
+            EQUAL => Self::Equal,
+            NOT_EQUAL => Self::NotEqual,
+            GREATER => Self::Greater,
+            GREATER_OR_EQUAL => Self::GreaterOrEqual,
+            LESS => Self::Less,
+            LESS_OR_EQUAL => Self::LessOrEqual,
+
+            // Logic
+            NOT => Self::Not,
+            AND => Self::And,
+            OR => Self::Or,
+
+            // Global vars
+            GET_GLOBAL => Self::GetGlobal(read_def_id(buf, offset)?),
+            SET_GLOBAL => Self::SetGlobal(read_def_id(buf, offset)?),
+
+            // Temp vars
+            DECLARE_TEMP => Self::DeclareTemp(read_u16(buf, offset)?),
+            GET_TEMP => Self::GetTemp(read_u16(buf, offset)?),
+            SET_TEMP => Self::SetTemp(read_u16(buf, offset)?),
+
+            // Control flow
+            JUMP => Self::Jump(read_i32(buf, offset)?),
+            JUMP_IF_FALSE => Self::JumpIfFalse(read_i32(buf, offset)?),
+            DIVERT => Self::Divert(read_def_id(buf, offset)?),
+            DIVERT_CONDITIONAL => Self::DivertConditional(read_def_id(buf, offset)?),
+            DIVERT_VARIABLE => Self::DivertVariable,
+
+            // Container flow
+            ENTER_CONTAINER => Self::EnterContainer(read_def_id(buf, offset)?),
+            EXIT_CONTAINER => Self::ExitContainer,
+
+            // Functions / tunnels
+            CALL => Self::Call(read_def_id(buf, offset)?),
+            RETURN => Self::Return,
+            TUNNEL_CALL => Self::TunnelCall(read_def_id(buf, offset)?),
+            TUNNEL_RETURN => Self::TunnelReturn,
+
+            // Threads
+            THREAD_START => Self::ThreadStart,
+            THREAD_DONE => Self::ThreadDone,
+
+            // Output
+            EMIT_LINE => Self::EmitLine(read_u16(buf, offset)?),
+            EMIT_VALUE => Self::EmitValue,
+            EMIT_NEWLINE => Self::EmitNewline,
+            GLUE => Self::Glue,
+            BEGIN_TAG => Self::BeginTag,
+            END_TAG => Self::EndTag,
+
+            // Choices
+            BEGIN_CHOICE_SET => Self::BeginChoiceSet,
+            END_CHOICE_SET => Self::EndChoiceSet,
+            BEGIN_CHOICE => Self::BeginChoice(ChoiceFlags::from_byte(read_u8(buf, offset)?)),
+            END_CHOICE => Self::EndChoice,
+            CHOICE_DISPLAY => Self::ChoiceDisplay(read_u16(buf, offset)?),
+            CHOICE_OUTPUT => Self::ChoiceOutput(read_u16(buf, offset)?),
+
+            // Sequences
+            SEQUENCE => {
+                let kind = SequenceKind::from_byte(read_u8(buf, offset)?)?;
+                let count = read_u8(buf, offset)?;
+                Self::Sequence(kind, count)
+            }
+            SEQUENCE_BRANCH => Self::SequenceBranch(read_i32(buf, offset)?),
+
+            // Intrinsics
+            VISIT_COUNT => Self::VisitCount,
+            TURNS_SINCE => Self::TurnsSince,
+            TURN_INDEX => Self::TurnIndex,
+            CHOICE_COUNT => Self::ChoiceCount,
+            RANDOM => Self::Random,
+            SEED_RANDOM => Self::SeedRandom,
+
+            // Casts / math
+            CAST_TO_INT => Self::CastToInt,
+            CAST_TO_FLOAT => Self::CastToFloat,
+            FLOOR => Self::Floor,
+            CEILING => Self::Ceiling,
+            POW => Self::Pow,
+            MIN => Self::Min,
+            MAX => Self::Max,
+
+            // External fns
+            CALL_EXTERNAL => {
+                let id = read_def_id(buf, offset)?;
+                let argc = read_u8(buf, offset)?;
+                Self::CallExternal(id, argc)
+            }
+
+            // List ops
+            LIST_CONTAINS => Self::ListContains,
+            LIST_NOT_CONTAINS => Self::ListNotContains,
+            LIST_INTERSECT => Self::ListIntersect,
+            LIST_UNION => Self::ListUnion,
+            LIST_EXCEPT => Self::ListExcept,
+            LIST_ALL => Self::ListAll,
+            LIST_INVERT => Self::ListInvert,
+            LIST_COUNT => Self::ListCount,
+            LIST_MIN => Self::ListMin,
+            LIST_MAX => Self::ListMax,
+            LIST_VALUE => Self::ListValue,
+            LIST_RANGE => Self::ListRange,
+            LIST_FROM_INT => Self::ListFromInt,
+            LIST_RANDOM => Self::ListRandom,
+
+            // Lifecycle
+            DONE => Self::Done,
+            END => Self::End,
+            NOP => Self::Nop,
+
+            // String eval
+            BEGIN_STRING_EVAL => Self::BeginStringEval,
+            END_STRING_EVAL => Self::EndStringEval,
+
+            // Debug
+            SOURCE_LOCATION => {
+                let line = read_u32(buf, offset)?;
+                let col = read_u32(buf, offset)?;
+                Self::SourceLocation(line, col)
+            }
+
+            _ => return Err(DecodeError::UnknownOpcode(disc)),
+        };
+
+        Ok(op)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::DefinitionTag;
+
+    fn roundtrip(op: &Opcode) {
+        let mut buf = Vec::new();
+        op.encode(&mut buf);
+        let mut offset = 0;
+        let decoded = Opcode::decode(&buf, &mut offset).unwrap();
+        assert_eq!(*op, decoded, "roundtrip failed for {op:?}");
+        assert_eq!(offset, buf.len(), "not all bytes consumed for {op:?}");
+    }
+
+    fn test_id() -> DefinitionId {
+        DefinitionId::new(DefinitionTag::Container, 0xBEEF)
+    }
+
+    fn global_id() -> DefinitionId {
+        DefinitionId::new(DefinitionTag::GlobalVar, 42)
+    }
+
+    fn ext_id() -> DefinitionId {
+        DefinitionId::new(DefinitionTag::ExternalFn, 0xCAFE)
+    }
+
+    #[test]
+    fn roundtrip_stack_literals() {
+        roundtrip(&Opcode::PushInt(0));
+        roundtrip(&Opcode::PushInt(-1));
+        roundtrip(&Opcode::PushInt(i32::MAX));
+        roundtrip(&Opcode::PushInt(i32::MIN));
+        roundtrip(&Opcode::PushFloat(0.0));
+        roundtrip(&Opcode::PushFloat(3.125));
+        roundtrip(&Opcode::PushFloat(f32::NEG_INFINITY));
+        roundtrip(&Opcode::PushBool(true));
+        roundtrip(&Opcode::PushBool(false));
+        roundtrip(&Opcode::PushString(0));
+        roundtrip(&Opcode::PushString(u16::MAX));
+        roundtrip(&Opcode::PushList(7));
+        roundtrip(&Opcode::PushDivertTarget(test_id()));
+        roundtrip(&Opcode::PushNull);
+        roundtrip(&Opcode::Pop);
+        roundtrip(&Opcode::Duplicate);
+    }
+
+    #[test]
+    fn roundtrip_arithmetic() {
+        for op in [
+            Opcode::Add,
+            Opcode::Subtract,
+            Opcode::Multiply,
+            Opcode::Divide,
+            Opcode::Modulo,
+            Opcode::Negate,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    #[test]
+    fn roundtrip_comparison() {
+        for op in [
+            Opcode::Equal,
+            Opcode::NotEqual,
+            Opcode::Greater,
+            Opcode::GreaterOrEqual,
+            Opcode::Less,
+            Opcode::LessOrEqual,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    #[test]
+    fn roundtrip_logic() {
+        for op in [Opcode::Not, Opcode::And, Opcode::Or] {
+            roundtrip(&op);
+        }
+    }
+
+    #[test]
+    fn roundtrip_globals() {
+        roundtrip(&Opcode::GetGlobal(global_id()));
+        roundtrip(&Opcode::SetGlobal(global_id()));
+    }
+
+    #[test]
+    fn roundtrip_temps() {
+        roundtrip(&Opcode::DeclareTemp(0));
+        roundtrip(&Opcode::GetTemp(5));
+        roundtrip(&Opcode::SetTemp(u16::MAX));
+    }
+
+    #[test]
+    fn roundtrip_control_flow() {
+        roundtrip(&Opcode::Jump(0));
+        roundtrip(&Opcode::Jump(-42));
+        roundtrip(&Opcode::JumpIfFalse(100));
+        roundtrip(&Opcode::Divert(test_id()));
+        roundtrip(&Opcode::DivertConditional(test_id()));
+        roundtrip(&Opcode::DivertVariable);
+    }
+
+    #[test]
+    fn roundtrip_container_flow() {
+        roundtrip(&Opcode::EnterContainer(test_id()));
+        roundtrip(&Opcode::ExitContainer);
+    }
+
+    #[test]
+    fn roundtrip_functions_tunnels() {
+        roundtrip(&Opcode::Call(test_id()));
+        roundtrip(&Opcode::Return);
+        roundtrip(&Opcode::TunnelCall(test_id()));
+        roundtrip(&Opcode::TunnelReturn);
+    }
+
+    #[test]
+    fn roundtrip_threads() {
+        roundtrip(&Opcode::ThreadStart);
+        roundtrip(&Opcode::ThreadDone);
+    }
+
+    #[test]
+    fn roundtrip_output() {
+        roundtrip(&Opcode::EmitLine(0));
+        roundtrip(&Opcode::EmitLine(999));
+        roundtrip(&Opcode::EmitValue);
+        roundtrip(&Opcode::EmitNewline);
+        roundtrip(&Opcode::Glue);
+        roundtrip(&Opcode::BeginTag);
+        roundtrip(&Opcode::EndTag);
+    }
+
+    #[test]
+    fn roundtrip_choices() {
+        roundtrip(&Opcode::BeginChoiceSet);
+        roundtrip(&Opcode::EndChoiceSet);
+        roundtrip(&Opcode::BeginChoice(ChoiceFlags {
+            has_condition: true,
+            once_only: false,
+            is_invisible_default: true,
+        }));
+        roundtrip(&Opcode::BeginChoice(ChoiceFlags {
+            has_condition: false,
+            once_only: true,
+            is_invisible_default: false,
+        }));
+        roundtrip(&Opcode::EndChoice);
+        roundtrip(&Opcode::ChoiceDisplay(42));
+        roundtrip(&Opcode::ChoiceOutput(0));
+    }
+
+    #[test]
+    fn roundtrip_sequences() {
+        for kind in [
+            SequenceKind::Cycle,
+            SequenceKind::Stopping,
+            SequenceKind::OnceOnly,
+            SequenceKind::Shuffle,
+        ] {
+            roundtrip(&Opcode::Sequence(kind, 5));
+        }
+        roundtrip(&Opcode::SequenceBranch(-10));
+        roundtrip(&Opcode::SequenceBranch(0));
+    }
+
+    #[test]
+    fn roundtrip_intrinsics() {
+        for op in [
+            Opcode::VisitCount,
+            Opcode::TurnsSince,
+            Opcode::TurnIndex,
+            Opcode::ChoiceCount,
+            Opcode::Random,
+            Opcode::SeedRandom,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    #[test]
+    fn roundtrip_casts_math() {
+        for op in [
+            Opcode::CastToInt,
+            Opcode::CastToFloat,
+            Opcode::Floor,
+            Opcode::Ceiling,
+            Opcode::Pow,
+            Opcode::Min,
+            Opcode::Max,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    #[test]
+    fn roundtrip_call_external() {
+        roundtrip(&Opcode::CallExternal(ext_id(), 3));
+        roundtrip(&Opcode::CallExternal(ext_id(), 0));
+    }
+
+    #[test]
+    fn roundtrip_list_ops() {
+        for op in [
+            Opcode::ListContains,
+            Opcode::ListNotContains,
+            Opcode::ListIntersect,
+            Opcode::ListUnion,
+            Opcode::ListExcept,
+            Opcode::ListAll,
+            Opcode::ListInvert,
+            Opcode::ListCount,
+            Opcode::ListMin,
+            Opcode::ListMax,
+            Opcode::ListValue,
+            Opcode::ListRange,
+            Opcode::ListFromInt,
+            Opcode::ListRandom,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    #[test]
+    fn roundtrip_lifecycle() {
+        for op in [Opcode::Done, Opcode::End, Opcode::Nop] {
+            roundtrip(&op);
+        }
+    }
+
+    #[test]
+    fn roundtrip_string_eval() {
+        roundtrip(&Opcode::BeginStringEval);
+        roundtrip(&Opcode::EndStringEval);
+    }
+
+    #[test]
+    fn roundtrip_debug() {
+        roundtrip(&Opcode::SourceLocation(1, 0));
+        roundtrip(&Opcode::SourceLocation(u32::MAX, u32::MAX));
+    }
+
+    #[test]
+    fn decode_unknown_opcode() {
+        let buf = [0xFF];
+        let mut offset = 0;
+        let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+        assert_eq!(err, DecodeError::UnknownOpcode(0xFF));
+    }
+
+    #[test]
+    fn decode_unexpected_eof() {
+        // PushInt needs 4 more bytes after the discriminant.
+        let buf = [PUSH_INT, 0x00];
+        let mut offset = 0;
+        let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+        assert_eq!(err, DecodeError::UnexpectedEof);
+    }
+
+    #[test]
+    fn decode_multiple_instructions() {
+        let ops = vec![
+            Opcode::PushInt(42),
+            Opcode::PushBool(true),
+            Opcode::Add,
+            Opcode::Done,
+        ];
+        let mut buf = Vec::new();
+        for op in &ops {
+            op.encode(&mut buf);
+        }
+        let mut offset = 0;
+        for expected in &ops {
+            let decoded = Opcode::decode(&buf, &mut offset).unwrap();
+            assert_eq!(*expected, decoded);
+        }
+        assert_eq!(offset, buf.len());
+    }
+
+    #[test]
+    fn choice_flags_roundtrip() {
+        for bits in 0..8u8 {
+            let flags = ChoiceFlags::from_byte(bits);
+            assert_eq!(flags.to_byte(), bits);
+        }
+    }
+}

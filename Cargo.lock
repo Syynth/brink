@@ -155,6 +155,7 @@ dependencies = [
 name = "brink-format"
 version = "0.0.1"
 dependencies = [
+ "bitflags 2.11.0",
  "insta",
  "serde",
 ]
