@@ -12,7 +12,10 @@ bitflags = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+brink-converter = { path = "../brink-converter" }
+brink-json = { path = "../brink-json" }
 insta = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

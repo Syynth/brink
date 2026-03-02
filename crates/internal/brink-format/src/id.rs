@@ -71,6 +71,12 @@ impl DefinitionId {
     }
 }
 
+impl fmt::Display for DefinitionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "${:02x}_{:014x}", self.tag() as u8, self.hash())
+    }
+}
+
 impl fmt::Debug for DefinitionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}({:#014x})", self.tag(), self.hash())

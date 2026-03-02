@@ -133,7 +133,11 @@ version = "0.0.1"
 name = "brink-cli"
 version = "0.0.1"
 dependencies = [
+ "brink-converter",
+ "brink-format",
+ "brink-json",
  "clap",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]
@@ -158,8 +162,11 @@ name = "brink-format"
 version = "0.0.1"
 dependencies = [
  "bitflags 2.11.0",
+ "brink-converter",
+ "brink-json",
  "insta",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
