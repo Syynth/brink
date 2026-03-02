@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-brink-format = { path = ".." }
+brink-format = { path = "..", features = ["inkt"] }
 
 [[bin]]
 name = "read_no_panic"
@@ -29,4 +29,14 @@ doc = false
 [[bin]]
 name = "section_reads_no_panic"
 path = "fuzz_targets/section_reads_no_panic.rs"
+doc = false
+
+[[bin]]
+name = "read_inkt_no_panic"
+path = "fuzz_targets/read_inkt_no_panic.rs"
+doc = false
+
+[[bin]]
+name = "inkt_write_read_roundtrip"
+path = "fuzz_targets/inkt_write_read_roundtrip.rs"
 doc = false
