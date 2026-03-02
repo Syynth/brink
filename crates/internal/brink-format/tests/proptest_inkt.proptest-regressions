@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 316d5131c22ea6ec8af15e0a3d240de37cc487a12eeacd6919add15c352ecc53 # shrinks to story = StoryData { containers: [], variables: [GlobalVarDef { id: Container(0x000000000000), name: NameId(0), value_type: Float, default_value: Int(0), mutable: false }], list_defs: [], list_items: [], externals: [], name_table: [] }
