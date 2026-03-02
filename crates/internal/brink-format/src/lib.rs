@@ -6,9 +6,11 @@
 //!
 //! `brink-runtime` depends ONLY on this crate — nothing else from brink.
 
+mod codec;
 mod counting;
 mod definition;
 mod id;
+mod inkb;
 mod line;
 mod opcode;
 mod story;
@@ -18,6 +20,7 @@ mod write_inkt;
 pub use counting::CountingFlags;
 pub use definition::{ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef};
 pub use id::{DefinitionId, DefinitionTag, LineId, NameId};
+pub use inkb::{read_inkb, write_inkb};
 pub use line::{LineContent, LinePart, LineTemplate, PluralCategory, PluralResolver, SelectKey};
 pub use opcode::{ChoiceFlags, DecodeError, Opcode, SequenceKind};
 pub use story::StoryData;

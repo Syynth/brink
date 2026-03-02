@@ -1,5 +1,9 @@
 use core::fmt;
 
+use crate::codec::{
+    read_def_id, read_f32, read_i32, read_u8, read_u16, read_u32, write_def_id, write_f32,
+    write_i32, write_u8, write_u16, write_u32,
+};
 use crate::id::DefinitionId;
 
 // ── Discriminant bytes ──────────────────────────────────────────────────────
@@ -198,7 +202,7 @@ impl ChoiceFlags {
     }
 }
 
-/// Errors that can occur when decoding an opcode from bytes.
+/// Errors that can occur when decoding from bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
     /// Not enough bytes remaining for the expected operand.
@@ -209,6 +213,22 @@ pub enum DecodeError {
     InvalidDefinitionId(u64),
     /// Invalid sequence kind byte.
     InvalidSequenceKind(u8),
+    /// .inkb magic bytes are not `INKB`.
+    BadMagic([u8; 4]),
+    /// .inkb version is not supported.
+    UnsupportedVersion(u16),
+    /// A string field contained invalid UTF-8.
+    InvalidUtf8,
+    /// Unknown value type discriminant.
+    InvalidValueType(u8),
+    /// Unknown select key discriminant.
+    InvalidSelectKey(u8),
+    /// Unknown line part discriminant.
+    InvalidLinePart(u8),
+    /// Unknown line content discriminant.
+    InvalidLineContent(u8),
+    /// Unknown plural category discriminant.
+    InvalidPluralCategory(u8),
 }
 
 impl fmt::Display for DecodeError {
@@ -220,6 +240,14 @@ impl fmt::Display for DecodeError {
                 write!(f, "invalid definition id: {raw:#018x}")
             }
             Self::InvalidSequenceKind(b) => write!(f, "invalid sequence kind: {b}"),
+            Self::BadMagic(m) => write!(f, "bad magic: {m:02x?}"),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported .inkb version: {v}"),
+            Self::InvalidUtf8 => write!(f, "invalid UTF-8 in string field"),
+            Self::InvalidValueType(b) => write!(f, "invalid value type: {b:#04x}"),
+            Self::InvalidSelectKey(b) => write!(f, "invalid select key: {b:#04x}"),
+            Self::InvalidLinePart(b) => write!(f, "invalid line part: {b:#04x}"),
+            Self::InvalidLineContent(b) => write!(f, "invalid line content: {b:#04x}"),
+            Self::InvalidPluralCategory(b) => write!(f, "invalid plural category: {b:#04x}"),
         }
     }
 }
@@ -358,121 +386,6 @@ pub enum Opcode {
 
     // ── Debug ───────────────────────────────────────────────────────────
     SourceLocation(u32, u32),
-}
-
-// ── Encoding helpers ────────────────────────────────────────────────────────
-
-fn write_u8(buf: &mut Vec<u8>, v: u8) {
-    buf.push(v);
-}
-
-fn write_u16(buf: &mut Vec<u8>, v: u16) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-
-fn write_i32(buf: &mut Vec<u8>, v: i32) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-
-fn write_u32(buf: &mut Vec<u8>, v: u32) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-
-fn write_f32(buf: &mut Vec<u8>, v: f32) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-
-fn write_u64(buf: &mut Vec<u8>, v: u64) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-
-fn write_def_id(buf: &mut Vec<u8>, id: DefinitionId) {
-    write_u64(buf, id.to_raw());
-}
-
-// ── Decoding helpers ────────────────────────────────────────────────────────
-
-fn read_u8(buf: &[u8], offset: &mut usize) -> Result<u8, DecodeError> {
-    if *offset >= buf.len() {
-        return Err(DecodeError::UnexpectedEof);
-    }
-    let v = buf[*offset];
-    *offset += 1;
-    Ok(v)
-}
-
-fn read_u16(buf: &[u8], offset: &mut usize) -> Result<u16, DecodeError> {
-    if *offset + 2 > buf.len() {
-        return Err(DecodeError::UnexpectedEof);
-    }
-    let v = u16::from_le_bytes([buf[*offset], buf[*offset + 1]]);
-    *offset += 2;
-    Ok(v)
-}
-
-fn read_i32(buf: &[u8], offset: &mut usize) -> Result<i32, DecodeError> {
-    if *offset + 4 > buf.len() {
-        return Err(DecodeError::UnexpectedEof);
-    }
-    let v = i32::from_le_bytes([
-        buf[*offset],
-        buf[*offset + 1],
-        buf[*offset + 2],
-        buf[*offset + 3],
-    ]);
-    *offset += 4;
-    Ok(v)
-}
-
-fn read_u32(buf: &[u8], offset: &mut usize) -> Result<u32, DecodeError> {
-    if *offset + 4 > buf.len() {
-        return Err(DecodeError::UnexpectedEof);
-    }
-    let v = u32::from_le_bytes([
-        buf[*offset],
-        buf[*offset + 1],
-        buf[*offset + 2],
-        buf[*offset + 3],
-    ]);
-    *offset += 4;
-    Ok(v)
-}
-
-fn read_f32(buf: &[u8], offset: &mut usize) -> Result<f32, DecodeError> {
-    if *offset + 4 > buf.len() {
-        return Err(DecodeError::UnexpectedEof);
-    }
-    let v = f32::from_le_bytes([
-        buf[*offset],
-        buf[*offset + 1],
-        buf[*offset + 2],
-        buf[*offset + 3],
-    ]);
-    *offset += 4;
-    Ok(v)
-}
-
-fn read_u64(buf: &[u8], offset: &mut usize) -> Result<u64, DecodeError> {
-    if *offset + 8 > buf.len() {
-        return Err(DecodeError::UnexpectedEof);
-    }
-    let v = u64::from_le_bytes([
-        buf[*offset],
-        buf[*offset + 1],
-        buf[*offset + 2],
-        buf[*offset + 3],
-        buf[*offset + 4],
-        buf[*offset + 5],
-        buf[*offset + 6],
-        buf[*offset + 7],
-    ]);
-    *offset += 8;
-    Ok(v)
-}
-
-fn read_def_id(buf: &[u8], offset: &mut usize) -> Result<DefinitionId, DecodeError> {
-    let raw = read_u64(buf, offset)?;
-    DefinitionId::from_raw(raw).ok_or(DecodeError::InvalidDefinitionId(raw))
 }
 
 // ── Opcode encode / decode ──────────────────────────────────────────────────
