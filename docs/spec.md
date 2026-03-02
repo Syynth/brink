@@ -93,9 +93,9 @@ Covers all ink constructs: knots, stitches, choices, gathers, diverts, tunnels, 
 - **Input:** `ast::SourceFile` from brink-syntax
 - **Output:** `(HirTree, SymbolManifest, Vec<Diagnostic>)`
 - **Responsibilities:**
-  - Weave folding: flat choices/gathers (identified by bullet/dash count) → container tree with proper nesting and scope
+  - Weave folding: flat choices/gathers (identified by bullet/dash count) → container tree with proper nesting and scope. Must recurse into conditional blocks to find choices that participate in the outer weave (see "Choices inside conditional blocks" under Ink semantics).
   - Implicit structure: top-level content before first knot → root container
-  - INCLUDE content merging: top-level content from included files is inlined at the INCLUDE location; knots are separated and appended to the story
+  - INCLUDE content merging: top-level content from included files is inlined at the INCLUDE location; knots are separated and appended to the story. Note: the actual merge is cross-file and happens in brink-analyzer; brink-hir records INCLUDE sites and exports `fold_weave` which the analyzer calls on the merged content.
   - First-stitch auto-enter: the first stitch in a knot is entered via implicit divert; other stitches require explicit diverts
   - Strip trivia and syntactic sugar
   - Collect declarations into symbol manifest (knots, stitches, variables, lists, externals, unresolved references)
@@ -317,12 +317,12 @@ The instruction set covers:
 - **Comparison & logic:** equal, not-equal, greater, less, etc., not, and, or
 - **Global variables:** get global (`DefinitionId`), set global (`DefinitionId`)
 - **Temp variables:** declare temp (slot), get temp (slot), set temp (slot)
-- **Control flow:** jump, conditional jump, divert (`DefinitionId`), conditional divert, variable divert
-- **Container flow:** enter container (push position, no new frame), exit container (pop position)
+- **Control flow:** jump, conditional jump, divert (`DefinitionId` — goto, replaces current position), conditional divert, variable divert
+- **Container flow:** enter container (`DefinitionId` — push position, resume at caller when child ends), exit container (pop position)
 - **Functions & tunnels:** call (push call frame + enter), return (pop call frame), tunnel call, tunnel return
 - **Threads:** thread start (fork entire call stack), thread done
-- **Output:** emit line (`u16` local line index), emit value (stringify + emit top of stack), emit newline, glue, emit tag
-- **Choices:** begin/end choice set, begin/end choice (with sticky/fallback/once-only flags + condition flag), choice display (`u16` local line index), choice output (`u16` local line index)
+- **Output:** emit line (`u16` local line index), eval line (`u16` local line index — same as emit line but pushes to value stack instead of output buffer), emit value (stringify + emit top of stack), emit newline, glue, emit tag
+- **Choices:** begin/end choice set, begin/end choice (`ChoiceFlags` + `DefinitionId` target), choice output (`u16` local line index)
 - **Sequences:** sequence (with kind: cycle/stopping/once-only/shuffle), sequence branch
 - **Intrinsics:** visit count, turns since, turn index, choice count, random, seed random
 - **External functions:** call external (`DefinitionId` + arg count)
@@ -572,16 +572,30 @@ This three-part split is a source-language authoring convenience. For localizati
 - **Choice display** — the complete text shown in the choice list (before + inside bracket)
 - **Choice output** — the complete text emitted after selection (before + after bracket)
 
-The bytecode references these as separate local line indices:
+`BeginChoice(flags, target)` always pops the display text from the value stack. The choice target (`DefinitionId`) is encoded directly in the opcode — no separate divert instruction. Two bytecode patterns are supported:
+
+**High-level (static/templated text):** The compiler resolves bracket syntax at compile time and stores both texts as line table entries. `EvalLine` reads a line and pushes it as a String to the value stack (same as `EmitLine` but targeting the value stack instead of the output buffer). `ChoiceOutput` stores a line table reference on the pending choice for emission when the player selects it.
 
 ```
-BeginChoice(flags)
-  ChoiceDisplay(line: 5)
-  ChoiceOutput(line: 6)
+EvalLine(5)                   // push display text from line table
+BeginChoice(flags, target)    // pop display text, register choice
+  ChoiceOutput(6)             // output text line reference
 EndChoice
 ```
 
-Translators localize each independently with no structural coupling. This allows the target language to use completely different grammatical constructions for the choice prompt vs. the narrative output.
+Translators localize each line independently with no structural coupling. This allows the target language to use completely different grammatical constructions for the choice prompt vs. the narrative output.
+
+**Low-level (dynamic text):** When choice text contains arbitrary logic that cannot be statically decomposed into a line table entry, `BeginStringEval`/`EndStringEval` captures evaluated text as a String and pushes it to the value stack. The choice target container handles output text directly. This path is also used by the ink.json converter, which does not have access to the original bracket syntax.
+
+```
+BeginStringEval
+  EnterContainer(choice_text)   // arbitrary code that emits text
+EndStringEval                   // capture text, push String to value stack
+BeginChoice(flags, target)      // pop display text, register choice
+EndChoice                       // no ChoiceOutput — target handles output
+```
+
+Both patterns are first-class. `BeginChoice` is agnostic to how the display text was produced — it always pops one String from the value stack.
 
 ### Voice acting
 
@@ -685,6 +699,7 @@ Key semantics verified against the reference C# ink implementation:
 - **Root entry point:** all top-level content becomes an implicit root container. The compiler appends an implicit gather + `-> DONE` so the story terminates gracefully.
 - **Visit counting:** per-container granularity. Any container (knot, stitch, gather, choice target) can independently track visits and turn indices. `countingAtStartOnly` prevents overcounting on mid-container re-entry.
 - **Gathers:** not first-class objects. Implemented as unnamed containers that choice branches divert to.
+- **Choices inside conditional blocks:** choices (`*`) can appear inside `{ - condition: ... }` multiline conditional blocks and participate in the outer weave structure (not a separate scope). Gathers (`-`) are explicitly forbidden inside conditional blocks — the reference compiler errors with "You can't use a gather (the dashes) within the { curly braces } context." This means conditional blocks are transparent to weave folding: they conditionally include/exclude choices at the current depth, but cannot introduce nested weave structure. The parser enforces this at `StatementLevel.InnerBlock`. **Parser gap:** brink-syntax does not yet parse choices inside multiline branch bodies — `multiline_branch_body` has no `STAR` arm and needs to be updated.
 
 ## Test corpus
 

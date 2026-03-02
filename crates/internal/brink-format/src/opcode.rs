@@ -77,13 +77,13 @@ const EMIT_NEWLINE: u8 = 0x62;
 const GLUE: u8 = 0x63;
 const BEGIN_TAG: u8 = 0x64;
 const END_TAG: u8 = 0x65;
+const EVAL_LINE: u8 = 0x66;
 
 // Choices
 const BEGIN_CHOICE_SET: u8 = 0x70;
 const END_CHOICE_SET: u8 = 0x71;
 const BEGIN_CHOICE: u8 = 0x72;
 const END_CHOICE: u8 = 0x73;
-const CHOICE_DISPLAY: u8 = 0x74;
 const CHOICE_OUTPUT: u8 = 0x75;
 
 // Sequences
@@ -172,8 +172,11 @@ impl SequenceKind {
 
 /// Flags packed into a `BeginChoice` instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct ChoiceFlags {
     pub has_condition: bool,
+    pub has_start_content: bool,
+    pub has_choice_only_content: bool,
     pub once_only: bool,
     pub is_invisible_default: bool,
 }
@@ -184,11 +187,17 @@ impl ChoiceFlags {
         if self.has_condition {
             b |= 0x01;
         }
-        if self.once_only {
+        if self.has_start_content {
             b |= 0x02;
         }
-        if self.is_invisible_default {
+        if self.has_choice_only_content {
             b |= 0x04;
+        }
+        if self.once_only {
+            b |= 0x08;
+        }
+        if self.is_invisible_default {
+            b |= 0x10;
         }
         b
     }
@@ -196,8 +205,10 @@ impl ChoiceFlags {
     fn from_byte(b: u8) -> Self {
         Self {
             has_condition: b & 0x01 != 0,
-            once_only: b & 0x02 != 0,
-            is_invisible_default: b & 0x04 != 0,
+            has_start_content: b & 0x02 != 0,
+            has_choice_only_content: b & 0x04 != 0,
+            once_only: b & 0x08 != 0,
+            is_invisible_default: b & 0x10 != 0,
         }
     }
 }
@@ -356,13 +367,13 @@ pub enum Opcode {
     Glue,
     BeginTag,
     EndTag,
+    EvalLine(u16),
 
     // ── Choices ─────────────────────────────────────────────────────────
     BeginChoiceSet,
     EndChoiceSet,
-    BeginChoice(ChoiceFlags),
+    BeginChoice(ChoiceFlags, DefinitionId),
     EndChoice,
-    ChoiceDisplay(u16),
     ChoiceOutput(u16),
 
     // ── Sequences ───────────────────────────────────────────────────────
@@ -551,19 +562,20 @@ impl Opcode {
             Self::Glue => write_u8(buf, GLUE),
             Self::BeginTag => write_u8(buf, BEGIN_TAG),
             Self::EndTag => write_u8(buf, END_TAG),
+            Self::EvalLine(idx) => {
+                write_u8(buf, EVAL_LINE);
+                write_u16(buf, idx);
+            }
 
             // Choices
             Self::BeginChoiceSet => write_u8(buf, BEGIN_CHOICE_SET),
             Self::EndChoiceSet => write_u8(buf, END_CHOICE_SET),
-            Self::BeginChoice(flags) => {
+            Self::BeginChoice(flags, target) => {
                 write_u8(buf, BEGIN_CHOICE);
                 write_u8(buf, flags.to_byte());
+                write_def_id(buf, target);
             }
             Self::EndChoice => write_u8(buf, END_CHOICE),
-            Self::ChoiceDisplay(idx) => {
-                write_u8(buf, CHOICE_DISPLAY);
-                write_u16(buf, idx);
-            }
             Self::ChoiceOutput(idx) => {
                 write_u8(buf, CHOICE_OUTPUT);
                 write_u16(buf, idx);
@@ -715,13 +727,17 @@ impl Opcode {
             GLUE => Self::Glue,
             BEGIN_TAG => Self::BeginTag,
             END_TAG => Self::EndTag,
+            EVAL_LINE => Self::EvalLine(read_u16(buf, offset)?),
 
             // Choices
             BEGIN_CHOICE_SET => Self::BeginChoiceSet,
             END_CHOICE_SET => Self::EndChoiceSet,
-            BEGIN_CHOICE => Self::BeginChoice(ChoiceFlags::from_byte(read_u8(buf, offset)?)),
+            BEGIN_CHOICE => {
+                let flags = ChoiceFlags::from_byte(read_u8(buf, offset)?);
+                let target = read_def_id(buf, offset)?;
+                Self::BeginChoice(flags, target)
+            }
             END_CHOICE => Self::EndChoice,
-            CHOICE_DISPLAY => Self::ChoiceDisplay(read_u16(buf, offset)?),
             CHOICE_OUTPUT => Self::ChoiceOutput(read_u16(buf, offset)?),
 
             // Sequences
@@ -928,24 +944,35 @@ mod tests {
         roundtrip(&Opcode::Glue);
         roundtrip(&Opcode::BeginTag);
         roundtrip(&Opcode::EndTag);
+        roundtrip(&Opcode::EvalLine(0));
+        roundtrip(&Opcode::EvalLine(42));
     }
 
     #[test]
     fn roundtrip_choices() {
         roundtrip(&Opcode::BeginChoiceSet);
         roundtrip(&Opcode::EndChoiceSet);
-        roundtrip(&Opcode::BeginChoice(ChoiceFlags {
-            has_condition: true,
-            once_only: false,
-            is_invisible_default: true,
-        }));
-        roundtrip(&Opcode::BeginChoice(ChoiceFlags {
-            has_condition: false,
-            once_only: true,
-            is_invisible_default: false,
-        }));
+        roundtrip(&Opcode::BeginChoice(
+            ChoiceFlags {
+                has_condition: true,
+                has_start_content: false,
+                has_choice_only_content: true,
+                once_only: false,
+                is_invisible_default: true,
+            },
+            test_id(),
+        ));
+        roundtrip(&Opcode::BeginChoice(
+            ChoiceFlags {
+                has_condition: false,
+                has_start_content: true,
+                has_choice_only_content: false,
+                once_only: true,
+                is_invisible_default: false,
+            },
+            test_id(),
+        ));
         roundtrip(&Opcode::EndChoice);
-        roundtrip(&Opcode::ChoiceDisplay(42));
         roundtrip(&Opcode::ChoiceOutput(0));
     }
 
@@ -1078,7 +1105,7 @@ mod tests {
 
     #[test]
     fn choice_flags_roundtrip() {
-        for bits in 0..8u8 {
+        for bits in 0..32u8 {
             let flags = ChoiceFlags::from_byte(bits);
             assert_eq!(flags.to_byte(), bits);
         }

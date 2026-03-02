@@ -2,9 +2,9 @@
 #![allow(clippy::unwrap_used)]
 
 use brink_format::{
-    ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef, GlobalVarDef,
-    LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue, NameId, Opcode,
-    PluralCategory, SelectKey, StoryData, Value,
+    ContainerDef, ContainerLineTable, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef,
+    GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue, NameId,
+    Opcode, PluralCategory, SelectKey, StoryData, Value,
 };
 use proptest::prelude::*;
 
@@ -148,6 +148,7 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         arb_def_id().prop_map(Opcode::Call),
         Just(Opcode::Return),
         any::<u16>().prop_map(Opcode::EmitLine),
+        any::<u16>().prop_map(Opcode::EvalLine),
         Just(Opcode::EmitValue),
         Just(Opcode::EmitNewline),
         Just(Opcode::Glue),
@@ -167,7 +168,7 @@ fn arb_bytecode() -> impl Strategy<Value = Vec<u8>> {
     })
 }
 
-fn arb_container() -> impl Strategy<Value = ContainerDef> {
+fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ContainerLineTable)> {
     (
         arb_def_id(),
         arb_bytecode(),
@@ -175,15 +176,19 @@ fn arb_container() -> impl Strategy<Value = ContainerDef> {
         arb_counting_flags(),
         prop::collection::vec(arb_line_entry(), 0..4),
     )
-        .prop_map(
-            |(id, bytecode, content_hash, counting_flags, line_table)| ContainerDef {
+        .prop_map(|(id, bytecode, content_hash, counting_flags, lines)| {
+            let def = ContainerDef {
                 id,
                 bytecode,
                 content_hash,
                 counting_flags,
-                line_table,
-            },
-        )
+            };
+            let lt = ContainerLineTable {
+                container_id: id,
+                lines,
+            };
+            (def, lt)
+        })
 }
 
 /// Generate a global var with consistent `value_type` and `default_value`.
@@ -236,7 +241,7 @@ fn arb_external() -> impl Strategy<Value = ExternalFnDef> {
 
 fn arb_story_data() -> impl Strategy<Value = StoryData> {
     (
-        prop::collection::vec(arb_container(), 0..5),
+        prop::collection::vec(arb_container_with_lines(), 0..5),
         prop::collection::vec(arb_global_var(), 0..5),
         prop::collection::vec(arb_list_def(), 0..5),
         prop::collection::vec(arb_list_item(), 0..5),
@@ -244,13 +249,17 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
         prop::collection::vec("[^\"\\\\\x00]*", 0..8),
     )
         .prop_map(
-            |(containers, variables, list_defs, list_items, externals, name_table)| StoryData {
-                containers,
-                variables,
-                list_defs,
-                list_items,
-                externals,
-                name_table,
+            |(pairs, variables, list_defs, list_items, externals, name_table)| {
+                let (containers, line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+                StoryData {
+                    containers,
+                    line_tables,
+                    variables,
+                    list_defs,
+                    list_items,
+                    externals,
+                    name_table,
+                }
             },
         )
 }

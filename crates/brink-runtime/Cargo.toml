@@ -9,5 +9,14 @@ keywords.workspace = true
 categories.workspace = true
 description = "Runtime/VM for executing compiled ink stories"
 
+[dependencies]
+brink-format = { path = "../internal/brink-format" }
+thiserror.workspace = true
+
+[dev-dependencies]
+brink-converter = { path = "../internal/brink-converter" }
+brink-json = { path = "../internal/brink-json" }
+serde_json.workspace = true
+
 [lints]
 workspace = true

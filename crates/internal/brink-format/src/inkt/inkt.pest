@@ -67,7 +67,7 @@ operand = { choice_flags | kv_operand | def_id | float | integer | source_loc | 
 kv_operand = @{ ASCII_ALPHA+ ~ "=" ~ (ASCII_ALPHANUMERIC | "_" | "-")+ }
 seq_kind = { "cycle" | "stopping" | "once_only" | "shuffle" }
 bool_lit = { "true" | "false" }
-choice_flags = @{ ("cond" | "once" | "invis_default" | "none") ~ ("+" ~ ("cond" | "once" | "invis_default"))* }
+choice_flags = @{ ("cond" | "start" | "choice_only" | "once" | "invis_default" | "none") ~ ("+" ~ ("cond" | "start" | "choice_only" | "once" | "invis_default"))* }
 source_loc = @{ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ }
 
 // ── Values ──────────────────────────────────────────────────────────────────

@@ -99,15 +99,17 @@ fn register_container(
             };
             register_container(index, child, &child_path)?;
 
-            // Also register under the container's own name if it has one
+            // Also register under the container's own name if it has one.
+            // Reuse the indexed container's ID so that both paths resolve to
+            // the same container def at link time.
             if let Some(name) = &child.name {
                 let named_path = if current_path.is_empty() {
                     name.clone()
                 } else {
                     format!("{current_path}.{name}")
                 };
-                let named_id = path::container_id(&named_path);
-                index.containers.insert(named_path, named_id);
+                let child_id = path::container_id(&child_path);
+                index.containers.insert(named_path, child_id);
             }
         }
     }

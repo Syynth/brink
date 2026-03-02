@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used)]
 
 use brink_format::{
-    ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef, GlobalVarDef,
-    LineContent, LineEntry, LinePart, ListDef, ListItemDef, NameId, PluralCategory, SectionKind,
-    SelectKey, StoryData, Value, ValueType, read_inkb, read_inkb_index, write_inkb,
+    ContainerDef, ContainerLineTable, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef,
+    GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, NameId, PluralCategory,
+    SectionKind, SelectKey, StoryData, Value, ValueType, read_inkb, read_inkb_index, write_inkb,
 };
 use proptest::prelude::*;
 
@@ -104,7 +104,7 @@ fn arb_value() -> impl Strategy<Value = Value> {
     ]
 }
 
-fn arb_container() -> impl Strategy<Value = ContainerDef> {
+fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ContainerLineTable)> {
     (
         arb_def_id(),
         prop::collection::vec(any::<u8>(), 0..32),
@@ -112,15 +112,19 @@ fn arb_container() -> impl Strategy<Value = ContainerDef> {
         arb_counting_flags(),
         prop::collection::vec(arb_line_entry(), 0..4),
     )
-        .prop_map(
-            |(id, bytecode, content_hash, counting_flags, line_table)| ContainerDef {
+        .prop_map(|(id, bytecode, content_hash, counting_flags, lines)| {
+            let def = ContainerDef {
                 id,
                 bytecode,
                 content_hash,
                 counting_flags,
-                line_table,
-            },
-        )
+            };
+            let lt = ContainerLineTable {
+                container_id: id,
+                lines,
+            };
+            (def, lt)
+        })
 }
 
 fn arb_global_var() -> impl Strategy<Value = GlobalVarDef> {
@@ -176,7 +180,7 @@ fn arb_external() -> impl Strategy<Value = ExternalFnDef> {
 
 fn arb_story_data() -> impl Strategy<Value = StoryData> {
     (
-        prop::collection::vec(arb_container(), 0..5),
+        prop::collection::vec(arb_container_with_lines(), 0..5),
         prop::collection::vec(arb_global_var(), 0..5),
         prop::collection::vec(arb_list_def(), 0..5),
         prop::collection::vec(arb_list_item(), 0..5),
@@ -184,13 +188,17 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
         prop::collection::vec(".*", 0..8),
     )
         .prop_map(
-            |(containers, variables, list_defs, list_items, externals, name_table)| StoryData {
-                containers,
-                variables,
-                list_defs,
-                list_items,
-                externals,
-                name_table,
+            |(pairs, variables, list_defs, list_items, externals, name_table)| {
+                let (containers, line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+                StoryData {
+                    containers,
+                    line_tables,
+                    variables,
+                    list_defs,
+                    list_items,
+                    externals,
+                    name_table,
+                }
             },
         )
 }
@@ -215,14 +223,15 @@ proptest! {
         // Correct version.
         prop_assert_eq!(index.version, 1);
 
-        // Exactly 6 sections in canonical order.
-        prop_assert_eq!(index.sections.len(), 6);
+        // Exactly 7 sections in canonical order.
+        prop_assert_eq!(index.sections.len(), 7);
         prop_assert_eq!(index.sections[0].kind, SectionKind::NameTable);
         prop_assert_eq!(index.sections[1].kind, SectionKind::Variables);
         prop_assert_eq!(index.sections[2].kind, SectionKind::ListDefs);
         prop_assert_eq!(index.sections[3].kind, SectionKind::ListItems);
         prop_assert_eq!(index.sections[4].kind, SectionKind::Externals);
         prop_assert_eq!(index.sections[5].kind, SectionKind::Containers);
+        prop_assert_eq!(index.sections[6].kind, SectionKind::LineTables);
 
         let header_size = u32::try_from(index.header_size()).unwrap();
 

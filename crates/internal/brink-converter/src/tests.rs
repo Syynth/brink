@@ -15,9 +15,9 @@ fn convert_i001_minimal_story() {
     // Should have containers (root + sub-containers)
     assert!(!data.containers.is_empty(), "should produce containers");
 
-    // At least one container should have a line table entry with "Hello, world!"
-    let has_hello = data.containers.iter().any(|c| {
-        c.line_table.iter().any(|entry| {
+    // At least one line table should have an entry with "Hello, world!"
+    let has_hello = data.line_tables.iter().any(|lt| {
+        lt.lines.iter().any(|entry| {
             matches!(
                 &entry.content,
                 brink_format::LineContent::Plain(s) if s == "Hello, world!"
@@ -33,9 +33,9 @@ fn convert_simple_divert() {
     let story: InkJson = serde_json::from_str(json_text).unwrap();
     let data = convert(&story).unwrap();
 
-    // Should have a container for "hurry_home"
-    let has_hurry_home = data.containers.iter().any(|c| {
-        c.line_table.iter().any(|entry| {
+    // Should have a line table with "hurried home" text
+    let has_hurry_home = data.line_tables.iter().any(|lt| {
+        lt.lines.iter().any(|entry| {
             matches!(
                 &entry.content,
                 brink_format::LineContent::Plain(s) if s.contains("hurried home")

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use brink_format::{
-    ChoiceFlags, ContainerDef, CountingFlags, ExternalFnDef, GlobalVarDef, LineContent, LineEntry,
-    ListDef, ListItemDef, NameId, Opcode, SequenceKind, Value,
+    ChoiceFlags, ContainerDef, ContainerLineTable, CountingFlags, ExternalFnDef, GlobalVarDef,
+    LineContent, LineEntry, ListDef, ListItemDef, NameId, Opcode, SequenceKind, Value,
 };
 use brink_json::{
     ChoicePoint, ChoicePointFlags, Container, ContainerFlags, ControlCommand, Divert, Element,
@@ -14,13 +14,13 @@ use crate::index::StoryIndex;
 use crate::path;
 
 /// Temp variable scope, shared across a knot/function.
-struct TempScope {
+pub(crate) struct TempScope {
     vars: HashMap<String, u16>,
     next_slot: u16,
 }
 
 impl TempScope {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             vars: HashMap::new(),
             next_slot: 0,
@@ -28,6 +28,12 @@ impl TempScope {
     }
 
     fn declare(&mut self, name: &str) -> Result<u16, ConvertError> {
+        // If already declared in this scope, reuse the existing slot.
+        // Ink temp variables are flat within a callframe — redeclaring
+        // just overwrites the same slot.
+        if let Some(&existing) = self.vars.get(name) {
+            return Ok(existing);
+        }
         let slot = self.next_slot;
         self.next_slot = self
             .next_slot
@@ -49,7 +55,7 @@ struct ContainerEmitter<'a> {
     bytecode: Vec<u8>,
     line_table: Vec<LineEntry>,
     in_eval_mode: bool,
-    temps: TempScope,
+    in_string_eval: bool,
 }
 
 impl<'a> ContainerEmitter<'a> {
@@ -60,7 +66,7 @@ impl<'a> ContainerEmitter<'a> {
             bytecode: Vec::new(),
             line_table: Vec::new(),
             in_eval_mode: false,
-            temps: TempScope::new(),
+            in_string_eval: false,
         }
     }
 
@@ -92,16 +98,17 @@ impl<'a> ContainerEmitter<'a> {
         &mut self,
         element: &Element,
         name_table: &mut NameTableWriter,
+        temps: &mut TempScope,
     ) -> Result<(), ConvertError> {
         match element {
             Element::Value(InkValue::String(s)) if s == "\n" => {
-                if !self.in_eval_mode {
+                if !self.in_eval_mode || self.in_string_eval {
                     self.emit(&Opcode::EmitNewline);
                 }
             }
 
             Element::Value(InkValue::String(s)) => {
-                if self.in_eval_mode {
+                if self.in_eval_mode && !self.in_string_eval {
                     let name_id = name_table.intern(s)?;
                     self.emit(&Opcode::PushString(name_id.0));
                 } else {
@@ -132,7 +139,7 @@ impl<'a> ContainerEmitter<'a> {
             }
 
             Element::Value(InkValue::VariablePointer(var)) => {
-                if let Some(slot) = self.temps.get(var) {
+                if let Some(slot) = temps.get(var) {
                     self.emit(&Opcode::GetTemp(slot));
                 } else {
                     // Use registered global or synthesize one for list items etc.
@@ -164,15 +171,15 @@ impl<'a> ContainerEmitter<'a> {
             }
 
             Element::Divert(divert) => {
-                self.emit_divert(divert)?;
+                self.emit_divert(divert, temps)?;
             }
 
             Element::VariableAssignment(assign) => {
-                self.emit_variable_assignment(assign)?;
+                self.emit_variable_assignment(assign, temps)?;
             }
 
             Element::VariableReference(VariableReference { variable }) => {
-                if let Some(slot) = self.temps.get(variable) {
+                if let Some(slot) = temps.get(variable) {
                     self.emit(&Opcode::GetTemp(slot));
                 } else {
                     let id = self
@@ -212,8 +219,14 @@ impl<'a> ContainerEmitter<'a> {
             ControlCommand::TunnelReturn => self.emit(&Opcode::TunnelReturn),
             ControlCommand::FunctionReturn => self.emit(&Opcode::Return),
             ControlCommand::Duplicate => self.emit(&Opcode::Duplicate),
-            ControlCommand::BeginStringEval => self.emit(&Opcode::BeginStringEval),
-            ControlCommand::EndStringEval => self.emit(&Opcode::EndStringEval),
+            ControlCommand::BeginStringEval => {
+                self.in_string_eval = true;
+                self.emit(&Opcode::BeginStringEval);
+            }
+            ControlCommand::EndStringEval => {
+                self.in_string_eval = false;
+                self.emit(&Opcode::EndStringEval);
+            }
             ControlCommand::NoOperation => self.emit(&Opcode::Nop),
             ControlCommand::ChoiceCount => self.emit(&Opcode::ChoiceCount),
             ControlCommand::Turn => self.emit(&Opcode::TurnIndex),
@@ -272,7 +285,7 @@ impl<'a> ContainerEmitter<'a> {
         self.emit(&op);
     }
 
-    fn emit_divert(&mut self, divert: &Divert) -> Result<(), ConvertError> {
+    fn emit_divert(&mut self, divert: &Divert, temps: &mut TempScope) -> Result<(), ConvertError> {
         match divert {
             Divert::Target { conditional, path } => {
                 let id = self.resolve_divert_target(path)?;
@@ -283,7 +296,14 @@ impl<'a> ContainerEmitter<'a> {
                 }
             }
 
-            Divert::Variable { .. } => {
+            Divert::Variable { path, .. } => {
+                // Push the variable's value onto the stack before diverting.
+                if let Some(slot) = temps.get(path) {
+                    self.emit(&Opcode::GetTemp(slot));
+                } else {
+                    let id = path::global_var_id(path);
+                    self.emit(&Opcode::GetGlobal(id));
+                }
                 self.emit(&Opcode::DivertVariable);
             }
 
@@ -312,6 +332,7 @@ impl<'a> ContainerEmitter<'a> {
     fn emit_variable_assignment(
         &mut self,
         assign: &VariableAssignment,
+        temps: &mut TempScope,
     ) -> Result<(), ConvertError> {
         match assign {
             VariableAssignment::GlobalAssignment { variable } => {
@@ -325,13 +346,13 @@ impl<'a> ContainerEmitter<'a> {
             }
             VariableAssignment::TemporaryAssignment { variable, reassign } => {
                 if *reassign {
-                    let slot = self.temps.get(variable).unwrap_or_else(|| {
+                    let slot = temps.get(variable).unwrap_or_else(|| {
                         // Reassignment to unknown temp — treat as new declaration
-                        self.temps.declare(variable).unwrap_or(0)
+                        temps.declare(variable).unwrap_or(0)
                     });
                     self.emit(&Opcode::SetTemp(slot));
                 } else {
-                    let slot = self.temps.declare(variable)?;
+                    let slot = temps.declare(variable)?;
                     self.emit(&Opcode::DeclareTemp(slot));
                 }
             }
@@ -344,12 +365,13 @@ impl<'a> ContainerEmitter<'a> {
 
         let flags = ChoiceFlags {
             has_condition: cp.flags.contains(ChoicePointFlags::HAS_CONDITION),
+            has_start_content: cp.flags.contains(ChoicePointFlags::HAS_START_CONTENT),
+            has_choice_only_content: cp.flags.contains(ChoicePointFlags::HAS_CHOICE_ONLY_CONTENT),
             once_only: cp.flags.contains(ChoicePointFlags::ONCE_ONLY),
             is_invisible_default: cp.flags.contains(ChoicePointFlags::IS_INVISIBLE_DEFAULT),
         };
 
-        self.emit(&Opcode::BeginChoice(flags));
-        self.emit(&Opcode::Divert(id));
+        self.emit(&Opcode::BeginChoice(flags, id));
         self.emit(&Opcode::EndChoice);
         Ok(())
     }
@@ -399,19 +421,77 @@ impl NameTableWriter {
     }
 }
 
-/// Process a container and all sub-containers, returning `ContainerDef`s.
+/// Check if a variable assignment targets a `$r`-family temp variable.
+fn is_dollar_r_assign(element: &Element) -> bool {
+    matches!(
+        element,
+        Element::VariableAssignment(VariableAssignment::TemporaryAssignment {
+            variable,
+            ..
+        }) if variable.starts_with("$r")
+    )
+}
+
+/// Check if a divert target value points to a `$r`-family label.
+fn is_dollar_r_divert_target(element: &Element) -> bool {
+    matches!(element, Element::Value(InkValue::DivertTarget(p)) if p.contains("$r"))
+}
+
+/// Check if a container is a `$r`-family label marker (e.g. `[{"#n":"$r1"}]`).
+fn is_dollar_r_marker(element: &Element) -> bool {
+    matches!(element, Element::Container(c) if c.name.as_deref().is_some_and(|n| n.starts_with("$r")))
+}
+
+/// Check if a divert is a variable divert to `$r` (the return divert in "s" containers).
+fn is_dollar_r_variable_divert(element: &Element) -> bool {
+    matches!(
+        element,
+        Element::Divert(Divert::Variable { path, .. }) if path.starts_with("$r")
+    )
+}
+
+/// Detect the $r pattern at position `i` in a contents array.
+///
+/// Returns `Some(skip_count)` if the pattern is found, where `skip_count` is
+/// the number of elements to skip (including the initial element at `i`).
+///
+/// Pattern A (inside eval block): ev, ^->$rN, temp=$r, str, ->.^.s, [$rN], /str
+///   Elements at i+0..i+2: DivertTarget($rN), temp=$r — skip 2 (ev already consumed)
+///   The caller is responsible for recognizing the "ev" that precedes this.
+///
+/// Pattern B (c-N container start): ev, ^->$rN, /ev, temp=$r, ->path.s, [$rN]
+///   Starts at the beginning of contents with ev at index 0.
+fn detect_dollar_r_setup(contents: &[Element], i: usize) -> Option<usize> {
+    // We need at least 2 elements: DivertTarget($r) + temp=$r
+    if i + 1 >= contents.len() {
+        return None;
+    }
+    if is_dollar_r_divert_target(&contents[i]) && is_dollar_r_assign(&contents[i + 1]) {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+/// Process a container and all sub-containers, returning `(ContainerDef, ContainerLineTable)` pairs.
+#[expect(clippy::too_many_lines)]
 pub fn process_container(
     index: &StoryIndex,
     container: &Container,
     current_path: &str,
     name_table: &mut NameTableWriter,
-) -> Result<Vec<ContainerDef>, ConvertError> {
-    let mut all_defs = Vec::new();
+    temps: &mut TempScope,
+) -> Result<Vec<(ContainerDef, ContainerLineTable)>, ConvertError> {
+    let mut all_pairs = Vec::new();
 
     let mut emitter = ContainerEmitter::new(index, current_path.to_string());
 
-    // Process contents
-    for (i, element) in container.contents.iter().enumerate() {
+    // Process contents with index-based iteration for pattern skipping
+    let contents = &container.contents;
+    let mut i = 0;
+    while i < contents.len() {
+        let element = &contents[i];
+
         if let Element::Container(child) = element {
             let child_path = if current_path.is_empty() {
                 i.to_string()
@@ -419,15 +499,87 @@ pub fn process_container(
                 format!("{current_path}.{i}")
             };
 
+            // Skip $r marker containers (e.g. [{"#n":"$r1"}])
+            if is_dollar_r_marker(element) {
+                // Still process as a child so it gets a ContainerDef, but don't
+                // emit an EnterContainer opcode.
+                let child_pairs = process_container(index, child, &child_path, name_table, temps)?;
+                all_pairs.extend(child_pairs);
+                i += 1;
+                continue;
+            }
+
             if let Some(&child_id) = index.containers.get(&child_path) {
                 emitter.emit(&Opcode::EnterContainer(child_id));
             }
 
-            let child_defs = process_container(index, child, &child_path, name_table)?;
-            all_defs.extend(child_defs);
+            let child_pairs = process_container(index, child, &child_path, name_table, temps)?;
+            all_pairs.extend(child_pairs);
+        } else if let Element::ControlCommand(ControlCommand::BeginLogicalEval) = element {
+            // Check for $r pattern: ev, ^->$rN, temp=$r, ...
+            if i + 2 < contents.len() && detect_dollar_r_setup(contents, i + 1).is_some() {
+                // Pattern A (choice text eval): ev, ^->$rN, temp=$r, str, ->.^.s, [$rN], /str, /ev
+                // Skip the ev, DivertTarget, and temp=$r. Keep str onward but replace
+                // the divert to .^.s with EnterContainer.
+                i += 3; // skip ev, ^->$rN, temp=$r
+
+                // Now process remaining elements normally — the Divert to .^.s will be
+                // converted to EnterContainer by emit_divert_as_enter below, and the
+                // $r marker container will be skipped by the is_dollar_r_marker check.
+                continue;
+            }
+            // Not a $r pattern — emit normally
+            emitter.emit_element(element, name_table, temps)?;
+        } else if is_dollar_r_divert_target(element)
+            && i + 1 < contents.len()
+            && matches!(
+                &contents[i + 1],
+                Element::ControlCommand(ControlCommand::EndLogicalEval)
+            )
+            && i + 3 < contents.len()
+            && is_dollar_r_assign(&contents[i + 2])
+        {
+            // Pattern B (c-N container start): ^->$rN, /ev, temp=$r, ->path.s, [$rN]
+            // The ev was already consumed. Skip ^->$rN, /ev, temp=$r.
+            // The divert to path.s becomes EnterContainer, $rN marker is skipped.
+            // Reset in_eval_mode since we're skipping the /ev that would have cleared it.
+            emitter.in_eval_mode = false;
+            i += 3; // skip ^->$rN, /ev, temp=$r
+            continue;
+        } else if is_dollar_r_assign(element) {
+            // Stray $r assignment (e.g. in c-N after the ev/ev block) — skip it
+            // This handles the case: ev, ^->$rN, /ev, temp=$r where ev was already emitted
+            i += 1;
+            continue;
+        } else if let Element::Divert(Divert::Target {
+            path,
+            conditional: false,
+        }) = element
+        {
+            // Check if this is a divert to a .s or .^.s sibling (choice text container).
+            // In the $r pattern, these should be EnterContainer instead of Divert.
+            let resolved = crate::path::resolve_path(&emitter.current_path, path);
+            #[expect(clippy::case_sensitive_file_extension_comparisons)]
+            if resolved.ends_with(".s") {
+                // Replace with EnterContainer
+                if let Some(id) = index.resolve_container(&resolved) {
+                    emitter.emit(&Opcode::EnterContainer(id));
+                } else {
+                    // Fall back to normal divert if we can't resolve
+                    emitter.emit_element(element, name_table, temps)?;
+                }
+            } else {
+                emitter.emit_element(element, name_table, temps)?;
+            }
+        } else if is_dollar_r_variable_divert(element) {
+            // Skip variable diverts to $r — EnterContainer handles return automatically
+            i += 1;
+            continue;
         } else {
-            emitter.emit_element(element, name_table)?;
+            emitter.emit_element(element, name_table, temps)?;
         }
+
+        i += 1;
     }
 
     // Build this container's counting flags
@@ -451,13 +603,17 @@ pub fn process_container(
         .copied()
         .ok_or_else(|| ConvertError::UnresolvedPath(current_path.to_string()))?;
 
-    all_defs.push(ContainerDef {
+    let def = ContainerDef {
         id: container_id,
         bytecode: emitter.bytecode,
         content_hash: 0,
         counting_flags,
-        line_table: emitter.line_table,
-    });
+    };
+    let lt = ContainerLineTable {
+        container_id,
+        lines: emitter.line_table,
+    };
+    all_pairs.push((def, lt));
 
     // Process named content
     for (name, element) in &container.named_content {
@@ -467,12 +623,12 @@ pub fn process_container(
             } else {
                 format!("{current_path}.{name}")
             };
-            let child_defs = process_container(index, child, &child_path, name_table)?;
-            all_defs.extend(child_defs);
+            let child_pairs = process_container(index, child, &child_path, name_table, temps)?;
+            all_pairs.extend(child_pairs);
         }
     }
 
-    Ok(all_defs)
+    Ok(all_pairs)
 }
 
 /// Extract global variable definitions from the "global decl" container.

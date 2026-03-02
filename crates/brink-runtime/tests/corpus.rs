@@ -1,0 +1,205 @@
+//! Transcript comparison harness for the test corpus.
+//!
+//! Walks `tests/tier1/`, and for each test case with `transcript.txt` and
+//! `mode = "runtime"` in `metadata.toml`, converts and runs the story,
+//! comparing output against the expected transcript.
+
+use std::path::{Path, PathBuf};
+
+use brink_converter::convert;
+use brink_json::InkJson;
+use brink_runtime::{StepResult, Story};
+
+/// Run a story from an ink.json file with the given choice inputs.
+fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, String> {
+    use std::fmt::Write;
+    let ink: InkJson =
+        serde_json::from_str(json_str).map_err(|e| format!("json parse error: {e}"))?;
+    let data = convert(&ink).map_err(|e| format!("convert error: {e}"))?;
+    let program = brink_runtime::link(&data).map_err(|e| format!("link error: {e}"))?;
+    let mut story = Story::new(&program);
+    let mut output = String::new();
+    let mut input_idx = 0;
+
+    // Safety limit to prevent infinite loops.
+    let mut steps = 0;
+    let max_steps = 10_000;
+
+    loop {
+        steps += 1;
+        if steps > max_steps {
+            return Err(format!("exceeded {max_steps} steps — likely infinite loop"));
+        }
+
+        match story
+            .step(&program)
+            .map_err(|e| format!("runtime error: {e}"))?
+        {
+            StepResult::Done { text } | StepResult::Ended { text } => {
+                output.push_str(&text);
+                break;
+            }
+            StepResult::Choices { text, choices } => {
+                output.push_str(&text);
+                if choices.is_empty() {
+                    return Err("no choices available".into());
+                }
+
+                // Format choices to match the transcript format.
+                output.push('\n');
+                for choice in &choices {
+                    let trimmed = choice.text.trim();
+                    let _ = writeln!(output, "{}: {trimmed}", choice.index + 1);
+                }
+                output.push_str("?> ");
+
+                let choice_idx = if input_idx < inputs.len() {
+                    let c = inputs[input_idx];
+                    input_idx += 1;
+                    c
+                } else {
+                    0 // default to first choice
+                };
+                if choice_idx >= choices.len() {
+                    return Err(format!(
+                        "choice index {choice_idx} out of range (only {} choices)",
+                        choices.len()
+                    ));
+                }
+                story
+                    .choose(choice_idx)
+                    .map_err(|e| format!("choose error: {e}"))?;
+            }
+        }
+    }
+
+    Ok(output)
+}
+
+/// Parse input.txt to get choice indices.
+fn parse_inputs(path: &Path) -> Vec<usize> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| l.trim().parse::<usize>().ok())
+        .collect()
+}
+
+/// Check if metadata.toml has mode = "runtime".
+fn is_runtime_test(metadata_path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(metadata_path) else {
+        return false;
+    };
+    content.contains("mode = \"runtime\"")
+}
+
+/// Find all test cases in a directory tree.
+fn find_test_cases(base: &Path) -> Vec<PathBuf> {
+    let mut cases = Vec::new();
+    if !base.is_dir() {
+        return cases;
+    }
+    walk_dir(base, &mut cases);
+    cases.sort();
+    cases
+}
+
+fn walk_dir(dir: &Path, cases: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Check if this directory is a test case.
+            let json_path = path.join("story.ink.json");
+            let transcript_path = path.join("transcript.txt");
+            if json_path.exists() && transcript_path.exists() {
+                cases.push(path.clone());
+            }
+            walk_dir(&path, cases);
+        }
+    }
+}
+
+#[test]
+fn corpus_tier1() {
+    let corpus_base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/tier1");
+
+    let test_cases = find_test_cases(&corpus_base);
+    if test_cases.is_empty() {
+        eprintln!("WARNING: no test cases found in {}", corpus_base.display());
+        return;
+    }
+
+    let mut passed: i32 = 0;
+    let mut failed: i32 = 0;
+    let mut skipped: i32 = 0;
+    let mut failures: Vec<String> = Vec::new();
+
+    for case_dir in &test_cases {
+        let case_name = case_dir
+            .strip_prefix(&corpus_base)
+            .unwrap_or(case_dir)
+            .display()
+            .to_string();
+
+        // Check metadata
+        let metadata_path = case_dir.join("metadata.toml");
+        if !is_runtime_test(&metadata_path) {
+            skipped += 1;
+            continue;
+        }
+
+        let json_path = case_dir.join("story.ink.json");
+        let transcript_path = case_dir.join("transcript.txt");
+        let input_path = case_dir.join("input.txt");
+
+        let json_str = std::fs::read_to_string(&json_path).unwrap();
+        let expected = std::fs::read_to_string(&transcript_path).unwrap();
+        let inputs = parse_inputs(&input_path);
+
+        match run_story_from_json(&json_str, &inputs) {
+            Ok(actual) => {
+                // Normalize: trim trailing whitespace and ensure consistent line endings.
+                let actual_normalized = actual.trim_end();
+                let expected_normalized = expected.trim_end();
+
+                if actual_normalized == expected_normalized {
+                    passed += 1;
+                } else {
+                    failed += 1;
+                    failures.push(format!(
+                        "FAIL: {case_name}\n  expected: {expected_normalized:?}\n  actual:   {actual_normalized:?}",
+                    ));
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                failures.push(format!("ERROR: {case_name}: {e}"));
+            }
+        }
+    }
+
+    let total = passed + failed + skipped;
+    eprintln!("\n=== Corpus Results ===");
+    eprintln!("Total: {total}, Passed: {passed}, Failed: {failed}, Skipped: {skipped}");
+
+    if !failures.is_empty() {
+        eprintln!("\nFailures:");
+        for f in &failures {
+            eprintln!("  {f}");
+        }
+    }
+
+    // Don't assert all pass — this is a spike. Just report.
+    let rate = if passed + failed > 0 {
+        (f64::from(passed) / f64::from(passed + failed)) * 100.0
+    } else {
+        0.0
+    };
+    eprintln!("\nPass rate: {passed}/{} ({rate:.0}%)", passed + failed);
+}

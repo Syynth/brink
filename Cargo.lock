@@ -205,6 +205,13 @@ dependencies = [
 [[package]]
 name = "brink-runtime"
 version = "0.0.1"
+dependencies = [
+ "brink-converter",
+ "brink-format",
+ "brink-json",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "brink-syntax"

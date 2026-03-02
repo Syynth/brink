@@ -10,7 +10,6 @@ pub struct ContainerDef {
     pub bytecode: Vec<u8>,
     pub content_hash: u64,
     pub counting_flags: CountingFlags,
-    pub line_table: Vec<LineEntry>,
 }
 
 /// One entry in a container's line table.
@@ -18,6 +17,14 @@ pub struct ContainerDef {
 pub struct LineEntry {
     pub content: LineContent,
     pub source_hash: u64,
+}
+
+/// Per-container line table, stored separately from [`ContainerDef`] for
+/// locale overlay swapping (`.inkl`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainerLineTable {
+    pub container_id: DefinitionId,
+    pub lines: Vec<LineEntry>,
 }
 
 /// A global variable definition.

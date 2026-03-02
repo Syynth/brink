@@ -5,7 +5,7 @@ use pest_derive::Parser;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -74,6 +74,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut list_items = Vec::new();
     let mut externals = Vec::new();
     let mut containers = Vec::new();
+    let mut line_tables = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -82,13 +83,18 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::lists => list_defs = parse_lists(inner)?,
             Rule::list_items => list_items = parse_list_items(inner)?,
             Rule::externals => externals = parse_externals(inner)?,
-            Rule::container => containers.push(parse_container(inner)?),
+            Rule::container => {
+                let (container, lt) = parse_container(inner)?;
+                containers.push(container);
+                line_tables.push(lt);
+            }
             _ => {}
         }
     }
 
     Ok(StoryData {
         containers,
+        line_tables,
         variables,
         list_defs,
         list_items,
@@ -418,7 +424,7 @@ fn parse_extern_entry(pair: P<'_>) -> Result<ExternalFnDef, InktParseError> {
 
 // ── Containers ──────────────────────────────────────────────────────────────
 
-fn parse_container(pair: P<'_>) -> Result<ContainerDef, InktParseError> {
+fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ContainerLineTable), InktParseError> {
     let mut inner = pair.into_inner();
     let id = parse_def_id(inner.next().ok_or_else(|| InktParseError {
         message: "expected def_id in container".into(),
@@ -428,7 +434,7 @@ fn parse_container(pair: P<'_>) -> Result<ContainerDef, InktParseError> {
 
     let mut content_hash = 0u64;
     let mut counting_flags = CountingFlags::empty();
-    let mut line_table = Vec::new();
+    let mut lines = Vec::new();
     let mut bytecode = Vec::new();
 
     for child in inner {
@@ -454,7 +460,7 @@ fn parse_container(pair: P<'_>) -> Result<ContainerDef, InktParseError> {
                 }
             }
             Rule::lines_field => {
-                line_table = parse_lines_field(child)?;
+                lines = parse_lines_field(child)?;
             }
             Rule::code_field => {
                 bytecode = parse_code_field(child)?;
@@ -463,13 +469,17 @@ fn parse_container(pair: P<'_>) -> Result<ContainerDef, InktParseError> {
         }
     }
 
-    Ok(ContainerDef {
+    let container = ContainerDef {
         id,
         bytecode,
         content_hash,
         counting_flags,
-        line_table,
-    })
+    };
+    let line_table = ContainerLineTable {
+        container_id: id,
+        lines,
+    };
+    Ok((container, line_table))
 }
 
 fn parse_lines_field(pair: P<'_>) -> Result<Vec<LineEntry>, InktParseError> {
@@ -804,18 +814,17 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "glue" => Ok(Opcode::Glue),
         "begin_tag" => Ok(Opcode::BeginTag),
         "end_tag" => Ok(Opcode::EndTag),
+        "eval_line" => Ok(Opcode::EvalLine(parse_operand_u16(&operands, 0, mnemonic)?)),
 
         // Choices
         "begin_choice_set" => Ok(Opcode::BeginChoiceSet),
         "end_choice_set" => Ok(Opcode::EndChoiceSet),
         "begin_choice" => {
             let flags = parse_choice_flags_operand(&operands, 0, mnemonic)?;
-            Ok(Opcode::BeginChoice(flags))
+            let target = parse_operand_def_id(&operands, 1, mnemonic)?;
+            Ok(Opcode::BeginChoice(flags, target))
         }
         "end_choice" => Ok(Opcode::EndChoice),
-        "choice_display" => Ok(Opcode::ChoiceDisplay(parse_operand_u16(
-            &operands, 0, mnemonic,
-        )?)),
         "choice_output" => Ok(Opcode::ChoiceOutput(parse_operand_u16(
             &operands, 0, mnemonic,
         )?)),
@@ -947,6 +956,8 @@ fn parse_choice_flags_operand(
     let s = operand_str(operands, idx, context)?;
     let mut flags = ChoiceFlags {
         has_condition: false,
+        has_start_content: false,
+        has_choice_only_content: false,
         once_only: false,
         is_invisible_default: false,
     };
@@ -956,6 +967,8 @@ fn parse_choice_flags_operand(
     for part in s.split('+') {
         match part {
             "cond" => flags.has_condition = true,
+            "start" => flags.has_start_content = true,
+            "choice_only" => flags.has_choice_only_content = true,
             "once" => flags.once_only = true,
             "invis_default" => flags.is_invisible_default = true,
             _ => {

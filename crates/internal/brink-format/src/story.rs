@@ -1,9 +1,13 @@
-use crate::definition::{ContainerDef, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef};
+use crate::definition::{
+    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef,
+};
 
 /// The top-level compiled story: everything the runtime needs to execute.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoryData {
     pub containers: Vec<ContainerDef>,
+    /// Per-container line tables, parallel to `containers`.
+    pub line_tables: Vec<ContainerLineTable>,
     pub variables: Vec<GlobalVarDef>,
     pub list_defs: Vec<ListDef>,
     pub list_items: Vec<ListItemDef>,

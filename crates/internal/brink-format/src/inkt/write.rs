@@ -8,8 +8,13 @@
 
 use core::fmt;
 
+use std::collections::HashMap;
+
 use crate::counting::CountingFlags;
-use crate::definition::{ContainerDef, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef};
+use crate::definition::{
+    ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+};
+use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
@@ -25,8 +30,16 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_list_items(w, &story.list_items)?;
     write_externals(w, &story.externals)?;
 
+    // Build a lookup from container_id → line table for writing
+    let line_map: HashMap<DefinitionId, &[LineEntry]> = story
+        .line_tables
+        .iter()
+        .map(|lt| (lt.container_id, lt.lines.as_slice()))
+        .collect();
+
     for container in &story.containers {
-        write_container(w, container)?;
+        let lines = line_map.get(&container.id).copied().unwrap_or(&[]);
+        write_container(w, container, lines)?;
     }
 
     write!(w, ")")
@@ -126,7 +139,7 @@ fn write_externals(w: &mut dyn fmt::Write, externals: &[ExternalFnDef]) -> fmt::
     writeln!(w, "  )")
 }
 
-fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef) -> fmt::Result {
+fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]) -> fmt::Result {
     writeln!(w)?;
     writeln!(w, "  (container {}", c.id)?;
 
@@ -149,9 +162,9 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef) -> fmt::Result {
     }
 
     // Line table
-    if !c.line_table.is_empty() {
+    if !lines.is_empty() {
         writeln!(w, "    (lines")?;
-        for (i, entry) in c.line_table.iter().enumerate() {
+        for (i, entry) in lines.iter().enumerate() {
             write!(w, "      {i} ")?;
             write_line_content(w, &entry.content)?;
             writeln!(w, " @{:016x}", entry.source_hash)?;
@@ -301,15 +314,15 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::Glue => write!(w, "glue"),
         Opcode::BeginTag => write!(w, "begin_tag"),
         Opcode::EndTag => write!(w, "end_tag"),
+        Opcode::EvalLine(idx) => write!(w, "eval_line {idx}"),
 
         // Choices
         Opcode::BeginChoiceSet => write!(w, "begin_choice_set"),
         Opcode::EndChoiceSet => write!(w, "end_choice_set"),
-        Opcode::BeginChoice(flags) => {
-            write!(w, "begin_choice {}", format_choice_flags(*flags))
+        Opcode::BeginChoice(flags, target) => {
+            write!(w, "begin_choice {} {target}", format_choice_flags(*flags))
         }
         Opcode::EndChoice => write!(w, "end_choice"),
-        Opcode::ChoiceDisplay(idx) => write!(w, "choice_display {idx}"),
         Opcode::ChoiceOutput(idx) => write!(w, "choice_output {idx}"),
 
         // Sequences
@@ -374,6 +387,12 @@ fn format_choice_flags(flags: ChoiceFlags) -> String {
     let mut parts = Vec::new();
     if flags.has_condition {
         parts.push("cond");
+    }
+    if flags.has_start_content {
+        parts.push("start");
+    }
+    if flags.has_choice_only_content {
+        parts.push("choice_only");
     }
     if flags.once_only {
         parts.push("once");
@@ -478,6 +497,7 @@ mod tests {
     fn empty_story() {
         let story = StoryData {
             containers: vec![],
+            line_tables: vec![],
             variables: vec![],
             list_defs: vec![],
             list_items: vec![],
@@ -493,6 +513,8 @@ mod tests {
     fn choice_flags_formatting() {
         let flags = ChoiceFlags {
             has_condition: true,
+            has_start_content: false,
+            has_choice_only_content: false,
             once_only: true,
             is_invisible_default: false,
         };
@@ -500,6 +522,8 @@ mod tests {
 
         let empty = ChoiceFlags {
             has_condition: false,
+            has_start_content: false,
+            has_choice_only_content: false,
             once_only: false,
             is_invisible_default: false,
         };

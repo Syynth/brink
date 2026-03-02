@@ -4,7 +4,7 @@ use crate::codec::{
     crc32, write_def_id, write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
 };
 use crate::definition::{
-    ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
 };
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::story::StoryData;
@@ -36,8 +36,9 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         SectionKind::ListItems,
         SectionKind::Externals,
         SectionKind::Containers,
+        SectionKind::LineTables,
     ];
-    let mut section_offsets = [0u32; 6];
+    let mut section_offsets = [0u32; 7];
 
     // 1. NameTable
     section_offsets[0] = (buf.len() - base) as u32;
@@ -62,6 +63,10 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // 6. Containers
     section_offsets[5] = (buf.len() - base) as u32;
     write_section_containers(&story.containers, buf);
+
+    // 7. LineTables
+    section_offsets[6] = (buf.len() - base) as u32;
+    write_section_line_tables(&story.line_tables, buf);
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -288,8 +293,22 @@ fn encode_container(c: &ContainerDef, buf: &mut Vec<u8>) {
     write_u8(buf, c.counting_flags.bits());
     write_u32(buf, c.bytecode.len() as u32);
     buf.extend_from_slice(&c.bytecode);
-    write_u32(buf, c.line_table.len() as u32);
-    for entry in &c.line_table {
+}
+
+/// Write the line tables section (no header framing).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_line_tables(line_tables: &[ContainerLineTable], buf: &mut Vec<u8>) {
+    write_u32(buf, line_tables.len() as u32);
+    for lt in line_tables {
+        encode_container_line_table(lt, buf);
+    }
+}
+
+#[expect(clippy::cast_possible_truncation)]
+fn encode_container_line_table(lt: &ContainerLineTable, buf: &mut Vec<u8>) {
+    write_def_id(buf, lt.container_id);
+    write_u32(buf, lt.lines.len() as u32);
+    for entry in &lt.lines {
         encode_line_entry(entry, buf);
     }
 }

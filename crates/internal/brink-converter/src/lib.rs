@@ -23,7 +23,10 @@ pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
     // Pass 2: emit bytecode for all containers
     let mut name_table = codegen::NameTableWriter::new();
 
-    let containers = codegen::process_container(&story_index, &story.root, "", &mut name_table)?;
+    let mut temps = codegen::TempScope::new();
+    let pairs =
+        codegen::process_container(&story_index, &story.root, "", &mut name_table, &mut temps)?;
+    let (containers, line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
 
     let variables = codegen::extract_globals(&story_index, story, &mut name_table)?;
     let (list_defs, list_items) = codegen::build_list_defs(&story_index, &mut name_table)?;
@@ -31,6 +34,7 @@ pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
 
     Ok(StoryData {
         containers,
+        line_tables,
         variables,
         list_defs,
         list_items,
