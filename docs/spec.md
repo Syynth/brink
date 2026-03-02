@@ -190,9 +190,24 @@ Root container
 - Stitches do NOT fall through to each other.
 - The root story container gets an implicit final gather + `-> DONE` appended by the compiler.
 
-#### Execution as a container stack
+#### Execution model: call frames and container positions
 
-The VM maintains a stack of container frames. Entering a container pushes a frame. Finishing a container (reaching end of its bytecode) pops the frame and resumes the parent. Diverts jump to a different container. Tunnels push/pop frames explicitly. Threads fork the frame stack.
+The VM distinguishes two kinds of entry into a container:
+
+- **Flow entry** — moving into a child container (stitch, gather, choice branch). Pushes a container position onto the current call frame's position stack. Does NOT create a new call frame. The child shares the parent's temp variable slots.
+- **Call entry** — function call or tunnel. Pushes a new call frame with a fresh position stack and fresh temp slots. The callee cannot access the caller's temps.
+
+Each call frame contains:
+
+```
+CallFrame {
+    return_address: (DefinitionId, offset),
+    temps: Vec<Value>,                        // frame-local temp variable slots
+    container_stack: Vec<(DefinitionId, offset)>,  // flow positions within this call
+}
+```
+
+The "current container" is always the top of `call_stack.top().container_stack`. Finishing a container (reaching end of its bytecode) pops from the container stack and resumes the parent. Returning from a function/tunnel pops the entire call frame. Diverts replace the current container position. Threads fork the entire call stack (call frames + their container stacks).
 
 ### Global variables (tag `0x02`)
 
@@ -206,7 +221,7 @@ Each variable definition has:
 
 `VAR` declarations are mutable globals. `CONST` declarations are immutable globals — they always exist in the format (visible, inspectable, debuggable). The compiler may inline CONST values as a build-time optimization controlled by a compiler flag, but the definition is always present. Attempting to `SetGlobal` on an immutable variable is a runtime error.
 
-Temporary variables (`temp`) have no format-level definition. They are stack-frame-local — created by a `DeclareTemp` opcode during execution, stored in the current call frame, and discarded when the frame pops.
+Temporary variables (`temp`) have no format-level definition. They are call-frame-local — created by a `DeclareTemp` opcode during execution, stored in the current call frame's temp slot array, and discarded when the frame pops. Temp slot indices are assigned by the compiler/converter across the entire knot/function scope (including all child containers reached by flow entry), not per-container.
 
 #### Bytecode instructions for variables
 
@@ -218,7 +233,7 @@ GetTemp(u16)                // push temp value from frame slot
 SetTemp(u16)                // pop stack → assign to frame slot
 ```
 
-Globals use `DefinitionId` (resolved by linker to fast runtime index). Temps use frame-local slot indices assigned by the compiler — no `DefinitionId`, no linker involvement.
+Globals use `DefinitionId` (resolved by linker to fast runtime index). Temps use call-frame-local slot indices assigned by the compiler across the entire knot/function scope — no `DefinitionId`, no linker involvement. Child containers reached by flow entry share the parent's call frame and use the same slot namespace.
 
 ### List definitions (tag `0x03`)
 
@@ -303,9 +318,9 @@ The instruction set covers:
 - **Global variables:** get global (`DefinitionId`), set global (`DefinitionId`)
 - **Temp variables:** declare temp (slot), get temp (slot), set temp (slot)
 - **Control flow:** jump, conditional jump, divert (`DefinitionId`), conditional divert, variable divert
-- **Containers:** enter container, exit container
-- **Functions & tunnels:** call (push frame + jump), return (pop frame), tunnel call, tunnel return
-- **Threads:** thread start (fork call stack), thread done
+- **Container flow:** enter container (push position, no new frame), exit container (pop position)
+- **Functions & tunnels:** call (push call frame + enter), return (pop call frame), tunnel call, tunnel return
+- **Threads:** thread start (fork entire call stack), thread done
 - **Output:** emit line (`u16` local line index), emit value (stringify + emit top of stack), emit newline, glue, emit tag
 - **Choices:** begin/end choice set, begin/end choice (with sticky/fallback/once-only flags + condition flag), choice display (`u16` local line index), choice output (`u16` local line index)
 - **Sequences:** sequence (with kind: cycle/stopping/once-only/shuffle), sequence branch
@@ -443,10 +458,8 @@ One codepath processes all definition types uniformly. The tag determines which 
 
 Each story instance maintains:
 
-- **Position:** `(DefinitionId, offset)` — symbolic container identity + bytecode offset within that container. Survives recompilation.
-- **Execution state:** call stack of `(DefinitionId, offset)` frames, value stack
+- **Execution state:** call stack of `CallFrame` (each with return address, temp slots, and container position stack), value stack. The current position is `call_stack.top().container_stack.top()`. All persistent positions use `(DefinitionId, offset)` for recompilation stability.
 - **Narrative state:** visit counts (per container `DefinitionId`), turn index, sequence states
-- **Variables:** temp variables in call frame slots
 - **RNG state:** per-instance seed + state for deterministic randomness
 - **Output buffer:** accumulated content, pending tags, pending choices (cleared each step)
 - **Status:** active, waiting for choice, done, ended, error
@@ -470,11 +483,10 @@ Global variables shared by all instances of a program. Separate from per-instanc
 
 All persistent references in story instances use `DefinitionId`, not runtime indices. When a new program is linked, the reconciliation is a single pass over the old and new definition sets by `DefinitionId`, regardless of type:
 
-1. For each running instance, check the position `(DefinitionId, offset)`:
+1. For each running instance, check every `(DefinitionId, offset)` position across all call frames and their container position stacks:
    - **Container exists, content hash unchanged** → position is valid, do nothing
    - **Container exists, content hash changed** → reset offset to 0 (container entry)
-   - **Container gone** → fall back up the call stack to deepest valid frame, or reset to entry point
-2. Same for every frame on the call stack
+   - **Container gone** → fall back up the container/call stack to deepest valid position, or reset to entry point
 3. Detect renames via content hashing (removed container with same content hash as added container = rename)
 4. Visit counts keyed by container `DefinitionId` — retain for containers that still exist, orphan the rest
 5. Sequence states keyed by `(DefinitionId, sequence_index)` — invalidate if content hash changed
