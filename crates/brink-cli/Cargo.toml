@@ -10,7 +10,7 @@ categories.workspace = true
 description = "CLI for compiling and running ink stories"
 
 [dependencies]
-brink-format = { path = "../internal/brink-format" }
+brink-format = { path = "../internal/brink-format", features = ["inkt"] }
 brink-json = { path = "../internal/brink-json" }
 brink-converter = { path = "../internal/brink-converter" }
 clap.workspace = true

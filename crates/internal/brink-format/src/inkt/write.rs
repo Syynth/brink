@@ -2,15 +2,18 @@
 //!
 //! Produces a WAT-inspired, section-based, indented mnemonic representation
 //! of compiled story data for debugging and inspection.
+//!
+//! The output is lossless — every field in `StoryData` is represented so that
+//! `read_inkt(write_inkt(story))` is an exact roundtrip.
 
 use core::fmt;
 
 use crate::counting::CountingFlags;
-use crate::definition::{ContainerDef, ExternalFnDef, GlobalVarDef, ListDef};
+use crate::definition::{ContainerDef, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef};
 use crate::line::{LineContent, LinePart, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
-use crate::value::Value;
+use crate::value::{Value, ValueType};
 
 /// Write the textual (.inkt) representation of a compiled story.
 pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
@@ -19,6 +22,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_name_table(w, &story.name_table)?;
     write_globals(w, &story.variables)?;
     write_lists(w, &story.list_defs)?;
+    write_list_items(w, &story.list_items)?;
     write_externals(w, &story.externals)?;
 
     for container in &story.containers {
@@ -59,7 +63,7 @@ fn write_globals(w: &mut dyn fmt::Write, globals: &[GlobalVarDef]) -> fmt::Resul
             w,
             "    (global {} :{} ",
             g.id,
-            value_type_name(&g.default_value)
+            value_type_name(g.value_type)
         )?;
         write_value(w, &g.default_value)?;
         if g.mutable {
@@ -88,6 +92,22 @@ fn write_lists(w: &mut dyn fmt::Write, list_defs: &[ListDef]) -> fmt::Result {
     writeln!(w, "  )")
 }
 
+fn write_list_items(w: &mut dyn fmt::Write, list_items: &[ListItemDef]) -> fmt::Result {
+    if list_items.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (list_items")?;
+    for li in list_items {
+        writeln!(
+            w,
+            "    (list_item {} (origin {}) (ordinal {}))",
+            li.id, li.origin, li.ordinal
+        )?;
+    }
+    writeln!(w, "  )")
+}
+
 fn write_externals(w: &mut dyn fmt::Write, externals: &[ExternalFnDef]) -> fmt::Result {
     if externals.is_empty() {
         return Ok(());
@@ -110,6 +130,9 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef) -> fmt::Result {
     writeln!(w)?;
     writeln!(w, "  (container {}", c.id)?;
 
+    // Content hash
+    writeln!(w, "    (hash 0x{:016x})", c.content_hash)?;
+
     // Counting flags
     if !c.counting_flags.is_empty() {
         write!(w, "    (flags")?;
@@ -131,7 +154,7 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef) -> fmt::Result {
         for (i, entry) in c.line_table.iter().enumerate() {
             write!(w, "      {i} ")?;
             write_line_content(w, &entry.content)?;
-            writeln!(w)?;
+            writeln!(w, " @{:016x}", entry.source_hash)?;
         }
         writeln!(w, "    )")?;
     }
@@ -374,37 +397,49 @@ fn format_sequence_kind(kind: SequenceKind) -> &'static str {
     }
 }
 
-fn value_type_name(v: &Value) -> &'static str {
-    match v {
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Bool(_) => "bool",
-        Value::String(_) => "string",
-        Value::List(_) => "list",
-        Value::DivertTarget(_) => "divert_target",
-        Value::Null => "null",
+fn value_type_name(vt: ValueType) -> &'static str {
+    match vt {
+        ValueType::Int => "int",
+        ValueType::Float => "float",
+        ValueType::Bool => "bool",
+        ValueType::String => "string",
+        ValueType::List => "list",
+        ValueType::DivertTarget => "divert_target",
+        ValueType::Null => "null",
     }
 }
 
 fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
     match v {
         Value::Int(n) => write!(w, "{n}"),
-        Value::Float(n) => write!(w, "{n}"),
+        Value::Float(n) => {
+            // Ensure float always has a decimal point for unambiguous parsing.
+            let s = format!("{n}");
+            if s.contains('.') || s.contains("inf") || s.contains("NaN") {
+                write!(w, "{s}")
+            } else {
+                write!(w, "{s}.0")
+            }
+        }
         Value::Bool(b) => write!(w, "{b}"),
         Value::String(s) => write!(w, "\"{}\"", escape_string(s)),
         Value::List(lv) => {
-            write!(w, "(list")?;
+            write!(w, "(list (items")?;
             for item in &lv.items {
                 write!(w, " {item}")?;
             }
-            write!(w, ")")
+            write!(w, ") (origins")?;
+            for origin in &lv.origins {
+                write!(w, " {origin}")?;
+            }
+            write!(w, "))")
         }
         Value::DivertTarget(id) => write!(w, "{id}"),
         Value::Null => write!(w, "null"),
     }
 }
 
-fn escape_string(s: &str) -> String {
+pub(crate) fn escape_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {

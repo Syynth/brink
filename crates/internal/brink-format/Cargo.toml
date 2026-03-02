@@ -7,8 +7,14 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+default = []
+inkt = ["dep:pest", "dep:pest_derive"]
+
 [dependencies]
 bitflags = { workspace = true }
+pest = { workspace = true, optional = true }
+pest_derive = { workspace = true, optional = true }
 serde = { workspace = true }
 
 [dev-dependencies]

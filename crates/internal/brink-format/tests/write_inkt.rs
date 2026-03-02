@@ -1,3 +1,4 @@
+#![cfg(feature = "inkt")]
 #![allow(clippy::unwrap_used)]
 
 use std::path::Path;
@@ -15,6 +16,20 @@ fn snapshot_i001_minimal_story() {
     brink_format::write_inkt(&data, &mut buf).unwrap();
 
     insta::assert_snapshot!(buf);
+}
+
+#[test]
+fn roundtrip_i001_minimal_story() {
+    let json_text =
+        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
+    let story: InkJson = serde_json::from_str(json_text).unwrap();
+    let data = brink_converter::convert(&story).unwrap();
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(data, recovered);
 }
 
 fn collect_ink_json_files(dir: &Path) -> Vec<std::path::PathBuf> {
@@ -77,6 +92,64 @@ fn write_inkt_corpus_smoke() {
     assert!(
         failures.is_empty(),
         "{}/{} files failed write_inkt:\n{}",
+        failures.len(),
+        files.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn inkt_roundtrip_corpus_smoke() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tests_dir = manifest_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests");
+
+    let files = collect_ink_json_files(&tests_dir);
+    assert!(
+        !files.is_empty(),
+        "no .ink.json files found in {tests_dir:?}"
+    );
+
+    let mut failures = Vec::new();
+
+    for path in &files {
+        let json_text = std::fs::read_to_string(path).unwrap();
+        let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(&json_text);
+
+        let Ok(story): Result<InkJson, _> = serde_json::from_str(json_text) else {
+            continue;
+        };
+
+        let Ok(data) = brink_converter::convert(&story) else {
+            continue;
+        };
+
+        let mut buf = String::new();
+        if brink_format::write_inkt(&data, &mut buf).is_err() {
+            continue;
+        }
+
+        match brink_format::read_inkt(&buf) {
+            Ok(recovered) => {
+                if data != recovered {
+                    failures.push(format!("MISMATCH {}", path.display()));
+                }
+            }
+            Err(e) => {
+                failures.push(format!("PARSE {}: {e}", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{}/{} files failed inkt roundtrip:\n{}",
         failures.len(),
         files.len(),
         failures.join("\n")

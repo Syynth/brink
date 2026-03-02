@@ -15,7 +15,9 @@ mod line;
 mod opcode;
 mod story;
 mod value;
-mod write_inkt;
+
+#[cfg(feature = "inkt")]
+mod inkt;
 
 pub use counting::CountingFlags;
 pub use definition::{ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef};
@@ -31,4 +33,6 @@ pub use line::{LineContent, LinePart, LineTemplate, PluralCategory, PluralResolv
 pub use opcode::{ChoiceFlags, DecodeError, Opcode, SequenceKind};
 pub use story::StoryData;
 pub use value::{ListValue, Value, ValueType};
-pub use write_inkt::write_inkt;
+
+#[cfg(feature = "inkt")]
+pub use inkt::{InktParseError, read_inkt, write_inkt};
