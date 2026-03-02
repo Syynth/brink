@@ -15,7 +15,7 @@ struct Cli {
 enum Commands {
     /// Convert between ink formats (.ink.json, .inkb, .inkt)
     Convert {
-        /// Input file (.ink.json or .inkb)
+        /// Input file (.ink.json, .inkb, or .inkt)
         input: PathBuf,
         /// Output file (format inferred from extension, defaults to stdout as .inkt)
         #[arg(short, long)]
@@ -51,6 +51,9 @@ fn load_story_data(
     if ext == "inkb" {
         let bytes = std::fs::read(input)?;
         Ok(brink_format::read_inkb(&bytes)?)
+    } else if ext == "inkt" {
+        let text = std::fs::read_to_string(input)?;
+        Ok(brink_format::read_inkt(&text)?)
     } else {
         // Assume ink.json
         let json_text = std::fs::read_to_string(input)?;
