@@ -34,6 +34,7 @@ fn load_basic_text() {
                 Element::ControlCommand(ControlCommand::Done),
             ],
         },
+        list_defs: HashMap::new(),
     };
 
     assert_eq!(parsed, actual);

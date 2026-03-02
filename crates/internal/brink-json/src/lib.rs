@@ -3,6 +3,8 @@
 //! Deserializes the reference ink compiler's JSON output into typed Rust
 //! structures for consumption by `brink-converter`.
 
+use std::collections::HashMap;
+
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -59,6 +61,8 @@ pub type Variable = String;
 pub struct InkJson {
     pub ink_version: u32,
     pub root: Container,
+    #[serde(default)]
+    pub list_defs: HashMap<String, HashMap<String, i64>>,
 }
 
 /// An ink list value: a set of named items, each with an integer value,

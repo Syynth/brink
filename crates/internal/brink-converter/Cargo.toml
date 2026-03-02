@@ -10,9 +10,11 @@ publish = false
 [dependencies]
 brink-format = { path = "../brink-format" }
 brink-json = { path = "../brink-json" }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

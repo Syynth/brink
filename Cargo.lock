@@ -149,6 +149,8 @@ dependencies = [
  "brink-format",
  "brink-json",
  "insta",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
