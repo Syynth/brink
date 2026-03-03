@@ -351,6 +351,16 @@ impl<'a> ContainerEmitter<'a> {
                 self.emit(&Opcode::Call(id));
             }
 
+            Divert::FunctionVariable { path, .. } => {
+                if let Some(slot) = temps.get(path) {
+                    self.emit(&Opcode::GetTemp(slot));
+                } else {
+                    let id = path::global_var_id(path);
+                    self.emit(&Opcode::GetGlobal(id));
+                }
+                self.emit(&Opcode::CallVariable);
+            }
+
             Divert::Tunnel { path, .. } => {
                 let id = self.resolve_divert_target(path)?;
                 self.emit(&Opcode::TunnelCall(id));
@@ -720,11 +730,24 @@ fn ink_list_to_list_value(ink_list: &brink_json::InkList, index: &StoryIndex) ->
         .filter_map(|qualified| index.list_items.get(qualified.as_str()).map(|&(id, _)| id))
         .collect();
 
-    let origins: Vec<_> = ink_list
+    // Use explicit origins if present; otherwise derive from item qualified names.
+    let mut origins: Vec<_> = ink_list
         .origins
         .iter()
         .filter_map(|name| index.list_defs.get(name.as_str()).copied())
         .collect();
+    if origins.is_empty() {
+        for qualified in ink_list.items.keys() {
+            if let Some(dot) = qualified.find('.') {
+                let list_name = &qualified[..dot];
+                if let Some(&def_id) = index.list_defs.get(list_name)
+                    && !origins.contains(&def_id)
+                {
+                    origins.push(def_id);
+                }
+            }
+        }
+    }
 
     ListValue { items, origins }
 }

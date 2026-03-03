@@ -225,6 +225,7 @@ fn register_labels(index: &mut StoryIndex, container: &Container, current_path: 
                     | Divert::Function { path, .. }
                     | Divert::Tunnel { path, .. } => vec![path.as_str()],
                     Divert::Variable { .. }
+                    | Divert::FunctionVariable { .. }
                     | Divert::TunnelVariable { .. }
                     | Divert::ExternalFunction { .. } => vec![],
                 };

@@ -346,6 +346,7 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::TunnelCall(id) => write!(w, "tunnel_call {id}"),
         Opcode::TunnelReturn => write!(w, "tunnel_return"),
         Opcode::TunnelCallVariable => write!(w, "tunnel_call_variable"),
+        Opcode::CallVariable => write!(w, "call_variable"),
 
         // Threads
         Opcode::ThreadCall(id) => write!(w, "thread_call {id}"),

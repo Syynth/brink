@@ -531,6 +531,37 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                     frame_type: CallFrameType::Tunnel,
                 });
             }
+            Opcode::CallVariable => {
+                let val = story.flow.pop_value()?;
+                let Value::DivertTarget(id) = val else {
+                    return Err(RuntimeError::TypeError(
+                        "call_variable requires DivertTarget".into(),
+                    ));
+                };
+                let idx = program
+                    .resolve_container(id)
+                    .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+
+                let container = program.container(idx);
+                if container.counting_flags.contains(CountingFlags::VISITS) {
+                    *story.visit_counts.entry(id).or_insert(0) += 1;
+                    story.flow.turn_counts.insert(id, story.flow.turn_index);
+                }
+
+                story.flow.output.begin_capture();
+
+                let current_pos = current_position(story)?;
+                let thread = story.flow.current_thread_mut();
+                thread.call_stack.push(CallFrame {
+                    return_address: Some(current_pos),
+                    temps: Vec::new(),
+                    container_stack: vec![ContainerPosition {
+                        container_idx: idx,
+                        offset: 0,
+                    }],
+                    frame_type: CallFrameType::Function,
+                });
+            }
             Opcode::TunnelReturn => {
                 // The eval block before ->-> pushes either void (normal
                 // return) or a DivertTarget (tunnel onwards override).
@@ -632,6 +663,8 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
             }
             Opcode::SeedRandom => {
                 let _seed = story.flow.pop_value()?;
+                // TODO: store seed for RNG when Random is properly implemented.
+                story.flow.value_stack.push(Value::Null);
             }
 
             // ── Sequences ───────────────────────────────────────────────

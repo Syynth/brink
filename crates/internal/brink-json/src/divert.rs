@@ -24,6 +24,11 @@ pub enum Divert {
     /// an ink function, since choices use them internally too.
     Function { conditional: bool, path: Path },
 
+    /// { "f()": "variableTarget", "var": true }
+    /// as above, except that var specifies that the target is the name of a
+    /// variable containing a divert target value.
+    FunctionVariable { conditional: bool, path: Path },
+
     /// { "->t->": "path.tunnel" }
     /// a tunnel, which works similarly to a function call by pushing an
     /// element to the callstack. The only difference is that the callstack is
@@ -70,6 +75,16 @@ impl Serialize for Divert {
                 let len = 1 + usize::from(*conditional);
                 let mut map = serializer.serialize_map(Some(len))?;
                 map.serialize_entry("f()", path)?;
+                if *conditional {
+                    map.serialize_entry("c", &true)?;
+                }
+                map.end()
+            }
+            Divert::FunctionVariable { conditional, path } => {
+                let len = 2 + usize::from(*conditional);
+                let mut map = serializer.serialize_map(Some(len))?;
+                map.serialize_entry("f()", path)?;
+                map.serialize_entry("var", &true)?;
                 if *conditional {
                     map.serialize_entry("c", &true)?;
                 }
@@ -138,12 +153,21 @@ impl<'de> Deserialize<'de> for Divert {
             };
         }
 
-        // Function call: { "f()": "path" }
+        // Function call: { "f()": "path" } or variable function: { "f()": "path", "var": true }
         if let Some(target) = obj.get("f()").and_then(Value::as_str) {
-            return Ok(Divert::Function {
-                conditional,
-                path: target.to_string(),
-            });
+            let is_var = obj.get("var").and_then(Value::as_bool).unwrap_or(false);
+
+            return if is_var {
+                Ok(Divert::FunctionVariable {
+                    conditional,
+                    path: target.to_string(),
+                })
+            } else {
+                Ok(Divert::Function {
+                    conditional,
+                    path: target.to_string(),
+                })
+            };
         }
 
         // Tunnel: { "->t->": "path" } or variable tunnel: { "->t->": "path", "var": true }

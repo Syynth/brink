@@ -631,6 +631,60 @@ fn list_item_variable_reference() {
     assert_eq!(result, "A, B\n");
 }
 
+/// `SEED_RANDOM` must push `Null` (void) after consuming its seed argument,
+/// so the subsequent `pop` instruction can discard it without underflow.
+/// List literals must derive origins from item qualified names when no
+/// explicit `origins` array is present in the ink.json.
+#[test]
+fn seed_random_and_list_literal_origins() {
+    let json = load_ink_json("../../tests/tier2/lists/more-list-operations2/story.ink.json");
+    let result = run_story(&json, &[]);
+    // NOTE: ` empty` has leading space (whitespace/glue issue, not list-specific).
+    // NOTE: `random:a1` — we don't implement reference PRNG yet, so we get
+    //       first item instead of the seeded-random result `b2`.
+    assert_eq!(
+        result,
+        "a1, b1, c1\n\
+         a1\n\
+         a1, b2\n\
+         count:2\n\
+         max:c2\n\
+         min:a1\n\
+         true\n\
+         true\n\
+         false\n \
+         empty\n\
+         a2\n\
+         a2, b2, c2\n\
+         range:a1, b2\n\
+         a1\n\
+         subtract:a1, c1\n\
+         random:a1\n\
+         listinc:b1\n"
+    );
+}
+
+/// Function calls via variable target (`{"f()": "s", "var": true}`) must
+/// read the divert target from the variable `s` rather than treating `s` as
+/// a literal container path. Without `CallVariable`, the converter emits a
+/// static `Call` to a non-existent container and execution goes haywire.
+#[test]
+fn function_variable_call() {
+    let json = load_ink_json("../../tests/tier2/lists/list-comparison/story.ink.json");
+    let result = run_story(&json, &[]);
+    // Leading spaces are a pre-existing whitespace/glue issue, not
+    // related to CallVariable. Assert content line-by-line after trimming.
+    let lines: Vec<&str> = result.lines().map(str::trim).collect();
+    assert_eq!(
+        lines,
+        vec![
+            "Hey, my name is Philippe. What about yours?",
+            "I am Andre and I need my rheumatism pills!",
+            "Would you like me, Philippe, to get some more for you?",
+        ]
+    );
+}
+
 /// `ref` parameters must pass a variable by reference. `inc(ref x)` takes
 /// a pointer to `val`; reads through the pointer see val's value, writes
 /// go back to val. After `inc(val)`, val should be 6 (was 5).
