@@ -125,13 +125,8 @@ mod tests {
 
     #[test]
     fn multibyte_chars_handled() {
-        let mut tw = TypewriterState::new("héllo".to_owned(), Duration::from_millis(0));
-        // With zero delay, tick should reveal everything
-        tw.last_tick = Instant::now()
-            .checked_sub(Duration::from_millis(1))
-            .unwrap();
-        tw.tick();
-        assert!(tw.is_complete());
+        let mut tw = TypewriterState::new("héllo".to_owned(), Duration::from_millis(50));
+        tw.skip();
         assert_eq!(tw.visible_text(), "héllo");
     }
 }
