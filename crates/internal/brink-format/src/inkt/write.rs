@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ContainerDef, ExternalFnDef, GlobalVarDef, LabelDef, LineEntry, ListDef, ListItemDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
@@ -29,6 +29,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_lists(w, &story.list_defs)?;
     write_list_items(w, &story.list_items)?;
     write_externals(w, &story.externals)?;
+    write_labels(w, &story.labels)?;
 
     // Build a lookup from container_id → line table for writing
     let line_map: HashMap<DefinitionId, &[LineEntry]> = story
@@ -135,6 +136,22 @@ fn write_externals(w: &mut dyn fmt::Write, externals: &[ExternalFnDef]) -> fmt::
             writeln!(w, "      (fallback {fb})")?;
         }
         writeln!(w, "    )")?;
+    }
+    writeln!(w, "  )")
+}
+
+fn write_labels(w: &mut dyn fmt::Write, labels: &[LabelDef]) -> fmt::Result {
+    if labels.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (labels")?;
+    for label in labels {
+        writeln!(
+            w,
+            "    (label {} -> {} +{})",
+            label.id, label.container_id, label.byte_offset
+        )?;
     }
     writeln!(w, "  )")
 }
@@ -289,9 +306,9 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         // Control flow
         Opcode::Jump(off) => write!(w, "jump {off}"),
         Opcode::JumpIfFalse(off) => write!(w, "jump_if_false {off}"),
-        Opcode::Divert(id) => write!(w, "divert {id}"),
-        Opcode::DivertConditional(id) => write!(w, "divert_conditional {id}"),
-        Opcode::DivertVariable => write!(w, "divert_variable"),
+        Opcode::Goto(id) => write!(w, "goto {id}"),
+        Opcode::GotoIf(id) => write!(w, "goto_if {id}"),
+        Opcode::GotoVariable => write!(w, "goto_variable"),
 
         // Container flow
         Opcode::EnterContainer(id) => write!(w, "enter_container {id}"),
@@ -502,6 +519,7 @@ mod tests {
             list_defs: vec![],
             list_items: vec![],
             externals: vec![],
+            labels: vec![],
             name_table: vec![],
         };
         let mut buf = String::new();

@@ -3,7 +3,8 @@
 use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64};
 use crate::counting::CountingFlags;
 use crate::definition::{
-    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LabelDef, LineEntry, ListDef,
+    ListItemDef,
 };
 use crate::id::NameId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -41,6 +42,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let externals = read_section_externals(buf, &index)?;
     let containers = read_section_containers(buf, &index)?;
     let line_tables = read_section_line_tables(buf, &index)?;
+    let labels = read_section_labels(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -49,6 +51,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         list_defs,
         list_items,
         externals,
+        labels,
         name_table,
     })
 }
@@ -238,6 +241,29 @@ pub fn read_section_containers(
         containers.push(decode_container(buf, &mut off)?);
     }
     Ok(containers)
+}
+
+/// Read the labels from a complete `.inkb` file using its index.
+pub fn read_section_labels(buf: &[u8], index: &InkbIndex) -> Result<Vec<LabelDef>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::Labels) else {
+        // Labels section is optional for backwards compatibility.
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let count = read_u32(buf, &mut off)? as usize;
+    // Each label entry: def_id(8) + container_id(8) + byte_offset(4) = 20 bytes
+    let mut labels = Vec::with_capacity(safe_capacity(count, buf.len(), off, 20));
+    for _ in 0..count {
+        let id = read_def_id(buf, &mut off)?;
+        let container_id = read_def_id(buf, &mut off)?;
+        let byte_offset = read_u32(buf, &mut off)?;
+        labels.push(LabelDef {
+            id,
+            container_id,
+            byte_offset,
+        });
+    }
+    Ok(labels)
 }
 
 // ── Decode helpers (private) ────────────────────────────────────────────────

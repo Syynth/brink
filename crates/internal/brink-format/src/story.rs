@@ -1,5 +1,5 @@
 use crate::definition::{
-    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef,
+    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LabelDef, ListDef, ListItemDef,
 };
 
 /// The top-level compiled story: everything the runtime needs to execute.
@@ -12,6 +12,8 @@ pub struct StoryData {
     pub list_defs: Vec<ListDef>,
     pub list_items: Vec<ListItemDef>,
     pub externals: Vec<ExternalFnDef>,
+    /// Labels pointing to byte offsets within containers.
+    pub labels: Vec<LabelDef>,
     /// Interned name strings, indexed by [`NameId`](crate::id::NameId).
     pub name_table: Vec<String>,
 }

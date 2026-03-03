@@ -34,6 +34,11 @@ pub fn external_fn_id(name: &str) -> DefinitionId {
     DefinitionId::new(DefinitionTag::ExternalFn, hash_path(name))
 }
 
+/// Create a `DefinitionId` for a label (index target within a container).
+pub fn label_id(path: &str) -> DefinitionId {
+    DefinitionId::new(DefinitionTag::Label, hash_path(path))
+}
+
 /// Resolve an ink.json path reference against a current container path.
 ///
 /// - Absolute paths (not starting with `.`) are returned as-is.

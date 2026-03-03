@@ -29,13 +29,13 @@ mod write;
 
 pub use read::{
     read_inkb, read_inkb_index, read_section_containers, read_section_externals,
-    read_section_line_tables, read_section_list_defs, read_section_list_items,
+    read_section_labels, read_section_line_tables, read_section_list_defs, read_section_list_items,
     read_section_name_table, read_section_variables,
 };
 pub use write::{
     assemble_inkb, write_inkb, write_section_containers, write_section_externals,
-    write_section_line_tables, write_section_list_defs, write_section_list_items,
-    write_section_name_table, write_section_variables,
+    write_section_labels, write_section_line_tables, write_section_list_defs,
+    write_section_list_items, write_section_name_table, write_section_variables,
 };
 
 use std::ops::Range;
@@ -51,7 +51,7 @@ pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)
 pub(crate) const SECTION_ENTRY_SIZE: usize = 8;
 /// Number of sections in the current format.
-pub(crate) const SECTION_COUNT: u8 = 7;
+pub(crate) const SECTION_COUNT: u8 = 8;
 
 // Value type tags
 pub(crate) const VAL_INT: u8 = 0x00;
@@ -98,6 +98,7 @@ pub enum SectionKind {
     Externals = 0x05,
     Containers = 0x06,
     LineTables = 0x07,
+    Labels = 0x08,
 }
 
 impl SectionKind {
@@ -110,6 +111,7 @@ impl SectionKind {
             0x05 => Ok(Self::Externals),
             0x06 => Ok(Self::Containers),
             0x07 => Ok(Self::LineTables),
+            0x08 => Ok(Self::Labels),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }

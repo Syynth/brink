@@ -141,8 +141,8 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         any::<u16>().prop_map(Opcode::SetTemp),
         any::<i32>().prop_map(Opcode::Jump),
         any::<i32>().prop_map(Opcode::JumpIfFalse),
-        arb_def_id().prop_map(Opcode::Divert),
-        Just(Opcode::DivertVariable),
+        arb_def_id().prop_map(Opcode::Goto),
+        Just(Opcode::GotoVariable),
         arb_def_id().prop_map(Opcode::EnterContainer),
         Just(Opcode::ExitContainer),
         arb_def_id().prop_map(Opcode::Call),
@@ -258,6 +258,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     list_defs,
                     list_items,
                     externals,
+                    labels: vec![],
                     name_table,
                 }
             },

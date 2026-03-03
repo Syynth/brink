@@ -4,7 +4,8 @@ use crate::codec::{
     crc32, write_def_id, write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
 };
 use crate::definition::{
-    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LabelDef, LineEntry, ListDef,
+    ListItemDef,
 };
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::story::StoryData;
@@ -37,8 +38,9 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         SectionKind::Externals,
         SectionKind::Containers,
         SectionKind::LineTables,
+        SectionKind::Labels,
     ];
-    let mut section_offsets = [0u32; 7];
+    let mut section_offsets = [0u32; 8];
 
     // 1. NameTable
     section_offsets[0] = (buf.len() - base) as u32;
@@ -67,6 +69,10 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // 7. LineTables
     section_offsets[6] = (buf.len() - base) as u32;
     write_section_line_tables(&story.line_tables, buf);
+
+    // 8. Labels
+    section_offsets[7] = (buf.len() - base) as u32;
+    write_section_labels(&story.labels, buf);
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -188,6 +194,17 @@ pub fn write_section_containers(containers: &[ContainerDef], buf: &mut Vec<u8>) 
     write_u32(buf, containers.len() as u32);
     for c in containers {
         encode_container(c, buf);
+    }
+}
+
+/// Write the labels section (no header framing).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_labels(labels: &[LabelDef], buf: &mut Vec<u8>) {
+    write_u32(buf, labels.len() as u32);
+    for label in labels {
+        write_def_id(buf, label.id);
+        write_def_id(buf, label.container_id);
+        write_u32(buf, label.byte_offset);
     }
 }
 

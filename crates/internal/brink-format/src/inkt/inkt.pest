@@ -3,7 +3,7 @@
 
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
-story = { SOI ~ "(" ~ "story" ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ container* ~ ")" ~ EOI }
+story = { SOI ~ "(" ~ "story" ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ labels? ~ container* ~ ")" ~ EOI }
 
 // ── Name table ──────────────────────────────────────────────────────────────
 
@@ -33,6 +33,11 @@ list_item_entry = { "(" ~ "list_item" ~ def_id ~ "(" ~ "origin" ~ def_id ~ ")" ~
 externals = { "(" ~ "externals" ~ extern_entry* ~ ")" }
 extern_entry = { "(" ~ "extern" ~ def_id ~ "argc=" ~ integer ~ "(" ~ "name" ~ integer ~ ")" ~ fallback? ~ ")" }
 fallback = { "(" ~ "fallback" ~ def_id ~ ")" }
+
+// ── Labels ──────────────────────────────────────────────────────────────────
+
+labels = { "(" ~ "labels" ~ label_entry* ~ ")" }
+label_entry = { "(" ~ "label" ~ def_id ~ "->" ~ def_id ~ "+" ~ integer ~ ")" }
 
 // ── Containers ──────────────────────────────────────────────────────────────
 

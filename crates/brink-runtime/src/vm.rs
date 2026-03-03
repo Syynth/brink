@@ -163,24 +163,24 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
             }
 
             // ── Control flow ────────────────────────────────────────────
-            Opcode::Divert(id) => {
+            Opcode::Goto(id) => {
                 if !story.skipping_choice {
-                    divert_to(story, program, id)?;
+                    goto_target(story, program, id)?;
                 }
             }
-            Opcode::DivertConditional(id) => {
+            Opcode::GotoIf(id) => {
                 let val = story.pop_value()?;
                 if value_ops::is_truthy(&val) {
-                    divert_to(story, program, id)?;
+                    goto_target(story, program, id)?;
                 }
             }
-            Opcode::DivertVariable => {
+            Opcode::GotoVariable => {
                 let val = story.pop_value()?;
                 if let Value::DivertTarget(id) = val {
-                    divert_to(story, program, id)?;
+                    goto_target(story, program, id)?;
                 } else {
                     return Err(RuntimeError::TypeError(
-                        "divert_variable requires DivertTarget".into(),
+                        "goto_variable requires DivertTarget".into(),
                     ));
                 }
             }
@@ -510,9 +510,9 @@ fn resume_at(story: &mut Story, pos: ContainerPosition) {
     }
 }
 
-fn divert_to(story: &mut Story, program: &Program, id: DefinitionId) -> Result<(), RuntimeError> {
-    let idx = program
-        .resolve_container(id)
+fn goto_target(story: &mut Story, program: &Program, id: DefinitionId) -> Result<(), RuntimeError> {
+    let (container_idx, byte_offset) = program
+        .resolve_target(id)
         .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
     let frame = story
@@ -520,16 +520,31 @@ fn divert_to(story: &mut Story, program: &Program, id: DefinitionId) -> Result<(
         .last_mut()
         .ok_or(RuntimeError::CallStackUnderflow)?;
 
-    // Push onto the container stack — the target will auto-return when it
-    // reaches the end of its bytecode, popping back to the caller's next
-    // instruction.
-    frame.container_stack.push(ContainerPosition {
-        container_idx: idx,
-        offset: 0,
-    });
+    // Goto semantics: transfer control within the current call frame.
+    //
+    // If the target container is already on the container stack, truncate
+    // above it (unwind) and set the offset — this handles break diverts
+    // like `.^.^.^.15`.
+    //
+    // If the target is NOT on the stack, clear the stack and push it —
+    // this handles cross-knot gotos like `-> another_knot`.
+    if let Some(pos) = frame
+        .container_stack
+        .iter()
+        .rposition(|p| p.container_idx == container_idx)
+    {
+        frame.container_stack.truncate(pos + 1);
+        frame.container_stack[pos].offset = byte_offset;
+    } else {
+        frame.container_stack.clear();
+        frame.container_stack.push(ContainerPosition {
+            container_idx,
+            offset: byte_offset,
+        });
+    }
 
     // Increment visit count if tracking.
-    let container = program.container(idx);
+    let container = program.container(container_idx);
     if container.counting_flags.contains(CountingFlags::VISITS) {
         *story.visit_counts.entry(id).or_insert(0) += 1;
     }
@@ -621,15 +636,15 @@ fn handle_begin_choice(
 
     let display_text = format!("{start_text}{choice_only_text}");
 
-    let target_idx = program
-        .resolve_container(target_id)
+    let (target_idx, target_offset) = program
+        .resolve_target(target_id)
         .ok_or(RuntimeError::UnresolvedDefinition(target_id))?;
 
     let idx = story.pending_choices.len();
     story.pending_choices.push(PendingChoice {
         display_text,
         target_idx,
-        target_offset: 0,
+        target_offset,
         flags,
         original_index: idx,
         output_line_idx: None,

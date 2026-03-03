@@ -26,7 +26,22 @@ impl OutputBuffer {
     }
 
     pub fn push_newline(&mut self) {
+        // Suppress leading newlines (no content yet) and duplicate newlines,
+        // matching the C# ink runtime's output stream filtering.
+        if !self.has_content() || self.ends_in_newline() {
+            return;
+        }
         self.parts.push(OutputPart::Newline);
+    }
+
+    /// Returns true if the buffer contains any non-whitespace text.
+    fn has_content(&self) -> bool {
+        self.parts.iter().any(|p| matches!(p, OutputPart::Text(_)))
+    }
+
+    /// Returns true if the last part in the buffer is a newline.
+    fn ends_in_newline(&self) -> bool {
+        matches!(self.parts.last(), Some(OutputPart::Newline))
     }
 
     pub fn push_glue(&mut self) {
@@ -142,5 +157,34 @@ mod tests {
         buf.push_text("hello");
         let _ = buf.flush();
         assert_eq!(buf.flush(), "");
+    }
+
+    #[test]
+    fn leading_newline_suppressed() {
+        let mut buf = OutputBuffer::new();
+        buf.push_newline();
+        buf.push_text("hello");
+        assert_eq!(buf.flush(), "hello");
+    }
+
+    #[test]
+    fn duplicate_newline_suppressed() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("hello");
+        buf.push_newline();
+        buf.push_newline();
+        buf.push_text("world");
+        assert_eq!(buf.flush(), "hello\nworld");
+    }
+
+    #[test]
+    fn leading_newline_after_flush_suppressed() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("first");
+        let _ = buf.flush();
+        // After flush, buffer is empty again — leading newline should be suppressed.
+        buf.push_newline();
+        buf.push_text("second");
+        assert_eq!(buf.flush(), "second");
     }
 }

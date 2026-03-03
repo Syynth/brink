@@ -18,6 +18,8 @@ pub struct StoryIndex {
     pub list_defs: HashMap<String, DefinitionId>,
     /// `"ListName.ItemName"` → `(DefinitionId, ordinal)`
     pub list_items: HashMap<String, (DefinitionId, i32)>,
+    /// Resolved path → label `DefinitionId` (for index-based divert targets)
+    pub labels: HashMap<String, DefinitionId>,
 }
 
 impl StoryIndex {
@@ -25,19 +27,63 @@ impl StoryIndex {
     /// path points to a non-container index within a container), fall back to the
     /// nearest ancestor container.
     pub fn resolve_container(&self, path: &str) -> Option<DefinitionId> {
+        self.resolve_container_with_index(path).map(|(id, _)| id)
+    }
+
+    /// Resolve a path, returning the container ID and an optional element index.
+    ///
+    /// When the path points to a specific element index within a container
+    /// (e.g. `"foo.bar.15"` where `15` is not itself a container), returns
+    /// `(container_id_for_foo_bar, Some(15))`.
+    ///
+    /// When the path directly names a container, returns `(container_id, None)`.
+    pub fn resolve_container_with_index(
+        &self,
+        path: &str,
+    ) -> Option<(DefinitionId, Option<usize>)> {
         if let Some(&id) = self.containers.get(path) {
-            return Some(id);
+            return Some((id, None));
         }
-        // Progressively strip trailing components to find the nearest container
+        // Progressively strip trailing components to find the nearest container.
+        // If the first stripped component is numeric, it's an element index.
         let mut p = path;
+        let mut stripped_suffix: Option<&str> = None;
         while let Some(dot) = p.rfind('.') {
+            if stripped_suffix.is_none() {
+                stripped_suffix = Some(&p[dot + 1..]);
+            }
             p = &p[..dot];
             if let Some(&id) = self.containers.get(p) {
-                return Some(id);
+                // Check if the first stripped component was a numeric index.
+                let element_index = stripped_suffix.and_then(|s| s.parse::<usize>().ok());
+                return Some((id, element_index));
             }
         }
         // Try root
-        self.containers.get("").copied()
+        self.containers.get("").map(|&id| (id, None))
+    }
+
+    /// Resolve a divert target path, returning a `DefinitionId` for either
+    /// a container or a label.
+    ///
+    /// If the path points directly to a container, returns the container's ID.
+    /// If the path points to an element index within a container, returns a
+    /// label ID (registering the label if needed).
+    pub fn resolve_target(&mut self, path: &str) -> Option<DefinitionId> {
+        match self.resolve_container_with_index(path) {
+            Some((container_id, None)) => Some(container_id),
+            Some((_container_id, Some(_index))) => {
+                // This is an index target — return or register a label.
+                if let Some(&label_id) = self.labels.get(path) {
+                    Some(label_id)
+                } else {
+                    let id = crate::path::label_id(path);
+                    self.labels.insert(path.to_string(), id);
+                    Some(id)
+                }
+            }
+            None => None,
+        }
     }
 }
 
@@ -49,6 +95,7 @@ pub fn build_index(story: &InkJson) -> Result<StoryIndex, ConvertError> {
         externals: HashMap::new(),
         list_defs: HashMap::new(),
         list_items: HashMap::new(),
+        labels: HashMap::new(),
     };
 
     // 1. Walk containers recursively
@@ -75,6 +122,9 @@ pub fn build_index(story: &InkJson) -> Result<StoryIndex, ConvertError> {
 
     // 4. Scan all containers for external function diverts
     scan_externals(&mut index, &story.root);
+
+    // 5. Scan all divert targets and register labels for index-based targets
+    register_labels(&mut index, &story.root, "");
 
     Ok(index)
 }
@@ -155,6 +205,56 @@ fn scan_global_decls(index: &mut StoryIndex, container: &Container) -> Result<()
     }
 
     Ok(())
+}
+
+/// Recursively scan all divert targets and register labels for paths that
+/// point to a specific element index within a container.
+fn register_labels(index: &mut StoryIndex, container: &Container, current_path: &str) {
+    for (i, element) in container.contents.iter().enumerate() {
+        match element {
+            Element::Divert(divert) => {
+                let paths: Vec<&str> = match divert {
+                    Divert::Target { path, .. }
+                    | Divert::Function { path, .. }
+                    | Divert::Tunnel { path, .. } => vec![path.as_str()],
+                    Divert::Variable { .. } | Divert::ExternalFunction { .. } => vec![],
+                };
+                for ink_path in paths {
+                    let resolved = path::resolve_path(current_path, ink_path);
+                    index.resolve_target(&resolved);
+                }
+            }
+            Element::ChoicePoint(cp) => {
+                let resolved = path::resolve_path(current_path, &cp.target);
+                index.resolve_target(&resolved);
+            }
+            Element::Value(brink_json::InkValue::DivertTarget(p)) => {
+                let resolved = path::resolve_path(current_path, p);
+                index.resolve_target(&resolved);
+            }
+            Element::Container(child) => {
+                let child_path = if current_path.is_empty() {
+                    i.to_string()
+                } else {
+                    format!("{current_path}.{i}")
+                };
+                register_labels(index, child, &child_path);
+            }
+            _ => {}
+        }
+    }
+
+    // Walk named content
+    for (name, element) in &container.named_content {
+        if let Element::Container(child) = element {
+            let child_path = if current_path.is_empty() {
+                name.clone()
+            } else {
+                format!("{current_path}.{name}")
+            };
+            register_labels(index, child, &child_path);
+        }
+    }
 }
 
 /// Recursively scan for `ExternalFunction` diverts and register them.

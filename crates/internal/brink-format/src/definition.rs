@@ -54,6 +54,17 @@ pub struct ListItemDef {
     pub ordinal: i32,
 }
 
+/// A label pointing to a specific byte offset within a container.
+///
+/// Labels are used for divert targets that reference a specific element
+/// index within a container rather than the container itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelDef {
+    pub id: DefinitionId,
+    pub container_id: DefinitionId,
+    pub byte_offset: u32,
+}
+
 /// An externally-bound function definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExternalFnDef {

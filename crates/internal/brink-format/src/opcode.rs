@@ -52,9 +52,9 @@ const SET_TEMP: u8 = 0x36;
 // Control flow
 const JUMP: u8 = 0x40;
 const JUMP_IF_FALSE: u8 = 0x41;
-const DIVERT: u8 = 0x42;
-const DIVERT_CONDITIONAL: u8 = 0x43;
-const DIVERT_VARIABLE: u8 = 0x44;
+const GOTO: u8 = 0x42;
+const GOTO_IF: u8 = 0x43;
+const GOTO_VARIABLE: u8 = 0x44;
 
 // Container flow
 const ENTER_CONTAINER: u8 = 0x48;
@@ -342,9 +342,9 @@ pub enum Opcode {
     // ── Control flow ────────────────────────────────────────────────────
     Jump(i32),
     JumpIfFalse(i32),
-    Divert(DefinitionId),
-    DivertConditional(DefinitionId),
-    DivertVariable,
+    Goto(DefinitionId),
+    GotoIf(DefinitionId),
+    GotoVariable,
 
     // ── Container flow ──────────────────────────────────────────────────
     EnterContainer(DefinitionId),
@@ -519,15 +519,15 @@ impl Opcode {
                 write_u8(buf, JUMP_IF_FALSE);
                 write_i32(buf, offset);
             }
-            Self::Divert(id) => {
-                write_u8(buf, DIVERT);
+            Self::Goto(id) => {
+                write_u8(buf, GOTO);
                 write_def_id(buf, id);
             }
-            Self::DivertConditional(id) => {
-                write_u8(buf, DIVERT_CONDITIONAL);
+            Self::GotoIf(id) => {
+                write_u8(buf, GOTO_IF);
                 write_def_id(buf, id);
             }
-            Self::DivertVariable => write_u8(buf, DIVERT_VARIABLE),
+            Self::GotoVariable => write_u8(buf, GOTO_VARIABLE),
 
             // Container flow
             Self::EnterContainer(id) => {
@@ -702,9 +702,9 @@ impl Opcode {
             // Control flow
             JUMP => Self::Jump(read_i32(buf, offset)?),
             JUMP_IF_FALSE => Self::JumpIfFalse(read_i32(buf, offset)?),
-            DIVERT => Self::Divert(read_def_id(buf, offset)?),
-            DIVERT_CONDITIONAL => Self::DivertConditional(read_def_id(buf, offset)?),
-            DIVERT_VARIABLE => Self::DivertVariable,
+            GOTO => Self::Goto(read_def_id(buf, offset)?),
+            GOTO_IF => Self::GotoIf(read_def_id(buf, offset)?),
+            GOTO_VARIABLE => Self::GotoVariable,
 
             // Container flow
             ENTER_CONTAINER => Self::EnterContainer(read_def_id(buf, offset)?),
@@ -910,9 +910,9 @@ mod tests {
         roundtrip(&Opcode::Jump(0));
         roundtrip(&Opcode::Jump(-42));
         roundtrip(&Opcode::JumpIfFalse(100));
-        roundtrip(&Opcode::Divert(test_id()));
-        roundtrip(&Opcode::DivertConditional(test_id()));
-        roundtrip(&Opcode::DivertVariable);
+        roundtrip(&Opcode::Goto(test_id()));
+        roundtrip(&Opcode::GotoIf(test_id()));
+        roundtrip(&Opcode::GotoVariable);
     }
 
     #[test]

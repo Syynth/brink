@@ -9,6 +9,7 @@ pub enum DefinitionTag {
     ListDef = 0x03,
     ListItem = 0x04,
     ExternalFn = 0x05,
+    Label = 0x06,
 }
 
 impl DefinitionTag {
@@ -20,6 +21,7 @@ impl DefinitionTag {
             0x03 => Some(Self::ListDef),
             0x04 => Some(Self::ListItem),
             0x05 => Some(Self::ExternalFn),
+            0x06 => Some(Self::Label),
             _ => None,
         }
     }

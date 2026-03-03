@@ -5,7 +5,8 @@ use pest_derive::Parser;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LabelDef, LineEntry, ListDef,
+    ListItemDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -73,6 +74,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut list_defs = Vec::new();
     let mut list_items = Vec::new();
     let mut externals = Vec::new();
+    let mut labels = Vec::new();
     let mut containers = Vec::new();
     let mut line_tables = Vec::new();
 
@@ -83,6 +85,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::lists => list_defs = parse_lists(inner)?,
             Rule::list_items => list_items = parse_list_items(inner)?,
             Rule::externals => externals = parse_externals(inner)?,
+            Rule::labels => labels = parse_labels(inner)?,
             Rule::container => {
                 let (container, lt) = parse_container(inner)?;
                 containers.push(container);
@@ -99,6 +102,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         list_defs,
         list_items,
         externals,
+        labels,
         name_table,
     })
 }
@@ -419,6 +423,46 @@ fn parse_extern_entry(pair: P<'_>) -> Result<ExternalFnDef, InktParseError> {
         name,
         arg_count,
         fallback,
+    })
+}
+
+// ── Labels ──────────────────────────────────────────────────────────────────
+
+fn parse_labels(pair: P<'_>) -> Result<Vec<LabelDef>, InktParseError> {
+    let mut labels = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::label_entry {
+            labels.push(parse_label_entry(entry)?);
+        }
+    }
+    Ok(labels)
+}
+
+fn parse_label_entry(pair: P<'_>) -> Result<LabelDef, InktParseError> {
+    let mut inner = pair.into_inner();
+    let id = parse_def_id(inner.next().ok_or_else(|| InktParseError {
+        message: "expected def_id in label".into(),
+        line: 0,
+        col: 0,
+    })?)?;
+    let container_id = parse_def_id(inner.next().ok_or_else(|| InktParseError {
+        message: "expected container_id in label".into(),
+        line: 0,
+        col: 0,
+    })?)?;
+    let offset_pair = inner.next().ok_or_else(|| InktParseError {
+        message: "expected byte_offset in label".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let byte_offset: u32 = offset_pair
+        .as_str()
+        .parse()
+        .map_err(|_| err(&offset_pair, "invalid byte_offset"))?;
+    Ok(LabelDef {
+        id,
+        container_id,
+        byte_offset,
     })
 }
 
@@ -781,13 +825,11 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "jump_if_false" => Ok(Opcode::JumpIfFalse(parse_operand_i32(
             &operands, 0, mnemonic,
         )?)),
-        "divert" => Ok(Opcode::Divert(parse_operand_def_id(
+        "goto" => Ok(Opcode::Goto(parse_operand_def_id(&operands, 0, mnemonic)?)),
+        "goto_if" => Ok(Opcode::GotoIf(parse_operand_def_id(
             &operands, 0, mnemonic,
         )?)),
-        "divert_conditional" => Ok(Opcode::DivertConditional(parse_operand_def_id(
-            &operands, 0, mnemonic,
-        )?)),
-        "divert_variable" => Ok(Opcode::DivertVariable),
+        "goto_variable" => Ok(Opcode::GotoVariable),
 
         // Container flow
         "enter_container" => Ok(Opcode::EnterContainer(parse_operand_def_id(

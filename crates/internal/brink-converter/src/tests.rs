@@ -47,12 +47,12 @@ fn convert_simple_divert() {
         "should contain 'hurried home' text in some container"
     );
 
-    // Root sub-container should have a Divert opcode
-    let has_divert = data.containers.iter().any(|c| {
+    // Root sub-container should have a Goto opcode
+    let has_goto = data.containers.iter().any(|c| {
         let mut offset = 0;
         while offset < c.bytecode.len() {
             if let Ok(op) = Opcode::decode(&c.bytecode, &mut offset) {
-                if matches!(op, Opcode::Divert(_)) {
+                if matches!(op, Opcode::Goto(_)) {
                     return true;
                 }
             } else {
@@ -61,7 +61,7 @@ fn convert_simple_divert() {
         }
         false
     });
-    assert!(has_divert, "should have a Divert opcode in bytecode");
+    assert!(has_goto, "should have a Goto opcode in bytecode");
 }
 
 fn collect_ink_json_files(dir: &Path) -> Vec<std::path::PathBuf> {

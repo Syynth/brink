@@ -75,6 +75,10 @@ impl<'a> ContainerEmitter<'a> {
         ink_path: &str,
     ) -> Result<brink_format::DefinitionId, ConvertError> {
         let resolved = path::resolve_path(&self.current_path, ink_path);
+        // Check labels first (for index-based targets), then containers.
+        if let Some(label_id) = self.index.labels.get(&resolved) {
+            return Ok(*label_id);
+        }
         self.index
             .resolve_container(&resolved)
             .ok_or(ConvertError::UnresolvedPath(resolved))
@@ -290,9 +294,9 @@ impl<'a> ContainerEmitter<'a> {
             Divert::Target { conditional, path } => {
                 let id = self.resolve_divert_target(path)?;
                 if *conditional {
-                    self.emit(&Opcode::DivertConditional(id));
+                    self.emit(&Opcode::GotoIf(id));
                 } else {
-                    self.emit(&Opcode::Divert(id));
+                    self.emit(&Opcode::Goto(id));
                 }
             }
 
@@ -304,7 +308,7 @@ impl<'a> ContainerEmitter<'a> {
                     let id = path::global_var_id(path);
                     self.emit(&Opcode::GetGlobal(id));
                 }
-                self.emit(&Opcode::DivertVariable);
+                self.emit(&Opcode::GotoVariable);
             }
 
             Divert::Function { path, .. } => {
@@ -473,7 +477,11 @@ fn detect_dollar_r_setup(contents: &[Element], i: usize) -> Option<usize> {
     }
 }
 
-/// Process a container and all sub-containers, returning `(ContainerDef, ContainerLineTable)` pairs.
+/// Per-container element offset map: element index → byte offset in bytecode.
+pub type ElementOffsets = HashMap<String, HashMap<usize, usize>>;
+
+/// Process a container and all sub-containers, returning `(ContainerDef, ContainerLineTable)` pairs
+/// and a map of element byte offsets per container path.
 #[expect(clippy::too_many_lines)]
 pub fn process_container(
     index: &StoryIndex,
@@ -481,15 +489,20 @@ pub fn process_container(
     current_path: &str,
     name_table: &mut NameTableWriter,
     temps: &mut TempScope,
+    element_offsets: &mut ElementOffsets,
 ) -> Result<Vec<(ContainerDef, ContainerLineTable)>, ConvertError> {
     let mut all_pairs = Vec::new();
 
     let mut emitter = ContainerEmitter::new(index, current_path.to_string());
+    let mut offsets_for_this_container: HashMap<usize, usize> = HashMap::new();
 
     // Process contents with index-based iteration for pattern skipping
     let contents = &container.contents;
     let mut i = 0;
     while i < contents.len() {
+        // Record byte offset before processing this element.
+        offsets_for_this_container.insert(i, emitter.bytecode.len());
+
         let element = &contents[i];
 
         if let Element::Container(child) = element {
@@ -503,7 +516,14 @@ pub fn process_container(
             if is_dollar_r_marker(element) {
                 // Still process as a child so it gets a ContainerDef, but don't
                 // emit an EnterContainer opcode.
-                let child_pairs = process_container(index, child, &child_path, name_table, temps)?;
+                let child_pairs = process_container(
+                    index,
+                    child,
+                    &child_path,
+                    name_table,
+                    temps,
+                    element_offsets,
+                )?;
                 all_pairs.extend(child_pairs);
                 i += 1;
                 continue;
@@ -513,7 +533,14 @@ pub fn process_container(
                 emitter.emit(&Opcode::EnterContainer(child_id));
             }
 
-            let child_pairs = process_container(index, child, &child_path, name_table, temps)?;
+            let child_pairs = process_container(
+                index,
+                child,
+                &child_path,
+                name_table,
+                temps,
+                element_offsets,
+            )?;
             all_pairs.extend(child_pairs);
         } else if let Element::ControlCommand(ControlCommand::BeginLogicalEval) = element {
             // Check for $r pattern: ev, ^->$rN, temp=$r, ...
@@ -615,6 +642,11 @@ pub fn process_container(
     };
     all_pairs.push((def, lt));
 
+    // Store element offsets for this container.
+    if !offsets_for_this_container.is_empty() {
+        element_offsets.insert(current_path.to_string(), offsets_for_this_container);
+    }
+
     // Process named content
     for (name, element) in &container.named_content {
         if let Element::Container(child) = element {
@@ -623,7 +655,14 @@ pub fn process_container(
             } else {
                 format!("{current_path}.{name}")
             };
-            let child_pairs = process_container(index, child, &child_path, name_table, temps)?;
+            let child_pairs = process_container(
+                index,
+                child,
+                &child_path,
+                name_table,
+                temps,
+                element_offsets,
+            )?;
             all_pairs.extend(child_pairs);
         }
     }

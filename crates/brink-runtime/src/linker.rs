@@ -56,6 +56,16 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
         });
     }
 
+    // Build label map.
+    let mut label_map = HashMap::with_capacity(data.labels.len());
+    for label in &data.labels {
+        let container_idx = container_map
+            .get(&label.container_id)
+            .copied()
+            .ok_or(RuntimeError::UnresolvedDefinition(label.container_id))?;
+        label_map.insert(label.id, (container_idx, label.byte_offset as usize));
+    }
+
     // Find root container: hash("") using DefaultHasher to match the converter.
     let root_id = DefinitionId::new(DefinitionTag::Container, hash_path(""));
     let root_idx = container_map
@@ -68,6 +78,7 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
     Ok(Program {
         containers,
         container_map,
+        label_map,
         line_tables,
         globals,
         global_map,
