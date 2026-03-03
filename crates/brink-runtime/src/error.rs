@@ -44,6 +44,6 @@ pub enum RuntimeError {
     #[error("unimplemented opcode: {0}")]
     Unimplemented(String),
 
-    #[error("string eval stack underflow")]
-    StringEvalUnderflow,
+    #[error("output capture underflow (no checkpoint)")]
+    CaptureUnderflow,
 }

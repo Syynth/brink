@@ -53,6 +53,8 @@ pub(crate) struct CallFrame {
     pub return_address: Option<ContainerPosition>,
     pub temps: Vec<Value>,
     pub container_stack: Vec<ContainerPosition>,
+    /// True for `f()` calls — output is captured as a return value.
+    pub is_function_call: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +84,6 @@ pub struct Story {
     pub(crate) turn_index: u32,
     pub(crate) status: StoryStatus,
     pub(crate) pending_choices: Vec<PendingChoice>,
-    pub(crate) string_eval_stack: Vec<OutputBuffer>,
     pub(crate) current_tags: Vec<String>,
     pub(crate) in_tag: bool,
     pub(crate) skipping_choice: bool,
@@ -102,6 +103,7 @@ impl Story {
                 container_idx: program.root_idx(),
                 offset: 0,
             }],
+            is_function_call: false,
         };
 
         Self {
@@ -113,7 +115,6 @@ impl Story {
             turn_index: 0,
             status: StoryStatus::Active,
             pending_choices: Vec::new(),
-            string_eval_stack: Vec::new(),
             current_tags: Vec::new(),
             in_tag: false,
             skipping_choice: false,

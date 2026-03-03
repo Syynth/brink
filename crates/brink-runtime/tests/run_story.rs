@@ -81,6 +81,40 @@ fn test_i001_minimal_story() {
     assert_eq!(result.trim(), "Hello, world!");
 }
 
+/// Function calls via `f()` must capture text output as a return value.
+/// The `out` opcode after the call pops this return value and emits it.
+/// Without text capture, `out` hits a value stack underflow.
+#[test]
+fn function_call_captures_text_as_return_value() {
+    // Minimal ink.json: `{print_hello()}` where print_hello outputs "hello".
+    // Equivalent ink: `{print_hello()}`  /  `=== function print_hello` / `hello`
+    let json = r##"{
+        "inkVersion": 21,
+        "root": [
+            [
+                "ev",
+                { "f()": "print_hello" },
+                "out",
+                "/ev",
+                "\n",
+                ["done", { "#n": "g-0" }],
+                null
+            ],
+            "done",
+            {
+                "print_hello": [
+                    "^hello",
+                    "\n",
+                    null
+                ]
+            }
+        ],
+        "listDefs": {}
+    }"##;
+    let result = run_story(json, &[]);
+    assert_eq!(result.trim(), "hello");
+}
+
 #[test]
 fn test_simple_divert() {
     let json = load_ink_json("../../tests/tier1/divert/simple-divert/story.ink.json");

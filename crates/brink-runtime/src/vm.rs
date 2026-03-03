@@ -3,7 +3,6 @@
 use brink_format::{ChoiceFlags, CountingFlags, DefinitionId, LineContent, Opcode, Value};
 
 use crate::error::RuntimeError;
-use crate::output::OutputBuffer;
 use crate::program::Program;
 use crate::story::{CallFrame, ContainerPosition, PendingChoice, Story, StoryStatus};
 use crate::value_ops::{self, BinaryOp};
@@ -34,14 +33,9 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
         };
 
         let Some(pos) = frame.container_stack.last().copied() else {
-            // Container stack empty — pop call frame.
-            let popped = story
-                .call_stack
-                .pop()
-                .ok_or(RuntimeError::CallStackUnderflow)?;
-            if let Some(ret) = popped.return_address {
-                resume_at(story, ret);
-            } else if story.call_stack.is_empty() {
+            // Container stack empty — pop call frame (implicit return, no explicit value).
+            pop_call_frame(story, false)?;
+            if story.call_stack.is_empty() {
                 return Ok(VmYield::Done);
             }
             continue;
@@ -63,14 +57,9 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                     // choose() can set the next execution position on it.
                     return Ok(VmYield::Done);
                 }
-                // Pop call frame.
-                let popped = story
-                    .call_stack
-                    .pop()
-                    .ok_or(RuntimeError::CallStackUnderflow)?;
-                if let Some(ret) = popped.return_address {
-                    resume_at(story, ret);
-                } else if story.call_stack.is_empty() {
+                // Pop call frame (implicit return, no explicit value).
+                pop_call_frame(story, false)?;
+                if story.call_stack.is_empty() {
                     return Ok(VmYield::Done);
                 }
             }
@@ -336,7 +325,10 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                     .resolve_container(id)
                     .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
-                // Save current position as return address.
+                // Capture output during function call — text output becomes
+                // the return value when the frame is popped.
+                story.output.begin_capture();
+
                 let current_pos = current_position(story)?;
                 story.call_stack.push(CallFrame {
                     return_address: Some(current_pos),
@@ -345,17 +337,13 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                         container_idx: idx,
                         offset: 0,
                     }],
+                    is_function_call: true,
                 });
             }
             Opcode::Return => {
-                // Pop call frame and resume at return address.
-                let popped = story
-                    .call_stack
-                    .pop()
-                    .ok_or(RuntimeError::CallStackUnderflow)?;
-                if let Some(ret) = popped.return_address {
-                    resume_at(story, ret);
-                }
+                // The function already pushed its return value via `ev, <value>, /ev`.
+                // It stays on the value stack; pop_call_frame just cleans up the checkpoint.
+                pop_call_frame(story, true)?;
             }
             Opcode::TunnelCall(id) => {
                 let idx = program
@@ -370,30 +358,22 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                         container_idx: idx,
                         offset: 0,
                     }],
+                    is_function_call: false,
                 });
             }
             Opcode::TunnelReturn => {
-                let popped = story
-                    .call_stack
-                    .pop()
-                    .ok_or(RuntimeError::CallStackUnderflow)?;
-                if let Some(ret) = popped.return_address {
-                    resume_at(story, ret);
-                }
+                pop_call_frame(story, true)?;
             }
 
             // ── Choices ─────────────────────────────────────────────────
             Opcode::BeginStringEval => {
-                let saved = core::mem::replace(&mut story.output, OutputBuffer::new());
-                story.string_eval_stack.push(saved);
+                story.output.begin_capture();
             }
             Opcode::EndStringEval => {
-                let text = story.output.flush();
-                let saved = story
-                    .string_eval_stack
-                    .pop()
-                    .ok_or(RuntimeError::StringEvalUnderflow)?;
-                story.output = saved;
+                let text = story
+                    .output
+                    .end_capture()
+                    .ok_or(RuntimeError::CaptureUnderflow)?;
                 story.value_stack.push(Value::String(text));
             }
             Opcode::BeginChoiceSet => {
@@ -447,16 +427,13 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
             // ── Tags ────────────────────────────────────────────────────
             Opcode::BeginTag => {
                 story.in_tag = true;
-                let saved = core::mem::replace(&mut story.output, OutputBuffer::new());
-                story.string_eval_stack.push(saved);
+                story.output.begin_capture();
             }
             Opcode::EndTag => {
-                let tag_text = story.output.flush();
-                let saved = story
-                    .string_eval_stack
-                    .pop()
-                    .ok_or(RuntimeError::StringEvalUnderflow)?;
-                story.output = saved;
+                let tag_text = story
+                    .output
+                    .end_capture()
+                    .ok_or(RuntimeError::CaptureUnderflow)?;
                 story.current_tags.push(tag_text);
                 story.in_tag = false;
             }
@@ -496,6 +473,44 @@ fn resolve_line(program: &Program, pos: &ContainerPosition, idx: u16) -> String 
     } else {
         String::new()
     }
+}
+
+/// Pop a call frame and handle function-call output capture.
+///
+/// For function calls (`is_function_call`):
+/// - `is_explicit_return = true` (from `~ret`): the function already pushed
+///   its return value via `ev, <value>, /ev`. We just discard the capture
+///   checkpoint, leaving any text in the output and the return value on the
+///   value stack.
+/// - `is_explicit_return = false` (implicit return via bytecode exhaustion):
+///   the function didn't push a return value. Capture text output and push
+///   it as a `Value::String`.
+fn pop_call_frame(story: &mut Story, is_explicit_return: bool) -> Result<(), RuntimeError> {
+    let popped = story
+        .call_stack
+        .pop()
+        .ok_or(RuntimeError::CallStackUnderflow)?;
+
+    if popped.is_function_call {
+        if is_explicit_return {
+            // Explicit `~ret`: return value is already on the value stack.
+            // Discard the capture checkpoint; text stays in the output.
+            story.output.discard_capture();
+        } else {
+            // Implicit return: capture text output as the return value.
+            let text = story
+                .output
+                .end_capture()
+                .ok_or(RuntimeError::CaptureUnderflow)?;
+            story.value_stack.push(Value::String(text));
+        }
+    }
+
+    if let Some(ret) = popped.return_address {
+        resume_at(story, ret);
+    }
+
+    Ok(())
 }
 
 fn binary(story: &mut Story, op: BinaryOp) -> Result<(), RuntimeError> {
