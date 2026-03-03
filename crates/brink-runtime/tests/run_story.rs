@@ -290,6 +290,20 @@ fn conditional_choice_in_weave() {
     );
 }
 
+/// Diverts to labeled weave points via named-path aliases (e.g.
+/// `knot.stitch.0.g-0.c-0`) must resolve correctly. Regression:
+/// named aliases were registered in the index but their descendants
+/// were not, so `knot.stitch.0.g-0.c-0` failed to resolve while
+/// `knot.stitch.0.0.c-0` (the numeric equivalent) would have worked.
+#[test]
+fn divert_to_weave_points() {
+    let json =
+        load_ink_json("../../tests/tier1/diverts/I063-divert-to-weave-points/story.ink.json");
+    let result = run_story(&json, &[0]);
+    let expected = "gather\ntest\nchoice content\ngather\nsecond time round";
+    assert_eq!(result.trim(), expected);
+}
+
 #[test]
 fn test_simple_divert() {
     let json = load_ink_json("../../tests/tier1/divert/simple-divert/story.ink.json");

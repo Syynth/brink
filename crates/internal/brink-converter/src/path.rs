@@ -48,7 +48,7 @@ pub fn label_id(path: &str) -> DefinitionId {
 /// position within its container. The first `^` goes to the container itself
 /// (effectively a no-op since `current_path` already names the container),
 /// and subsequent `^` components go to ancestor containers.
-pub fn resolve_path(current_path: &str, ink_path: &str) -> String {
+pub(crate) fn resolve_path(current_path: &str, ink_path: &str) -> String {
     // Absolute path — return as-is
     if !ink_path.starts_with('.') {
         return ink_path.to_string();

@@ -18,6 +18,10 @@ pub enum Element {
     VariableReference(VariableReference),
     ReadCount(ReadCountReference),
     ChoicePoint(ChoicePoint),
+    /// Placeholder inserted by the preprocessing pass to blank out elements
+    /// (e.g. $r ceremony) without changing array indices. Never produced by
+    /// JSON parsing. Codegen emits nothing for this variant.
+    Nop,
 }
 
 impl Serialize for Element {
@@ -33,6 +37,7 @@ impl Serialize for Element {
             Element::VariableReference(r) => r.serialize(serializer),
             Element::ReadCount(r) => r.serialize(serializer),
             Element::ChoicePoint(c) => c.serialize(serializer),
+            Element::Nop => serializer.serialize_str("nop"),
         }
     }
 }

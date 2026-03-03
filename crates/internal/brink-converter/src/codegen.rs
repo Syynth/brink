@@ -7,7 +7,7 @@ use brink_format::{
 };
 use brink_json::{
     ChoicePoint, ChoicePointFlags, Container, ContainerFlags, ControlCommand, Divert, Element,
-    InkJson, InkValue, NativeFunction, VariableAssignment, VariableReference,
+    InkValue, NativeFunction, VariableAssignment, VariableReference,
 };
 
 use crate::error::ConvertError;
@@ -225,6 +225,8 @@ impl<'a> ContainerEmitter<'a> {
             Element::Container(child) => {
                 self.emit_child_container(child);
             }
+
+            Element::Nop => {}
         }
 
         Ok(())
@@ -463,58 +465,6 @@ impl NameTableWriter {
     }
 }
 
-/// Check if a variable assignment targets a `$r`-family temp variable.
-fn is_dollar_r_assign(element: &Element) -> bool {
-    matches!(
-        element,
-        Element::VariableAssignment(VariableAssignment::TemporaryAssignment {
-            variable,
-            ..
-        }) if variable.starts_with("$r")
-    )
-}
-
-/// Check if a divert target value points to a `$r`-family label.
-fn is_dollar_r_divert_target(element: &Element) -> bool {
-    matches!(element, Element::Value(InkValue::DivertTarget(p)) if p.contains("$r"))
-}
-
-/// Check if a container is a `$r`-family label marker (e.g. `[{"#n":"$r1"}]`).
-fn is_dollar_r_marker(element: &Element) -> bool {
-    matches!(element, Element::Container(c) if c.name.as_deref().is_some_and(|n| n.starts_with("$r")))
-}
-
-/// Check if a divert is a variable divert to `$r` (the return divert in "s" containers).
-fn is_dollar_r_variable_divert(element: &Element) -> bool {
-    matches!(
-        element,
-        Element::Divert(Divert::Variable { path, .. }) if path.starts_with("$r")
-    )
-}
-
-/// Detect the $r pattern at position `i` in a contents array.
-///
-/// Returns `Some(skip_count)` if the pattern is found, where `skip_count` is
-/// the number of elements to skip (including the initial element at `i`).
-///
-/// Pattern A (inside eval block): ev, ^->$rN, temp=$r, str, ->.^.s, [$rN], /str
-///   Elements at i+0..i+2: DivertTarget($rN), temp=$r — skip 2 (ev already consumed)
-///   The caller is responsible for recognizing the "ev" that precedes this.
-///
-/// Pattern B (c-N container start): ev, ^->$rN, /ev, temp=$r, ->path.s, [$rN]
-///   Starts at the beginning of contents with ev at index 0.
-fn detect_dollar_r_setup(contents: &[Element], i: usize) -> Option<usize> {
-    // We need at least 2 elements: DivertTarget($r) + temp=$r
-    if i + 1 >= contents.len() {
-        return None;
-    }
-    if is_dollar_r_divert_target(&contents[i]) && is_dollar_r_assign(&contents[i + 1]) {
-        Some(2)
-    } else {
-        None
-    }
-}
-
 /// Per-container element offset map: container `DefinitionId` → (element index → byte offset).
 ///
 /// Keyed by `DefinitionId` rather than path string so that containers with
@@ -523,9 +473,25 @@ fn detect_dollar_r_setup(contents: &[Element], i: usize) -> Option<usize> {
 /// during codegen under the numeric path.
 pub type ElementOffsets = HashMap<DefinitionId, HashMap<usize, usize>>;
 
+/// Convert ink.json `ContainerFlags` to brink-format `CountingFlags`.
+fn convert_counting_flags(flags: Option<ContainerFlags>) -> CountingFlags {
+    flags.map_or_else(CountingFlags::empty, |f| {
+        let mut cf = CountingFlags::empty();
+        if f.contains(ContainerFlags::VISITS) {
+            cf |= CountingFlags::VISITS;
+        }
+        if f.contains(ContainerFlags::TURNS) {
+            cf |= CountingFlags::TURNS;
+        }
+        if f.contains(ContainerFlags::COUNT_START_ONLY) {
+            cf |= CountingFlags::COUNT_START_ONLY;
+        }
+        cf
+    })
+}
+
 /// Process a container and all sub-containers, returning `(ContainerDef, ContainerLineTable)` pairs
 /// and a map of element byte offsets per container path.
-#[expect(clippy::too_many_lines)]
 pub fn process_container(
     index: &StoryIndex,
     container: &Container,
@@ -539,7 +505,7 @@ pub fn process_container(
     let mut emitter = ContainerEmitter::new(index, current_path.to_string());
     let mut offsets_for_this_container: HashMap<usize, usize> = HashMap::new();
 
-    // Process contents with index-based iteration for pattern skipping
+    // Process contents with index-based iteration for pattern detection.
     let contents = &container.contents;
     let mut i = 0;
     while i < contents.len() {
@@ -555,23 +521,6 @@ pub fn process_container(
                 format!("{current_path}.{i}")
             };
 
-            // Skip $r marker containers (e.g. [{"#n":"$r1"}])
-            if is_dollar_r_marker(element) {
-                // Still process as a child so it gets a ContainerDef, but don't
-                // emit an EnterContainer opcode.
-                let child_pairs = process_container(
-                    index,
-                    child,
-                    &child_path,
-                    name_table,
-                    temps,
-                    element_offsets,
-                )?;
-                all_pairs.extend(child_pairs);
-                i += 1;
-                continue;
-            }
-
             if let Some(&child_id) = index.containers.get(&child_path) {
                 emitter.emit(&Opcode::EnterContainer(child_id));
             }
@@ -585,72 +534,27 @@ pub fn process_container(
                 element_offsets,
             )?;
             all_pairs.extend(child_pairs);
-        } else if let Element::ControlCommand(ControlCommand::BeginLogicalEval) = element {
-            // Check for $r pattern: ev, ^->$rN, temp=$r, ...
-            if i + 2 < contents.len() && detect_dollar_r_setup(contents, i + 1).is_some() {
-                // Pattern A (choice text eval): ev, ^->$rN, temp=$r, str, ->.^.s, [$rN], /str, /ev
-                // Skip the ev, DivertTarget, and temp=$r. Keep str onward but replace
-                // the divert to .^.s with EnterContainer.
-                i += 3; // skip ev, ^->$rN, temp=$r
-
-                // Now process remaining elements normally — the Divert to .^.s will be
-                // converted to EnterContainer by emit_divert_as_enter below, and the
-                // $r marker container will be skipped by the is_dollar_r_marker check.
-                continue;
-            }
-            // Not a $r pattern — emit normally
-            emitter.emit_element(element, name_table, temps)?;
-        } else if is_dollar_r_divert_target(element)
-            && i + 1 < contents.len()
-            && matches!(
-                &contents[i + 1],
-                Element::ControlCommand(ControlCommand::EndLogicalEval)
-            )
-            && i + 3 < contents.len()
-            && is_dollar_r_assign(&contents[i + 2])
-        {
-            // Pattern B (c-N container start): ^->$rN, /ev, temp=$r, ->path.s, [$rN]
-            // The ev was already consumed. Skip ^->$rN, /ev, temp=$r.
-            // The divert to path.s becomes EnterContainer, $rN marker is skipped.
-            // Reset in_eval_mode since we're skipping the /ev that would have cleared it.
-            emitter.in_eval_mode = false;
-            i += 3; // skip ^->$rN, /ev, temp=$r
-            continue;
-        } else if is_dollar_r_assign(element) {
-            // Stray $r assignment (e.g. in c-N after the ev/ev block) — skip it
-            // This handles the case: ev, ^->$rN, /ev, temp=$r where ev was already emitted
-            i += 1;
-            continue;
         } else if let Element::Divert(Divert::Target {
             path,
             conditional: false,
         }) = element
         {
-            // Check if this is a divert to a .s or .^.s sibling (choice text container).
-            // In the $r pattern, these should be EnterContainer instead of Divert.
-            let resolved = crate::path::resolve_path(&emitter.current_path, path);
+            // Check if this is a divert to a ".s" choice-text container.
+            // These should be EnterContainer (push child) instead of Goto.
             #[expect(clippy::case_sensitive_file_extension_comparisons)]
-            if resolved.ends_with(".s") {
-                // Replace with EnterContainer
-                if let Some(id) = index.resolve_container(&resolved) {
+            if path.ends_with(".s") {
+                if let Some(id) = index.resolve_container(path) {
                     emitter.emit(&Opcode::EnterContainer(id));
                 } else {
-                    // Fall back to normal divert if we can't resolve
                     emitter.emit_element(element, name_table, temps)?;
                 }
             } else {
                 emitter.emit_element(element, name_table, temps)?;
             }
-        } else if is_dollar_r_variable_divert(element) {
-            // Skip variable diverts to $r — EnterContainer handles return automatically
-            i += 1;
-            continue;
         } else if matches!(element, Element::ControlCommand(ControlCommand::Thread))
             && i + 1 < contents.len()
         {
             // Thread pattern: `thread` + `-> target` becomes ThreadCall(target).
-            // The thread body runs and contributes choices to the shared pool,
-            // then execution returns to the main flow.
             if let Element::Divert(Divert::Target {
                 path,
                 conditional: false,
@@ -670,20 +574,7 @@ pub fn process_container(
         i += 1;
     }
 
-    // Build this container's counting flags
-    let counting_flags = container.flags.map_or_else(CountingFlags::empty, |f| {
-        let mut cf = CountingFlags::empty();
-        if f.contains(ContainerFlags::VISITS) {
-            cf |= CountingFlags::VISITS;
-        }
-        if f.contains(ContainerFlags::TURNS) {
-            cf |= CountingFlags::TURNS;
-        }
-        if f.contains(ContainerFlags::COUNT_START_ONLY) {
-            cf |= CountingFlags::COUNT_START_ONLY;
-        }
-        cf
-    });
+    let counting_flags = convert_counting_flags(container.flags);
 
     let container_id = index
         .containers
@@ -734,12 +625,12 @@ pub fn process_container(
 /// Extract global variable definitions from the "global decl" container.
 pub fn extract_globals(
     index: &StoryIndex,
-    story: &InkJson,
+    root: &Container,
     name_table: &mut NameTableWriter,
 ) -> Result<Vec<GlobalVarDef>, ConvertError> {
     let mut globals = Vec::new();
 
-    let Some(Element::Container(global_decl)) = story.root.named_content.get("global decl") else {
+    let Some(Element::Container(global_decl)) = root.named_content.get("global decl") else {
         return Ok(globals);
     };
 

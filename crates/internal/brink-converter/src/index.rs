@@ -88,7 +88,14 @@ impl StoryIndex {
 }
 
 /// Build a `StoryIndex` from a parsed `InkJson`.
-pub fn build_index(story: &InkJson) -> Result<StoryIndex, ConvertError> {
+///
+/// Uses `canonical_root` (the preprocessed root with canonicalized paths
+/// and $r elements removed) for container registration, label scanning,
+/// and external function scanning. Uses `story` for list definitions.
+pub fn build_index(
+    story: &InkJson,
+    canonical_root: &Container,
+) -> Result<StoryIndex, ConvertError> {
     let mut index = StoryIndex {
         containers: HashMap::new(),
         globals: HashMap::new(),
@@ -98,8 +105,8 @@ pub fn build_index(story: &InkJson) -> Result<StoryIndex, ConvertError> {
         labels: HashMap::new(),
     };
 
-    // 1. Walk containers recursively
-    register_container(&mut index, &story.root, "")?;
+    // 1. Walk containers recursively (using canonical root)
+    register_container(&mut index, canonical_root, "")?;
 
     // 2. Process list definitions
     for (list_name, items) in &story.list_defs {
@@ -116,15 +123,15 @@ pub fn build_index(story: &InkJson) -> Result<StoryIndex, ConvertError> {
     }
 
     // 3. Scan root's named content for global variable declarations
-    if let Some(Element::Container(global_decl)) = story.root.named_content.get("global decl") {
+    if let Some(Element::Container(global_decl)) = canonical_root.named_content.get("global decl") {
         scan_global_decls(&mut index, global_decl)?;
     }
 
     // 4. Scan all containers for external function diverts
-    scan_externals(&mut index, &story.root);
+    scan_externals(&mut index, canonical_root);
 
     // 5. Scan all divert targets and register labels for index-based targets
-    register_labels(&mut index, &story.root, "");
+    register_labels(&mut index, canonical_root, "");
 
     Ok(index)
 }
