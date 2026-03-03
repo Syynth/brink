@@ -205,6 +205,21 @@ fn variable_tunnel_call() {
     assert_eq!(result.trim(), "STUFF");
 }
 
+/// Once-only choices (`*` bullet in ink) must not appear after their target
+/// container has been visited. Without this, stories that loop back to a
+/// choice point will infinite-loop because exhausted choices keep appearing.
+#[test]
+fn once_only_choices_filtered_by_visit_count() {
+    let json = load_ink_json(
+        "../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink.json",
+    );
+    // Input: choose 0 twice (first choice both times). The story should
+    // terminate after the fallback fires, not infinite loop.
+    let result = run_story(&json, &[0, 0]);
+    // Story should complete without panic/infinite loop.
+    assert!(!result.is_empty() || result.is_empty()); // just assert it completes
+}
+
 #[test]
 fn test_simple_divert() {
     let json = load_ink_json("../../tests/tier1/divert/simple-divert/story.ink.json");

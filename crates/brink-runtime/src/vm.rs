@@ -676,6 +676,21 @@ fn handle_begin_choice(
         }
     }
 
+    // 1b. Once-only check: skip if the target container was already visited.
+    if flags.once_only {
+        let visit_count = story.visit_counts.get(&target_id).copied().unwrap_or(0);
+        if visit_count > 0 {
+            if flags.has_choice_only_content {
+                let _ = story.value_stack.pop();
+            }
+            if flags.has_start_content {
+                let _ = story.value_stack.pop();
+            }
+            story.skipping_choice = true;
+            return Ok(());
+        }
+    }
+
     // 2. Pop choice text strings (choice-only is on top, start below).
     let choice_only_text = if flags.has_choice_only_content {
         match story.value_stack.pop() {
@@ -706,6 +721,7 @@ fn handle_begin_choice(
     let idx = story.pending_choices.len();
     story.pending_choices.push(PendingChoice {
         display_text,
+        target_id,
         target_idx,
         target_offset,
         flags,

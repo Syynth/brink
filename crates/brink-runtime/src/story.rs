@@ -60,6 +60,7 @@ pub(crate) struct CallFrame {
 #[derive(Debug, Clone)]
 pub(crate) struct PendingChoice {
     pub display_text: String,
+    pub target_id: DefinitionId,
     pub target_idx: u32,
     pub target_offset: usize,
     pub flags: ChoiceFlags,
@@ -202,8 +203,13 @@ impl Story {
         }
 
         let choice = &self.pending_choices[index];
+        let target_id = choice.target_id;
         let target_idx = choice.target_idx;
         let target_offset = choice.target_offset;
+
+        // Increment visit count for the choice target container so that
+        // once-only choices can be filtered on subsequent passes.
+        *self.visit_counts.entry(target_id).or_insert(0) += 1;
 
         // Set execution position to the choice target.
         let frame = self
@@ -242,5 +248,87 @@ impl Story {
     /// Peek at the top value without popping.
     pub(crate) fn peek_value(&self) -> Result<&Value, RuntimeError> {
         self.value_stack.last().ok_or(RuntimeError::StackUnderflow)
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::panic, clippy::needless_continue)]
+mod tests {
+    use super::*;
+    use crate::link;
+
+    fn load_i079() -> (crate::Program, Story) {
+        let json_str = std::fs::read_to_string(
+            "../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink.json",
+        )
+        .unwrap();
+        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
+        let data = brink_converter::convert(&ink).unwrap();
+        let program = link(&data).unwrap();
+        let story = Story::new(&program);
+        (program, story)
+    }
+
+    /// Step a story until it yields choices, panicking if it ends first.
+    fn step_until_choices(story: &mut Story, program: &Program) -> Vec<Choice> {
+        loop {
+            match story.step(program).unwrap() {
+                StepResult::Choices { choices, .. } => return choices,
+                StepResult::Done { .. } => continue,
+                StepResult::Ended { .. } => panic!("story ended before presenting choices"),
+            }
+        }
+    }
+
+    /// After selecting a once-only choice, the visit count for its target
+    /// container must be > 0. Without this, the once-only filter in
+    /// `handle_begin_choice` can never fire.
+    #[test]
+    fn select_choice_increments_visit_count_for_target() {
+        let (program, mut story) = load_i079();
+        let choices = step_until_choices(&mut story, &program);
+
+        assert!(!choices.is_empty(), "expected at least one choice");
+
+        // Record the target_id of the first pending choice BEFORE selecting.
+        let target_id = story.pending_choices[0].target_id;
+        let visit_before = story.visit_counts.get(&target_id).copied().unwrap_or(0);
+
+        story.choose(0).unwrap();
+
+        // After selection, the visit count for this target must have increased.
+        let visit_after = story.visit_counts.get(&target_id).copied().unwrap_or(0);
+        assert!(
+            visit_after > visit_before,
+            "visit count for choice target should increment after selection: \
+             before={visit_before}, after={visit_after}"
+        );
+    }
+
+    /// On the second pass through a choice set with once-only choices,
+    /// a choice whose target has already been visited must NOT appear
+    /// in `pending_choices`.
+    #[test]
+    fn once_only_choice_excluded_on_second_pass() {
+        let (program, mut story) = load_i079();
+
+        let first_choices = step_until_choices(&mut story, &program);
+        assert!(
+            first_choices
+                .iter()
+                .any(|c| c.text.contains("First choice")),
+            "first pass should contain 'First choice', got: {first_choices:?}"
+        );
+
+        story.choose(0).unwrap();
+
+        let second_choices = step_until_choices(&mut story, &program);
+        assert!(
+            !second_choices
+                .iter()
+                .any(|c| c.text.contains("First choice")),
+            "second pass should NOT contain 'First choice' (once-only, already visited), \
+             got: {second_choices:?}"
+        );
     }
 }
