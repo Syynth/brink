@@ -338,6 +338,11 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                     .resolve_container(id)
                     .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
+                let container = program.container(idx);
+                if container.counting_flags.contains(CountingFlags::VISITS) {
+                    *story.visit_counts.entry(id).or_insert(0) += 1;
+                }
+
                 // Capture output during function call — text output becomes
                 // the return value when the frame is popped.
                 story.output.begin_capture();
@@ -362,6 +367,11 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 let idx = program
                     .resolve_container(id)
                     .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+
+                let container = program.container(idx);
+                if container.counting_flags.contains(CountingFlags::VISITS) {
+                    *story.visit_counts.entry(id).or_insert(0) += 1;
+                }
 
                 let current_pos = current_position(story)?;
                 story.call_stack.push(CallFrame {
@@ -400,6 +410,11 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 let idx = program
                     .resolve_container(id)
                     .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+
+                let container = program.container(idx);
+                if container.counting_flags.contains(CountingFlags::VISITS) {
+                    *story.visit_counts.entry(id).or_insert(0) += 1;
+                }
 
                 let current_pos = current_position(story)?;
                 story.call_stack.push(CallFrame {
@@ -630,6 +645,11 @@ fn goto_target(story: &mut Story, program: &Program, id: DefinitionId) -> Result
     //
     // If the target is NOT on the stack, clear the stack and push it —
     // this handles cross-knot gotos like `-> another_knot`.
+    let already_on_stack = frame
+        .container_stack
+        .iter()
+        .any(|p| p.container_idx == container_idx);
+
     if let Some(pos) = frame
         .container_stack
         .iter()
@@ -645,10 +665,24 @@ fn goto_target(story: &mut Story, program: &Program, id: DefinitionId) -> Result
         });
     }
 
-    // Increment visit count if tracking.
+    // Increment visit count conditionally:
+    // - New container (not already on stack): always count.
+    // - Already on stack + COUNT_START_ONLY at offset 0: count (gather loops).
+    // - Already on stack without COUNT_START_ONLY: don't count (self-loops
+    //   in VISITS-only knots shouldn't inflate the visit counter).
     let container = program.container(container_idx);
     if container.counting_flags.contains(CountingFlags::VISITS) {
-        *story.visit_counts.entry(id).or_insert(0) += 1;
+        let should_count = if already_on_stack {
+            container
+                .counting_flags
+                .contains(CountingFlags::COUNT_START_ONLY)
+                && byte_offset == 0
+        } else {
+            true
+        };
+        if should_count {
+            *story.visit_counts.entry(id).or_insert(0) += 1;
+        }
     }
 
     Ok(())

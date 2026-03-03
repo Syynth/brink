@@ -311,3 +311,241 @@ fn test_simple_divert() {
     let expected = "We arrived into London at 9.45pm exactly.\nWe hurried home to Savile Row as fast as we could.";
     assert_eq!(result.trim(), expected);
 }
+
+// ── Visit counting ─────────────────────────────────────────────────────
+
+/// Tunnel calls must increment the visit count of the target container.
+/// Ink: `->t-> knot` twice, each time outputting `{knot}` (visit count).
+/// Expected: "1\n2\n" — each tunnel entry increments.
+/// Bug: `TunnelCall` handler doesn't increment `visit_counts`.
+#[test]
+fn tunnel_call_increments_visit_count() {
+    // Ink equivalent:
+    //   -> knot ->
+    //   -> knot ->
+    //   done
+    //   == knot ==
+    //   {knot}
+    //   ->->
+    let json = r##"{
+        "inkVersion": 21,
+        "root": [
+            [
+                {"->t->": "knot"},
+                {"->t->": "knot"},
+                "done",
+                null
+            ],
+            "done",
+            {
+                "knot": [
+                    "ev", {"CNT?": ".^"}, "out", "/ev",
+                    "\n",
+                    "ev", "void", "/ev",
+                    "->->",
+                    {"#f": 1}
+                ]
+            }
+        ],
+        "listDefs": {}
+    }"##;
+    let result = run_story(json, &[]);
+    assert_eq!(
+        result, "1\n2\n",
+        "tunnel calls should increment visit count: first call=1, second call=2"
+    );
+}
+
+/// Function calls (`f()`) must increment the visit count of the target container.
+/// Ink: `{func()}{func()}` where func returns its own visit count as text.
+/// Expected: output contains "1" then "2".
+/// Bug: `Call` handler doesn't increment `visit_counts`.
+#[test]
+fn function_call_increments_visit_count() {
+    // Ink equivalent:
+    //   {func()}
+    //   {func()}
+    //   === function func ===
+    //   ~ return func
+    //
+    // In ink.json, `{func()}` is: ev, f() func, out, /ev
+    // The function body: ev, CNT? .^, /ev, ~ret (return)
+    // CNT? pushes the visit count of func, which becomes the return value.
+    let json = r##"{
+        "inkVersion": 21,
+        "root": [
+            [
+                "ev", {"f()": "func"}, "out", "/ev",
+                "^ ",
+                "ev", {"f()": "func"}, "out", "/ev",
+                "\n",
+                ["done", {"#n": "g-0"}],
+                null
+            ],
+            "done",
+            {
+                "func": [
+                    "ev", {"CNT?": ".^"}, "/ev",
+                    "~ret",
+                    {"#f": 1}
+                ]
+            }
+        ],
+        "listDefs": {}
+    }"##;
+    let result = run_story(json, &[]);
+    assert_eq!(
+        result.trim(),
+        "1 2",
+        "function calls should increment visit count: first call=1, second call=2"
+    );
+}
+
+/// Goto-to-self (loop back to the same VISITS-only container) must NOT
+/// increment the visit count. The count should only increase on new
+/// entry (tunnel/function call or cross-knot goto).
+/// Ink: `== knot ==` with `{knot}` and a conditional `-> knot` loop.
+/// Expected: visit count stays at 1 across all iterations.
+/// Bug: `goto_target` always increments, causing over-counting.
+#[test]
+fn goto_to_self_does_not_increment_visits_only() {
+    // Ink equivalent:
+    //   -> knot ->
+    //   done
+    //   == knot ==
+    //   ~ count++
+    //   {count} {knot}
+    //   {count < 3: -> knot}
+    //   ->->
+    //
+    // The knot has #f: 1 (VISITS only). Looping back with -> knot should
+    // NOT increment the visit count since the container is already on the stack.
+    let json = r##"{
+        "inkVersion": 21,
+        "root": [
+            [
+                {"->t->": "knot"},
+                "done",
+                null
+            ],
+            "done",
+            {
+                "knot": [
+                    "ev", {"VAR?": "count"}, 1, "+", {"VAR=": "count", "re": true}, "/ev",
+                    "ev", {"VAR?": "count"}, "out", "/ev",
+                    "^ ",
+                    "ev", {"CNT?": ".^"}, "out", "/ev",
+                    "\n",
+                    "ev", {"VAR?": "count"}, 3, "<", "/ev",
+                    [
+                        {"->": ".^.b", "c": true},
+                        {"b": [{"->": ".^.^.^"}, {"->": ".^.^.^.22"}, null]}
+                    ],
+                    "nop",
+                    "\n",
+                    "ev", "void", "/ev",
+                    "->->",
+                    {"#f": 1}
+                ],
+                "global decl": [
+                    "ev", 0, {"VAR=": "count"}, "/ev",
+                    "end",
+                    null
+                ]
+            }
+        ],
+        "listDefs": {}
+    }"##;
+    let result = run_story(json, &[]);
+    // count increments each iteration; visit count should stay at 1
+    assert_eq!(
+        result, "1 1\n2 1\n3 1\n",
+        "goto-to-self should NOT increment visit count for VISITS-only containers"
+    );
+}
+
+/// Goto-to-self in a `COUNT_START_ONLY` container (gather loop) SHOULD
+/// increment the visit count every time offset 0 is re-entered.
+/// Ink: `- (loop)` with `{loop}` and a conditional `-> loop`.
+/// Expected: visit count increases each loop iteration (1, 2, 3).
+/// This currently over-counts because goto always increments (accidental pass),
+/// but the semantics must be: increment because `COUNT_START_ONLY` + offset 0.
+#[test]
+fn gather_loop_increments_count_start_only() {
+    // Ink equivalent:
+    //   -> test ->
+    //   done
+    //   == test ==
+    //   - (loop)
+    //   ~ count++
+    //   {count} {loop}
+    //   {count < 3: -> loop}
+    //   ->->
+    let json = r##"{
+        "inkVersion": 21,
+        "root": [
+            [
+                {"->t->": "test"},
+                "done",
+                null
+            ],
+            "done",
+            {
+                "test": [
+                    [
+                        [
+                            "ev", {"VAR?": "count"}, 1, "+", {"VAR=": "count", "re": true}, "/ev",
+                            "ev", {"VAR?": "count"}, "out", "/ev",
+                            "^ ",
+                            "ev", {"CNT?": ".^"}, "out", "/ev",
+                            "\n",
+                            "ev", {"VAR?": "count"}, 3, "<", "/ev",
+                            [
+                                {"->": ".^.b", "c": true},
+                                {"b": [{"->": ".^.^.^"}, {"->": ".^.^.^.22"}, null]}
+                            ],
+                            "nop",
+                            "\n",
+                            "ev", "void", "/ev",
+                            "->->",
+                            {"#f": 5, "#n": "loop"}
+                        ],
+                        null
+                    ],
+                    null
+                ],
+                "global decl": [
+                    "ev", 0, {"VAR=": "count"}, "/ev",
+                    "end",
+                    null
+                ]
+            }
+        ],
+        "listDefs": {}
+    }"##;
+    let result = run_story(json, &[]);
+    // Both count and visit count should increment each iteration
+    assert_eq!(
+        result, "1 1\n2 2\n3 3\n",
+        "COUNT_START_ONLY gather loops should increment visit count on each re-entry at offset 0"
+    );
+}
+
+/// Full I128 corpus test: validates tunnel visit counting, goto-to-self
+/// suppression for VISITS-only, and gather `COUNT_START_ONLY` behavior together.
+#[test]
+fn knot_stitch_gather_counts() {
+    let json =
+        load_ink_json("../../tests/tier1/knots/I128-knot-stitch-gather-counts/story.ink.json");
+    let result = run_story(&json, &[]);
+    let expected = "\
+1 1\n2 2\n3 3\n\
+1 1\n2 1\n3 1\n\
+1 2\n2 2\n3 2\n\
+1 1\n2 1\n3 1\n\
+1 2\n2 2\n3 2\n";
+    assert_eq!(
+        result, expected,
+        "I128 knot-stitch-gather-counts output mismatch"
+    );
+}
