@@ -102,6 +102,7 @@ pub(crate) struct Flow {
     pub output: OutputBuffer,
     pub pending_choices: Vec<PendingChoice>,
     pub turn_index: u32,
+    pub turn_counts: HashMap<DefinitionId, u32>,
     pub current_tags: Vec<String>,
     pub in_tag: bool,
     pub skipping_choice: bool,
@@ -211,6 +212,7 @@ impl Story {
                 output: OutputBuffer::new(),
                 pending_choices: Vec::new(),
                 turn_index: 0,
+                turn_counts: HashMap::new(),
                 current_tags: Vec::new(),
                 in_tag: false,
                 skipping_choice: false,
@@ -309,6 +311,9 @@ impl Story {
         // Increment visit count for the choice target container so that
         // once-only choices can be filtered on subsequent passes.
         *self.visit_counts.entry(choice.target_id).or_insert(0) += 1;
+        self.flow
+            .turn_counts
+            .insert(choice.target_id, self.flow.turn_index);
 
         // Replace the current thread with the fork from choice creation
         // time. By selection time, all spawned threads should have

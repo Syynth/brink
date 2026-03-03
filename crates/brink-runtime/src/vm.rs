@@ -172,6 +172,7 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 let container = program.container(idx);
                 if container.counting_flags.contains(CountingFlags::VISITS) {
                     *story.visit_counts.entry(id).or_insert(0) += 1;
+                    story.flow.turn_counts.insert(id, story.flow.turn_index);
                 }
 
                 let thread = story.flow.current_thread_mut();
@@ -372,6 +373,7 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 let container = program.container(idx);
                 if container.counting_flags.contains(CountingFlags::VISITS) {
                     *story.visit_counts.entry(id).or_insert(0) += 1;
+                    story.flow.turn_counts.insert(id, story.flow.turn_index);
                 }
 
                 // Capture output during function call — text output becomes
@@ -403,6 +405,7 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 let container = program.container(idx);
                 if container.counting_flags.contains(CountingFlags::VISITS) {
                     *story.visit_counts.entry(id).or_insert(0) += 1;
+                    story.flow.turn_counts.insert(id, story.flow.turn_index);
                 }
 
                 let current_pos = current_position(story)?;
@@ -446,6 +449,7 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 let container = program.container(idx);
                 if container.counting_flags.contains(CountingFlags::VISITS) {
                     *story.visit_counts.entry(id).or_insert(0) += 1;
+                    story.flow.turn_counts.insert(id, story.flow.turn_index);
                 }
 
                 let current_pos = current_position(story)?;
@@ -526,9 +530,19 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                     .push(Value::Int(zero_based.cast_signed()));
             }
             Opcode::TurnsSince => {
-                // Stub: return -1 (never visited) for now.
-                let _val = story.flow.pop_value()?;
-                story.flow.value_stack.push(Value::Int(-1));
+                let val = story.flow.pop_value()?;
+                let result = if let Value::DivertTarget(id) = val {
+                    if let Some(&last_turn) = story.flow.turn_counts.get(&id) {
+                        #[expect(clippy::cast_possible_wrap)]
+                        let delta = (story.flow.turn_index - last_turn) as i32;
+                        delta
+                    } else {
+                        -1
+                    }
+                } else {
+                    -1
+                };
+                story.flow.value_stack.push(Value::Int(result));
             }
             Opcode::TurnIndex => {
                 story
@@ -727,6 +741,7 @@ fn goto_target(story: &mut Story, program: &Program, id: DefinitionId) -> Result
         };
         if should_count {
             *story.visit_counts.entry(id).or_insert(0) += 1;
+            story.flow.turn_counts.insert(id, story.flow.turn_index);
         }
     }
 

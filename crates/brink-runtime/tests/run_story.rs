@@ -542,6 +542,21 @@ Finishing thread.\n";
     );
 }
 
+/// `TURNS_SINCE(-> knot)` must return the number of turns since the knot
+/// was last visited. Returns 0 on the same turn, 1 after one choice, etc.
+/// The VM previously stubbed this to always return -1.
+#[test]
+fn turns_since_with_variable_target() {
+    let json = load_ink_json(
+        "../../tests/tier1/variables/turns-since-with-variable-target/story.ink.json",
+    );
+    let result = run_story(&json, &[0]);
+    assert_eq!(
+        result, "0\n0\n1\n",
+        "TURNS_SINCE should return 0 on same turn, 1 after a choice"
+    );
+}
+
 /// Full I128 corpus test: validates tunnel visit counting, goto-to-self
 /// suppression for VISITS-only, and gather `COUNT_START_ONLY` behavior together.
 #[test]
