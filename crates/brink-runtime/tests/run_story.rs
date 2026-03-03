@@ -174,6 +174,17 @@ fn fallback_choice_auto_selected() {
     }
 }
 
+/// Tunnel onwards: `->-> B` should override the tunnel return address
+/// and divert to B instead of returning to the caller.
+#[test]
+fn tunnel_onwards_divert_override() {
+    let json = load_ink_json(
+        "../../tests/tier1/diverts/I053-tunnel-onwards-divert-override/story.ink.json",
+    );
+    let result = run_story(&json, &[]);
+    assert_eq!(result.trim(), "This is A\nNow in B.");
+}
+
 /// String constants declared via `CONST kX = "hi"` / `VAR x = kX` must
 /// resolve to the string value. The ink.json wraps these in `str/.../str`
 /// control commands inside the `global decl` container.

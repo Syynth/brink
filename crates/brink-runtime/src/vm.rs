@@ -362,6 +362,24 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 });
             }
             Opcode::TunnelReturn => {
+                // The eval block before ->-> pushes either void (normal
+                // return) or a DivertTarget (tunnel onwards override).
+                // Pop it: if it's a DivertTarget, overwrite this frame's
+                // return address so we divert there instead of returning.
+                let val = story.pop_value()?;
+                if let Value::DivertTarget(id) = val {
+                    let (idx, offset) = program
+                        .resolve_target(id)
+                        .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                    let frame = story
+                        .call_stack
+                        .last_mut()
+                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                    frame.return_address = Some(ContainerPosition {
+                        container_idx: idx,
+                        offset,
+                    });
+                }
                 pop_call_frame(story, true)?;
             }
 
