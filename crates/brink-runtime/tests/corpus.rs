@@ -126,9 +126,10 @@ fn walk_dir(dir: &Path, cases: &mut Vec<PathBuf>) {
     }
 }
 
-#[test]
-fn corpus_tier1() {
-    let corpus_base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/tier1");
+/// Run the corpus for a given tier directory and print results.
+#[expect(clippy::print_stderr, clippy::unwrap_used)]
+fn run_corpus(tier: &str) {
+    let corpus_base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../tests/{tier}"));
 
     let test_cases = find_test_cases(&corpus_base);
     if test_cases.is_empty() {
@@ -186,7 +187,7 @@ fn corpus_tier1() {
     }
 
     let total = passed + failed + skipped;
-    eprintln!("\n=== Corpus Results ===");
+    eprintln!("\n=== Corpus Results ({tier}) ===");
     eprintln!("Total: {total}, Passed: {passed}, Failed: {failed}, Skipped: {skipped}");
 
     if !failures.is_empty() {
@@ -203,4 +204,14 @@ fn corpus_tier1() {
         0.0
     };
     eprintln!("\nPass rate: {passed}/{} ({rate:.0}%)", passed + failed);
+}
+
+#[test]
+fn corpus_tier1() {
+    run_corpus("tier1");
+}
+
+#[test]
+fn corpus_tier2() {
+    run_corpus("tier2");
 }
