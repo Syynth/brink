@@ -150,6 +150,30 @@ fn function_text_capture_strips_trailing_newlines() {
     assert_eq!(result.trim(), "Say hi please.");
 }
 
+/// Fallback choices (`is_invisible_default` flag) must be auto-selected
+/// without presenting them to the player. The VM should never yield
+/// `StepResult::Choices` for invisible-default choices — they should be
+/// followed transparently.
+#[test]
+fn fallback_choice_auto_selected() {
+    let json =
+        load_ink_json("../../tests/tier1/choices/I077-fallback-choice-on-thread/story.ink.json");
+    let ink: InkJson = serde_json::from_str(&json).unwrap();
+    let data = convert(&ink).unwrap();
+    let program = brink_runtime::link(&data).unwrap();
+    let mut story = Story::new(&program);
+
+    // The story should complete in a single step with no Choices yield.
+    let result = story.step(&program).unwrap();
+    assert!(
+        matches!(result, StepResult::Done { .. } | StepResult::Ended { .. }),
+        "expected Done/Ended (auto-selected fallback), got Choices"
+    );
+    if let StepResult::Done { text } | StepResult::Ended { text } = result {
+        assert_eq!(text.trim(), "Should be 1 not 0: 1.");
+    }
+}
+
 #[test]
 fn test_simple_divert() {
     let json = load_ink_json("../../tests/tier1/divert/simple-divert/story.ink.json");

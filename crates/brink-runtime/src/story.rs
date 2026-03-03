@@ -62,7 +62,6 @@ pub(crate) struct PendingChoice {
     pub display_text: String,
     pub target_idx: u32,
     pub target_offset: usize,
-    #[expect(dead_code)]
     pub flags: ChoiceFlags,
     #[expect(dead_code)]
     pub original_index: usize,
@@ -132,33 +131,56 @@ impl Story {
             self.status = StoryStatus::Active;
         }
 
-        let yield_kind = vm::run(self, program)?;
+        let mut full_text = String::new();
 
-        let text = self.output.flush();
-        self.turn_index += 1;
+        loop {
+            let yield_kind = vm::run(self, program)?;
 
-        match yield_kind {
-            vm::VmYield::Done => {
-                if self.pending_choices.is_empty() {
-                    self.status = StoryStatus::Done;
-                    Ok(StepResult::Done { text })
-                } else {
+            let text = self.output.flush();
+            full_text.push_str(&text);
+            self.turn_index += 1;
+
+            match yield_kind {
+                vm::VmYield::Done => {
+                    if self.pending_choices.is_empty() {
+                        self.status = StoryStatus::Done;
+                        return Ok(StepResult::Done { text: full_text });
+                    }
+
+                    // If all pending choices are invisible defaults (fallback
+                    // choices), auto-select the first one and keep running.
+                    let all_invisible = self
+                        .pending_choices
+                        .iter()
+                        .all(|pc| pc.flags.is_invisible_default);
+
+                    if all_invisible {
+                        self.select_choice(0)?;
+                        continue;
+                    }
+
+                    // Filter out invisible defaults — they shouldn't be
+                    // presented to the player.
                     self.status = StoryStatus::WaitingForChoice;
                     let choices = self
                         .pending_choices
                         .iter()
                         .enumerate()
+                        .filter(|(_, pc)| !pc.flags.is_invisible_default)
                         .map(|(i, pc)| Choice {
                             text: pc.display_text.clone(),
                             index: i,
                         })
                         .collect();
-                    Ok(StepResult::Choices { text, choices })
+                    return Ok(StepResult::Choices {
+                        text: full_text,
+                        choices,
+                    });
                 }
-            }
-            vm::VmYield::End => {
-                self.status = StoryStatus::Ended;
-                Ok(StepResult::Ended { text })
+                vm::VmYield::End => {
+                    self.status = StoryStatus::Ended;
+                    return Ok(StepResult::Ended { text: full_text });
+                }
             }
         }
     }
@@ -168,7 +190,12 @@ impl Story {
         if self.status != StoryStatus::WaitingForChoice {
             return Err(RuntimeError::NotWaitingForChoice);
         }
+        self.select_choice(index)
+    }
 
+    /// Internal: set execution position to the given choice target, clear
+    /// pending choices, and set status to Active. No status precondition.
+    fn select_choice(&mut self, index: usize) -> Result<(), RuntimeError> {
         let available = self.pending_choices.len();
         if index >= available {
             return Err(RuntimeError::InvalidChoiceIndex { index, available });
