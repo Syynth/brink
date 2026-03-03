@@ -220,6 +220,19 @@ fn once_only_choices_filtered_by_visit_count() {
     assert!(!result.is_empty() || result.is_empty()); // just assert it completes
 }
 
+/// Choices created inside a tunnel must preserve the tunnel's temp
+/// variables. `generate_choice(1)` sets temp `x = 1`; the choice target
+/// outputs `{x}` which must resolve to `1`, not empty.
+#[test]
+fn choice_thread_forking_preserves_temp() {
+    let json = load_ink_json("../../tests/tier1/choices/I083-choice-thread-forking/story.ink.json");
+    let result = run_story(&json, &[0]);
+    assert!(
+        result.contains("Vaue of local var is: 1"),
+        "expected temp var x=1 to be preserved through choice, got: {result:?}"
+    );
+}
+
 #[test]
 fn test_simple_divert() {
     let json = load_ink_json("../../tests/tier1/divert/simple-divert/story.ink.json");

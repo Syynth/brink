@@ -727,6 +727,7 @@ fn handle_begin_choice(
         flags,
         original_index: idx,
         output_line_idx: None,
+        thread_snapshot: story.call_stack.clone(),
     });
 
     Ok(())

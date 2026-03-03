@@ -68,6 +68,10 @@ pub(crate) struct PendingChoice {
     pub original_index: usize,
     #[expect(dead_code)]
     pub output_line_idx: Option<u16>,
+    /// Snapshot of the call stack at choice creation time, so that
+    /// selecting this choice can restore the execution context
+    /// (including temp variables from enclosing tunnels/functions).
+    pub thread_snapshot: Vec<CallFrame>,
 }
 
 /// Per-instance mutable state for executing stories.
@@ -202,30 +206,32 @@ impl Story {
             return Err(RuntimeError::InvalidChoiceIndex { index, available });
         }
 
-        let choice = &self.pending_choices[index];
-        let target_id = choice.target_id;
-        let target_idx = choice.target_idx;
-        let target_offset = choice.target_offset;
+        let choice = self.pending_choices.swap_remove(index);
 
         // Increment visit count for the choice target container so that
         // once-only choices can be filtered on subsequent passes.
-        *self.visit_counts.entry(target_id).or_insert(0) += 1;
+        *self.visit_counts.entry(choice.target_id).or_insert(0) += 1;
 
-        // Set execution position to the choice target.
+        // Restore the call stack from when the choice was created. This
+        // ensures temp variables from enclosing tunnels/functions are
+        // accessible when the choice target executes.
+        if !choice.thread_snapshot.is_empty() {
+            self.call_stack = choice.thread_snapshot;
+        }
+
+        // Set execution position to the choice target. We reset the top
+        // frame's container_stack to just the target — the snapshot may
+        // have captured stale nesting from inside the choice eval block.
         let frame = self
             .call_stack
             .last_mut()
             .ok_or(RuntimeError::CallStackUnderflow)?;
 
-        if let Some(top) = frame.container_stack.last_mut() {
-            top.container_idx = target_idx;
-            top.offset = target_offset;
-        } else {
-            frame.container_stack.push(ContainerPosition {
-                container_idx: target_idx,
-                offset: target_offset,
-            });
-        }
+        frame.container_stack.clear();
+        frame.container_stack.push(ContainerPosition {
+            container_idx: choice.target_idx,
+            offset: choice.target_offset,
+        });
 
         self.pending_choices.clear();
         self.status = StoryStatus::Active;
@@ -329,6 +335,83 @@ mod tests {
                 .any(|c| c.text.contains("First choice")),
             "second pass should NOT contain 'First choice' (once-only, already visited), \
              got: {second_choices:?}"
+        );
+    }
+
+    // ── Choice thread forking ──────────────────────────────────────────
+
+    fn load_i083() -> (crate::Program, Story) {
+        let json_str = std::fs::read_to_string(
+            "../../tests/tier1/choices/I083-choice-thread-forking/story.ink.json",
+        )
+        .unwrap();
+        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
+        let data = brink_converter::convert(&ink).unwrap();
+        let program = link(&data).unwrap();
+        let story = Story::new(&program);
+        (program, story)
+    }
+
+    /// When a choice is created inside a tunnel, the call stack at that
+    /// moment (including the tunnel frame with its temps) must be captured.
+    /// After the tunnel returns and the choice is presented, the snapshot
+    /// should still reflect the tunnel-era call stack depth (>= 2 frames).
+    #[test]
+    fn pending_choice_captures_tunnel_call_stack() {
+        let (program, mut story) = load_i083();
+        let _choices = step_until_choices(&mut story, &program);
+
+        // At this point the tunnel has returned, so the live call_stack
+        // has only the root frame.
+        assert_eq!(
+            story.call_stack.len(),
+            1,
+            "live call stack should be 1 frame (root) after tunnel return"
+        );
+
+        // But the pending choice's snapshot should have captured the
+        // call stack from inside the tunnel (root + tunnel = 2 frames).
+        assert!(!story.pending_choices.is_empty());
+        let snapshot = &story.pending_choices[0].thread_snapshot;
+        assert!(
+            snapshot.len() >= 2,
+            "choice snapshot should have >= 2 frames (root + tunnel), got {}",
+            snapshot.len()
+        );
+    }
+
+    /// After selecting a choice that was created inside a tunnel,
+    /// `select_choice` must restore the tunnel's call frame so that
+    /// temp variables from the tunnel scope are accessible.
+    #[test]
+    fn select_choice_restores_tunnel_frame_with_temps() {
+        let (program, mut story) = load_i083();
+        let _choices = step_until_choices(&mut story, &program);
+
+        // Before choosing: only root frame, no tunnel temps.
+        assert_eq!(story.call_stack.len(), 1);
+
+        story.choose(0).unwrap();
+
+        // After choosing: the tunnel frame should be restored.
+        // The call stack should have at least 2 frames (root + tunnel).
+        assert!(
+            story.call_stack.len() >= 2,
+            "call stack should be restored to tunnel depth after choice selection, \
+             got {} frame(s)",
+            story.call_stack.len()
+        );
+
+        // The tunnel frame (last frame) should have temp x = Int(1).
+        let tunnel_frame = story.call_stack.last().unwrap();
+        assert!(
+            !tunnel_frame.temps.is_empty(),
+            "tunnel frame should have temp variables"
+        );
+        assert_eq!(
+            tunnel_frame.temps[0],
+            Value::Int(1),
+            "tunnel frame temps[0] should be Int(1) (the parameter x)"
         );
     }
 }
