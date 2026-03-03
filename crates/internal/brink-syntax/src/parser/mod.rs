@@ -10,7 +10,7 @@ mod logic;
 mod story;
 mod tag;
 
-use crate::SyntaxKind::{self, EOF, ERROR, IDENT};
+use crate::SyntaxKind::{self, COLON, EOF, ERROR, IDENT, L_BRACE, NEWLINE, PIPE, R_BRACE};
 use crate::lexer;
 use rowan::GreenNode;
 
@@ -71,24 +71,96 @@ pub(crate) struct Parser<'t> {
     tokens: &'t [(SyntaxKind, &'t str)],
     pos: usize,
     depth: u32,
+    /// Pre-computed scan results for each `{` token. Indexed by raw token
+    /// position. For positions that are not `L_BRACE`, the value is meaningless.
+    /// For `L_BRACE` positions, stores `PIPE`, `COLON`, or `EOF` indicating
+    /// which delimiter appears first at depth-0 inside that brace pair.
+    brace_scan: Vec<SyntaxKind>,
     builder: rowan::GreenNodeBuilder<'static>,
     errors: Vec<ParseError>,
 }
 
 impl<'t> Parser<'t> {
     fn new(tokens: &'t [(SyntaxKind, &'t str)]) -> Self {
+        let brace_scan = Self::build_brace_scan(tokens);
         Self {
             tokens,
             pos: 0,
             depth: 0,
+            brace_scan,
             builder: rowan::GreenNodeBuilder::new(),
             errors: Vec::new(),
         }
     }
 
+    /// One O(n) pre-pass over the token stream. For each `{`, determines whether
+    /// `PIPE` or `COLON` appears first at depth-0 inside that brace pair.
+    /// Stores the result so `scan_for_pipe_or_colon` becomes an O(1) lookup.
+    fn build_brace_scan(tokens: &[(SyntaxKind, &str)]) -> Vec<SyntaxKind> {
+        let n = tokens.len();
+        let mut result = vec![EOF; n];
+
+        // Stack of (brace_raw_pos, first_delimiter_seen).
+        // `first_delimiter_seen` is PIPE, COLON, or EOF (neither yet).
+        let mut stack: Vec<(usize, SyntaxKind)> = Vec::new();
+
+        for (i, &(kind, _)) in tokens.iter().enumerate() {
+            if kind.is_trivia() {
+                continue;
+            }
+            match kind {
+                L_BRACE => {
+                    stack.push((i, EOF));
+                }
+                R_BRACE => {
+                    if let Some((brace_pos, delim)) = stack.pop() {
+                        result[brace_pos] = delim;
+                    }
+                    // Unmatched `}` — ignore
+                }
+                PIPE => {
+                    // Only affects the innermost open brace (depth-0 relative to it)
+                    if let Some((_, delim)) = stack.last_mut()
+                        && *delim == EOF
+                    {
+                        *delim = PIPE;
+                    }
+                }
+                COLON => {
+                    if let Some((_, delim)) = stack.last_mut()
+                        && *delim == EOF
+                    {
+                        *delim = COLON;
+                    }
+                }
+                NEWLINE => {
+                    // Newline terminates unclosed braces on the current line.
+                    // Pop all open braces — they're unclosed within this line.
+                    while let Some((brace_pos, delim)) = stack.pop() {
+                        result[brace_pos] = delim;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Anything left on the stack is unclosed at EOF
+        for (brace_pos, delim) in stack {
+            result[brace_pos] = delim;
+        }
+
+        result
+    }
+
     /// Returns `true` if the nesting depth limit has been reached.
     fn at_depth_limit(&self) -> bool {
         self.depth >= MAX_DEPTH
+    }
+
+    /// Look up the pre-computed scan result for a `{` token at the given raw
+    /// position. Returns `PIPE`, `COLON`, or `EOF`.
+    fn brace_scan_at(&self, raw_pos: usize) -> SyntaxKind {
+        self.brace_scan.get(raw_pos).copied().unwrap_or(EOF)
     }
 
     // ── Lookahead ───────────────────────────────────────────────

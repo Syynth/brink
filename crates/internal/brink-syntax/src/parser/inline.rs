@@ -1,5 +1,5 @@
 use crate::SyntaxKind::{
-    self, AMP, BACKSLASH, BANG, BLOCK_COMMENT, BRANCH_CONTENT, BRANCHLESS_COND_BODY, COLON,
+    AMP, BACKSLASH, BANG, BLOCK_COMMENT, BRANCH_CONTENT, BRANCHLESS_COND_BODY, COLON,
     CONDITIONAL_WITH_EXPR, DIVERT, DOLLAR, ELSE_BRANCH, EOF, ESCAPE, GLUE, GLUE_NODE,
     IMPLICIT_SEQUENCE, INLINE_BRANCHES_COND, INLINE_BRANCHES_SEQ, INLINE_LOGIC, INNER_EXPRESSION,
     KW_CYCLE, KW_ELSE, KW_ONCE, KW_SHUFFLE, KW_STOPPING, L_BRACE, L_PAREN, LINE_COMMENT, MINUS,
@@ -21,10 +21,39 @@ use super::Parser;
 pub(crate) fn inline_logic(p: &mut Parser<'_>) {
     p.skip_ws(); // flush trivia to the parent before starting the node
     p.start_node(INLINE_LOGIC);
+    let brace_pos = p.pos(); // raw position of the `{` for scan lookup
     p.bump(); // L_BRACE
+
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        // Skip tokens until the matching `}` or EOF to recover.
+        let mut depth = 1u32;
+        while !p.at_eof() && depth > 0 {
+            match p.current() {
+                L_BRACE => {
+                    depth += 1;
+                    p.bump();
+                }
+                R_BRACE => {
+                    depth -= 1;
+                    if depth > 0 {
+                        p.bump();
+                    }
+                }
+                _ => p.bump(),
+            }
+        }
+        if p.current() == R_BRACE {
+            p.bump();
+        }
+        p.finish_node();
+        return;
+    }
+
+    p.depth += 1;
     p.skip_ws();
 
-    inner_logic(p);
+    inner_logic(p, brace_pos);
 
     p.skip_ws();
     if p.current() == R_BRACE {
@@ -32,6 +61,7 @@ pub(crate) fn inline_logic(p: &mut Parser<'_>) {
     } else if !p.at_eof() {
         p.error("expected `}`".into());
     }
+    p.depth -= 1;
     p.finish_node();
 }
 
@@ -75,34 +105,11 @@ pub(crate) fn multiline_block(p: &mut Parser<'_>) {
     p.finish_node();
 }
 
-/// Scan ahead (without consuming) to find whether PIPE or COLON comes first
-/// within the current brace level. Skips nested `{...}` pairs.
-/// Returns: `PIPE`, `COLON`, or `R_BRACE`/`NEWLINE`/`EOF` if neither found.
-fn scan_for_pipe_or_colon(p: &Parser<'_>) -> SyntaxKind {
-    let mut i = 0;
-    let mut depth = 0u32;
-    loop {
-        let kind = p.nth(i);
-        match kind {
-            L_BRACE => {
-                depth += 1;
-                i += 1;
-            }
-            R_BRACE if depth > 0 => {
-                depth -= 1;
-                i += 1;
-            }
-            PIPE if depth == 0 => return PIPE,
-            COLON if depth == 0 => return COLON,
-            R_BRACE | NEWLINE | EOF => return kind,
-            _ => {
-                i += 1;
-            }
-        }
-    }
-}
-
 /// 5-way dispatch for inner logic inside `{...}`.
+///
+/// `brace_pos` is the raw token position of the opening `{`, used to look up
+/// the pre-computed scan result (whether `PIPE` or `COLON` appears first at
+/// depth-0 inside this brace pair).
 ///
 /// ```text
 /// inner_logic = {
@@ -113,7 +120,7 @@ fn scan_for_pipe_or_colon(p: &Parser<'_>) -> SyntaxKind {
 ///   | inner_expression
 /// }
 /// ```
-fn inner_logic(p: &mut Parser<'_>) {
+fn inner_logic(p: &mut Parser<'_>, brace_pos: usize) {
     // 1. sequence_with_annotation: starts with annotation symbol or keyword
     if at_sequence_annotation(p) {
         sequence_with_annotation(p);
@@ -126,8 +133,8 @@ fn inner_logic(p: &mut Parser<'_>) {
         return;
     }
 
-    // Scan ahead to determine brace type before consuming any tokens.
-    let lookahead = scan_for_pipe_or_colon(p);
+    // O(1) lookup of pre-computed scan result for this brace pair.
+    let lookahead = p.brace_scan_at(brace_pos);
 
     if lookahead == PIPE {
         // Implicit sequence: {branch|branch|...}

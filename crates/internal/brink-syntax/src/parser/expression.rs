@@ -237,10 +237,39 @@ fn looks_like_list_expr(p: &Parser<'_>) -> bool {
 fn paren_expr(p: &mut Parser<'_>) {
     p.start_node(PAREN_EXPR);
     p.bump(); // (
+
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        // Skip tokens until the matching `)` or EOF.
+        let mut depth = 1u32;
+        while !p.at_eof() && depth > 0 {
+            match p.current() {
+                L_PAREN => {
+                    depth += 1;
+                    p.bump();
+                }
+                R_PAREN => {
+                    depth -= 1;
+                    if depth > 0 {
+                        p.bump();
+                    }
+                }
+                _ => p.bump(),
+            }
+        }
+        if p.current() == R_PAREN {
+            p.bump();
+        }
+        p.finish_node();
+        return;
+    }
+
+    p.depth += 1;
     p.skip_ws();
     expression(p);
     p.skip_ws();
     p.expect(R_PAREN);
+    p.depth -= 1;
     p.finish_node();
 }
 
