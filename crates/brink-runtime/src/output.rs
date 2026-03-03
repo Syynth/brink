@@ -176,6 +176,10 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
             }
             OutputPart::Newline => {
                 if !after_glue {
+                    // Trim trailing whitespace before the newline, matching
+                    // the C# ink runtime's output cleanup.
+                    let trimmed_len = out.trim_end().len();
+                    out.truncate(trimmed_len);
                     out.push('\n');
                 }
                 // When after_glue, skip the newline (glue eats following newlines too).
@@ -391,6 +395,19 @@ mod tests {
         buf.push_newline();
         buf.push_text("eight");
         assert_eq!(buf.flush(), "fifty-eight");
+    }
+
+    /// Trailing whitespace before a newline should be trimmed.
+    /// Pattern: `A {f():B}⏎X` where `f()` returns false — the space after
+    /// "A" becomes trailing whitespace when the inline expression produces
+    /// no output.
+    #[test]
+    fn trailing_whitespace_before_newline_trimmed() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("A ");
+        buf.push_newline();
+        buf.push_text("X");
+        assert_eq!(buf.flush(), "A\nX");
     }
 
     /// Glue should NOT trim leading whitespace from text content.
