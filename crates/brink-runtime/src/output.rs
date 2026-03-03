@@ -144,12 +144,8 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
         }
         match part {
             OutputPart::Text(s) => {
-                if after_glue {
-                    out.push_str(s.trim_start());
-                    after_glue = false;
-                } else {
-                    out.push_str(s);
-                }
+                out.push_str(s);
+                after_glue = false;
             }
             OutputPart::Newline => {
                 if !after_glue {
@@ -197,13 +193,13 @@ mod tests {
     }
 
     #[test]
-    fn glue_trims_leading_whitespace() {
+    fn glue_preserves_leading_whitespace_in_text() {
         let mut buf = OutputBuffer::new();
         buf.push_text("hello");
         buf.push_newline();
         buf.push_glue();
         buf.push_text("  world");
-        assert_eq!(buf.flush(), "helloworld");
+        assert_eq!(buf.flush(), "hello  world");
     }
 
     #[test]
@@ -278,7 +274,7 @@ mod tests {
         buf.push_glue();
         buf.push_text(" world");
         let result = buf.end_capture();
-        assert_eq!(result, Some("helloworld".to_owned()));
+        assert_eq!(result, Some("hello world".to_owned()));
     }
 
     #[test]
@@ -336,5 +332,20 @@ mod tests {
         buf.push_newline();
         buf.push_text("eight");
         assert_eq!(buf.flush(), "fifty-eight");
+    }
+
+    /// Glue should NOT trim leading whitespace from text content.
+    /// Pattern: `Some <>⏎content<> with glue.`
+    /// The space in " with glue." is content, not indentation.
+    #[test]
+    fn glue_preserves_text_whitespace() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("Some ");
+        buf.push_glue();
+        buf.push_newline();
+        buf.push_text("content");
+        buf.push_glue();
+        buf.push_text(" with glue.");
+        assert_eq!(buf.flush(), "Some content with glue.");
     }
 }
