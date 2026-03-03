@@ -13,6 +13,7 @@ description = "CLI for compiling and running ink stories"
 brink-format = { path = "../internal/brink-format", features = ["inkt"] }
 brink-json = { path = "../internal/brink-json" }
 brink-converter = { path = "../internal/brink-converter" }
+brink-runtime = { path = "../brink-runtime" }
 clap.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

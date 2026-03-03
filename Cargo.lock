@@ -145,6 +145,7 @@ dependencies = [
  "brink-converter",
  "brink-format",
  "brink-json",
+ "brink-runtime",
  "clap",
  "serde_json",
  "tracing",
