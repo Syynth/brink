@@ -1,6 +1,7 @@
 use crate::definition::{
     ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LabelDef, ListDef, ListItemDef,
 };
+use crate::value::ListValue;
 
 /// The top-level compiled story: everything the runtime needs to execute.
 #[derive(Debug, Clone, PartialEq)]
@@ -16,4 +17,6 @@ pub struct StoryData {
     pub labels: Vec<LabelDef>,
     /// Interned name strings, indexed by [`NameId`](crate::id::NameId).
     pub name_table: Vec<String>,
+    /// List literal values referenced by `PushList(idx)` opcodes.
+    pub list_literals: Vec<ListValue>,
 }

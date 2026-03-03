@@ -1,8 +1,9 @@
 //! Arithmetic, comparison, coercion, truthiness, and stringify for [`Value`].
 
-use brink_format::Value;
+use brink_format::{ListValue, Value};
 
 use crate::error::RuntimeError;
+use crate::program::Program;
 
 /// Returns whether a value is truthy in ink semantics.
 pub(crate) fn is_truthy(v: &Value) -> bool {
@@ -12,26 +13,56 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         Value::Float(n) => *n != 0.0,
         Value::String(s) => !s.is_empty(),
         Value::Null => false,
-        Value::DivertTarget(_) | Value::VariablePointer(_) | Value::List(_) => true,
+        Value::DivertTarget(_) | Value::VariablePointer(_) => true,
+        Value::List(lv) => !lv.items.is_empty(),
     }
 }
 
 /// Stringify a value for output.
-pub(crate) fn stringify(v: &Value) -> String {
+pub(crate) fn stringify(v: &Value, program: &Program) -> String {
     match v {
         Value::Int(n) => n.to_string(),
         Value::Float(n) => format!("{n}"),
         Value::Bool(b) => if *b { "true" } else { "false" }.to_owned(),
         Value::String(s) => s.clone(),
-        Value::Null | Value::List(_) => String::new(),
+        Value::Null => String::new(),
+        Value::List(lv) => stringify_list(lv, program),
         Value::DivertTarget(id) | Value::VariablePointer(id) => format!("{id}"),
     }
 }
 
+/// Stringify a list value: sort items by ordinal, join names with ", ".
+fn stringify_list(lv: &ListValue, program: &Program) -> String {
+    let mut entries: Vec<(i32, &str)> = lv
+        .items
+        .iter()
+        .filter_map(|&id| {
+            program
+                .list_item(id)
+                .map(|entry| (entry.ordinal, program.name(entry.name)))
+        })
+        .collect();
+    entries.sort_by_key(|&(ordinal, _)| ordinal);
+    let names: Vec<&str> = entries.iter().map(|&(_, name)| name).collect();
+    names.join(", ")
+}
+
 /// Binary arithmetic/comparison operation.
-pub(crate) fn binary_op(op: BinaryOp, left: &Value, right: &Value) -> Result<Value, RuntimeError> {
+pub(crate) fn binary_op(
+    op: BinaryOp,
+    left: &Value,
+    right: &Value,
+    program: &Program,
+) -> Result<Value, RuntimeError> {
     // Coerce types: if both are numeric, promote to float if either is float.
     match (left, right) {
+        // List + List
+        (Value::List(a), Value::List(b)) => list_binary_op(op, a, b, program),
+        // List + Int / List - Int → ordinal shift
+        (Value::List(a), Value::Int(b)) if op == BinaryOp::Add || op == BinaryOp::Subtract => {
+            let shift = if op == BinaryOp::Add { *b } else { -*b };
+            Ok(Value::List(list_ordinal_shift(a, shift, program)))
+        }
         (Value::Int(a), Value::Int(b)) => int_op(op, *a, *b),
         (Value::Float(a), Value::Float(b)) => Ok(float_op(op, *a, *b)),
         #[expect(clippy::cast_precision_loss)]
@@ -78,6 +109,109 @@ pub(crate) fn binary_op(op: BinaryOp, left: &Value, right: &Value) -> Result<Val
             left.value_type(),
             right.value_type()
         ))),
+    }
+}
+
+/// Binary operations on two list values.
+fn list_binary_op(
+    op: BinaryOp,
+    a: &ListValue,
+    b: &ListValue,
+    _program: &Program,
+) -> Result<Value, RuntimeError> {
+    match op {
+        BinaryOp::Add => {
+            // Union
+            let mut items = a.items.clone();
+            for &id in &b.items {
+                if !items.contains(&id) {
+                    items.push(id);
+                }
+            }
+            let mut origins = a.origins.clone();
+            for &id in &b.origins {
+                if !origins.contains(&id) {
+                    origins.push(id);
+                }
+            }
+            Ok(Value::List(ListValue { items, origins }))
+        }
+        BinaryOp::Subtract => {
+            // Except (a \ b)
+            let items: Vec<_> = a
+                .items
+                .iter()
+                .filter(|id| !b.items.contains(id))
+                .copied()
+                .collect();
+            Ok(Value::List(ListValue {
+                items,
+                origins: a.origins.clone(),
+            }))
+        }
+        BinaryOp::Equal => {
+            // Same item set (order-independent)
+            let eq =
+                a.items.len() == b.items.len() && a.items.iter().all(|id| b.items.contains(id));
+            Ok(Value::Bool(eq))
+        }
+        BinaryOp::NotEqual => {
+            let eq =
+                a.items.len() == b.items.len() && a.items.iter().all(|id| b.items.contains(id));
+            Ok(Value::Bool(!eq))
+        }
+        BinaryOp::Greater => {
+            // Strict superset: a contains all of b, and a has more items.
+            let superset =
+                b.items.iter().all(|id| a.items.contains(id)) && a.items.len() > b.items.len();
+            Ok(Value::Bool(superset))
+        }
+        BinaryOp::GreaterOrEqual => {
+            // Superset: a contains all of b.
+            let superset = b.items.iter().all(|id| a.items.contains(id));
+            Ok(Value::Bool(superset))
+        }
+        BinaryOp::Less => {
+            // Strict subset: b contains all of a, and b has more items.
+            let subset =
+                a.items.iter().all(|id| b.items.contains(id)) && b.items.len() > a.items.len();
+            Ok(Value::Bool(subset))
+        }
+        BinaryOp::LessOrEqual => {
+            // Subset: b contains all of a.
+            let subset = a.items.iter().all(|id| b.items.contains(id));
+            Ok(Value::Bool(subset))
+        }
+        BinaryOp::And => Ok(Value::Bool(!a.items.is_empty() && !b.items.is_empty())),
+        BinaryOp::Or => Ok(Value::Bool(!a.items.is_empty() || !b.items.is_empty())),
+        _ => Err(RuntimeError::TypeError(format!(
+            "cannot apply {op:?} to lists"
+        ))),
+    }
+}
+
+/// Shift all list items by an ordinal delta within their origin lists.
+fn list_ordinal_shift(lv: &ListValue, shift: i32, program: &Program) -> ListValue {
+    let mut items = Vec::with_capacity(lv.items.len());
+    for &item_id in &lv.items {
+        if let Some(entry) = program.list_item(item_id) {
+            let target_ordinal = entry.ordinal + shift;
+            // Find the item with the target ordinal in the same origin.
+            if let Some(def) = program.list_def(entry.origin) {
+                for &candidate_id in &def.items {
+                    if let Some(candidate) = program.list_item(candidate_id)
+                        && candidate.ordinal == target_ordinal
+                    {
+                        items.push(candidate_id);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    ListValue {
+        items,
+        origins: lv.origins.clone(),
     }
 }
 
@@ -205,6 +339,34 @@ pub(crate) fn cast_to_float(v: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::program::LinkedContainer;
+    use std::collections::HashMap;
+
+    fn dummy_program() -> Program {
+        use brink_format::{DefinitionId, DefinitionTag};
+        Program {
+            containers: vec![LinkedContainer {
+                id: DefinitionId::new(DefinitionTag::Container, 0),
+                bytecode: vec![],
+                counting_flags: brink_format::CountingFlags::empty(),
+            }],
+            container_map: {
+                let mut m = HashMap::new();
+                m.insert(DefinitionId::new(DefinitionTag::Container, 0), 0);
+                m
+            },
+            label_map: HashMap::new(),
+            line_tables: vec![vec![]],
+            globals: vec![],
+            global_map: HashMap::new(),
+            name_table: vec![],
+            root_idx: 0,
+            list_literals: vec![],
+            list_item_map: HashMap::new(),
+            list_defs: vec![],
+            list_def_map: HashMap::new(),
+        }
+    }
 
     #[test]
     fn truthiness() {
@@ -221,22 +383,26 @@ mod tests {
 
     #[test]
     fn int_arithmetic() {
-        let r = binary_op(BinaryOp::Add, &Value::Int(2), &Value::Int(3)).unwrap();
+        let p = dummy_program();
+        let r = binary_op(BinaryOp::Add, &Value::Int(2), &Value::Int(3), &p).unwrap();
         assert_eq!(r, Value::Int(5));
     }
 
     #[test]
     fn int_float_promotion() {
-        let r = binary_op(BinaryOp::Add, &Value::Int(2), &Value::Float(1.5)).unwrap();
+        let p = dummy_program();
+        let r = binary_op(BinaryOp::Add, &Value::Int(2), &Value::Float(1.5), &p).unwrap();
         assert_eq!(r, Value::Float(3.5));
     }
 
     #[test]
     fn string_concat() {
+        let p = dummy_program();
         let r = binary_op(
             BinaryOp::Add,
             &Value::String("a".into()),
             &Value::String("b".into()),
+            &p,
         )
         .unwrap();
         assert_eq!(r, Value::String("ab".into()));
@@ -244,8 +410,9 @@ mod tests {
 
     #[test]
     fn stringify_values() {
-        assert_eq!(stringify(&Value::Int(42)), "42");
-        assert_eq!(stringify(&Value::Bool(true)), "true");
-        assert_eq!(stringify(&Value::Null), "");
+        let p = dummy_program();
+        assert_eq!(stringify(&Value::Int(42), &p), "42");
+        assert_eq!(stringify(&Value::Bool(true), &p), "true");
+        assert_eq!(stringify(&Value::Null, &p), "");
     }
 }

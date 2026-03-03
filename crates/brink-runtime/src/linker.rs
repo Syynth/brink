@@ -6,7 +6,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use brink_format::{DefinitionId, DefinitionTag, StoryData};
 
 use crate::error::RuntimeError;
-use crate::program::{GlobalSlot, LinkedContainer, Program};
+use crate::program::{GlobalSlot, LinkedContainer, ListDefEntry, ListItemEntry, Program};
 
 /// Link a [`StoryData`] into an executable [`Program`].
 ///
@@ -75,6 +75,43 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
 
     let name_table = data.name_table.clone();
 
+    // Build list item map.
+    let mut list_item_map = HashMap::with_capacity(data.list_items.len());
+    for li in &data.list_items {
+        list_item_map.insert(
+            li.id,
+            ListItemEntry {
+                name: li.name,
+                ordinal: li.ordinal,
+                origin: li.origin,
+            },
+        );
+    }
+
+    // Build list defs and list def map.
+    let mut list_defs = Vec::with_capacity(data.list_defs.len());
+    let mut list_def_map = HashMap::with_capacity(data.list_defs.len());
+    for ldef in &data.list_defs {
+        let idx = list_defs.len();
+        // Collect all items belonging to this list, sorted by ordinal.
+        let mut items: Vec<_> = data
+            .list_items
+            .iter()
+            .filter(|li| li.origin == ldef.id)
+            .collect();
+        items.sort_by_key(|li| li.ordinal);
+        let item_ids: Vec<_> = items.iter().map(|li| li.id).collect();
+
+        list_def_map.insert(ldef.id, idx);
+        list_defs.push(ListDefEntry {
+            name: ldef.name,
+            items: item_ids,
+        });
+    }
+
+    // Clone list literals.
+    let list_literals = data.list_literals.clone();
+
     Ok(Program {
         containers,
         container_map,
@@ -84,6 +121,10 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
         global_map,
         name_table,
         root_idx,
+        list_literals,
+        list_item_map,
+        list_defs,
+        list_def_map,
     })
 }
 

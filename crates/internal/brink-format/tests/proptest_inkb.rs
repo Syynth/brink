@@ -156,11 +156,14 @@ fn arb_list_def() -> impl Strategy<Value = ListDef> {
 }
 
 fn arb_list_item() -> impl Strategy<Value = ListItemDef> {
-    (arb_def_id(), arb_def_id(), any::<i32>()).prop_map(|(id, origin, ordinal)| ListItemDef {
-        id,
-        origin,
-        ordinal,
-    })
+    (arb_def_id(), arb_def_id(), any::<i32>(), arb_name_id()).prop_map(
+        |(id, origin, ordinal, name)| ListItemDef {
+            id,
+            origin,
+            ordinal,
+            name,
+        },
+    )
 }
 
 fn arb_external() -> impl Strategy<Value = ExternalFnDef> {
@@ -199,6 +202,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     externals,
                     labels: vec![],
                     name_table,
+                    list_literals: vec![],
                 }
             },
         )
@@ -224,8 +228,8 @@ proptest! {
         // Correct version.
         prop_assert_eq!(index.version, 1);
 
-        // Exactly 8 sections in canonical order.
-        prop_assert_eq!(index.sections.len(), 8);
+        // Exactly 9 sections in canonical order.
+        prop_assert_eq!(index.sections.len(), 9);
         prop_assert_eq!(index.sections[0].kind, SectionKind::NameTable);
         prop_assert_eq!(index.sections[1].kind, SectionKind::Variables);
         prop_assert_eq!(index.sections[2].kind, SectionKind::ListDefs);
@@ -234,6 +238,7 @@ proptest! {
         prop_assert_eq!(index.sections[5].kind, SectionKind::Containers);
         prop_assert_eq!(index.sections[6].kind, SectionKind::LineTables);
         prop_assert_eq!(index.sections[7].kind, SectionKind::Labels);
+        prop_assert_eq!(index.sections[8].kind, SectionKind::ListLiterals);
 
         let header_size = u32::try_from(index.header_size()).unwrap();
 

@@ -29,6 +29,7 @@ pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
     let mut element_offsets = codegen::ElementOffsets::new();
 
     let mut temps = codegen::TempScope::new();
+    let mut list_literals = Vec::new();
     let pairs = codegen::process_container(
         &story_index,
         &canonical_root,
@@ -36,6 +37,7 @@ pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
         &mut name_table,
         &mut temps,
         &mut element_offsets,
+        &mut list_literals,
     )?;
     let (containers, line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
 
@@ -55,6 +57,7 @@ pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
         externals,
         labels,
         name_table: name_table.into_vec(),
+        list_literals,
     })
 }
 

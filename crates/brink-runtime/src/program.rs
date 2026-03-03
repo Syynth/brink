@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use brink_format::{CountingFlags, DefinitionId, LineEntry, NameId, Value};
+use brink_format::{CountingFlags, DefinitionId, LineEntry, ListValue, NameId, Value};
 
 /// A linked, ready-to-execute program.
 ///
@@ -18,6 +18,14 @@ pub struct Program {
     pub(crate) global_map: HashMap<DefinitionId, u32>,
     pub(crate) name_table: Vec<String>,
     pub(crate) root_idx: u32,
+    /// List literal values referenced by `PushList(idx)`.
+    pub(crate) list_literals: Vec<ListValue>,
+    /// Per-item metadata keyed by item `DefinitionId`.
+    pub(crate) list_item_map: HashMap<DefinitionId, ListItemEntry>,
+    /// List definitions indexed by position.
+    pub(crate) list_defs: Vec<ListDefEntry>,
+    /// Map from list def `DefinitionId` to index in `list_defs`.
+    pub(crate) list_def_map: HashMap<DefinitionId, usize>,
 }
 
 pub(crate) struct LinkedContainer {
@@ -32,6 +40,21 @@ pub(crate) struct GlobalSlot {
     #[expect(dead_code)]
     pub name: NameId,
     pub default: Value,
+}
+
+/// Runtime metadata for a list item.
+pub(crate) struct ListItemEntry {
+    pub name: NameId,
+    pub ordinal: i32,
+    pub origin: DefinitionId,
+}
+
+/// Runtime metadata for a list definition.
+pub(crate) struct ListDefEntry {
+    #[expect(dead_code)]
+    pub name: NameId,
+    /// All item `DefinitionId`s belonging to this list, sorted by ordinal.
+    pub items: Vec<DefinitionId>,
 }
 
 impl Program {
@@ -78,5 +101,20 @@ impl Program {
     /// Build the initial globals vector from slot defaults.
     pub(crate) fn global_defaults(&self) -> Vec<Value> {
         self.globals.iter().map(|s| s.default.clone()).collect()
+    }
+
+    /// Get a list literal by index.
+    pub(crate) fn list_literal(&self, idx: u16) -> &ListValue {
+        &self.list_literals[idx as usize]
+    }
+
+    /// Look up a list item's metadata.
+    pub(crate) fn list_item(&self, id: DefinitionId) -> Option<&ListItemEntry> {
+        self.list_item_map.get(&id)
+    }
+
+    /// Get a list definition by its `DefinitionId`.
+    pub(crate) fn list_def(&self, id: DefinitionId) -> Option<&ListDefEntry> {
+        self.list_def_map.get(&id).map(|&idx| &self.list_defs[idx])
     }
 }

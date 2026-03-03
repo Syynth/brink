@@ -52,6 +52,7 @@ pub struct ListItemDef {
     pub id: DefinitionId,
     pub origin: DefinitionId,
     pub ordinal: i32,
+    pub name: NameId,
 }
 
 /// A label pointing to a specific byte offset within a container.

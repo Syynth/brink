@@ -215,3 +215,8 @@ fn corpus_tier1() {
 fn corpus_tier2() {
     run_corpus("tier2");
 }
+
+#[test]
+fn corpus_tier3() {
+    run_corpus("tier3");
+}

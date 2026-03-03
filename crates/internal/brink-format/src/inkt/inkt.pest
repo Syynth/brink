@@ -3,7 +3,7 @@
 
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
-story = { SOI ~ "(" ~ "story" ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ labels? ~ container* ~ ")" ~ EOI }
+story = { SOI ~ "(" ~ "story" ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ labels? ~ list_literals? ~ container* ~ ")" ~ EOI }
 
 // ── Name table ──────────────────────────────────────────────────────────────
 
@@ -26,7 +26,7 @@ list_item_inline = { "(" ~ "item" ~ "name=" ~ integer ~ "ordinal=" ~ integer ~ "
 // ── List items ──────────────────────────────────────────────────────────────
 
 list_items = { "(" ~ "list_items" ~ list_item_entry* ~ ")" }
-list_item_entry = { "(" ~ "list_item" ~ def_id ~ "(" ~ "origin" ~ def_id ~ ")" ~ "(" ~ "ordinal" ~ integer ~ ")" ~ ")" }
+list_item_entry = { "(" ~ "list_item" ~ def_id ~ "(" ~ "origin" ~ def_id ~ ")" ~ "(" ~ "ordinal" ~ integer ~ ")" ~ ("(" ~ "name" ~ integer ~ ")")? ~ ")" }
 
 // ── Externals ───────────────────────────────────────────────────────────────
 
@@ -38,6 +38,11 @@ fallback = { "(" ~ "fallback" ~ def_id ~ ")" }
 
 labels = { "(" ~ "labels" ~ label_entry* ~ ")" }
 label_entry = { "(" ~ "label" ~ def_id ~ "->" ~ def_id ~ "+" ~ integer ~ ")" }
+
+// ── List literals ────────────────────────────────────────────────────────────
+
+list_literals = { "(" ~ "list_literals" ~ list_literal_entry* ~ ")" }
+list_literal_entry = { "(" ~ "list" ~ list_value_items ~ list_value_origins ~ ")" }
 
 // ── Containers ──────────────────────────────────────────────────────────────
 

@@ -18,7 +18,7 @@ use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
-use crate::value::{Value, ValueType};
+use crate::value::{ListValue, Value, ValueType};
 
 /// Write the textual (.inkt) representation of a compiled story.
 pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
@@ -30,6 +30,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_list_items(w, &story.list_items)?;
     write_externals(w, &story.externals)?;
     write_labels(w, &story.labels)?;
+    write_list_literals(w, &story.list_literals)?;
 
     // Build a lookup from container_id → line table for writing
     let line_map: HashMap<DefinitionId, &[LineEntry]> = story
@@ -115,9 +116,29 @@ fn write_list_items(w: &mut dyn fmt::Write, list_items: &[ListItemDef]) -> fmt::
     for li in list_items {
         writeln!(
             w,
-            "    (list_item {} (origin {}) (ordinal {}))",
-            li.id, li.origin, li.ordinal
+            "    (list_item {} (origin {}) (ordinal {}) (name {}))",
+            li.id, li.origin, li.ordinal, li.name.0
         )?;
+    }
+    writeln!(w, "  )")
+}
+
+fn write_list_literals(w: &mut dyn fmt::Write, list_literals: &[ListValue]) -> fmt::Result {
+    if list_literals.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (list_literals")?;
+    for lv in list_literals {
+        write!(w, "    (list (items")?;
+        for item in &lv.items {
+            write!(w, " {item}")?;
+        }
+        write!(w, ") (origins")?;
+        for origin in &lv.origins {
+            write!(w, " {origin}")?;
+        }
+        writeln!(w, "))")?;
     }
     writeln!(w, "  )")
 }
@@ -533,6 +554,7 @@ mod tests {
             externals: vec![],
             labels: vec![],
             name_table: vec![],
+            list_literals: vec![],
         };
         let mut buf = String::new();
         write_inkt(&story, &mut buf).unwrap();

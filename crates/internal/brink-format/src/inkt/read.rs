@@ -77,6 +77,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut labels = Vec::new();
     let mut containers = Vec::new();
     let mut line_tables = Vec::new();
+    let mut list_literals = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -86,6 +87,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::list_items => list_items = parse_list_items(inner)?,
             Rule::externals => externals = parse_externals(inner)?,
             Rule::labels => labels = parse_labels(inner)?,
+            Rule::list_literals => list_literals = parse_list_literals(inner)?,
             Rule::container => {
                 let (container, lt) = parse_container(inner)?;
                 containers.push(container);
@@ -104,6 +106,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         externals,
         labels,
         name_table,
+        list_literals,
     })
 }
 
@@ -368,10 +371,14 @@ fn parse_list_item_entry(pair: P<'_>) -> Result<ListItemDef, InktParseError> {
             line: 0,
             col: 0,
         })?;
+    let name_val = next_rule(&mut inner, Rule::integer, "list_item name")
+        .map(|p| parse_u16(&p))
+        .unwrap_or(Ok(0))?;
     Ok(ListItemDef {
         id,
         origin,
         ordinal,
+        name: NameId(name_val),
     })
 }
 
@@ -473,6 +480,45 @@ fn parse_label_entry(pair: P<'_>) -> Result<LabelDef, InktParseError> {
         container_id,
         byte_offset,
     })
+}
+
+// ── List literals ────────────────────────────────────────────────────────────
+
+fn parse_list_literals(pair: P<'_>) -> Result<Vec<ListValue>, InktParseError> {
+    let mut literals = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::list_literal_entry {
+            literals.push(parse_list_literal_entry(entry)?);
+        }
+    }
+    Ok(literals)
+}
+
+fn parse_list_literal_entry(pair: P<'_>) -> Result<ListValue, InktParseError> {
+    let mut items = Vec::new();
+    let mut origins = Vec::new();
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::list_value_items => {
+                for def_pair in child.into_inner() {
+                    if def_pair.as_rule() == Rule::def_id {
+                        items.push(parse_def_id(def_pair)?);
+                    }
+                }
+            }
+            Rule::list_value_origins => {
+                for def_pair in child.into_inner() {
+                    if def_pair.as_rule() == Rule::def_id {
+                        origins.push(parse_def_id(def_pair)?);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(ListValue { items, origins })
 }
 
 // ── Containers ──────────────────────────────────────────────────────────────

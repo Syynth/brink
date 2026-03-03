@@ -24,6 +24,7 @@
 
 mod error;
 mod linker;
+mod list_ops;
 mod output;
 mod program;
 mod story;

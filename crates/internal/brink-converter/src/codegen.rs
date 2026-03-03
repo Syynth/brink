@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use brink_format::{
     ChoiceFlags, ContainerDef, ContainerLineTable, CountingFlags, DefinitionId, ExternalFnDef,
-    GlobalVarDef, LineContent, LineEntry, ListDef, ListItemDef, NameId, Opcode, SequenceKind,
-    Value,
+    GlobalVarDef, LineContent, LineEntry, ListDef, ListItemDef, ListValue, NameId, Opcode,
+    SequenceKind, Value,
 };
 use brink_json::{
     ChoicePoint, ChoicePointFlags, Container, ContainerFlags, ControlCommand, Divert, Element,
@@ -119,6 +119,7 @@ impl<'a> ContainerEmitter<'a> {
         element: &Element,
         name_table: &mut NameTableWriter,
         temps: &mut TempScope,
+        list_literals: &mut Vec<ListValue>,
     ) -> Result<(), ConvertError> {
         match element {
             Element::Value(InkValue::String(s)) if s == "\n" => {
@@ -174,9 +175,12 @@ impl<'a> ContainerEmitter<'a> {
                 }
             }
 
-            Element::Value(InkValue::List(_)) => {
-                let name_id = name_table.intern("")?;
-                self.emit(&Opcode::PushList(name_id.0));
+            Element::Value(InkValue::List(ink_list)) => {
+                let lv = ink_list_to_list_value(ink_list, self.index);
+                let idx = list_literals.len();
+                list_literals.push(lv);
+                #[expect(clippy::cast_possible_truncation)]
+                self.emit(&Opcode::PushList(idx as u16));
             }
 
             Element::Void => {
@@ -500,6 +504,7 @@ pub fn process_container(
     name_table: &mut NameTableWriter,
     temps: &mut TempScope,
     element_offsets: &mut ElementOffsets,
+    list_literals: &mut Vec<ListValue>,
 ) -> Result<Vec<(ContainerDef, ContainerLineTable)>, ConvertError> {
     let mut all_pairs = Vec::new();
 
@@ -516,12 +521,7 @@ pub fn process_container(
         let element = &contents[i];
 
         if let Element::Container(child) = element {
-            let child_path = if current_path.is_empty() {
-                i.to_string()
-            } else {
-                format!("{current_path}.{i}")
-            };
-
+            let child_path = child_path_for_index(current_path, i);
             if let Some(&child_id) = index.containers.get(&child_path) {
                 emitter.emit(&Opcode::EnterContainer(child_id));
             }
@@ -533,6 +533,7 @@ pub fn process_container(
                 name_table,
                 temps,
                 element_offsets,
+                list_literals,
             )?;
             all_pairs.extend(child_pairs);
         } else if let Element::Divert(Divert::Target {
@@ -547,10 +548,10 @@ pub fn process_container(
                 if let Some(id) = index.resolve_container(path) {
                     emitter.emit(&Opcode::EnterContainer(id));
                 } else {
-                    emitter.emit_element(element, name_table, temps)?;
+                    emitter.emit_element(element, name_table, temps, list_literals)?;
                 }
             } else {
-                emitter.emit_element(element, name_table, temps)?;
+                emitter.emit_element(element, name_table, temps, list_literals)?;
             }
         } else if matches!(element, Element::ControlCommand(ControlCommand::Thread))
             && i + 1 < contents.len()
@@ -567,9 +568,9 @@ pub fn process_container(
                 continue;
             }
             // Not followed by a simple divert — emit ThreadStart as-is
-            emitter.emit_element(element, name_table, temps)?;
+            emitter.emit_element(element, name_table, temps, list_literals)?;
         } else {
-            emitter.emit_element(element, name_table, temps)?;
+            emitter.emit_element(element, name_table, temps, list_literals)?;
         }
 
         i += 1;
@@ -615,12 +616,21 @@ pub fn process_container(
                 name_table,
                 temps,
                 element_offsets,
+                list_literals,
             )?;
             all_pairs.extend(child_pairs);
         }
     }
 
     Ok(all_pairs)
+}
+
+fn child_path_for_index(current_path: &str, i: usize) -> String {
+    if current_path.is_empty() {
+        i.to_string()
+    } else {
+        format!("{current_path}.{i}")
+    }
 }
 
 /// Extract global variable definitions from the "global decl" container.
@@ -641,7 +651,7 @@ pub fn extract_globals(
     for element in &global_decl.contents {
         match element {
             Element::Value(ink_val) => {
-                pending_value = Some(ink_value_to_format_value(ink_val));
+                pending_value = Some(ink_value_to_format_value(ink_val, index));
             }
             Element::VariableAssignment(
                 VariableAssignment::GlobalAssignment { variable }
@@ -676,7 +686,7 @@ pub fn extract_globals(
 }
 
 /// Convert an ink.json `InkValue` to a brink-format `Value`.
-fn ink_value_to_format_value(ink: &InkValue) -> Value {
+fn ink_value_to_format_value(ink: &InkValue, index: &StoryIndex) -> Value {
     match ink {
         InkValue::Integer(i) => {
             #[expect(clippy::cast_possible_truncation)]
@@ -691,8 +701,26 @@ fn ink_value_to_format_value(ink: &InkValue) -> Value {
         InkValue::Bool(b) => Value::Bool(*b),
         InkValue::String(s) => Value::String(s.clone()),
         InkValue::DivertTarget(p) => Value::DivertTarget(path::container_id(p)),
-        InkValue::VariablePointer(_) | InkValue::List(_) => Value::Null,
+        InkValue::List(ink_list) => Value::List(ink_list_to_list_value(ink_list, index)),
+        InkValue::VariablePointer(_) => Value::Null,
     }
+}
+
+/// Convert an ink.json `InkList` to a brink-format `ListValue`.
+fn ink_list_to_list_value(ink_list: &brink_json::InkList, index: &StoryIndex) -> ListValue {
+    let items: Vec<_> = ink_list
+        .items
+        .keys()
+        .filter_map(|qualified| index.list_items.get(qualified.as_str()).map(|&(id, _)| id))
+        .collect();
+
+    let origins: Vec<_> = ink_list
+        .origins
+        .iter()
+        .filter_map(|name| index.list_defs.get(name.as_str()).copied())
+        .collect();
+
+    ListValue { items, origins }
 }
 
 /// Build list definitions and items from the story index.
@@ -719,6 +747,7 @@ pub fn build_list_defs(
                     id: item_id,
                     origin: list_id,
                     ordinal,
+                    name: item_name_id,
                 });
             }
         }

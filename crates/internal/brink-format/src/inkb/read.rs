@@ -44,6 +44,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let containers = read_section_containers(buf, &index)?;
     let line_tables = read_section_line_tables(buf, &index)?;
     let labels = read_section_labels(buf, &index)?;
+    let list_literals = read_section_list_literals(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -54,6 +55,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         externals,
         labels,
         name_table,
+        list_literals,
     })
 }
 
@@ -350,11 +352,40 @@ fn decode_list_item(buf: &[u8], off: &mut usize) -> Result<ListItemDef, DecodeEr
     let id = read_def_id(buf, off)?;
     let origin = read_def_id(buf, off)?;
     let ordinal = read_i32(buf, off)?;
+    let name = NameId(read_u16(buf, off)?);
     Ok(ListItemDef {
         id,
         origin,
         ordinal,
+        name,
     })
+}
+
+/// Read the list literals from a complete `.inkb` file using its index.
+pub fn read_section_list_literals(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<ListValue>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::ListLiterals) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut literals = Vec::with_capacity(safe_capacity(count, buf.len(), off, 8));
+    for _ in 0..count {
+        let item_count = read_u32(buf, &mut off)? as usize;
+        let mut items = Vec::with_capacity(safe_capacity(item_count, buf.len(), off, 8));
+        for _ in 0..item_count {
+            items.push(read_def_id(buf, &mut off)?);
+        }
+        let origin_count = read_u32(buf, &mut off)? as usize;
+        let mut origins = Vec::with_capacity(safe_capacity(origin_count, buf.len(), off, 8));
+        for _ in 0..origin_count {
+            origins.push(read_def_id(buf, &mut off)?);
+        }
+        literals.push(ListValue { items, origins });
+    }
+    Ok(literals)
 }
 
 fn decode_external(buf: &[u8], off: &mut usize) -> Result<ExternalFnDef, DecodeError> {

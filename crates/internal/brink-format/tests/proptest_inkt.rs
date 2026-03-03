@@ -217,11 +217,14 @@ fn arb_list_def() -> impl Strategy<Value = ListDef> {
 }
 
 fn arb_list_item() -> impl Strategy<Value = ListItemDef> {
-    (arb_def_id(), arb_def_id(), any::<i32>()).prop_map(|(id, origin, ordinal)| ListItemDef {
-        id,
-        origin,
-        ordinal,
-    })
+    (arb_def_id(), arb_def_id(), any::<i32>(), arb_name_id()).prop_map(
+        |(id, origin, ordinal, name)| ListItemDef {
+            id,
+            origin,
+            ordinal,
+            name,
+        },
+    )
 }
 
 fn arb_external() -> impl Strategy<Value = ExternalFnDef> {
@@ -260,6 +263,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     externals,
                     labels: vec![],
                     name_table,
+                    list_literals: vec![],
                 }
             },
         )

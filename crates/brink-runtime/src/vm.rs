@@ -3,6 +3,7 @@
 use brink_format::{ChoiceFlags, CountingFlags, DefinitionId, LineContent, Opcode, Value};
 
 use crate::error::RuntimeError;
+use crate::list_ops;
 use crate::program::Program;
 use crate::story::{CallFrame, CallFrameType, ContainerPosition, PendingChoice, Story};
 use crate::value_ops::{self, BinaryOp};
@@ -131,7 +132,7 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
             }
             Opcode::EmitValue => {
                 let val = story.flow.pop_value()?;
-                let text = value_ops::stringify(&val);
+                let text = value_ops::stringify(&val, program);
                 story.flow.output.push_text(&text);
             }
             Opcode::EmitNewline => {
@@ -234,8 +235,12 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 let s = program.name(brink_format::NameId(idx)).to_owned();
                 story.flow.value_stack.push(Value::String(s));
             }
-            Opcode::PushNull | Opcode::PushList(_) => {
+            Opcode::PushNull => {
                 story.flow.value_stack.push(Value::Null);
+            }
+            Opcode::PushList(idx) => {
+                let lv = program.list_literal(idx).clone();
+                story.flow.value_stack.push(Value::List(lv));
             }
             Opcode::PushDivertTarget(id) => {
                 story.flow.value_stack.push(Value::DivertTarget(id));
@@ -252,11 +257,11 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
             }
 
             // ── Arithmetic ──────────────────────────────────────────────
-            Opcode::Add => binary(story, BinaryOp::Add)?,
-            Opcode::Subtract => binary(story, BinaryOp::Subtract)?,
-            Opcode::Multiply => binary(story, BinaryOp::Multiply)?,
-            Opcode::Divide => binary(story, BinaryOp::Divide)?,
-            Opcode::Modulo => binary(story, BinaryOp::Modulo)?,
+            Opcode::Add => binary(story, program, BinaryOp::Add)?,
+            Opcode::Subtract => binary(story, program, BinaryOp::Subtract)?,
+            Opcode::Multiply => binary(story, program, BinaryOp::Multiply)?,
+            Opcode::Divide => binary(story, program, BinaryOp::Divide)?,
+            Opcode::Modulo => binary(story, program, BinaryOp::Modulo)?,
             Opcode::Negate => {
                 let val = story.flow.pop_value()?;
                 let result = match val {
@@ -270,12 +275,12 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
             }
 
             // ── Comparison ──────────────────────────────────────────────
-            Opcode::Equal => binary(story, BinaryOp::Equal)?,
-            Opcode::NotEqual => binary(story, BinaryOp::NotEqual)?,
-            Opcode::Greater => binary(story, BinaryOp::Greater)?,
-            Opcode::GreaterOrEqual => binary(story, BinaryOp::GreaterOrEqual)?,
-            Opcode::Less => binary(story, BinaryOp::Less)?,
-            Opcode::LessOrEqual => binary(story, BinaryOp::LessOrEqual)?,
+            Opcode::Equal => binary(story, program, BinaryOp::Equal)?,
+            Opcode::NotEqual => binary(story, program, BinaryOp::NotEqual)?,
+            Opcode::Greater => binary(story, program, BinaryOp::Greater)?,
+            Opcode::GreaterOrEqual => binary(story, program, BinaryOp::GreaterOrEqual)?,
+            Opcode::Less => binary(story, program, BinaryOp::Less)?,
+            Opcode::LessOrEqual => binary(story, program, BinaryOp::LessOrEqual)?,
 
             // ── Logic ───────────────────────────────────────────────────
             Opcode::Not => {
@@ -285,8 +290,8 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                     .value_stack
                     .push(Value::Bool(!value_ops::is_truthy(&val)));
             }
-            Opcode::And => binary(story, BinaryOp::And)?,
-            Opcode::Or => binary(story, BinaryOp::Or)?,
+            Opcode::And => binary(story, program, BinaryOp::And)?,
+            Opcode::Or => binary(story, program, BinaryOp::Or)?,
 
             // ── Global vars ─────────────────────────────────────────────
             Opcode::GetGlobal(id) => {
@@ -412,9 +417,9 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 };
                 story.flow.value_stack.push(result);
             }
-            Opcode::Pow => binary(story, BinaryOp::Pow)?,
-            Opcode::Min => binary(story, BinaryOp::Min)?,
-            Opcode::Max => binary(story, BinaryOp::Max)?,
+            Opcode::Pow => binary(story, program, BinaryOp::Pow)?,
+            Opcode::Min => binary(story, program, BinaryOp::Min)?,
+            Opcode::Max => binary(story, program, BinaryOp::Max)?,
 
             // ── Functions ───────────────────────────────────────────────
             Opcode::Call(id) => {
@@ -639,22 +644,22 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 story.flow.in_tag = false;
             }
 
+            // ── List operations ─────────────────────────────────────────
+            Opcode::ListContains => list_ops::list_contains(story)?,
+            Opcode::ListNotContains => list_ops::list_not_contains(story)?,
+            Opcode::ListIntersect => list_ops::list_intersect(story)?,
+            Opcode::ListAll => list_ops::list_all(story, program)?,
+            Opcode::ListInvert => list_ops::list_invert(story, program)?,
+            Opcode::ListCount => list_ops::list_count(story)?,
+            Opcode::ListMin => list_ops::list_min(story, program)?,
+            Opcode::ListMax => list_ops::list_max(story, program)?,
+            Opcode::ListValue => list_ops::list_value(story, program)?,
+            Opcode::ListRange => list_ops::list_range(story, program)?,
+            Opcode::ListFromInt => list_ops::list_from_int(story, program)?,
+            Opcode::ListRandom => list_ops::list_random(story)?,
+
             // ── Deferred ────────────────────────────────────────────────
-            Opcode::CallExternal(_, _)
-            | Opcode::ListContains
-            | Opcode::ListNotContains
-            | Opcode::ListIntersect
-            | Opcode::ListUnion
-            | Opcode::ListExcept
-            | Opcode::ListAll
-            | Opcode::ListInvert
-            | Opcode::ListCount
-            | Opcode::ListMin
-            | Opcode::ListMax
-            | Opcode::ListValue
-            | Opcode::ListRange
-            | Opcode::ListFromInt
-            | Opcode::ListRandom => {
+            Opcode::CallExternal(_, _) | Opcode::ListUnion | Opcode::ListExcept => {
                 return Err(RuntimeError::Unimplemented(format!("{op:?}")));
             }
         }
@@ -719,10 +724,10 @@ fn pop_call_frame(story: &mut Story, is_explicit_return: bool) -> Result<(), Run
     Ok(())
 }
 
-fn binary(story: &mut Story, op: BinaryOp) -> Result<(), RuntimeError> {
+fn binary(story: &mut Story, program: &Program, op: BinaryOp) -> Result<(), RuntimeError> {
     let right = story.flow.pop_value()?;
     let left = story.flow.pop_value()?;
-    let result = value_ops::binary_op(op, &left, &right)?;
+    let result = value_ops::binary_op(op, &left, &right, program)?;
     story.flow.value_stack.push(result);
     Ok(())
 }
@@ -882,7 +887,7 @@ fn handle_begin_choice(
     let choice_only_text = if flags.has_choice_only_content {
         match story.flow.value_stack.pop() {
             Some(Value::String(s)) => s,
-            Some(other) => value_ops::stringify(&other),
+            Some(other) => value_ops::stringify(&other, program),
             None => String::new(),
         }
     } else {
@@ -892,7 +897,7 @@ fn handle_begin_choice(
     let start_text = if flags.has_start_content {
         match story.flow.value_stack.pop() {
             Some(Value::String(s)) => s,
-            Some(other) => value_ops::stringify(&other),
+            Some(other) => value_ops::stringify(&other, program),
             None => String::new(),
         }
     } else {

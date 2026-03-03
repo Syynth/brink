@@ -5,10 +5,11 @@ use std::path::Path;
 use brink_format::{
     DecodeError, SectionKind, assemble_inkb, read_inkb, read_inkb_index, read_section_containers,
     read_section_externals, read_section_labels, read_section_line_tables, read_section_list_defs,
-    read_section_list_items, read_section_name_table, read_section_variables, write_inkb,
-    write_section_containers, write_section_externals, write_section_labels,
-    write_section_line_tables, write_section_list_defs, write_section_list_items,
-    write_section_name_table, write_section_variables,
+    read_section_list_items, read_section_list_literals, read_section_name_table,
+    read_section_variables, write_inkb, write_section_containers, write_section_externals,
+    write_section_labels, write_section_line_tables, write_section_list_defs,
+    write_section_list_items, write_section_list_literals, write_section_name_table,
+    write_section_variables,
 };
 use brink_json::InkJson;
 
@@ -166,7 +167,7 @@ fn index_parsing() {
     let index = read_inkb_index(&buf).unwrap();
     assert_eq!(index.version, 1);
     assert_eq!(index.file_size as usize, buf.len());
-    assert_eq!(index.sections.len(), 8);
+    assert_eq!(index.sections.len(), 9);
 
     // Sections are in canonical order.
     assert_eq!(index.sections[0].kind, SectionKind::NameTable);
@@ -177,9 +178,10 @@ fn index_parsing() {
     assert_eq!(index.sections[5].kind, SectionKind::Containers);
     assert_eq!(index.sections[6].kind, SectionKind::LineTables);
     assert_eq!(index.sections[7].kind, SectionKind::Labels);
+    assert_eq!(index.sections[8].kind, SectionKind::ListLiterals);
 
-    // Header size is 16 + 8*8 = 80.
-    assert_eq!(index.header_size(), 80);
+    // Header size is 16 + 8*9 = 88.
+    assert_eq!(index.header_size(), 88);
 
     // First section starts right after header.
     assert_eq!(index.sections[0].offset as usize, index.header_size());
@@ -246,6 +248,9 @@ fn section_level_roundtrip() {
 
     let labels = read_section_labels(&buf, &index).unwrap();
     assert_eq!(labels, data.labels);
+
+    let list_literals = read_section_list_literals(&buf, &index).unwrap();
+    assert_eq!(list_literals, data.list_literals);
 }
 
 #[test]
@@ -298,6 +303,9 @@ fn assemble_inkb_equivalence() {
     let mut label_buf = Vec::new();
     write_section_labels(&data.labels, &mut label_buf);
 
+    let mut list_lit_buf = Vec::new();
+    write_section_list_literals(&data.list_literals, &mut list_lit_buf);
+
     let mut assembled = Vec::new();
     assemble_inkb(
         &[
@@ -309,6 +317,7 @@ fn assemble_inkb_equivalence() {
             (SectionKind::Containers, &cont_buf),
             (SectionKind::LineTables, &line_table_buf),
             (SectionKind::Labels, &label_buf),
+            (SectionKind::ListLiterals, &list_lit_buf),
         ],
         &mut assembled,
     );

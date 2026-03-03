@@ -576,6 +576,16 @@ fn knot_stitch_gather_counts() {
     );
 }
 
+/// I071: List basic operations — default value output, union, intersection,
+/// contains, not-contains. Exercises `PushList`, `ListContains`, `ListNotContains`,
+/// `ListIntersect`, and `Add` (list union via +).
+#[test]
+fn i071_list_basic_operations() {
+    let json = load_ink_json("../../tests/tier2/lists/I071-list-basic-operations/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result, "b, d\na, b, c, e\nb, c\n0\n1\n1\n");
+}
+
 /// `ref` parameters must pass a variable by reference. `inc(ref x)` takes
 /// a pointer to `val`; reads through the pointer see val's value, writes
 /// go back to val. After `inc(val)`, val should be 6 (was 5).

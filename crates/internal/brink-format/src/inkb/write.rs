@@ -9,7 +9,7 @@ use crate::definition::{
 };
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::story::StoryData;
-use crate::value::{Value, ValueType};
+use crate::value::{ListValue, Value, ValueType};
 
 use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, KEY_CARDINAL,
@@ -40,8 +40,9 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         SectionKind::Containers,
         SectionKind::LineTables,
         SectionKind::Labels,
+        SectionKind::ListLiterals,
     ];
-    let mut section_offsets = [0u32; 8];
+    let mut section_offsets = [0u32; 9];
 
     // 1. NameTable
     section_offsets[0] = (buf.len() - base) as u32;
@@ -74,6 +75,10 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // 8. Labels
     section_offsets[7] = (buf.len() - base) as u32;
     write_section_labels(&story.labels, buf);
+
+    // 9. ListLiterals
+    section_offsets[8] = (buf.len() - base) as u32;
+    write_section_list_literals(&story.list_literals, buf);
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -292,6 +297,23 @@ fn encode_list_item(li: &ListItemDef, buf: &mut Vec<u8>) {
     write_def_id(buf, li.id);
     write_def_id(buf, li.origin);
     write_i32(buf, li.ordinal);
+    write_u16(buf, li.name.0);
+}
+
+/// Write the list literals section (no header framing).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_list_literals(list_literals: &[ListValue], buf: &mut Vec<u8>) {
+    write_u32(buf, list_literals.len() as u32);
+    for lv in list_literals {
+        write_u32(buf, lv.items.len() as u32);
+        for item in &lv.items {
+            write_def_id(buf, *item);
+        }
+        write_u32(buf, lv.origins.len() as u32);
+        for origin in &lv.origins {
+            write_def_id(buf, *origin);
+        }
+    }
 }
 
 fn encode_external(ext: &ExternalFnDef, buf: &mut Vec<u8>) {
