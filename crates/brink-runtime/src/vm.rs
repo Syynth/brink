@@ -433,6 +433,16 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                     story.value_stack.push(Value::Int(0));
                 }
             }
+            Opcode::CurrentVisitCount => {
+                // The current container's visit count was already incremented
+                // by EnterContainer, so subtract 1 to get the 0-based count
+                // that ink sequences expect (0 on first visit).
+                let pos = current_position(story)?;
+                let id = program.container(pos.container_idx).id;
+                let count = story.visit_counts.get(&id).copied().unwrap_or(0);
+                let zero_based = count.saturating_sub(1);
+                story.value_stack.push(Value::Int(zero_based.cast_signed()));
+            }
             Opcode::TurnsSince => {
                 // Stub: return -1 (never visited) for now.
                 let _val = story.pop_value()?;

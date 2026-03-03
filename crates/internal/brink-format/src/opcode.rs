@@ -98,6 +98,7 @@ const TURN_INDEX: u8 = 0x82;
 const CHOICE_COUNT: u8 = 0x83;
 const RANDOM: u8 = 0x84;
 const SEED_RANDOM: u8 = 0x85;
+const CURRENT_VISIT_COUNT: u8 = 0x86;
 
 // Casts / math
 const CAST_TO_INT: u8 = 0x90;
@@ -383,7 +384,10 @@ pub enum Opcode {
     SequenceBranch(i32),
 
     // ── Intrinsics ──────────────────────────────────────────────────────
+    /// Pop a `DivertTarget` from the stack, push its visit count.
     VisitCount,
+    /// Push the visit count of the *current* container (no stack input).
+    CurrentVisitCount,
     TurnsSince,
     TurnIndex,
     ChoiceCount,
@@ -597,6 +601,7 @@ impl Opcode {
 
             // Intrinsics
             Self::VisitCount => write_u8(buf, VISIT_COUNT),
+            Self::CurrentVisitCount => write_u8(buf, CURRENT_VISIT_COUNT),
             Self::TurnsSince => write_u8(buf, TURNS_SINCE),
             Self::TurnIndex => write_u8(buf, TURN_INDEX),
             Self::ChoiceCount => write_u8(buf, CHOICE_COUNT),
@@ -754,6 +759,7 @@ impl Opcode {
 
             // Intrinsics
             VISIT_COUNT => Self::VisitCount,
+            CURRENT_VISIT_COUNT => Self::CurrentVisitCount,
             TURNS_SINCE => Self::TurnsSince,
             TURN_INDEX => Self::TurnIndex,
             CHOICE_COUNT => Self::ChoiceCount,
@@ -999,6 +1005,7 @@ mod tests {
     fn roundtrip_intrinsics() {
         for op in [
             Opcode::VisitCount,
+            Opcode::CurrentVisitCount,
             Opcode::TurnsSince,
             Opcode::TurnIndex,
             Opcode::ChoiceCount,

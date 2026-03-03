@@ -394,6 +394,9 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::BeginStringEval => write!(w, "begin_string_eval"),
         Opcode::EndStringEval => write!(w, "end_string_eval"),
 
+        // Visit
+        Opcode::CurrentVisitCount => write!(w, "current_visit_count"),
+
         // Debug
         Opcode::SourceLocation(line, col) => write!(w, "source_location {line}:{col}"),
     }

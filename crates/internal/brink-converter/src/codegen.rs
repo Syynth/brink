@@ -84,6 +84,21 @@ impl<'a> ContainerEmitter<'a> {
             .ok_or(ConvertError::UnresolvedPath(resolved))
     }
 
+    /// Check whether an ink.json divert path resolves to a direct named child
+    /// container of the current container. Used to detect sequence branch
+    /// diverts (`.^.s0`) that should be emitted as `EnterContainer` instead
+    /// of `Goto`.
+    fn is_child_container_divert(&self, ink_path: &str) -> bool {
+        let resolved = path::resolve_path(&self.current_path, ink_path);
+        let prefix = format!("{}.", self.current_path);
+        if !resolved.starts_with(&prefix) {
+            return false;
+        }
+        let suffix = &resolved[prefix.len()..];
+        // Direct child: no more dots in the suffix, and it's a registered container.
+        !suffix.contains('.') && self.index.containers.contains_key(&resolved)
+    }
+
     fn emit(&mut self, op: &Opcode) {
         op.encode(&mut self.bytecode);
     }
@@ -235,7 +250,7 @@ impl<'a> ContainerEmitter<'a> {
             ControlCommand::ChoiceCount => self.emit(&Opcode::ChoiceCount),
             ControlCommand::Turn => self.emit(&Opcode::TurnIndex),
             ControlCommand::Turns => self.emit(&Opcode::TurnsSince),
-            ControlCommand::Visit => self.emit(&Opcode::VisitCount),
+            ControlCommand::Visit => self.emit(&Opcode::CurrentVisitCount),
             ControlCommand::Sequence => self.emit(&Opcode::Sequence(SequenceKind::Cycle, 0)),
             ControlCommand::Thread => self.emit(&Opcode::ThreadStart),
             ControlCommand::Done => self.emit(&Opcode::Done),
@@ -292,11 +307,23 @@ impl<'a> ContainerEmitter<'a> {
     fn emit_divert(&mut self, divert: &Divert, temps: &mut TempScope) -> Result<(), ConvertError> {
         match divert {
             Divert::Target { conditional, path } => {
-                let id = self.resolve_divert_target(path)?;
-                if *conditional {
-                    self.emit(&Opcode::GotoIf(id));
+                if *conditional && self.is_child_container_divert(path) {
+                    // Conditional divert to a named child of the current
+                    // container (e.g. sequence branches `.^.s0`). Emit as
+                    // JumpIfFalse + EnterContainer so the child is pushed
+                    // on the container stack rather than replacing it.
+                    let resolved = path::resolve_path(&self.current_path, path);
+                    let child_id = self.index.containers[&resolved];
+                    // EnterContainer encodes as 1 (tag) + 8 (DefinitionId) = 9 bytes.
+                    self.emit(&Opcode::JumpIfFalse(9));
+                    self.emit(&Opcode::EnterContainer(child_id));
                 } else {
-                    self.emit(&Opcode::Goto(id));
+                    let id = self.resolve_divert_target(path)?;
+                    if *conditional {
+                        self.emit(&Opcode::GotoIf(id));
+                    } else {
+                        self.emit(&Opcode::Goto(id));
+                    }
                 }
             }
 

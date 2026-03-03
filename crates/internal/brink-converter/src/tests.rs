@@ -64,6 +64,77 @@ fn convert_simple_divert() {
     assert!(has_goto, "should have a Goto opcode in bytecode");
 }
 
+/// Sequence branch conditional diverts (`.^.s0`, `.^.s1`, `.^.s2`) must be
+/// emitted as `JumpIfFalse + EnterContainer`, NOT `GotoIf`. `GotoIf` clears
+/// the container stack, losing the parent context needed to resume after the
+/// branch. `JumpIfFalse + EnterContainer` pushes the branch as a child,
+/// allowing the branch's internal goto to correctly unwind back.
+#[test]
+fn sequence_branch_diverts_use_enter_container() {
+    let json_text = include_str!(
+        "../../../../tests/tier1/choices/I089-once-only-choices-with-own-content/story.ink.json"
+    );
+    let story: InkJson = serde_json::from_str(json_text).unwrap();
+    let data = convert(&story).unwrap();
+
+    // The sequence container (eat.0.1) should NOT have any GotoIf opcodes.
+    // Instead it should use JumpIfFalse + EnterContainer for the s0/s1/s2
+    // branch diverts.
+    //
+    // Find the container whose bytecode has the sequence pattern. We can
+    // identify it by looking for CurrentVisitCount (the "visit" command).
+    let seq_container = data.containers.iter().find(|c| {
+        let mut offset = 0;
+        while offset < c.bytecode.len() {
+            if let Ok(op) = Opcode::decode(&c.bytecode, &mut offset) {
+                if matches!(op, Opcode::CurrentVisitCount) {
+                    return true;
+                }
+            } else {
+                break;
+            }
+        }
+        false
+    });
+
+    let seq_container =
+        seq_container.expect("should find the sequence container with CurrentVisitCount");
+
+    // Decode all opcodes and check: no GotoIf, but has EnterContainer.
+    let mut opcodes = Vec::new();
+    let mut offset = 0;
+    while offset < seq_container.bytecode.len() {
+        if let Ok(op) = Opcode::decode(&seq_container.bytecode, &mut offset) {
+            opcodes.push(op);
+        } else {
+            break;
+        }
+    }
+
+    let has_goto_if = opcodes.iter().any(|op| matches!(op, Opcode::GotoIf(_)));
+    assert!(
+        !has_goto_if,
+        "sequence container should NOT have GotoIf for branch diverts; \
+         should use JumpIfFalse + EnterContainer instead. Opcodes: {opcodes:?}"
+    );
+
+    let has_enter_container = opcodes
+        .iter()
+        .any(|op| matches!(op, Opcode::EnterContainer(_)));
+    assert!(
+        has_enter_container,
+        "sequence container should have EnterContainer for branch diverts"
+    );
+
+    let has_jump_if_false = opcodes
+        .iter()
+        .any(|op| matches!(op, Opcode::JumpIfFalse(_)));
+    assert!(
+        has_jump_if_false,
+        "sequence container should have JumpIfFalse paired with EnterContainer"
+    );
+}
+
 fn collect_ink_json_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     if dir.is_dir() {

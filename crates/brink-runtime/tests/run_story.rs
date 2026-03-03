@@ -220,6 +220,26 @@ fn once_only_choices_filtered_by_visit_count() {
     assert!(!result.is_empty() || result.is_empty()); // just assert it completes
 }
 
+/// Once-only choices with start content (using `[]` syntax) combined with
+/// sequences (`{first|second|third}`) must work without stack underflow.
+/// The `"visit"` control command pushes the current container's visit count
+/// without popping anything from the stack.
+#[test]
+fn once_only_choices_with_own_content() {
+    let json = load_ink_json(
+        "../../tests/tier1/choices/I089-once-only-choices-with-own-content/story.ink.json",
+    );
+    let result = run_story(&json, &[0, 0, 0]);
+    assert!(
+        result.contains("first time"),
+        "expected sequence output, got: {result:?}"
+    );
+    assert!(
+        result.contains("I've finished eating now."),
+        "expected story to complete, got: {result:?}"
+    );
+}
+
 /// Choices created inside a tunnel must preserve the tunnel's temp
 /// variables. `generate_choice(1)` sets temp `x = 1`; the choice target
 /// outputs `{x}` which must resolve to `1`, not empty.

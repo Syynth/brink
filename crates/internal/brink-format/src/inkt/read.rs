@@ -904,6 +904,7 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
 
         // Intrinsics
         "visit_count" => Ok(Opcode::VisitCount),
+        "current_visit_count" => Ok(Opcode::CurrentVisitCount),
         "turns_since" => Ok(Opcode::TurnsSince),
         "turn_index" => Ok(Opcode::TurnIndex),
         "choice_count" => Ok(Opcode::ChoiceCount),

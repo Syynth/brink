@@ -21,7 +21,6 @@ pub struct Program {
 }
 
 pub(crate) struct LinkedContainer {
-    #[expect(dead_code)]
     pub id: DefinitionId,
     pub bytecode: Vec<u8>,
     pub counting_flags: CountingFlags,
