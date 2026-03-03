@@ -31,7 +31,17 @@ impl OutputBuffer {
         if !self.has_content() && text.trim().is_empty() {
             return;
         }
-        self.parts.push(OutputPart::Text(text.to_owned()));
+        // Collapse adjacent whitespace at text boundaries: if the
+        // previous text part ends with whitespace and this text starts
+        // with whitespace, trim the leading whitespace from this text.
+        let text = if text.starts_with(char::is_whitespace) && self.ends_in_whitespace() {
+            text.trim_start()
+        } else {
+            text
+        };
+        if !text.is_empty() {
+            self.parts.push(OutputPart::Text(text.to_owned()));
+        }
     }
 
     pub fn push_newline(&mut self) {
@@ -56,6 +66,16 @@ impl OutputBuffer {
     /// Returns true if the last part in the buffer is a newline.
     fn ends_in_newline(&self) -> bool {
         matches!(self.parts.last(), Some(OutputPart::Newline))
+    }
+
+    /// Returns true if the last part is text ending with whitespace.
+    /// Only checks the immediately preceding part — intervening Glue or
+    /// Newline parts mean the glue system handles the join instead.
+    fn ends_in_whitespace(&self) -> bool {
+        matches!(
+            self.parts.last(),
+            Some(OutputPart::Text(s)) if s.ends_with(char::is_whitespace)
+        )
     }
 
     pub fn push_glue(&mut self) {
@@ -237,6 +257,16 @@ mod tests {
     }
 
     /// Leading whitespace-only text after a flush should also be suppressed.
+    /// Adjacent whitespace at text boundaries should collapse.
+    /// E.g., start content "Hello " + inner content " right back" → "Hello right back".
+    #[test]
+    fn adjacent_whitespace_collapsed() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("Hello ");
+        buf.push_text(" right back");
+        assert_eq!(buf.flush(), "Hello right back");
+    }
+
     #[test]
     fn leading_whitespace_after_flush_suppressed() {
         let mut buf = OutputBuffer::new();
