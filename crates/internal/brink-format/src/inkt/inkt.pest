@@ -15,7 +15,7 @@ name_entry = { integer ~ string }
 globals = { "(" ~ "globals" ~ global_entry* ~ ")" }
 global_entry = { "(" ~ "global" ~ def_id ~ ":" ~ type_name ~ value ~ mutable_flag? ~ "(" ~ "name" ~ integer ~ ")" ~ ")" }
 mutable_flag = { "mutable" }
-type_name = { "int" | "float" | "bool" | "string" | "list" | "divert_target" | "null" }
+type_name = { "int" | "float" | "bool" | "string" | "list" | "divert_target" | "var_pointer" | "null" }
 
 // ── Lists ───────────────────────────────────────────────────────────────────
 
@@ -77,7 +77,8 @@ source_loc = @{ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ }
 
 // ── Values ──────────────────────────────────────────────────────────────────
 
-value = { list_value | string | float | integer | def_id | null_value | bool_value }
+value = { list_value | var_pointer_value | string | float | integer | def_id | null_value | bool_value }
+var_pointer_value = { "(" ~ "var_pointer" ~ def_id ~ ")" }
 list_value = { "(" ~ "list" ~ list_value_items ~ list_value_origins ~ ")" }
 list_value_items = { "(" ~ "items" ~ def_id* ~ ")" }
 list_value_origins = { "(" ~ "origins" ~ def_id* ~ ")" }

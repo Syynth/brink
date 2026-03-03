@@ -12,7 +12,7 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         Value::Float(n) => *n != 0.0,
         Value::String(s) => !s.is_empty(),
         Value::Null => false,
-        Value::DivertTarget(_) | Value::List(_) => true,
+        Value::DivertTarget(_) | Value::VariablePointer(_) | Value::List(_) => true,
     }
 }
 
@@ -24,7 +24,7 @@ pub(crate) fn stringify(v: &Value) -> String {
         Value::Bool(b) => if *b { "true" } else { "false" }.to_owned(),
         Value::String(s) => s.clone(),
         Value::Null | Value::List(_) => String::new(),
-        Value::DivertTarget(id) => format!("{id}"),
+        Value::DivertTarget(id) | Value::VariablePointer(id) => format!("{id}"),
     }
 }
 

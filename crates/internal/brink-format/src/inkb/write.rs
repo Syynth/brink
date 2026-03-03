@@ -15,7 +15,8 @@ use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, KEY_CARDINAL,
     KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC, PART_LITERAL,
     PART_SELECT, PART_SLOT, SECTION_COUNT, SECTION_ENTRY_SIZE, SectionKind, VAL_BOOL,
-    VAL_DIVERT_TARGET, VAL_FLOAT, VAL_INT, VAL_LIST, VAL_NULL, VAL_STRING, VERSION,
+    VAL_DIVERT_TARGET, VAL_FLOAT, VAL_INT, VAL_LIST, VAL_NULL, VAL_STRING, VAL_VAR_POINTER,
+    VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -226,6 +227,7 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         ValueType::String => VAL_STRING,
         ValueType::List => VAL_LIST,
         ValueType::DivertTarget => VAL_DIVERT_TARGET,
+        ValueType::VariablePointer => VAL_VAR_POINTER,
         ValueType::Null => VAL_NULL,
     };
     write_u8(buf, tag);
@@ -263,6 +265,10 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
         }
         Value::DivertTarget(id) => {
             write_u8(buf, VAL_DIVERT_TARGET);
+            write_def_id(buf, *id);
+        }
+        Value::VariablePointer(id) => {
+            write_u8(buf, VAL_VAR_POINTER);
             write_def_id(buf, *id);
         }
         Value::Null => {

@@ -48,6 +48,10 @@ const SET_GLOBAL: u8 = 0x31;
 const DECLARE_TEMP: u8 = 0x34;
 const GET_TEMP: u8 = 0x35;
 const SET_TEMP: u8 = 0x36;
+const GET_TEMP_RAW: u8 = 0x37;
+
+// Variable pointers
+const PUSH_VAR_POINTER: u8 = 0x38;
 
 // Control flow
 const JUMP: u8 = 0x40;
@@ -341,6 +345,12 @@ pub enum Opcode {
     DeclareTemp(u16),
     GetTemp(u16),
     SetTemp(u16),
+    /// Get a temp's raw value without auto-dereference (for passing a ref onward).
+    GetTempRaw(u16),
+
+    // ── Variable pointers ──────────────────────────────────────────────
+    /// Push a pointer to a global variable onto the eval stack.
+    PushVarPointer(DefinitionId),
 
     // ── Control flow ────────────────────────────────────────────────────
     Jump(i32),
@@ -516,6 +526,16 @@ impl Opcode {
             Self::SetTemp(idx) => {
                 write_u8(buf, SET_TEMP);
                 write_u16(buf, idx);
+            }
+            Self::GetTempRaw(idx) => {
+                write_u8(buf, GET_TEMP_RAW);
+                write_u16(buf, idx);
+            }
+
+            // Variable pointers
+            Self::PushVarPointer(id) => {
+                write_u8(buf, PUSH_VAR_POINTER);
+                write_def_id(buf, id);
             }
 
             // Control flow
@@ -712,6 +732,10 @@ impl Opcode {
             DECLARE_TEMP => Self::DeclareTemp(read_u16(buf, offset)?),
             GET_TEMP => Self::GetTemp(read_u16(buf, offset)?),
             SET_TEMP => Self::SetTemp(read_u16(buf, offset)?),
+            GET_TEMP_RAW => Self::GetTempRaw(read_u16(buf, offset)?),
+
+            // Variable pointers
+            PUSH_VAR_POINTER => Self::PushVarPointer(read_def_id(buf, offset)?),
 
             // Control flow
             JUMP => Self::Jump(read_i32(buf, offset)?),
@@ -920,6 +944,12 @@ mod tests {
         roundtrip(&Opcode::DeclareTemp(0));
         roundtrip(&Opcode::GetTemp(5));
         roundtrip(&Opcode::SetTemp(u16::MAX));
+        roundtrip(&Opcode::GetTempRaw(3));
+    }
+
+    #[test]
+    fn roundtrip_var_pointer() {
+        roundtrip(&Opcode::PushVarPointer(global_id()));
     }
 
     #[test]

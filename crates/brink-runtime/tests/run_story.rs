@@ -575,3 +575,17 @@ fn knot_stitch_gather_counts() {
         "I128 knot-stitch-gather-counts output mismatch"
     );
 }
+
+/// `ref` parameters must pass a variable by reference. `inc(ref x)` takes
+/// a pointer to `val`; reads through the pointer see val's value, writes
+/// go back to val. After `inc(val)`, val should be 6 (was 5).
+#[test]
+fn variable_pointer_ref_from_knot() {
+    let json =
+        load_ink_json("../../tests/tier1/variables/variable-pointer-ref-from-knot/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(
+        result, "6\n",
+        "ref parameter should increment val from 5 to 6"
+    );
+}

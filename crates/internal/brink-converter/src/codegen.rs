@@ -160,16 +160,17 @@ impl<'a> ContainerEmitter<'a> {
 
             Element::Value(InkValue::VariablePointer(var)) => {
                 if let Some(slot) = temps.get(var) {
-                    self.emit(&Opcode::GetTemp(slot));
+                    // Temp holds a pointer — pass it through without auto-deref.
+                    self.emit(&Opcode::GetTempRaw(slot));
                 } else {
-                    // Use registered global or synthesize one for list items etc.
+                    // Global variable — push a pointer to it.
                     let id = self
                         .index
                         .globals
                         .get(var.as_str())
                         .copied()
                         .unwrap_or_else(|| path::global_var_id(var));
-                    self.emit(&Opcode::GetGlobal(id));
+                    self.emit(&Opcode::PushVarPointer(id));
                 }
             }
 

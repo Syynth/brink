@@ -9,6 +9,7 @@ pub enum ValueType {
     String,
     List,
     DivertTarget,
+    VariablePointer,
     Null,
 }
 
@@ -21,6 +22,8 @@ pub enum Value {
     String(String),
     List(ListValue),
     DivertTarget(DefinitionId),
+    /// A reference to a global variable, used for `ref` parameters.
+    VariablePointer(DefinitionId),
     Null,
 }
 
@@ -34,6 +37,7 @@ impl Value {
             Self::String(_) => ValueType::String,
             Self::List(_) => ValueType::List,
             Self::DivertTarget(_) => ValueType::DivertTarget,
+            Self::VariablePointer(_) => ValueType::VariablePointer,
             Self::Null => ValueType::Null,
         }
     }

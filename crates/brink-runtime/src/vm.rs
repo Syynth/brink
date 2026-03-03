@@ -240,6 +240,9 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
             Opcode::PushDivertTarget(id) => {
                 story.flow.value_stack.push(Value::DivertTarget(id));
             }
+            Opcode::PushVarPointer(id) => {
+                story.flow.value_stack.push(Value::VariablePointer(id));
+            }
             Opcode::Pop => {
                 story.flow.pop_value()?;
             }
@@ -302,7 +305,8 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
             }
 
             // ── Temp vars ───────────────────────────────────────────────
-            Opcode::DeclareTemp(slot) | Opcode::SetTemp(slot) => {
+            Opcode::DeclareTemp(slot) => {
+                // New declaration stores as-is, including pointers.
                 let val = story.flow.pop_value()?;
                 let thread = story.flow.current_thread_mut();
                 let frame = thread
@@ -315,7 +319,55 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 }
                 frame.temps[idx] = val;
             }
+            Opcode::SetTemp(slot) => {
+                // Write-through: if the temp holds a VariablePointer,
+                // write the new value to the pointed-to global instead.
+                let val = story.flow.pop_value()?;
+                let thread = story.flow.current_thread_mut();
+                let frame = thread
+                    .call_stack
+                    .last_mut()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                let idx = slot as usize;
+                let current = frame.temps.get(idx).cloned().unwrap_or(Value::Null);
+                if let Value::VariablePointer(target_id) = current {
+                    // Write through to the global.
+                    let global_idx = program
+                        .resolve_global(target_id)
+                        .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                    story.globals[global_idx as usize] = val;
+                } else {
+                    while frame.temps.len() <= idx {
+                        frame.temps.push(Value::Null);
+                    }
+                    frame.temps[idx] = val;
+                }
+            }
             Opcode::GetTemp(slot) => {
+                // Auto-dereference: if temp holds a VariablePointer,
+                // push the pointed-to global's value instead.
+                let thread = story.flow.current_thread();
+                let frame = thread
+                    .call_stack
+                    .last()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                let val = frame
+                    .temps
+                    .get(slot as usize)
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                if let Value::VariablePointer(target_id) = val {
+                    let global_idx = program
+                        .resolve_global(target_id)
+                        .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                    let global_val = story.globals[global_idx as usize].clone();
+                    story.flow.value_stack.push(global_val);
+                } else {
+                    story.flow.value_stack.push(val);
+                }
+            }
+            Opcode::GetTempRaw(slot) => {
+                // Raw read: push the temp's value as-is (including pointers).
                 let thread = story.flow.current_thread();
                 let frame = thread
                     .call_stack

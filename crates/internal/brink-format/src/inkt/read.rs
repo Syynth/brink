@@ -192,6 +192,7 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "string" => Ok(ValueType::String),
         "list" => Ok(ValueType::List),
         "divert_target" => Ok(ValueType::DivertTarget),
+        "var_pointer" => Ok(ValueType::VariablePointer),
         "null" => Ok(ValueType::Null),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
@@ -244,6 +245,14 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
         Rule::def_id => Ok(Value::DivertTarget(parse_def_id(inner)?)),
         Rule::null_value => Ok(Value::Null),
         Rule::list_value => parse_list_value(inner),
+        Rule::var_pointer_value => {
+            let id_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
+                message: "expected def_id in var_pointer".into(),
+                line: 0,
+                col: 0,
+            })?;
+            Ok(Value::VariablePointer(parse_def_id(id_pair)?))
+        }
         _ => Err(err(
             &inner,
             format!("unexpected value rule: {:?}", inner.as_rule()),
@@ -819,6 +828,14 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         )?)),
         "get_temp" => Ok(Opcode::GetTemp(parse_operand_u16(&operands, 0, mnemonic)?)),
         "set_temp" => Ok(Opcode::SetTemp(parse_operand_u16(&operands, 0, mnemonic)?)),
+        "get_temp_raw" => Ok(Opcode::GetTempRaw(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+
+        // Variable pointers
+        "push_var_pointer" => Ok(Opcode::PushVarPointer(parse_operand_def_id(
+            &operands, 0, mnemonic,
+        )?)),
 
         // Control flow
         "jump" => Ok(Opcode::Jump(parse_operand_i32(&operands, 0, mnemonic)?)),
