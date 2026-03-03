@@ -135,6 +135,33 @@ fn sequence_branch_diverts_use_enter_container() {
     );
 }
 
+/// Labels with named-path containers (e.g. "0.g-0.3") must resolve
+/// to a non-zero byte offset. Regression: the element offset table was
+/// keyed by numeric path ("0.0") but the label used the named path
+/// ("0.g-0"), so the lookup failed and defaulted to offset 0.
+#[test]
+fn named_path_label_has_nonzero_byte_offset() {
+    let json_text =
+        include_str!("../../../../tests/tier1/choices/conditional-choice-in-weave/story.ink.json");
+    let story: InkJson = serde_json::from_str(json_text).unwrap();
+    let data = convert(&story).unwrap();
+
+    // The story has exactly one label (for the divert "0.g-0.3").
+    // Its byte_offset must be > 0 — offset 0 means "start of container"
+    // which would cause an infinite loop.
+    assert!(
+        !data.labels.is_empty(),
+        "should have at least one label for index-based divert target"
+    );
+    for label in &data.labels {
+        assert!(
+            label.byte_offset > 0,
+            "label byte_offset should be > 0 (non-zero offset into container), \
+             got label: {label:?}"
+        );
+    }
+}
+
 fn collect_ink_json_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     if dir.is_dir() {

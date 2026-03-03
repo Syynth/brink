@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use brink_format::{
-    ChoiceFlags, ContainerDef, ContainerLineTable, CountingFlags, ExternalFnDef, GlobalVarDef,
-    LineContent, LineEntry, ListDef, ListItemDef, NameId, Opcode, SequenceKind, Value,
+    ChoiceFlags, ContainerDef, ContainerLineTable, CountingFlags, DefinitionId, ExternalFnDef,
+    GlobalVarDef, LineContent, LineEntry, ListDef, ListItemDef, NameId, Opcode, SequenceKind,
+    Value,
 };
 use brink_json::{
     ChoicePoint, ChoicePointFlags, Container, ContainerFlags, ControlCommand, Divert, Element,
@@ -514,8 +515,13 @@ fn detect_dollar_r_setup(contents: &[Element], i: usize) -> Option<usize> {
     }
 }
 
-/// Per-container element offset map: element index → byte offset in bytecode.
-pub type ElementOffsets = HashMap<String, HashMap<usize, usize>>;
+/// Per-container element offset map: container `DefinitionId` → (element index → byte offset).
+///
+/// Keyed by `DefinitionId` rather than path string so that containers with
+/// both a numeric path ("0.0") and a named alias ("0.g-0") share the same
+/// entry — labels that reference the named path can find the offsets recorded
+/// during codegen under the numeric path.
+pub type ElementOffsets = HashMap<DefinitionId, HashMap<usize, usize>>;
 
 /// Process a container and all sub-containers, returning `(ContainerDef, ContainerLineTable)` pairs
 /// and a map of element byte offsets per container path.
@@ -697,9 +703,9 @@ pub fn process_container(
     };
     all_pairs.push((def, lt));
 
-    // Store element offsets for this container.
+    // Store element offsets for this container, keyed by DefinitionId.
     if !offsets_for_this_container.is_empty() {
-        element_offsets.insert(current_path.to_string(), offsets_for_this_container);
+        element_offsets.insert(container_id, offsets_for_this_container);
     }
 
     // Process named content

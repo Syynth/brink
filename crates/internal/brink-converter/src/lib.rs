@@ -80,7 +80,7 @@ fn build_labels(
 
         // Look up the byte offset for this element index.
         let byte_offset = element_offsets
-            .get(container_path)
+            .get(&container_id)
             .and_then(|offsets| offsets.get(&element_index))
             .copied()
             .unwrap_or(0);
