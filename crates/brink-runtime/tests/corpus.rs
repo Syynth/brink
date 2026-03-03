@@ -164,7 +164,19 @@ fn run_corpus(tier: &str) {
         let expected = std::fs::read_to_string(&transcript_path).unwrap();
         let inputs = parse_inputs(&input_path);
 
-        match run_story_from_json(&json_str, &inputs) {
+        let result = std::panic::catch_unwind(|| run_story_from_json(&json_str, &inputs));
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = e
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| e.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown panic");
+                Err(format!("panic: {msg}"))
+            }
+        };
+        match result {
             Ok(actual) => {
                 // Normalize: trim trailing whitespace and ensure consistent line endings.
                 let actual_normalized = actual.trim_end();

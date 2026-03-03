@@ -18,8 +18,8 @@ use brink_json::InkJson;
 
 /// Convert a parsed ink.json story into a `StoryData`.
 pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
-    // Pass 0: canonicalize paths and remove $r ceremony
-    let canonical_root = canonicalize::canonicalize(&story.root);
+    // Pass 0: canonicalize paths, remove $r ceremony, resolve list item refs
+    let canonical_root = canonicalize::canonicalize(&story.root, &story.list_defs);
 
     // Pass 1: build the index of all definitions (including labels)
     let story_index = index::build_index(story, &canonical_root)?;

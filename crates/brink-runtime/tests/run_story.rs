@@ -586,6 +586,16 @@ fn i071_list_basic_operations() {
     assert_eq!(result, "b, d\na, b, c, e\nb, c\n0\n1\n1\n");
 }
 
+/// List item variable references (like `A`, `B`) must be resolved to list
+/// values, not treated as global variables. `LIST_ALL(A + B)` unions two
+/// single-item lists then expands to all items from their origins.
+#[test]
+fn list_item_variable_reference() {
+    let json = load_ink_json("../../tests/tier2/lists/list-all/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result, "A, B\n");
+}
+
 /// `ref` parameters must pass a variable by reference. `inc(ref x)` takes
 /// a pointer to `val`; reads through the pointer see val's value, writes
 /// go back to val. After `inc(val)`, val should be 6 (was 5).

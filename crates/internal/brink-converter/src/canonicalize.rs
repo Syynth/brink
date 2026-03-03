@@ -1,18 +1,28 @@
-//! Preprocessing pass: canonicalize paths and remove $r ceremony.
+//! Preprocessing pass: canonicalize paths, remove $r ceremony, and resolve
+//! list item variable references.
 //!
 //! Before index-building or codegen sees the tree, this pass:
 //! 1. Rewrites all named-path aliases to their numeric equivalents
 //!    (e.g. `knot.stitch.0.g-0.c-0` → `knot.stitch.0.0.c-0`).
 //! 2. Blanks out $r-family elements with `Element::Nop`.
+//! 3. Rewrites `VariableReference("ItemName")` to `Value(InkValue::List(...))`
+//!    when `ItemName` matches a list item, so codegen emits `PushList` instead
+//!    of an invalid `GetGlobal`.
 
 use std::collections::HashMap;
 
-use brink_json::{ChoicePoint, Container, Divert, Element, InkValue, VariableAssignment};
+use brink_json::{
+    ChoicePoint, Container, Divert, Element, InkList, InkValue, VariableAssignment,
+    VariableReference,
+};
 
 use crate::path::resolve_path;
 
 /// Name-to-index map: `parent_path → (child_name → numeric_index)`.
 type NameMap = HashMap<String, HashMap<String, usize>>;
+
+/// Unqualified list item name → `("ListName", "ListName.ItemName", ordinal)`.
+type ListItemMap = HashMap<String, (String, String, i64)>;
 
 // ── Pass 1: Analyze ─────────────────────────────────────────────────
 
@@ -113,8 +123,14 @@ fn path_contains_dollar_r(path: &str) -> bool {
     path.split('.').any(|c| c.starts_with("$r"))
 }
 
-/// Transform a single element: canonicalize paths and blank $r elements.
-fn transform_element(element: &Element, current_path: &str, name_map: &NameMap) -> Element {
+/// Transform a single element: canonicalize paths, blank $r elements,
+/// and rewrite list item variable references.
+fn transform_element(
+    element: &Element,
+    current_path: &str,
+    name_map: &NameMap,
+    list_items: &ListItemMap,
+) -> Element {
     match element {
         // ── $r blanking ──
 
@@ -183,6 +199,19 @@ fn transform_element(element: &Element, current_path: &str, name_map: &NameMap) 
             })
         }
 
+        // ── List item variable references ──
+        Element::VariableReference(VariableReference { variable })
+            if list_items.contains_key(variable.as_str()) =>
+        {
+            let (list_name, qualified, ordinal) = &list_items[variable.as_str()];
+            let mut items = HashMap::new();
+            items.insert(qualified.clone(), *ordinal);
+            Element::Value(InkValue::List(InkList {
+                items,
+                origins: vec![list_name.clone()],
+            }))
+        }
+
         // ── Recurse into child containers ──
         Element::Container(_) => {
             // Non-$r containers are transformed recursively in transform_container.
@@ -198,7 +227,12 @@ fn transform_element(element: &Element, current_path: &str, name_map: &NameMap) 
 }
 
 /// Deep-clone and transform a container and all its descendants.
-fn transform_container(container: &Container, current_path: &str, name_map: &NameMap) -> Container {
+fn transform_container(
+    container: &Container,
+    current_path: &str,
+    name_map: &NameMap,
+    list_items: &ListItemMap,
+) -> Container {
     let mut new_contents = Vec::with_capacity(container.contents.len());
 
     for (i, element) in container.contents.iter().enumerate() {
@@ -214,11 +248,11 @@ fn transform_container(container: &Container, current_path: &str, name_map: &Nam
                 new_contents.push(Element::Nop);
             }
             Element::Container(child) => {
-                let transformed = transform_container(child, &child_path, name_map);
+                let transformed = transform_container(child, &child_path, name_map, list_items);
                 new_contents.push(Element::Container(transformed));
             }
             other => {
-                new_contents.push(transform_element(other, current_path, name_map));
+                new_contents.push(transform_element(other, current_path, name_map, list_items));
             }
         }
     }
@@ -234,13 +268,13 @@ fn transform_container(container: &Container, current_path: &str, name_map: &Nam
 
         match element {
             Element::Container(child) => {
-                let transformed = transform_container(child, &child_path, name_map);
+                let transformed = transform_container(child, &child_path, name_map, list_items);
                 new_named.insert(name.clone(), Element::Container(transformed));
             }
             other => {
                 new_named.insert(
                     name.clone(),
-                    transform_element(other, current_path, name_map),
+                    transform_element(other, current_path, name_map, list_items),
                 );
             }
         }
@@ -256,15 +290,30 @@ fn transform_container(container: &Container, current_path: &str, name_map: &Nam
 
 // ── Public API ──────────────────────────────────────────────────────
 
-/// Canonicalize all paths in the tree and blank out $r ceremony elements.
+/// Canonicalize all paths in the tree, blank out $r ceremony elements,
+/// and rewrite list item variable references to list value literals.
 ///
 /// Returns a new root container with:
 /// - All path-bearing elements rewritten to absolute numeric form
 /// - All $r-family elements replaced with `Element::Nop`
-pub fn canonicalize(root: &Container) -> Container {
+/// - `VariableReference("ItemName")` → `Value(List(...))` for list items
+pub fn canonicalize(
+    root: &Container,
+    list_defs: &HashMap<String, HashMap<String, i64>>,
+) -> Container {
     let mut name_map = NameMap::new();
     build_name_map(root, "", &mut name_map);
-    transform_container(root, "", &name_map)
+
+    // Build reverse map: unqualified item name → (list_name, qualified, ordinal).
+    let mut list_items = ListItemMap::new();
+    for (list_name, items) in list_defs {
+        for (item_name, &ordinal) in items {
+            let qualified = format!("{list_name}.{item_name}");
+            list_items.insert(item_name.clone(), (list_name.clone(), qualified, ordinal));
+        }
+    }
+
+    transform_container(root, "", &name_map, &list_items)
 }
 
 #[cfg(test)]
@@ -298,7 +347,7 @@ mod tests {
         let outer = make_container(vec![Element::Container(inner), divert], vec![], None);
         let root = make_container(vec![], vec![("root", Element::Container(outer))], None);
 
-        let result = canonicalize(&root);
+        let result = canonicalize(&root, &HashMap::new());
         let Some(Element::Container(root_c)) = result.named_content.get("root") else {
             unreachable!("expected root named content");
         };
@@ -329,7 +378,7 @@ mod tests {
             }),
         ];
         let root = make_container(contents, vec![], None);
-        let result = canonicalize(&root);
+        let result = canonicalize(&root, &HashMap::new());
 
         // Element 0 (string) should be unchanged.
         assert!(matches!(&result.contents[0], Element::Value(InkValue::String(s)) if s == "hello"));
@@ -352,7 +401,7 @@ mod tests {
         let outer = make_container(vec![Element::Container(inner), cp], vec![], None);
         let root = make_container(vec![], vec![("root", Element::Container(outer))], None);
 
-        let result = canonicalize(&root);
+        let result = canonicalize(&root, &HashMap::new());
         let Some(Element::Container(root_c)) = result.named_content.get("root") else {
             unreachable!("expected root named content");
         };
@@ -388,7 +437,7 @@ mod tests {
 
         let root = make_container(vec![divert], vec![("knot", Element::Container(knot))], None);
 
-        let result = canonicalize(&root);
+        let result = canonicalize(&root, &HashMap::new());
 
         // The divert in root.contents[0] should have "knot.stitch.0.0.c-0"
         assert!(
