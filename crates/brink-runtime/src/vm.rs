@@ -4,7 +4,9 @@ use brink_format::{ChoiceFlags, CountingFlags, DefinitionId, LineContent, Opcode
 
 use crate::error::RuntimeError;
 use crate::program::Program;
-use crate::story::{CallFrame, ContainerPosition, PendingChoice, Story, StoryStatus};
+use crate::story::{
+    CallFrame, CallFrameType, ContainerPosition, PendingChoice, Story, StoryStatus,
+};
 use crate::value_ops::{self, BinaryOp};
 
 /// Result of a single step through the VM.
@@ -52,13 +54,24 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 .ok_or(RuntimeError::CallStackUnderflow)?;
             frame.container_stack.pop();
             if frame.container_stack.is_empty() {
-                if !story.pending_choices.is_empty() {
-                    // Choices are pending — keep the call frame alive so
-                    // choose() can set the next execution position on it.
-                    return Ok(VmYield::Done);
+                match frame.frame_type {
+                    CallFrameType::Thread => {
+                        // Thread frame: always return to caller. Thread's
+                        // job is to contribute choices to the shared pool —
+                        // the main flow must resume for CHOICE_COUNT() etc.
+                        pop_call_frame(story, false)?;
+                    }
+                    _ if !story.pending_choices.is_empty() => {
+                        // Root / tunnel / function frame with pending
+                        // choices — keep frame alive so choose() can set
+                        // execution position.
+                        return Ok(VmYield::Done);
+                    }
+                    _ => {
+                        // No pending choices — pop call frame.
+                        pop_call_frame(story, false)?;
+                    }
                 }
-                // Pop call frame (implicit return, no explicit value).
-                pop_call_frame(story, false)?;
                 if story.call_stack.is_empty() {
                     return Ok(VmYield::Done);
                 }
@@ -337,7 +350,7 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                         container_idx: idx,
                         offset: 0,
                     }],
-                    is_function_call: true,
+                    frame_type: CallFrameType::Function,
                 });
             }
             Opcode::Return => {
@@ -358,7 +371,23 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                         container_idx: idx,
                         offset: 0,
                     }],
-                    is_function_call: false,
+                    frame_type: CallFrameType::Tunnel,
+                });
+            }
+            Opcode::ThreadCall(id) => {
+                let idx = program
+                    .resolve_container(id)
+                    .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+
+                let current_pos = current_position(story)?;
+                story.call_stack.push(CallFrame {
+                    return_address: Some(current_pos),
+                    temps: Vec::new(),
+                    container_stack: vec![ContainerPosition {
+                        container_idx: idx,
+                        offset: 0,
+                    }],
+                    frame_type: CallFrameType::Thread,
                 });
             }
             Opcode::TunnelCallVariable => {
@@ -380,7 +409,7 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                         container_idx: idx,
                         offset: 0,
                     }],
-                    is_function_call: false,
+                    frame_type: CallFrameType::Tunnel,
                 });
             }
             Opcode::TunnelReturn => {
@@ -541,7 +570,7 @@ fn pop_call_frame(story: &mut Story, is_explicit_return: bool) -> Result<(), Run
         .pop()
         .ok_or(RuntimeError::CallStackUnderflow)?;
 
-    if popped.is_function_call {
+    if popped.frame_type == CallFrameType::Function {
         if is_explicit_return {
             // Explicit `~ret`: return value is already on the value stack.
             // Discard the capture checkpoint; text stays in the output.

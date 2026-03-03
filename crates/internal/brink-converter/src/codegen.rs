@@ -639,6 +639,24 @@ pub fn process_container(
             // Skip variable diverts to $r — EnterContainer handles return automatically
             i += 1;
             continue;
+        } else if matches!(element, Element::ControlCommand(ControlCommand::Thread))
+            && i + 1 < contents.len()
+        {
+            // Thread pattern: `thread` + `-> target` becomes ThreadCall(target).
+            // The thread body runs and contributes choices to the shared pool,
+            // then execution returns to the main flow.
+            if let Element::Divert(Divert::Target {
+                path,
+                conditional: false,
+            }) = &contents[i + 1]
+            {
+                let id = emitter.resolve_divert_target(path)?;
+                emitter.emit(&Opcode::ThreadCall(id));
+                i += 2; // skip both thread and divert
+                continue;
+            }
+            // Not followed by a simple divert — emit ThreadStart as-is
+            emitter.emit_element(element, name_table, temps)?;
         } else {
             emitter.emit_element(element, name_table, temps)?;
         }

@@ -48,13 +48,28 @@ pub(crate) struct ContainerPosition {
     pub offset: usize,
 }
 
+/// Distinguishes call frame types for container-stack-empty semantics:
+///
+/// - **Root**: the initial frame. Yields for pending choices.
+/// - **Function**: `f()` calls. Output is captured as a return value.
+/// - **Tunnel**: `->t->` calls. Yields for pending choices (the tunnel
+///   needs the player's choice before it can continue).
+/// - **Thread**: `<-` calls. Always pops — the thread's job is to
+///   contribute choices to the shared pool, then return to the main flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallFrameType {
+    Root,
+    Function,
+    Tunnel,
+    Thread,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CallFrame {
     pub return_address: Option<ContainerPosition>,
     pub temps: Vec<Value>,
     pub container_stack: Vec<ContainerPosition>,
-    /// True for `f()` calls — output is captured as a return value.
-    pub is_function_call: bool,
+    pub frame_type: CallFrameType,
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +122,7 @@ impl Story {
                 container_idx: program.root_idx(),
                 offset: 0,
             }],
-            is_function_call: false,
+            frame_type: CallFrameType::Root,
         };
 
         Self {
@@ -413,5 +428,47 @@ mod tests {
             Value::Int(1),
             "tunnel frame temps[0] should be Int(1) (the parameter x)"
         );
+    }
+
+    // ── Thread support ──────────────────────────────────────────────────
+
+    fn load_i091() -> (crate::Program, Story) {
+        let json_str =
+            std::fs::read_to_string("../../tests/tier1/choices/I091-choice-count/story.ink.json")
+                .unwrap();
+        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
+        let data = brink_converter::convert(&ink).unwrap();
+        let program = link(&data).unwrap();
+        let story = Story::new(&program);
+        (program, story)
+    }
+
+    /// `<- choices` (thread) must create choices AND return to the main
+    /// flow so that `CHOICE_COUNT()` can evaluate. The thread body
+    /// should be called like a tunnel — when its container stack empties,
+    /// execution returns to the caller. Non-root frames must always pop
+    /// back to their caller, even when pending choices exist.
+    #[test]
+    fn thread_call_returns_to_main_flow() {
+        let (program, mut story) = load_i091();
+
+        let result = story.step(&program).unwrap();
+
+        // The story should yield Choices (not Done/Ended) because the
+        // thread creates two choice points.
+        assert!(
+            matches!(result, StepResult::Choices { .. }),
+            "expected Choices after thread creates choices, got {result:?}"
+        );
+
+        // The text output should include "2" (CHOICE_COUNT()) which
+        // proves execution returned to the main flow after the thread.
+        if let StepResult::Choices { text, choices } = result {
+            assert!(
+                text.contains('2'),
+                "text should contain '2' from CHOICE_COUNT(), got: {text:?}"
+            );
+            assert_eq!(choices.len(), 2, "should have 2 choices (one/two)");
+        }
     }
 }

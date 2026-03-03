@@ -253,6 +253,18 @@ fn choice_thread_forking_preserves_temp() {
     );
 }
 
+/// `<- choices` thread must run the thread body, creating choices, then
+/// return to the main flow where `CHOICE_COUNT()` outputs "2".
+#[test]
+fn thread_call_with_choice_count() {
+    let json = load_ink_json("../../tests/tier1/choices/I091-choice-count/story.ink.json");
+    let result = run_story(&json, &[0]);
+    assert!(
+        result.starts_with('2'),
+        "expected output to start with '2' from CHOICE_COUNT(), got: {result:?}"
+    );
+}
+
 #[test]
 fn test_simple_divert() {
     let json = load_ink_json("../../tests/tier1/divert/simple-divert/story.ink.json");

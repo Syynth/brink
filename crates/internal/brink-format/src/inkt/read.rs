@@ -847,6 +847,9 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "tunnel_call_variable" => Ok(Opcode::TunnelCallVariable),
 
         // Threads
+        "thread_call" => Ok(Opcode::ThreadCall(parse_operand_def_id(
+            &operands, 0, mnemonic,
+        )?)),
         "thread_start" => Ok(Opcode::ThreadStart),
         "thread_done" => Ok(Opcode::ThreadDone),
 
