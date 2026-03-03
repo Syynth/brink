@@ -51,7 +51,6 @@ pub(crate) struct ListItemEntry {
 
 /// Runtime metadata for a list definition.
 pub(crate) struct ListDefEntry {
-    #[expect(dead_code)]
     pub name: NameId,
     /// All item `DefinitionId`s belonging to this list, sorted by ordinal.
     pub items: Vec<DefinitionId>,

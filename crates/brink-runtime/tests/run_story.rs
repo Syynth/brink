@@ -586,6 +586,22 @@ fn i071_list_basic_operations() {
     assert_eq!(result, "b, d\na, b, c, e\nb, c\n0\n1\n1\n");
 }
 
+/// `LIST_RANGE` filters a list's items by ordinal bounds, including inline
+/// literals with no origins. Multi-origin lists are stringified sorted by
+/// ordinal then origin name.
+#[test]
+fn list_range_and_ordering() {
+    let json = load_ink_json("../../tests/tier2/lists/list-range/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(
+        result,
+        "Pound, Pizza, Euro, Pasta, Dollar, Curry, Paella\n\
+         Euro, Pasta, Dollar, Curry\n\
+         Two, Three, Four, Five, Six\n\
+         Pizza, Pasta\n"
+    );
+}
+
 /// List item variable references (like `A`, `B`) must be resolved to list
 /// values, not treated as global variables. `LIST_ALL(A + B)` unions two
 /// single-item lists then expands to all items from their origins.

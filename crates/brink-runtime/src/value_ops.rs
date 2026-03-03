@@ -31,19 +31,22 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
     }
 }
 
-/// Stringify a list value: sort items by ordinal, join names with ", ".
+/// Stringify a list value: sort items by (ordinal, origin name), join names with ", ".
 fn stringify_list(lv: &ListValue, program: &Program) -> String {
-    let mut entries: Vec<(i32, &str)> = lv
+    let mut entries: Vec<(i32, &str, &str)> = lv
         .items
         .iter()
         .filter_map(|&id| {
-            program
-                .list_item(id)
-                .map(|entry| (entry.ordinal, program.name(entry.name)))
+            program.list_item(id).map(|entry| {
+                let origin_name = program
+                    .list_def(entry.origin)
+                    .map_or("", |def| program.name(def.name));
+                (entry.ordinal, origin_name, program.name(entry.name))
+            })
         })
         .collect();
-    entries.sort_by_key(|&(ordinal, _)| ordinal);
-    let names: Vec<&str> = entries.iter().map(|&(_, name)| name).collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    let names: Vec<&str> = entries.iter().map(|&(_, _, name)| name).collect();
     names.join(", ")
 }
 

@@ -145,23 +145,22 @@ pub(crate) fn list_invert(story: &mut Story, program: &Program) -> Result<(), Ru
 }
 
 /// `ListRange`: `[list, min, max]` → `List(items with ordinal in [min,max])`
+///
+/// Filters the list's *own* items by ordinal bounds (not all items from origins).
 pub(crate) fn list_range(story: &mut Story, program: &Program) -> Result<(), RuntimeError> {
     let max_val = pop_int_or_list_ordinal(story, program)?;
     let min_val = pop_int_or_list_ordinal(story, program)?;
     let lv = pop_list(story)?;
-    let mut items = Vec::new();
-    for &origin_id in &lv.origins {
-        if let Some(def) = program.list_def(origin_id) {
-            for &item_id in &def.items {
-                if let Some(entry) = program.list_item(item_id)
-                    && entry.ordinal >= min_val
-                    && entry.ordinal <= max_val
-                {
-                    items.push(item_id);
-                }
-            }
-        }
-    }
+    let items: Vec<_> = lv
+        .items
+        .iter()
+        .copied()
+        .filter(|&id| {
+            program
+                .list_item(id)
+                .is_some_and(|e| e.ordinal >= min_val && e.ordinal <= max_val)
+        })
+        .collect();
     story.flow.value_stack.push(Value::List(ListValue {
         items,
         origins: lv.origins,
