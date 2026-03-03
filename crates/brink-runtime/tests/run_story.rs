@@ -639,7 +639,6 @@ fn list_item_variable_reference() {
 fn seed_random_and_list_literal_origins() {
     let json = load_ink_json("../../tests/tier2/lists/more-list-operations2/story.ink.json");
     let result = run_story(&json, &[]);
-    // NOTE: ` empty` has leading space (whitespace/glue issue, not list-specific).
     // NOTE: `random:a1` — we don't implement reference PRNG yet, so we get
     //       first item instead of the seeded-random result `b2`.
     assert_eq!(
@@ -652,7 +651,7 @@ fn seed_random_and_list_literal_origins() {
          min:a1\n\
          true\n\
          true\n\
-         false\n \
+         false\n\
          empty\n\
          a2\n\
          a2, b2, c2\n\
@@ -672,16 +671,11 @@ fn seed_random_and_list_literal_origins() {
 fn function_variable_call() {
     let json = load_ink_json("../../tests/tier2/lists/list-comparison/story.ink.json");
     let result = run_story(&json, &[]);
-    // Leading spaces are a pre-existing whitespace/glue issue, not
-    // related to CallVariable. Assert content line-by-line after trimming.
-    let lines: Vec<&str> = result.lines().map(str::trim).collect();
     assert_eq!(
-        lines,
-        vec![
-            "Hey, my name is Philippe. What about yours?",
-            "I am Andre and I need my rheumatism pills!",
-            "Would you like me, Philippe, to get some more for you?",
-        ]
+        result,
+        "Hey, my name is Philippe. What about yours?\n\
+         I am Andre and I need my rheumatism pills!\n\
+         Would you like me, Philippe, to get some more for you?\n"
     );
 }
 

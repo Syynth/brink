@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use brink_format::{ChoiceFlags, DefinitionId, Value};
 
 use crate::error::RuntimeError;
-use crate::output::OutputBuffer;
+use crate::output::{OutputBuffer, clean_output_whitespace};
 use crate::program::Program;
 use crate::vm;
 
@@ -247,7 +247,9 @@ impl Story {
                 vm::VmYield::Done => {
                     if self.flow.pending_choices.is_empty() {
                         self.status = StoryStatus::Done;
-                        return Ok(StepResult::Done { text: full_text });
+                        return Ok(StepResult::Done {
+                            text: clean_output_whitespace(&full_text),
+                        });
                     }
 
                     // If all pending choices are invisible defaults (fallback
@@ -278,13 +280,15 @@ impl Story {
                         })
                         .collect();
                     return Ok(StepResult::Choices {
-                        text: full_text,
+                        text: clean_output_whitespace(&full_text),
                         choices,
                     });
                 }
                 vm::VmYield::End => {
                     self.status = StoryStatus::Ended;
-                    return Ok(StepResult::Ended { text: full_text });
+                    return Ok(StepResult::Ended {
+                        text: clean_output_whitespace(&full_text),
+                    });
                 }
             }
         }

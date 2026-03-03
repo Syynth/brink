@@ -193,6 +193,50 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
     out
 }
 
+/// Clean inline whitespace in the output text, matching the reference ink
+/// runtime's `CleanOutputWhitespace`:
+///  - Removes all leading inline whitespace (spaces/tabs) from each line
+///  - Removes all trailing inline whitespace before `\n` or end of string
+///  - Collapses consecutive space/tab runs within a line to a single space
+pub(crate) fn clean_output_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut ws_start: Option<usize> = None;
+    let mut start_of_line: usize = 0;
+
+    for (i, c) in s.char_indices() {
+        let is_inline_ws = c == ' ' || c == '\t';
+
+        if is_inline_ws && ws_start.is_none() {
+            ws_start = Some(i);
+        }
+
+        if !is_inline_ws {
+            // Emit a single space for a whitespace run, but only if:
+            //  - It's not at the start of the string (ws_start > 0)
+            //  - It's not at the start of the current line
+            //  - The next character is not a newline (trailing ws)
+            if c != '\n'
+                && let Some(ws) = ws_start
+                && ws > 0
+                && ws != start_of_line
+            {
+                out.push(' ');
+            }
+            ws_start = None;
+        }
+
+        if c == '\n' {
+            start_of_line = i + 1;
+        }
+
+        if !is_inline_ws {
+            out.push(c);
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,5 +467,41 @@ mod tests {
         buf.push_glue();
         buf.push_text(" with glue.");
         assert_eq!(buf.flush(), "Some content with glue.");
+    }
+
+    // ── clean_output_whitespace tests ────────────────────────────────
+
+    #[test]
+    fn clean_strips_leading_whitespace() {
+        assert_eq!(clean_output_whitespace(" hello"), "hello");
+        assert_eq!(clean_output_whitespace("  hello"), "hello");
+        assert_eq!(clean_output_whitespace("\thello"), "hello");
+    }
+
+    #[test]
+    fn clean_strips_trailing_whitespace() {
+        assert_eq!(clean_output_whitespace("hello "), "hello");
+        assert_eq!(clean_output_whitespace("hello  "), "hello");
+    }
+
+    #[test]
+    fn clean_strips_per_line() {
+        assert_eq!(clean_output_whitespace(" hello \n world "), "hello\nworld");
+    }
+
+    #[test]
+    fn clean_collapses_internal_whitespace() {
+        assert_eq!(clean_output_whitespace("a  b"), "a b");
+        assert_eq!(clean_output_whitespace("a   b  c"), "a b c");
+    }
+
+    #[test]
+    fn clean_preserves_newlines() {
+        assert_eq!(clean_output_whitespace("a\nb\n"), "a\nb\n");
+    }
+
+    #[test]
+    fn clean_empty_string() {
+        assert_eq!(clean_output_whitespace(""), "");
     }
 }
