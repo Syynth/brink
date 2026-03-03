@@ -521,6 +521,27 @@ fn gather_loop_increments_count_start_only() {
     );
 }
 
+/// I098: A thread spawned via `<-` calls a tunnel that creates a choice.
+/// The thread must complete (pop back to the main flow) so the main flow
+/// text ("When should this get printed?") appears *before* the choice.
+/// After the player selects the choice, the tunnel resumes and the thread
+/// finishes ("Finishing thread.").
+#[test]
+fn knot_thread_interaction_2() {
+    let json =
+        load_ink_json("../../tests/tier1/knots/I098-knot-thread-interaction-2/story.ink.json");
+    let result = run_story(&json, &[0]);
+    let expected = "\
+I\u{2019}m in a tunnel
+When should this get printed?
+I\u{2019}m an option
+Finishing thread.\n";
+    assert_eq!(
+        result, expected,
+        "I098 knot-thread-interaction-2 output mismatch"
+    );
+}
+
 /// Full I128 corpus test: validates tunnel visit counting, goto-to-self
 /// suppression for VISITS-only, and gather `COUNT_START_ONLY` behavior together.
 #[test]

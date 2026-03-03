@@ -54,14 +54,11 @@ pub(crate) struct ContainerPosition {
 /// - **Function**: `f()` calls. Output is captured as a return value.
 /// - **Tunnel**: `->t->` calls. Yields for pending choices (the tunnel
 ///   needs the player's choice before it can continue).
-/// - **Thread**: `<-` calls. Always pops — the thread's job is to
-///   contribute choices to the shared pool, then return to the main flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CallFrameType {
     Root,
     Function,
     Tunnel,
-    Thread,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +67,14 @@ pub(crate) struct CallFrame {
     pub temps: Vec<Value>,
     pub container_stack: Vec<ContainerPosition>,
     pub frame_type: CallFrameType,
+}
+
+/// A single execution thread with its own call stack.
+#[derive(Debug, Clone)]
+pub(crate) struct Thread {
+    pub call_stack: Vec<CallFrame>,
+    #[expect(dead_code)]
+    pub thread_index: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -83,10 +88,85 @@ pub(crate) struct PendingChoice {
     pub original_index: usize,
     #[expect(dead_code)]
     pub output_line_idx: Option<u16>,
-    /// Snapshot of the call stack at choice creation time, so that
+    /// Snapshot of the current thread at choice creation time, so that
     /// selecting this choice can restore the execution context
     /// (including temp variables from enclosing tunnels/functions).
-    pub thread_snapshot: Vec<CallFrame>,
+    pub thread_fork: Thread,
+}
+
+/// Per-flow execution context. Owns threads, eval stack, output, choices.
+pub(crate) struct Flow {
+    pub threads: Vec<Thread>,
+    pub thread_counter: u32,
+    pub value_stack: Vec<Value>,
+    pub output: OutputBuffer,
+    pub pending_choices: Vec<PendingChoice>,
+    pub turn_index: u32,
+    pub current_tags: Vec<String>,
+    pub in_tag: bool,
+    pub skipping_choice: bool,
+}
+
+impl Flow {
+    /// Returns a reference to the current (topmost) thread.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the thread stack is empty. This is a programming error —
+    /// flows are always constructed with at least one thread.
+    #[expect(clippy::expect_used)]
+    pub fn current_thread(&self) -> &Thread {
+        self.threads
+            .last()
+            .expect("flow must always have at least one thread")
+    }
+
+    /// Returns a mutable reference to the current (topmost) thread.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the thread stack is empty. This is a programming error —
+    /// flows are always constructed with at least one thread.
+    #[expect(clippy::expect_used)]
+    pub fn current_thread_mut(&mut self) -> &mut Thread {
+        self.threads
+            .last_mut()
+            .expect("flow must always have at least one thread")
+    }
+
+    pub fn can_pop_thread(&self) -> bool {
+        self.threads.len() > 1
+    }
+
+    pub fn pop_thread(&mut self) {
+        self.threads.pop();
+    }
+
+    pub fn push_thread(&mut self, initial_frame: CallFrame) {
+        self.thread_counter += 1;
+        self.threads.push(Thread {
+            call_stack: vec![initial_frame],
+            thread_index: self.thread_counter,
+        });
+    }
+
+    pub fn fork_thread(&mut self) -> Thread {
+        self.thread_counter += 1;
+        Thread {
+            call_stack: self.current_thread().call_stack.clone(),
+            thread_index: self.thread_counter,
+        }
+    }
+
+    /// Pop a value from the value stack.
+    pub fn pop_value(&mut self) -> Result<Value, RuntimeError> {
+        self.value_stack.pop().ok_or(RuntimeError::StackUnderflow)
+    }
+
+    /// Peek at the top value without popping.
+    pub fn peek_value(&self) -> Result<&Value, RuntimeError> {
+        self.value_stack.last().ok_or(RuntimeError::StackUnderflow)
+    }
 }
 
 /// Per-instance mutable state for executing stories.
@@ -95,17 +175,10 @@ pub(crate) struct PendingChoice {
 /// (stacks, globals, output buffer) while the immutable program data lives
 /// in [`Program`].
 pub struct Story {
-    pub(crate) call_stack: Vec<CallFrame>,
-    pub(crate) value_stack: Vec<Value>,
+    pub(crate) flow: Flow,
     pub(crate) globals: Vec<Value>,
-    pub(crate) output: OutputBuffer,
     pub(crate) visit_counts: HashMap<DefinitionId, u32>,
-    pub(crate) turn_index: u32,
     pub(crate) status: StoryStatus,
-    pub(crate) pending_choices: Vec<PendingChoice>,
-    pub(crate) current_tags: Vec<String>,
-    pub(crate) in_tag: bool,
-    pub(crate) skipping_choice: bool,
 }
 
 impl Story {
@@ -125,18 +198,26 @@ impl Story {
             frame_type: CallFrameType::Root,
         };
 
-        Self {
+        let initial_thread = Thread {
             call_stack: vec![initial_frame],
-            value_stack: Vec::new(),
+            thread_index: 0,
+        };
+
+        Self {
+            flow: Flow {
+                threads: vec![initial_thread],
+                thread_counter: 0,
+                value_stack: Vec::new(),
+                output: OutputBuffer::new(),
+                pending_choices: Vec::new(),
+                turn_index: 0,
+                current_tags: Vec::new(),
+                in_tag: false,
+                skipping_choice: false,
+            },
             globals,
-            output: OutputBuffer::new(),
             visit_counts: HashMap::new(),
-            turn_index: 0,
             status: StoryStatus::Active,
-            pending_choices: Vec::new(),
-            current_tags: Vec::new(),
-            in_tag: false,
-            skipping_choice: false,
         }
     }
 
@@ -156,13 +237,13 @@ impl Story {
         loop {
             let yield_kind = vm::run(self, program)?;
 
-            let text = self.output.flush();
+            let text = self.flow.output.flush();
             full_text.push_str(&text);
-            self.turn_index += 1;
+            self.flow.turn_index += 1;
 
             match yield_kind {
                 vm::VmYield::Done => {
-                    if self.pending_choices.is_empty() {
+                    if self.flow.pending_choices.is_empty() {
                         self.status = StoryStatus::Done;
                         return Ok(StepResult::Done { text: full_text });
                     }
@@ -170,6 +251,7 @@ impl Story {
                     // If all pending choices are invisible defaults (fallback
                     // choices), auto-select the first one and keep running.
                     let all_invisible = self
+                        .flow
                         .pending_choices
                         .iter()
                         .all(|pc| pc.flags.is_invisible_default);
@@ -183,6 +265,7 @@ impl Story {
                     // presented to the player.
                     self.status = StoryStatus::WaitingForChoice;
                     let choices = self
+                        .flow
                         .pending_choices
                         .iter()
                         .enumerate()
@@ -216,28 +299,27 @@ impl Story {
     /// Internal: set execution position to the given choice target, clear
     /// pending choices, and set status to Active. No status precondition.
     fn select_choice(&mut self, index: usize) -> Result<(), RuntimeError> {
-        let available = self.pending_choices.len();
+        let available = self.flow.pending_choices.len();
         if index >= available {
             return Err(RuntimeError::InvalidChoiceIndex { index, available });
         }
 
-        let choice = self.pending_choices.swap_remove(index);
+        let choice = self.flow.pending_choices.swap_remove(index);
 
         // Increment visit count for the choice target container so that
         // once-only choices can be filtered on subsequent passes.
         *self.visit_counts.entry(choice.target_id).or_insert(0) += 1;
 
-        // Restore the call stack from when the choice was created. This
-        // ensures temp variables from enclosing tunnels/functions are
-        // accessible when the choice target executes.
-        if !choice.thread_snapshot.is_empty() {
-            self.call_stack = choice.thread_snapshot;
-        }
+        // Replace the current thread with the fork from choice creation
+        // time. By selection time, all spawned threads should have
+        // completed — only the main thread remains.
+        let current = self.flow.current_thread_mut();
+        *current = choice.thread_fork;
 
         // Set execution position to the choice target. We reset the top
         // frame's container_stack to just the target — the snapshot may
         // have captured stale nesting from inside the choice eval block.
-        let frame = self
+        let frame = current
             .call_stack
             .last_mut()
             .ok_or(RuntimeError::CallStackUnderflow)?;
@@ -248,7 +330,7 @@ impl Story {
             offset: choice.target_offset,
         });
 
-        self.pending_choices.clear();
+        self.flow.pending_choices.clear();
         self.status = StoryStatus::Active;
 
         Ok(())
@@ -257,18 +339,6 @@ impl Story {
     /// Get the current execution status.
     pub fn status(&self) -> StoryStatus {
         self.status
-    }
-
-    // ── Internal helpers ────────────────────────────────────────────────
-
-    /// Pop a value from the value stack.
-    pub(crate) fn pop_value(&mut self) -> Result<Value, RuntimeError> {
-        self.value_stack.pop().ok_or(RuntimeError::StackUnderflow)
-    }
-
-    /// Peek at the top value without popping.
-    pub(crate) fn peek_value(&self) -> Result<&Value, RuntimeError> {
-        self.value_stack.last().ok_or(RuntimeError::StackUnderflow)
     }
 }
 
@@ -312,7 +382,7 @@ mod tests {
         assert!(!choices.is_empty(), "expected at least one choice");
 
         // Record the target_id of the first pending choice BEFORE selecting.
-        let target_id = story.pending_choices[0].target_id;
+        let target_id = story.flow.pending_choices[0].target_id;
         let visit_before = story.visit_counts.get(&target_id).copied().unwrap_or(0);
 
         story.choose(0).unwrap();
@@ -378,20 +448,21 @@ mod tests {
 
         // At this point the tunnel has returned, so the live call_stack
         // has only the root frame.
+        let current_thread = story.flow.current_thread();
         assert_eq!(
-            story.call_stack.len(),
+            current_thread.call_stack.len(),
             1,
             "live call stack should be 1 frame (root) after tunnel return"
         );
 
-        // But the pending choice's snapshot should have captured the
+        // But the pending choice's fork should have captured the
         // call stack from inside the tunnel (root + tunnel = 2 frames).
-        assert!(!story.pending_choices.is_empty());
-        let snapshot = &story.pending_choices[0].thread_snapshot;
+        assert!(!story.flow.pending_choices.is_empty());
+        let fork = &story.flow.pending_choices[0].thread_fork;
         assert!(
-            snapshot.len() >= 2,
-            "choice snapshot should have >= 2 frames (root + tunnel), got {}",
-            snapshot.len()
+            fork.call_stack.len() >= 2,
+            "choice fork should have >= 2 frames (root + tunnel), got {}",
+            fork.call_stack.len()
         );
     }
 
@@ -404,21 +475,22 @@ mod tests {
         let _choices = step_until_choices(&mut story, &program);
 
         // Before choosing: only root frame, no tunnel temps.
-        assert_eq!(story.call_stack.len(), 1);
+        assert_eq!(story.flow.current_thread().call_stack.len(), 1);
 
         story.choose(0).unwrap();
 
         // After choosing: the tunnel frame should be restored.
         // The call stack should have at least 2 frames (root + tunnel).
+        let call_stack = &story.flow.current_thread().call_stack;
         assert!(
-            story.call_stack.len() >= 2,
+            call_stack.len() >= 2,
             "call stack should be restored to tunnel depth after choice selection, \
              got {} frame(s)",
-            story.call_stack.len()
+            call_stack.len()
         );
 
         // The tunnel frame (last frame) should have temp x = Int(1).
-        let tunnel_frame = story.call_stack.last().unwrap();
+        let tunnel_frame = call_stack.last().unwrap();
         assert!(
             !tunnel_frame.temps.is_empty(),
             "tunnel frame should have temp variables"
