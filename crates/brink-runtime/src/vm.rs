@@ -305,7 +305,17 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 let idx = program
                     .resolve_global(id)
                     .ok_or(RuntimeError::UnresolvedGlobal(id))?;
-                let val = story.flow.pop_value()?;
+                let mut val = story.flow.pop_value()?;
+                // Retain list origins: when assigning an empty list to a
+                // global that holds a list, preserve the old origins so
+                // LIST_ALL can still enumerate the original list definition.
+                if let Value::List(new_lv) = &mut val
+                    && new_lv.items.is_empty()
+                    && new_lv.origins.is_empty()
+                    && let Value::List(old_lv) = &story.globals[idx as usize]
+                {
+                    new_lv.origins.clone_from(&old_lv.origins);
+                }
                 story.globals[idx as usize] = val;
             }
 

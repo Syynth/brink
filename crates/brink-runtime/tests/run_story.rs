@@ -595,6 +595,16 @@ fn list_from_int_and_more_ops() {
     assert_eq!(result, "1\nl\nn\nl, m\nn\n");
 }
 
+/// Assigning `()` to a list variable must preserve its origins so that
+/// `LIST_ALL` can still enumerate all items from the original list def.
+#[test]
+fn empty_list_preserves_origins() {
+    let json =
+        load_ink_json("../../tests/tier2/lists/empty-list-origin-after-assignment/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result, "a, b, c\n");
+}
+
 /// `LIST_RANGE` filters a list's items by ordinal bounds, including inline
 /// literals with no origins. Multi-origin lists are stringified sorted by
 /// ordinal then origin name.
