@@ -385,13 +385,19 @@ impl<'a> ContainerEmitter<'a> {
     ) -> Result<(), ConvertError> {
         match assign {
             VariableAssignment::GlobalAssignment { variable } => {
-                let id = self
-                    .index
-                    .globals
-                    .get(variable.as_str())
-                    .copied()
-                    .unwrap_or_else(|| path::global_var_id(variable));
-                self.emit(&Opcode::SetGlobal(id));
+                // "VAR=" with "re":true can target either a global or a temp
+                // that was previously declared with "temp=".
+                if let Some(slot) = temps.get(variable) {
+                    self.emit(&Opcode::SetTemp(slot));
+                } else {
+                    let id = self
+                        .index
+                        .globals
+                        .get(variable.as_str())
+                        .copied()
+                        .unwrap_or_else(|| path::global_var_id(variable));
+                    self.emit(&Opcode::SetGlobal(id));
+                }
             }
             VariableAssignment::TemporaryAssignment { variable, reassign } => {
                 if *reassign {

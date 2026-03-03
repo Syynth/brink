@@ -116,4 +116,11 @@ impl Program {
     pub(crate) fn list_def(&self, id: DefinitionId) -> Option<&ListDefEntry> {
         self.list_def_map.get(&id).map(|&idx| &self.list_defs[idx])
     }
+
+    /// Find a list definition by its string name.
+    pub(crate) fn list_def_by_name(&self, name: &str) -> Option<&ListDefEntry> {
+        self.list_defs
+            .iter()
+            .find(|def| self.name(def.name) == name)
+    }
 }

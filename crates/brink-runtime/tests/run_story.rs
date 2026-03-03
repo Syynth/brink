@@ -586,6 +586,15 @@ fn i071_list_basic_operations() {
     assert_eq!(result, "b, d\na, b, c, e\nb, c\n0\n1\n1\n");
 }
 
+/// `list(n)` calls `ListFromInt` with a string list-def name on the stack.
+/// `LIST_VALUE`, `LIST_ALL`, `LIST_INVERT`, and subtract also tested.
+#[test]
+fn list_from_int_and_more_ops() {
+    let json = load_ink_json("../../tests/tier2/lists/more-list-operations/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result, "1\nl\nn\nl, m\nn\n");
+}
+
 /// `LIST_RANGE` filters a list's items by ordinal bounds, including inline
 /// literals with no origins. Multi-origin lists are stringified sorted by
 /// ordinal then origin name.

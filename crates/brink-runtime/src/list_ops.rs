@@ -168,47 +168,57 @@ pub(crate) fn list_range(story: &mut Story, program: &Program) -> Result<(), Run
     Ok(())
 }
 
-/// `ListFromInt`: `[list_origin, ordinal]` → `List(single item by ordinal in origin)`
+/// `ListFromInt`: `[origin, ordinal]` → `List(single item by ordinal in origin)`
+///
+/// The origin can be either a `String` (list def name, from `listInt` native fn)
+/// or a `List` (from which origins are derived).
 pub(crate) fn list_from_int(story: &mut Story, program: &Program) -> Result<(), RuntimeError> {
     let ordinal = pop_int(story)?;
-    let origin_list = pop_list(story)?;
-    let mut items = Vec::new();
-    let mut origins = origin_list.origins.clone();
-    // Use origins from the list to find the target item.
-    for &origin_id in &origin_list.origins {
-        if let Some(def) = program.list_def(origin_id) {
-            for &item_id in &def.items {
-                if let Some(entry) = program.list_item(item_id)
-                    && entry.ordinal == ordinal
-                {
-                    items.push(item_id);
-                    break;
+    let origin_val = story.flow.pop_value()?;
+
+    // Collect origin list definitions to search.
+    let origin_defs: Vec<&crate::program::ListDefEntry> = match &origin_val {
+        Value::String(name) => program.list_def_by_name(name).into_iter().collect(),
+        Value::List(lv) => {
+            let mut defs = Vec::new();
+            // Use explicit origins first.
+            for &origin_id in &lv.origins {
+                if let Some(def) = program.list_def(origin_id) {
+                    defs.push(def);
                 }
             }
-        }
-    }
-    // If the list had no origins but had items, derive origins from items.
-    if origins.is_empty() {
-        for &item_id in &origin_list.items {
-            if let Some(entry) = program.list_item(item_id)
-                && !origins.contains(&entry.origin)
-            {
-                origins.push(entry.origin);
-            }
-        }
-        for &origin_id in &origins {
-            if let Some(def) = program.list_def(origin_id) {
-                for &candidate_id in &def.items {
-                    if let Some(e) = program.list_item(candidate_id)
-                        && e.ordinal == ordinal
+            // If no origins, derive from items.
+            if defs.is_empty() {
+                for &item_id in &lv.items {
+                    if let Some(entry) = program.list_item(item_id)
+                        && let Some(def) = program.list_def(entry.origin)
+                        && !defs.iter().any(|d| d.name == def.name)
                     {
-                        items.push(candidate_id);
-                        break;
+                        defs.push(def);
                     }
                 }
             }
+            defs
+        }
+        _ => Vec::new(),
+    };
+
+    let mut items = Vec::new();
+    let mut origins = Vec::new();
+    for def in &origin_defs {
+        for &item_id in &def.items {
+            if let Some(entry) = program.list_item(item_id)
+                && entry.ordinal == ordinal
+            {
+                items.push(item_id);
+                if !origins.contains(&entry.origin) {
+                    origins.push(entry.origin);
+                }
+                break;
+            }
         }
     }
+
     story
         .flow
         .value_stack
