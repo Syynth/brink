@@ -22,9 +22,16 @@ impl OutputBuffer {
     }
 
     pub fn push_text(&mut self, text: &str) {
-        if !text.is_empty() {
-            self.parts.push(OutputPart::Text(text.to_owned()));
+        if text.is_empty() {
+            return;
         }
+        // Suppress whitespace-only text when there's no content yet,
+        // matching the C# ink runtime's output stream filtering.
+        // This handles leading spaces after choice selection (`"^ "`).
+        if !self.has_content() && text.trim().is_empty() {
+            return;
+        }
+        self.parts.push(OutputPart::Text(text.to_owned()));
     }
 
     pub fn push_newline(&mut self) {
@@ -216,6 +223,28 @@ mod tests {
         buf.push_newline();
         buf.push_text("hello");
         assert_eq!(buf.flush(), "hello");
+    }
+
+    /// Leading whitespace-only text at the start of output (no prior content)
+    /// should be suppressed, just like leading newlines are suppressed.
+    /// This happens after choice selection: choice bodies start with `"^ "`.
+    #[test]
+    fn leading_whitespace_only_text_suppressed() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text(" ");
+        buf.push_text("hello");
+        assert_eq!(buf.flush(), "hello");
+    }
+
+    /// Leading whitespace-only text after a flush should also be suppressed.
+    #[test]
+    fn leading_whitespace_after_flush_suppressed() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("first");
+        let _ = buf.flush();
+        buf.push_text("  ");
+        buf.push_text("second");
+        assert_eq!(buf.flush(), "second");
     }
 
     #[test]
