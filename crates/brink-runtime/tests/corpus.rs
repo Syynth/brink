@@ -45,6 +45,12 @@ fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, Strin
                     return Err("no choices available".into());
                 }
 
+                // No more inputs — stop here (transcript ends before
+                // these choices are displayed/selected).
+                if input_idx >= inputs.len() {
+                    break;
+                }
+
                 // Format choices to match the transcript format.
                 output.push('\n');
                 for choice in &choices {
@@ -53,13 +59,8 @@ fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, Strin
                 }
                 output.push_str("?> ");
 
-                let choice_idx = if input_idx < inputs.len() {
-                    let c = inputs[input_idx];
-                    input_idx += 1;
-                    c
-                } else {
-                    0 // default to first choice
-                };
+                let choice_idx = inputs[input_idx];
+                input_idx += 1;
                 if choice_idx >= choices.len() {
                     return Err(format!(
                         "choice index {choice_idx} out of range (only {} choices)",
