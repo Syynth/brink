@@ -87,6 +87,18 @@ fn insta_sequence() {
     insta::assert_snapshot!(format!("{:#?}", p.syntax()));
 }
 
+/// Regression test for fuzzer-discovered timeout: repeated divert + brace patterns
+/// cause the parser to take exponential time in `inline_logic` / expression / content
+/// mutual recursion. The parser must complete in bounded time.
+#[test]
+fn fuzz_deeply_nested_braces_completes() {
+    // Simplified version of the fuzz artifact — repeated `->=(-> Z{` patterns
+    // that cause pathological behavior via mutual recursion in the parser.
+    let src = "->=(-> Z{={{{{;{;; ".repeat(150);
+    let p = parse(&src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+}
+
 /// Regression test for fuzzer-discovered infinite loop in `looks_like_condition`.
 /// An unclosed paren followed by an unterminated block comment caused the
 /// lookahead to spin forever because EOF was only checked when depth == 0.

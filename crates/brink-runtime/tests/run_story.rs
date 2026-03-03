@@ -270,24 +270,14 @@ fn thread_call_with_choice_count() {
 /// start of the container. Regression: named-path labels resolved to
 /// offset 0 causing an infinite loop.
 ///
-/// NOTE: The reference transcript expects just "start\nresult" (no
-/// "gather should be seen"), but we currently output the gather text.
-/// This is a known secondary issue — the label offset fix is verified.
+/// The gather text "gather should be seen" IS expected in the output —
+/// the reference ink test (`TestConditionalChoiceInWeave`) asserts this.
 #[test]
 fn conditional_choice_in_weave() {
     let json =
         load_ink_json("../../tests/tier1/choices/conditional-choice-in-weave/story.ink.json");
     let result = run_story(&json, &[0]);
-    // The story should NOT infinite-loop (regression from label offset bug).
-    // Full correctness: "start\nresult" (without "gather should be seen").
-    assert!(
-        result.contains("result"),
-        "expected 'result' in output (choice should reach a_stitch), got: {result:?}"
-    );
-    assert!(
-        !result.contains("start\nstart"),
-        "should not infinite-loop, got: {result:?}"
-    );
+    assert_eq!(result.trim(), "start\ngather should be seen\nresult");
 }
 
 /// Diverts to labeled weave points via named-path aliases (e.g.

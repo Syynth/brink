@@ -61,10 +61,16 @@ pub fn parse(source: &str) -> Parse {
 
 // ── Parser internals ────────────────────────────────────────────────
 
+/// Maximum nesting depth for recursive grammar rules (inline logic, expressions,
+/// parenthesized groups). Prevents stack overflow and superlinear parse time on
+/// pathological input. 256 matches Rust's default `recursion_limit`.
+const MAX_DEPTH: u32 = 256;
+
 /// The parser. Holds a token stream and a `GreenNodeBuilder`.
 pub(crate) struct Parser<'t> {
     tokens: &'t [(SyntaxKind, &'t str)],
     pos: usize,
+    depth: u32,
     builder: rowan::GreenNodeBuilder<'static>,
     errors: Vec<ParseError>,
 }
@@ -74,9 +80,15 @@ impl<'t> Parser<'t> {
         Self {
             tokens,
             pos: 0,
+            depth: 0,
             builder: rowan::GreenNodeBuilder::new(),
             errors: Vec::new(),
         }
+    }
+
+    /// Returns `true` if the nesting depth limit has been reached.
+    fn at_depth_limit(&self) -> bool {
+        self.depth >= MAX_DEPTH
     }
 
     // ── Lookahead ───────────────────────────────────────────────
