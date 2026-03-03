@@ -115,6 +115,41 @@ fn function_call_captures_text_as_return_value() {
     assert_eq!(result.trim(), "hello");
 }
 
+/// Function text output used inline must not leak trailing newlines into
+/// the surrounding text. Equivalent ink: `Say {greet()} please.`
+/// where greet outputs "hi\n" (trailing newline from the function body).
+/// Expected: "Say hi please." not "Say hi\n please."
+#[test]
+fn function_text_capture_strips_trailing_newlines() {
+    let json = r##"{
+        "inkVersion": 21,
+        "root": [
+            [
+                "^Say ",
+                "ev",
+                { "f()": "greet" },
+                "out",
+                "/ev",
+                "^ please.",
+                "\n",
+                ["done", { "#n": "g-0" }],
+                null
+            ],
+            "done",
+            {
+                "greet": [
+                    "^hi",
+                    "\n",
+                    null
+                ]
+            }
+        ],
+        "listDefs": {}
+    }"##;
+    let result = run_story(json, &[]);
+    assert_eq!(result.trim(), "Say hi please.");
+}
+
 #[test]
 fn test_simple_divert() {
     let json = load_ink_json("../../tests/tier1/divert/simple-divert/story.ink.json");

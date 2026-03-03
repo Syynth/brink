@@ -498,10 +498,13 @@ fn pop_call_frame(story: &mut Story, is_explicit_return: bool) -> Result<(), Run
             story.output.discard_capture();
         } else {
             // Implicit return: capture text output as the return value.
+            // Trim trailing newlines — function bodies end with `\n` but
+            // inline callers (`{f()}`) expect clean text without trailing breaks.
             let text = story
                 .output
                 .end_capture()
                 .ok_or(RuntimeError::CaptureUnderflow)?;
+            let text = text.trim_end_matches('\n').to_owned();
             story.value_stack.push(Value::String(text));
         }
     }

@@ -152,8 +152,10 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
                 }
             }
             OutputPart::Newline => {
-                after_glue = false;
-                out.push('\n');
+                if !after_glue {
+                    out.push('\n');
+                }
+                // When after_glue, skip the newline (glue eats following newlines too).
             }
             OutputPart::Glue | OutputPart::Checkpoint => {
                 after_glue = true;
@@ -319,5 +321,20 @@ mod tests {
         buf.discard_capture();
         let result = buf.end_capture();
         assert_eq!(result, Some("outerinner".to_owned()));
+    }
+
+    /// Glue should eat the following newline, not just the preceding one.
+    /// Pattern: `<>-<>` where glue appears on both sides of the dash.
+    #[test]
+    fn glue_eats_following_newline() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("fifty");
+        buf.push_newline();
+        buf.push_glue();
+        buf.push_text("-");
+        buf.push_glue();
+        buf.push_newline();
+        buf.push_text("eight");
+        assert_eq!(buf.flush(), "fifty-eight");
     }
 }
