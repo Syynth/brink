@@ -712,9 +712,10 @@ pub fn extract_globals(
                     mutable: true,
                 });
             }
-            _ => {
-                pending_value = None;
-            }
+            // Don't clear pending_value on control commands (ev, /ev,
+            // str, /str) — string constants use `str, ^text, /str`
+            // wrappers between the value and the assignment.
+            _ => {}
         }
     }
 

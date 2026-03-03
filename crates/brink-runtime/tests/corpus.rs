@@ -88,12 +88,12 @@ fn parse_inputs(path: &Path) -> Vec<usize> {
         .collect()
 }
 
-/// Check if metadata.toml has mode = "runtime".
+/// Check if metadata.toml has mode = "runtime" and no [skip] section.
 fn is_runtime_test(metadata_path: &Path) -> bool {
     let Ok(content) = std::fs::read_to_string(metadata_path) else {
         return false;
     };
-    content.contains("mode = \"runtime\"")
+    content.contains("mode = \"runtime\"") && !content.contains("[skip]")
 }
 
 /// Find all test cases in a directory tree.

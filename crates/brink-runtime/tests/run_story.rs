@@ -174,6 +174,16 @@ fn fallback_choice_auto_selected() {
     }
 }
 
+/// String constants declared via `CONST kX = "hi"` / `VAR x = kX` must
+/// resolve to the string value. The ink.json wraps these in `str/.../str`
+/// control commands inside the `global decl` container.
+#[test]
+fn string_constant_global() {
+    let json = load_ink_json("../../tests/tier1/variables/string-constants/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result.trim(), "hi");
+}
+
 #[test]
 fn test_simple_divert() {
     let json = load_ink_json("../../tests/tier1/divert/simple-divert/story.ink.json");
