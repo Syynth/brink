@@ -50,6 +50,30 @@ fn load_ink_json(path: &str) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
+/// When a story presents choices via bytecode exhaustion (no explicit `Done`
+/// opcode), `step()` must return `Choices`, not `Done`. The I003 story diverts
+/// to a knot via goto (clearing the container stack), creates choices inside
+/// that knot, and then the container stack naturally exhausts — there is no
+/// `Done` opcode to yield at. The VM must still present the pending choices.
+#[test]
+fn choices_yielded_on_bytecode_exhaustion() {
+    let json = load_ink_json("../../tests/tier1/basics/I003-tunnel-to-death/story.ink.json");
+    let ink: InkJson = serde_json::from_str(&json).unwrap();
+    let data = convert(&ink).unwrap();
+    let program = brink_runtime::link(&data).unwrap();
+    let mut story = Story::new(&program);
+
+    // First step should produce text AND choices, not Done.
+    let result = story.step(&program).unwrap();
+    assert!(
+        matches!(result, StepResult::Choices { .. }),
+        "expected Choices after first step, got {result:?}"
+    );
+    if let StepResult::Choices { choices, .. } = &result {
+        assert_eq!(choices.len(), 2, "expected 2 choices (Yes/No)");
+    }
+}
+
 #[test]
 fn test_i001_minimal_story() {
     let json = load_ink_json("../../tests/tier1/basics/I001-minimal-story/story.ink.json");

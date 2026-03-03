@@ -58,6 +58,11 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                 .ok_or(RuntimeError::CallStackUnderflow)?;
             frame.container_stack.pop();
             if frame.container_stack.is_empty() {
+                if !story.pending_choices.is_empty() {
+                    // Choices are pending — keep the call frame alive so
+                    // choose() can set the next execution position on it.
+                    return Ok(VmYield::Done);
+                }
                 // Pop call frame.
                 let popped = story
                     .call_stack

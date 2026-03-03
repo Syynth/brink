@@ -138,7 +138,11 @@ impl Story {
 
         match yield_kind {
             vm::VmYield::Done => {
-                if self.status == StoryStatus::WaitingForChoice {
+                if self.pending_choices.is_empty() {
+                    self.status = StoryStatus::Done;
+                    Ok(StepResult::Done { text })
+                } else {
+                    self.status = StoryStatus::WaitingForChoice;
                     let choices = self
                         .pending_choices
                         .iter()
@@ -149,9 +153,6 @@ impl Story {
                         })
                         .collect();
                     Ok(StepResult::Choices { text, choices })
-                } else {
-                    self.status = StoryStatus::Done;
-                    Ok(StepResult::Done { text })
                 }
             }
             vm::VmYield::End => {
