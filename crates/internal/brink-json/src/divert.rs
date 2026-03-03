@@ -30,6 +30,11 @@ pub enum Divert {
     /// aware of the type of element that was pushed, for error checking.
     Tunnel { conditional: bool, path: Path },
 
+    /// { "->t->": "variableTarget", "var": true }
+    /// as above, except that var specifies that the target is the name of a
+    /// variable containing a divert target value.
+    TunnelVariable { conditional: bool, path: Path },
+
     /// { "x()": "externalFuncName", "exArgs": 5 }
     /// an external (game-side) function call, that optionally takes the specified number of arguments.
     ExternalFunction {
@@ -74,6 +79,16 @@ impl Serialize for Divert {
                 let len = 1 + usize::from(*conditional);
                 let mut map = serializer.serialize_map(Some(len))?;
                 map.serialize_entry("->t->", path)?;
+                if *conditional {
+                    map.serialize_entry("c", &true)?;
+                }
+                map.end()
+            }
+            Divert::TunnelVariable { conditional, path } => {
+                let len = 2 + usize::from(*conditional);
+                let mut map = serializer.serialize_map(Some(len))?;
+                map.serialize_entry("->t->", path)?;
+                map.serialize_entry("var", &true)?;
                 if *conditional {
                     map.serialize_entry("c", &true)?;
                 }
@@ -131,12 +146,20 @@ impl<'de> Deserialize<'de> for Divert {
             });
         }
 
-        // Tunnel: { "->t->": "path" }
+        // Tunnel: { "->t->": "path" } or variable tunnel: { "->t->": "path", "var": true }
         if let Some(target) = obj.get("->t->").and_then(Value::as_str) {
-            return Ok(Divert::Tunnel {
-                conditional,
-                path: target.to_string(),
-            });
+            let is_var = obj.get("var").and_then(Value::as_bool).unwrap_or(false);
+            return if is_var {
+                Ok(Divert::TunnelVariable {
+                    conditional,
+                    path: target.to_string(),
+                })
+            } else {
+                Ok(Divert::Tunnel {
+                    conditional,
+                    path: target.to_string(),
+                })
+            };
         }
 
         // External function: { "x()": "name", "exArgs": n }

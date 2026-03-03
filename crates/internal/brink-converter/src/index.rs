@@ -217,7 +217,9 @@ fn register_labels(index: &mut StoryIndex, container: &Container, current_path: 
                     Divert::Target { path, .. }
                     | Divert::Function { path, .. }
                     | Divert::Tunnel { path, .. } => vec![path.as_str()],
-                    Divert::Variable { .. } | Divert::ExternalFunction { .. } => vec![],
+                    Divert::Variable { .. }
+                    | Divert::TunnelVariable { .. }
+                    | Divert::ExternalFunction { .. } => vec![],
                 };
                 for ink_path in paths {
                     let resolved = path::resolve_path(current_path, ink_path);

@@ -361,6 +361,28 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                     is_function_call: false,
                 });
             }
+            Opcode::TunnelCallVariable => {
+                let val = story.pop_value()?;
+                let Value::DivertTarget(id) = val else {
+                    return Err(RuntimeError::TypeError(
+                        "tunnel_call_variable requires DivertTarget".into(),
+                    ));
+                };
+                let idx = program
+                    .resolve_container(id)
+                    .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+
+                let current_pos = current_position(story)?;
+                story.call_stack.push(CallFrame {
+                    return_address: Some(current_pos),
+                    temps: Vec::new(),
+                    container_stack: vec![ContainerPosition {
+                        container_idx: idx,
+                        offset: 0,
+                    }],
+                    is_function_call: false,
+                });
+            }
             Opcode::TunnelReturn => {
                 // The eval block before ->-> pushes either void (normal
                 // return) or a DivertTarget (tunnel onwards override).

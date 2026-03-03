@@ -65,6 +65,7 @@ const CALL: u8 = 0x50;
 const RETURN: u8 = 0x51;
 const TUNNEL_CALL: u8 = 0x52;
 const TUNNEL_RETURN: u8 = 0x53;
+const TUNNEL_CALL_VARIABLE: u8 = 0x54;
 
 // Threads
 const THREAD_START: u8 = 0x58;
@@ -355,6 +356,7 @@ pub enum Opcode {
     Return,
     TunnelCall(DefinitionId),
     TunnelReturn,
+    TunnelCallVariable,
 
     // ── Threads ─────────────────────────────────────────────────────────
     ThreadStart,
@@ -547,6 +549,7 @@ impl Opcode {
                 write_def_id(buf, id);
             }
             Self::TunnelReturn => write_u8(buf, TUNNEL_RETURN),
+            Self::TunnelCallVariable => write_u8(buf, TUNNEL_CALL_VARIABLE),
 
             // Threads
             Self::ThreadStart => write_u8(buf, THREAD_START),
@@ -715,6 +718,7 @@ impl Opcode {
             RETURN => Self::Return,
             TUNNEL_CALL => Self::TunnelCall(read_def_id(buf, offset)?),
             TUNNEL_RETURN => Self::TunnelReturn,
+            TUNNEL_CALL_VARIABLE => Self::TunnelCallVariable,
 
             // Threads
             THREAD_START => Self::ThreadStart,
@@ -927,6 +931,7 @@ mod tests {
         roundtrip(&Opcode::Return);
         roundtrip(&Opcode::TunnelCall(test_id()));
         roundtrip(&Opcode::TunnelReturn);
+        roundtrip(&Opcode::TunnelCallVariable);
     }
 
     #[test]

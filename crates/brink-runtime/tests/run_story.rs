@@ -195,6 +195,16 @@ fn string_constant_global() {
     assert_eq!(result.trim(), "hi");
 }
 
+/// Variable tunnel call: `-> one_then_tother(-> tunnel)` passes a divert
+/// target as a parameter. The ink.json uses `{"->t->": "x", "var": true}`
+/// which is a tunnel call where the target comes from variable `x`.
+#[test]
+fn variable_tunnel_call() {
+    let json = load_ink_json("../../tests/tier1/diverts/variable-tunnel/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result.trim(), "STUFF");
+}
+
 #[test]
 fn test_simple_divert() {
     let json = load_ink_json("../../tests/tier1/divert/simple-divert/story.ink.json");

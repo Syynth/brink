@@ -321,6 +321,16 @@ impl<'a> ContainerEmitter<'a> {
                 self.emit(&Opcode::TunnelCall(id));
             }
 
+            Divert::TunnelVariable { path, .. } => {
+                if let Some(slot) = temps.get(path) {
+                    self.emit(&Opcode::GetTemp(slot));
+                } else {
+                    let id = path::global_var_id(path);
+                    self.emit(&Opcode::GetGlobal(id));
+                }
+                self.emit(&Opcode::TunnelCallVariable);
+            }
+
             Divert::ExternalFunction {
                 name, arg_count, ..
             } => {
