@@ -5,6 +5,7 @@ use brink_format::{ChoiceFlags, CountingFlags, DefinitionId, LineContent, Opcode
 use crate::error::RuntimeError;
 use crate::list_ops;
 use crate::program::Program;
+use crate::rng::StoryRng;
 use crate::story::{CallFrame, CallFrameType, ContainerPosition, PendingChoice, Story};
 use crate::value_ops::{self, BinaryOp};
 
@@ -21,7 +22,10 @@ pub(crate) enum VmYield {
 const MAX_OPS_PER_STEP: u32 = 100_000;
 
 #[expect(clippy::too_many_lines)]
-pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, RuntimeError> {
+pub(crate) fn run<R: StoryRng>(
+    story: &mut Story<R>,
+    program: &Program,
+) -> Result<VmYield, RuntimeError> {
     let mut op_count: u32 = 0;
     loop {
         op_count += 1;
@@ -647,20 +651,56 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                     .push(Value::Int(story.flow.pending_choices.len() as i32));
             }
             Opcode::Random => {
-                // Stub: push 0.
-                let _max = story.flow.pop_value()?;
-                let _min = story.flow.pop_value()?;
-                story.flow.value_stack.push(Value::Int(0));
+                // Reference pops max first, then min.
+                let max_val = story.flow.pop_value()?;
+                let min_val = story.flow.pop_value()?;
+                let max_i = match max_val {
+                    Value::Int(n) => n,
+                    Value::Float(f) => {
+                        #[expect(clippy::cast_possible_truncation)]
+                        {
+                            f as i32
+                        }
+                    }
+                    _ => 1,
+                };
+                let min_i = match min_val {
+                    Value::Int(n) => n,
+                    Value::Float(f) => {
+                        #[expect(clippy::cast_possible_truncation)]
+                        {
+                            f as i32
+                        }
+                    }
+                    _ => 0,
+                };
+                // +1 because RANDOM is inclusive of both min and max.
+                let range = max_i.wrapping_sub(min_i).wrapping_add(1);
+                let result = if range <= 0 {
+                    min_i
+                } else {
+                    let result_seed = story.rng_seed.wrapping_add(story.previous_random);
+                    let mut rng = R::from_seed(result_seed);
+                    let next_random = rng.next_int();
+                    story.previous_random = next_random;
+                    (next_random % range) + min_i
+                };
+                story.flow.value_stack.push(Value::Int(result));
             }
             Opcode::SeedRandom => {
-                let _seed = story.flow.pop_value()?;
-                // TODO: store seed for RNG when Random is properly implemented.
+                let seed_val = story.flow.pop_value()?;
+                let seed = match seed_val {
+                    Value::Int(n) => n,
+                    _ => 0,
+                };
+                story.rng_seed = seed;
+                story.previous_random = 0;
                 story.flow.value_stack.push(Value::Null);
             }
 
             // ── Sequences ───────────────────────────────────────────────
             Opcode::Sequence(kind, count) => {
-                handle_sequence(story, kind, count)?;
+                handle_sequence(story, program, kind, count)?;
             }
 
             // ── Tags ────────────────────────────────────────────────────
@@ -679,18 +719,18 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
             }
 
             // ── List operations ─────────────────────────────────────────
-            Opcode::ListContains => list_ops::list_contains(story)?,
-            Opcode::ListNotContains => list_ops::list_not_contains(story)?,
-            Opcode::ListIntersect => list_ops::list_intersect(story)?,
-            Opcode::ListAll => list_ops::list_all(story, program)?,
-            Opcode::ListInvert => list_ops::list_invert(story, program)?,
-            Opcode::ListCount => list_ops::list_count(story)?,
-            Opcode::ListMin => list_ops::list_min(story, program)?,
-            Opcode::ListMax => list_ops::list_max(story, program)?,
-            Opcode::ListValue => list_ops::list_value(story, program)?,
-            Opcode::ListRange => list_ops::list_range(story, program)?,
-            Opcode::ListFromInt => list_ops::list_from_int(story, program)?,
-            Opcode::ListRandom => list_ops::list_random(story)?,
+            Opcode::ListContains => list_ops::list_contains::<R>(story)?,
+            Opcode::ListNotContains => list_ops::list_not_contains::<R>(story)?,
+            Opcode::ListIntersect => list_ops::list_intersect::<R>(story)?,
+            Opcode::ListAll => list_ops::list_all::<R>(story, program)?,
+            Opcode::ListInvert => list_ops::list_invert::<R>(story, program)?,
+            Opcode::ListCount => list_ops::list_count::<R>(story)?,
+            Opcode::ListMin => list_ops::list_min::<R>(story, program)?,
+            Opcode::ListMax => list_ops::list_max::<R>(story, program)?,
+            Opcode::ListValue => list_ops::list_value::<R>(story, program)?,
+            Opcode::ListRange => list_ops::list_range::<R>(story, program)?,
+            Opcode::ListFromInt => list_ops::list_from_int::<R>(story, program)?,
+            Opcode::ListRandom => list_ops::list_random::<R>(story)?,
 
             // ── Deferred ────────────────────────────────────────────────
             Opcode::CallExternal(_, _) | Opcode::ListUnion | Opcode::ListExcept => {
@@ -724,8 +764,8 @@ fn resolve_line(program: &Program, pos: &ContainerPosition, idx: u16) -> String 
 /// - **Non-function with pending choices**: the frame is waiting for a
 ///   choice selection. Pop the thread so other threads can run.
 /// - **Otherwise**: pop the call frame normally (implicit return).
-fn handle_frame_exhaustion(
-    story: &mut Story,
+fn handle_frame_exhaustion<R: StoryRng>(
+    story: &mut Story<R>,
     frame_type: CallFrameType,
 ) -> Result<Option<VmYield>, RuntimeError> {
     if frame_type == CallFrameType::Thread {
@@ -768,7 +808,10 @@ fn handle_frame_exhaustion(
 /// - `is_explicit_return = false` (implicit return via bytecode exhaustion):
 ///   the function didn't push a return value. Capture text output and push
 ///   it as a `Value::String`.
-fn pop_call_frame(story: &mut Story, is_explicit_return: bool) -> Result<(), RuntimeError> {
+fn pop_call_frame<R: StoryRng>(
+    story: &mut Story<R>,
+    is_explicit_return: bool,
+) -> Result<(), RuntimeError> {
     let thread = story.flow.current_thread_mut();
     let popped = thread
         .call_stack
@@ -801,7 +844,11 @@ fn pop_call_frame(story: &mut Story, is_explicit_return: bool) -> Result<(), Run
     Ok(())
 }
 
-fn binary(story: &mut Story, program: &Program, op: BinaryOp) -> Result<(), RuntimeError> {
+fn binary<R: StoryRng>(
+    story: &mut Story<R>,
+    program: &Program,
+    op: BinaryOp,
+) -> Result<(), RuntimeError> {
     let right = story.flow.pop_value()?;
     let left = story.flow.pop_value()?;
     let result = value_ops::binary_op(op, &left, &right, program)?;
@@ -810,7 +857,7 @@ fn binary(story: &mut Story, program: &Program, op: BinaryOp) -> Result<(), Runt
 }
 
 /// Resume execution at a return address.
-fn resume_at(story: &mut Story, pos: ContainerPosition) {
+fn resume_at<R: StoryRng>(story: &mut Story<R>, pos: ContainerPosition) {
     let thread = story.flow.current_thread_mut();
     if let Some(frame) = thread.call_stack.last_mut()
         && let Some(top) = frame.container_stack.last_mut()
@@ -819,7 +866,11 @@ fn resume_at(story: &mut Story, pos: ContainerPosition) {
     }
 }
 
-fn goto_target(story: &mut Story, program: &Program, id: DefinitionId) -> Result<(), RuntimeError> {
+fn goto_target<R: StoryRng>(
+    story: &mut Story<R>,
+    program: &Program,
+    id: DefinitionId,
+) -> Result<(), RuntimeError> {
     let (container_idx, byte_offset) = program
         .resolve_target(id)
         .ok_or(RuntimeError::UnresolvedDefinition(id))?;
@@ -882,7 +933,7 @@ fn goto_target(story: &mut Story, program: &Program, id: DefinitionId) -> Result
     Ok(())
 }
 
-fn apply_jump(story: &mut Story, relative: i32) -> Result<(), RuntimeError> {
+fn apply_jump<R: StoryRng>(story: &mut Story<R>, relative: i32) -> Result<(), RuntimeError> {
     let thread = story.flow.current_thread_mut();
     let frame = thread
         .call_stack
@@ -905,7 +956,7 @@ fn apply_jump(story: &mut Story, relative: i32) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn current_position(story: &Story) -> Result<ContainerPosition, RuntimeError> {
+fn current_position<R: StoryRng>(story: &Story<R>) -> Result<ContainerPosition, RuntimeError> {
     let thread = story.flow.current_thread();
     let frame = thread
         .call_stack
@@ -919,8 +970,8 @@ fn current_position(story: &Story) -> Result<ContainerPosition, RuntimeError> {
     Ok(pos)
 }
 
-fn handle_begin_choice(
-    story: &mut Story,
+fn handle_begin_choice<R: StoryRng>(
+    story: &mut Story<R>,
     program: &Program,
     flags: ChoiceFlags,
     target_id: DefinitionId,
@@ -1005,13 +1056,17 @@ fn handle_begin_choice(
     Ok(())
 }
 
-fn handle_sequence(
-    story: &mut Story,
+fn handle_sequence<R: StoryRng>(
+    story: &mut Story<R>,
+    program: &Program,
     kind: brink_format::SequenceKind,
     count: u8,
 ) -> Result<(), RuntimeError> {
-    // The visit count of the current container determines the sequence index.
-    // Pop the divert target from the stack to identify the container.
+    if kind == brink_format::SequenceKind::Shuffle {
+        return handle_shuffle_sequence::<R>(story, program);
+    }
+
+    // Non-shuffle sequences: pop divert target, use visit count.
     let val = story.flow.pop_value()?;
     let visit_count = if let Value::DivertTarget(id) = val {
         story.visit_counts.get(&id).copied().unwrap_or(0)
@@ -1026,9 +1081,7 @@ fn handle_sequence(
     }
 
     let idx = match kind {
-        brink_format::SequenceKind::Cycle | brink_format::SequenceKind::Shuffle => {
-            visit_count % count
-        }
+        brink_format::SequenceKind::Cycle => visit_count % count,
         brink_format::SequenceKind::Stopping => visit_count.min(count - 1),
         brink_format::SequenceKind::OnceOnly => {
             if visit_count < count {
@@ -1037,8 +1090,72 @@ fn handle_sequence(
                 count // past the end -> skip all branches
             }
         }
+        brink_format::SequenceKind::Shuffle => unreachable!(),
     };
 
     story.flow.value_stack.push(Value::Int(idx.cast_signed()));
+    Ok(())
+}
+
+/// `NextSequenceShuffleIndex` — reference ink implementation.
+///
+/// Pops `numElements` (Int) and `seqCount` (Int) from the value stack.
+/// Uses a partial Fisher-Yates shuffle seeded with `path_hash + loopIndex + story_seed`.
+#[expect(clippy::cast_sign_loss)]
+fn handle_shuffle_sequence<R: StoryRng>(
+    story: &mut Story<R>,
+    program: &Program,
+) -> Result<(), RuntimeError> {
+    let num_elements = match story.flow.pop_value()? {
+        Value::Int(n) => n,
+        other => {
+            return Err(RuntimeError::TypeError(format!(
+                "Shuffle: expected Int for numElements, got {other:?}"
+            )));
+        }
+    };
+    let seq_count = match story.flow.pop_value()? {
+        Value::Int(n) => n,
+        other => {
+            return Err(RuntimeError::TypeError(format!(
+                "Shuffle: expected Int for seqCount, got {other:?}"
+            )));
+        }
+    };
+
+    if num_elements == 0 {
+        story.flow.value_stack.push(Value::Int(0));
+        return Ok(());
+    }
+
+    let loop_index = seq_count / num_elements;
+    let iteration_index = seq_count % num_elements;
+
+    // Get path_hash from the current container.
+    let pos = current_position(story)?;
+    let path_hash = program.container(pos.container_idx).path_hash;
+
+    // Seed RNG with path_hash + loopIndex + story_seed (matching reference).
+    let seed = path_hash
+        .wrapping_add(loop_index)
+        .wrapping_add(story.rng_seed);
+    let mut rng = R::from_seed(seed);
+
+    // Partial Fisher-Yates: maintain unpicked list, pick iterationIndex+1 elements.
+    let mut unpicked: Vec<i32> = (0..num_elements).collect();
+
+    for i in 0..=iteration_index {
+        let chosen = rng.next_int() as usize % unpicked.len();
+        let chosen_index = unpicked[chosen];
+        unpicked.swap_remove(chosen);
+
+        if i == iteration_index {
+            story.flow.value_stack.push(Value::Int(chosen_index));
+            return Ok(());
+        }
+    }
+
+    // Should not reach here.
+    story.flow.value_stack.push(Value::Int(0));
     Ok(())
 }

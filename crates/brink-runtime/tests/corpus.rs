@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use brink_converter::convert;
 use brink_json::InkJson;
-use brink_runtime::{StepResult, Story};
+use brink_runtime::{DotNetRng, StepResult, Story};
 
 /// Run a story from an ink.json file with the given choice inputs.
 fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, String> {
@@ -17,7 +17,7 @@ fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, Strin
         serde_json::from_str(json_str).map_err(|e| format!("json parse error: {e}"))?;
     let data = convert(&ink).map_err(|e| format!("convert error: {e}"))?;
     let program = brink_runtime::link(&data).map_err(|e| format!("link error: {e}"))?;
-    let mut story = Story::new(&program);
+    let mut story = Story::<DotNetRng>::new(&program);
     let mut output = String::new();
     let mut input_idx = 0;
 

@@ -259,7 +259,7 @@ impl<'a> ContainerEmitter<'a> {
             ControlCommand::Turn => self.emit(&Opcode::TurnIndex),
             ControlCommand::Turns => self.emit(&Opcode::TurnsSince),
             ControlCommand::Visit => self.emit(&Opcode::CurrentVisitCount),
-            ControlCommand::Sequence => self.emit(&Opcode::Sequence(SequenceKind::Cycle, 0)),
+            ControlCommand::Sequence => self.emit(&Opcode::Sequence(SequenceKind::Shuffle, 0)),
             ControlCommand::Thread => self.emit(&Opcode::ThreadStart),
             ControlCommand::Done => self.emit(&Opcode::Done),
             ControlCommand::End => self.emit(&Opcode::End),
@@ -600,11 +600,14 @@ pub fn process_container(
         .copied()
         .ok_or_else(|| ConvertError::UnresolvedPath(current_path.to_string()))?;
 
+    let path_hash: i32 = current_path.chars().map(|c| c as i32).sum();
+
     let def = ContainerDef {
         id: container_id,
         bytecode: emitter.bytecode,
         content_hash: 0,
         counting_flags,
+        path_hash,
     };
     let lt = ContainerLineTable {
         container_id,

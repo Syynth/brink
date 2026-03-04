@@ -533,6 +533,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ContainerLineTable), In
 
     let mut content_hash = 0u64;
     let mut counting_flags = CountingFlags::empty();
+    let mut path_hash = 0i32;
     let mut lines = Vec::new();
     let mut bytecode = Vec::new();
 
@@ -558,6 +559,18 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ContainerLineTable), In
                     }
                 }
             }
+            Rule::path_hash_field => {
+                let val = child.into_inner().next().ok_or_else(|| InktParseError {
+                    message: "expected integer in path_hash".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                path_hash = val.as_str().parse().map_err(|_| InktParseError {
+                    message: "invalid path_hash integer".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+            }
             Rule::lines_field => {
                 lines = parse_lines_field(child)?;
             }
@@ -573,6 +586,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ContainerLineTable), In
         bytecode,
         content_hash,
         counting_flags,
+        path_hash,
     };
     let line_table = ContainerLineTable {
         container_id: id,

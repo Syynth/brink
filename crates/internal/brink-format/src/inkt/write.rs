@@ -199,6 +199,11 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
         writeln!(w, ")")?;
     }
 
+    // Path hash (for shuffle RNG seeding)
+    if c.path_hash != 0 {
+        writeln!(w, "    (path_hash {})", c.path_hash)?;
+    }
+
     // Line table
     if !lines.is_empty() {
         writeln!(w, "    (lines")?;

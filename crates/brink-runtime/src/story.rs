@@ -1,12 +1,14 @@
 //! Per-instance mutable story state.
 
 use std::collections::HashMap;
+use std::marker::PhantomData;
 
 use brink_format::{ChoiceFlags, DefinitionId, Value};
 
 use crate::error::RuntimeError;
 use crate::output::{OutputBuffer, clean_output_whitespace};
 use crate::program::Program;
+use crate::rng::{FastRng, StoryRng};
 use crate::vm;
 
 /// The current execution status of a story.
@@ -179,14 +181,20 @@ impl Flow {
 /// Created from a [`Program`] via [`Story::new`]. Holds all mutable state
 /// (stacks, globals, output buffer) while the immutable program data lives
 /// in [`Program`].
-pub struct Story {
+///
+/// Generic over `R: StoryRng` — defaults to [`FastRng`]. Use
+/// [`DotNetRng`](crate::DotNetRng) for .NET-compatible deterministic output.
+pub struct Story<R: StoryRng = FastRng> {
     pub(crate) flow: Flow,
     pub(crate) globals: Vec<Value>,
     pub(crate) visit_counts: HashMap<DefinitionId, u32>,
     pub(crate) status: StoryStatus,
+    pub(crate) rng_seed: i32,
+    pub(crate) previous_random: i32,
+    pub(crate) _rng: PhantomData<R>,
 }
 
-impl Story {
+impl<R: StoryRng> Story<R> {
     /// Create a new story instance from a linked program.
     pub fn new(program: &Program) -> Self {
         // Initialize globals from program defaults.
@@ -224,6 +232,9 @@ impl Story {
             globals,
             visit_counts: HashMap::new(),
             status: StoryStatus::Active,
+            rng_seed: 0,
+            previous_random: 0,
+            _rng: PhantomData,
         }
     }
 
@@ -241,7 +252,7 @@ impl Story {
         let mut full_text = String::new();
 
         loop {
-            let yield_kind = vm::run(self, program)?;
+            let yield_kind = vm::run::<R>(self, program)?;
 
             let text = self.flow.output.flush();
             full_text.push_str(&text);

@@ -10,6 +10,9 @@ pub struct ContainerDef {
     pub bytecode: Vec<u8>,
     pub content_hash: u64,
     pub counting_flags: CountingFlags,
+    /// Sum of char values from the container's ink path string.
+    /// Used to seed the RNG for shuffle sequences.
+    pub path_hash: i32,
 }
 
 /// One entry in a container's line table.

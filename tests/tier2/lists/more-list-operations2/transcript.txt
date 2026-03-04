@@ -13,5 +13,5 @@ a2, b2, c2
 range:a1, b2
 a1
 subtract:a1, c1
-random:b2
+random:c2
 listinc:b1

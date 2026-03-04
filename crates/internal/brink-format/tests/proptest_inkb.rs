@@ -118,6 +118,7 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ContainerL
                 bytecode,
                 content_hash,
                 counting_flags,
+                path_hash: 0,
             };
             let lt = ContainerLineTable {
                 container_id: id,

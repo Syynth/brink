@@ -26,6 +26,7 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
             id: cdef.id,
             bytecode: cdef.bytecode.clone(),
             counting_flags: cdef.counting_flags,
+            path_hash: cdef.path_hash,
         });
     }
 

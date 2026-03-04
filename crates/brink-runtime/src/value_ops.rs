@@ -352,6 +352,7 @@ mod tests {
                 id: DefinitionId::new(DefinitionTag::Container, 0),
                 bytecode: vec![],
                 counting_flags: brink_format::CountingFlags::empty(),
+                path_hash: 0,
             }],
             container_map: {
                 let mut m = HashMap::new();

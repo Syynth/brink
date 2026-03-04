@@ -4,7 +4,7 @@
 
 use brink_converter::convert;
 use brink_json::InkJson;
-use brink_runtime::{StepResult, Story};
+use brink_runtime::{DotNetRng, StepResult, Story};
 
 /// Convert an ink.json string, link, and run to completion with the given choice inputs.
 /// Returns the full text output.
@@ -13,7 +13,7 @@ fn run_story(ink_json: &str, inputs: &[usize]) -> String {
     let ink: InkJson = serde_json::from_str(ink_json).unwrap();
     let data = convert(&ink).unwrap();
     let program = brink_runtime::link(&data).unwrap();
-    let mut story = Story::new(&program);
+    let mut story = Story::<DotNetRng>::new(&program);
     let mut output = String::new();
     let mut input_idx = 0;
 
@@ -61,7 +61,7 @@ fn choices_yielded_on_bytecode_exhaustion() {
     let ink: InkJson = serde_json::from_str(&json).unwrap();
     let data = convert(&ink).unwrap();
     let program = brink_runtime::link(&data).unwrap();
-    let mut story = Story::new(&program);
+    let mut story = Story::<DotNetRng>::new(&program);
 
     // First step should produce text AND choices, not Done.
     let result = story.step(&program).unwrap();
@@ -161,7 +161,7 @@ fn fallback_choice_auto_selected() {
     let ink: InkJson = serde_json::from_str(&json).unwrap();
     let data = convert(&ink).unwrap();
     let program = brink_runtime::link(&data).unwrap();
-    let mut story = Story::new(&program);
+    let mut story = Story::<DotNetRng>::new(&program);
 
     // The story should complete in a single step with no Choices yield.
     let result = story.step(&program).unwrap();
@@ -639,8 +639,6 @@ fn list_item_variable_reference() {
 fn seed_random_and_list_literal_origins() {
     let json = load_ink_json("../../tests/tier2/lists/more-list-operations2/story.ink.json");
     let result = run_story(&json, &[]);
-    // NOTE: `random:a1` — we don't implement reference PRNG yet, so we get
-    //       first item instead of the seeded-random result `b2`.
     assert_eq!(
         result,
         "a1, b1, c1\n\
@@ -658,7 +656,7 @@ fn seed_random_and_list_literal_origins() {
          range:a1, b2\n\
          a1\n\
          subtract:a1, c1\n\
-         random:a1\n\
+         random:c2\n\
          listinc:b1\n"
     );
 }
@@ -690,5 +688,20 @@ fn variable_pointer_ref_from_knot() {
     assert_eq!(
         result, "6\n",
         "ref parameter should increment val from 5 to 6"
+    );
+}
+
+/// `RANDOM(min, max)` + `SEED_RANDOM(seed)` must produce deterministic output
+/// matching the reference .NET runtime. Seed 100 → 4 dice rolls.
+#[test]
+fn rnd_func_deterministic_output() {
+    let json = load_ink_json("../../tests/tier2/function/rnd-func/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(
+        result,
+        "Rolling dice 1: 6.\n\
+         Rolling dice 2: 6.\n\
+         Rolling dice 3: 4.\n\
+         Rolling dice 4: 2.\n"
     );
 }

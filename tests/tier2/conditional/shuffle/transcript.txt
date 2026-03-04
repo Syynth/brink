@@ -1,21 +1,16 @@
 King of Spades.
 
 1: Try again
-?> 
-Ace of Hearts.
+?> 2 of Diamonds.
 
 1: Try again
-?> 
-2 of Diamonds.
+?> Ace of Hearts.
 
 1: Try again
-?> 
-2 of Diamonds.
+?> King of Spades.
 
 1: Try again
-?> 
-Ace of Hearts.
+?> Ace of Hearts.
 
 1: Try again
-?> 
-King of Spades.
+?> 2 of Diamonds.

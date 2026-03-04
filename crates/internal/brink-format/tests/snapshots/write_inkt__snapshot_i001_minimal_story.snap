@@ -1,12 +1,12 @@
 ---
 source: crates/internal/brink-format/tests/write_inkt.rs
-assertion_line: 18
 expression: buf
 ---
 (story
 
   (container $01_ab1ed7229c18b5
     (hash 0x0000000000000000)
+    (path_hash 144)
     (code
       done
     )
@@ -14,6 +14,7 @@ expression: buf
 
   (container $01_6647014fb554e5
     (hash 0x0000000000000000)
+    (path_hash 48)
     (lines
       0 "Hello, world!" @0000000000000000
     )

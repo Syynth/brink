@@ -46,7 +46,8 @@ list_literal_entry = { "(" ~ "list" ~ list_value_items ~ list_value_origins ~ ")
 
 // ── Containers ──────────────────────────────────────────────────────────────
 
-container = { "(" ~ "container" ~ def_id ~ hash_field ~ flags_field? ~ lines_field? ~ code_field? ~ ")" }
+container = { "(" ~ "container" ~ def_id ~ hash_field ~ flags_field? ~ path_hash_field? ~ lines_field? ~ code_field? ~ ")" }
+path_hash_field = { "(" ~ "path_hash" ~ integer ~ ")" }
 hash_field = { "(" ~ "hash" ~ hex_literal ~ ")" }
 flags_field = { "(" ~ "flags" ~ flag_name+ ~ ")" }
 flag_name = { "visits" | "turns" | "start_only" }

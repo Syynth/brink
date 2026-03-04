@@ -32,6 +32,7 @@ pub(crate) struct LinkedContainer {
     pub id: DefinitionId,
     pub bytecode: Vec<u8>,
     pub counting_flags: CountingFlags,
+    pub path_hash: i32,
 }
 
 pub(crate) struct GlobalSlot {
