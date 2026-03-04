@@ -803,11 +803,13 @@ pub fn build_externals(
 
     for (name, &(id, argc)) in &index.externals {
         let name_id = name_table.intern(name)?;
+        // If a container with the same name exists, it's the ink fallback body.
+        let fallback = index.containers.get(name.as_str()).copied();
         externals.push(ExternalFnDef {
             id,
             name: name_id,
             arg_count: argc,
-            fallback: None,
+            fallback,
         });
     }
 

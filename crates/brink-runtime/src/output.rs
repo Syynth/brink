@@ -8,6 +8,8 @@ pub(crate) enum OutputPart {
     Glue,
     /// Marks the start of a captured region (string eval, tag, or function call).
     Checkpoint,
+    /// A tag associated with the current line of output.
+    Tag(String),
 }
 
 /// Accumulates output text with glue resolution.
@@ -82,6 +84,18 @@ impl OutputBuffer {
         self.parts.push(OutputPart::Glue);
     }
 
+    /// Push a tag associated with the current output line.
+    pub fn push_tag(&mut self, tag: String) {
+        self.parts.push(OutputPart::Tag(tag));
+    }
+
+    /// Returns true if the buffer contains any checkpoint markers.
+    pub fn has_checkpoint(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|p| matches!(p, OutputPart::Checkpoint))
+    }
+
     /// Push a checkpoint marker. Everything after it will be captured by
     /// [`end_capture`](Self::end_capture).
     pub fn begin_capture(&mut self) {
@@ -117,10 +131,11 @@ impl OutputBuffer {
         }
     }
 
-    /// Resolve glue and flush to a string.
+    /// Resolve glue and flush to a string (ignoring tags).
     ///
     /// Glue removes the newline immediately before it and any leading
     /// whitespace on the text immediately after it, stitching text together.
+    #[cfg(test)]
     pub fn flush(&mut self) -> String {
         debug_assert!(
             !self
@@ -131,6 +146,22 @@ impl OutputBuffer {
         );
         let parts = core::mem::take(&mut self.parts);
         resolve_parts(&parts)
+    }
+
+    /// Resolve glue and flush to structured per-line output.
+    ///
+    /// Each returned element is `(line_text, line_tags)`. Tags are associated
+    /// with the line they appear on in the output stream.
+    pub fn flush_lines(&mut self) -> Vec<(String, Vec<String>)> {
+        debug_assert!(
+            !self
+                .parts
+                .iter()
+                .any(|p| matches!(p, OutputPart::Checkpoint)),
+            "flush_lines() called with active checkpoints"
+        );
+        let parts = core::mem::take(&mut self.parts);
+        resolve_lines(&parts)
     }
 }
 
@@ -150,7 +181,7 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
                         remove[j] = true;
                         break;
                     }
-                    OutputPart::Glue | OutputPart::Checkpoint => {}
+                    OutputPart::Glue | OutputPart::Checkpoint | OutputPart::Tag(_) => {}
                     OutputPart::Text(s) if s.trim().is_empty() => {}
                     OutputPart::Text(_) => break,
                 }
@@ -189,13 +220,85 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
                 }
                 // When after_glue, skip the newline (glue eats following newlines too).
             }
-            OutputPart::Glue | OutputPart::Checkpoint => {
+            OutputPart::Glue | OutputPart::Checkpoint | OutputPart::Tag(_) => {
                 after_glue = true;
             }
         }
     }
 
     out
+}
+
+/// Resolve glue and split into per-line output with associated tags.
+///
+/// Each returned element is `(line_text, line_tags)`. Tags that appear
+/// in the stream associate with the current line (the line being built
+/// when the tag is encountered).
+fn resolve_lines(parts: &[OutputPart]) -> Vec<(String, Vec<String>)> {
+    // First pass: mark newlines/glue for removal (same logic as resolve_parts).
+    let mut remove = vec![false; parts.len()];
+    for (i, part) in parts.iter().enumerate() {
+        if matches!(part, OutputPart::Glue) {
+            for j in (0..i).rev() {
+                if remove[j] {
+                    continue;
+                }
+                match &parts[j] {
+                    OutputPart::Newline => {
+                        remove[j] = true;
+                        break;
+                    }
+                    OutputPart::Glue | OutputPart::Checkpoint | OutputPart::Tag(_) => {}
+                    OutputPart::Text(s) if s.trim().is_empty() => {}
+                    OutputPart::Text(_) => break,
+                }
+            }
+            remove[i] = true;
+        }
+    }
+
+    let mut lines: Vec<(String, Vec<String>)> = Vec::new();
+    let mut current_text = String::new();
+    let mut current_tags: Vec<String> = Vec::new();
+    let mut after_glue = false;
+
+    for (i, part) in parts.iter().enumerate() {
+        if remove[i] {
+            if matches!(part, OutputPart::Glue) {
+                after_glue = true;
+            }
+            continue;
+        }
+        match part {
+            OutputPart::Text(s) => {
+                current_text.push_str(s);
+                if !s.trim().is_empty() {
+                    after_glue = false;
+                }
+            }
+            OutputPart::Newline => {
+                if !after_glue {
+                    // Trim trailing whitespace before the newline.
+                    let trimmed = current_text.trim_end().to_string();
+                    lines.push((trimmed, std::mem::take(&mut current_tags)));
+                    current_text = String::new();
+                }
+            }
+            OutputPart::Tag(tag) => {
+                current_tags.push(tag.clone());
+            }
+            OutputPart::Glue | OutputPart::Checkpoint => {
+                after_glue = true;
+            }
+        }
+    }
+
+    // Always push the final line — even if empty — so that a trailing
+    // Newline part produces a trailing `\n` when the lines are joined.
+    let trimmed = current_text.trim_end().to_string();
+    lines.push((trimmed, current_tags));
+
+    lines
 }
 
 /// Clean inline whitespace in the output text, matching the reference ink
@@ -522,5 +625,52 @@ mod tests {
     #[test]
     fn clean_empty_string() {
         assert_eq!(clean_output_whitespace(""), "");
+    }
+
+    // ── flush_lines tests ────────────────────────────────────────────
+
+    /// Tags should associate with the line they appear on.
+    #[test]
+    fn flush_lines_associates_tags_with_lines() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("line one");
+        buf.push_newline();
+        buf.push_text("line two");
+        buf.push_tag("my_tag".to_string());
+        buf.push_newline();
+        buf.push_text("line three");
+        let lines = buf.flush_lines();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].0, "line one");
+        assert!(lines[0].1.is_empty());
+        assert_eq!(lines[1].0, "line two");
+        assert_eq!(lines[1].1, vec!["my_tag"]);
+        assert_eq!(lines[2].0, "line three");
+        assert!(lines[2].1.is_empty());
+    }
+
+    /// Tags on the last line (no trailing newline) should still be captured.
+    #[test]
+    fn flush_lines_tag_on_last_line() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("only line");
+        buf.push_tag("t".to_string());
+        let lines = buf.flush_lines();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].0, "only line");
+        assert_eq!(lines[0].1, vec!["t"]);
+    }
+
+    /// `flush_lines` should resolve glue the same as `flush`.
+    #[test]
+    fn flush_lines_resolves_glue() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("hello");
+        buf.push_newline();
+        buf.push_glue();
+        buf.push_text(" world");
+        let lines = buf.flush_lines();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].0, "hello world");
     }
 }

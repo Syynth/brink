@@ -28,15 +28,24 @@ pub enum StoryStatus {
 #[derive(Debug, Clone)]
 pub enum StepResult {
     /// Yielded text; can resume with another [`step`](Story::step).
-    Done { text: String, tags: Vec<String> },
+    ///
+    /// `tags` is per-line: `tags[i]` holds the tags for the `i`-th line
+    /// of `text` (split on `\n`).
+    Done {
+        text: String,
+        tags: Vec<Vec<String>>,
+    },
     /// Yielded text and choices; call [`choose`](Story::choose) then [`step`](Story::step).
     Choices {
         text: String,
         choices: Vec<Choice>,
-        tags: Vec<String>,
+        tags: Vec<Vec<String>>,
     },
     /// Story permanently ended.
-    Ended { text: String, tags: Vec<String> },
+    Ended {
+        text: String,
+        tags: Vec<Vec<String>>,
+    },
 }
 
 /// A single choice presented to the player.
@@ -65,12 +74,17 @@ pub(crate) struct ContainerPosition {
 ///   exhausts, the thread is done — inherited frames below it are never
 ///   unwound into during normal execution. `->->` (`TunnelReturn`) strips
 ///   Thread frames to find the enclosing Tunnel.
+/// - **External**: pushed by `CallExternal`. Holds popped arguments in
+///   `temps` and the external function's [`DefinitionId`] in
+///   `external_fn_id`. The orchestration layer resolves it (binding or
+///   fallback) before the VM resumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CallFrameType {
     Root,
     Function,
     Tunnel,
     Thread,
+    External,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +93,9 @@ pub(crate) struct CallFrame {
     pub temps: Vec<Value>,
     pub container_stack: Vec<ContainerPosition>,
     pub frame_type: CallFrameType,
+    /// For `External` frames: the `DefinitionId` of the external function,
+    /// used to look up the fallback container if no binding is registered.
+    pub external_fn_id: Option<DefinitionId>,
 }
 
 /// A single execution thread with its own call stack.
@@ -115,11 +132,23 @@ pub(crate) struct Flow {
     pub value_stack: Vec<Value>,
     pub output: OutputBuffer,
     pub pending_choices: Vec<PendingChoice>,
-    pub turn_index: u32,
-    pub turn_counts: HashMap<DefinitionId, u32>,
     pub current_tags: Vec<String>,
     pub in_tag: bool,
     pub skipping_choice: bool,
+}
+
+/// Shared game state that lives above individual flows.
+///
+/// Holds globals, visit/turn tracking, and RNG state. This is the natural
+/// serialization boundary for save/load (deferred).
+pub(crate) struct Context<R: StoryRng = FastRng> {
+    pub globals: Vec<Value>,
+    pub visit_counts: HashMap<DefinitionId, u32>,
+    pub turn_counts: HashMap<DefinitionId, u32>,
+    pub turn_index: u32,
+    pub rng_seed: i32,
+    pub previous_random: i32,
+    pub _rng: PhantomData<R>,
 }
 
 impl Flow {
@@ -165,6 +194,63 @@ impl Flow {
         }
     }
 
+    /// Read the arguments from the top External frame.
+    pub fn external_args(&self) -> &[Value] {
+        let frame = self.current_thread().call_stack.last();
+        match frame {
+            Some(f) if f.frame_type == CallFrameType::External => &f.temps,
+            _ => &[],
+        }
+    }
+
+    /// Read the external function's `DefinitionId` from the top External frame.
+    pub fn external_fn_id(&self) -> Option<DefinitionId> {
+        let frame = self.current_thread().call_stack.last()?;
+        if frame.frame_type == CallFrameType::External {
+            frame.external_fn_id
+        } else {
+            None
+        }
+    }
+
+    /// Resolve an external call: pop the External frame and push the
+    /// return value onto the value stack.
+    pub fn resolve_external(&mut self, value: Value) {
+        let thread = self.current_thread_mut();
+        if let Some(frame) = thread.call_stack.last()
+            && frame.frame_type == CallFrameType::External
+        {
+            let ret_addr = frame.return_address;
+            thread.call_stack.pop();
+            self.value_stack.push(value);
+            // Restore position from return address (if any).
+            if let Some(pos) = ret_addr
+                && let Some(f) = self.current_thread_mut().call_stack.last_mut()
+                && let Some(top) = f.container_stack.last_mut()
+            {
+                *top = pos;
+            }
+        }
+    }
+
+    /// Replace the External frame with a Function frame pointing at the
+    /// fallback container. The External frame's args become the Function
+    /// frame's temps (they map to the function's parameters).
+    pub fn invoke_fallback(&mut self, container_idx: u32) {
+        let thread = self.current_thread_mut();
+        if let Some(frame) = thread.call_stack.last_mut()
+            && frame.frame_type == CallFrameType::External
+        {
+            frame.frame_type = CallFrameType::Function;
+            frame.container_stack = vec![ContainerPosition {
+                container_idx,
+                offset: 0,
+            }];
+            frame.external_fn_id = None;
+            // temps already hold the args — they become the function's parameters.
+        }
+    }
+
     /// Pop a value from the value stack.
     pub fn pop_value(&mut self) -> Result<Value, RuntimeError> {
         self.value_stack.pop().ok_or(RuntimeError::StackUnderflow)
@@ -173,6 +259,39 @@ impl Flow {
     /// Peek at the top value without popping.
     pub fn peek_value(&self) -> Result<&Value, RuntimeError> {
         self.value_stack.last().ok_or(RuntimeError::StackUnderflow)
+    }
+}
+
+/// Result of an external function handler call.
+pub enum ExternalResult {
+    /// The handler resolved the call and returned a value.
+    /// `Value::Null` is valid for fire-and-forget calls.
+    Resolved(Value),
+    /// The handler declined — use the ink fallback body if available.
+    Fallback,
+}
+
+/// Trait for handling external function calls from ink.
+///
+/// Implement this to provide runtime-injected external function behavior.
+/// The orchestration layer calls [`call`](ExternalFnHandler::call) when the
+/// VM encounters a `CallExternal` opcode. The handler can resolve the call
+/// immediately, decline to handle it (triggering fallback), or in the future,
+/// indicate that resolution is pending (async/WASM).
+pub trait ExternalFnHandler {
+    /// Handle an external function call.
+    ///
+    /// `name` is the ink-declared function name. `args` are the values
+    /// popped from the value stack, in declaration order.
+    fn call(&self, name: &str, args: &[Value]) -> ExternalResult;
+}
+
+/// Default handler that always falls back to the ink function body.
+struct FallbackHandler;
+
+impl ExternalFnHandler for FallbackHandler {
+    fn call(&self, _name: &str, _args: &[Value]) -> ExternalResult {
+        ExternalResult::Fallback
     }
 }
 
@@ -186,12 +305,8 @@ impl Flow {
 /// [`DotNetRng`](crate::DotNetRng) for .NET-compatible deterministic output.
 pub struct Story<R: StoryRng = FastRng> {
     pub(crate) flow: Flow,
-    pub(crate) globals: Vec<Value>,
-    pub(crate) visit_counts: HashMap<DefinitionId, u32>,
+    pub(crate) context: Context<R>,
     pub(crate) status: StoryStatus,
-    pub(crate) rng_seed: i32,
-    pub(crate) previous_random: i32,
-    pub(crate) _rng: PhantomData<R>,
 }
 
 impl<R: StoryRng> Story<R> {
@@ -209,6 +324,7 @@ impl<R: StoryRng> Story<R> {
                 offset: 0,
             }],
             frame_type: CallFrameType::Root,
+            external_fn_id: None,
         };
 
         let initial_thread = Thread {
@@ -223,23 +339,42 @@ impl<R: StoryRng> Story<R> {
                 value_stack: Vec::new(),
                 output: OutputBuffer::new(),
                 pending_choices: Vec::new(),
-                turn_index: 0,
-                turn_counts: HashMap::new(),
                 current_tags: Vec::new(),
                 in_tag: false,
                 skipping_choice: false,
             },
-            globals,
-            visit_counts: HashMap::new(),
+            context: Context {
+                globals,
+                visit_counts: HashMap::new(),
+                turn_counts: HashMap::new(),
+                turn_index: 0,
+                rng_seed: 0,
+                previous_random: 0,
+                _rng: PhantomData,
+            },
             status: StoryStatus::Active,
-            rng_seed: 0,
-            previous_random: 0,
-            _rng: PhantomData,
         }
     }
 
+    /// Maximum opcodes per step to prevent infinite loops.
+    const MAX_OPS_PER_STEP: u32 = 100_000;
+
     /// Execute until the next yield point (done, choices, or end).
+    ///
+    /// External functions use fallback ink bodies when available,
+    /// or error if no fallback exists. Use [`step_with`](Self::step_with)
+    /// to provide a custom external function handler.
     pub fn step(&mut self, program: &Program) -> Result<StepResult, RuntimeError> {
+        self.step_with(program, &FallbackHandler)
+    }
+
+    /// Execute until the next yield point, using the given external
+    /// function handler to resolve `CallExternal` opcodes.
+    pub fn step_with(
+        &mut self,
+        program: &Program,
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<StepResult, RuntimeError> {
         if self.status == StoryStatus::Ended {
             return Err(RuntimeError::StoryEnded);
         }
@@ -249,24 +384,35 @@ impl<R: StoryRng> Story<R> {
             self.status = StoryStatus::Active;
         }
 
-        let mut full_text = String::new();
+        let mut all_lines: Vec<(String, Vec<String>)> = Vec::new();
+        let mut op_count: u32 = 0;
 
         loop {
-            let yield_kind = vm::run::<R>(self, program)?;
+            op_count += 1;
+            if op_count > Self::MAX_OPS_PER_STEP {
+                // Safety limit — treat as Done to avoid infinite loops.
+                all_lines.extend(self.flow.output.flush_lines());
+                self.context.turn_index += 1;
+                self.status = StoryStatus::Done;
+                let (text, tags) = Self::finalize_lines(&all_lines);
+                return Ok(StepResult::Done { text, tags });
+            }
 
-            let text = self.flow.output.flush();
-            full_text.push_str(&text);
-            self.flow.turn_index += 1;
+            match vm::step(self, program)? {
+                vm::Stepped::Continue | vm::Stepped::ThreadCompleted => {}
 
-            match yield_kind {
-                vm::VmYield::Done => {
+                vm::Stepped::ExternalCall => {
+                    self.resolve_external_call(program, handler)?;
+                }
+
+                vm::Stepped::Done => {
+                    all_lines.extend(self.flow.output.flush_lines());
+                    self.context.turn_index += 1;
+
                     if self.flow.pending_choices.is_empty() {
                         self.status = StoryStatus::Done;
-                        let tags = std::mem::take(&mut self.flow.current_tags);
-                        return Ok(StepResult::Done {
-                            text: clean_output_whitespace(&full_text),
-                            tags,
-                        });
+                        let (text, tags) = Self::finalize_lines(&all_lines);
+                        return Ok(StepResult::Done { text, tags });
                     }
 
                     // If all pending choices are invisible defaults (fallback
@@ -297,23 +443,71 @@ impl<R: StoryRng> Story<R> {
                             tags: pc.tags.clone(),
                         })
                         .collect();
-                    let tags = std::mem::take(&mut self.flow.current_tags);
+                    let (text, tags) = Self::finalize_lines(&all_lines);
                     return Ok(StepResult::Choices {
-                        text: clean_output_whitespace(&full_text),
+                        text,
                         choices,
                         tags,
                     });
                 }
-                vm::VmYield::End => {
+                vm::Stepped::Ended => {
+                    all_lines.extend(self.flow.output.flush_lines());
+                    self.context.turn_index += 1;
                     self.status = StoryStatus::Ended;
-                    let tags = std::mem::take(&mut self.flow.current_tags);
-                    return Ok(StepResult::Ended {
-                        text: clean_output_whitespace(&full_text),
-                        tags,
-                    });
+                    let (text, tags) = Self::finalize_lines(&all_lines);
+                    return Ok(StepResult::Ended { text, tags });
                 }
             }
         }
+    }
+
+    /// Build the final `text` string and per-line `tags` from structured lines.
+    fn finalize_lines(lines: &[(String, Vec<String>)]) -> (String, Vec<Vec<String>>) {
+        let text = lines
+            .iter()
+            .map(|(t, _)| clean_output_whitespace(t))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tags = lines.iter().map(|(_, t)| t.clone()).collect();
+        (text, tags)
+    }
+
+    /// Resolve an external function call using the handler and program metadata.
+    fn resolve_external_call(
+        &mut self,
+        program: &Program,
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<(), RuntimeError> {
+        let fn_id = self
+            .flow
+            .external_fn_id()
+            .ok_or(RuntimeError::CallStackUnderflow)?;
+
+        let entry = program.external_fn(fn_id);
+        let fn_name = entry.map_or("?", |e| program.name(e.name));
+
+        let result = handler.call(fn_name, self.flow.external_args());
+        match result {
+            ExternalResult::Resolved(value) => {
+                self.flow.resolve_external(value);
+            }
+            ExternalResult::Fallback => {
+                let fallback_id = entry.and_then(|e| e.fallback);
+                if let Some(fb_id) = fallback_id {
+                    let container_idx = program
+                        .resolve_container(fb_id)
+                        .ok_or(RuntimeError::UnresolvedDefinition(fb_id))?;
+
+                    // Begin output capture — fallback is a function call whose
+                    // text output becomes the return value.
+                    self.flow.output.begin_capture();
+                    self.flow.invoke_fallback(container_idx);
+                } else {
+                    return Err(RuntimeError::UnresolvedExternalCall(fn_id));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Select a choice by index. Call [`step`](Story::step) afterward to continue.
@@ -336,10 +530,14 @@ impl<R: StoryRng> Story<R> {
 
         // Increment visit count for the choice target container so that
         // once-only choices can be filtered on subsequent passes.
-        *self.visit_counts.entry(choice.target_id).or_insert(0) += 1;
-        self.flow
+        *self
+            .context
+            .visit_counts
+            .entry(choice.target_id)
+            .or_insert(0) += 1;
+        self.context
             .turn_counts
-            .insert(choice.target_id, self.flow.turn_index);
+            .insert(choice.target_id, self.context.turn_index);
 
         // Replace the current thread with the fork from choice creation
         // time. By selection time, all spawned threads should have
@@ -414,12 +612,22 @@ mod tests {
 
         // Record the target_id of the first pending choice BEFORE selecting.
         let target_id = story.flow.pending_choices[0].target_id;
-        let visit_before = story.visit_counts.get(&target_id).copied().unwrap_or(0);
+        let visit_before = story
+            .context
+            .visit_counts
+            .get(&target_id)
+            .copied()
+            .unwrap_or(0);
 
         story.choose(0).unwrap();
 
         // After selection, the visit count for this target must have increased.
-        let visit_after = story.visit_counts.get(&target_id).copied().unwrap_or(0);
+        let visit_after = story
+            .context
+            .visit_counts
+            .get(&target_id)
+            .copied()
+            .unwrap_or(0);
         assert!(
             visit_after > visit_before,
             "visit count for choice target should increment after selection: \
@@ -561,7 +769,8 @@ mod tests {
         let result = story.step(&program).unwrap();
         match result {
             StepResult::Done { tags, .. } | StepResult::Ended { tags, .. } => {
-                assert_eq!(tags, vec!["author: Joe", "title: My Great Story"]);
+                // Tags are per-line; the first line should have both tags.
+                assert_eq!(tags[0], vec!["author: Joe", "title: My Great Story"]);
             }
             other @ StepResult::Choices { .. } => panic!("expected Done or Ended, got {other:?}"),
         }
@@ -618,6 +827,118 @@ mod tests {
                 "text should contain '2' from CHOICE_COUNT(), got: {text:?}"
             );
             assert_eq!(choices.len(), 2, "should have 2 choices (one/two)");
+        }
+    }
+
+    // ── External functions ──────────────────────────────────────────
+
+    fn load_external_0_arg() -> (crate::Program, Story) {
+        let json_str = std::fs::read_to_string(
+            "../../tests/tier3/runtime/external-function-0-arg/story.ink.json",
+        )
+        .unwrap();
+        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
+        let data = brink_converter::convert(&ink).unwrap();
+        let program = link(&data).unwrap();
+        let story = Story::new(&program);
+        (program, story)
+    }
+
+    fn load_external_binding() -> (crate::Program, Story) {
+        let json_str =
+            std::fs::read_to_string("../../tests/tier3/bindings/external-binding/story.ink.json")
+                .unwrap();
+        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
+        let data = brink_converter::convert(&ink).unwrap();
+        let program = link(&data).unwrap();
+        let story = Story::new(&program);
+        (program, story)
+    }
+
+    /// When an external function has a fallback body and no binding is
+    /// registered, the VM should invoke the fallback without error.
+    #[test]
+    fn external_function_uses_fallback_when_no_binding() {
+        let (program, mut story) = load_external_0_arg();
+        // The fallback returns "" so the output should be "The value is ."
+        let result = story.step(&program);
+        assert!(
+            result.is_ok(),
+            "external function with fallback should not error, got: {result:?}"
+        );
+        match result.unwrap() {
+            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
+                assert!(
+                    text.contains("The value is"),
+                    "expected 'The value is' in output, got: {text:?}"
+                );
+            }
+            StepResult::Choices { .. } => panic!("expected Done or Ended, got Choices"),
+        }
+    }
+
+    /// When an external function handler is provided via `step_with`,
+    /// it should be called instead of the fallback.
+    #[test]
+    fn external_function_binding_is_called() {
+        use super::ExternalResult;
+
+        struct TestHandler;
+        impl super::ExternalFnHandler for TestHandler {
+            #[expect(clippy::cast_precision_loss, clippy::cast_sign_loss)]
+            fn call(&self, name: &str, args: &[Value]) -> ExternalResult {
+                match name {
+                    "multiply" => {
+                        let a = match args[0] {
+                            Value::Float(f) => f,
+                            Value::Int(i) => i as f32,
+                            _ => 0.0,
+                        };
+                        let b = match args[1] {
+                            Value::Float(f) => f,
+                            Value::Int(i) => i as f32,
+                            _ => 0.0,
+                        };
+                        #[expect(clippy::cast_possible_truncation)]
+                        ExternalResult::Resolved(Value::Int((a * b) as i32))
+                    }
+                    "message" => ExternalResult::Resolved(Value::Null),
+                    "times" => {
+                        let count = match args[0] {
+                            Value::Int(i) => i as usize,
+                            _ => 0,
+                        };
+                        let s = match &args[1] {
+                            Value::String(s) => s.clone(),
+                            _ => String::new(),
+                        };
+                        ExternalResult::Resolved(Value::String(s.repeat(count)))
+                    }
+                    _ => ExternalResult::Fallback,
+                }
+            }
+        }
+
+        let (program, mut story) = load_external_binding();
+        let handler = TestHandler;
+
+        let result = story.step_with(&program, &handler);
+        assert!(
+            result.is_ok(),
+            "bound external functions should not error, got: {result:?}"
+        );
+        match result.unwrap() {
+            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
+                assert!(
+                    text.contains("15"),
+                    "expected '15' from multiply(5.0, 3), got: {text:?}"
+                );
+                assert!(
+                    text.contains("knock knock knock"),
+                    "expected 'knock knock knock' from times(3, 'knock '), got: {text:?}"
+                );
+            }
+            StepResult::Choices { .. } => panic!("expected Done or Ended, got Choices"),
         }
     }
 

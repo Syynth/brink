@@ -10,6 +10,44 @@ use brink_converter::convert;
 use brink_json::InkJson;
 use brink_runtime::{DotNetRng, StepResult, Story};
 
+/// Format text with per-line tags inserted after each tagged line.
+///
+/// Tags for a line are inserted immediately after that line's trailing `\n`
+/// (on a new line). If the tagged line has no trailing `\n` (last line),
+/// tags are appended directly (no newline separator), matching the old
+/// flat-tags formatting behaviour.
+fn format_text_with_tags(text: &str, tags: &[Vec<String>], output: &mut String) {
+    use std::fmt::Write;
+    if tags.iter().all(Vec::is_empty) {
+        output.push_str(text);
+        return;
+    }
+    let mut line_start = 0;
+    let mut line_idx = 0;
+    for (i, ch) in text.char_indices() {
+        if ch == '\n' {
+            let line = &text[line_start..i];
+            output.push_str(line);
+            if let Some(lt) = tags.get(line_idx)
+                && !lt.is_empty()
+            {
+                let _ = write!(output, "\n# tags: {}", lt.join(", "));
+            }
+            output.push('\n');
+            line_start = i + 1;
+            line_idx += 1;
+        }
+    }
+    // Final segment (no trailing \n).
+    let remaining = &text[line_start..];
+    output.push_str(remaining);
+    if let Some(lt) = tags.get(line_idx)
+        && !lt.is_empty()
+    {
+        let _ = write!(output, "# tags: {}", lt.join(", "));
+    }
+}
+
 /// Run a story from an ink.json file with the given choice inputs.
 fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, String> {
     use std::fmt::Write;
@@ -36,10 +74,7 @@ fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, Strin
             .map_err(|e| format!("runtime error: {e}"))?
         {
             StepResult::Done { text, tags } | StepResult::Ended { text, tags } => {
-                output.push_str(&text);
-                if !tags.is_empty() {
-                    let _ = write!(output, "# tags: {}", tags.join(", "));
-                }
+                format_text_with_tags(&text, &tags, &mut output);
                 break;
             }
             StepResult::Choices {
@@ -47,10 +82,7 @@ fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, Strin
                 choices,
                 tags,
             } => {
-                output.push_str(&text);
-                if !tags.is_empty() {
-                    let _ = write!(output, "# tags: {}", tags.join(", "));
-                }
+                format_text_with_tags(&text, &tags, &mut output);
                 if choices.is_empty() {
                     return Err("no choices available".into());
                 }

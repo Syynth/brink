@@ -6,14 +6,16 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use brink_format::{DefinitionId, DefinitionTag, StoryData};
 
 use crate::error::RuntimeError;
-use crate::program::{GlobalSlot, LinkedContainer, ListDefEntry, ListItemEntry, Program};
+use crate::program::{
+    ExternalFnEntry, GlobalSlot, LinkedContainer, ListDefEntry, ListItemEntry, Program,
+};
 
 /// Link a [`StoryData`] into an executable [`Program`].
 ///
 /// Builds lookup tables mapping [`DefinitionId`]s to flat array indices.
 /// The root container is identified as the one with `hash("")` using the same
 /// hash function as the converter.
-#[expect(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation, clippy::too_many_lines)]
 pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
     let mut containers = Vec::with_capacity(data.containers.len());
     let mut container_map = HashMap::with_capacity(data.containers.len());
@@ -113,6 +115,18 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
     // Clone list literals.
     let list_literals = data.list_literals.clone();
 
+    // Build external function map.
+    let mut external_fns = HashMap::with_capacity(data.externals.len());
+    for ext in &data.externals {
+        external_fns.insert(
+            ext.id,
+            ExternalFnEntry {
+                name: ext.name,
+                fallback: ext.fallback,
+            },
+        );
+    }
+
     Ok(Program {
         containers,
         container_map,
@@ -126,6 +140,7 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
         list_item_map,
         list_defs,
         list_def_map,
+        external_fns,
     })
 }
 

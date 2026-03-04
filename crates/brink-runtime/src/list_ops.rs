@@ -254,12 +254,15 @@ pub(crate) fn list_random<R: StoryRng>(story: &mut Story<R>) -> Result<(), Runti
     let items = if lv.items.is_empty() {
         vec![]
     } else {
-        let result_seed = story.rng_seed.wrapping_add(story.previous_random);
+        let result_seed = story
+            .context
+            .rng_seed
+            .wrapping_add(story.context.previous_random);
         let mut rng = R::from_seed(result_seed);
         let next_random = rng.next_int();
         #[expect(clippy::cast_sign_loss)]
         let idx = (next_random as usize) % lv.items.len();
-        story.previous_random = next_random;
+        story.context.previous_random = next_random;
         vec![lv.items[idx]]
     };
     story.flow.value_stack.push(Value::List(ListValue {

@@ -44,6 +44,9 @@ pub enum RuntimeError {
     #[error("unimplemented opcode: {0}")]
     Unimplemented(String),
 
+    #[error("unresolved external function call: {0}")]
+    UnresolvedExternalCall(DefinitionId),
+
     #[error("output capture underflow (no checkpoint)")]
     CaptureUnderflow,
 }

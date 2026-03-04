@@ -26,6 +26,8 @@ pub struct Program {
     pub(crate) list_defs: Vec<ListDefEntry>,
     /// Map from list def `DefinitionId` to index in `list_defs`.
     pub(crate) list_def_map: HashMap<DefinitionId, usize>,
+    /// External function metadata keyed by the external function's `DefinitionId`.
+    pub(crate) external_fns: HashMap<DefinitionId, ExternalFnEntry>,
 }
 
 pub(crate) struct LinkedContainer {
@@ -55,6 +57,12 @@ pub(crate) struct ListDefEntry {
     pub name: NameId,
     /// All item `DefinitionId`s belonging to this list, sorted by ordinal.
     pub items: Vec<DefinitionId>,
+}
+
+/// Runtime metadata for an external function.
+pub(crate) struct ExternalFnEntry {
+    pub name: NameId,
+    pub fallback: Option<DefinitionId>,
 }
 
 impl Program {
@@ -123,5 +131,10 @@ impl Program {
         self.list_defs
             .iter()
             .find(|def| self.name(def.name) == name)
+    }
+
+    /// Look up an external function by its `DefinitionId`.
+    pub(crate) fn external_fn(&self, id: DefinitionId) -> Option<&ExternalFnEntry> {
+        self.external_fns.get(&id)
     }
 }

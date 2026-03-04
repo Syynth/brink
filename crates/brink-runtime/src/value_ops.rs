@@ -369,6 +369,7 @@ mod tests {
             list_item_map: HashMap::new(),
             list_defs: vec![],
             list_def_map: HashMap::new(),
+            external_fns: HashMap::new(),
         }
     }
 
