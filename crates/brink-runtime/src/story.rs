@@ -59,11 +59,16 @@ pub(crate) struct ContainerPosition {
 /// - **Function**: `f()` calls. Output is captured as a return value.
 /// - **Tunnel**: `->t->` calls. Yields for pending choices (the tunnel
 ///   needs the player's choice before it can continue).
+/// - **Thread**: boundary frame pushed by `ThreadCall`. When this frame
+///   exhausts, the thread is done — inherited frames below it are never
+///   unwound into during normal execution. `->->` (`TunnelReturn`) strips
+///   Thread frames to find the enclosing Tunnel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CallFrameType {
     Root,
     Function,
     Tunnel,
+    Thread,
 }
 
 #[derive(Debug, Clone)]
@@ -148,14 +153,6 @@ impl Flow {
 
     pub fn pop_thread(&mut self) {
         self.threads.pop();
-    }
-
-    pub fn push_thread(&mut self, initial_frame: CallFrame) {
-        self.thread_counter += 1;
-        self.threads.push(Thread {
-            call_stack: vec![initial_frame],
-            thread_index: self.thread_counter,
-        });
     }
 
     pub fn fork_thread(&mut self) -> Thread {
@@ -611,5 +608,59 @@ mod tests {
             );
             assert_eq!(choices.len(), 2, "should have 2 choices (one/two)");
         }
+    }
+
+    // ── Multi-thread tunnel return ──────────────────────────────────
+
+    fn load_multi_thread() -> (crate::Program, Story) {
+        let json_str =
+            std::fs::read_to_string("../../tests/tier2/threads/multi-thread/story.ink.json")
+                .unwrap();
+        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
+        let data = brink_converter::convert(&ink).unwrap();
+        let program = link(&data).unwrap();
+        let story = Story::new(&program);
+        (program, story)
+    }
+
+    /// When threads are spawned inside a tunnel (`<- place1` inside
+    /// `->t->`), selecting a choice created by a thread must return
+    /// to the tunnel caller after `->->`. The thread fork must
+    /// preserve the enclosing tunnel frame so that `TunnelReturn` can
+    /// resume at `start` where "The end" text lives.
+    #[test]
+    fn multi_thread_tunnel_return_outputs_the_end() {
+        let (program, mut story) = load_multi_thread();
+
+        // Step to choices — should present choices from place1 and place2.
+        let choices = step_until_choices(&mut story, &program);
+        assert_eq!(choices.len(), 2, "expected 2 choices from place1 + place2");
+
+        // Select the first choice (choice in place 1).
+        story.choose(0).unwrap();
+
+        // Step again — should output "The end" from the tunnel caller.
+        let mut found_the_end = false;
+        loop {
+            match story.step(&program).unwrap() {
+                StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
+                    if text.contains("The end") {
+                        found_the_end = true;
+                    }
+                    if matches!(story.status(), StoryStatus::Done | StoryStatus::Ended) {
+                        break;
+                    }
+                }
+                StepResult::Choices { .. } => {
+                    panic!("unexpected choices after selecting first choice");
+                }
+            }
+        }
+
+        assert!(
+            found_the_end,
+            "after selecting a choice created in a thread inside a tunnel, \
+             the story should output 'The end' from the tunnel caller"
+        );
     }
 }

@@ -43,24 +43,8 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
         let Some(pos) = frame.container_stack.last().copied() else {
             // Container stack empty — the frame has no more containers to execute.
             let frame_type = frame.frame_type;
-            if frame_type != CallFrameType::Function && !story.flow.pending_choices.is_empty() {
-                // Non-function frame with pending choices: the frame is
-                // waiting for a choice selection. The thread fork captured
-                // at choice creation preserves the state for resumption.
-                if story.flow.can_pop_thread() {
-                    story.flow.pop_thread();
-                } else {
-                    return Ok(VmYield::Done);
-                }
-            } else {
-                pop_call_frame(story, false)?;
-                if story.flow.current_thread().call_stack.is_empty() {
-                    if story.flow.can_pop_thread() {
-                        story.flow.pop_thread();
-                    } else {
-                        return Ok(VmYield::Done);
-                    }
-                }
+            if let Some(y) = handle_frame_exhaustion(story, frame_type)? {
+                return Ok(y);
             }
             continue;
         };
@@ -78,24 +62,8 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
             frame.container_stack.pop();
             if frame.container_stack.is_empty() {
                 let frame_type = frame.frame_type;
-                if frame_type != CallFrameType::Function && !story.flow.pending_choices.is_empty() {
-                    // Non-function frame with pending choices: the frame
-                    // is waiting for a choice. The thread fork captured at
-                    // choice creation preserves the state for resumption.
-                    if story.flow.can_pop_thread() {
-                        story.flow.pop_thread();
-                    } else {
-                        return Ok(VmYield::Done);
-                    }
-                } else {
-                    pop_call_frame(story, false)?;
-                    if story.flow.current_thread().call_stack.is_empty() {
-                        if story.flow.can_pop_thread() {
-                            story.flow.pop_thread();
-                        } else {
-                            return Ok(VmYield::Done);
-                        }
-                    }
+                if let Some(y) = handle_frame_exhaustion(story, frame_type)? {
+                    return Ok(y);
                 }
             }
             continue;
@@ -492,15 +460,23 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                     .resolve_container(id)
                     .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
-                story.flow.push_thread(CallFrame {
+                // Fork the current thread — the fork inherits the full call
+                // stack (including any enclosing Tunnel frames) so that
+                // `fork_thread` at choice creation captures enough context
+                // for `->->` to return through tunnels. The Thread frame
+                // acts as a boundary: when it exhausts, the thread pops
+                // without unwinding into inherited frames below.
+                let mut forked = story.flow.fork_thread();
+                forked.call_stack.push(CallFrame {
                     return_address: None,
                     temps: Vec::new(),
                     container_stack: vec![ContainerPosition {
                         container_idx: idx,
                         offset: 0,
                     }],
-                    frame_type: CallFrameType::Root,
+                    frame_type: CallFrameType::Thread,
                 });
+                story.flow.threads.push(forked);
             }
             Opcode::TunnelCallVariable => {
                 let val = story.flow.pop_value()?;
@@ -565,9 +541,24 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
             Opcode::TunnelReturn => {
                 // The eval block before ->-> pushes either void (normal
                 // return) or a DivertTarget (tunnel onwards override).
-                // Pop it: if it's a DivertTarget, overwrite this frame's
-                // return address so we divert there instead of returning.
                 let val = story.flow.pop_value()?;
+
+                // Strip Thread boundary frames — they are transparent to
+                // ->->. This happens after choice selection when the fork
+                // has [inherited..., Thread, choice-body] and ->-> needs
+                // to reach the Tunnel frame below the Thread boundary.
+                while story
+                    .flow
+                    .current_thread()
+                    .call_stack
+                    .last()
+                    .is_some_and(|f| f.frame_type == CallFrameType::Thread)
+                {
+                    story.flow.current_thread_mut().call_stack.pop();
+                }
+
+                // If a DivertTarget, overwrite this frame's return address
+                // so we divert there instead of the original caller.
                 if let Value::DivertTarget(id) = val {
                     let (idx, offset) = program
                         .resolve_target(id)
@@ -722,6 +713,49 @@ fn resolve_line(program: &Program, pos: &ContainerPosition, idx: u16) -> String 
     } else {
         String::new()
     }
+}
+
+/// Handle a frame whose container stack has been exhausted.
+///
+/// Returns `Some(VmYield)` if the VM should yield, `None` to continue.
+///
+/// - **Thread**: the thread boundary is done — pop the entire thread.
+///   Inherited frames below the Thread frame are never unwound into.
+/// - **Non-function with pending choices**: the frame is waiting for a
+///   choice selection. Pop the thread so other threads can run.
+/// - **Otherwise**: pop the call frame normally (implicit return).
+fn handle_frame_exhaustion(
+    story: &mut Story,
+    frame_type: CallFrameType,
+) -> Result<Option<VmYield>, RuntimeError> {
+    if frame_type == CallFrameType::Thread {
+        // Thread boundary exhausted — thread is done. Pop it without
+        // touching inherited frames below. ThreadCall always creates a
+        // child thread, so can_pop_thread is expected to be true.
+        if story.flow.can_pop_thread() {
+            story.flow.pop_thread();
+        } else {
+            return Ok(Some(VmYield::Done));
+        }
+    } else if frame_type != CallFrameType::Function && !story.flow.pending_choices.is_empty() {
+        // Non-function frame with pending choices: the fork captured at
+        // choice creation preserves the state for resumption.
+        if story.flow.can_pop_thread() {
+            story.flow.pop_thread();
+        } else {
+            return Ok(Some(VmYield::Done));
+        }
+    } else {
+        pop_call_frame(story, false)?;
+        if story.flow.current_thread().call_stack.is_empty() {
+            if story.flow.can_pop_thread() {
+                story.flow.pop_thread();
+            } else {
+                return Ok(Some(VmYield::Done));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Pop a call frame and handle function-call output capture.
