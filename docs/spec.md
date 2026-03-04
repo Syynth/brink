@@ -275,13 +275,7 @@ Each external function definition has:
 - **Arg count** — `u8`
 - **Fallback** — `Option<DefinitionId>` pointing to a container (tag `0x01`) with the ink-defined fallback body
 
-The linker resolves external function calls at load time:
-
-1. **Host provides a binding** → resolved to host call
-2. **No host binding, fallback exists** → resolved to the fallback container
-3. **Neither** → linker error: "external function 'X' has no host binding and no fallback"
-
-At runtime, calling an external is just a call — the linker already resolved it to the right target. No branching on the hot path. The separate tag gives better diagnostics and makes externals visually distinct in `.inkt` debug output.
+External function resolution is a **runtime** concern, not a link-time concern. The linker indexes external definitions (assigns runtime indices, builds lookup tables) but does not resolve them to host bindings or fallbacks. Resolution happens per-flow at execution time — see [External function handling](#external-function-handling). The separate tag gives better diagnostics and makes externals visually distinct in `.inkt` debug output.
 
 ### What is NOT a definition
 
@@ -447,37 +441,140 @@ The linker reads all definitions from the unlinked layer and:
 2. Assigns each definition a fast runtime index within its table
 3. Builds resolution tables: `DefinitionId → runtime index` (one per tag type)
 4. Resolves all `DefinitionId` references in bytecode to runtime indices
-5. Resolves external functions: host binding → host call; no binding + fallback → fallback container; neither → error
+5. Indexes external function definitions (assigns runtime indices, builds name lookup tables). Resolution to host bindings or ink fallbacks is a runtime concern, not a link-time concern.
 6. Initializes global variables from their default values
 7. Builds per-container line tables, name table, and other content structures
 8. Produces an immutable, shareable `Program`
 
 One codepath processes all definition types uniformly. The tag determines which table, but the resolution mechanism is the same.
 
-### Story instance (per-entity runtime state)
+### Three-part state model
 
-Each story instance maintains:
+Runtime state is split into three parts with distinct ownership and lifecycle:
 
-- **Execution state:** call stack of `CallFrame` (each with return address, temp slots, and container position stack), value stack. The current position is `call_stack.top().container_stack.top()`. All persistent positions use `(DefinitionId, offset)` for recompilation stability.
-- **Narrative state:** visit counts (per container `DefinitionId`), turn index, sequence states
-- **RNG state:** per-instance seed + state for deterministic randomness
-- **Output buffer:** accumulated content, pending tags, pending choices (cleared each step)
-- **Status:** active, waiting for choice, done, ended, error
+#### Flow (isolated execution state)
 
-### Global state (shared across instances)
+A Flow is a fully isolated execution context — analogous to a separate conversation or narrative track. Each flow owns:
 
-Global variables shared by all instances of a program. Separate from per-instance locals.
+- **Threads / call stack** — `Vec<Thread>`, each thread containing a `Vec<CallFrame>` (return address, temp slots, container position stack). The current position is `call_stack.top().container_stack.top()`.
+- **Value stack** — operand stack for bytecode evaluation
+- **Output buffer** — accumulated text with per-line structure and tag association (see [Output buffer](#output-buffer))
+- **Pending choices** — choices awaiting player selection, each with a thread fork snapshot
+- **Tag state** — current tags, in-tag flag
+- **External function pending state** — tracks whether the flow is awaiting an external function result (see [External function handling](#external-function-handling))
+
+All persistent positions within a flow use `(DefinitionId, offset)` for recompilation stability.
+
+#### Context (game state / save state)
+
+A Context holds the narrative and game state that is meaningful to save, load, and synchronize:
+
+- **Globals** — global variable values
+- **Visit counts** — per container `DefinitionId`
+- **Turn counts** — which turn each container was last visited
+- **Turn index** — current turn number
+- **RNG seed + state** — for deterministic randomness
+
+Context is the natural serialization boundary — saving a story means serializing its Context (plus Flow state for mid-passage saves). Contexts can be cloned for speculative execution ("what happens if the player picks choice 2?") and diffed to see what changed.
+
+#### Program (immutable, shared)
+
+The linked program — containers, bytecode, line tables, definitions, name table. Loaded once, shared across all story instances and flows. Never mutated after linking.
 
 ### Execution model
 
-- Synchronous, non-blocking step function
-- Runs until a yield point (choice set, done, end, external call)
-- Returns a `StepResult`:
-  - `Continue` — produced text, keep running
-  - `ChoicePoint` — waiting for player input (content + choices)
-  - `Done` — pause point, can resume
-  - `Ended` — permanent finish
-  - `Error` — runtime error with source location
+The execution model is layered: a dumb per-instruction VM at the bottom, with progressively higher-level APIs built on top. Each layer adds intelligence; lower layers know nothing about the layers above.
+
+#### Layer 0: VM step (per-instruction)
+
+The VM processes a single bytecode instruction and reports what happened:
+
+```
+vm::step(flow: &mut Flow, context: &mut Context, program: &Program) -> Result<Stepped>
+```
+
+The VM is maximally dumb — it decodes one opcode, executes it, and returns. It does not loop, does not make decisions about when to stop, and does not know about lines, passages, or the Story.
+
+```
+enum Stepped {
+    Continue,                                  // opcode executed, nothing special
+    ExternalCall { name: String, args: Vec<Value> },  // hit external fn, args popped, awaiting resolution
+    ThreadCompleted,                           // current thread exhausted, switched to next
+    Done,                                      // hit Done opcode
+    Ended,                                     // hit End opcode
+    Error(RuntimeError),                       // opcode encountered invalid state (type error, stack underflow, etc.)
+}
+```
+
+When the VM yields `ExternalCall`, it has already popped the arguments from the value stack. The stack is missing the return value. The caller is responsible for pushing a return value (or `Null` for void functions) onto the flow's value stack before calling `step` again. See [External function handling](#external-function-handling).
+
+#### Layer 1: Line-level continuation
+
+Loops the VM step until a complete line of dialogue is ready:
+
+- Detects newline boundaries in the output buffer (a newline followed by non-glue content confirms the line)
+- Handles glue lookahead (a newline is tentative until the next step confirms it wasn't consumed by glue)
+- Resolves external function calls via registered handlers
+- Returns one line of text with its associated tags
+
+This is equivalent to the reference ink runtime's `Continue()`.
+
+#### Layer 2: Passage-level continuation
+
+Loops line-level continuation until a yield point (choices available, done, or ended). Returns all accumulated lines. This is equivalent to the reference ink runtime's `ContinueMaximally()` and the current behavior of `step()`.
+
+#### Layer 3: Story orchestrator
+
+The `Story` manages one or more flows and their contexts, providing the convenient public API:
+
+- **Single-flow** (common case): one flow, one context. API behaves like `ContinueMaximally` — step and get text + choices.
+- **External function binding**: register handlers at the Story level. Line/passage-level continuation resolves external calls transparently.
+- **Choice selection**: `choose(index)` is a flow-level operation — restores the thread fork, sets execution position, clears pending choices.
+
+#### Flows and instancing
+
+Every flow in the Story is a named **(Flow, Context) pair**. Multi-flow and instanced flows are the same primitive — the difference is usage pattern, not mechanism.
+
+- **Named flows**: the Story manages a collection of named (Flow, Context) pairs. The "default" flow is just the one created at startup. Additional flows can be created with their own entry points and contexts.
+- **Instanced flows**: multiple (Flow, Context) pairs can share the same scene template (entry point in the Program). Each instance has a unique identity (e.g., `"shopkeeper:npc_42"`) and fully independent state.
+
+**Variable scoping for instances** uses explicit registration. When setting up an instance template, the game developer declares which globals are **shared** (readable/writable across all instances, backed by a common store). Everything else in the Context is **per-instance by default** — visit counts, turn counts, turn index, RNG, and all unregistered globals get their own copy per instance. The VM sees a flat key-value store; the backing store handles the shared/instance split transparently.
+
+**Lifecycle, persistence, and synchronization** are Story-layer or engine/caller-layer concerns — the Flow and VM know nothing about them. The Story (or the engine above it) decides when to spawn or destroy instances, how to serialize their contexts, and whether/how to propagate state between flows. The primitives (named (Flow, Context) pairs, explicit shared-global registration) are designed to support a range of policies without prescribing one.
+
+Consumers who need maximum control can bypass the Story and work directly with flows, contexts, and `vm::step`. The Story is a convenience layer that does not sacrifice performance or control.
+
+### External function handling
+
+External function resolution is a runtime concern, handled per-flow:
+
+1. The VM hits `CallExternal(fn_id, argc)` → pops `argc` args from the value stack → yields `Stepped::ExternalCall { name, args }`.
+2. The flow marks itself as pending an external function result.
+3. The caller decides how to resolve:
+   - **Provide a result**: `flow.provide_external_result(value)` — pushes the value onto the value stack, clears pending state. For fire-and-forget calls (e.g., `~ play_sound(...)`), the caller provides `Value::Null` and the next opcode (`Pop`) discards it.
+   - **Invoke the ink fallback**: `flow.invoke_fallback()` — directs the VM to execute the ink-defined fallback container instead of waiting for a host-provided value.
+4. The next `vm::step` call proceeds from where it left off.
+
+Higher-level APIs (line/passage continuation) resolve external calls transparently via registered handlers. The low-level API gives callers full control over when and how each external call is resolved.
+
+### Output buffer
+
+The output buffer lives in each Flow and tracks per-line structure as content is emitted:
+
+- The VM calls `push_text`, `push_newline`, `push_glue`, `begin_tag`/`end_tag` — it does not know about lines.
+- The buffer internally groups text and tags into line segments, separated by newline boundaries.
+- Glue resolution collapses line boundaries (a glue followed by a newline merges the adjacent lines).
+- Callers query the buffer for structured output: completed lines with their associated tags, whether a partial line is in progress, etc.
+
+This design solves per-line tag association (e.g., the i18n test case where tags must attach to the line they follow, not the entire passage) without adding complexity to the VM.
+
+### Choice forks
+
+When a choice is created (`BeginChoice`), the VM captures a **thread fork** — a snapshot of the current thread's call stack. This fork is stored on the `PendingChoice` and restored when the player selects that choice.
+
+Choice forks capture **Flow state only** (call stack, temps). The Context (globals, visit counts) is **not** captured or rolled back — modifications to globals between fork creation and choice selection remain visible. This matches the reference ink runtime's behavior.
+
+**Guiding invariant:** the multi-flow model must produce identical results to a single-flow story when only one flow is present. Choice forks are a Flow-local operation and do not interact with Context synchronization.
 
 ### Hot-reload reconciliation
 
@@ -500,11 +597,11 @@ All persistent references in story instances use `DefinitionId`, not runtime ind
 A `NarrativeRuntime` (or equivalent) host interface manages:
 
 - Loading/unloading programs (via the linker step)
-- Spawning/destroying story instances
+- Spawning/destroying story instances (each with its own flows and contexts)
 - Stepping instances and collecting results
-- Routing external function calls to host
+- Registering external function handlers
 - Hot-reloading programs and reconciling instances
-- Save/load for instances and global state
+- Save/load for contexts and flow state
 
 ## Localization
 
@@ -684,7 +781,7 @@ The analyzer grows with each tier — barely exists during the spike, picks up n
 
 The following are real requirements but deferred to later phases:
 
-- **Step budgeting** — `StepBudget::Instructions(n)` for cooperative scheduling, `BudgetExhausted` result variant. The VM will need this for game integration but it's not needed for initial implementation.
+- **Step budgeting** — the per-instruction `vm::step` naturally supports cooperative scheduling (the caller controls the loop), but a convenience API like `continue_line_with_budget(n)` that limits the number of instructions per call may be useful for frame-budgeted game loops. Deferred until the layered API is stable.
 - **JSON codegen backend** — inklecate-compatible `.ink.json` output for conformance testing. Decision on whether to build this is deferred.
 - **Content extensions** — pluggable compile-time text transforms (speaker attribution, parentheticals, styled text). Still wanted, but the architectural integration (opcode reservation, structured `ContentOutput` types) needs more thought before committing.
 - **Localization implementation** — the localization architecture is specified (see [Localization](#localization)) but implementation is deferred to post-tier-3. Format types (`LineTemplate`, `PluralCategory`, etc.) land with `brink-format`; the line resolver, `.inkl` loading, XLIFF tooling, and `brink-intl` come later.

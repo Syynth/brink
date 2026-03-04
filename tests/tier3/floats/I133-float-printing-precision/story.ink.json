@@ -1,7 +1,7 @@
 {
   "inkVersion": 21,
   "root": [
-    ["ev", 7, 3, "/", "out", "/ev", "\n", ["done", { "#n": "g-0" }], null],
+    ["ev", 7, 3.0, "/", "out", "/ev", "\n", ["done", { "#n": "g-0" }], null],
     "done",
     null
   ],
