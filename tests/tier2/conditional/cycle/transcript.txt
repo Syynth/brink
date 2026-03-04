@@ -1,17 +1,13 @@
 I held my breath.
 
 1: Try again
-?> 
-I waited impatiently.
+?> I waited impatiently.
 
 1: Try again
-?> 
-I paused.
+?> I paused.
 
 1: Try again
-?> 
-I held my breath.
+?> I held my breath.
 
 1: Try again
-?> 
-I waited impatiently.
+?> I waited impatiently.
