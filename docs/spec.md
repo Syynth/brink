@@ -201,11 +201,22 @@ Each call frame contains:
 
 ```
 CallFrame {
+    frame_type: CallFrameType,
     return_address: (DefinitionId, offset),
     temps: Vec<Value>,                        // frame-local temp variable slots
     container_stack: Vec<(DefinitionId, offset)>,  // flow positions within this call
 }
 ```
+
+#### Call frame types
+
+| Type | Created by | Behavior |
+|------|-----------|----------|
+| `Root` | Story startup | Main flow entry. Empty → yield Done. |
+| `Function` | `Call` opcode | Output captured as return value. Empty → pop frame, push captured text. |
+| `Tunnel` | `TunnelCall` opcode | Non-capturing call. Yields for pending choices. |
+| `Thread` | `ThreadCall` opcode | Boundary frame — thread won't unwind into inherited frames below. |
+| `External` | `CallExternal` opcode | Marker frame for pending external function resolution. Contains no bytecode — the frame exists to track state on the call stack. See [External function handling](#external-function-handling). |
 
 The "current container" is always the top of `call_stack.top().container_stack`. Finishing a container (reaching end of its bytecode) pops from the container stack and resumes the parent. Returning from a function/tunnel pops the entire call frame. Diverts replace the current container position. Threads fork the entire call stack (call frames + their container stacks).
 
@@ -461,7 +472,6 @@ A Flow is a fully isolated execution context — analogous to a separate convers
 - **Output buffer** — accumulated text with per-line structure and tag association (see [Output buffer](#output-buffer))
 - **Pending choices** — choices awaiting player selection, each with a thread fork snapshot
 - **Tag state** — current tags, in-tag flag
-- **External function pending state** — tracks whether the flow is awaiting an external function result (see [External function handling](#external-function-handling))
 
 All persistent positions within a flow use `(DefinitionId, offset)` for recompilation stability.
 
@@ -498,15 +508,16 @@ The VM is maximally dumb — it decodes one opcode, executes it, and returns. It
 ```
 enum Stepped {
     Continue,                                  // opcode executed, nothing special
-    ExternalCall { name: String, args: Vec<Value> },  // hit external fn, args popped, awaiting resolution
+    ExternalCall,                                      // hit external fn — name, args, fallback all on the External frame
     ThreadCompleted,                           // current thread exhausted, switched to next
     Done,                                      // hit Done opcode
     Ended,                                     // hit End opcode
-    Error(RuntimeError),                       // opcode encountered invalid state (type error, stack underflow, etc.)
 }
 ```
 
-When the VM yields `ExternalCall`, it has already popped the arguments from the value stack. The stack is missing the return value. The caller is responsible for pushing a return value (or `Null` for void functions) onto the flow's value stack before calling `step` again. See [External function handling](#external-function-handling).
+All runtime errors (type errors, stack underflow, unresolved external calls, etc.) are returned via `Result::Err(RuntimeError)`. Error variants should be detailed enough for the caller to decide recoverability — e.g., a type error includes the types involved, an unresolved external includes the function name. If the VM is in an unrecoverable state, subsequent `step` calls will continue returning the same error; it is the caller's responsibility to detect this and stop.
+
+When the VM yields `ExternalCall`, it has popped the arguments from the value stack and pushed an `External` call frame. The caller must resolve the external call before the next `step` — see [External function handling](#external-function-handling).
 
 #### Layer 1: Line-level continuation
 
@@ -546,16 +557,44 @@ Consumers who need maximum control can bypass the Story and work directly with f
 
 ### External function handling
 
-External function resolution is a runtime concern, handled per-flow:
+External function resolution uses the call stack itself as the state machine. The `External` call frame type (see [Call frame types](#call-frame-types)) tracks pending external calls with no separate state flags.
 
-1. The VM hits `CallExternal(fn_id, argc)` → pops `argc` args from the value stack → yields `Stepped::ExternalCall { name, args }`.
-2. The flow marks itself as pending an external function result.
-3. The caller decides how to resolve:
-   - **Provide a result**: `flow.provide_external_result(value)` — pushes the value onto the value stack, clears pending state. For fire-and-forget calls (e.g., `~ play_sound(...)`), the caller provides `Value::Null` and the next opcode (`Pop`) discards it.
-   - **Invoke the ink fallback**: `flow.invoke_fallback()` — directs the VM to execute the ink-defined fallback container instead of waiting for a host-provided value.
-4. The next `vm::step` call proceeds from where it left off.
+#### VM behavior
 
-Higher-level APIs (line/passage continuation) resolve external calls transparently via registered handlers. The low-level API gives callers full control over when and how each external call is resolved.
+When the VM hits `CallExternal(fn_id, argc)`:
+
+1. Pop `argc` args from the value stack
+2. Push an `External` call frame — return address = current position, the external function's `DefinitionId` for fallback lookup, and the popped args stored in the frame's `temps` (frame-local storage)
+3. Yield `Stepped::ExternalCall`
+
+Everything about the pending call — name, args, fallback `DefinitionId` — lives on the `External` frame. The `Stepped` variant is a pure signal with no payload. The caller inspects the flow to get what it needs (e.g., `flow.external_name(program)`, `flow.external_args()`). This keeps the yield minimal and ensures all call state survives serialization, debugging, and save/load.
+
+If `step` is called while an `External` frame is on top of the call stack (i.e., the caller forgot to resolve it), the VM returns `Err(RuntimeError::UnresolvedExternalCall)`. The caller can inspect the frame for details.
+
+#### Caller resolution
+
+The caller resolves the external call via methods on the Flow:
+
+- **Provide a result**: `flow.resolve_external(value)` — pops the `External` frame and pushes the return value onto the value stack. For fire-and-forget calls (e.g., `~ play_sound(...)`), the caller provides `Value::Null` and the next opcode (`Pop`) discards it.
+- **Invoke the ink fallback**: `flow.invoke_fallback(program)` — replaces the `External` frame with a `Function` frame pointing at the ink-defined fallback container. The next `step` call executes the fallback using the existing function call machinery (output capture, return value, frame pop). No special-case VM code needed.
+
+#### Story-level integration
+
+Higher-level APIs (line/passage continuation) resolve external calls transparently via registered handlers:
+
+```
+story.bind_external("play_sound", |args| Ok(Value::Null));
+story.bind_external("get_health", |args| Ok(Value::Int(player.health)));
+```
+
+When `continue_line` encounters `Stepped::ExternalCall`:
+
+1. Read name from `flow.external_name(program)`, look up handler
+2. **Handler found**: read args from `flow.external_args()`, call handler, use `flow.resolve_external(result)`, continue stepping
+3. **No handler, fallback exists**: use `flow.invoke_fallback(program)`, continue stepping
+4. **Neither**: return error to caller
+
+External handler functions are fallible (`-> Result<Value, E>`) — a handler that errors propagates through the continuation layer to the caller. The error should be descriptive (handler name, args, underlying cause) so the caller can decide how to respond.
 
 ### Output buffer
 
