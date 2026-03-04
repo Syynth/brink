@@ -382,8 +382,7 @@ pub(crate) fn run<R: StoryRng>(
             Opcode::Floor => {
                 let val = story.flow.pop_value()?;
                 let result = match val {
-                    #[expect(clippy::cast_possible_truncation)]
-                    Value::Float(f) => Value::Int(f.floor() as i32),
+                    Value::Float(f) => Value::Float(f.floor()),
                     Value::Int(_) => val,
                     _ => return Err(RuntimeError::TypeError("floor requires numeric".into())),
                 };
@@ -392,8 +391,7 @@ pub(crate) fn run<R: StoryRng>(
             Opcode::Ceiling => {
                 let val = story.flow.pop_value()?;
                 let result = match val {
-                    #[expect(clippy::cast_possible_truncation)]
-                    Value::Float(f) => Value::Int(f.ceil() as i32),
+                    Value::Float(f) => Value::Float(f.ceil()),
                     Value::Int(_) => val,
                     _ => return Err(RuntimeError::TypeError("ceiling requires numeric".into())),
                 };

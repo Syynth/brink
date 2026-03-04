@@ -705,3 +705,23 @@ fn rnd_func_deterministic_output() {
          Rolling dice 4: 2.\n"
     );
 }
+
+/// CEILING/FLOOR should return Float, not Int, so downstream arithmetic
+/// preserves float semantics. `CEILING(1.2) / 3` → `0.6666667` (float division).
+#[test]
+fn ceiling_preserves_float_for_arithmetic() {
+    let json =
+        load_ink_json("../../tests/tier2/builtins/I026-floor-ceiling-and-casts/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result, "1\n1\n2\n0.6666667\n0\n1\n");
+}
+
+/// Glue should look past whitespace-only text to find the preceding newline.
+/// `{true: a} <> b` should produce `a b`, not `a\nb`.
+#[test]
+fn glue_skips_whitespace_text_to_find_newline() {
+    let json =
+        load_ink_json("../../tests/tier2/logic/I095-multiline-logic-with-glue/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result, "a b\na b\n");
+}

@@ -140,7 +140,7 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
     let mut remove = vec![false; parts.len()];
     for (i, part) in parts.iter().enumerate() {
         if matches!(part, OutputPart::Glue) {
-            // Remove the nearest preceding newline.
+            // Remove the nearest preceding newline, skipping whitespace-only text.
             for j in (0..i).rev() {
                 if remove[j] {
                     continue;
@@ -151,6 +151,7 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
                         break;
                     }
                     OutputPart::Glue | OutputPart::Checkpoint => {}
+                    OutputPart::Text(s) if s.trim().is_empty() => {}
                     OutputPart::Text(_) => break,
                 }
             }
@@ -172,7 +173,11 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
         match part {
             OutputPart::Text(s) => {
                 out.push_str(s);
-                after_glue = false;
+                // Only clear after_glue for non-whitespace text; whitespace-only
+                // text should not prevent glue from eating a following newline.
+                if !s.trim().is_empty() {
+                    after_glue = false;
+                }
             }
             OutputPart::Newline => {
                 if !after_glue {
@@ -467,6 +472,20 @@ mod tests {
         buf.push_glue();
         buf.push_text(" with glue.");
         assert_eq!(buf.flush(), "Some content with glue.");
+    }
+
+    /// Glue should skip past whitespace-only text to find the preceding newline.
+    /// Pattern: `a\n" "<>b` — the `" "` is whitespace-only and should not block
+    /// the glue from removing the newline.
+    #[test]
+    fn glue_skips_whitespace_only_text_to_find_newline() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("a");
+        buf.push_newline();
+        buf.push_text(" ");
+        buf.push_glue();
+        buf.push_text("b");
+        assert_eq!(buf.flush(), "a b");
     }
 
     // ── clean_output_whitespace tests ────────────────────────────────
