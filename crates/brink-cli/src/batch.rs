@@ -10,13 +10,13 @@ pub fn play_loop<B: BufRead>(
 
     loop {
         match story.step(program)? {
-            brink_runtime::StepResult::Done { text }
-            | brink_runtime::StepResult::Ended { text } => {
+            brink_runtime::StepResult::Done { text, .. }
+            | brink_runtime::StepResult::Ended { text, .. } => {
                 write!(stdout, "{text}")?;
                 stdout.flush()?;
                 break;
             }
-            brink_runtime::StepResult::Choices { text, choices } => {
+            brink_runtime::StepResult::Choices { text, choices, .. } => {
                 write!(stdout, "{text}")?;
 
                 for choice in &choices {

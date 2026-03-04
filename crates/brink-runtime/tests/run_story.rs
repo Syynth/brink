@@ -19,11 +19,11 @@ fn run_story(ink_json: &str, inputs: &[usize]) -> String {
 
     loop {
         match story.step(&program).unwrap() {
-            StepResult::Done { text } | StepResult::Ended { text } => {
+            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
                 output.push_str(&text);
                 break;
             }
-            StepResult::Choices { text, choices } => {
+            StepResult::Choices { text, choices, .. } => {
                 output.push_str(&text);
                 let choice_idx = if input_idx < inputs.len() {
                     let c = inputs[input_idx];
@@ -169,7 +169,7 @@ fn fallback_choice_auto_selected() {
         matches!(result, StepResult::Done { .. } | StepResult::Ended { .. }),
         "expected Done/Ended (auto-selected fallback), got Choices"
     );
-    if let StepResult::Done { text } | StepResult::Ended { text } = result {
+    if let StepResult::Done { text, .. } | StepResult::Ended { text, .. } = result {
         assert_eq!(text.trim(), "Should be 1 not 0: 1.");
     }
 }

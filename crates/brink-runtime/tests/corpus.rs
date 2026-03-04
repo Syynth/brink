@@ -35,12 +35,22 @@ fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, Strin
             .step(&program)
             .map_err(|e| format!("runtime error: {e}"))?
         {
-            StepResult::Done { text } | StepResult::Ended { text } => {
+            StepResult::Done { text, tags } | StepResult::Ended { text, tags } => {
                 output.push_str(&text);
+                if !tags.is_empty() {
+                    let _ = write!(output, "# tags: {}", tags.join(", "));
+                }
                 break;
             }
-            StepResult::Choices { text, choices } => {
+            StepResult::Choices {
+                text,
+                choices,
+                tags,
+            } => {
                 output.push_str(&text);
+                if !tags.is_empty() {
+                    let _ = write!(output, "# tags: {}", tags.join(", "));
+                }
                 if choices.is_empty() {
                     return Err("no choices available".into());
                 }

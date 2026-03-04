@@ -78,14 +78,14 @@ impl App {
         self.focus = Focus::Story;
 
         match story.step(program)? {
-            StepResult::Done { text } => {
+            StepResult::Done { text, .. } => {
                 self.phase = Phase::Typing {
                     typewriter: TypewriterState::new(text, self.char_delay),
                     pending_choices: Vec::new(),
                     ended: false,
                 };
             }
-            StepResult::Choices { text, choices } => {
+            StepResult::Choices { text, choices, .. } => {
                 let entries: Vec<ChoiceEntry> = choices
                     .into_iter()
                     .map(|c| ChoiceEntry {
@@ -99,7 +99,7 @@ impl App {
                     ended: false,
                 };
             }
-            StepResult::Ended { text } => {
+            StepResult::Ended { text, .. } => {
                 self.phase = Phase::Typing {
                     typewriter: TypewriterState::new(text, self.char_delay),
                     pending_choices: Vec::new(),

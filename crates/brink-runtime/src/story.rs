@@ -26,11 +26,15 @@ pub enum StoryStatus {
 #[derive(Debug, Clone)]
 pub enum StepResult {
     /// Yielded text; can resume with another [`step`](Story::step).
-    Done { text: String },
+    Done { text: String, tags: Vec<String> },
     /// Yielded text and choices; call [`choose`](Story::choose) then [`step`](Story::step).
-    Choices { text: String, choices: Vec<Choice> },
+    Choices {
+        text: String,
+        choices: Vec<Choice>,
+        tags: Vec<String>,
+    },
     /// Story permanently ended.
-    Ended { text: String },
+    Ended { text: String, tags: Vec<String> },
 }
 
 /// A single choice presented to the player.
@@ -38,6 +42,7 @@ pub enum StepResult {
 pub struct Choice {
     pub text: String,
     pub index: usize,
+    pub tags: Vec<String>,
 }
 
 // ── Internal types ──────────────────────────────────────────────────────────
@@ -88,6 +93,8 @@ pub(crate) struct PendingChoice {
     pub original_index: usize,
     #[expect(dead_code)]
     pub output_line_idx: Option<u16>,
+    /// Tags collected during choice evaluation.
+    pub tags: Vec<String>,
     /// Snapshot of the current thread at choice creation time, so that
     /// selecting this choice can restore the execution context
     /// (including temp variables from enclosing tunnels/functions).
@@ -247,8 +254,10 @@ impl Story {
                 vm::VmYield::Done => {
                     if self.flow.pending_choices.is_empty() {
                         self.status = StoryStatus::Done;
+                        let tags = std::mem::take(&mut self.flow.current_tags);
                         return Ok(StepResult::Done {
                             text: clean_output_whitespace(&full_text),
+                            tags,
                         });
                     }
 
@@ -277,17 +286,22 @@ impl Story {
                         .map(|(i, pc)| Choice {
                             text: pc.display_text.clone(),
                             index: i,
+                            tags: pc.tags.clone(),
                         })
                         .collect();
+                    let tags = std::mem::take(&mut self.flow.current_tags);
                     return Ok(StepResult::Choices {
                         text: clean_output_whitespace(&full_text),
                         choices,
+                        tags,
                     });
                 }
                 vm::VmYield::End => {
                     self.status = StoryStatus::Ended;
+                    let tags = std::mem::take(&mut self.flow.current_tags);
                     return Ok(StepResult::Ended {
                         text: clean_output_whitespace(&full_text),
+                        tags,
                     });
                 }
             }
@@ -511,6 +525,52 @@ mod tests {
         );
     }
 
+    // ── Tags ──────────────────────────────────────────────────────────
+
+    fn load_tags() -> (crate::Program, Story) {
+        let json_str =
+            std::fs::read_to_string("../../tests/tier3/tags/tags/story.ink.json").unwrap();
+        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
+        let data = brink_converter::convert(&ink).unwrap();
+        let program = link(&data).unwrap();
+        let story = Story::new(&program);
+        (program, story)
+    }
+
+    fn load_tags_in_choice() -> (crate::Program, Story) {
+        let json_str =
+            std::fs::read_to_string("../../tests/tier3/tags/tagsInChoice/story.ink.json").unwrap();
+        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
+        let data = brink_converter::convert(&ink).unwrap();
+        let program = link(&data).unwrap();
+        let story = Story::new(&program);
+        (program, story)
+    }
+
+    #[test]
+    fn step_result_exposes_tags() {
+        let (program, mut story) = load_tags();
+        let result = story.step(&program).unwrap();
+        match result {
+            StepResult::Done { tags, .. } | StepResult::Ended { tags, .. } => {
+                assert_eq!(tags, vec!["author: Joe", "title: My Great Story"]);
+            }
+            other @ StepResult::Choices { .. } => panic!("expected Done or Ended, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choice_exposes_tags() {
+        let (program, mut story) = load_tags_in_choice();
+        let choices = step_until_choices(&mut story, &program);
+        assert!(!choices.is_empty());
+        // The choice in tagsInChoice has tags "one" and "two"
+        assert!(
+            !choices[0].tags.is_empty(),
+            "choice should have tags, got: {choices:?}"
+        );
+    }
+
     // ── Thread support ──────────────────────────────────────────────────
 
     fn load_i091() -> (crate::Program, Story) {
@@ -544,7 +604,7 @@ mod tests {
 
         // The text output should include "2" (CHOICE_COUNT()) which
         // proves execution returned to the main flow after the thread.
-        if let StepResult::Choices { text, choices } = result {
+        if let StepResult::Choices { text, choices, .. } = result {
             assert!(
                 text.contains('2'),
                 "text should contain '2' from CHOICE_COUNT(), got: {text:?}"

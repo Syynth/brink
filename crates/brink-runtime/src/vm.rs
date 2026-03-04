@@ -683,7 +683,7 @@ pub(crate) fn run(story: &mut Story, program: &Program) -> Result<VmYield, Runti
                     .output
                     .end_capture()
                     .ok_or(RuntimeError::CaptureUnderflow)?;
-                story.flow.current_tags.push(tag_text);
+                story.flow.current_tags.push(tag_text.trim().to_string());
                 story.flow.in_tag = false;
             }
 
@@ -955,6 +955,7 @@ fn handle_begin_choice(
 
     let idx = story.flow.pending_choices.len();
     let thread_fork = story.flow.fork_thread();
+    let tags = std::mem::take(&mut story.flow.current_tags);
     story.flow.pending_choices.push(PendingChoice {
         display_text,
         target_id,
@@ -963,6 +964,7 @@ fn handle_begin_choice(
         flags,
         original_index: idx,
         output_line_idx: None,
+        tags,
         thread_fork,
     });
 

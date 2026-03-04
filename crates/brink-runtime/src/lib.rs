@@ -8,13 +8,13 @@
 //! let mut story = brink_runtime::Story::new(&program);
 //! loop {
 //!     match story.step(&program)? {
-//!         StepResult::Done { text } => print!("{text}"),
-//!         StepResult::Choices { text, choices } => {
+//!         StepResult::Done { text, .. } => print!("{text}"),
+//!         StepResult::Choices { text, choices, .. } => {
 //!             print!("{text}");
 //!             // pick a choice...
 //!             story.choose(0)?;
 //!         }
-//!         StepResult::Ended { text } => {
+//!         StepResult::Ended { text, .. } => {
 //!             print!("{text}");
 //!             break;
 //!         }
