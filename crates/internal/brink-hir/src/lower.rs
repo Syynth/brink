@@ -4,11 +4,11 @@ use rowan::TextRange;
 
 use crate::{
     AssignOp, Assignment, Block, BlockSequence, Choice, ChoiceSet, CondBranch, Conditional,
-    ConstDecl, Content, ContentPart, DeclaredSymbol, Diagnostic, Divert, DivertPath, DivertTarget,
-    Expr, ExternalDecl, FloatBits, Gather, HirFile, IncludeSite, InfixOp, InlineBranch, InlineCond,
-    InlineSeq, Knot, ListDecl, ListMember, Name, Param, Path, PostfixOp, PrefixOp, RefKind, Return,
-    SequenceType, Severity, Stitch, Stmt, StringExpr, StringPart, SymbolManifest, Tag, TempDecl,
-    ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
+    ConstDecl, Content, ContentPart, DeclaredSymbol, Diagnostic, DiagnosticCode, Divert,
+    DivertPath, DivertTarget, Expr, ExternalDecl, FloatBits, Gather, HirFile, IncludeSite, InfixOp,
+    InlineBranch, InlineCond, InlineSeq, Knot, ListDecl, ListMember, Name, Param, Path, PostfixOp,
+    PrefixOp, RefKind, Return, SequenceType, Stitch, Stmt, StringExpr, StringPart, SymbolManifest,
+    Tag, TempDecl, ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
 };
 
 #[cfg(test)]
@@ -87,11 +87,11 @@ impl LowerCtx {
         }
     }
 
-    fn emit_error(&mut self, range: TextRange, message: impl Into<String>) {
+    fn emit(&mut self, range: TextRange, code: DiagnosticCode) {
         self.diagnostics.push(Diagnostic {
             range,
-            message: message.into(),
-            severity: Severity::Error,
+            message: code.title().to_string(),
+            code,
         });
     }
 
@@ -169,7 +169,10 @@ impl LowerCtx {
             .externals()
             .filter_map(|e| self.lower_external_decl(&e))
             .collect();
-        let includes: Vec<_> = file.includes().filter_map(|i| lower_include(&i)).collect();
+        let includes: Vec<_> = file
+            .includes()
+            .filter_map(|i| self.lower_include(&i))
+            .collect();
         let knots: Vec<_> = file.knots().filter_map(|k| self.lower_knot(&k)).collect();
         let root_content = self.lower_body_children(file.syntax());
 
@@ -185,15 +188,24 @@ impl LowerCtx {
     }
 
     fn lower_knot(&mut self, knot: &ast::KnotDef) -> Option<Knot> {
-        let header = knot.header()?;
-        let name_text = header.name()?;
-        let ident = header.identifier()?;
+        let header = knot.header().or_else(|| {
+            self.emit(knot.syntax().text_range(), DiagnosticCode::E001);
+            None
+        })?;
+        let ident = header.identifier().or_else(|| {
+            self.emit(knot.syntax().text_range(), DiagnosticCode::E001);
+            None
+        })?;
+        let name_text = header.name().or_else(|| {
+            self.emit(knot.syntax().text_range(), DiagnosticCode::E001);
+            None
+        })?;
         let name = make_name(name_text.clone(), ident.syntax().text_range());
 
         self.declare(SymbolKind::Knot, &name_text, ident.syntax().text_range());
 
         let is_function = header.is_function();
-        let params = lower_knot_params(header.params());
+        let params = self.lower_knot_params(header.params());
 
         let (body, stitches) = knot.body().map_or_else(
             || (Block::default(), Vec::new()),
@@ -220,15 +232,24 @@ impl LowerCtx {
     }
 
     fn lower_stitch(&mut self, stitch: &ast::StitchDef, knot_name: &str) -> Option<Stitch> {
-        let header = stitch.header()?;
-        let name_text = header.name()?;
-        let ident = header.identifier()?;
+        let header = stitch.header().or_else(|| {
+            self.emit(stitch.syntax().text_range(), DiagnosticCode::E002);
+            None
+        })?;
+        let ident = header.identifier().or_else(|| {
+            self.emit(stitch.syntax().text_range(), DiagnosticCode::E002);
+            None
+        })?;
+        let name_text = header.name().or_else(|| {
+            self.emit(stitch.syntax().text_range(), DiagnosticCode::E002);
+            None
+        })?;
         let name = make_name(name_text.clone(), ident.syntax().text_range());
 
         let qualified = format!("{knot_name}.{name_text}");
         self.declare(SymbolKind::Stitch, &qualified, ident.syntax().text_range());
 
-        let params = lower_knot_params(header.params());
+        let params = self.lower_knot_params(header.params());
         let body = stitch
             .body()
             .map_or_else(Block::default, |b| self.lower_body_children(b.syntax()));
@@ -242,37 +263,49 @@ impl LowerCtx {
     }
 }
 
-fn lower_knot_params(params: Option<ast::KnotParams>) -> Vec<Param> {
-    params
-        .map(|p| p.params().filter_map(|pd| lower_param(&pd)).collect())
-        .unwrap_or_default()
-}
+impl LowerCtx {
+    fn lower_knot_params(&mut self, params: Option<ast::KnotParams>) -> Vec<Param> {
+        params
+            .map(|p| p.params().filter_map(|pd| self.lower_param(&pd)).collect())
+            .unwrap_or_default()
+    }
 
-fn lower_param(p: &ast::KnotParamDecl) -> Option<Param> {
-    let name = name_from_ident(&p.identifier()?)?;
-    Some(Param {
-        name,
-        is_ref: p.is_ref(),
-        is_divert: p.is_divert(),
-    })
+    fn lower_param(&mut self, p: &ast::KnotParamDecl) -> Option<Param> {
+        let ident = p.identifier().or_else(|| {
+            self.emit(p.syntax().text_range(), DiagnosticCode::E003);
+            None
+        })?;
+        let name = name_from_ident(&ident).or_else(|| {
+            self.emit(p.syntax().text_range(), DiagnosticCode::E003);
+            None
+        })?;
+        Some(Param {
+            name,
+            is_ref: p.is_ref(),
+            is_divert: p.is_divert(),
+        })
+    }
 }
 
 // ─── Phase 2: Declarations ──────────────────────────────────────────
 
 impl LowerCtx {
     fn lower_var_decl(&mut self, v: &ast::VarDecl) -> Option<VarDecl> {
-        let ident = v.identifier()?;
-        let name = name_from_ident(&ident)?;
+        let ident = v.identifier().or_else(|| {
+            self.emit(v.syntax().text_range(), DiagnosticCode::E004);
+            None
+        })?;
+        let name = name_from_ident(&ident).or_else(|| {
+            self.emit(v.syntax().text_range(), DiagnosticCode::E004);
+            None
+        })?;
         self.declare(SymbolKind::Variable, &name.text, name.range);
 
         let value = v
             .value()
             .and_then(|e| self.lower_expr(&e))
             .unwrap_or_else(|| {
-                self.emit_error(
-                    v.syntax().text_range(),
-                    "VAR declaration missing initializer",
-                );
+                self.emit(v.syntax().text_range(), DiagnosticCode::E005);
                 Expr::Null
             });
 
@@ -280,18 +313,21 @@ impl LowerCtx {
     }
 
     fn lower_const_decl(&mut self, c: &ast::ConstDecl) -> Option<ConstDecl> {
-        let ident = c.identifier()?;
-        let name = name_from_ident(&ident)?;
+        let ident = c.identifier().or_else(|| {
+            self.emit(c.syntax().text_range(), DiagnosticCode::E006);
+            None
+        })?;
+        let name = name_from_ident(&ident).or_else(|| {
+            self.emit(c.syntax().text_range(), DiagnosticCode::E006);
+            None
+        })?;
         self.declare(SymbolKind::Variable, &name.text, name.range);
 
         let value = c
             .value()
             .and_then(|e| self.lower_expr(&e))
             .unwrap_or_else(|| {
-                self.emit_error(
-                    c.syntax().text_range(),
-                    "CONST declaration missing initializer",
-                );
+                self.emit(c.syntax().text_range(), DiagnosticCode::E007);
                 Expr::Null
             });
 
@@ -299,15 +335,21 @@ impl LowerCtx {
     }
 
     fn lower_list_decl(&mut self, l: &ast::ListDecl) -> Option<ListDecl> {
-        let ident = l.identifier()?;
-        let name = name_from_ident(&ident)?;
+        let ident = l.identifier().or_else(|| {
+            self.emit(l.syntax().text_range(), DiagnosticCode::E008);
+            None
+        })?;
+        let name = name_from_ident(&ident).or_else(|| {
+            self.emit(l.syntax().text_range(), DiagnosticCode::E008);
+            None
+        })?;
         self.declare(SymbolKind::List, &name.text, name.range);
 
         let members = l
             .definition()
             .map(|def| {
                 def.members()
-                    .filter_map(|m| lower_list_member(&m))
+                    .filter_map(|m| self.lower_list_member(&m))
                     .collect()
             })
             .unwrap_or_default();
@@ -316,8 +358,14 @@ impl LowerCtx {
     }
 
     fn lower_external_decl(&mut self, e: &ast::ExternalDecl) -> Option<ExternalDecl> {
-        let ident = e.identifier()?;
-        let name = name_from_ident(&ident)?;
+        let ident = e.identifier().or_else(|| {
+            self.emit(e.syntax().text_range(), DiagnosticCode::E010);
+            None
+        })?;
+        let name = name_from_ident(&ident).or_else(|| {
+            self.emit(e.syntax().text_range(), DiagnosticCode::E010);
+            None
+        })?;
         self.declare(SymbolKind::External, &name.text, name.range);
 
         #[expect(
@@ -330,34 +378,49 @@ impl LowerCtx {
     }
 }
 
-fn lower_list_member(m: &ast::ListMember) -> Option<ListMember> {
-    let range = m.syntax().text_range();
-    if let Some(on) = m.on_member() {
-        let name_text = on.name()?;
-        #[expect(clippy::cast_possible_truncation, reason = "list values fit in i32")]
-        Some(ListMember {
-            name: make_name(name_text, range),
-            value: on.value().map(|v| v as i32),
-            is_active: true,
-        })
-    } else if let Some(off) = m.off_member() {
-        let name_text = off.name()?;
-        #[expect(clippy::cast_possible_truncation, reason = "list values fit in i32")]
-        Some(ListMember {
-            name: make_name(name_text, range),
-            value: off.value().map(|v| v as i32),
-            is_active: false,
-        })
-    } else {
-        None
+impl LowerCtx {
+    fn lower_list_member(&mut self, m: &ast::ListMember) -> Option<ListMember> {
+        let range = m.syntax().text_range();
+        if let Some(on) = m.on_member() {
+            let name_text = on.name().or_else(|| {
+                self.emit(range, DiagnosticCode::E009);
+                None
+            })?;
+            #[expect(clippy::cast_possible_truncation, reason = "list values fit in i32")]
+            Some(ListMember {
+                name: make_name(name_text, range),
+                value: on.value().map(|v| v as i32),
+                is_active: true,
+            })
+        } else if let Some(off) = m.off_member() {
+            let name_text = off.name().or_else(|| {
+                self.emit(range, DiagnosticCode::E009);
+                None
+            })?;
+            #[expect(clippy::cast_possible_truncation, reason = "list values fit in i32")]
+            Some(ListMember {
+                name: make_name(name_text, range),
+                value: off.value().map(|v| v as i32),
+                is_active: false,
+            })
+        } else {
+            self.emit(range, DiagnosticCode::E009);
+            None
+        }
     }
 }
 
-fn lower_include(inc: &ast::IncludeStmt) -> Option<IncludeSite> {
-    Some(IncludeSite {
-        file_path: inc.file_path()?.text(),
-        ptr: AstPtr::new(inc),
-    })
+impl LowerCtx {
+    fn lower_include(&mut self, inc: &ast::IncludeStmt) -> Option<IncludeSite> {
+        let file_path = inc.file_path().or_else(|| {
+            self.emit(inc.syntax().text_range(), DiagnosticCode::E011);
+            None
+        })?;
+        Some(IncludeSite {
+            file_path: file_path.text(),
+            ptr: AstPtr::new(inc),
+        })
+    }
 }
 
 // ─── Phase 3: Expression lowering ───────────────────────────────────
@@ -380,25 +443,56 @@ impl LowerCtx {
                 Some(Expr::Path(p))
             }
             ast::Expr::Prefix(pe) => {
-                let op = lower_prefix_op(pe)?;
-                let operand = pe.operand().and_then(|e| self.lower_expr(&e))?;
+                let range = pe.syntax().text_range();
+                let op = lower_prefix_op(pe).or_else(|| {
+                    self.emit(range, DiagnosticCode::E016);
+                    None
+                })?;
+                let operand = pe.operand().and_then(|e| self.lower_expr(&e)).or_else(|| {
+                    self.emit(range, DiagnosticCode::E015);
+                    None
+                })?;
                 Some(Expr::Prefix(op, Box::new(operand)))
             }
             ast::Expr::Infix(ie) => {
-                let lhs = ie.lhs().and_then(|e| self.lower_expr(&e))?;
-                let op = lower_infix_op(ie)?;
-                let rhs = ie.rhs().and_then(|e| self.lower_expr(&e))?;
+                let range = ie.syntax().text_range();
+                let lhs = ie.lhs().and_then(|e| self.lower_expr(&e)).or_else(|| {
+                    self.emit(range, DiagnosticCode::E015);
+                    None
+                })?;
+                let op = lower_infix_op(ie).or_else(|| {
+                    self.emit(range, DiagnosticCode::E016);
+                    None
+                })?;
+                let rhs = ie.rhs().and_then(|e| self.lower_expr(&e)).or_else(|| {
+                    self.emit(range, DiagnosticCode::E015);
+                    None
+                })?;
                 Some(Expr::Infix(Box::new(lhs), op, Box::new(rhs)))
             }
             ast::Expr::Postfix(pe) => {
-                let operand = pe.operand().and_then(|e| self.lower_expr(&e))?;
-                let op = lower_postfix_op(pe)?;
+                let range = pe.syntax().text_range();
+                let operand = pe.operand().and_then(|e| self.lower_expr(&e)).or_else(|| {
+                    self.emit(range, DiagnosticCode::E015);
+                    None
+                })?;
+                let op = lower_postfix_op(pe).or_else(|| {
+                    self.emit(range, DiagnosticCode::E016);
+                    None
+                })?;
                 Some(Expr::Postfix(Box::new(operand), op))
             }
             ast::Expr::Paren(pe) => pe.inner().and_then(|e| self.lower_expr(&e)),
             ast::Expr::FunctionCall(fc) => {
-                let ident = fc.identifier()?;
-                let name_text = ident.name()?;
+                let range = fc.syntax().text_range();
+                let ident = fc.identifier().or_else(|| {
+                    self.emit(range, DiagnosticCode::E017);
+                    None
+                })?;
+                let name_text = ident.name().or_else(|| {
+                    self.emit(range, DiagnosticCode::E017);
+                    None
+                })?;
                 let range = ident.syntax().text_range();
                 let path = Path {
                     segments: vec![make_name(name_text.clone(), range)],
@@ -412,7 +506,10 @@ impl LowerCtx {
                 Some(Expr::Call(path, args))
             }
             ast::Expr::DivertTarget(dt) => {
-                let ast_path = dt.target()?;
+                let ast_path = dt.target().or_else(|| {
+                    self.emit(dt.syntax().text_range(), DiagnosticCode::E018);
+                    None
+                })?;
                 let path = lower_path(&ast_path);
                 let full = path_full_name(&path);
                 self.add_unresolved(&full, ast_path.syntax().text_range(), RefKind::Divert);
@@ -564,7 +661,13 @@ impl LowerCtx {
     }
 
     fn lower_inline_conditional(&mut self, cond: &ast::ConditionalWithExpr) -> Option<InlineCond> {
-        let condition = cond.condition().and_then(|e| self.lower_expr(&e))?;
+        let condition = cond
+            .condition()
+            .and_then(|e| self.lower_expr(&e))
+            .or_else(|| {
+                self.emit(cond.syntax().text_range(), DiagnosticCode::E020);
+                None
+            })?;
         let mut branches = Vec::new();
 
         if let Some(body) = cond.branchless_body() {
@@ -645,6 +748,7 @@ impl LowerCtx {
                 })
                 .collect()
         } else {
+            self.emit(seq.syntax().text_range(), DiagnosticCode::E021);
             return None;
         };
 
@@ -738,7 +842,11 @@ fn lower_tags(tags: Option<ast::Tags>) -> Vec<Tag> {
 impl LowerCtx {
     fn lower_divert_node(&mut self, node: &ast::DivertNode) -> Option<Stmt> {
         if let Some(thread) = node.thread_start() {
-            return Some(Stmt::ThreadStart(self.lower_thread_target(&thread)?));
+            if let Some(ts) = self.lower_thread_target(&thread) {
+                return Some(Stmt::ThreadStart(ts));
+            }
+            self.emit(node.syntax().text_range(), DiagnosticCode::E013);
+            return None;
         }
 
         if let Some(tunnel) = node.tunnel_call() {
@@ -749,6 +857,7 @@ impl LowerCtx {
             if !targets.is_empty() {
                 return Some(Stmt::TunnelCall(TunnelCall { targets }));
             }
+            self.emit(node.syntax().text_range(), DiagnosticCode::E012);
             return None;
         }
 
@@ -766,6 +875,7 @@ impl LowerCtx {
             if !targets.is_empty() {
                 return Some(Stmt::TunnelCall(TunnelCall { targets }));
             }
+            self.emit(node.syntax().text_range(), DiagnosticCode::E012);
             return None;
         }
 
@@ -779,10 +889,14 @@ impl LowerCtx {
                     target: targets.into_iter().next()?,
                 })),
                 n if n > 1 => Some(Stmt::TunnelCall(TunnelCall { targets })),
-                _ => None,
+                _ => {
+                    self.emit(node.syntax().text_range(), DiagnosticCode::E012);
+                    None
+                }
             };
         }
 
+        self.emit(node.syntax().text_range(), DiagnosticCode::E012);
         None
     }
 
@@ -866,6 +980,7 @@ impl LowerCtx {
             }
         }
 
+        self.emit(line.syntax().text_range(), DiagnosticCode::E014);
         None
     }
 }
@@ -874,7 +989,10 @@ impl LowerCtx {
 
 impl LowerCtx {
     fn lower_choice(&mut self, choice: &ast::Choice) -> Option<Choice> {
-        let bullets = choice.bullets()?;
+        let bullets = choice.bullets().or_else(|| {
+            self.emit(choice.syntax().text_range(), DiagnosticCode::E019);
+            None
+        })?;
         let is_sticky = bullets.is_sticky();
 
         let label = choice

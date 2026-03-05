@@ -511,13 +511,144 @@ pub enum RefKind {
 /// A diagnostic produced during HIR lowering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
+    /// The source span this diagnostic points at.
     pub range: TextRange,
+    /// Human-readable message describing the problem.
     pub message: String,
-    pub severity: Severity,
+    /// Structured error code for documentation and tooling.
+    pub code: DiagnosticCode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Severity {
     Error,
     Warning,
+}
+
+/// Stable error codes for brink diagnostics.
+///
+/// Codes are never reused once assigned. Each code has a corresponding
+/// explanation file at `docs/diagnostics/Exxx.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiagnosticCode {
+    // ── Containers ──────────────────────────────────────────────
+    /// Knot definition is missing a name.
+    E001,
+    /// Stitch definition is missing a name.
+    E002,
+    /// Knot or stitch parameter is missing a name.
+    E003,
+
+    // ── Declarations ────────────────────────────────────────────
+    /// `VAR` declaration is missing a name.
+    E004,
+    /// `VAR` declaration is missing an initializer.
+    E005,
+    /// `CONST` declaration is missing a name.
+    E006,
+    /// `CONST` declaration is missing an initializer.
+    E007,
+    /// `LIST` declaration is missing a name.
+    E008,
+    /// `LIST` member is missing a name.
+    E009,
+    /// `EXTERNAL` declaration is missing a name.
+    E010,
+    /// `INCLUDE` statement is missing a file path.
+    E011,
+
+    // ── Control flow ────────────────────────────────────────────
+    /// Divert is missing a target.
+    E012,
+    /// Thread start is missing a target.
+    E013,
+    /// Logic line has no effect (bare `~`).
+    E014,
+
+    // ── Expressions ─────────────────────────────────────────────
+    /// Expression is missing an operand.
+    E015,
+    /// Unknown or unsupported operator.
+    E016,
+    /// Function call is missing a name.
+    E017,
+    /// Divert target expression is missing a path.
+    E018,
+
+    // ── Choices ─────────────────────────────────────────────────
+    /// Choice is missing bullet markers.
+    E019,
+
+    // ── Inline logic ────────────────────────────────────────────
+    /// Inline conditional is missing a condition.
+    E020,
+    /// Inline sequence has no branches.
+    E021,
+}
+
+impl DiagnosticCode {
+    /// The stable string representation (e.g., `"E001"`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::E001 => "E001",
+            Self::E002 => "E002",
+            Self::E003 => "E003",
+            Self::E004 => "E004",
+            Self::E005 => "E005",
+            Self::E006 => "E006",
+            Self::E007 => "E007",
+            Self::E008 => "E008",
+            Self::E009 => "E009",
+            Self::E010 => "E010",
+            Self::E011 => "E011",
+            Self::E012 => "E012",
+            Self::E013 => "E013",
+            Self::E014 => "E014",
+            Self::E015 => "E015",
+            Self::E016 => "E016",
+            Self::E017 => "E017",
+            Self::E018 => "E018",
+            Self::E019 => "E019",
+            Self::E020 => "E020",
+            Self::E021 => "E021",
+        }
+    }
+
+    /// Short human-readable title for this diagnostic code.
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::E001 => "knot is missing a name",
+            Self::E002 => "stitch is missing a name",
+            Self::E003 => "parameter is missing a name",
+            Self::E004 => "VAR declaration is missing a name",
+            Self::E005 => "VAR declaration is missing an initializer",
+            Self::E006 => "CONST declaration is missing a name",
+            Self::E007 => "CONST declaration is missing an initializer",
+            Self::E008 => "LIST declaration is missing a name",
+            Self::E009 => "LIST member is missing a name",
+            Self::E010 => "EXTERNAL declaration is missing a name",
+            Self::E011 => "INCLUDE statement is missing a file path",
+            Self::E012 => "divert is missing a target",
+            Self::E013 => "thread start is missing a target",
+            Self::E014 => "logic line has no effect",
+            Self::E015 => "expression is missing an operand",
+            Self::E016 => "unknown or unsupported operator",
+            Self::E017 => "function call is missing a name",
+            Self::E018 => "divert target expression is missing a path",
+            Self::E019 => "choice is missing bullet markers",
+            Self::E020 => "inline conditional is missing a condition",
+            Self::E021 => "inline sequence has no branches",
+        }
+    }
+
+    /// Default severity for this diagnostic code.
+    #[must_use]
+    pub fn severity(self) -> Severity {
+        match self {
+            Self::E014 => Severity::Warning,
+            _ => Severity::Error,
+        }
+    }
 }
