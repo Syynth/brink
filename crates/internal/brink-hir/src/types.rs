@@ -150,6 +150,9 @@ pub struct Choice {
 }
 
 /// A gather — the convergence point after a choice set.
+///
+/// Gathers do not own a body. Content after a gather is the next sibling
+/// statement in the parent `Block`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Gather {
     pub ptr: AstPtr<ast::Gather>,
@@ -160,8 +163,6 @@ pub struct Gather {
     /// Explicit divert on the gather line.
     pub divert: Option<Divert>,
     pub tags: Vec<Tag>,
-    /// Everything that follows this gather until the next structural boundary.
-    pub body: Block,
 }
 
 // ─── Content and inline elements ────────────────────────────────────

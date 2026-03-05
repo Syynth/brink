@@ -591,9 +591,9 @@ fn weave_choices_with_gather() {
     }
 }
 
-/// Statements after a gather are folded into the gather's body.
+/// Statements after a gather are siblings in the parent block, NOT nested in the gather.
 #[test]
-fn weave_stmts_after_gather_in_gather_body() {
+fn weave_stmts_after_gather_are_siblings() {
     let (hir, _, diags) = lower_ink(
         "\
 === knot ===
@@ -606,22 +606,22 @@ More content after gather.
     );
     assert!(diags.is_empty());
     let body = &hir.knots[0].body;
-    // Should be a single ChoiceSet with the gather containing trailing stmts
-    assert_eq!(body.stmts.len(), 1);
-    match &body.stmts[0] {
-        Stmt::ChoiceSet(cs) => {
-            let gather = cs.gather.as_ref().unwrap();
-            // The gather body should contain the trailing content + divert
-            assert!(
-                gather.body.stmts.len() >= 2,
-                "expected >=2 stmts in gather body, got {:?}",
-                gather.body.stmts
-            );
-            assert!(matches!(&gather.body.stmts[0], Stmt::Content(_)));
-            assert!(matches!(gather.body.stmts.last().unwrap(), Stmt::Divert(_)));
-        }
-        other => panic!("expected ChoiceSet, got {other:?}"),
-    }
+    // ChoiceSet with gather, then Content, then Divert — all siblings
+    assert_eq!(body.stmts.len(), 3, "stmts: {:#?}", body.stmts);
+    assert!(
+        matches!(&body.stmts[0], Stmt::ChoiceSet(cs) if cs.gather.is_some()),
+        "first stmt should be ChoiceSet with gather"
+    );
+    assert!(
+        matches!(&body.stmts[1], Stmt::Content(_)),
+        "second stmt should be Content, got {:?}",
+        body.stmts[1]
+    );
+    assert!(
+        matches!(&body.stmts[2], Stmt::Divert(_)),
+        "third stmt should be Divert, got {:?}",
+        body.stmts[2]
+    );
 }
 
 /// Two sequential choice sets each with their own gather.
@@ -854,9 +854,10 @@ fn weave_labeled_gather() {
     }
 }
 
-/// Nested bullet choices — the parser flattens `* *` to separate choice nodes
-/// at the knot body level, so `fold_weave` sees them all as flat. This test verifies
-/// the lowering handles multi-bullet choices without errors and produces choice sets.
+/// Nested bullet choices — currently the parser flattens `* *` to separate choice
+/// nodes at the knot body level, so `fold_weave` sees them all as flat. Depth-based
+/// recursive nesting (inner choices becoming nested `ChoiceSet`s inside Outer A's body)
+/// is the target behavior but requires depth tracking on `WeaveItem`.
 #[test]
 fn weave_nested_bullet_choices() {
     let (hir, _, diags) = lower_ink(
@@ -933,7 +934,7 @@ fn weave_fallback_choice() {
     }
 }
 
-/// Content interleaved around multiple choice sets — verifies ordering.
+/// Content interleaved around multiple choice sets — all siblings in a flat block.
 #[test]
 fn weave_interleaved_content_and_choices() {
     let (hir, _, diags) = lower_ink(
@@ -952,27 +953,430 @@ After everything.
     );
     assert!(diags.is_empty());
     let body = &hir.knots[0].body;
-    // Expected: Content("Before"), ChoiceSet(A1/A2 + gather1 whose body has
-    // Content("Between"), ChoiceSet(B1/B2 + gather2 whose body has Content("After")))
-    // OR the gathers close their choice sets and we get flat structure.
-    // Let's just verify the key structural invariants.
+    // Expected flat structure:
+    // [0] Content("Before first.")
+    // [1] ChoiceSet(A1, A2, gather: "Gather one.")
+    // [2] Content("Between sets.")
+    // [3] ChoiceSet(B1, B2, gather: "Gather two.")
+    // [4] Content("After everything.")
+    assert_eq!(body.stmts.len(), 5, "stmts: {:#?}", body.stmts);
+    assert!(matches!(&body.stmts[0], Stmt::Content(_)));
+    assert!(matches!(&body.stmts[1], Stmt::ChoiceSet(_)));
+    assert!(matches!(&body.stmts[2], Stmt::Content(_)));
+    assert!(matches!(&body.stmts[3], Stmt::ChoiceSet(_)));
+    assert!(matches!(&body.stmts[4], Stmt::Content(_)));
+}
 
-    // Must have at least the initial content and first choice set
-    assert!(
-        body.stmts.len() >= 2,
-        "expected >=2 top-level stmts, got {:#?}",
-        body.stmts
+// ─── Inline logic lowering ──────────────────────────────────────────
+
+#[test]
+fn inline_expression_interpolation() {
+    let (hir, _, diags) = lower_ink("Hello {x} world\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.root_content.stmts[0] {
+        Stmt::Content(c) => {
+            assert!(
+                c.parts
+                    .iter()
+                    .any(|p| matches!(p, ContentPart::Interpolation(Expr::Path(_)))),
+                "expected Interpolation(Path), got {:#?}",
+                c.parts
+            );
+        }
+        other => panic!("expected Content, got {other:?}"),
+    }
+}
+
+#[test]
+fn inline_conditional_true_false() {
+    let (hir, _, diags) = lower_ink("{x: yes|no}\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.root_content.stmts[0] {
+        Stmt::Content(c) => {
+            let ic = c.parts.iter().find_map(|p| match p {
+                ContentPart::InlineConditional(ic) => Some(ic),
+                _ => None,
+            });
+            let ic = ic.expect("expected InlineConditional part");
+            assert_eq!(ic.branches.len(), 2, "expected 2 branches");
+            assert!(
+                ic.branches[0].condition.is_some(),
+                "first branch should have condition"
+            );
+            assert!(
+                ic.branches[1].condition.is_none(),
+                "second branch should be else"
+            );
+        }
+        other => panic!("expected Content, got {other:?}"),
+    }
+}
+
+#[test]
+fn inline_conditional_true_only() {
+    let (hir, _, diags) = lower_ink("{x: shown}\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.root_content.stmts[0] {
+        Stmt::Content(c) => {
+            let ic = c.parts.iter().find_map(|p| match p {
+                ContentPart::InlineConditional(ic) => Some(ic),
+                _ => None,
+            });
+            let ic = ic.expect("expected InlineConditional part");
+            assert!(ic.branches[0].condition.is_some());
+        }
+        other => panic!("expected Content, got {other:?}"),
+    }
+}
+
+#[test]
+fn inline_sequence_cycle() {
+    let (hir, _, diags) = lower_ink("Hello {&a|b|c}\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.root_content.stmts[0] {
+        Stmt::Content(c) => {
+            let is = c.parts.iter().find_map(|p| match p {
+                ContentPart::InlineSequence(is) => Some(is),
+                _ => None,
+            });
+            let is = is.expect("expected InlineSequence part");
+            assert_eq!(is.kind, SequenceType::CYCLE);
+            assert_eq!(is.branches.len(), 3);
+        }
+        other => panic!("expected Content, got {other:?}"),
+    }
+}
+
+#[test]
+fn inline_sequence_stopping() {
+    let (hir, _, diags) = lower_ink("{stopping: first|second|third}\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.root_content.stmts[0] {
+        Stmt::Content(c) => {
+            let is = c.parts.iter().find_map(|p| match p {
+                ContentPart::InlineSequence(is) => Some(is),
+                _ => None,
+            });
+            let is = is.expect("expected InlineSequence part");
+            assert_eq!(is.kind, SequenceType::STOPPING);
+            assert_eq!(is.branches.len(), 3);
+        }
+        other => panic!("expected Content, got {other:?}"),
+    }
+}
+
+#[test]
+fn inline_sequence_shuffle() {
+    let (hir, _, diags) = lower_ink("{~a|b}\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.root_content.stmts[0] {
+        Stmt::Content(c) => {
+            let is = c.parts.iter().find_map(|p| match p {
+                ContentPart::InlineSequence(is) => Some(is),
+                _ => None,
+            });
+            let is = is.expect("expected InlineSequence part");
+            assert_eq!(is.kind, SequenceType::SHUFFLE);
+            assert_eq!(is.branches.len(), 2);
+        }
+        other => panic!("expected Content, got {other:?}"),
+    }
+}
+
+#[test]
+fn inline_sequence_once() {
+    let (hir, _, diags) = lower_ink("{!a|b}\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.root_content.stmts[0] {
+        Stmt::Content(c) => {
+            let is = c.parts.iter().find_map(|p| match p {
+                ContentPart::InlineSequence(is) => Some(is),
+                _ => None,
+            });
+            let is = is.expect("expected InlineSequence part");
+            assert_eq!(is.kind, SequenceType::ONCE);
+            assert_eq!(is.branches.len(), 2);
+        }
+        other => panic!("expected Content, got {other:?}"),
+    }
+}
+
+#[test]
+fn implicit_sequence() {
+    let (hir, _, diags) = lower_ink("{a|b|c}\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.root_content.stmts[0] {
+        Stmt::Content(c) => {
+            let is = c.parts.iter().find_map(|p| match p {
+                ContentPart::InlineSequence(is) => Some(is),
+                _ => None,
+            });
+            let is = is.expect("expected InlineSequence part");
+            assert_eq!(
+                is.kind,
+                SequenceType::STOPPING,
+                "implicit sequences default to stopping"
+            );
+            assert_eq!(is.branches.len(), 3);
+        }
+        other => panic!("expected Content, got {other:?}"),
+    }
+}
+
+// ─── Block-level conditionals and sequences ─────────────────────────
+
+#[test]
+fn block_conditional() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+{
+- x > 5:
+  Big.
+- else:
+  Small.
+}
+",
     );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.knots[0].body.stmts[0] {
+        Stmt::Conditional(cond) => {
+            assert_eq!(cond.branches.len(), 2);
+            assert!(
+                cond.branches[0].condition.is_some(),
+                "first branch should have condition"
+            );
+            assert!(
+                cond.branches[1].condition.is_none(),
+                "second branch should be else"
+            );
+        }
+        other => panic!("expected Conditional, got {other:?}"),
+    }
+}
+
+#[test]
+fn block_conditional_single_branch() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+{
+- x:
+  Hello.
+}
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.knots[0].body.stmts[0] {
+        Stmt::Conditional(cond) => {
+            assert_eq!(cond.branches.len(), 1);
+            assert!(cond.branches[0].condition.is_some());
+        }
+        other => panic!("expected Conditional, got {other:?}"),
+    }
+}
+
+#[test]
+fn block_sequence() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+{stopping:
+- First.
+- Second.
+- Third.
+}
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.knots[0].body.stmts[0] {
+        Stmt::Sequence(seq) => {
+            assert_eq!(seq.kind, SequenceType::STOPPING);
+            assert_eq!(seq.branches.len(), 3);
+        }
+        other => panic!("expected Sequence, got {other:?}"),
+    }
+}
+
+// ─── Control flow ───────────────────────────────────────────────────
+
+#[test]
+fn tunnel_call() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+-> tunnel_knot ->
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.knots[0].body.stmts[0] {
+        Stmt::TunnelCall(tc) => {
+            assert!(
+                !tc.targets.is_empty(),
+                "tunnel should have at least one target"
+            );
+        }
+        other => panic!("expected TunnelCall, got {other:?}"),
+    }
+}
+
+#[test]
+fn thread_start() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+<- background_thread
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.knots[0].body.stmts[0] {
+        Stmt::ThreadStart(ts) => match &ts.target.path {
+            DivertPath::Path(p) => assert_eq!(p.segments[0].text, "background_thread"),
+            other => panic!("expected Path target, got {other:?}"),
+        },
+        other => panic!("expected ThreadStart, got {other:?}"),
+    }
+}
+
+// ─── Expression statement ───────────────────────────────────────────
+
+#[test]
+fn expr_stmt_function_call() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+~ foo()
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.knots[0].body.stmts[0] {
+        Stmt::ExprStmt(Expr::Call(path, args)) => {
+            assert_eq!(path.segments[0].text, "foo");
+            assert!(args.is_empty());
+        }
+        other => panic!("expected ExprStmt(Call), got {other:?}"),
+    }
+}
+
+// ─── String interpolation ───────────────────────────────────────────
+
+#[test]
+fn string_literal_with_interpolation() {
+    let (hir, _, diags) = lower_ink("VAR x = \"hello\"\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.variables[0].value {
+        Expr::String(s) => {
+            assert_eq!(s.parts.len(), 1);
+            match &s.parts[0] {
+                StringPart::Literal(text) => assert_eq!(text, "hello"),
+                StringPart::Interpolation(e) => {
+                    panic!("expected Literal, got Interpolation({e:?})")
+                }
+            }
+        }
+        other => panic!("expected String, got {other:?}"),
+    }
+}
+
+// ─── Divert target as value ─────────────────────────────────────────
+
+#[test]
+fn divert_target_as_value() {
+    let (hir, _, diags) = lower_ink("VAR x = -> somewhere\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    match &hir.variables[0].value {
+        Expr::DivertTarget(p) => {
+            assert_eq!(p.segments[0].text, "somewhere");
+        }
+        other => panic!("expected DivertTarget, got {other:?}"),
+    }
+}
+
+// ─── Choices inside conditional blocks ───────────────────────────────
+
+/// Choices inside multiline conditional blocks stay nested in the
+/// conditional's branches in the HIR. Weave transparency is handled at
+/// runtime — the conditional evaluates its branches, and choice points
+/// within active branches get registered. The HIR preserves structure.
+///
+/// Reference: `InkParser_Statements.cs` allows choices at
+/// `StatementLevel.InnerBlock`; `Weave.cs` treats the conditional as
+/// regular content and handles loose ends via `PassLooseEndsToAncestors`.
+#[test]
+fn weave_choice_inside_conditional_preserved() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+{
+- door_open:
+  * Go outside -> END
+- else:
+  * Ask permission -> END
+}
+* Stay inside
+- You decided.
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    let body = &hir.knots[0].body;
+    // The conditional is a stmt, followed by a choice set for "Stay inside"
+    // with the gather "You decided."
     assert!(
-        matches!(&body.stmts[0], Stmt::Content(_)),
-        "first stmt should be Content, got {:?}",
+        matches!(&body.stmts[0], Stmt::Conditional(_)),
+        "first stmt should be Conditional, got {:?}",
         body.stmts[0]
     );
+    // The conditional's branches each contain a ChoiceSet
+    match &body.stmts[0] {
+        Stmt::Conditional(cond) => {
+            assert_eq!(cond.branches.len(), 2);
+            assert!(
+                matches!(&cond.branches[0].body.stmts[0], Stmt::ChoiceSet(_)),
+                "first branch should contain a ChoiceSet"
+            );
+            assert!(
+                matches!(&cond.branches[1].body.stmts[0], Stmt::ChoiceSet(_)),
+                "second branch should contain a ChoiceSet"
+            );
+        }
+        _ => unreachable!(),
+    }
+    // "Stay inside" is a separate ChoiceSet at the outer level
     assert!(
         matches!(&body.stmts[1], Stmt::ChoiceSet(_)),
         "second stmt should be ChoiceSet, got {:?}",
         body.stmts[1]
     );
+}
+
+/// Simpler case: conditional with a choice alongside unconditional
+/// choices. The conditional is a separate stmt, not merged.
+/// Reference: `TestConditionalChoiceInWeave` from ink tests.
+#[test]
+fn weave_conditional_choice_alongside_unconditional() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Always available
+{
+- has_key:
+  * Use the key -> END
+}
+- You chose.
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    let body = &hir.knots[0].body;
+    // The choice "Always available" is followed by a multiline block
+    // which the parser treats as part of the choice's body (since the
+    // choice has no explicit divert). The conditional and gather are
+    // woven relative to the choice.
+    //
+    // Current behavior: the choice accumulator sees the choice, then the
+    // fold_weave encounters the conditional (which breaks the choice set),
+    // then the gather. This will change when we redesign ChoiceSet to
+    // support interleaved conditionals.
+    assert!(!body.stmts.is_empty(), "body should have stmts, got empty");
 }
 
 // ─── Diagnostic coverage ────────────────────────────────────────────

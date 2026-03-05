@@ -1128,7 +1128,6 @@ impl LowerCtx {
             content,
             divert,
             tags,
-            body: Block::default(),
         }
     }
 }
@@ -1149,6 +1148,20 @@ impl LowerCtx {
             match child.kind() {
                 SyntaxKind::CONTENT_LINE => {
                     if let Some(cl) = ast::ContentLine::cast(child.clone()) {
+                        // Check if this content line is just a wrapper around
+                        // a multiline block-level construct (conditional or
+                        // sequence with multiline branches). The reference ink
+                        // parser doesn't distinguish these at the brace level —
+                        // they're all InlineLogic, with the multiline-vs-inline
+                        // decision made inside. So we promote here.
+                        if let Some(mc) = cl.mixed_content()
+                            && let Some(il) = mc.inline_logics().next()
+                            && let Some(stmt) = self.lower_multiline_block_from_inline(&il)
+                        {
+                            items.push(WeaveItem::Stmt(stmt));
+                            continue;
+                        }
+
                         let stmt = self.lower_content_line(&cl);
                         let was_content = matches!(&stmt, Some(Stmt::Content(_)));
                         if let Some(s) = stmt {
@@ -1201,6 +1214,13 @@ impl LowerCtx {
                         items.push(WeaveItem::Stmt(stmt));
                     }
                 }
+                SyntaxKind::MULTILINE_BLOCK => {
+                    if let Some(mb) = ast::MultilineBlock::cast(child)
+                        && let Some(stmt) = self.lower_multiline_block(&mb)
+                    {
+                        items.push(WeaveItem::Stmt(stmt));
+                    }
+                }
                 SyntaxKind::DIVERT_NODE => {
                     if let Some(dn) = ast::DivertNode::cast(child)
                         && let Some(stmt) = self.lower_divert_node(&dn)
@@ -1213,6 +1233,27 @@ impl LowerCtx {
         }
 
         fold_weave(items)
+    }
+
+    fn lower_multiline_block(&mut self, mb: &ast::MultilineBlock) -> Option<Stmt> {
+        if let Some(cond) = mb.conditional()
+            && cond.multiline_branches().is_some()
+        {
+            return Some(Stmt::Conditional(self.lower_block_conditional(&cond)));
+        }
+
+        if let Some(seq) = mb.sequence()
+            && seq.multiline_branches().is_some()
+        {
+            return Some(Stmt::Sequence(self.lower_block_sequence(&seq)));
+        }
+
+        if let Some(branches) = mb.branches_cond() {
+            let cond = self.lower_multiline_conditional_from_branches(&branches);
+            return Some(Stmt::Conditional(cond));
+        }
+
+        None
     }
 
     fn lower_multiline_block_from_inline(&mut self, inline: &ast::InlineLogic) -> Option<Stmt> {
@@ -1238,8 +1279,21 @@ impl LowerCtx {
     }
 
     fn lower_multiline_conditional(&mut self, mc: &ast::MultilineConditional) -> Conditional {
-        let branches = mc
-            .branches()
+        self.lower_cond_branches(mc.branches())
+    }
+
+    fn lower_multiline_conditional_from_branches(
+        &mut self,
+        mb: &ast::MultilineBranchesCond,
+    ) -> Conditional {
+        self.lower_cond_branches(mb.branches())
+    }
+
+    fn lower_cond_branches(
+        &mut self,
+        branches: impl Iterator<Item = ast::MultilineBranchCond>,
+    ) -> Conditional {
+        let branches = branches
             .map(|b| {
                 let condition = if b.is_else() {
                     None
@@ -1305,67 +1359,55 @@ impl LowerCtx {
 pub fn fold_weave(items: Vec<WeaveItem>) -> Block {
     let mut stmts = Vec::new();
     let mut choice_acc: Vec<Choice> = Vec::new();
-    let mut pending_gather: Option<Gather> = None;
 
     for item in items {
         match item {
             WeaveItem::Stmt(stmt) => {
-                if let Some(ref mut gather) = pending_gather {
-                    gather.body.stmts.push(stmt);
-                } else {
+                if choice_acc.is_empty() {
                     stmts.push(stmt);
+                } else {
+                    // Content between choices belongs to the previous choice's body
+                    // (matches reference ink's addContentToPreviousWeavePoint)
+                    if let Some(c) = choice_acc.last_mut() {
+                        c.body.stmts.push(stmt);
+                    }
                 }
             }
             WeaveItem::Choice { choice } => {
-                if pending_gather.is_some() {
-                    emit_choice_set(&mut stmts, &mut choice_acc, &mut pending_gather);
-                }
                 choice_acc.push(choice);
             }
             WeaveItem::Gather { gather } => {
-                if choice_acc.is_empty() && pending_gather.is_none() {
-                    // Standalone gather
-                    emit_standalone_gather(&mut stmts, gather);
-                } else if pending_gather.is_some() {
-                    emit_choice_set(&mut stmts, &mut choice_acc, &mut pending_gather);
-                    emit_standalone_gather(&mut stmts, gather);
+                if choice_acc.is_empty() {
+                    // Standalone gather — emit its content as a sibling
+                    emit_standalone_gather(&mut stmts, &gather);
                 } else {
-                    pending_gather = Some(gather);
+                    // Gather closes the current choice set
+                    flush_choices(&mut stmts, &mut choice_acc, Some(gather));
                 }
             }
         }
     }
 
-    emit_choice_set(&mut stmts, &mut choice_acc, &mut pending_gather);
+    // Flush any trailing choices with no gather
+    flush_choices(&mut stmts, &mut choice_acc, None);
     Block { stmts }
 }
 
-fn emit_choice_set(
-    stmts: &mut Vec<Stmt>,
-    choice_acc: &mut Vec<Choice>,
-    pending_gather: &mut Option<Gather>,
-) {
-    if choice_acc.is_empty() && pending_gather.is_none() {
+fn flush_choices(stmts: &mut Vec<Stmt>, choice_acc: &mut Vec<Choice>, gather: Option<Gather>) {
+    if choice_acc.is_empty() {
         return;
     }
-
-    if !choice_acc.is_empty() {
-        let choices = std::mem::take(choice_acc);
-        let gather = pending_gather.take();
-        stmts.push(Stmt::ChoiceSet(ChoiceSet { choices, gather }));
-    } else if let Some(g) = pending_gather.take() {
-        emit_standalone_gather(stmts, g);
-    }
+    let choices = std::mem::take(choice_acc);
+    stmts.push(Stmt::ChoiceSet(ChoiceSet { choices, gather }));
 }
 
-fn emit_standalone_gather(stmts: &mut Vec<Stmt>, gather: Gather) {
-    if let Some(content) = gather.content
+fn emit_standalone_gather(stmts: &mut Vec<Stmt>, gather: &Gather) {
+    if let Some(content) = &gather.content
         && (!content.parts.is_empty() || !gather.tags.is_empty())
     {
         stmts.push(Stmt::Content(Content {
-            parts: content.parts,
-            tags: gather.tags,
+            parts: content.parts.clone(),
+            tags: gather.tags.clone(),
         }));
     }
-    stmts.extend(gather.body.stmts);
 }

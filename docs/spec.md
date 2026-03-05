@@ -100,7 +100,7 @@ brink-hir is a **rich semantic tree** — it preserves the full structure of the
 
 #### Responsibilities
 
-- **Weave folding:** flat choices/gathers (identified by bullet/dash count) → nested `ChoiceSet`/`Gather` tree with proper nesting and scope. Must recurse into conditional blocks to find choices that participate in the outer weave (see "Choices inside conditional blocks" under Ink semantics).
+- **Weave folding:** flat choices/gathers (identified by bullet/dash count) → recursively nested `ChoiceSet`/`Gather` tree. Nested bullet levels (`* *`) produce nested `ChoiceSet`s inside the parent choice's body. Conditional blocks are structurally opaque — the HIR preserves them as `Stmt::Conditional` within the choice body; weave transparency for choices inside conditionals is a runtime/codegen concern (see "Choices inside conditional blocks" under Ink semantics).
 - **Implicit structure:** top-level content before first knot → root content block.
 - **INCLUDE recording:** records INCLUDE sites. The actual cross-file merge happens in brink-analyzer; brink-hir exports `fold_weave` which the analyzer calls on the merged content.
 - **First-stitch auto-enter:** the first stitch in a knot is entered via implicit divert; other stitches require explicit diverts. Stitches with parameters are never auto-entered.
@@ -132,11 +132,11 @@ The HIR is organized around a small set of structural concepts:
 
 **`Knot` and `Stitch`** — named containers with optional parameters, a function flag (for `== function knot_name ==`), and a body. Each knot may contain stitches. Stitches have the same shape as knots minus the function flag and child stitches.
 
-**`Block`** — the universal body type. A sequence of statements. Used for knot bodies, stitch bodies, choice branches, gather continuations, conditional branches, and sequence branches. This uniformity keeps the tree regular — any structural position that can hold content uses `Block`.
+**`Block`** — the universal body type. A flat sequence of statements. Used for knot bodies, stitch bodies, choice branches, conditional branches, and sequence branches. This uniformity keeps the tree regular — any structural position that can hold content uses `Block`. No statement in a block "owns" the rest of the block — content after a `ChoiceSet` or any other statement is simply the next item in the list.
 
 **`Stmt`** — the things inside a block: content output, diverts (`->`), tunnel calls (`->->`), thread starts (`<-`), temp declarations, assignments, returns, choice sets, block-level conditionals, and block-level sequences.
 
-**`ChoiceSet` and `Gather`** — the core weave folding output. A `ChoiceSet` groups choices at the same weave depth with an optional `Gather` as their convergence point. Each choice has the three-part content split (start/bracket/inner from ink's `[...]` syntax), an optional condition, optional label, sticky/fallback flags, tags, an optional explicit divert, and a `Block` body. The gather has its own content, tags, and a `Block` body containing everything after the convergence point. Choice set bodies may themselves contain nested choice sets — weave nesting is recursive.
+**`ChoiceSet` and `Gather`** — the core weave folding output. A `ChoiceSet` groups consecutive choices at the same weave depth with an optional `Gather` as their convergence point. Each choice has the three-part content split (start/bracket/inner from ink's `[...]` syntax), an optional condition, optional label, sticky/fallback flags, tags, an optional explicit divert, and a `Block` body. The gather has its own content and tags but no body — it is the convergence point, not a container for continuation. Content after a gather is simply the next statement in the parent `Block`, not owned by the `ChoiceSet`. Choice bodies may themselves contain nested `ChoiceSet`s — weave nesting is recursive via the tree structure, not depth counters.
 
 **`Content` and `ContentPart`** — a line of text output with inline elements. Parts include plain text, glue, expression interpolation (`{expr}`), inline conditionals (`{cond: a | b}`), and inline sequences (`{&a|b|c}`). Block-level conditionals and sequences are separate `Stmt` variants, not content parts — this reflects the genuine semantic distinction in ink between inline elements (which produce text fragments) and block elements (which contain statements).
 
@@ -156,13 +156,17 @@ Sequence type is a **bitmask**, not an enum. The reference ink compiler supports
 
 #### Weave folding algorithm
 
-The weave folder converts flat choices and gathers into the nested `ChoiceSet`/`Gather` tree. Based on the reference ink compiler's `Weave.cs`:
+The weave folder (`fold_weave`) converts a flat stream of `WeaveItem`s (choices, gathers, and statements with depth markers) into a recursively nested tree. Based on the reference ink compiler's `Weave.cs` `ConstructWeaveHierarchyFromIndentation`:
 
-1. **Group by depth:** scan the flat statement list. When a choice/gather at depth > base appears, collect it and all subsequent content at that depth or deeper into a nested group. Recurse.
-2. **Build choice sets:** consecutive choices at the same depth form a `ChoiceSet`. An optional gather at that depth becomes the convergence point.
-3. **Recurse into conditionals:** choices inside multiline conditional blocks participate in the outer weave (conditional blocks are transparent to weave folding). Gathers inside conditional blocks are a structural error.
-4. **Loose end tracking:** choices and gathers without explicit diverts are "loose ends" that codegen must connect to the next gather. The HIR records the structure; codegen handles divert insertion.
-5. **Auto-enter gathers:** a gather that follows only non-choice content (no choices in the current section) is auto-entered in the main flow. A gather that follows choices is only reachable via divert from those choices.
+1. **Group by depth:** scan the flat item list. When a choice or gather at depth > base appears, collect it and all subsequent items at that depth or deeper. Recursively fold the collected items into a nested `Block` and insert it as a statement in the parent.
+2. **Build choice sets:** within a single depth level, consecutive choices form a `ChoiceSet`. If a gather follows choices at the same depth, it becomes the `ChoiceSet`'s convergence point.
+3. **Gathers don't own continuations:** content after a gather is the next sibling statement in the parent `Block`, NOT nested inside the gather or the `ChoiceSet`. A `Block` is always a flat list of statements — no statement swallows the tail of its parent block.
+4. **Standalone gathers:** a gather that appears without preceding choices (e.g., a labeled gather used as a divert target) is emitted as its own statement, not wrapped in a `ChoiceSet`.
+5. **Conditionals are opaque:** conditional blocks are preserved as `Stmt::Conditional` within choice/gather bodies. The weave folder does NOT recurse into conditionals to extract choices. Weave transparency for choices inside conditionals is handled at runtime/codegen via loose end propagation (see reference `Weave.cs` `PassLooseEndsToAncestors`).
+6. **Loose end tracking:** choices and gathers without explicit diverts are "loose ends" that codegen must connect to the next gather. The HIR records the structure; codegen handles divert insertion.
+7. **Auto-enter gathers:** a gather that follows only non-choice content (no choices in the current section) is auto-entered in the main flow. A gather that follows choices is only reachable via divert from those choices.
+
+**Invariant:** after folding, no `WeaveItem` depth markers remain in the tree. Nesting is encoded entirely by the recursive `Block` → `ChoiceSet` → `Choice.body: Block` → `ChoiceSet` → ... structure. Downstream passes never inspect depth values.
 
 #### What HIR does NOT do
 
@@ -903,8 +907,8 @@ Key semantics verified against the reference C# ink implementation:
 - **Stitch fall-through:** stitches do NOT fall through. Only the first stitch in a knot is auto-entered (via implicit divert). Other stitches require explicit `-> stitch_name`. Stitches with parameters are never auto-entered.
 - **Root entry point:** all top-level content becomes an implicit root container. The compiler appends an implicit gather + `-> DONE` so the story terminates gracefully.
 - **Visit counting:** per-container granularity. Any container (knot, stitch, gather, choice target) can independently track visits and turn indices. `countingAtStartOnly` prevents overcounting on mid-container re-entry.
-- **Gathers:** first-class semantic nodes in the HIR (with optional labels, content, and a body block). At the bytecode level, gathers become unnamed containers that choice branches divert to — codegen handles the lowering.
-- **Choices inside conditional blocks:** choices (`*`) can appear inside `{ - condition: ... }` multiline conditional blocks and participate in the outer weave structure (not a separate scope). Gathers (`-`) are explicitly forbidden inside conditional blocks — the reference compiler errors with "You can't use a gather (the dashes) within the { curly braces } context." This means conditional blocks are transparent to weave folding: they conditionally include/exclude choices at the current depth, but cannot introduce nested weave structure. The parser enforces this at `StatementLevel.InnerBlock`. **Parser gap:** brink-syntax does not yet parse choices inside multiline branch bodies — `multiline_branch_body` has no `STAR` arm and needs to be updated.
+- **Gathers:** convergence points in the HIR (with optional labels, content, and tags). Gathers do not own a body — content after a gather is the next sibling statement in the parent block. At the bytecode level, gathers become named containers that choice branches divert to — codegen handles the lowering.
+- **Choices inside conditional blocks:** choices (`*`) can appear inside `{ - condition: ... }` multiline conditional blocks. Gathers (`-`) are explicitly forbidden inside conditional blocks — the reference compiler errors with "You can't use a gather (the dashes) within the { curly braces } context." The parser enforces this at `StatementLevel.InnerBlock`. In the HIR, conditional blocks are structurally opaque — the weave folder does NOT extract choices from inside conditionals to merge them into the outer weave. Instead, choices inside conditionals stay nested within the `Stmt::Conditional` node. Weave transparency (choices inside conditionals participating in the outer choice point at runtime) is handled by codegen/runtime via loose end propagation, matching the reference compiler's `Weave.cs` `PassLooseEndsToAncestors` mechanism. This keeps the HIR tree structure faithful to the source while deferring control-flow semantics to the appropriate layer. **Parser gap:** brink-syntax does not yet parse choices inside multiline branch bodies — `multiline_branch_body` has no `STAR` arm and needs to be updated.
 
 ## Test corpus
 
