@@ -235,6 +235,10 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
 /// in the stream associate with the current line (the line being built
 /// when the tag is encountered).
 fn resolve_lines(parts: &[OutputPart]) -> Vec<(String, Vec<String>)> {
+    if parts.is_empty() {
+        return Vec::new();
+    }
+
     // First pass: mark newlines/glue for removal (same logic as resolve_parts).
     let mut remove = vec![false; parts.len()];
     for (i, part) in parts.iter().enumerate() {
@@ -672,5 +676,19 @@ mod tests {
         let lines = buf.flush_lines();
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].0, "hello world");
+    }
+
+    /// Flushing an empty buffer should return no lines.
+    /// A spurious `[("", [])]` from an empty buffer causes leading `\n`
+    /// when `step_with` calls `flush_lines` multiple times (e.g., before
+    /// auto-selecting invisible default choices).
+    #[test]
+    fn flush_lines_empty_buffer_returns_no_lines() {
+        let mut buf = OutputBuffer::new();
+        let lines = buf.flush_lines();
+        assert!(
+            lines.is_empty(),
+            "empty buffer should produce no lines, got: {lines:?}"
+        );
     }
 }

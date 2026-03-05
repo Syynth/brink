@@ -415,7 +415,7 @@ impl<R: StoryRng> FlowInstance<R> {
             op_count += 1;
             if op_count > MAX_OPS_PER_STEP {
                 // Safety limit — treat as Done to avoid infinite loops.
-                all_lines.extend(self.flow.output.flush_lines());
+                extend_lines(&mut all_lines, self.flow.output.flush_lines());
                 self.context.turn_index += 1;
                 self.status = StoryStatus::Done;
                 let (text, tags) = finalize_lines(&all_lines);
@@ -430,7 +430,7 @@ impl<R: StoryRng> FlowInstance<R> {
                 }
 
                 vm::Stepped::Done => {
-                    all_lines.extend(self.flow.output.flush_lines());
+                    extend_lines(&mut all_lines, self.flow.output.flush_lines());
                     self.context.turn_index += 1;
 
                     if self.flow.pending_choices.is_empty() {
@@ -475,7 +475,7 @@ impl<R: StoryRng> FlowInstance<R> {
                     });
                 }
                 vm::Stepped::Ended => {
-                    all_lines.extend(self.flow.output.flush_lines());
+                    extend_lines(&mut all_lines, self.flow.output.flush_lines());
                     self.context.turn_index += 1;
                     self.status = StoryStatus::Ended;
                     let (text, tags) = finalize_lines(&all_lines);
@@ -576,6 +576,24 @@ fn resolve_external_call(
         }
     }
     Ok(())
+}
+
+/// Extend accumulated lines with a new flush, stripping the trailing empty
+/// entry from the previous flush to avoid double-newlines at flush boundaries.
+///
+/// `flush_lines` represents a trailing newline as `("", [])` — this is correct
+/// when the lines are finalized alone, but when concatenating multiple flushes
+/// (e.g., auto-selecting invisible default choices), the trailing empty entry
+/// from one flush and the `\n` join from `finalize_lines` produce a double `\n`.
+fn extend_lines(all: &mut Vec<(String, Vec<String>)>, new: Vec<(String, Vec<String>)>) {
+    if !new.is_empty()
+        && let Some(last) = all.last()
+        && last.0.is_empty()
+        && last.1.is_empty()
+    {
+        all.pop();
+    }
+    all.extend(new);
 }
 
 /// Build the final `text` string and per-line `tags` from structured lines.
