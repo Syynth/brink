@@ -12,5 +12,5 @@
 mod lower;
 mod types;
 
-pub use lower::lower;
+pub use lower::{WeaveItem, fold_weave, lower, lower_knot, lower_top_level};
 pub use types::*;

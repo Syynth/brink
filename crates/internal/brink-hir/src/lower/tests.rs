@@ -390,3 +390,556 @@ fn manifest_tracks_unresolved_variable() {
             .any(|r| r.kind == RefKind::Variable)
     );
 }
+
+// ─── Per-knot lowering ──────────────────────────────────────────────
+
+#[test]
+fn lower_knot_matches_full_lower() {
+    let source = "\
+=== my_knot ===
+Hello from knot.
+-> DONE
+";
+    let parsed = parse(source);
+    let tree = parsed.tree();
+
+    // Full lower
+    let (hir, _, _) = lower(&tree);
+    let full_knot = &hir.knots[0];
+
+    // Per-knot lower
+    let ast_knot = tree.knots().next().unwrap();
+    let (knot, manifest, diags) = crate::lower_knot(&ast_knot);
+    let knot = knot.unwrap();
+
+    assert!(diags.is_empty());
+    assert_eq!(knot.name.text, full_knot.name.text);
+    assert_eq!(knot.is_function, full_knot.is_function);
+    assert_eq!(knot.body.stmts.len(), full_knot.body.stmts.len());
+    assert!(manifest.knots.iter().any(|s| s.name == "my_knot"));
+}
+
+#[test]
+fn lower_knot_function_with_params() {
+    let source = "\
+=== function add(a, b) ===
+~ return a + b
+";
+    let parsed = parse(source);
+    let tree = parsed.tree();
+
+    let ast_knot = tree.knots().next().unwrap();
+    let (knot, manifest, diags) = crate::lower_knot(&ast_knot);
+    let knot = knot.unwrap();
+
+    assert!(diags.is_empty());
+    assert!(knot.is_function);
+    assert_eq!(knot.params.len(), 2);
+    assert!(manifest.knots.iter().any(|s| s.name == "add"));
+}
+
+// ─── Top-level lowering ─────────────────────────────────────────────
+
+#[test]
+fn lower_top_level_excludes_knots() {
+    let source = "\
+VAR health = 100
+Hello world.
+=== some_knot ===
+Knot content.
+";
+    let parsed = parse(source);
+    let tree = parsed.tree();
+
+    let (block, manifest, diags) = crate::lower_top_level(&tree);
+
+    assert!(diags.is_empty());
+    // Should have root content
+    assert!(!block.stmts.is_empty());
+    // Should declare the variable
+    assert!(manifest.variables.iter().any(|s| s.name == "health"));
+    // Should NOT declare the knot
+    assert!(manifest.knots.is_empty());
+}
+
+#[test]
+fn lower_top_level_returns_declarations() {
+    let source = "\
+VAR x = 1
+CONST y = 2
+LIST colors = red, green
+EXTERNAL doThing(a)
+";
+    let parsed = parse(source);
+    let tree = parsed.tree();
+
+    let (_block, manifest, diags) = crate::lower_top_level(&tree);
+
+    assert!(diags.is_empty());
+    assert!(manifest.variables.iter().any(|s| s.name == "x"));
+    assert!(manifest.variables.iter().any(|s| s.name == "y"));
+    assert!(manifest.lists.iter().any(|s| s.name == "colors"));
+    assert!(manifest.externals.iter().any(|s| s.name == "doThing"));
+}
+
+// ─── fold_weave public access ───────────────────────────────────────
+
+#[test]
+fn fold_weave_is_public() {
+    use crate::lower::WeaveItem;
+    use crate::lower::fold_weave;
+
+    // Simple: just statements, no choices or gathers
+    let items = vec![WeaveItem::Stmt(Stmt::Content(Content {
+        parts: vec![ContentPart::Text("hello".into())],
+        tags: vec![],
+    }))];
+    let block = fold_weave(items);
+    assert_eq!(block.stmts.len(), 1);
+    assert!(matches!(&block.stmts[0], Stmt::Content(_)));
+}
+
+// ─── Complex weave patterns ─────────────────────────────────────────
+
+/// Choices with no gather — produces a `ChoiceSet` with `gather=None`.
+#[test]
+fn weave_choices_without_gather() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Choice A
+  After A.
+* Choice B
+  After B.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    // The knot body may contain content stmts from choice sub-lines, plus the ChoiceSet
+    let choice_sets: Vec<_> = body
+        .stmts
+        .iter()
+        .filter(|s| matches!(s, Stmt::ChoiceSet(_)))
+        .collect();
+    assert_eq!(
+        choice_sets.len(),
+        1,
+        "expected exactly 1 ChoiceSet, got {:#?}",
+        body.stmts
+    );
+    match choice_sets[0] {
+        Stmt::ChoiceSet(cs) => {
+            assert_eq!(cs.choices.len(), 2);
+            assert!(cs.gather.is_none());
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Choices followed by a gather — the gather becomes part of the `ChoiceSet`.
+#[test]
+fn weave_choices_with_gather() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Choice A
+* Choice B
+- Gathered here.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    assert_eq!(body.stmts.len(), 1);
+    match &body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            assert_eq!(cs.choices.len(), 2);
+            let gather = cs.gather.as_ref().unwrap();
+            assert!(gather.content.is_some());
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// Statements after a gather are folded into the gather's body.
+#[test]
+fn weave_stmts_after_gather_in_gather_body() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Choice A
+* Choice B
+- Gathered.
+More content after gather.
+-> DONE
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    // Should be a single ChoiceSet with the gather containing trailing stmts
+    assert_eq!(body.stmts.len(), 1);
+    match &body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            let gather = cs.gather.as_ref().unwrap();
+            // The gather body should contain the trailing content + divert
+            assert!(
+                gather.body.stmts.len() >= 2,
+                "expected >=2 stmts in gather body, got {:?}",
+                gather.body.stmts
+            );
+            assert!(matches!(&gather.body.stmts[0], Stmt::Content(_)));
+            assert!(matches!(gather.body.stmts.last().unwrap(), Stmt::Divert(_)));
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// Two sequential choice sets each with their own gather.
+#[test]
+fn weave_two_sequential_choice_sets() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* First A
+* First B
+- First gather.
+* Second A
+* Second B
+- Second gather.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    // Two ChoiceSets
+    assert_eq!(body.stmts.len(), 2, "stmts: {:#?}", body.stmts);
+    for (i, stmt) in body.stmts.iter().enumerate() {
+        match stmt {
+            Stmt::ChoiceSet(cs) => {
+                assert_eq!(cs.choices.len(), 2, "choice set {i} should have 2 choices");
+                assert!(cs.gather.is_some(), "choice set {i} should have a gather");
+            }
+            other => panic!("expected ChoiceSet at index {i}, got {other:?}"),
+        }
+    }
+}
+
+/// Content before choices becomes a top-level stmt, not part of the `ChoiceSet`.
+#[test]
+fn weave_content_before_choices() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+Preamble text.
+* Choice A
+* Choice B
+- Gathered.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    assert_eq!(body.stmts.len(), 2, "stmts: {:#?}", body.stmts);
+    assert!(matches!(&body.stmts[0], Stmt::Content(_)));
+    assert!(matches!(&body.stmts[1], Stmt::ChoiceSet(_)));
+}
+
+/// A standalone gather (no preceding choices) emits its content as a Content stmt.
+#[test]
+fn weave_standalone_gather() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+- Standalone gathered text.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    // Standalone gather is flattened into a Content stmt
+    assert!(
+        body.stmts
+            .iter()
+            .any(|s| matches!(s, Stmt::Content(c) if c.parts.iter().any(|p|
+                matches!(p, ContentPart::Text(t) if t.contains("Standalone"))))),
+        "expected standalone gather content, got {:#?}",
+        body.stmts
+    );
+}
+
+/// Two gathers in a row — both are standalone (no choices between them).
+#[test]
+fn weave_consecutive_standalone_gathers() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+- First gather.
+- Second gather.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    let content_stmts: Vec<_> = body
+        .stmts
+        .iter()
+        .filter(|s| matches!(s, Stmt::Content(_)))
+        .collect();
+    assert!(
+        content_stmts.len() >= 2,
+        "expected at least 2 content stmts from standalone gathers, got {:#?}",
+        body.stmts
+    );
+}
+
+/// Choices with a gather, then more choices — the first gather closes the first
+/// `ChoiceSet`, and the second batch of choices starts a new `ChoiceSet`.
+#[test]
+fn weave_gather_separates_choice_sets() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Alpha
+* Beta
+- Middle gather.
+* Gamma
+* Delta
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    // First ChoiceSet (Alpha, Beta) with gather, then Content from standalone gather
+    // emission, then second ChoiceSet (Gamma, Delta) without gather.
+    let choice_sets: Vec<_> = body
+        .stmts
+        .iter()
+        .filter(|s| matches!(s, Stmt::ChoiceSet(_)))
+        .collect();
+    assert_eq!(
+        choice_sets.len(),
+        2,
+        "expected 2 choice sets, got {:#?}",
+        body.stmts
+    );
+
+    // First should have gather content embedded, second should not
+    match choice_sets[0] {
+        Stmt::ChoiceSet(cs) => {
+            assert_eq!(cs.choices.len(), 2);
+        }
+        _ => unreachable!(),
+    }
+    match choice_sets[1] {
+        Stmt::ChoiceSet(cs) => {
+            assert_eq!(cs.choices.len(), 2);
+            assert!(cs.gather.is_none());
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// A choice with a divert on its line — the divert is captured in choice.divert.
+#[test]
+fn weave_choice_with_inline_divert() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Go somewhere -> other_knot
+* Stay here
+- Gathered.
+=== other_knot ===
+Arrived.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    match &body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            assert!(cs.choices[0].divert.is_some());
+            assert!(cs.choices[1].divert.is_none());
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// Sticky and once-only choices can be mixed in the same `ChoiceSet`.
+#[test]
+fn weave_mixed_sticky_and_once_only() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Once-only choice
++ Sticky choice
+* Another once-only
+- Gathered.
+",
+    );
+    assert!(diags.is_empty());
+    match &hir.knots[0].body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            assert!(!cs.choices[0].is_sticky);
+            assert!(cs.choices[1].is_sticky);
+            assert!(!cs.choices[2].is_sticky);
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// Choice with a condition — the condition expr is captured.
+#[test]
+fn weave_conditional_choice() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* {x > 0} Conditional choice
+* Always available
+- Gathered.
+",
+    );
+    assert!(diags.is_empty());
+    match &hir.knots[0].body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            assert!(cs.choices[0].condition.is_some());
+            assert!(cs.choices[1].condition.is_none());
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// Labeled gather — the label is preserved.
+#[test]
+fn weave_labeled_gather() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Choice A
+* Choice B
+- (my_label) Gathered with label.
+",
+    );
+    assert!(diags.is_empty());
+    match &hir.knots[0].body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            let gather = cs.gather.as_ref().unwrap();
+            let label = gather.label.as_ref().unwrap();
+            assert_eq!(label.text, "my_label");
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// Nested bullet choices — the parser flattens `* *` to separate choice nodes
+/// at the knot body level, so `fold_weave` sees them all as flat. This test verifies
+/// the lowering handles multi-bullet choices without errors and produces choice sets.
+#[test]
+fn weave_nested_bullet_choices() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Outer A
+  * * Inner A1
+  * * Inner A2
+  - - Inner gather.
+* Outer B
+- Outer gather.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    let choice_sets: Vec<&ChoiceSet> = body
+        .stmts
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::ChoiceSet(cs) => Some(cs),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !choice_sets.is_empty(),
+        "expected at least 1 ChoiceSet from nested bullets, got {:#?}",
+        body.stmts
+    );
+    // Total choices across all sets should account for all bullet lines
+    let total_choices: usize = choice_sets.iter().map(|cs| cs.choices.len()).sum();
+    assert!(
+        total_choices >= 4,
+        "expected at least 4 total choices (2 outer + 2 inner), got {total_choices}"
+    );
+}
+
+/// Choice with bracket content — text in [...] is captured separately.
+#[test]
+fn weave_choice_bracket_content() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Start [bracket] inner
+- Gathered.
+",
+    );
+    assert!(diags.is_empty());
+    match &hir.knots[0].body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            let choice = &cs.choices[0];
+            assert!(choice.start_content.is_some(), "missing start_content");
+            assert!(choice.bracket_content.is_some(), "missing bracket_content");
+            assert!(choice.inner_content.is_some(), "missing inner_content");
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// Fallback choice — a choice with no text content is marked as fallback.
+#[test]
+fn weave_fallback_choice() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* -> somewhere
+",
+    );
+    assert!(diags.is_empty());
+    match &hir.knots[0].body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            assert!(cs.choices[0].is_fallback);
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// Content interleaved around multiple choice sets — verifies ordering.
+#[test]
+fn weave_interleaved_content_and_choices() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+Before first.
+* A1
+* A2
+- Gather one.
+Between sets.
+* B1
+* B2
+- Gather two.
+After everything.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    // Expected: Content("Before"), ChoiceSet(A1/A2 + gather1 whose body has
+    // Content("Between"), ChoiceSet(B1/B2 + gather2 whose body has Content("After")))
+    // OR the gathers close their choice sets and we get flat structure.
+    // Let's just verify the key structural invariants.
+
+    // Must have at least the initial content and first choice set
+    assert!(
+        body.stmts.len() >= 2,
+        "expected >=2 top-level stmts, got {:#?}",
+        body.stmts
+    );
+    assert!(
+        matches!(&body.stmts[0], Stmt::Content(_)),
+        "first stmt should be Content, got {:?}",
+        body.stmts[0]
+    );
+    assert!(
+        matches!(&body.stmts[1], Stmt::ChoiceSet(_)),
+        "second stmt should be ChoiceSet, got {:?}",
+        body.stmts[1]
+    );
+}

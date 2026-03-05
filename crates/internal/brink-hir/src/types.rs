@@ -392,8 +392,6 @@ pub enum InfixOp {
     Or,
     Has,
     HasNot,
-    Contains,
-    NotContains,
 }
 
 // ─── Declarations ───────────────────────────────────────────────────

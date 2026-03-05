@@ -26,6 +26,52 @@ pub fn lower(file: &ast::SourceFile) -> (HirFile, SymbolManifest, Vec<Diagnostic
     (hir, manifest, diagnostics)
 }
 
+/// Lower a single knot definition in isolation.
+///
+/// Returns `None` for the knot if the AST node is malformed (e.g. missing header).
+pub fn lower_knot(knot: &ast::KnotDef) -> (Option<Knot>, SymbolManifest, Vec<Diagnostic>) {
+    let mut ctx = LowerCtx::new();
+    let result = ctx.lower_knot(knot);
+    let LowerCtx {
+        manifest,
+        diagnostics,
+    } = ctx;
+    (result, manifest, diagnostics)
+}
+
+/// Lower only the top-level content and declarations of a file, skipping knots.
+///
+/// Useful for incremental analysis where knots are lowered separately.
+pub fn lower_top_level(file: &ast::SourceFile) -> (Block, SymbolManifest, Vec<Diagnostic>) {
+    let mut ctx = LowerCtx::new();
+
+    // Lower declarations (registers symbols in manifest)
+    let _variables: Vec<_> = file
+        .var_decls()
+        .filter_map(|v| ctx.lower_var_decl(&v))
+        .collect();
+    let _constants: Vec<_> = file
+        .const_decls()
+        .filter_map(|c| ctx.lower_const_decl(&c))
+        .collect();
+    let _lists: Vec<_> = file
+        .list_decls()
+        .filter_map(|l| ctx.lower_list_decl(&l))
+        .collect();
+    let _externals: Vec<_> = file
+        .externals()
+        .filter_map(|e| ctx.lower_external_decl(&e))
+        .collect();
+
+    let root_content = ctx.lower_body_children(file.syntax());
+
+    let LowerCtx {
+        manifest,
+        diagnostics,
+    } = ctx;
+    (root_content, manifest, diagnostics)
+}
+
 // ─── Lowering context ────────────────────────────────────────────────
 
 struct LowerCtx {
@@ -971,7 +1017,7 @@ impl LowerCtx {
 
 // ─── Phase 7: Body assembly and weave folding ───────────────────────
 
-enum WeaveItem {
+pub enum WeaveItem {
     Choice { choice: Choice },
     Gather { gather: Gather },
     Stmt(Stmt),
@@ -1138,7 +1184,7 @@ impl LowerCtx {
 
 // ─── Weave folding ──────────────────────────────────────────────────
 
-fn fold_weave(items: Vec<WeaveItem>) -> Block {
+pub fn fold_weave(items: Vec<WeaveItem>) -> Block {
     let mut stmts = Vec::new();
     let mut choice_acc: Vec<Choice> = Vec::new();
     let mut pending_gather: Option<Gather> = None;
