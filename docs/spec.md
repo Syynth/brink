@@ -23,8 +23,10 @@ brink is the ink compiler and bytecode runtime for s92-studio, extracted into it
 | `brink-hir` | `crates/internal/brink-hir/` | HIR types, per-file lowering from AST |
 | `brink-analyzer` | `crates/internal/brink-analyzer/` | Cross-file semantic analysis, project database |
 | `brink-format` | `crates/internal/brink-format/` | Binary interface between compiler and runtime |
+| `brink-json` | `crates/internal/brink-json/` | Parser for inklecate `.ink.json` output format |
+| `brink-converter` | `crates/internal/brink-converter/` | Converts `.ink.json` to `.inkb` (bootstraps runtime testing) |
 
-Whether `brink-format` needs to be published is deferred.
+Whether `brink-format` needs to be published is deferred. `brink-json` and `brink-converter` exist to bootstrap runtime testing via the reference compiler's output — they are not part of the native compilation pipeline (Parse → HIR → Analyze → Codegen).
 
 ### Dependency graph
 
@@ -91,20 +93,88 @@ Covers all ink constructs: knots, stitches, choices, gathers, diverts, tunnels, 
 ### Pass 2: Lower (brink-hir)
 
 - **Input:** `ast::SourceFile` from brink-syntax
-- **Output:** `(HirTree, SymbolManifest, Vec<Diagnostic>)`
-- **Responsibilities:**
-  - Weave folding: flat choices/gathers (identified by bullet/dash count) → container tree with proper nesting and scope. Must recurse into conditional blocks to find choices that participate in the outer weave (see "Choices inside conditional blocks" under Ink semantics).
-  - Implicit structure: top-level content before first knot → root container
-  - INCLUDE content merging: top-level content from included files is inlined at the INCLUDE location; knots are separated and appended to the story. Note: the actual merge is cross-file and happens in brink-analyzer; brink-hir records INCLUDE sites and exports `fold_weave` which the analyzer calls on the merged content.
-  - First-stitch auto-enter: the first stitch in a knot is entered via implicit divert; other stitches require explicit diverts
-  - Strip trivia and syntactic sugar
-  - Collect declarations into symbol manifest (knots, stitches, variables, lists, externals, unresolved references)
-  - Emit structural diagnostics (malformed weave nesting, orphaned gathers, etc.)
-- **Scope:** Per-file. Does not require cross-file context.
+- **Output:** `(HirFile, SymbolManifest, Vec<Diagnostic>)`
+- **Scope:** Per-file. Does not require cross-file context. Granularity is per-knot — individual knots can be re-lowered independently.
+
+brink-hir is a **rich semantic tree** — it preserves the full structure of the source with nesting resolved and syntactic sugar stripped, but all semantic information retained. Expressions stay as trees (not stack ops), choices/sequences/conditionals keep their branch structure, diverts/tunnels/threads are semantic nodes (not jump instructions). Both brink-analyzer and brink-compiler (codegen) consume the HIR. Codegen does the last-mile lowering from semantic nodes to bytecode.
+
+#### Responsibilities
+
+- **Weave folding:** flat choices/gathers (identified by bullet/dash count) → nested `ChoiceSet`/`Gather` tree with proper nesting and scope. Must recurse into conditional blocks to find choices that participate in the outer weave (see "Choices inside conditional blocks" under Ink semantics).
+- **Implicit structure:** top-level content before first knot → root content block.
+- **INCLUDE recording:** records INCLUDE sites. The actual cross-file merge happens in brink-analyzer; brink-hir exports `fold_weave` which the analyzer calls on the merged content.
+- **First-stitch auto-enter:** the first stitch in a knot is entered via implicit divert; other stitches require explicit diverts. Stitches with parameters are never auto-entered.
+- **Strip trivia and syntactic sugar:** comments, whitespace, and surface syntax are removed; semantic content is preserved.
+- **Symbol manifest:** collect declarations (knots, stitches, variables, lists, externals) and unresolved references (divert targets, variable references that may be cross-file).
+- **Structural diagnostics:** malformed weave nesting, orphaned gathers, gathers inside conditional blocks, choices in conditionals without explicit diverts.
+
+#### Source provenance
+
+HIR nodes carry `AstPtr<N>` — a lightweight pointer (`SyntaxKind` + `TextRange`, typed via `PhantomData`) that resolves back to a live AST node given the syntax tree root. This supports LSP refactoring workflows (rename, lint fix, extract/inline) without lifetime coupling to the CST. Stale pointers from previous parses fail gracefully on resolution. `AstPtr` is implemented in brink-syntax.
+
+#### Error recovery
+
+The HIR is always structurally valid but potentially incomplete. Fields that might be missing due to parse errors are `Option<T>`. Unparseable constructs are skipped with a diagnostic. Malformed weave gets best-effort folding with a diagnostic. No explicit error/sentinel nodes in the tree — a syntax error in one stitch does not prevent other stitches from being lowered.
+
+#### API surface
+
+brink-hir exports composable per-knot lowering functions alongside a convenience whole-file entry point (`lower`). Per-knot functions (`lower_knot`, `lower_top_level`) enable the analyzer to re-lower only changed knots. `fold_weave` is public so the analyzer can call it on merged INCLUDE content after cross-file resolution.
+
+#### Incremental strategy
+
+The analyzer caches HIR per knot and uses rowan green node identity to detect unchanged knots after incremental reparse. Only changed knots are re-lowered — unchanged knots reuse cached HIR. The `SymbolManifest` is reassembled from per-knot pieces.
+
+#### HIR type model
+
+The HIR is organized around a small set of structural concepts:
+
+**`HirFile`** — the root output for a single `.ink` file. Contains the root content block (top-level content before the first knot), all knot definitions, and top-level declarations (VAR, CONST, LIST, EXTERNAL, INCLUDE sites).
+
+**`Knot` and `Stitch`** — named containers with optional parameters, a function flag (for `== function knot_name ==`), and a body. Each knot may contain stitches. Stitches have the same shape as knots minus the function flag and child stitches.
+
+**`Block`** — the universal body type. A sequence of statements. Used for knot bodies, stitch bodies, choice branches, gather continuations, conditional branches, and sequence branches. This uniformity keeps the tree regular — any structural position that can hold content uses `Block`.
+
+**`Stmt`** — the things inside a block: content output, diverts (`->`), tunnel calls (`->->`), thread starts (`<-`), temp declarations, assignments, returns, choice sets, block-level conditionals, and block-level sequences.
+
+**`ChoiceSet` and `Gather`** — the core weave folding output. A `ChoiceSet` groups choices at the same weave depth with an optional `Gather` as their convergence point. Each choice has the three-part content split (start/bracket/inner from ink's `[...]` syntax), an optional condition, optional label, sticky/fallback flags, tags, an optional explicit divert, and a `Block` body. The gather has its own content, tags, and a `Block` body containing everything after the convergence point. Choice set bodies may themselves contain nested choice sets — weave nesting is recursive.
+
+**`Content` and `ContentPart`** — a line of text output with inline elements. Parts include plain text, glue, expression interpolation (`{expr}`), inline conditionals (`{cond: a | b}`), and inline sequences (`{&a|b|c}`). Block-level conditionals and sequences are separate `Stmt` variants, not content parts — this reflects the genuine semantic distinction in ink between inline elements (which produce text fragments) and block elements (which contain statements).
+
+**`Conditional` and `BlockSequence`** — block-level control flow. Conditionals have branches (each with an optional condition and a `Block` body). Block sequences have a `SequenceType` and branches (each a `Block`).
+
+**`Expr`** — expression trees preserved as-is. Literals (int, float, bool, string with interpolation parts, null), unresolved path references, divert targets as values, list literals, prefix/infix/postfix operations, and function calls. No lowering to stack operations — codegen handles that.
+
+**Control flow nodes** — diverts, tunnel calls, and thread starts are separate statement types (not a single divert variant) reflecting their distinct ink semantics. Each carries a target path and optional arguments.
+
+**Declarations** — VAR, CONST, temp, assignment (with `=`/`+=`/`-=`), LIST (with members carrying name, optional explicit ordinal, and active/inactive flag), EXTERNAL (name + param count), and INCLUDE sites.
+
+**`Name` and `Path`** — a `Name` is a single identifier with its text and an `AstPtr` back to the source. A `Path` is a dotted sequence of names (e.g., `knot.stitch.label`). Paths are unresolved at the HIR level — the analyzer resolves them to `DefinitionId`s.
+
+#### Sequence types
+
+Sequence type is a **bitmask**, not an enum. The reference ink compiler supports combining flags (e.g., `shuffle stopping`). Symbols: `$` = stopping (also the default when no annotation), `&` = cycle, `!` = once, `~` = shuffle. Valid combinations: each standalone, `shuffle | stopping`, and `shuffle | once`. All other combinations are structural errors.
+
+#### Weave folding algorithm
+
+The weave folder converts flat choices and gathers into the nested `ChoiceSet`/`Gather` tree. Based on the reference ink compiler's `Weave.cs`:
+
+1. **Group by depth:** scan the flat statement list. When a choice/gather at depth > base appears, collect it and all subsequent content at that depth or deeper into a nested group. Recurse.
+2. **Build choice sets:** consecutive choices at the same depth form a `ChoiceSet`. An optional gather at that depth becomes the convergence point.
+3. **Recurse into conditionals:** choices inside multiline conditional blocks participate in the outer weave (conditional blocks are transparent to weave folding). Gathers inside conditional blocks are a structural error.
+4. **Loose end tracking:** choices and gathers without explicit diverts are "loose ends" that codegen must connect to the next gather. The HIR records the structure; codegen handles divert insertion.
+5. **Auto-enter gathers:** a gather that follows only non-choice content (no choices in the current section) is auto-entered in the main flow. A gather that follows choices is only reachable via divert from those choices.
+
+#### What HIR does NOT do
+
+- **No cross-file context** — that is brink-analyzer's job
+- **No bytecode emission** — that is brink-compiler's job (codegen)
+- **No name resolution** — paths stay as unresolved `Path` nodes; the analyzer resolves them to `DefinitionId`s
+- **No type checking** — the analyzer handles this after name resolution
+- **No container boundary decisions** — the HIR has knots, stitches, choices, gathers as semantic nodes; codegen decides which become bytecode containers
 
 ### Pass 3–5: Analyze (brink-analyzer)
 
-- **Input:** `Vec<(FileId, HirTree, SymbolManifest)>` from all files
+- **Input:** `Vec<(FileId, HirFile, SymbolManifest)>` from all files
 - **Output:** `(SymbolIndex, Vec<Diagnostic>)`
 - **Responsibilities:**
   - Merge per-file symbol manifests into a unified symbol table
@@ -328,7 +398,7 @@ The instruction set covers:
 - **Threads:** thread start (fork entire call stack), thread done
 - **Output:** emit line (`u16` local line index), eval line (`u16` local line index — same as emit line but pushes to value stack instead of output buffer), emit value (stringify + emit top of stack), emit newline, glue, emit tag
 - **Choices:** begin/end choice set, begin/end choice (`ChoiceFlags` + `DefinitionId` target), choice output (`u16` local line index)
-- **Sequences:** sequence (with kind: cycle/stopping/once-only/shuffle), sequence branch
+- **Sequences:** sequence (with type bitmask: stopping/cycle/once/shuffle and valid combinations), sequence branch
 - **Intrinsics:** visit count, turns since, turn index, choice count, random, seed random
 - **External functions:** call external (`DefinitionId` + arg count)
 - **List operations:** contains, not-contains, intersect, union, except, all, invert, count, min, max, value, range, list-from-int, random
@@ -580,21 +650,22 @@ The caller resolves the external call via methods on the Flow:
 
 #### Story-level integration
 
-Higher-level APIs (line/passage continuation) resolve external calls transparently via registered handlers:
+Higher-level APIs (line/passage continuation) resolve external calls transparently via an `ExternalFnHandler` trait passed to the orchestration layer. The handler receives the function name and arguments, and returns a resolution:
 
-```
-story.bind_external("play_sound", |args| Ok(Value::Null));
-story.bind_external("get_health", |args| Ok(Value::Int(player.health)));
-```
+- `Resolved(Value)` — call completed, push return value
+- `Fallback` — use the ink-defined fallback body
+- `Pending` — async resolution; caller resolves later via `flow.resolve_external()`
 
 When `continue_line` encounters `Stepped::ExternalCall`:
 
-1. Read name from `flow.external_name(program)`, look up handler
-2. **Handler found**: read args from `flow.external_args()`, call handler, use `flow.resolve_external(result)`, continue stepping
-3. **No handler, fallback exists**: use `flow.invoke_fallback(program)`, continue stepping
-4. **Neither**: return error to caller
+1. Read name from `flow.external_name(program)` and args from `flow.external_args()`
+2. Call the handler trait method
+3. **Resolved**: use `flow.resolve_external(result)`, continue stepping
+4. **Fallback**: use `flow.invoke_fallback(program)`, continue stepping
+5. **Pending**: yield to caller for async resolution
+6. **Handler error**: propagate to caller with descriptive context (handler name, args, underlying cause)
 
-External handler functions are fallible (`-> Result<Value, E>`) — a handler that errors propagates through the continuation layer to the caller. The error should be descriptive (handler name, args, underlying cause) so the caller can decide how to respond.
+The trait approach lets different consumers use different resolution strategies (closure map, ECS lookup, async bridge) without coupling the runtime to any specific pattern.
 
 ### Output buffer
 
@@ -788,33 +859,31 @@ Planned features:
 
 ## Implementation order
 
-### Vertical spike
+### Vertical spike — COMPLETE
 
-The first implementation milestone is a vertical spike: a thin slice through every crate that runs a trivial ink story end-to-end. The spike validates that the crate boundaries and interfaces work together before investing heavily in any single crate.
+The vertical spike validated the crate boundaries by running ink stories end-to-end. It used a bootstrap path: brink-syntax (parser) + brink-json/brink-converter (ink.json → .inkb) + brink-format + brink-runtime. This bypassed HIR and the native compiler pipeline, instead using the reference ink compiler's JSON output to test the runtime.
 
-The spike covers: text output, simple choices, diverts between knots, `-> END`. No weave folding, no variables, no sequences, no cross-file includes.
+The spike established: the parser (complete), the format types (stable), the runtime VM (functional through tier 3 features), and a corpus test suite validating runtime behavior against reference ink output.
 
-### Spike deliverables
+### Native compiler pipeline
 
-The spike's real output is **interfaces and tests**, not implementations.
+The next phase builds the native compilation pipeline: Parse → HIR → Analyze → Codegen. This replaces the brink-json/brink-converter bootstrap path with brink's own compiler. The crates to build:
 
-1. **Public API surfaces** — each crate gets its public types and function signatures defined first. These are the stable artifacts that survive rewrites.
-2. **Boundary tests** — integration tests at each crate boundary that describe what the pipeline produces for specific inputs (parse snapshots, HIR snapshots, bytecode disassembly, execution output). These are the source of truth.
-3. **Minimal implementations** — just enough to make the tests pass. These are explicitly disposable.
+1. **brink-hir** — HIR types and per-file lowering from AST. This is the current focus.
+2. **brink-analyzer** — cross-file semantic analysis. Grows incrementally as features are added.
+3. **brink-compiler (codegen)** — walks HIR + resolved SymbolIndex, emits bytecode to brink-format types.
 
-### Disposability
-
-Spike implementations are v0. They exist to validate interfaces, not to be the final code. When building out a crate for real, **prefer rewriting over patching** if the existing implementation doesn't match the target design. The tests and public API signatures are what matter; everything behind them is throwaway.
-
-Keep spike implementations tiny — the smaller they are, the less inertia they carry.
-
-### Tiers (post-spike)
+### Feature tiers
 
 - **Tier 1:** Full choice semantics (sticky, once-only, fallback, nesting, conditions), gathers, weave folding, variables (local, temp), arithmetic, conditionals, sequences, glue, tags.
 - **Tier 2:** Tunnels, threads, external functions, global variables, visit counts, `TURNS_SINCE`, multi-file (`INCLUDE`).
 - **Tier 3:** LIST type (definitions, bitset operations, full set operations).
 
-The analyzer grows with each tier — barely exists during the spike, picks up name resolution in tier 1, and gets the full pass suite by tier 2.
+Each tier applies across the pipeline — HIR lowering, analysis, and codegen all grow together. The runtime already handles all three tiers via the converter bootstrap path; the native compiler catches up tier by tier.
+
+### Disposability
+
+Spike implementations are v0. They exist to validate interfaces, not to be the final code. When building out a crate for real, **prefer rewriting over patching** if the existing implementation doesn't match the target design. The tests and public API signatures are what matter; everything behind them is throwaway.
 
 ## Deferred
 
@@ -834,7 +903,7 @@ Key semantics verified against the reference C# ink implementation:
 - **Stitch fall-through:** stitches do NOT fall through. Only the first stitch in a knot is auto-entered (via implicit divert). Other stitches require explicit `-> stitch_name`. Stitches with parameters are never auto-entered.
 - **Root entry point:** all top-level content becomes an implicit root container. The compiler appends an implicit gather + `-> DONE` so the story terminates gracefully.
 - **Visit counting:** per-container granularity. Any container (knot, stitch, gather, choice target) can independently track visits and turn indices. `countingAtStartOnly` prevents overcounting on mid-container re-entry.
-- **Gathers:** not first-class objects. Implemented as unnamed containers that choice branches divert to.
+- **Gathers:** first-class semantic nodes in the HIR (with optional labels, content, and a body block). At the bytecode level, gathers become unnamed containers that choice branches divert to — codegen handles the lowering.
 - **Choices inside conditional blocks:** choices (`*`) can appear inside `{ - condition: ... }` multiline conditional blocks and participate in the outer weave structure (not a separate scope). Gathers (`-`) are explicitly forbidden inside conditional blocks — the reference compiler errors with "You can't use a gather (the dashes) within the { curly braces } context." This means conditional blocks are transparent to weave folding: they conditionally include/exclude choices at the current depth, but cannot introduce nested weave structure. The parser enforces this at `StatementLevel.InnerBlock`. **Parser gap:** brink-syntax does not yet parse choices inside multiline branch bodies — `multiline_branch_body` has no `STAR` arm and needs to be updated.
 
 ## Test corpus

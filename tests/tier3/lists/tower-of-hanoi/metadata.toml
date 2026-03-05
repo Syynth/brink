@@ -10,5 +10,3 @@ tier = 3
 feature = "lists"
 tags = ["threads", "ref-params", "list-ops", "sequences", "functions"]
 
-[skip]
-reason = "list comparison operators use set-theoretic semantics instead of ink's ordinal-based semantics"
