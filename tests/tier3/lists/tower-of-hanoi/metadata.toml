@@ -1,0 +1,14 @@
+description = "Tower of Hanoi — 3-disc optimal solution using lists, threads, ref params, and sequences"
+mode = "runtime"
+
+[source]
+origin = "ink-docs"
+original_id = "tower_of_hanoi"
+
+[classification]
+tier = 3
+feature = "lists"
+tags = ["threads", "ref-params", "list-ops", "sequences", "functions"]
+
+[skip]
+reason = "list comparison operators use set-theoretic semantics instead of ink's ordinal-based semantics"
