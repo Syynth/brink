@@ -227,7 +227,28 @@ impl LowerCtx {
             .stitches()
             .filter_map(|s| self.lower_stitch(&s, knot_name))
             .collect();
-        let block = self.lower_body_children(body.syntax());
+        let mut block = self.lower_body_children(body.syntax());
+
+        // First-stitch auto-enter: if the knot body has no content and the
+        // first stitch has no parameters, insert an implicit divert to it.
+        if block.stmts.is_empty()
+            && let Some(first) = stitches.first()
+            && first.params.is_empty()
+        {
+            block.stmts.push(Stmt::Divert(Divert {
+                target: DivertTarget {
+                    path: DivertPath::Path(Path {
+                        segments: vec![Name {
+                            text: first.name.text.clone(),
+                            range: first.name.range,
+                        }],
+                        range: first.name.range,
+                    }),
+                    args: Vec::new(),
+                },
+            }));
+        }
+
         (block, stitches)
     }
 
@@ -1135,8 +1156,8 @@ impl LowerCtx {
 // ─── Phase 7: Body assembly and weave folding ───────────────────────
 
 pub enum WeaveItem {
-    Choice { choice: Choice },
-    Gather { gather: Gather },
+    Choice { choice: Choice, depth: usize },
+    Gather { gather: Gather, depth: usize },
     Stmt(Stmt),
 }
 
@@ -1194,16 +1215,19 @@ impl LowerCtx {
                     }
                 }
                 SyntaxKind::CHOICE => {
-                    if let Some(c) = ast::Choice::cast(child)
-                        && let Some(choice) = self.lower_choice(&c)
-                    {
-                        items.push(WeaveItem::Choice { choice });
+                    if let Some(c) = ast::Choice::cast(child) {
+                        let depth = c.bullets().map_or(1, |b| b.depth());
+                        if let Some(choice) = self.lower_choice(&c) {
+                            items.push(WeaveItem::Choice { choice, depth });
+                        }
                     }
                 }
                 SyntaxKind::GATHER => {
                     if let Some(g) = ast::Gather::cast(child) {
+                        let depth = g.dashes().map_or(1, |d| d.depth());
                         items.push(WeaveItem::Gather {
                             gather: self.lower_gather(&g),
+                            depth,
                         });
                     }
                 }
@@ -1356,7 +1380,34 @@ impl LowerCtx {
 
 // ─── Weave folding ──────────────────────────────────────────────────
 
+/// Fold a flat stream of `WeaveItem`s into a recursively nested `Block`.
+///
+/// Matches the reference ink compiler's `ConstructWeaveHierarchyFromIndentation`:
+/// items at deeper depths are recursively folded and inserted into the preceding
+/// weave point's body.
 pub fn fold_weave(items: Vec<WeaveItem>) -> Block {
+    let base_depth = determine_base_depth(&items);
+    fold_weave_at_depth(items, base_depth)
+}
+
+/// Determine the base depth from the first choice or gather in the list.
+fn determine_base_depth(items: &[WeaveItem]) -> usize {
+    for item in items {
+        match item {
+            WeaveItem::Choice { depth, .. } | WeaveItem::Gather { depth, .. } => return *depth,
+            WeaveItem::Stmt(_) => {}
+        }
+    }
+    1
+}
+
+/// Fold items at a given base depth. Items at deeper depths are collected
+/// and recursively folded into the preceding weave point's body.
+fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
+    // Phase 1: Group nested items into sub-weaves (matching ConstructWeaveHierarchyFromIndentation)
+    let items = nest_deeper_items(items, base_depth);
+
+    // Phase 2: Build choice sets from the now-single-depth stream
     let mut stmts = Vec::new();
     let mut choice_acc: Vec<Choice> = Vec::new();
 
@@ -1373,24 +1424,76 @@ pub fn fold_weave(items: Vec<WeaveItem>) -> Block {
                     }
                 }
             }
-            WeaveItem::Choice { choice } => {
+            WeaveItem::Choice { choice, .. } => {
                 choice_acc.push(choice);
             }
-            WeaveItem::Gather { gather } => {
+            WeaveItem::Gather { gather, .. } => {
                 if choice_acc.is_empty() {
-                    // Standalone gather — emit its content as a sibling
                     emit_standalone_gather(&mut stmts, &gather);
                 } else {
-                    // Gather closes the current choice set
                     flush_choices(&mut stmts, &mut choice_acc, Some(gather));
                 }
             }
         }
     }
 
-    // Flush any trailing choices with no gather
     flush_choices(&mut stmts, &mut choice_acc, None);
     Block { stmts }
+}
+
+/// Extract runs of deeper-depth items and recursively fold them into nested blocks,
+/// inserting the result into the preceding weave point's body.
+fn nest_deeper_items(items: Vec<WeaveItem>, base_depth: usize) -> Vec<WeaveItem> {
+    let mut result = Vec::new();
+    let mut iter = items.into_iter().peekable();
+
+    while let Some(item) = iter.next() {
+        let depth = item_depth(&item);
+
+        if let Some(d) = depth
+            && d > base_depth
+        {
+            // Collect all consecutive items at this deeper depth or beyond
+            let inner_depth = d;
+            let mut nested_items = vec![item];
+            loop {
+                let Some(peeked) = iter.peek() else {
+                    break;
+                };
+                if let Some(d) = item_depth(peeked)
+                    && d <= base_depth
+                {
+                    break;
+                }
+                // Safe: we just peeked successfully
+                if let Some(next) = iter.next() {
+                    nested_items.push(next);
+                }
+            }
+            let nested_block = fold_weave_at_depth(nested_items, inner_depth);
+
+            // Attach the nested block to the previous weave point's body
+            if let Some(WeaveItem::Choice { choice, .. }) = result.last_mut() {
+                choice.body.stmts.extend(nested_block.stmts);
+            } else {
+                // No preceding choice — emit as standalone stmts
+                for stmt in nested_block.stmts {
+                    result.push(WeaveItem::Stmt(stmt));
+                }
+            }
+        } else {
+            result.push(item);
+        }
+    }
+
+    result
+}
+
+fn item_depth(item: &WeaveItem) -> Option<usize> {
+    match item {
+        WeaveItem::Choice { depth, .. } | WeaveItem::Gather { depth, .. } => Some(*depth),
+        WeaveItem::Stmt(_) => None,
+    }
 }
 
 fn flush_choices(stmts: &mut Vec<Stmt>, choice_acc: &mut Vec<Choice>, gather: Option<Gather>) {

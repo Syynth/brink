@@ -91,6 +91,74 @@ Stitch content.
     );
 }
 
+/// First stitch with no params gets an implicit divert in the knot body.
+#[test]
+fn first_stitch_auto_enter() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+= first_stitch
+First stitch content.
+= second_stitch
+Second stitch content.
+",
+    );
+    assert!(diags.is_empty());
+    let knot = &hir.knots[0];
+    assert_eq!(knot.stitches.len(), 2);
+    // Knot body should have an implicit divert to first_stitch
+    assert!(
+        knot.body.stmts.iter().any(|s| matches!(s,
+            Stmt::Divert(d) if matches!(&d.target.path, DivertPath::Path(p) if p.segments[0].text == "first_stitch")
+        )),
+        "expected implicit divert to first_stitch, got {:#?}",
+        knot.body.stmts
+    );
+}
+
+/// First stitch with params does NOT get auto-entered.
+#[test]
+fn first_stitch_with_params_no_auto_enter() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+= first_stitch(x)
+Content with {x}.
+",
+    );
+    assert!(diags.is_empty());
+    let knot = &hir.knots[0];
+    // No implicit divert — first stitch has params
+    assert!(
+        !knot.body.stmts.iter().any(|s| matches!(s, Stmt::Divert(_))),
+        "should NOT have implicit divert when first stitch has params, got {:#?}",
+        knot.body.stmts
+    );
+}
+
+/// Knot with content before stitches does NOT get auto-enter divert.
+#[test]
+fn knot_with_content_before_stitch_no_auto_enter() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+Some preamble.
+= first_stitch
+Stitch content.
+",
+    );
+    assert!(diags.is_empty());
+    let knot = &hir.knots[0];
+    // Has content before stitch, so no auto-enter needed
+    assert!(
+        knot.body
+            .stmts
+            .iter()
+            .any(|s| matches!(s, Stmt::Content(_))),
+        "knot body should have content"
+    );
+}
+
 #[test]
 fn function_knot() {
     let (hir, _, diags) = lower_ink(
@@ -854,10 +922,8 @@ fn weave_labeled_gather() {
     }
 }
 
-/// Nested bullet choices — currently the parser flattens `* *` to separate choice
-/// nodes at the knot body level, so `fold_weave` sees them all as flat. Depth-based
-/// recursive nesting (inner choices becoming nested `ChoiceSet`s inside Outer A's body)
-/// is the target behavior but requires depth tracking on `WeaveItem`.
+/// Nested bullet choices produce recursively nested `ChoiceSet`s.
+/// `* *` (depth 2) choices become a nested `ChoiceSet` inside Outer A's body.
 #[test]
 fn weave_nested_bullet_choices() {
     let (hir, _, diags) = lower_ink(
@@ -873,24 +939,42 @@ fn weave_nested_bullet_choices() {
     );
     assert!(diags.is_empty());
     let body = &hir.knots[0].body;
-    let choice_sets: Vec<&ChoiceSet> = body
+
+    // Top level: one ChoiceSet with 2 outer choices + outer gather
+    assert_eq!(body.stmts.len(), 1, "stmts: {:#?}", body.stmts);
+    let outer_cs = match &body.stmts[0] {
+        Stmt::ChoiceSet(cs) => cs,
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    };
+    assert_eq!(outer_cs.choices.len(), 2, "expected 2 outer choices");
+    assert!(outer_cs.gather.is_some(), "expected outer gather");
+
+    // Outer A's body should contain a nested ChoiceSet with the inner choices
+    let outer_a_body = &outer_cs.choices[0].body;
+    let inner_cs = outer_a_body
         .stmts
         .iter()
-        .filter_map(|s| match s {
+        .find_map(|s| match s {
             Stmt::ChoiceSet(cs) => Some(cs),
             _ => None,
         })
-        .collect();
+        .unwrap_or_else(|| {
+            panic!(
+                "expected nested ChoiceSet in Outer A's body, got {:#?}",
+                outer_a_body.stmts
+            )
+        });
+    assert_eq!(inner_cs.choices.len(), 2, "expected 2 inner choices");
+    assert!(inner_cs.gather.is_some(), "expected inner gather");
+
+    // Outer B should have no nested choice sets
     assert!(
-        !choice_sets.is_empty(),
-        "expected at least 1 ChoiceSet from nested bullets, got {:#?}",
-        body.stmts
-    );
-    // Total choices across all sets should account for all bullet lines
-    let total_choices: usize = choice_sets.iter().map(|cs| cs.choices.len()).sum();
-    assert!(
-        total_choices >= 4,
-        "expected at least 4 total choices (2 outer + 2 inner), got {total_choices}"
+        outer_cs.choices[1]
+            .body
+            .stmts
+            .iter()
+            .all(|s| !matches!(s, Stmt::ChoiceSet(_))),
+        "Outer B should have no nested ChoiceSets"
     );
 }
 
