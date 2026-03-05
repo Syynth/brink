@@ -36,4 +36,4 @@ pub use error::RuntimeError;
 pub use linker::link;
 pub use program::Program;
 pub use rng::{DotNetRng, FastRng, StoryRng};
-pub use story::{Choice, ExternalFnHandler, ExternalResult, StepResult, Story, StoryStatus};
+pub use story::{Choice, ExternalFnHandler, ExternalResult, Stats, StepResult, Story, StoryStatus};

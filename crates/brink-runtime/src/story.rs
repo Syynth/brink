@@ -57,6 +57,38 @@ pub struct Choice {
     pub tags: Vec<String>,
 }
 
+// ── Stats ───────────────────────────────────────────────────────────────────
+
+/// Lightweight counters tracking VM activity over a story's lifetime.
+///
+/// Always-on — incrementing a `u64` is effectively free compared to opcode
+/// dispatch. Use [`Story::stats`] to read after a run.
+#[derive(Debug, Clone, Default)]
+pub struct Stats {
+    /// Total opcodes dispatched.
+    pub opcodes: u64,
+    /// Total `vm::step` calls from the outer loop.
+    pub steps: u64,
+    /// Threads forked (via `ThreadCall` and choice creation).
+    pub threads_created: u64,
+    /// Threads that completed and were popped.
+    pub threads_completed: u64,
+    /// Call frames pushed onto thread stacks.
+    pub frames_pushed: u64,
+    /// Call frames popped from thread stacks.
+    pub frames_popped: u64,
+    /// Choice sets presented to the player.
+    pub choices_presented: u64,
+    /// Individual choices selected.
+    pub choices_selected: u64,
+    /// `CallStack::snapshot` cache hits (reused existing `Rc`).
+    pub snapshot_cache_hits: u64,
+    /// `CallStack::snapshot` cache misses (new allocation).
+    pub snapshot_cache_misses: u64,
+    /// `CallStack::materialize` calls (flattened inherited prefix).
+    pub materializations: u64,
+}
+
 // ── Internal types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +144,8 @@ pub(crate) struct CallStack {
     own: Vec<CallFrame>,
     /// Cached snapshot so multiple forks from the same parent share one allocation.
     cached_snapshot: Option<Rc<[CallFrame]>>,
+    /// Count of materializations (flattening inherited prefix into own).
+    pub(crate) materialization_count: u64,
 }
 
 impl CallStack {
@@ -120,6 +154,7 @@ impl CallStack {
             inherited: None,
             own: vec![frame],
             cached_snapshot: None,
+            materialization_count: 0,
         }
     }
 
@@ -144,7 +179,6 @@ impl CallStack {
     }
 
     pub fn last_mut(&mut self) -> Option<&mut CallFrame> {
-        self.cached_snapshot = None;
         if !self.own.is_empty() {
             return self.own.last_mut();
         }
@@ -163,10 +197,10 @@ impl CallStack {
 
     /// Build an `Rc<[CallFrame]>` snapshot of the full stack (inherited + own).
     /// The result is cached so multiple forks from the same parent share one
-    /// allocation.
-    pub fn snapshot(&mut self) -> Rc<[CallFrame]> {
+    /// allocation. Returns `(snapshot, cache_hit)`.
+    pub fn snapshot(&mut self) -> (Rc<[CallFrame]>, bool) {
         if let Some(ref cached) = self.cached_snapshot {
-            return Rc::clone(cached);
+            return (Rc::clone(cached), true);
         }
         let rc = match &self.inherited {
             None => Rc::from(self.own.as_slice()),
@@ -179,16 +213,21 @@ impl CallStack {
             }
         };
         self.cached_snapshot = Some(Rc::clone(&rc));
-        rc
+        (rc, false)
     }
 
-    fn materialize(&mut self) {
+    /// Flatten inherited prefix into `own`. Returns `true` if work was done.
+    fn materialize(&mut self) -> bool {
         self.cached_snapshot = None;
         if let Some(prefix) = self.inherited.take() {
             let mut combined = Vec::with_capacity(prefix.len() + self.own.len());
             combined.extend_from_slice(&prefix);
             combined.append(&mut self.own);
             self.own = combined;
+            self.materialization_count += 1;
+            true
+        } else {
+            false
         }
     }
 }
@@ -281,17 +320,32 @@ impl Flow {
         self.threads.pop();
     }
 
-    pub fn fork_thread(&mut self) -> Thread {
+    /// Fork a new thread from the current one. Returns `(thread, snapshot_cache_hit)`.
+    pub fn fork_thread(&mut self) -> (Thread, bool) {
         self.thread_counter += 1;
-        let shared = self.current_thread_mut().call_stack.snapshot();
-        Thread {
-            call_stack: CallStack {
-                inherited: Some(shared),
-                own: Vec::new(),
-                cached_snapshot: None,
+        let (shared, cache_hit) = self.current_thread_mut().call_stack.snapshot();
+        (
+            Thread {
+                call_stack: CallStack {
+                    inherited: Some(shared),
+                    own: Vec::new(),
+                    cached_snapshot: None,
+                    materialization_count: 0,
+                },
+                thread_index: self.thread_counter,
             },
-            thread_index: self.thread_counter,
+            cache_hit,
+        )
+    }
+
+    /// Drain materialization counts from all thread call stacks.
+    pub fn drain_materializations(&mut self) -> u64 {
+        let mut total = 0;
+        for thread in &mut self.threads {
+            total += thread.call_stack.materialization_count;
+            thread.call_stack.materialization_count = 0;
         }
+        total
     }
 
     /// Read the arguments from the top External frame.
@@ -407,6 +461,7 @@ pub(crate) struct FlowInstance<R: StoryRng = FastRng> {
     pub(crate) flow: Flow,
     pub(crate) context: Context<R>,
     pub(crate) status: StoryStatus,
+    pub(crate) stats: Stats,
 }
 
 /// Maximum opcodes per step to prevent infinite loops.
@@ -451,6 +506,7 @@ impl<R: StoryRng> FlowInstance<R> {
                 _rng: PhantomData,
             },
             status: StoryStatus::Active,
+            stats: Stats::default(),
         }
     }
 
@@ -492,6 +548,7 @@ impl<R: StoryRng> FlowInstance<R> {
                 _rng: PhantomData,
             },
             status: StoryStatus::Active,
+            stats: Stats::default(),
         }
     }
 
@@ -525,7 +582,10 @@ impl<R: StoryRng> FlowInstance<R> {
                 return Ok(StepResult::Done { text, tags });
             }
 
-            match vm::step(&mut self.flow, &mut self.context, program)? {
+            self.stats.steps += 1;
+            let stepped = vm::step(&mut self.flow, &mut self.context, &mut self.stats, program)?;
+            self.stats.materializations += self.flow.drain_materializations();
+            match stepped {
                 vm::Stepped::Continue | vm::Stepped::ThreadCompleted => {}
 
                 vm::Stepped::ExternalCall => {
@@ -558,6 +618,7 @@ impl<R: StoryRng> FlowInstance<R> {
                     // Filter out invisible defaults — they shouldn't be
                     // presented to the player.
                     self.status = StoryStatus::WaitingForChoice;
+                    self.stats.choices_presented += 1;
                     let choices = self
                         .flow
                         .pending_choices
@@ -639,6 +700,7 @@ impl<R: StoryRng> FlowInstance<R> {
 
         self.flow.pending_choices.clear();
         self.status = StoryStatus::Active;
+        self.stats.choices_selected += 1;
 
         Ok(())
     }
@@ -763,6 +825,11 @@ impl<R: StoryRng> Story<R> {
     /// Get the current execution status.
     pub fn status(&self) -> StoryStatus {
         self.default.status
+    }
+
+    /// Read-only access to the default flow's VM statistics.
+    pub fn stats(&self) -> &Stats {
+        &self.default.stats
     }
 
     // ── Named flow API ──────────────────────────────────────────────
@@ -1399,8 +1466,8 @@ mod tests {
         );
 
         // Fork — children share the cached snapshot Rc.
-        let child = story.default.flow.fork_thread();
-        let child2 = story.default.flow.fork_thread();
+        let (child, _) = story.default.flow.fork_thread();
+        let (child2, _) = story.default.flow.fork_thread();
 
         assert_eq!(child.call_stack.len(), parent_len);
         assert_eq!(child2.call_stack.len(), parent_len);
@@ -1411,6 +1478,70 @@ mod tests {
         assert!(
             Rc::ptr_eq(rc1, rc2),
             "children should share the same snapshot Rc"
+        );
+    }
+
+    /// Running a minimal story should produce non-zero opcodes and steps.
+    #[test]
+    fn stats_basic_counters() {
+        let json_str =
+            std::fs::read_to_string("../../tests/tier1/basics/I001-minimal-story/story.ink.json")
+                .unwrap();
+        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
+        let data = brink_converter::convert(&ink).unwrap();
+        let program = link(&data).unwrap();
+        let mut story: Story = Story::new(&program);
+
+        // Minimal story completes in one step.
+        let result = story.step(&program).unwrap();
+        assert!(
+            matches!(result, StepResult::Done { .. } | StepResult::Ended { .. }),
+            "minimal story should not have choices"
+        );
+
+        let s = story.stats();
+        assert!(s.opcodes > 0, "should have dispatched at least one opcode");
+        assert!(s.steps > 0, "should have at least one step");
+    }
+
+    /// A story with multiple choices per set should get snapshot cache hits.
+    /// Between consecutive `fork_thread` calls in the same choice set, the
+    /// snapshot should be reused (cache hit) rather than re-allocated.
+    #[test]
+    fn snapshot_cache_hits_nonzero_for_multi_choice() {
+        // I091 has 2 choices created via threads — the second fork should
+        // hit the cache because the parent's call stack hasn't structurally
+        // changed between the two ThreadCall forks.
+        let (program, mut story) = load_i091();
+        let _choices = step_until_choices(&mut story, &program);
+
+        let stats = story.stats();
+        assert!(
+            stats.snapshot_cache_hits > 0,
+            "expected snapshot_cache_hits > 0 for a story with multiple choices, \
+             got hits={}, misses={}",
+            stats.snapshot_cache_hits,
+            stats.snapshot_cache_misses,
+        );
+    }
+
+    /// Running a story with choices should track choice stats.
+    #[test]
+    fn stats_choice_counters() {
+        let (program, mut story) = load_i079();
+
+        let _choices = step_until_choices(&mut story, &program);
+        assert!(
+            story.stats().choices_presented > 0,
+            "should have presented choices"
+        );
+        assert!(story.stats().threads_created > 0, "choices fork threads");
+
+        story.choose(0).unwrap();
+        assert_eq!(
+            story.stats().choices_selected,
+            1,
+            "should have selected one choice"
         );
     }
 }

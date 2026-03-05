@@ -8,7 +8,9 @@ use crate::error::RuntimeError;
 use crate::list_ops;
 use crate::program::Program;
 use crate::rng::StoryRng;
-use crate::story::{CallFrame, CallFrameType, ContainerPosition, Context, Flow, PendingChoice};
+use crate::story::{
+    CallFrame, CallFrameType, ContainerPosition, Context, Flow, PendingChoice, Stats,
+};
 use crate::value_ops::{self, BinaryOp};
 
 /// Result of a single VM instruction step.
@@ -32,6 +34,7 @@ pub(crate) enum Stepped {
 pub(crate) fn step<R: StoryRng>(
     flow: &mut Flow,
     context: &mut Context<R>,
+    stats: &mut Stats,
     program: &Program,
 ) -> Result<Stepped, RuntimeError> {
     // ── Preamble: resolve current position ──────────────────────────────
@@ -40,6 +43,7 @@ pub(crate) fn step<R: StoryRng>(
         // Current thread's call stack is empty.
         if flow.can_pop_thread() {
             flow.pop_thread();
+            stats.threads_completed += 1;
             return Ok(Stepped::ThreadCompleted);
         }
         return Ok(Stepped::Done);
@@ -56,7 +60,7 @@ pub(crate) fn step<R: StoryRng>(
     let Some(pos) = frame.container_stack.last().copied() else {
         // Container stack empty — the frame has no more containers to execute.
         let frame_type = frame.frame_type;
-        return handle_frame_exhaustion(flow, frame_type);
+        return handle_frame_exhaustion(flow, stats, frame_type);
     };
 
     let container = program.container(pos.container_idx);
@@ -71,7 +75,7 @@ pub(crate) fn step<R: StoryRng>(
         frame.container_stack.pop();
         if frame.container_stack.is_empty() {
             let frame_type = frame.frame_type;
-            return handle_frame_exhaustion(flow, frame_type);
+            return handle_frame_exhaustion(flow, stats, frame_type);
         }
         return Ok(Stepped::Continue);
     }
@@ -79,6 +83,7 @@ pub(crate) fn step<R: StoryRng>(
     // ── Decode ──────────────────────────────────────────────────────────
     let mut offset = pos.offset;
     let op = Opcode::decode(&container.bytecode, &mut offset)?;
+    stats.opcodes += 1;
 
     // Advance the offset in the position.
     {
@@ -430,11 +435,12 @@ pub(crate) fn step<R: StoryRng>(
                 frame_type: CallFrameType::Function,
                 external_fn_id: None,
             });
+            stats.frames_pushed += 1;
         }
         Opcode::Return => {
             // The function already pushed its return value via `ev, <value>, /ev`.
             // It stays on the value stack; pop_call_frame just cleans up the checkpoint.
-            pop_call_frame(flow, true)?;
+            pop_call_frame(flow, stats, true)?;
         }
         Opcode::TunnelCall(id) => {
             let idx = program
@@ -459,6 +465,7 @@ pub(crate) fn step<R: StoryRng>(
                 frame_type: CallFrameType::Tunnel,
                 external_fn_id: None,
             });
+            stats.frames_pushed += 1;
         }
         Opcode::ThreadCall(id) => {
             let idx = program
@@ -471,7 +478,7 @@ pub(crate) fn step<R: StoryRng>(
             // for `->->` to return through tunnels. The Thread frame
             // acts as a boundary: when it exhausts, the thread pops
             // without unwinding into inherited frames below.
-            let mut forked = flow.fork_thread();
+            let (mut forked, cache_hit) = flow.fork_thread();
             forked.call_stack.push(CallFrame {
                 return_address: None,
                 temps: Vec::new(),
@@ -483,6 +490,13 @@ pub(crate) fn step<R: StoryRng>(
                 external_fn_id: None,
             });
             flow.threads.push(forked);
+            stats.threads_created += 1;
+            stats.frames_pushed += 1;
+            if cache_hit {
+                stats.snapshot_cache_hits += 1;
+            } else {
+                stats.snapshot_cache_misses += 1;
+            }
         }
         Opcode::TunnelCallVariable => {
             let val = flow.pop_value()?;
@@ -513,6 +527,7 @@ pub(crate) fn step<R: StoryRng>(
                 frame_type: CallFrameType::Tunnel,
                 external_fn_id: None,
             });
+            stats.frames_pushed += 1;
         }
         Opcode::CallVariable => {
             let val = flow.pop_value()?;
@@ -545,6 +560,7 @@ pub(crate) fn step<R: StoryRng>(
                 frame_type: CallFrameType::Function,
                 external_fn_id: None,
             });
+            stats.frames_pushed += 1;
         }
         Opcode::TunnelReturn => {
             // The eval block before ->-> pushes either void (normal
@@ -562,6 +578,7 @@ pub(crate) fn step<R: StoryRng>(
                 .is_some_and(|f| f.frame_type == CallFrameType::Thread)
             {
                 flow.current_thread_mut().call_stack.pop();
+                stats.frames_popped += 1;
             }
 
             // If a DivertTarget, overwrite this frame's return address
@@ -580,7 +597,7 @@ pub(crate) fn step<R: StoryRng>(
                     offset,
                 });
             }
-            pop_call_frame(flow, true)?;
+            pop_call_frame(flow, stats, true)?;
         }
 
         // ── Choices ─────────────────────────────────────────────────
@@ -598,7 +615,7 @@ pub(crate) fn step<R: StoryRng>(
             flow.pending_choices.clear();
         }
         Opcode::BeginChoice(flags, target_id) => {
-            handle_begin_choice(flow, context, program, flags, target_id)?;
+            handle_begin_choice(flow, context, stats, program, flags, target_id)?;
         }
 
         // ── Intrinsics ──────────────────────────────────────────────
@@ -754,6 +771,7 @@ pub(crate) fn step<R: StoryRng>(
                 frame_type: CallFrameType::External,
                 external_fn_id: Some(fn_id),
             });
+            stats.frames_pushed += 1;
             return Ok(Stepped::ExternalCall);
         }
 
@@ -795,6 +813,7 @@ fn resolve_line(program: &Program, pos: &ContainerPosition, idx: u16) -> String 
 /// - **Otherwise**: pop the call frame normally (implicit return).
 fn handle_frame_exhaustion(
     flow: &mut Flow,
+    stats: &mut Stats,
     frame_type: CallFrameType,
 ) -> Result<Stepped, RuntimeError> {
     if frame_type == CallFrameType::Thread {
@@ -803,6 +822,7 @@ fn handle_frame_exhaustion(
         // child thread, so can_pop_thread is expected to be true.
         if flow.can_pop_thread() {
             flow.pop_thread();
+            stats.threads_completed += 1;
             return Ok(Stepped::ThreadCompleted);
         }
         return Ok(Stepped::Done);
@@ -813,15 +833,17 @@ fn handle_frame_exhaustion(
         // choice creation preserves the state for resumption.
         if flow.can_pop_thread() {
             flow.pop_thread();
+            stats.threads_completed += 1;
             return Ok(Stepped::ThreadCompleted);
         }
         return Ok(Stepped::Done);
     }
 
-    pop_call_frame(flow, false)?;
+    pop_call_frame(flow, stats, false)?;
     if flow.current_thread().call_stack.is_empty() {
         if flow.can_pop_thread() {
             flow.pop_thread();
+            stats.threads_completed += 1;
             return Ok(Stepped::ThreadCompleted);
         }
         return Ok(Stepped::Done);
@@ -839,12 +861,17 @@ fn handle_frame_exhaustion(
 /// - `is_explicit_return = false` (implicit return via bytecode exhaustion):
 ///   the function didn't push a return value. Capture text output and push
 ///   it as a `Value::String`.
-fn pop_call_frame(flow: &mut Flow, is_explicit_return: bool) -> Result<(), RuntimeError> {
+fn pop_call_frame(
+    flow: &mut Flow,
+    stats: &mut Stats,
+    is_explicit_return: bool,
+) -> Result<(), RuntimeError> {
     let thread = flow.current_thread_mut();
     let popped = thread
         .call_stack
         .pop()
         .ok_or(RuntimeError::CallStackUnderflow)?;
+    stats.frames_popped += 1;
 
     if popped.frame_type == CallFrameType::Function {
         if is_explicit_return {
@@ -997,6 +1024,7 @@ fn current_position(flow: &Flow) -> Result<ContainerPosition, RuntimeError> {
 fn handle_begin_choice<R: StoryRng>(
     flow: &mut Flow,
     context: &mut Context<R>,
+    stats: &mut Stats,
     program: &Program,
     flags: ChoiceFlags,
     target_id: DefinitionId,
@@ -1064,7 +1092,13 @@ fn handle_begin_choice<R: StoryRng>(
         .ok_or(RuntimeError::UnresolvedDefinition(target_id))?;
 
     let idx = flow.pending_choices.len();
-    let thread_fork = flow.fork_thread();
+    let (thread_fork, cache_hit) = flow.fork_thread();
+    stats.threads_created += 1;
+    if cache_hit {
+        stats.snapshot_cache_hits += 1;
+    } else {
+        stats.snapshot_cache_misses += 1;
+    }
     let tags = std::mem::take(&mut flow.current_tags);
     flow.pending_choices.push(PendingChoice {
         display_text,
