@@ -87,6 +87,23 @@ pub(crate) fn binary_op(
         (Value::Float(a), Value::String(b)) if op == BinaryOp::Add => {
             Ok(Value::String(format!("{a}{b}")))
         }
+        // String vs Int/Float equality: coerce numeric to string (ink type priority: String > Float > Int).
+        (Value::String(a), Value::Int(b)) if op == BinaryOp::Equal || op == BinaryOp::NotEqual => {
+            string_op(op, a, &b.to_string())
+        }
+        (Value::Int(a), Value::String(b)) if op == BinaryOp::Equal || op == BinaryOp::NotEqual => {
+            string_op(op, &a.to_string(), b)
+        }
+        (Value::String(a), Value::Float(b))
+            if op == BinaryOp::Equal || op == BinaryOp::NotEqual =>
+        {
+            string_op(op, a, &format!("{b}"))
+        }
+        (Value::Float(a), Value::String(b))
+            if op == BinaryOp::Equal || op == BinaryOp::NotEqual =>
+        {
+            string_op(op, &format!("{a}"), b)
+        }
         // Bool comparisons
         (Value::Bool(a), Value::Bool(b)) => bool_op(op, *a, *b),
         // Bool + Int coercion
@@ -419,5 +436,40 @@ mod tests {
         assert_eq!(stringify(&Value::Int(42), &p), "42");
         assert_eq!(stringify(&Value::Bool(true), &p), "true");
         assert_eq!(stringify(&Value::Null, &p), "");
+    }
+
+    /// String == Int coerces Int to String (ink type priority: String > Int).
+    #[test]
+    fn string_int_equality_coercion() {
+        let p = dummy_program();
+        // "5" == 5 → "5" == "5" → true
+        let r = binary_op(
+            BinaryOp::Equal,
+            &Value::String("5".into()),
+            &Value::Int(5),
+            &p,
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(true));
+
+        // "blah" == 5 → "blah" == "5" → false
+        let r = binary_op(
+            BinaryOp::Equal,
+            &Value::String("blah".into()),
+            &Value::Int(5),
+            &p,
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(false));
+
+        // 5 == "5" (reversed operand order)
+        let r = binary_op(
+            BinaryOp::Equal,
+            &Value::Int(5),
+            &Value::String("5".into()),
+            &p,
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(true));
     }
 }

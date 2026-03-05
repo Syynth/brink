@@ -8,19 +8,35 @@ use crate::rng::StoryRng;
 use crate::story::{Context, Flow};
 
 /// `ListContains` (`?`): `[lhs, rhs]` → `Bool(rhs ⊆ lhs)`
+///
+/// Also handles string operands: `"hello" ? "ell"` → substring check.
 pub(crate) fn list_contains(flow: &mut Flow) -> Result<(), RuntimeError> {
-    let rhs = pop_list(flow)?;
-    let lhs = pop_list(flow)?;
-    let result = rhs.items.iter().all(|id| lhs.items.contains(id));
+    let rhs = flow.pop_value()?;
+    let lhs = flow.pop_value()?;
+    let result = if let (Value::String(a), Value::String(b)) = (&lhs, &rhs) {
+        a.contains(b.as_str())
+    } else {
+        let rhs = to_list(rhs)?;
+        let lhs = to_list(lhs)?;
+        rhs.items.iter().all(|id| lhs.items.contains(id))
+    };
     flow.value_stack.push(Value::Bool(result));
     Ok(())
 }
 
 /// `ListNotContains` (`!?`): `[lhs, rhs]` → `Bool(¬(rhs ⊆ lhs))`
+///
+/// Also handles string operands.
 pub(crate) fn list_not_contains(flow: &mut Flow) -> Result<(), RuntimeError> {
-    let rhs = pop_list(flow)?;
-    let lhs = pop_list(flow)?;
-    let result = !rhs.items.iter().all(|id| lhs.items.contains(id));
+    let rhs = flow.pop_value()?;
+    let lhs = flow.pop_value()?;
+    let result = if let (Value::String(a), Value::String(b)) = (&lhs, &rhs) {
+        !a.contains(b.as_str())
+    } else {
+        let rhs = to_list(rhs)?;
+        let lhs = to_list(lhs)?;
+        !rhs.items.iter().all(|id| lhs.items.contains(id))
+    };
     flow.value_stack.push(Value::Bool(result));
     Ok(())
 }
@@ -245,6 +261,21 @@ pub(crate) fn list_random<R: StoryRng>(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Convert an already-popped value to a list.
+fn to_list(val: Value) -> Result<ListValue, RuntimeError> {
+    match val {
+        Value::List(lv) => Ok(lv),
+        Value::Null => Ok(ListValue {
+            items: vec![],
+            origins: vec![],
+        }),
+        _ => Err(RuntimeError::TypeError(format!(
+            "expected list, got {:?}",
+            val.value_type()
+        ))),
+    }
+}
 
 fn pop_list(flow: &mut Flow) -> Result<ListValue, RuntimeError> {
     let val = flow.pop_value()?;

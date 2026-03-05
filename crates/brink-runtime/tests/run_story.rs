@@ -734,3 +734,19 @@ fn external_function_fallback_with_args() {
     let result = run_story(&json, &[]);
     assert_eq!(result, "The value is false.\n");
 }
+
+/// String `?` (contains) should do substring check, not list containment.
+#[test]
+fn string_contains_operator() {
+    let json = load_ink_json("../../tests/tier3/strings/I050-string-contains/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result, "1\n0\n1\n1\n");
+}
+
+/// String == Int should coerce Int to String for comparison.
+#[test]
+fn string_int_equality_coercion() {
+    let json = load_ink_json("../../tests/tier3/strings/I052-string-type-coercion/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result, "same\ndifferent\n");
+}
