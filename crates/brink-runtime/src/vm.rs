@@ -702,19 +702,21 @@ pub(crate) fn step<R: StoryRng>(
             flow.output.begin_capture();
         }
         Opcode::EndTag => {
-            let tag_text = flow
-                .output
-                .end_capture()
-                .ok_or(RuntimeError::CaptureUnderflow)?;
-            let tag = tag_text.trim().to_string();
-            flow.in_tag = false;
-            if flow.output.has_checkpoint() {
-                // Inside a capture (choice text, function call) — store
-                // for the choice/function to consume.
-                flow.current_tags.push(tag);
-            } else {
-                // Top-level output — associate with the current line.
-                flow.output.push_tag(tag);
+            // end_capture returns None when there's no active checkpoint.
+            // This happens in sequences: non-first branches start with `/#`
+            // to close the *previous* branch's tag, but on a fresh visit
+            // there's nothing to close. Silently skip in that case.
+            if let Some(tag_text) = flow.output.end_capture() {
+                let tag = tag_text.trim().to_string();
+                flow.in_tag = false;
+                if flow.output.has_checkpoint() {
+                    // Inside a capture (choice text, function call) — store
+                    // for the choice/function to consume.
+                    flow.current_tags.push(tag);
+                } else {
+                    // Top-level output — associate with the current line.
+                    flow.output.push_tag(tag);
+                }
             }
         }
 

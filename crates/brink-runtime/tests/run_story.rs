@@ -750,3 +750,13 @@ fn string_int_equality_coercion() {
     let result = run_story(&json, &[]);
     assert_eq!(result, "same\ndifferent\n");
 }
+
+/// Tags inside sequences should not cause capture underflow on subsequent visits.
+/// The `/#` at the start of non-first sequence branches closes the previous
+/// branch's tag, but on a fresh visit there's no active capture to close.
+#[test]
+fn tags_in_sequence() {
+    let json = load_ink_json("../../tests/tier3/tags/tagsInSeq/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result, "A red sequence.\nA white sequence.\n");
+}
