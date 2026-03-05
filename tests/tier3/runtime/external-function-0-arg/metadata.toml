@@ -9,3 +9,6 @@ original_id = "external_function_zero_arguments"
 tier = 3
 feature = "runtime"
 tags = []
+
+[skip]
+reason = "requires custom external function handler (transcript expects handler result, not fallback)"

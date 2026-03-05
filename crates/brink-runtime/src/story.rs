@@ -234,20 +234,23 @@ impl Flow {
     }
 
     /// Replace the External frame with a Function frame pointing at the
-    /// fallback container. The External frame's args become the Function
-    /// frame's temps (they map to the function's parameters).
+    /// fallback container. Args are pushed back onto the value stack so
+    /// the fallback body's `temp=` opcodes can pop them.
     pub fn invoke_fallback(&mut self, container_idx: u32) {
         let thread = self.current_thread_mut();
         if let Some(frame) = thread.call_stack.last_mut()
             && frame.frame_type == CallFrameType::External
         {
+            let args = core::mem::take(&mut frame.temps);
             frame.frame_type = CallFrameType::Function;
             frame.container_stack = vec![ContainerPosition {
                 container_idx,
                 offset: 0,
             }];
             frame.external_fn_id = None;
-            // temps already hold the args — they become the function's parameters.
+            // Push args back onto the value stack — the fallback body
+            // starts with `temp=` instructions that pop them.
+            self.value_stack.extend(args);
         }
     }
 

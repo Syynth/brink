@@ -725,3 +725,12 @@ fn glue_skips_whitespace_text_to_find_newline() {
     let result = run_story(&json, &[]);
     assert_eq!(result, "a b\na b\n");
 }
+
+/// External function fallback with 1 arg should not stack-underflow.
+/// The fallback body's `temp=` opcodes expect args on the value stack.
+#[test]
+fn external_function_fallback_with_args() {
+    let json = load_ink_json("../../tests/tier3/runtime/external-function-1-arg-v1/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result, "The value is false.\n");
+}
