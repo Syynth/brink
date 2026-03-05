@@ -19,6 +19,9 @@ pub(crate) fn include_statement(p: &mut Parser<'_>) {
 
     // file_path: everything until newline
     p.start_node(FILE_PATH);
+    if p.at_eof() || p.nth_raw(0) == NEWLINE {
+        p.error("expected file path".into());
+    }
     while !p.at_eof() && p.nth_raw(0) != NEWLINE {
         p.bump();
     }

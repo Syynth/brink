@@ -1046,10 +1046,7 @@ fn diag_e010_external_missing_name() {
 }
 
 // E011: INCLUDE is missing a file path
-// Gap: the parser doesn't error on bare `INCLUDE` and doesn't yield it
-// from `file.includes()`, so `lower_include` never runs. Needs a parser fix.
 #[test]
-#[ignore = "requires parser fix: bare INCLUDE produces no error"]
 fn diag_e011_include_missing_path() {
     expect_diag_or_parse_error("INCLUDE\n", DiagnosticCode::E011);
 }
@@ -1144,10 +1141,7 @@ fn diag_e020_inline_cond_missing_condition() {
 }
 
 // E021: inline sequence has no branches
-// Gap: the parser doesn't produce a `SequenceWithAnnotation` for `{stopping:}`
-// with no branches, so `lower_inline_sequence` never runs. Needs a parser fix.
 #[test]
-#[ignore = "requires parser fix: empty sequence produces no error"]
 fn diag_e021_inline_seq_no_branches() {
     expect_diag_or_parse_error("Hello {stopping:}\n", DiagnosticCode::E021);
 }

@@ -68,6 +68,21 @@ fn list_corpus_midsyll_demonic() {
 }
 
 #[test]
+fn include_bare_emits_error() {
+    let p = parse("INCLUDE\n");
+    assert_eq!(
+        "INCLUDE\n",
+        p.syntax().text().to_string(),
+        "lossless round-trip"
+    );
+    assert!(
+        p.errors().iter().any(|e| e.message.contains("file path")),
+        "expected error about missing file path, got: {:?}",
+        p.errors()
+    );
+}
+
+#[test]
 fn insta_include() {
     let p = parse("INCLUDE story.ink\n");
     insta::assert_snapshot!(format!("{:#?}", p.syntax()));

@@ -76,6 +76,36 @@ fn conditional_nested_with_outer_pipe() {
 }
 
 #[test]
+fn sequence_stopping_empty_emits_error() {
+    let p = parse("{stopping:}\n");
+    assert_eq!(
+        "{stopping:}\n",
+        p.syntax().text().to_string(),
+        "lossless round-trip"
+    );
+    assert!(
+        p.errors().iter().any(|e| e.message.contains("branches")),
+        "expected error about missing branches, got: {:?}",
+        p.errors()
+    );
+}
+
+#[test]
+fn sequence_symbol_empty_emits_error() {
+    let p = parse("{&}\n");
+    assert_eq!(
+        "{&}\n",
+        p.syntax().text().to_string(),
+        "lossless round-trip"
+    );
+    assert!(
+        p.errors().iter().any(|e| e.message.contains("branches")),
+        "expected error about missing branches, got: {:?}",
+        p.errors()
+    );
+}
+
+#[test]
 fn insta_conditional() {
     let p = parse("{x > 5: big|small}\n");
     insta::assert_snapshot!(format!("{:#?}", p.syntax()));

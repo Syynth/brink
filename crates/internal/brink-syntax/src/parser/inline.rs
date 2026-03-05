@@ -240,7 +240,9 @@ fn sequence_with_annotation(p: &mut Parser<'_>) {
     p.skip_ws();
 
     // Branches: multiline or inline
-    if p.current() == NEWLINE {
+    if p.current() == R_BRACE {
+        p.error("expected sequence branches".into());
+    } else if p.current() == NEWLINE {
         multiline_branches_seq(p);
     } else {
         inline_branches_seq(p);
