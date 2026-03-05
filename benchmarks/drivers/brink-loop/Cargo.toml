@@ -9,3 +9,6 @@ brink-runtime = { path = "../../../crates/brink-runtime" }
 brink-converter = { path = "../../../crates/internal/brink-converter" }
 brink-json = { path = "../../../crates/internal/brink-json" }
 serde_json = "1"
+
+[profile.release]
+debug = true

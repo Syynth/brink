@@ -718,9 +718,9 @@ fn ink_value_to_format_value(ink: &InkValue, index: &StoryIndex) -> Value {
             Value::Float(val)
         }
         InkValue::Bool(b) => Value::Bool(*b),
-        InkValue::String(s) => Value::String(s.clone()),
+        InkValue::String(s) => Value::String(s.clone().into()),
         InkValue::DivertTarget(p) => Value::DivertTarget(path::container_id(p)),
-        InkValue::List(ink_list) => Value::List(ink_list_to_list_value(ink_list, index)),
+        InkValue::List(ink_list) => Value::List(ink_list_to_list_value(ink_list, index).into()),
         InkValue::VariablePointer(_) => Value::Null,
     }
 }

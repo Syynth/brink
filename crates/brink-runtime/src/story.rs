@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::rc::Rc;
 
 use brink_format::{ChoiceFlags, DefinitionId, Value};
 
@@ -98,10 +99,104 @@ pub(crate) struct CallFrame {
     pub external_fn_id: Option<DefinitionId>,
 }
 
+/// Two-part call stack: shared read-only prefix + owned mutable frames.
+///
+/// `fork_thread` snapshots the parent's frames into a cached `Rc<[CallFrame]>`
+/// (one clone, amortized across all children). Children get `Rc::clone` — O(1).
+/// The parent keeps its `own` vec unchanged and continues mutating freely.
+#[derive(Debug, Clone)]
+pub(crate) struct CallStack {
+    /// Shared read-only prefix inherited from the parent thread.
+    inherited: Option<Rc<[CallFrame]>>,
+    /// Frames owned by this thread (above the fork point).
+    own: Vec<CallFrame>,
+    /// Cached snapshot so multiple forks from the same parent share one allocation.
+    cached_snapshot: Option<Rc<[CallFrame]>>,
+}
+
+impl CallStack {
+    pub fn new(frame: CallFrame) -> Self {
+        Self {
+            inherited: None,
+            own: vec![frame],
+            cached_snapshot: None,
+        }
+    }
+
+    pub fn push(&mut self, frame: CallFrame) {
+        self.cached_snapshot = None;
+        self.own.push(frame);
+    }
+
+    pub fn pop(&mut self) -> Option<CallFrame> {
+        self.cached_snapshot = None;
+        if let Some(f) = self.own.pop() {
+            return Some(f);
+        }
+        self.materialize();
+        self.own.pop()
+    }
+
+    pub fn last(&self) -> Option<&CallFrame> {
+        self.own
+            .last()
+            .or_else(|| self.inherited.as_ref().and_then(|h| h.last()))
+    }
+
+    pub fn last_mut(&mut self) -> Option<&mut CallFrame> {
+        self.cached_snapshot = None;
+        if !self.own.is_empty() {
+            return self.own.last_mut();
+        }
+        self.materialize();
+        self.own.last_mut()
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.inherited.as_ref().map_or(0, |h| h.len()) + self.own.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.own.is_empty() && self.inherited.as_ref().is_none_or(|h| h.is_empty())
+    }
+
+    /// Build an `Rc<[CallFrame]>` snapshot of the full stack (inherited + own).
+    /// The result is cached so multiple forks from the same parent share one
+    /// allocation.
+    pub fn snapshot(&mut self) -> Rc<[CallFrame]> {
+        if let Some(ref cached) = self.cached_snapshot {
+            return Rc::clone(cached);
+        }
+        let rc = match &self.inherited {
+            None => Rc::from(self.own.as_slice()),
+            Some(prefix) if self.own.is_empty() => Rc::clone(prefix),
+            Some(prefix) => {
+                let mut combined = Vec::with_capacity(prefix.len() + self.own.len());
+                combined.extend_from_slice(prefix);
+                combined.extend_from_slice(&self.own);
+                Rc::from(combined)
+            }
+        };
+        self.cached_snapshot = Some(Rc::clone(&rc));
+        rc
+    }
+
+    fn materialize(&mut self) {
+        self.cached_snapshot = None;
+        if let Some(prefix) = self.inherited.take() {
+            let mut combined = Vec::with_capacity(prefix.len() + self.own.len());
+            combined.extend_from_slice(&prefix);
+            combined.append(&mut self.own);
+            self.own = combined;
+        }
+    }
+}
+
 /// A single execution thread with its own call stack.
 #[derive(Debug, Clone)]
 pub(crate) struct Thread {
-    pub call_stack: Vec<CallFrame>,
+    pub call_stack: CallStack,
     #[expect(dead_code)]
     pub thread_index: u32,
 }
@@ -188,8 +283,13 @@ impl Flow {
 
     pub fn fork_thread(&mut self) -> Thread {
         self.thread_counter += 1;
+        let shared = self.current_thread_mut().call_stack.snapshot();
         Thread {
-            call_stack: self.current_thread().call_stack.clone(),
+            call_stack: CallStack {
+                inherited: Some(shared),
+                own: Vec::new(),
+                cached_snapshot: None,
+            },
             thread_index: self.thread_counter,
         }
     }
@@ -327,7 +427,7 @@ impl<R: StoryRng> FlowInstance<R> {
             external_fn_id: None,
         };
         let initial_thread = Thread {
-            call_stack: vec![initial_frame],
+            call_stack: CallStack::new(initial_frame),
             thread_index: 0,
         };
         Self {
@@ -368,7 +468,7 @@ impl<R: StoryRng> FlowInstance<R> {
             external_fn_id: None,
         };
         let initial_thread = Thread {
-            call_stack: vec![initial_frame],
+            call_stack: CallStack::new(initial_frame),
             thread_index: 0,
         };
         Self {
@@ -1078,10 +1178,10 @@ mod tests {
                             _ => 0,
                         };
                         let s = match &args[1] {
-                            Value::String(s) => s.clone(),
-                            _ => String::new(),
+                            Value::String(s) => &**s,
+                            _ => "",
                         };
-                        ExternalResult::Resolved(Value::String(s.repeat(count)))
+                        ExternalResult::Resolved(Value::String(s.repeat(count).into()))
                     }
                     _ => ExternalResult::Fallback,
                 }
@@ -1278,5 +1378,39 @@ mod tests {
         // Duplicate name should error.
         let err = story.spawn_flow("a", root_id, &program);
         assert!(err.is_err());
+    }
+
+    // ── CallStack shared-prefix optimization ───────────────────────
+
+    #[test]
+    fn fork_thread_shares_snapshot_rc() {
+        let json_str =
+            std::fs::read_to_string("../../tests/tier1/choices/I091-choice-count/story.ink.json")
+                .unwrap();
+        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
+        let data = brink_converter::convert(&ink).unwrap();
+        let program = link(&data).unwrap();
+        let mut story: Story = Story::new(&program);
+
+        let parent_len = story.default.flow.current_thread().call_stack.len();
+        assert!(
+            parent_len >= 1,
+            "main thread should have at least one frame"
+        );
+
+        // Fork — children share the cached snapshot Rc.
+        let child = story.default.flow.fork_thread();
+        let child2 = story.default.flow.fork_thread();
+
+        assert_eq!(child.call_stack.len(), parent_len);
+        assert_eq!(child2.call_stack.len(), parent_len);
+
+        // Both children reference the same inherited Rc.
+        let rc1 = child.call_stack.inherited.as_ref().unwrap();
+        let rc2 = child2.call_stack.inherited.as_ref().unwrap();
+        assert!(
+            Rc::ptr_eq(rc1, rc2),
+            "children should share the same snapshot Rc"
+        );
     }
 }

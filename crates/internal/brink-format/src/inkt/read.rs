@@ -244,7 +244,7 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
             Ok(Value::Float(n))
         }
         Rule::bool_value => Ok(Value::Bool(inner.as_str() == "true")),
-        Rule::string => Ok(Value::String(unescape_string(inner.as_str()))),
+        Rule::string => Ok(Value::String(unescape_string(inner.as_str()).into())),
         Rule::def_id => Ok(Value::DivertTarget(parse_def_id(inner)?)),
         Rule::null_value => Ok(Value::Null),
         Rule::list_value => parse_list_value(inner),
@@ -287,7 +287,7 @@ fn parse_list_value(pair: P<'_>) -> Result<Value, InktParseError> {
         }
     }
 
-    Ok(Value::List(ListValue { items, origins }))
+    Ok(Value::List(ListValue { items, origins }.into()))
 }
 
 // ── Lists ───────────────────────────────────────────────────────────────────

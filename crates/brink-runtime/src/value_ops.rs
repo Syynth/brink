@@ -1,5 +1,7 @@
 //! Arithmetic, comparison, coercion, truthiness, and stringify for [`Value`].
 
+use std::rc::Rc;
+
 use brink_format::{ListValue, Value};
 
 use crate::error::RuntimeError;
@@ -24,7 +26,7 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
         Value::Int(n) => n.to_string(),
         Value::Float(n) => format!("{n}"),
         Value::Bool(b) => if *b { "true" } else { "false" }.to_owned(),
-        Value::String(s) => s.clone(),
+        Value::String(s) => s.to_string(),
         Value::Null => String::new(),
         Value::List(lv) => stringify_list(lv, program),
         Value::DivertTarget(id) | Value::VariablePointer(id) => format!("{id}"),
@@ -64,7 +66,7 @@ pub(crate) fn binary_op(
         // List + Int / List - Int → ordinal shift
         (Value::List(a), Value::Int(b)) if op == BinaryOp::Add || op == BinaryOp::Subtract => {
             let shift = if op == BinaryOp::Add { *b } else { -*b };
-            Ok(Value::List(list_ordinal_shift(a, shift, program)))
+            Ok(Value::List(Rc::new(list_ordinal_shift(a, shift, program))))
         }
         (Value::Int(a), Value::Int(b)) => int_op(op, *a, *b),
         (Value::Float(a), Value::Float(b)) => Ok(float_op(op, *a, *b)),
@@ -75,17 +77,17 @@ pub(crate) fn binary_op(
         (Value::String(a), Value::String(b)) => string_op(op, a, b),
         // Int + String coercion: stringify the int
         (Value::String(a), Value::Int(b)) if op == BinaryOp::Add => {
-            Ok(Value::String(format!("{a}{b}")))
+            Ok(Value::String(format!("{a}{b}").into()))
         }
         (Value::Int(a), Value::String(b)) if op == BinaryOp::Add => {
-            Ok(Value::String(format!("{a}{b}")))
+            Ok(Value::String(format!("{a}{b}").into()))
         }
         // Float + String coercion
         (Value::String(a), Value::Float(b)) if op == BinaryOp::Add => {
-            Ok(Value::String(format!("{a}{b}")))
+            Ok(Value::String(format!("{a}{b}").into()))
         }
         (Value::Float(a), Value::String(b)) if op == BinaryOp::Add => {
-            Ok(Value::String(format!("{a}{b}")))
+            Ok(Value::String(format!("{a}{b}").into()))
         }
         // String vs Int/Float equality: coerce numeric to string (ink type priority: String > Float > Int).
         (Value::String(a), Value::Int(b)) if op == BinaryOp::Equal || op == BinaryOp::NotEqual => {
@@ -234,7 +236,7 @@ fn list_binary_op(
                     origins.push(id);
                 }
             }
-            Ok(Value::List(ListValue { items, origins }))
+            Ok(Value::List(Rc::new(ListValue { items, origins })))
         }
         BinaryOp::Subtract => {
             // Except (a \ b)
@@ -244,10 +246,10 @@ fn list_binary_op(
                 .filter(|id| !b.items.contains(id))
                 .copied()
                 .collect();
-            Ok(Value::List(ListValue {
+            Ok(Value::List(Rc::new(ListValue {
                 items,
                 origins: a.origins.clone(),
-            }))
+            })))
         }
         BinaryOp::Equal => {
             let eq =
@@ -370,7 +372,7 @@ fn float_op(op: BinaryOp, a: f32, b: f32) -> Value {
 
 fn string_op(op: BinaryOp, a: &str, b: &str) -> Result<Value, RuntimeError> {
     Ok(match op {
-        BinaryOp::Add => Value::String(format!("{a}{b}")),
+        BinaryOp::Add => Value::String(format!("{a}{b}").into()),
         BinaryOp::Equal => Value::Bool(a == b),
         BinaryOp::NotEqual => Value::Bool(a != b),
         _ => {
@@ -459,7 +461,7 @@ mod tests {
         assert!(is_truthy(&Value::Float(0.1)));
         assert!(!is_truthy(&Value::Float(0.0)));
         assert!(is_truthy(&Value::String("hi".into())));
-        assert!(!is_truthy(&Value::String(String::new())));
+        assert!(!is_truthy(&Value::String("".into())));
         assert!(!is_truthy(&Value::Null));
     }
 
@@ -552,22 +554,22 @@ mod tests {
         let (p, low_id, mid_id, high_id) = program_with_rank_list();
         let list_def_id = DefinitionId::new(DefinitionTag::ListDef, 100);
 
-        let low = Value::List(ListValue {
+        let low = Value::List(Rc::new(ListValue {
             items: vec![low_id],
             origins: vec![list_def_id],
-        });
-        let mid = Value::List(ListValue {
+        }));
+        let mid = Value::List(Rc::new(ListValue {
             items: vec![mid_id],
             origins: vec![list_def_id],
-        });
-        let high = Value::List(ListValue {
+        }));
+        let high = Value::List(Rc::new(ListValue {
             items: vec![high_id],
             origins: vec![list_def_id],
-        });
-        let mid_high = Value::List(ListValue {
+        }));
+        let mid_high = Value::List(Rc::new(ListValue {
             items: vec![mid_id, high_id],
             origins: vec![list_def_id],
-        });
+        }));
 
         // {mid} > {low} — ordinal 2 > ordinal 1 → true
         // (set-theoretic would say false because low ∉ {mid})
@@ -613,14 +615,14 @@ mod tests {
         let (p, low_id, _, _) = program_with_rank_list();
         let list_def_id = DefinitionId::new(DefinitionTag::ListDef, 100);
 
-        let empty = Value::List(ListValue {
+        let empty = Value::List(Rc::new(ListValue {
             items: vec![],
             origins: vec![list_def_id],
-        });
-        let low = Value::List(ListValue {
+        }));
+        let low = Value::List(Rc::new(ListValue {
             items: vec![low_id],
             origins: vec![list_def_id],
-        });
+        }));
 
         // {low} > () → true (non-empty > empty)
         assert_eq!(

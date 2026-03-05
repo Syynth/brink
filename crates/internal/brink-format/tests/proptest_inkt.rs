@@ -100,14 +100,14 @@ fn arb_value() -> impl Strategy<Value = Value> {
         any::<i32>().prop_map(Value::Int),
         arb_inkt_float().prop_map(Value::Float),
         any::<bool>().prop_map(Value::Bool),
-        "[^\"\\\\\x00]*".prop_map(Value::String),
+        "[^\"\\\\\x00]*".prop_map(|s: String| Value::String(s.into())),
         arb_def_id().prop_map(Value::DivertTarget),
         Just(Value::Null),
         (
             prop::collection::vec(arb_def_id(), 0..3),
             prop::collection::vec(arb_def_id(), 0..3),
         )
-            .prop_map(|(items, origins)| Value::List(ListValue { items, origins })),
+            .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
     ]
 }
 

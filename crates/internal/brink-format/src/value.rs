@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::id::DefinitionId;
 
 /// The runtime type of a [`Value`].
@@ -14,13 +16,18 @@ pub enum ValueType {
 }
 
 /// A runtime value in the ink VM.
+///
+/// Heap-allocating variants (`String`, `List`) are wrapped in `Rc` so that
+/// cloning a `Value` is always O(1) — a refcount bump, not a deep copy.
+/// This matches C#'s reference-type semantics and makes call-frame cloning
+/// (during `fork_thread`) essentially free.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i32),
     Float(f32),
     Bool(bool),
-    String(String),
-    List(ListValue),
+    String(Rc<str>),
+    List(Rc<ListValue>),
     DivertTarget(DefinitionId),
     /// A reference to a global variable, used for `ref` parameters.
     VariablePointer(DefinitionId),
@@ -62,14 +69,14 @@ mod tests {
         assert_eq!(Value::Int(0).value_type(), ValueType::Int);
         assert_eq!(Value::Float(0.0).value_type(), ValueType::Float);
         assert_eq!(Value::Bool(true).value_type(), ValueType::Bool);
-        assert_eq!(Value::String(String::new()).value_type(), ValueType::String);
+        assert_eq!(Value::String("".into()).value_type(), ValueType::String);
         assert_eq!(Value::Null.value_type(), ValueType::Null);
 
         let list = ListValue {
             items: vec![],
             origins: vec![],
         };
-        assert_eq!(Value::List(list).value_type(), ValueType::List);
+        assert_eq!(Value::List(list.into()).value_type(), ValueType::List);
 
         let target = DefinitionId::new(DefinitionTag::Container, 1);
         assert_eq!(

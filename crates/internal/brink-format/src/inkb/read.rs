@@ -314,7 +314,7 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, DecodeError> {
             Ok(Value::Float(v))
         }
         VAL_BOOL => Ok(Value::Bool(read_u8(buf, off)? != 0)),
-        VAL_STRING => Ok(Value::String(read_str(buf, off)?)),
+        VAL_STRING => Ok(Value::String(read_str(buf, off)?.into())),
         VAL_LIST => {
             let item_count = read_u32(buf, off)? as usize;
             let mut items = Vec::with_capacity(safe_capacity(item_count, buf.len(), *off, 8));
@@ -326,7 +326,7 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, DecodeError> {
             for _ in 0..origin_count {
                 origins.push(read_def_id(buf, off)?);
             }
-            Ok(Value::List(ListValue { items, origins }))
+            Ok(Value::List(ListValue { items, origins }.into()))
         }
         VAL_DIVERT_TARGET => Ok(Value::DivertTarget(read_def_id(buf, off)?)),
         VAL_VAR_POINTER => Ok(Value::VariablePointer(read_def_id(buf, off)?)),

@@ -1,5 +1,7 @@
 //! Opcode decode-dispatch loop.
 
+use std::rc::Rc;
+
 use brink_format::{ChoiceFlags, CountingFlags, DefinitionId, LineContent, Opcode, Value};
 
 use crate::error::RuntimeError;
@@ -101,7 +103,7 @@ pub(crate) fn step<R: StoryRng>(
         }
         Opcode::EvalLine(idx) => {
             let text = resolve_line(program, &pos, idx);
-            flow.value_stack.push(Value::String(text));
+            flow.value_stack.push(Value::String(text.into()));
         }
         Opcode::EmitValue => {
             let val = flow.pop_value()?;
@@ -205,7 +207,7 @@ pub(crate) fn step<R: StoryRng>(
         Opcode::PushFloat(v) => flow.value_stack.push(Value::Float(v)),
         Opcode::PushBool(v) => flow.value_stack.push(Value::Bool(v)),
         Opcode::PushString(idx) => {
-            let s = program.name(brink_format::NameId(idx)).to_owned();
+            let s: Rc<str> = program.name(brink_format::NameId(idx)).into();
             flow.value_stack.push(Value::String(s));
         }
         Opcode::PushNull => {
@@ -213,7 +215,7 @@ pub(crate) fn step<R: StoryRng>(
         }
         Opcode::PushList(idx) => {
             let lv = program.list_literal(idx).clone();
-            flow.value_stack.push(Value::List(lv));
+            flow.value_stack.push(Value::List(Rc::new(lv)));
         }
         Opcode::PushDivertTarget(id) => {
             flow.value_stack.push(Value::DivertTarget(id));
@@ -285,7 +287,7 @@ pub(crate) fn step<R: StoryRng>(
                 && new_lv.origins.is_empty()
                 && let Value::List(old_lv) = &context.globals[idx as usize]
             {
-                new_lv.origins.clone_from(&old_lv.origins);
+                Rc::make_mut(new_lv).origins.clone_from(&old_lv.origins);
             }
             context.globals[idx as usize] = val;
         }
@@ -590,7 +592,7 @@ pub(crate) fn step<R: StoryRng>(
                 .output
                 .end_capture()
                 .ok_or(RuntimeError::CaptureUnderflow)?;
-            flow.value_stack.push(Value::String(text));
+            flow.value_stack.push(Value::String(text.into()));
         }
         Opcode::BeginChoiceSet => {
             flow.pending_choices.clear();
@@ -857,7 +859,7 @@ fn pop_call_frame(flow: &mut Flow, is_explicit_return: bool) -> Result<(), Runti
                 .output
                 .end_capture()
                 .ok_or(RuntimeError::CaptureUnderflow)?;
-            let text = text.trim_end_matches('\n').to_owned();
+            let text: Rc<str> = text.trim_end_matches('\n').into();
             flow.value_stack.push(Value::String(text));
         }
     }
@@ -1037,7 +1039,7 @@ fn handle_begin_choice<R: StoryRng>(
     // 2. Pop choice text strings (choice-only is on top, start below).
     let choice_only_text = if flags.has_choice_only_content {
         match flow.value_stack.pop() {
-            Some(Value::String(s)) => s,
+            Some(Value::String(s)) => (*s).to_owned(),
             Some(other) => value_ops::stringify(&other, program),
             None => String::new(),
         }
@@ -1047,7 +1049,7 @@ fn handle_begin_choice<R: StoryRng>(
 
     let start_text = if flags.has_start_content {
         match flow.value_stack.pop() {
-            Some(Value::String(s)) => s,
+            Some(Value::String(s)) => (*s).to_owned(),
             Some(other) => value_ops::stringify(&other, program),
             None => String::new(),
         }
