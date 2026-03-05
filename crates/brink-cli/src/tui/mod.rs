@@ -41,7 +41,7 @@ fn run_inner(
         let timeout = app.poll_timeout();
         let input = event::poll_input(timeout)?;
         app.handle_input(input, story, program)?;
-        app.tick(story, program)?;
+        app.tick();
     }
 
     Ok(())

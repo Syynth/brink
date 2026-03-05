@@ -24,13 +24,18 @@ pub enum Focus {
     Choices,
 }
 
+/// What happens after the current passage finishes typing.
+pub(super) enum AfterPassage {
+    ShowChoices(Vec<ChoiceEntry>),
+    End,
+}
+
 /// The current phase of the TUI state machine.
 pub enum Phase {
     /// Text is being revealed character by character.
     Typing {
         typewriter: TypewriterState,
-        pending_choices: Vec<ChoiceEntry>,
-        ended: bool,
+        then: AfterPassage,
     },
     /// All text is visible, awaiting player choice. Choice text is revealed
     /// via its own typewriter (concatenated choice texts joined by `\n`).
@@ -78,13 +83,6 @@ impl App {
         self.focus = Focus::Story;
 
         match story.step(program)? {
-            StepResult::Done { text, .. } => {
-                self.phase = Phase::Typing {
-                    typewriter: TypewriterState::new(text, self.char_delay),
-                    pending_choices: Vec::new(),
-                    ended: false,
-                };
-            }
             StepResult::Choices { text, choices, .. } => {
                 let entries: Vec<ChoiceEntry> = choices
                     .into_iter()
@@ -95,15 +93,20 @@ impl App {
                     .collect();
                 self.phase = Phase::Typing {
                     typewriter: TypewriterState::new(text, self.char_delay),
-                    pending_choices: entries,
-                    ended: false,
+                    then: AfterPassage::ShowChoices(entries),
                 };
             }
             StepResult::Ended { text, .. } => {
                 self.phase = Phase::Typing {
                     typewriter: TypewriterState::new(text, self.char_delay),
-                    pending_choices: Vec::new(),
-                    ended: true,
+                    then: AfterPassage::End,
+                };
+            }
+            StepResult::Done { text, .. } => {
+                tracing::warn!("unexpected StepResult::Done during interactive play");
+                self.phase = Phase::Typing {
+                    typewriter: TypewriterState::new(text, self.char_delay),
+                    then: AfterPassage::End,
                 };
             }
         }
@@ -166,140 +169,107 @@ impl App {
                 }
             },
             Input::Confirm => {
-                if let Phase::Choosing { .. } = &self.phase {
-                    let old_phase = std::mem::replace(
-                        &mut self.phase,
-                        Phase::Ended {
-                            text: String::new(),
-                        },
-                    );
-                    if let Phase::Choosing {
-                        text,
-                        choices,
-                        selected,
-                        ..
-                    } = old_phase
-                    {
-                        let chosen_text = choices
-                            .get(selected)
-                            .map(|c| c.text.clone())
-                            .unwrap_or_default();
-                        let choice_index =
-                            choices.get(selected).map(|c| c.index).unwrap_or_default();
-
-                        self.history.push(Passage {
-                            text,
-                            chosen: Some(chosen_text),
-                        });
-
-                        story.choose(choice_index)?;
-                        self.advance_story(story, program)?;
-                    }
-                }
+                self.confirm_choice(story, program)?;
             }
             Input::None => {}
         }
         Ok(())
     }
 
-    /// Called each frame to advance typewriter and transition phases.
-    pub fn tick(
+    /// Confirm the currently selected choice and advance the story.
+    fn confirm_choice(
         &mut self,
         story: &mut Story,
         program: &Program,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let transition = match &mut self.phase {
-            Phase::Typing {
-                typewriter,
-                pending_choices,
-                ended,
-            } => {
+        if !matches!(self.phase, Phase::Choosing { .. }) {
+            return Ok(());
+        }
+
+        let old_phase = std::mem::replace(
+            &mut self.phase,
+            Phase::Ended {
+                text: String::new(),
+            },
+        );
+        if let Phase::Choosing {
+            text,
+            choices,
+            selected,
+            ..
+        } = old_phase
+        {
+            let chosen_text = choices
+                .get(selected)
+                .map(|c| c.text.clone())
+                .unwrap_or_default();
+            let choice_index = choices.get(selected).map(|c| c.index).unwrap_or_default();
+
+            self.history.push(Passage {
+                text,
+                chosen: Some(chosen_text),
+            });
+
+            story.choose(choice_index)?;
+            self.advance_story(story, program)?;
+        }
+        Ok(())
+    }
+
+    /// Called each frame to advance typewriter and transition phases.
+    pub fn tick(&mut self) {
+        match &mut self.phase {
+            Phase::Typing { typewriter, .. } => {
                 typewriter.tick();
                 if typewriter.is_complete() {
-                    if *ended {
-                        Some(PhaseTransition::End)
-                    } else if pending_choices.is_empty() {
-                        Some(PhaseTransition::AutoStep)
-                    } else {
-                        Some(PhaseTransition::ToChoosing)
-                    }
-                } else {
-                    None
+                    self.transition_after_passage();
                 }
             }
             Phase::Choosing { typewriter, .. } => {
                 typewriter.tick();
-                None
             }
-            Phase::Ended { .. } => None,
-        };
+            Phase::Ended { .. } => {}
+        }
+    }
 
-        if let Some(transition) = transition {
-            match transition {
-                PhaseTransition::ToChoosing => {
-                    let old = std::mem::replace(
-                        &mut self.phase,
-                        Phase::Ended {
-                            text: String::new(),
-                        },
-                    );
-                    if let Phase::Typing {
-                        typewriter: passage_tw,
-                        pending_choices,
-                        ..
-                    } = old
-                    {
-                        let text = passage_tw.into_text();
-                        let choice_text: String = pending_choices
-                            .iter()
-                            .map(|c| c.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        let typewriter = TypewriterState::new(choice_text, self.char_delay);
-                        self.phase = Phase::Choosing {
-                            text,
-                            choices: pending_choices,
-                            selected: 0,
-                            typewriter,
-                        };
-                        self.focus = Focus::Choices;
-                    }
+    /// Transition from Typing to the next phase based on `AfterPassage`.
+    fn transition_after_passage(&mut self) {
+        let old = std::mem::replace(
+            &mut self.phase,
+            Phase::Ended {
+                text: String::new(),
+            },
+        );
+        if let Phase::Typing {
+            typewriter, then, ..
+        } = old
+        {
+            let text = typewriter.into_text();
+            match then {
+                AfterPassage::ShowChoices(entries) => {
+                    let choice_text: String = entries
+                        .iter()
+                        .map(|c| c.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let typewriter = TypewriterState::new(choice_text, self.char_delay);
+                    self.phase = Phase::Choosing {
+                        text,
+                        choices: entries,
+                        selected: 0,
+                        typewriter,
+                    };
+                    self.focus = Focus::Choices;
                 }
-                PhaseTransition::End => {
-                    let old = std::mem::replace(
-                        &mut self.phase,
-                        Phase::Ended {
-                            text: String::new(),
-                        },
-                    );
-                    if let Phase::Typing { typewriter, .. } = old {
-                        let text = typewriter.into_text();
-                        self.history.push(Passage {
-                            text: text.clone(),
-                            chosen: None,
-                        });
-                        self.phase = Phase::Ended { text };
-                    }
-                }
-                PhaseTransition::AutoStep => {
-                    let old = std::mem::replace(
-                        &mut self.phase,
-                        Phase::Ended {
-                            text: String::new(),
-                        },
-                    );
-                    if let Phase::Typing { typewriter, .. } = old {
-                        let text = typewriter.into_text();
-                        if !text.is_empty() {
-                            self.history.push(Passage { text, chosen: None });
-                        }
-                        self.advance_story(story, program)?;
-                    }
+                AfterPassage::End => {
+                    self.history.push(Passage {
+                        text: text.clone(),
+                        chosen: None,
+                    });
+                    self.phase = Phase::Ended { text };
                 }
             }
         }
-
-        Ok(())
     }
 
     /// How long the main loop should wait for the next event.
@@ -316,10 +286,15 @@ impl App {
     pub fn choice_count(&self) -> usize {
         match &self.phase {
             Phase::Typing {
-                pending_choices, ..
-            } => pending_choices.len(),
+                then: AfterPassage::ShowChoices(c),
+                ..
+            } => c.len(),
             Phase::Choosing { choices, .. } => choices.len(),
-            Phase::Ended { .. } => 0,
+            Phase::Typing {
+                then: AfterPassage::End,
+                ..
+            }
+            | Phase::Ended { .. } => 0,
         }
     }
 
@@ -343,10 +318,4 @@ impl App {
             _ => None,
         }
     }
-}
-
-enum PhaseTransition {
-    ToChoosing,
-    End,
-    AutoStep,
 }

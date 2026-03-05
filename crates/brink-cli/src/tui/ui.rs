@@ -55,16 +55,17 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let text_area = centered[1];
 
     // Bottom-align: pad with empty lines at the top.
+    // Count visual rows (accounting for word-wrap) rather than logical lines.
     let inner_height = text_area.height;
-    let total_lines = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let padding = inner_height.saturating_sub(total_lines);
+    let total_visual = visual_row_count(&lines, text_area.width);
+    let padding = inner_height.saturating_sub(total_visual);
     if padding > 0 {
         lines.splice(0..0, (0..padding).map(|_| Line::from("")));
     }
 
     // Scroll: start at the bottom, then apply user scrollback.
-    let padded_total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let natural_scroll = padded_total.saturating_sub(inner_height);
+    let padded_visual = total_visual + padding;
+    let natural_scroll = padded_visual.saturating_sub(inner_height);
     let clamped_offset = app.scroll_offset.min(natural_scroll);
     let effective_scroll = natural_scroll.saturating_sub(clamped_offset);
 
@@ -181,6 +182,19 @@ fn max_content_width(history: &[Passage], full_text: &str) -> u16 {
     let current_max = full_text.lines().map(str::len).max().unwrap_or(0);
 
     u16::try_from(history_max.max(current_max)).unwrap_or(u16::MAX)
+}
+
+/// Count visual rows that `lines` will occupy when wrapped at `width`.
+fn visual_row_count(lines: &[Line<'_>], width: u16) -> u16 {
+    let w = usize::from(width.max(1));
+    let total: usize = lines
+        .iter()
+        .map(|line| {
+            let lw = line.width();
+            if lw == 0 { 1 } else { lw.div_ceil(w) }
+        })
+        .sum();
+    u16::try_from(total).unwrap_or(u16::MAX)
 }
 
 /// Build choice lines with typewriter reveal applied per-choice.
