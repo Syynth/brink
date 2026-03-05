@@ -1,0 +1,8 @@
+[scenario]
+name = "Tower of Hanoi (10 discs)"
+description = "5000 choice points, seeded random moves"
+
+[source]
+story = "benchmarks/stories/hanoi-10/story.ink.json"
+input = "benchmarks/stories/hanoi-10/input.txt"
+input_indexing = "0-based"

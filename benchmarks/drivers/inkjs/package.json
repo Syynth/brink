@@ -1,0 +1,9 @@
+{
+  "name": "brink-bench-inkjs",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "inkjs": "^2.3.0"
+  }
+}

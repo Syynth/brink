@@ -17,6 +17,11 @@ thiserror.workspace = true
 brink-converter = { path = "../internal/brink-converter" }
 brink-json = { path = "../internal/brink-json" }
 serde_json.workspace = true
+divan.workspace = true
+
+[[bench]]
+name = "runtime"
+harness = false
 
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/brink-*", "crates/brink", "crates/internal/*"]
-exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-format/fuzz"]
+exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-format/fuzz", "benchmarks/tools/gen-input", "benchmarks/drivers/brink-loop"]
 resolver = "2"
 
 [workspace.package]
@@ -64,3 +64,4 @@ pest = "2"
 pest_derive = "2"
 proptest = "1"
 ratatui = "0.30"
+divan = "0.1"

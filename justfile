@@ -20,6 +20,17 @@ fix:
     cargo fmt --all
     cargo clippy --workspace --all-targets --fix --allow-dirty
 
+# Run internal divan benchmarks
+bench:
+    cargo bench -p brink-runtime
+
+# Run cross-implementation benchmark comparison
+cross-language-benchmark:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash benchmarks/setup.sh
+    bash benchmarks/run.sh
+
 # Duration per fuzz target in seconds (default: 5 minutes)
 fuzz_duration := "300"
 
