@@ -5,9 +5,11 @@
 //! a parse result.
 
 mod nodes;
+mod ptr;
 mod support;
 
 pub use nodes::*;
+pub use ptr::AstPtr;
 
 use crate::SyntaxNode;
 
