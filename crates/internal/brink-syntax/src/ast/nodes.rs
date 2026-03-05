@@ -305,6 +305,14 @@ impl SourceFile {
     pub fn logic_lines(&self) -> impl Iterator<Item = LogicLine> {
         support::children(&self.syntax)
     }
+
+    pub fn choices(&self) -> impl Iterator<Item = Choice> {
+        support::children(&self.syntax)
+    }
+
+    pub fn gathers(&self) -> impl Iterator<Item = Gather> {
+        support::children(&self.syntax)
+    }
 }
 
 // ── IncludeStmt ──────────────────────────────────────────────────────
