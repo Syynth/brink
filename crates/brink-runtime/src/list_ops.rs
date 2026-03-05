@@ -5,30 +5,30 @@ use brink_format::{ListValue, Value};
 use crate::error::RuntimeError;
 use crate::program::Program;
 use crate::rng::StoryRng;
-use crate::story::Story;
+use crate::story::{Context, Flow};
 
 /// `ListContains` (`?`): `[lhs, rhs]` → `Bool(rhs ⊆ lhs)`
-pub(crate) fn list_contains<R: StoryRng>(story: &mut Story<R>) -> Result<(), RuntimeError> {
-    let rhs = pop_list(story)?;
-    let lhs = pop_list(story)?;
+pub(crate) fn list_contains(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let rhs = pop_list(flow)?;
+    let lhs = pop_list(flow)?;
     let result = rhs.items.iter().all(|id| lhs.items.contains(id));
-    story.flow.value_stack.push(Value::Bool(result));
+    flow.value_stack.push(Value::Bool(result));
     Ok(())
 }
 
 /// `ListNotContains` (`!?`): `[lhs, rhs]` → `Bool(¬(rhs ⊆ lhs))`
-pub(crate) fn list_not_contains<R: StoryRng>(story: &mut Story<R>) -> Result<(), RuntimeError> {
-    let rhs = pop_list(story)?;
-    let lhs = pop_list(story)?;
+pub(crate) fn list_not_contains(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let rhs = pop_list(flow)?;
+    let lhs = pop_list(flow)?;
     let result = !rhs.items.iter().all(|id| lhs.items.contains(id));
-    story.flow.value_stack.push(Value::Bool(result));
+    flow.value_stack.push(Value::Bool(result));
     Ok(())
 }
 
 /// `ListIntersect` (`L^`): `[a, b]` → `List(a ∩ b)`
-pub(crate) fn list_intersect<R: StoryRng>(story: &mut Story<R>) -> Result<(), RuntimeError> {
-    let b = pop_list(story)?;
-    let a = pop_list(story)?;
+pub(crate) fn list_intersect(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let b = pop_list(flow)?;
+    let a = pop_list(flow)?;
     let items: Vec<_> = a
         .items
         .iter()
@@ -41,30 +41,22 @@ pub(crate) fn list_intersect<R: StoryRng>(story: &mut Story<R>) -> Result<(), Ru
             origins.push(o);
         }
     }
-    story
-        .flow
-        .value_stack
+    flow.value_stack
         .push(Value::List(ListValue { items, origins }));
     Ok(())
 }
 
 /// `ListCount`: `[list]` → `Int(len)`
 #[expect(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-pub(crate) fn list_count<R: StoryRng>(story: &mut Story<R>) -> Result<(), RuntimeError> {
-    let lv = pop_list(story)?;
-    story
-        .flow
-        .value_stack
-        .push(Value::Int(lv.items.len() as i32));
+pub(crate) fn list_count(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let lv = pop_list(flow)?;
+    flow.value_stack.push(Value::Int(lv.items.len() as i32));
     Ok(())
 }
 
 /// `ListMin`: `[list]` → `List(single item with lowest ordinal)`
-pub(crate) fn list_min<R: StoryRng>(
-    story: &mut Story<R>,
-    program: &Program,
-) -> Result<(), RuntimeError> {
-    let lv = pop_list(story)?;
+pub(crate) fn list_min(flow: &mut Flow, program: &Program) -> Result<(), RuntimeError> {
+    let lv = pop_list(flow)?;
     let min_item = lv
         .items
         .iter()
@@ -72,7 +64,7 @@ pub(crate) fn list_min<R: StoryRng>(
         .min_by_key(|&(_, ord)| ord)
         .map(|(id, _)| id);
     let items = min_item.map_or_else(Vec::new, |id| vec![id]);
-    story.flow.value_stack.push(Value::List(ListValue {
+    flow.value_stack.push(Value::List(ListValue {
         items,
         origins: lv.origins,
     }));
@@ -80,11 +72,8 @@ pub(crate) fn list_min<R: StoryRng>(
 }
 
 /// `ListMax`: `[list]` → `List(single item with highest ordinal)`
-pub(crate) fn list_max<R: StoryRng>(
-    story: &mut Story<R>,
-    program: &Program,
-) -> Result<(), RuntimeError> {
-    let lv = pop_list(story)?;
+pub(crate) fn list_max(flow: &mut Flow, program: &Program) -> Result<(), RuntimeError> {
+    let lv = pop_list(flow)?;
     let max_item = lv
         .items
         .iter()
@@ -92,7 +81,7 @@ pub(crate) fn list_max<R: StoryRng>(
         .max_by_key(|&(_, ord)| ord)
         .map(|(id, _)| id);
     let items = max_item.map_or_else(Vec::new, |id| vec![id]);
-    story.flow.value_stack.push(Value::List(ListValue {
+    flow.value_stack.push(Value::List(ListValue {
         items,
         origins: lv.origins,
     }));
@@ -100,26 +89,20 @@ pub(crate) fn list_max<R: StoryRng>(
 }
 
 /// `ListValue`: `[list]` → `Int(ordinal of single-item list)`
-pub(crate) fn list_value<R: StoryRng>(
-    story: &mut Story<R>,
-    program: &Program,
-) -> Result<(), RuntimeError> {
-    let lv = pop_list(story)?;
+pub(crate) fn list_value(flow: &mut Flow, program: &Program) -> Result<(), RuntimeError> {
+    let lv = pop_list(flow)?;
     let ordinal = if lv.items.len() == 1 {
         program.list_item(lv.items[0]).map_or(0, |e| e.ordinal)
     } else {
         0
     };
-    story.flow.value_stack.push(Value::Int(ordinal));
+    flow.value_stack.push(Value::Int(ordinal));
     Ok(())
 }
 
 /// `ListAll`: `[list]` → `List(all items from origins)`
-pub(crate) fn list_all<R: StoryRng>(
-    story: &mut Story<R>,
-    program: &Program,
-) -> Result<(), RuntimeError> {
-    let lv = pop_list(story)?;
+pub(crate) fn list_all(flow: &mut Flow, program: &Program) -> Result<(), RuntimeError> {
+    let lv = pop_list(flow)?;
     let mut items = Vec::new();
     for &origin_id in &lv.origins {
         if let Some(def) = program.list_def(origin_id) {
@@ -130,7 +113,7 @@ pub(crate) fn list_all<R: StoryRng>(
             }
         }
     }
-    story.flow.value_stack.push(Value::List(ListValue {
+    flow.value_stack.push(Value::List(ListValue {
         items,
         origins: lv.origins,
     }));
@@ -138,11 +121,8 @@ pub(crate) fn list_all<R: StoryRng>(
 }
 
 /// `ListInvert`: `[list]` → `List(ALL \ list)` — complement within origins.
-pub(crate) fn list_invert<R: StoryRng>(
-    story: &mut Story<R>,
-    program: &Program,
-) -> Result<(), RuntimeError> {
-    let lv = pop_list(story)?;
+pub(crate) fn list_invert(flow: &mut Flow, program: &Program) -> Result<(), RuntimeError> {
+    let lv = pop_list(flow)?;
     let mut items = Vec::new();
     for &origin_id in &lv.origins {
         if let Some(def) = program.list_def(origin_id) {
@@ -153,7 +133,7 @@ pub(crate) fn list_invert<R: StoryRng>(
             }
         }
     }
-    story.flow.value_stack.push(Value::List(ListValue {
+    flow.value_stack.push(Value::List(ListValue {
         items,
         origins: lv.origins,
     }));
@@ -163,13 +143,10 @@ pub(crate) fn list_invert<R: StoryRng>(
 /// `ListRange`: `[list, min, max]` → `List(items with ordinal in [min,max])`
 ///
 /// Filters the list's *own* items by ordinal bounds (not all items from origins).
-pub(crate) fn list_range<R: StoryRng>(
-    story: &mut Story<R>,
-    program: &Program,
-) -> Result<(), RuntimeError> {
-    let max_val = pop_int_or_list_ordinal(story, program)?;
-    let min_val = pop_int_or_list_ordinal(story, program)?;
-    let lv = pop_list(story)?;
+pub(crate) fn list_range(flow: &mut Flow, program: &Program) -> Result<(), RuntimeError> {
+    let max_val = pop_int_or_list_ordinal(flow, program)?;
+    let min_val = pop_int_or_list_ordinal(flow, program)?;
+    let lv = pop_list(flow)?;
     let items: Vec<_> = lv
         .items
         .iter()
@@ -180,7 +157,7 @@ pub(crate) fn list_range<R: StoryRng>(
                 .is_some_and(|e| e.ordinal >= min_val && e.ordinal <= max_val)
         })
         .collect();
-    story.flow.value_stack.push(Value::List(ListValue {
+    flow.value_stack.push(Value::List(ListValue {
         items,
         origins: lv.origins,
     }));
@@ -191,12 +168,9 @@ pub(crate) fn list_range<R: StoryRng>(
 ///
 /// The origin can be either a `String` (list def name, from `listInt` native fn)
 /// or a `List` (from which origins are derived).
-pub(crate) fn list_from_int<R: StoryRng>(
-    story: &mut Story<R>,
-    program: &Program,
-) -> Result<(), RuntimeError> {
-    let ordinal = pop_int(story)?;
-    let origin_val = story.flow.pop_value()?;
+pub(crate) fn list_from_int(flow: &mut Flow, program: &Program) -> Result<(), RuntimeError> {
+    let ordinal = pop_int(flow)?;
+    let origin_val = flow.pop_value()?;
 
     // Collect origin list definitions to search.
     let origin_defs: Vec<&crate::program::ListDefEntry> = match &origin_val {
@@ -241,31 +215,29 @@ pub(crate) fn list_from_int<R: StoryRng>(
         }
     }
 
-    story
-        .flow
-        .value_stack
+    flow.value_stack
         .push(Value::List(ListValue { items, origins }));
     Ok(())
 }
 
 /// `ListRandom`: `[list]` → `List(random item)` — picks one item using the story RNG.
-pub(crate) fn list_random<R: StoryRng>(story: &mut Story<R>) -> Result<(), RuntimeError> {
-    let lv = pop_list(story)?;
+pub(crate) fn list_random<R: StoryRng>(
+    flow: &mut Flow,
+    context: &mut Context<R>,
+) -> Result<(), RuntimeError> {
+    let lv = pop_list(flow)?;
     let items = if lv.items.is_empty() {
         vec![]
     } else {
-        let result_seed = story
-            .context
-            .rng_seed
-            .wrapping_add(story.context.previous_random);
+        let result_seed = context.rng_seed.wrapping_add(context.previous_random);
         let mut rng = R::from_seed(result_seed);
         let next_random = rng.next_int();
         #[expect(clippy::cast_sign_loss)]
         let idx = (next_random as usize) % lv.items.len();
-        story.context.previous_random = next_random;
+        context.previous_random = next_random;
         vec![lv.items[idx]]
     };
-    story.flow.value_stack.push(Value::List(ListValue {
+    flow.value_stack.push(Value::List(ListValue {
         items,
         origins: lv.origins,
     }));
@@ -274,8 +246,8 @@ pub(crate) fn list_random<R: StoryRng>(story: &mut Story<R>) -> Result<(), Runti
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn pop_list<R: StoryRng>(story: &mut Story<R>) -> Result<ListValue, RuntimeError> {
-    let val = story.flow.pop_value()?;
+fn pop_list(flow: &mut Flow) -> Result<ListValue, RuntimeError> {
+    let val = flow.pop_value()?;
     match val {
         Value::List(lv) => Ok(lv),
         // An empty list can appear as Null in some contexts.
@@ -290,8 +262,8 @@ fn pop_list<R: StoryRng>(story: &mut Story<R>) -> Result<ListValue, RuntimeError
     }
 }
 
-fn pop_int<R: StoryRng>(story: &mut Story<R>) -> Result<i32, RuntimeError> {
-    let val = story.flow.pop_value()?;
+fn pop_int(flow: &mut Flow) -> Result<i32, RuntimeError> {
+    let val = flow.pop_value()?;
     match val {
         Value::Int(n) => Ok(n),
         _ => Err(RuntimeError::TypeError(format!(
@@ -302,11 +274,8 @@ fn pop_int<R: StoryRng>(story: &mut Story<R>) -> Result<i32, RuntimeError> {
 }
 
 /// Pop a value that's either an Int or a single-item List (extract its ordinal).
-fn pop_int_or_list_ordinal<R: StoryRng>(
-    story: &mut Story<R>,
-    program: &Program,
-) -> Result<i32, RuntimeError> {
-    let val = story.flow.pop_value()?;
+fn pop_int_or_list_ordinal(flow: &mut Flow, program: &Program) -> Result<i32, RuntimeError> {
+    let val = flow.pop_value()?;
     match val {
         Value::Int(n) => Ok(n),
         Value::List(lv) => {

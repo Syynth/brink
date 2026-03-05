@@ -49,4 +49,10 @@ pub enum RuntimeError {
 
     #[error("output capture underflow (no checkpoint)")]
     CaptureUnderflow,
+
+    #[error("unknown flow: {0}")]
+    UnknownFlow(String),
+
+    #[error("flow already exists: {0}")]
+    FlowAlreadyExists(String),
 }

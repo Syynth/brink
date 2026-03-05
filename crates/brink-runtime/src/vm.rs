@@ -6,7 +6,7 @@ use crate::error::RuntimeError;
 use crate::list_ops;
 use crate::program::Program;
 use crate::rng::StoryRng;
-use crate::story::{CallFrame, CallFrameType, ContainerPosition, PendingChoice, Story};
+use crate::story::{CallFrame, CallFrameType, ContainerPosition, Context, Flow, PendingChoice};
 use crate::value_ops::{self, BinaryOp};
 
 /// Result of a single VM instruction step.
@@ -28,15 +28,16 @@ pub(crate) enum Stepped {
 /// The caller is responsible for looping and for enforcing safety limits.
 #[expect(clippy::too_many_lines)]
 pub(crate) fn step<R: StoryRng>(
-    story: &mut Story<R>,
+    flow: &mut Flow,
+    context: &mut Context<R>,
     program: &Program,
 ) -> Result<Stepped, RuntimeError> {
     // ── Preamble: resolve current position ──────────────────────────────
-    let thread = story.flow.current_thread_mut();
+    let thread = flow.current_thread_mut();
     let Some(frame) = thread.call_stack.last_mut() else {
         // Current thread's call stack is empty.
-        if story.flow.can_pop_thread() {
-            story.flow.pop_thread();
+        if flow.can_pop_thread() {
+            flow.pop_thread();
             return Ok(Stepped::ThreadCompleted);
         }
         return Ok(Stepped::Done);
@@ -53,14 +54,14 @@ pub(crate) fn step<R: StoryRng>(
     let Some(pos) = frame.container_stack.last().copied() else {
         // Container stack empty — the frame has no more containers to execute.
         let frame_type = frame.frame_type;
-        return handle_frame_exhaustion(story, frame_type);
+        return handle_frame_exhaustion(flow, frame_type);
     };
 
     let container = program.container(pos.container_idx);
 
     // Check if we've reached end of bytecode.
     if pos.offset >= container.bytecode.len() {
-        let thread = story.flow.current_thread_mut();
+        let thread = flow.current_thread_mut();
         let frame = thread
             .call_stack
             .last_mut()
@@ -68,7 +69,7 @@ pub(crate) fn step<R: StoryRng>(
         frame.container_stack.pop();
         if frame.container_stack.is_empty() {
             let frame_type = frame.frame_type;
-            return handle_frame_exhaustion(story, frame_type);
+            return handle_frame_exhaustion(flow, frame_type);
         }
         return Ok(Stepped::Continue);
     }
@@ -79,7 +80,7 @@ pub(crate) fn step<R: StoryRng>(
 
     // Advance the offset in the position.
     {
-        let thread = story.flow.current_thread_mut();
+        let thread = flow.current_thread_mut();
         let frame = thread
             .call_stack
             .last_mut()
@@ -96,25 +97,25 @@ pub(crate) fn step<R: StoryRng>(
         // ── Output ──────────────────────────────────────────────────
         Opcode::EmitLine(idx) => {
             let text = resolve_line(program, &pos, idx);
-            story.flow.output.push_text(&text);
+            flow.output.push_text(&text);
         }
         Opcode::EvalLine(idx) => {
             let text = resolve_line(program, &pos, idx);
-            story.flow.value_stack.push(Value::String(text));
+            flow.value_stack.push(Value::String(text));
         }
         Opcode::EmitValue => {
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
             let text = value_ops::stringify(&val, program);
-            story.flow.output.push_text(&text);
+            flow.output.push_text(&text);
         }
         Opcode::EmitNewline => {
-            story.flow.output.push_newline();
+            flow.output.push_newline();
         }
         Opcode::Glue => {
-            story.flow.output.push_glue();
+            flow.output.push_glue();
         }
         Opcode::EndChoice => {
-            story.flow.skipping_choice = false;
+            flow.skipping_choice = false;
         }
         Opcode::Nop
         | Opcode::SourceLocation(_, _)
@@ -125,8 +126,8 @@ pub(crate) fn step<R: StoryRng>(
 
         // ── Lifecycle ────────────────────────────────────────────────
         Opcode::Done => {
-            if story.flow.can_pop_thread() {
-                story.flow.pop_thread();
+            if flow.can_pop_thread() {
+                flow.pop_thread();
                 return Ok(Stepped::ThreadCompleted);
             }
             return Ok(Stepped::Done);
@@ -144,14 +145,11 @@ pub(crate) fn step<R: StoryRng>(
             // Increment visit count if flags set.
             let container = program.container(idx);
             if container.counting_flags.contains(CountingFlags::VISITS) {
-                *story.context.visit_counts.entry(id).or_insert(0) += 1;
-                story
-                    .context
-                    .turn_counts
-                    .insert(id, story.context.turn_index);
+                *context.visit_counts.entry(id).or_insert(0) += 1;
+                context.turn_counts.insert(id, context.turn_index);
             }
 
-            let thread = story.flow.current_thread_mut();
+            let thread = flow.current_thread_mut();
             let frame = thread
                 .call_stack
                 .last_mut()
@@ -162,7 +160,7 @@ pub(crate) fn step<R: StoryRng>(
             });
         }
         Opcode::ExitContainer => {
-            let thread = story.flow.current_thread_mut();
+            let thread = flow.current_thread_mut();
             let frame = thread
                 .call_stack
                 .last_mut()
@@ -172,20 +170,20 @@ pub(crate) fn step<R: StoryRng>(
 
         // ── Control flow ────────────────────────────────────────────
         Opcode::Goto(id) => {
-            if !story.flow.skipping_choice {
-                goto_target(story, program, id)?;
+            if !flow.skipping_choice {
+                goto_target(flow, context, program, id)?;
             }
         }
         Opcode::GotoIf(id) => {
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
             if value_ops::is_truthy(&val) {
-                goto_target(story, program, id)?;
+                goto_target(flow, context, program, id)?;
             }
         }
         Opcode::GotoVariable => {
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
             if let Value::DivertTarget(id) = val {
-                goto_target(story, program, id)?;
+                goto_target(flow, context, program, id)?;
             } else {
                 return Err(RuntimeError::TypeError(
                     "goto_variable requires DivertTarget".into(),
@@ -193,52 +191,52 @@ pub(crate) fn step<R: StoryRng>(
             }
         }
         Opcode::Jump(rel) | Opcode::SequenceBranch(rel) => {
-            apply_jump(story, rel)?;
+            apply_jump(flow, rel)?;
         }
         Opcode::JumpIfFalse(rel) => {
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
             if !value_ops::is_truthy(&val) {
-                apply_jump(story, rel)?;
+                apply_jump(flow, rel)?;
             }
         }
 
         // ── Stack & literals ─────────────────────────────────────────
-        Opcode::PushInt(v) => story.flow.value_stack.push(Value::Int(v)),
-        Opcode::PushFloat(v) => story.flow.value_stack.push(Value::Float(v)),
-        Opcode::PushBool(v) => story.flow.value_stack.push(Value::Bool(v)),
+        Opcode::PushInt(v) => flow.value_stack.push(Value::Int(v)),
+        Opcode::PushFloat(v) => flow.value_stack.push(Value::Float(v)),
+        Opcode::PushBool(v) => flow.value_stack.push(Value::Bool(v)),
         Opcode::PushString(idx) => {
             let s = program.name(brink_format::NameId(idx)).to_owned();
-            story.flow.value_stack.push(Value::String(s));
+            flow.value_stack.push(Value::String(s));
         }
         Opcode::PushNull => {
-            story.flow.value_stack.push(Value::Null);
+            flow.value_stack.push(Value::Null);
         }
         Opcode::PushList(idx) => {
             let lv = program.list_literal(idx).clone();
-            story.flow.value_stack.push(Value::List(lv));
+            flow.value_stack.push(Value::List(lv));
         }
         Opcode::PushDivertTarget(id) => {
-            story.flow.value_stack.push(Value::DivertTarget(id));
+            flow.value_stack.push(Value::DivertTarget(id));
         }
         Opcode::PushVarPointer(id) => {
-            story.flow.value_stack.push(Value::VariablePointer(id));
+            flow.value_stack.push(Value::VariablePointer(id));
         }
         Opcode::Pop => {
-            story.flow.pop_value()?;
+            flow.pop_value()?;
         }
         Opcode::Duplicate => {
-            let val = story.flow.peek_value()?.clone();
-            story.flow.value_stack.push(val);
+            let val = flow.peek_value()?.clone();
+            flow.value_stack.push(val);
         }
 
         // ── Arithmetic ──────────────────────────────────────────────
-        Opcode::Add => binary(story, program, BinaryOp::Add)?,
-        Opcode::Subtract => binary(story, program, BinaryOp::Subtract)?,
-        Opcode::Multiply => binary(story, program, BinaryOp::Multiply)?,
-        Opcode::Divide => binary(story, program, BinaryOp::Divide)?,
-        Opcode::Modulo => binary(story, program, BinaryOp::Modulo)?,
+        Opcode::Add => binary(flow, program, BinaryOp::Add)?,
+        Opcode::Subtract => binary(flow, program, BinaryOp::Subtract)?,
+        Opcode::Multiply => binary(flow, program, BinaryOp::Multiply)?,
+        Opcode::Divide => binary(flow, program, BinaryOp::Divide)?,
+        Opcode::Modulo => binary(flow, program, BinaryOp::Modulo)?,
         Opcode::Negate => {
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
             let result = match val {
                 Value::Int(n) => Value::Int(-n),
                 Value::Float(n) => Value::Float(-n),
@@ -246,59 +244,57 @@ pub(crate) fn step<R: StoryRng>(
                     return Err(RuntimeError::TypeError("cannot negate non-numeric".into()));
                 }
             };
-            story.flow.value_stack.push(result);
+            flow.value_stack.push(result);
         }
 
         // ── Comparison ──────────────────────────────────────────────
-        Opcode::Equal => binary(story, program, BinaryOp::Equal)?,
-        Opcode::NotEqual => binary(story, program, BinaryOp::NotEqual)?,
-        Opcode::Greater => binary(story, program, BinaryOp::Greater)?,
-        Opcode::GreaterOrEqual => binary(story, program, BinaryOp::GreaterOrEqual)?,
-        Opcode::Less => binary(story, program, BinaryOp::Less)?,
-        Opcode::LessOrEqual => binary(story, program, BinaryOp::LessOrEqual)?,
+        Opcode::Equal => binary(flow, program, BinaryOp::Equal)?,
+        Opcode::NotEqual => binary(flow, program, BinaryOp::NotEqual)?,
+        Opcode::Greater => binary(flow, program, BinaryOp::Greater)?,
+        Opcode::GreaterOrEqual => binary(flow, program, BinaryOp::GreaterOrEqual)?,
+        Opcode::Less => binary(flow, program, BinaryOp::Less)?,
+        Opcode::LessOrEqual => binary(flow, program, BinaryOp::LessOrEqual)?,
 
         // ── Logic ───────────────────────────────────────────────────
         Opcode::Not => {
-            let val = story.flow.pop_value()?;
-            story
-                .flow
-                .value_stack
+            let val = flow.pop_value()?;
+            flow.value_stack
                 .push(Value::Bool(!value_ops::is_truthy(&val)));
         }
-        Opcode::And => binary(story, program, BinaryOp::And)?,
-        Opcode::Or => binary(story, program, BinaryOp::Or)?,
+        Opcode::And => binary(flow, program, BinaryOp::And)?,
+        Opcode::Or => binary(flow, program, BinaryOp::Or)?,
 
         // ── Global vars ─────────────────────────────────────────────
         Opcode::GetGlobal(id) => {
             let idx = program
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
-            let val = story.context.globals[idx as usize].clone();
-            story.flow.value_stack.push(val);
+            let val = context.globals[idx as usize].clone();
+            flow.value_stack.push(val);
         }
         Opcode::SetGlobal(id) => {
             let idx = program
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
-            let mut val = story.flow.pop_value()?;
+            let mut val = flow.pop_value()?;
             // Retain list origins: when assigning an empty list to a
             // global that holds a list, preserve the old origins so
             // LIST_ALL can still enumerate the original list definition.
             if let Value::List(new_lv) = &mut val
                 && new_lv.items.is_empty()
                 && new_lv.origins.is_empty()
-                && let Value::List(old_lv) = &story.context.globals[idx as usize]
+                && let Value::List(old_lv) = &context.globals[idx as usize]
             {
                 new_lv.origins.clone_from(&old_lv.origins);
             }
-            story.context.globals[idx as usize] = val;
+            context.globals[idx as usize] = val;
         }
 
         // ── Temp vars ───────────────────────────────────────────────
         Opcode::DeclareTemp(slot) => {
             // New declaration stores as-is, including pointers.
-            let val = story.flow.pop_value()?;
-            let thread = story.flow.current_thread_mut();
+            let val = flow.pop_value()?;
+            let thread = flow.current_thread_mut();
             let frame = thread
                 .call_stack
                 .last_mut()
@@ -312,8 +308,8 @@ pub(crate) fn step<R: StoryRng>(
         Opcode::SetTemp(slot) => {
             // Write-through: if the temp holds a VariablePointer,
             // write the new value to the pointed-to global instead.
-            let val = story.flow.pop_value()?;
-            let thread = story.flow.current_thread_mut();
+            let val = flow.pop_value()?;
+            let thread = flow.current_thread_mut();
             let frame = thread
                 .call_stack
                 .last_mut()
@@ -325,7 +321,7 @@ pub(crate) fn step<R: StoryRng>(
                 let global_idx = program
                     .resolve_global(target_id)
                     .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
-                story.context.globals[global_idx as usize] = val;
+                context.globals[global_idx as usize] = val;
             } else {
                 while frame.temps.len() <= idx {
                     frame.temps.push(Value::Null);
@@ -336,7 +332,7 @@ pub(crate) fn step<R: StoryRng>(
         Opcode::GetTemp(slot) => {
             // Auto-dereference: if temp holds a VariablePointer,
             // push the pointed-to global's value instead.
-            let thread = story.flow.current_thread();
+            let thread = flow.current_thread();
             let frame = thread
                 .call_stack
                 .last()
@@ -350,15 +346,15 @@ pub(crate) fn step<R: StoryRng>(
                 let global_idx = program
                     .resolve_global(target_id)
                     .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
-                let global_val = story.context.globals[global_idx as usize].clone();
-                story.flow.value_stack.push(global_val);
+                let global_val = context.globals[global_idx as usize].clone();
+                flow.value_stack.push(global_val);
             } else {
-                story.flow.value_stack.push(val);
+                flow.value_stack.push(val);
             }
         }
         Opcode::GetTempRaw(slot) => {
             // Raw read: push the temp's value as-is (including pointers).
-            let thread = story.flow.current_thread();
+            let thread = flow.current_thread();
             let frame = thread
                 .call_stack
                 .last()
@@ -368,41 +364,41 @@ pub(crate) fn step<R: StoryRng>(
                 .get(slot as usize)
                 .cloned()
                 .unwrap_or(Value::Null);
-            story.flow.value_stack.push(val);
+            flow.value_stack.push(val);
         }
 
         // ── Casts ───────────────────────────────────────────────────
         Opcode::CastToInt => {
-            let val = story.flow.pop_value()?;
-            story.flow.value_stack.push(value_ops::cast_to_int(&val));
+            let val = flow.pop_value()?;
+            flow.value_stack.push(value_ops::cast_to_int(&val));
         }
         Opcode::CastToFloat => {
-            let val = story.flow.pop_value()?;
-            story.flow.value_stack.push(value_ops::cast_to_float(&val));
+            let val = flow.pop_value()?;
+            flow.value_stack.push(value_ops::cast_to_float(&val));
         }
 
         // ── Math ────────────────────────────────────────────────────
         Opcode::Floor => {
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
             let result = match val {
                 Value::Float(f) => Value::Float(f.floor()),
                 Value::Int(_) => val,
                 _ => return Err(RuntimeError::TypeError("floor requires numeric".into())),
             };
-            story.flow.value_stack.push(result);
+            flow.value_stack.push(result);
         }
         Opcode::Ceiling => {
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
             let result = match val {
                 Value::Float(f) => Value::Float(f.ceil()),
                 Value::Int(_) => val,
                 _ => return Err(RuntimeError::TypeError("ceiling requires numeric".into())),
             };
-            story.flow.value_stack.push(result);
+            flow.value_stack.push(result);
         }
-        Opcode::Pow => binary(story, program, BinaryOp::Pow)?,
-        Opcode::Min => binary(story, program, BinaryOp::Min)?,
-        Opcode::Max => binary(story, program, BinaryOp::Max)?,
+        Opcode::Pow => binary(flow, program, BinaryOp::Pow)?,
+        Opcode::Min => binary(flow, program, BinaryOp::Min)?,
+        Opcode::Max => binary(flow, program, BinaryOp::Max)?,
 
         // ── Functions ───────────────────────────────────────────────
         Opcode::Call(id) => {
@@ -412,19 +408,16 @@ pub(crate) fn step<R: StoryRng>(
 
             let container = program.container(idx);
             if container.counting_flags.contains(CountingFlags::VISITS) {
-                *story.context.visit_counts.entry(id).or_insert(0) += 1;
-                story
-                    .context
-                    .turn_counts
-                    .insert(id, story.context.turn_index);
+                *context.visit_counts.entry(id).or_insert(0) += 1;
+                context.turn_counts.insert(id, context.turn_index);
             }
 
             // Capture output during function call — text output becomes
             // the return value when the frame is popped.
-            story.flow.output.begin_capture();
+            flow.output.begin_capture();
 
-            let current_pos = current_position(story)?;
-            let thread = story.flow.current_thread_mut();
+            let current_pos = current_position(flow)?;
+            let thread = flow.current_thread_mut();
             thread.call_stack.push(CallFrame {
                 return_address: Some(current_pos),
                 temps: Vec::new(),
@@ -439,7 +432,7 @@ pub(crate) fn step<R: StoryRng>(
         Opcode::Return => {
             // The function already pushed its return value via `ev, <value>, /ev`.
             // It stays on the value stack; pop_call_frame just cleans up the checkpoint.
-            pop_call_frame(story, true)?;
+            pop_call_frame(flow, true)?;
         }
         Opcode::TunnelCall(id) => {
             let idx = program
@@ -448,15 +441,12 @@ pub(crate) fn step<R: StoryRng>(
 
             let container = program.container(idx);
             if container.counting_flags.contains(CountingFlags::VISITS) {
-                *story.context.visit_counts.entry(id).or_insert(0) += 1;
-                story
-                    .context
-                    .turn_counts
-                    .insert(id, story.context.turn_index);
+                *context.visit_counts.entry(id).or_insert(0) += 1;
+                context.turn_counts.insert(id, context.turn_index);
             }
 
-            let current_pos = current_position(story)?;
-            let thread = story.flow.current_thread_mut();
+            let current_pos = current_position(flow)?;
+            let thread = flow.current_thread_mut();
             thread.call_stack.push(CallFrame {
                 return_address: Some(current_pos),
                 temps: Vec::new(),
@@ -479,7 +469,7 @@ pub(crate) fn step<R: StoryRng>(
             // for `->->` to return through tunnels. The Thread frame
             // acts as a boundary: when it exhausts, the thread pops
             // without unwinding into inherited frames below.
-            let mut forked = story.flow.fork_thread();
+            let mut forked = flow.fork_thread();
             forked.call_stack.push(CallFrame {
                 return_address: None,
                 temps: Vec::new(),
@@ -490,10 +480,10 @@ pub(crate) fn step<R: StoryRng>(
                 frame_type: CallFrameType::Thread,
                 external_fn_id: None,
             });
-            story.flow.threads.push(forked);
+            flow.threads.push(forked);
         }
         Opcode::TunnelCallVariable => {
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
             let Value::DivertTarget(id) = val else {
                 return Err(RuntimeError::TypeError(
                     "tunnel_call_variable requires DivertTarget".into(),
@@ -505,15 +495,12 @@ pub(crate) fn step<R: StoryRng>(
 
             let container = program.container(idx);
             if container.counting_flags.contains(CountingFlags::VISITS) {
-                *story.context.visit_counts.entry(id).or_insert(0) += 1;
-                story
-                    .context
-                    .turn_counts
-                    .insert(id, story.context.turn_index);
+                *context.visit_counts.entry(id).or_insert(0) += 1;
+                context.turn_counts.insert(id, context.turn_index);
             }
 
-            let current_pos = current_position(story)?;
-            let thread = story.flow.current_thread_mut();
+            let current_pos = current_position(flow)?;
+            let thread = flow.current_thread_mut();
             thread.call_stack.push(CallFrame {
                 return_address: Some(current_pos),
                 temps: Vec::new(),
@@ -526,7 +513,7 @@ pub(crate) fn step<R: StoryRng>(
             });
         }
         Opcode::CallVariable => {
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
             let Value::DivertTarget(id) = val else {
                 return Err(RuntimeError::TypeError(
                     "call_variable requires DivertTarget".into(),
@@ -538,17 +525,14 @@ pub(crate) fn step<R: StoryRng>(
 
             let container = program.container(idx);
             if container.counting_flags.contains(CountingFlags::VISITS) {
-                *story.context.visit_counts.entry(id).or_insert(0) += 1;
-                story
-                    .context
-                    .turn_counts
-                    .insert(id, story.context.turn_index);
+                *context.visit_counts.entry(id).or_insert(0) += 1;
+                context.turn_counts.insert(id, context.turn_index);
             }
 
-            story.flow.output.begin_capture();
+            flow.output.begin_capture();
 
-            let current_pos = current_position(story)?;
-            let thread = story.flow.current_thread_mut();
+            let current_pos = current_position(flow)?;
+            let thread = flow.current_thread_mut();
             thread.call_stack.push(CallFrame {
                 return_address: Some(current_pos),
                 temps: Vec::new(),
@@ -563,20 +547,19 @@ pub(crate) fn step<R: StoryRng>(
         Opcode::TunnelReturn => {
             // The eval block before ->-> pushes either void (normal
             // return) or a DivertTarget (tunnel onwards override).
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
 
             // Strip Thread boundary frames — they are transparent to
             // ->->. This happens after choice selection when the fork
             // has [inherited..., Thread, choice-body] and ->-> needs
             // to reach the Tunnel frame below the Thread boundary.
-            while story
-                .flow
+            while flow
                 .current_thread()
                 .call_stack
                 .last()
                 .is_some_and(|f| f.frame_type == CallFrameType::Thread)
             {
-                story.flow.current_thread_mut().call_stack.pop();
+                flow.current_thread_mut().call_stack.pop();
             }
 
             // If a DivertTarget, overwrite this frame's return address
@@ -585,7 +568,7 @@ pub(crate) fn step<R: StoryRng>(
                 let (idx, offset) = program
                     .resolve_target(id)
                     .ok_or(RuntimeError::UnresolvedDefinition(id))?;
-                let thread = story.flow.current_thread_mut();
+                let thread = flow.current_thread_mut();
                 let frame = thread
                     .call_stack
                     .last_mut()
@@ -595,57 +578,53 @@ pub(crate) fn step<R: StoryRng>(
                     offset,
                 });
             }
-            pop_call_frame(story, true)?;
+            pop_call_frame(flow, true)?;
         }
 
         // ── Choices ─────────────────────────────────────────────────
         Opcode::BeginStringEval => {
-            story.flow.output.begin_capture();
+            flow.output.begin_capture();
         }
         Opcode::EndStringEval => {
-            let text = story
-                .flow
+            let text = flow
                 .output
                 .end_capture()
                 .ok_or(RuntimeError::CaptureUnderflow)?;
-            story.flow.value_stack.push(Value::String(text));
+            flow.value_stack.push(Value::String(text));
         }
         Opcode::BeginChoiceSet => {
-            story.flow.pending_choices.clear();
+            flow.pending_choices.clear();
         }
         Opcode::BeginChoice(flags, target_id) => {
-            handle_begin_choice(story, program, flags, target_id)?;
+            handle_begin_choice(flow, context, program, flags, target_id)?;
         }
 
         // ── Intrinsics ──────────────────────────────────────────────
         Opcode::VisitCount => {
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
             if let Value::DivertTarget(id) = val {
-                let count = story.context.visit_counts.get(&id).copied().unwrap_or(0);
-                story.flow.value_stack.push(Value::Int(count.cast_signed()));
+                let count = context.visit_counts.get(&id).copied().unwrap_or(0);
+                flow.value_stack.push(Value::Int(count.cast_signed()));
             } else {
-                story.flow.value_stack.push(Value::Int(0));
+                flow.value_stack.push(Value::Int(0));
             }
         }
         Opcode::CurrentVisitCount => {
             // The current container's visit count was already incremented
             // by EnterContainer, so subtract 1 to get the 0-based count
             // that ink sequences expect (0 on first visit).
-            let pos = current_position(story)?;
+            let pos = current_position(flow)?;
             let id = program.container(pos.container_idx).id;
-            let count = story.context.visit_counts.get(&id).copied().unwrap_or(0);
+            let count = context.visit_counts.get(&id).copied().unwrap_or(0);
             let zero_based = count.saturating_sub(1);
-            story
-                .flow
-                .value_stack
-                .push(Value::Int(zero_based.cast_signed()));
+            flow.value_stack.push(Value::Int(zero_based.cast_signed()));
         }
         Opcode::TurnsSince => {
-            let val = story.flow.pop_value()?;
+            let val = flow.pop_value()?;
             let result = if let Value::DivertTarget(id) = val {
-                if let Some(&last_turn) = story.context.turn_counts.get(&id) {
+                if let Some(&last_turn) = context.turn_counts.get(&id) {
                     #[expect(clippy::cast_possible_wrap)]
-                    let delta = (story.context.turn_index - last_turn) as i32;
+                    let delta = (context.turn_index - last_turn) as i32;
                     delta
                 } else {
                     -1
@@ -653,25 +632,21 @@ pub(crate) fn step<R: StoryRng>(
             } else {
                 -1
             };
-            story.flow.value_stack.push(Value::Int(result));
+            flow.value_stack.push(Value::Int(result));
         }
         Opcode::TurnIndex => {
-            story
-                .flow
-                .value_stack
-                .push(Value::Int(story.context.turn_index.cast_signed()));
+            flow.value_stack
+                .push(Value::Int(context.turn_index.cast_signed()));
         }
         #[expect(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         Opcode::ChoiceCount => {
-            story
-                .flow
-                .value_stack
-                .push(Value::Int(story.flow.pending_choices.len() as i32));
+            flow.value_stack
+                .push(Value::Int(flow.pending_choices.len() as i32));
         }
         Opcode::Random => {
             // Reference pops max first, then min.
-            let max_val = story.flow.pop_value()?;
-            let min_val = story.flow.pop_value()?;
+            let max_val = flow.pop_value()?;
+            let min_val = flow.pop_value()?;
             let max_i = match max_val {
                 Value::Int(n) => n,
                 Value::Float(f) => {
@@ -697,81 +672,77 @@ pub(crate) fn step<R: StoryRng>(
             let result = if range <= 0 {
                 min_i
             } else {
-                let result_seed = story
-                    .context
-                    .rng_seed
-                    .wrapping_add(story.context.previous_random);
+                let result_seed = context.rng_seed.wrapping_add(context.previous_random);
                 let mut rng = R::from_seed(result_seed);
                 let next_random = rng.next_int();
-                story.context.previous_random = next_random;
+                context.previous_random = next_random;
                 (next_random % range) + min_i
             };
-            story.flow.value_stack.push(Value::Int(result));
+            flow.value_stack.push(Value::Int(result));
         }
         Opcode::SeedRandom => {
-            let seed_val = story.flow.pop_value()?;
+            let seed_val = flow.pop_value()?;
             let seed = match seed_val {
                 Value::Int(n) => n,
                 _ => 0,
             };
-            story.context.rng_seed = seed;
-            story.context.previous_random = 0;
-            story.flow.value_stack.push(Value::Null);
+            context.rng_seed = seed;
+            context.previous_random = 0;
+            flow.value_stack.push(Value::Null);
         }
 
         // ── Sequences ───────────────────────────────────────────────
         Opcode::Sequence(kind, count) => {
-            handle_sequence(story, program, kind, count)?;
+            handle_sequence(flow, context, program, kind, count)?;
         }
 
         // ── Tags ────────────────────────────────────────────────────
         Opcode::BeginTag => {
-            story.flow.in_tag = true;
-            story.flow.output.begin_capture();
+            flow.in_tag = true;
+            flow.output.begin_capture();
         }
         Opcode::EndTag => {
-            let tag_text = story
-                .flow
+            let tag_text = flow
                 .output
                 .end_capture()
                 .ok_or(RuntimeError::CaptureUnderflow)?;
             let tag = tag_text.trim().to_string();
-            story.flow.in_tag = false;
-            if story.flow.output.has_checkpoint() {
+            flow.in_tag = false;
+            if flow.output.has_checkpoint() {
                 // Inside a capture (choice text, function call) — store
                 // for the choice/function to consume.
-                story.flow.current_tags.push(tag);
+                flow.current_tags.push(tag);
             } else {
                 // Top-level output — associate with the current line.
-                story.flow.output.push_tag(tag);
+                flow.output.push_tag(tag);
             }
         }
 
         // ── List operations ─────────────────────────────────────────
-        Opcode::ListContains => list_ops::list_contains::<R>(story)?,
-        Opcode::ListNotContains => list_ops::list_not_contains::<R>(story)?,
-        Opcode::ListIntersect => list_ops::list_intersect::<R>(story)?,
-        Opcode::ListAll => list_ops::list_all::<R>(story, program)?,
-        Opcode::ListInvert => list_ops::list_invert::<R>(story, program)?,
-        Opcode::ListCount => list_ops::list_count::<R>(story)?,
-        Opcode::ListMin => list_ops::list_min::<R>(story, program)?,
-        Opcode::ListMax => list_ops::list_max::<R>(story, program)?,
-        Opcode::ListValue => list_ops::list_value::<R>(story, program)?,
-        Opcode::ListRange => list_ops::list_range::<R>(story, program)?,
-        Opcode::ListFromInt => list_ops::list_from_int::<R>(story, program)?,
-        Opcode::ListRandom => list_ops::list_random::<R>(story)?,
+        Opcode::ListContains => list_ops::list_contains(flow)?,
+        Opcode::ListNotContains => list_ops::list_not_contains(flow)?,
+        Opcode::ListIntersect => list_ops::list_intersect(flow)?,
+        Opcode::ListAll => list_ops::list_all(flow, program)?,
+        Opcode::ListInvert => list_ops::list_invert(flow, program)?,
+        Opcode::ListCount => list_ops::list_count(flow)?,
+        Opcode::ListMin => list_ops::list_min(flow, program)?,
+        Opcode::ListMax => list_ops::list_max(flow, program)?,
+        Opcode::ListValue => list_ops::list_value(flow, program)?,
+        Opcode::ListRange => list_ops::list_range(flow, program)?,
+        Opcode::ListFromInt => list_ops::list_from_int(flow, program)?,
+        Opcode::ListRandom => list_ops::list_random(flow, context)?,
 
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {
             // Pop arguments from the value stack.
             let mut args = Vec::with_capacity(arg_count as usize);
             for _ in 0..arg_count {
-                args.push(story.flow.pop_value()?);
+                args.push(flow.pop_value()?);
             }
             args.reverse(); // Args were pushed left-to-right, popped right-to-left.
 
-            let current_pos = current_position(story)?;
-            let thread = story.flow.current_thread_mut();
+            let current_pos = current_position(flow)?;
+            let thread = flow.current_thread_mut();
             thread.call_stack.push(CallFrame {
                 return_address: Some(current_pos),
                 temps: args,
@@ -818,35 +789,35 @@ fn resolve_line(program: &Program, pos: &ContainerPosition, idx: u16) -> String 
 /// - **Non-function with pending choices**: the frame is waiting for a
 ///   choice selection. Pop the thread so other threads can run.
 /// - **Otherwise**: pop the call frame normally (implicit return).
-fn handle_frame_exhaustion<R: StoryRng>(
-    story: &mut Story<R>,
+fn handle_frame_exhaustion(
+    flow: &mut Flow,
     frame_type: CallFrameType,
 ) -> Result<Stepped, RuntimeError> {
     if frame_type == CallFrameType::Thread {
         // Thread boundary exhausted — thread is done. Pop it without
         // touching inherited frames below. ThreadCall always creates a
         // child thread, so can_pop_thread is expected to be true.
-        if story.flow.can_pop_thread() {
-            story.flow.pop_thread();
+        if flow.can_pop_thread() {
+            flow.pop_thread();
             return Ok(Stepped::ThreadCompleted);
         }
         return Ok(Stepped::Done);
     }
 
-    if frame_type != CallFrameType::Function && !story.flow.pending_choices.is_empty() {
+    if frame_type != CallFrameType::Function && !flow.pending_choices.is_empty() {
         // Non-function frame with pending choices: the fork captured at
         // choice creation preserves the state for resumption.
-        if story.flow.can_pop_thread() {
-            story.flow.pop_thread();
+        if flow.can_pop_thread() {
+            flow.pop_thread();
             return Ok(Stepped::ThreadCompleted);
         }
         return Ok(Stepped::Done);
     }
 
-    pop_call_frame(story, false)?;
-    if story.flow.current_thread().call_stack.is_empty() {
-        if story.flow.can_pop_thread() {
-            story.flow.pop_thread();
+    pop_call_frame(flow, false)?;
+    if flow.current_thread().call_stack.is_empty() {
+        if flow.can_pop_thread() {
+            flow.pop_thread();
             return Ok(Stepped::ThreadCompleted);
         }
         return Ok(Stepped::Done);
@@ -864,11 +835,8 @@ fn handle_frame_exhaustion<R: StoryRng>(
 /// - `is_explicit_return = false` (implicit return via bytecode exhaustion):
 ///   the function didn't push a return value. Capture text output and push
 ///   it as a `Value::String`.
-fn pop_call_frame<R: StoryRng>(
-    story: &mut Story<R>,
-    is_explicit_return: bool,
-) -> Result<(), RuntimeError> {
-    let thread = story.flow.current_thread_mut();
+fn pop_call_frame(flow: &mut Flow, is_explicit_return: bool) -> Result<(), RuntimeError> {
+    let thread = flow.current_thread_mut();
     let popped = thread
         .call_stack
         .pop()
@@ -878,43 +846,38 @@ fn pop_call_frame<R: StoryRng>(
         if is_explicit_return {
             // Explicit `~ret`: return value is already on the value stack.
             // Discard the capture checkpoint; text stays in the output.
-            story.flow.output.discard_capture();
+            flow.output.discard_capture();
         } else {
             // Implicit return: capture text output as the return value.
             // Trim trailing newlines — function bodies end with `\n` but
             // inline callers (`{f()}`) expect clean text without trailing breaks.
-            let text = story
-                .flow
+            let text = flow
                 .output
                 .end_capture()
                 .ok_or(RuntimeError::CaptureUnderflow)?;
             let text = text.trim_end_matches('\n').to_owned();
-            story.flow.value_stack.push(Value::String(text));
+            flow.value_stack.push(Value::String(text));
         }
     }
 
     if let Some(ret) = popped.return_address {
-        resume_at(story, ret);
+        resume_at(flow, ret);
     }
 
     Ok(())
 }
 
-fn binary<R: StoryRng>(
-    story: &mut Story<R>,
-    program: &Program,
-    op: BinaryOp,
-) -> Result<(), RuntimeError> {
-    let right = story.flow.pop_value()?;
-    let left = story.flow.pop_value()?;
+fn binary(flow: &mut Flow, program: &Program, op: BinaryOp) -> Result<(), RuntimeError> {
+    let right = flow.pop_value()?;
+    let left = flow.pop_value()?;
     let result = value_ops::binary_op(op, &left, &right, program)?;
-    story.flow.value_stack.push(result);
+    flow.value_stack.push(result);
     Ok(())
 }
 
 /// Resume execution at a return address.
-fn resume_at<R: StoryRng>(story: &mut Story<R>, pos: ContainerPosition) {
-    let thread = story.flow.current_thread_mut();
+fn resume_at(flow: &mut Flow, pos: ContainerPosition) {
+    let thread = flow.current_thread_mut();
     if let Some(frame) = thread.call_stack.last_mut()
         && let Some(top) = frame.container_stack.last_mut()
     {
@@ -923,7 +886,8 @@ fn resume_at<R: StoryRng>(story: &mut Story<R>, pos: ContainerPosition) {
 }
 
 fn goto_target<R: StoryRng>(
-    story: &mut Story<R>,
+    flow: &mut Flow,
+    context: &mut Context<R>,
     program: &Program,
     id: DefinitionId,
 ) -> Result<(), RuntimeError> {
@@ -931,7 +895,7 @@ fn goto_target<R: StoryRng>(
         .resolve_target(id)
         .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
-    let thread = story.flow.current_thread_mut();
+    let thread = flow.current_thread_mut();
     let frame = thread
         .call_stack
         .last_mut()
@@ -981,19 +945,16 @@ fn goto_target<R: StoryRng>(
             true
         };
         if should_count {
-            *story.context.visit_counts.entry(id).or_insert(0) += 1;
-            story
-                .context
-                .turn_counts
-                .insert(id, story.context.turn_index);
+            *context.visit_counts.entry(id).or_insert(0) += 1;
+            context.turn_counts.insert(id, context.turn_index);
         }
     }
 
     Ok(())
 }
 
-fn apply_jump<R: StoryRng>(story: &mut Story<R>, relative: i32) -> Result<(), RuntimeError> {
-    let thread = story.flow.current_thread_mut();
+fn apply_jump(flow: &mut Flow, relative: i32) -> Result<(), RuntimeError> {
+    let thread = flow.current_thread_mut();
     let frame = thread
         .call_stack
         .last_mut()
@@ -1015,8 +976,8 @@ fn apply_jump<R: StoryRng>(story: &mut Story<R>, relative: i32) -> Result<(), Ru
     Ok(())
 }
 
-fn current_position<R: StoryRng>(story: &Story<R>) -> Result<ContainerPosition, RuntimeError> {
-    let thread = story.flow.current_thread();
+fn current_position(flow: &Flow) -> Result<ContainerPosition, RuntimeError> {
+    let thread = flow.current_thread();
     let frame = thread
         .call_stack
         .last()
@@ -1030,7 +991,8 @@ fn current_position<R: StoryRng>(story: &Story<R>) -> Result<ContainerPosition, 
 }
 
 fn handle_begin_choice<R: StoryRng>(
-    story: &mut Story<R>,
+    flow: &mut Flow,
+    context: &mut Context<R>,
     program: &Program,
     flags: ChoiceFlags,
     target_id: DefinitionId,
@@ -1041,43 +1003,38 @@ fn handle_begin_choice<R: StoryRng>(
 
     // 1. Pop condition first (it was evaluated last, so it's on top).
     if flags.has_condition {
-        let condition = story.flow.pop_value()?;
+        let condition = flow.pop_value()?;
         if !value_ops::is_truthy(&condition) {
             // Skip this choice — pop remaining text values and mark skipping.
             if flags.has_choice_only_content {
-                let _ = story.flow.value_stack.pop();
+                let _ = flow.value_stack.pop();
             }
             if flags.has_start_content {
-                let _ = story.flow.value_stack.pop();
+                let _ = flow.value_stack.pop();
             }
-            story.flow.skipping_choice = true;
+            flow.skipping_choice = true;
             return Ok(());
         }
     }
 
     // 1b. Once-only check: skip if the target container was already visited.
     if flags.once_only {
-        let visit_count = story
-            .context
-            .visit_counts
-            .get(&target_id)
-            .copied()
-            .unwrap_or(0);
+        let visit_count = context.visit_counts.get(&target_id).copied().unwrap_or(0);
         if visit_count > 0 {
             if flags.has_choice_only_content {
-                let _ = story.flow.value_stack.pop();
+                let _ = flow.value_stack.pop();
             }
             if flags.has_start_content {
-                let _ = story.flow.value_stack.pop();
+                let _ = flow.value_stack.pop();
             }
-            story.flow.skipping_choice = true;
+            flow.skipping_choice = true;
             return Ok(());
         }
     }
 
     // 2. Pop choice text strings (choice-only is on top, start below).
     let choice_only_text = if flags.has_choice_only_content {
-        match story.flow.value_stack.pop() {
+        match flow.value_stack.pop() {
             Some(Value::String(s)) => s,
             Some(other) => value_ops::stringify(&other, program),
             None => String::new(),
@@ -1087,7 +1044,7 @@ fn handle_begin_choice<R: StoryRng>(
     };
 
     let start_text = if flags.has_start_content {
-        match story.flow.value_stack.pop() {
+        match flow.value_stack.pop() {
             Some(Value::String(s)) => s,
             Some(other) => value_ops::stringify(&other, program),
             None => String::new(),
@@ -1102,10 +1059,10 @@ fn handle_begin_choice<R: StoryRng>(
         .resolve_target(target_id)
         .ok_or(RuntimeError::UnresolvedDefinition(target_id))?;
 
-    let idx = story.flow.pending_choices.len();
-    let thread_fork = story.flow.fork_thread();
-    let tags = std::mem::take(&mut story.flow.current_tags);
-    story.flow.pending_choices.push(PendingChoice {
+    let idx = flow.pending_choices.len();
+    let thread_fork = flow.fork_thread();
+    let tags = std::mem::take(&mut flow.current_tags);
+    flow.pending_choices.push(PendingChoice {
         display_text,
         target_id,
         target_idx,
@@ -1121,26 +1078,27 @@ fn handle_begin_choice<R: StoryRng>(
 }
 
 fn handle_sequence<R: StoryRng>(
-    story: &mut Story<R>,
+    flow: &mut Flow,
+    context: &mut Context<R>,
     program: &Program,
     kind: brink_format::SequenceKind,
     count: u8,
 ) -> Result<(), RuntimeError> {
     if kind == brink_format::SequenceKind::Shuffle {
-        return handle_shuffle_sequence::<R>(story, program);
+        return handle_shuffle_sequence(flow, context, program);
     }
 
     // Non-shuffle sequences: pop divert target, use visit count.
-    let val = story.flow.pop_value()?;
+    let val = flow.pop_value()?;
     let visit_count = if let Value::DivertTarget(id) = val {
-        story.context.visit_counts.get(&id).copied().unwrap_or(0)
+        context.visit_counts.get(&id).copied().unwrap_or(0)
     } else {
         0
     };
 
     let count = u32::from(count);
     if count == 0 {
-        story.flow.value_stack.push(Value::Int(0));
+        flow.value_stack.push(Value::Int(0));
         return Ok(());
     }
 
@@ -1157,7 +1115,7 @@ fn handle_sequence<R: StoryRng>(
         brink_format::SequenceKind::Shuffle => unreachable!(),
     };
 
-    story.flow.value_stack.push(Value::Int(idx.cast_signed()));
+    flow.value_stack.push(Value::Int(idx.cast_signed()));
     Ok(())
 }
 
@@ -1167,10 +1125,11 @@ fn handle_sequence<R: StoryRng>(
 /// Uses a partial Fisher-Yates shuffle seeded with `path_hash + loopIndex + story_seed`.
 #[expect(clippy::cast_sign_loss)]
 fn handle_shuffle_sequence<R: StoryRng>(
-    story: &mut Story<R>,
+    flow: &mut Flow,
+    context: &mut Context<R>,
     program: &Program,
 ) -> Result<(), RuntimeError> {
-    let num_elements = match story.flow.pop_value()? {
+    let num_elements = match flow.pop_value()? {
         Value::Int(n) => n,
         other => {
             return Err(RuntimeError::TypeError(format!(
@@ -1178,7 +1137,7 @@ fn handle_shuffle_sequence<R: StoryRng>(
             )));
         }
     };
-    let seq_count = match story.flow.pop_value()? {
+    let seq_count = match flow.pop_value()? {
         Value::Int(n) => n,
         other => {
             return Err(RuntimeError::TypeError(format!(
@@ -1188,7 +1147,7 @@ fn handle_shuffle_sequence<R: StoryRng>(
     };
 
     if num_elements == 0 {
-        story.flow.value_stack.push(Value::Int(0));
+        flow.value_stack.push(Value::Int(0));
         return Ok(());
     }
 
@@ -1196,13 +1155,13 @@ fn handle_shuffle_sequence<R: StoryRng>(
     let iteration_index = seq_count % num_elements;
 
     // Get path_hash from the current container.
-    let pos = current_position(story)?;
+    let pos = current_position(flow)?;
     let path_hash = program.container(pos.container_idx).path_hash;
 
     // Seed RNG with path_hash + loopIndex + story_seed (matching reference).
     let seed = path_hash
         .wrapping_add(loop_index)
-        .wrapping_add(story.context.rng_seed);
+        .wrapping_add(context.rng_seed);
     let mut rng = R::from_seed(seed);
 
     // Partial Fisher-Yates: maintain unpicked list, pick iterationIndex+1 elements.
@@ -1214,12 +1173,12 @@ fn handle_shuffle_sequence<R: StoryRng>(
         unpicked.swap_remove(chosen);
 
         if i == iteration_index {
-            story.flow.value_stack.push(Value::Int(chosen_index));
+            flow.value_stack.push(Value::Int(chosen_index));
             return Ok(());
         }
     }
 
     // Should not reach here.
-    story.flow.value_stack.push(Value::Int(0));
+    flow.value_stack.push(Value::Int(0));
     Ok(())
 }
