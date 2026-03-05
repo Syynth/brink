@@ -760,3 +760,101 @@ fn tags_in_sequence() {
     let result = run_story(&json, &[]);
     assert_eq!(result, "A red sequence.\nA white sequence.\n");
 }
+
+/// Trace the step-by-step behavior of the Tower of Hanoi story to verify
+/// the execution model returns the correct `StepResult` at each point.
+///
+/// Expected flow per cycle:
+/// 1. `step()` → Choices (flavor/intro text, with "Regard the temples")
+/// 2. `choose(0)` → select Regard
+/// 3. `step()` → Choices (pillar descriptions, with valid moves)
+/// 4. `choose(move)` → select a move
+/// 5. Back to step 1
+///
+/// The runtime should NEVER return `StepResult::Done` during normal play —
+/// every step should yield Choices.
+#[test]
+#[expect(clippy::panic)] // let-else destructuring needs panic for the fallthrough
+fn tower_of_hanoi_step_sequence() {
+    let json = load_ink_json("../../tests/tier3/lists/tower-of-hanoi/story.ink.json");
+    let ink: InkJson = serde_json::from_str(&json).unwrap();
+    let data = convert(&ink).unwrap();
+    let program = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<brink_runtime::DotNetRng>::new(&program);
+
+    // Step 1: intro text + "Regard the temples" choice
+    let result = story.step(&program).unwrap();
+    let StepResult::Choices { text, choices, .. } = &result else {
+        panic!("step 1: expected Choices, got {result:?}");
+    };
+    assert!(
+        text.contains("Staring down from the heavens"),
+        "step 1: expected intro text, got: {text:?}"
+    );
+    assert_eq!(choices.len(), 1, "step 1: expected 1 choice (Regard)");
+    assert!(
+        choices[0].text.contains("Regard the temples"),
+        "step 1: expected 'Regard the temples', got: {:?}",
+        choices[0].text
+    );
+
+    // Choose "Regard the temples"
+    story.choose(choices[0].index).unwrap();
+
+    // Step 2: pillar descriptions + move choices
+    let result = story.step(&program).unwrap();
+    let StepResult::Choices { text, choices, .. } = &result else {
+        panic!("step 2: expected Choices, got {result:?}");
+    };
+    assert!(
+        text.contains("You regard each of the temples"),
+        "step 2: expected regard text, got: {text:?}"
+    );
+    assert!(
+        text.contains("discs numbered one, two, three"),
+        "step 2: expected pillar descriptions, got: {text:?}"
+    );
+    assert_eq!(choices.len(), 2, "step 2: expected 2 move choices");
+
+    // Choose first move (first → second)
+    story.choose(choices[0].index).unwrap();
+
+    // Step 3: move flavor text + "Regard the temples" again
+    let result = story.step(&program).unwrap();
+    let StepResult::Choices { text, choices, .. } = &result else {
+        panic!("step 3: expected Choices, got {result:?}");
+    };
+    assert!(
+        text.contains("priests far below"),
+        "step 3: expected move flavor text, got: {text:?}"
+    );
+    assert_eq!(choices.len(), 1, "step 3: expected 1 choice (Regard)");
+    assert!(
+        choices[0].text.contains("Regard the temples"),
+        "step 3: choice should be 'Regard the temples', got: {:?}",
+        choices[0].text
+    );
+
+    // Choose "Regard the temples" again
+    story.choose(choices[0].index).unwrap();
+
+    // Step 4: updated pillar descriptions + move choices
+    let result = story.step(&program).unwrap();
+    let StepResult::Choices { text, choices, .. } = &result else {
+        panic!("step 4: expected Choices, got {result:?}");
+    };
+    assert!(
+        text.contains("You regard each of the temples"),
+        "step 4: expected regard text, got: {text:?}"
+    );
+    // After moving disc 1 to temple 2: first has {two, three}, second has {one}
+    assert!(
+        text.contains("discs numbered two, three"),
+        "step 4: first temple should have two, three; got: {text:?}"
+    );
+    assert!(
+        choices.len() == 3,
+        "step 4: expected 3 move choices, got {}",
+        choices.len()
+    );
+}

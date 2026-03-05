@@ -132,12 +132,92 @@ pub(crate) fn binary_op(
     }
 }
 
+/// Get the minimum ordinal value in a list. Returns `None` if the list is empty.
+fn list_min_ordinal(lv: &ListValue, program: &Program) -> Option<i32> {
+    lv.items
+        .iter()
+        .filter_map(|&id| program.list_item(id).map(|e| e.ordinal))
+        .min()
+}
+
+/// Get the maximum ordinal value in a list. Returns `None` if the list is empty.
+fn list_max_ordinal(lv: &ListValue, program: &Program) -> Option<i32> {
+    lv.items
+        .iter()
+        .filter_map(|&id| program.list_item(id).map(|e| e.ordinal))
+        .max()
+}
+
+/// Ordinal-based list comparison (ink semantics).
+///
+/// - `A > B`:  if A empty → false; if B empty → true; else min(A) > max(B)
+/// - `A >= B`: if A empty → (B empty); if B empty → true; else min(A) >= min(B) AND max(A) >= max(B)
+/// - `A < B`:  if B empty → false; if A empty → true; else max(A) < min(B)
+/// - `A <= B`: if B empty → (A empty); if A empty → true; else max(A) <= max(B) AND min(A) <= min(B)
+fn list_compare(op: BinaryOp, a: &ListValue, b: &ListValue, program: &Program) -> bool {
+    match op {
+        BinaryOp::Greater => {
+            if a.items.is_empty() {
+                return false;
+            }
+            if b.items.is_empty() {
+                return true;
+            }
+            matches!(
+                (list_min_ordinal(a, program), list_max_ordinal(b, program)),
+                (Some(a_min), Some(b_max)) if a_min > b_max
+            )
+        }
+        BinaryOp::GreaterOrEqual => {
+            if a.items.is_empty() {
+                return b.items.is_empty();
+            }
+            if b.items.is_empty() {
+                return true;
+            }
+            matches!(
+                (list_min_ordinal(a, program), list_min_ordinal(b, program),
+                 list_max_ordinal(a, program), list_max_ordinal(b, program)),
+                (Some(a_min), Some(b_min), Some(a_max), Some(b_max))
+                    if a_min >= b_min && a_max >= b_max
+            )
+        }
+        BinaryOp::Less => {
+            if b.items.is_empty() {
+                return false;
+            }
+            if a.items.is_empty() {
+                return true;
+            }
+            matches!(
+                (list_max_ordinal(a, program), list_min_ordinal(b, program)),
+                (Some(a_max), Some(b_min)) if a_max < b_min
+            )
+        }
+        BinaryOp::LessOrEqual => {
+            if b.items.is_empty() {
+                return a.items.is_empty();
+            }
+            if a.items.is_empty() {
+                return true;
+            }
+            matches!(
+                (list_max_ordinal(a, program), list_max_ordinal(b, program),
+                 list_min_ordinal(a, program), list_min_ordinal(b, program)),
+                (Some(a_max), Some(b_max), Some(a_min), Some(b_min))
+                    if a_max <= b_max && a_min <= b_min
+            )
+        }
+        _ => false,
+    }
+}
+
 /// Binary operations on two list values.
 fn list_binary_op(
     op: BinaryOp,
     a: &ListValue,
     b: &ListValue,
-    _program: &Program,
+    program: &Program,
 ) -> Result<Value, RuntimeError> {
     match op {
         BinaryOp::Add => {
@@ -170,7 +250,6 @@ fn list_binary_op(
             }))
         }
         BinaryOp::Equal => {
-            // Same item set (order-independent)
             let eq =
                 a.items.len() == b.items.len() && a.items.iter().all(|id| b.items.contains(id));
             Ok(Value::Bool(eq))
@@ -180,27 +259,8 @@ fn list_binary_op(
                 a.items.len() == b.items.len() && a.items.iter().all(|id| b.items.contains(id));
             Ok(Value::Bool(!eq))
         }
-        BinaryOp::Greater => {
-            // Strict superset: a contains all of b, and a has more items.
-            let superset =
-                b.items.iter().all(|id| a.items.contains(id)) && a.items.len() > b.items.len();
-            Ok(Value::Bool(superset))
-        }
-        BinaryOp::GreaterOrEqual => {
-            // Superset: a contains all of b.
-            let superset = b.items.iter().all(|id| a.items.contains(id));
-            Ok(Value::Bool(superset))
-        }
-        BinaryOp::Less => {
-            // Strict subset: b contains all of a, and b has more items.
-            let subset =
-                a.items.iter().all(|id| b.items.contains(id)) && b.items.len() > a.items.len();
-            Ok(Value::Bool(subset))
-        }
-        BinaryOp::LessOrEqual => {
-            // Subset: b contains all of a.
-            let subset = a.items.iter().all(|id| b.items.contains(id));
-            Ok(Value::Bool(subset))
+        BinaryOp::Greater | BinaryOp::GreaterOrEqual | BinaryOp::Less | BinaryOp::LessOrEqual => {
+            Ok(Value::Bool(list_compare(op, a, b, program)))
         }
         BinaryOp::And => Ok(Value::Bool(!a.items.is_empty() && !b.items.is_empty())),
         BinaryOp::Or => Ok(Value::Bool(!a.items.is_empty() || !b.items.is_empty())),
@@ -359,11 +419,11 @@ pub(crate) fn cast_to_float(v: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::program::LinkedContainer;
+    use crate::program::{LinkedContainer, ListDefEntry, ListItemEntry};
+    use brink_format::{DefinitionId, DefinitionTag, NameId};
     use std::collections::HashMap;
 
     fn dummy_program() -> Program {
-        use brink_format::{DefinitionId, DefinitionTag};
         Program {
             containers: vec![LinkedContainer {
                 id: DefinitionId::new(DefinitionTag::Container, 0),
@@ -436,6 +496,157 @@ mod tests {
         assert_eq!(stringify(&Value::Int(42), &p), "42");
         assert_eq!(stringify(&Value::Bool(true), &p), "true");
         assert_eq!(stringify(&Value::Null, &p), "");
+    }
+
+    /// Build a program with a list definition "Rank" containing items low(1), mid(2), high(3).
+    fn program_with_rank_list() -> (Program, DefinitionId, DefinitionId, DefinitionId) {
+        let list_def_id = DefinitionId::new(DefinitionTag::ListDef, 100);
+        let low_id = DefinitionId::new(DefinitionTag::ListItem, 1);
+        let mid_id = DefinitionId::new(DefinitionTag::ListItem, 2);
+        let high_id = DefinitionId::new(DefinitionTag::ListItem, 3);
+
+        let mut p = dummy_program();
+        // Names: 0="low", 1="mid", 2="high", 3="Rank"
+        p.name_table = vec![
+            "low".to_string(),
+            "mid".to_string(),
+            "high".to_string(),
+            "Rank".to_string(),
+        ];
+        p.list_item_map.insert(
+            low_id,
+            ListItemEntry {
+                name: NameId(0),
+                ordinal: 1,
+                origin: list_def_id,
+            },
+        );
+        p.list_item_map.insert(
+            mid_id,
+            ListItemEntry {
+                name: NameId(1),
+                ordinal: 2,
+                origin: list_def_id,
+            },
+        );
+        p.list_item_map.insert(
+            high_id,
+            ListItemEntry {
+                name: NameId(2),
+                ordinal: 3,
+                origin: list_def_id,
+            },
+        );
+        p.list_defs.push(ListDefEntry {
+            name: NameId(3),
+            items: vec![low_id, mid_id, high_id],
+        });
+        p.list_def_map.insert(list_def_id, 0);
+
+        (p, low_id, mid_id, high_id)
+    }
+
+    /// List comparisons use ordinal-based semantics, not set-theoretic.
+    #[test]
+    fn list_comparison_ordinal_semantics() {
+        let (p, low_id, mid_id, high_id) = program_with_rank_list();
+        let list_def_id = DefinitionId::new(DefinitionTag::ListDef, 100);
+
+        let low = Value::List(ListValue {
+            items: vec![low_id],
+            origins: vec![list_def_id],
+        });
+        let mid = Value::List(ListValue {
+            items: vec![mid_id],
+            origins: vec![list_def_id],
+        });
+        let high = Value::List(ListValue {
+            items: vec![high_id],
+            origins: vec![list_def_id],
+        });
+        let mid_high = Value::List(ListValue {
+            items: vec![mid_id, high_id],
+            origins: vec![list_def_id],
+        });
+
+        // {mid} > {low} — ordinal 2 > ordinal 1 → true
+        // (set-theoretic would say false because low ∉ {mid})
+        assert_eq!(
+            binary_op(BinaryOp::Greater, &mid, &low, &p).unwrap(),
+            Value::Bool(true)
+        );
+
+        // {high} > {mid_high} — min(high)=3 > max(mid_high)=3 → false
+        assert_eq!(
+            binary_op(BinaryOp::Greater, &high, &mid_high, &p).unwrap(),
+            Value::Bool(false)
+        );
+
+        // {low} < {mid} — max(low)=1 < min(mid)=2 → true
+        assert_eq!(
+            binary_op(BinaryOp::Less, &low, &mid, &p).unwrap(),
+            Value::Bool(true)
+        );
+
+        // {mid_high} >= {mid} — min(mid_high)=2 >= min(mid)=2 AND max(mid_high)=3 >= max(mid)=2 → true
+        assert_eq!(
+            binary_op(BinaryOp::GreaterOrEqual, &mid_high, &mid, &p).unwrap(),
+            Value::Bool(true)
+        );
+
+        // {mid} <= {mid_high} — max(mid)=2 <= max(mid_high)=3 AND min(mid)=2 <= min(mid_high)=2 → true
+        assert_eq!(
+            binary_op(BinaryOp::LessOrEqual, &mid, &mid_high, &p).unwrap(),
+            Value::Bool(true)
+        );
+
+        // {low} >= {mid} — min(low)=1 >= min(mid)=2 → false
+        assert_eq!(
+            binary_op(BinaryOp::GreaterOrEqual, &low, &mid, &p).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    /// Empty list edge cases for ordinal comparisons.
+    #[test]
+    fn list_comparison_empty() {
+        let (p, low_id, _, _) = program_with_rank_list();
+        let list_def_id = DefinitionId::new(DefinitionTag::ListDef, 100);
+
+        let empty = Value::List(ListValue {
+            items: vec![],
+            origins: vec![list_def_id],
+        });
+        let low = Value::List(ListValue {
+            items: vec![low_id],
+            origins: vec![list_def_id],
+        });
+
+        // {low} > () → true (non-empty > empty)
+        assert_eq!(
+            binary_op(BinaryOp::Greater, &low, &empty, &p).unwrap(),
+            Value::Bool(true)
+        );
+        // () > {low} → false
+        assert_eq!(
+            binary_op(BinaryOp::Greater, &empty, &low, &p).unwrap(),
+            Value::Bool(false)
+        );
+        // () < {low} → true (empty < non-empty)
+        assert_eq!(
+            binary_op(BinaryOp::Less, &empty, &low, &p).unwrap(),
+            Value::Bool(true)
+        );
+        // () >= () → true
+        assert_eq!(
+            binary_op(BinaryOp::GreaterOrEqual, &empty, &empty, &p).unwrap(),
+            Value::Bool(true)
+        );
+        // () <= () → true
+        assert_eq!(
+            binary_op(BinaryOp::LessOrEqual, &empty, &empty, &p).unwrap(),
+            Value::Bool(true)
+        );
     }
 
     /// String == Int coerces Int to String (ink type priority: String > Int).
