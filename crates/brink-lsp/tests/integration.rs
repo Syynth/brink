@@ -303,3 +303,128 @@ fn diagnostics_for_scene1_ink() {
     drop(stdout);
     let _ = child.wait();
 }
+
+#[test]
+fn folding_ranges_for_dice_rolling_functions() {
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    // --- initialize ---
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": null,
+            }
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    // --- didOpen with dice_rolling.ink ---
+    let ink_source =
+        include_str!("../../../tests/tests_patched/alobacheva__Tsiolkov-Sky/dice_rolling.ink");
+    let file_uri = "file:///tmp/dice_rolling.ink";
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": ink_source,
+                }
+            }
+        }),
+    );
+
+    // --- foldingRange (id=2) ---
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/foldingRange",
+            "params": {
+                "textDocument": { "uri": file_uri }
+            }
+        }),
+    );
+
+    let (fold_resp, _) = recv_response(&mut stdout, 2);
+    let ranges = fold_resp["result"]
+        .as_array()
+        .expect("expected array of folding ranges");
+
+    // dice_rolling.ink has 6 function knots:
+    //   _start_rolling, _keep_rolling, player_roll,
+    //   ccplayer_roll, opposite_roll, ccopposite_roll
+    let collapsed: Vec<&str> = ranges
+        .iter()
+        .filter_map(|r| r["collapsedText"].as_str())
+        .collect();
+
+    eprintln!("folding ranges ({}):", ranges.len());
+    for r in ranges {
+        eprintln!(
+            "  lines {}-{}: {}",
+            r["startLine"], r["endLine"], r["collapsedText"]
+        );
+    }
+
+    let expected_knots = [
+        "_start_rolling",
+        "_keep_rolling",
+        "player_roll",
+        "ccplayer_roll",
+        "opposite_roll",
+        "ccopposite_roll",
+    ];
+
+    for knot in &expected_knots {
+        let label = format!("== {knot} ==");
+        assert!(
+            collapsed.contains(&label.as_str()),
+            "expected folding range for `{knot}`, got: {collapsed:?}",
+        );
+    }
+
+    // Each range should span multiple lines
+    for r in ranges {
+        let start = r["startLine"].as_u64().unwrap();
+        let end = r["endLine"].as_u64().unwrap();
+        assert!(
+            end > start,
+            "folding range should span multiple lines: {start}-{end}",
+        );
+    }
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+}
