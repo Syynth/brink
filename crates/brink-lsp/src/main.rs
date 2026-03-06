@@ -1,27 +1,14 @@
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::{InitializeParams, InitializeResult, ServerCapabilities, ServerInfo};
-use tower_lsp::{Client, LanguageServer, LspService, Server};
+mod backend;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "plumbing for future handler implementations")
+)]
+mod convert;
+mod semantic_tokens;
 
-struct Backend {
-    _client: Client,
-}
+use tower_lsp::{LspService, Server};
 
-#[tower_lsp::async_trait]
-impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
-        Ok(InitializeResult {
-            capabilities: ServerCapabilities::default(),
-            server_info: Some(ServerInfo {
-                name: "brink-lsp".to_owned(),
-                version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-            }),
-        })
-    }
-
-    async fn shutdown(&self) -> Result<()> {
-        Ok(())
-    }
-}
+use crate::backend::Backend;
 
 #[tokio::main]
 async fn main() {
@@ -32,6 +19,6 @@ async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::new(|client| Backend { _client: client });
+    let (service, socket) = LspService::new(Backend::new);
     Server::new(stdin, stdout, socket).serve(service).await;
 }
