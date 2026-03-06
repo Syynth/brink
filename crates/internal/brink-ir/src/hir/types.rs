@@ -1,4 +1,4 @@
-use brink_syntax::ast::{self, AstPtr};
+use brink_syntax::ast::{self, AstPtr, SyntaxNodePtr};
 use rowan::TextRange;
 
 // ─── File identity ──────────────────────────────────────────────────
@@ -176,6 +176,7 @@ pub struct Gather {
 /// A line of text output with inline elements and associated tags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Content {
+    pub ptr: Option<SyntaxNodePtr>,
     pub parts: Vec<ContentPart>,
     pub tags: Vec<Tag>,
 }
@@ -198,6 +199,7 @@ pub enum ContentPart {
 /// An inline conditional within content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlineCond {
+    pub ptr: AstPtr<ast::ConditionalWithExpr>,
     pub branches: Vec<InlineBranch>,
 }
 
@@ -212,6 +214,7 @@ pub struct InlineBranch {
 /// An inline sequence within content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlineSeq {
+    pub ptr: SyntaxNodePtr,
     pub kind: SequenceType,
     pub branches: Vec<Vec<ContentPart>>,
 }
@@ -244,6 +247,7 @@ bitflags::bitflags! {
 /// A multiline conditional block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conditional {
+    pub ptr: SyntaxNodePtr,
     pub branches: Vec<CondBranch>,
 }
 
@@ -258,6 +262,7 @@ pub struct CondBranch {
 /// A multiline sequence block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockSequence {
+    pub ptr: AstPtr<ast::SequenceWithAnnotation>,
     pub kind: SequenceType,
     pub branches: Vec<Block>,
 }
@@ -267,18 +272,21 @@ pub struct BlockSequence {
 /// `-> target` — simple divert.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Divert {
+    pub ptr: Option<SyntaxNodePtr>,
     pub target: DivertTarget,
 }
 
 /// `->-> target` or chained tunnel calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TunnelCall {
+    pub ptr: AstPtr<ast::DivertNode>,
     pub targets: Vec<DivertTarget>,
 }
 
 /// `<- target` — fork execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadStart {
+    pub ptr: AstPtr<ast::ThreadStart>,
     pub target: DivertTarget,
 }
 
@@ -303,6 +311,7 @@ pub enum DivertPath {
 /// `~ return expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Return {
+    pub ptr: AstPtr<ast::ReturnStmt>,
     pub value: Option<Expr>,
 }
 
@@ -406,6 +415,7 @@ pub enum InfixOp {
 /// `VAR x = expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarDecl {
+    pub ptr: AstPtr<ast::VarDecl>,
     pub name: Name,
     pub value: Expr,
 }
@@ -413,6 +423,7 @@ pub struct VarDecl {
 /// `CONST x = expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstDecl {
+    pub ptr: AstPtr<ast::ConstDecl>,
     pub name: Name,
     pub value: Expr,
 }
@@ -420,6 +431,7 @@ pub struct ConstDecl {
 /// `~ temp x = expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TempDecl {
+    pub ptr: AstPtr<ast::TempDecl>,
     pub name: Name,
     pub value: Option<Expr>,
 }
@@ -427,6 +439,7 @@ pub struct TempDecl {
 /// `~ x = expr` or `~ x += expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment {
+    pub ptr: AstPtr<ast::Assignment>,
     pub target: Expr,
     pub op: AssignOp,
     pub value: Expr,
@@ -442,6 +455,7 @@ pub enum AssignOp {
 /// `LIST name = (item1), item2, (item3 = 5)`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListDecl {
+    pub ptr: AstPtr<ast::ListDecl>,
     pub name: Name,
     pub members: Vec<ListMember>,
 }
@@ -459,6 +473,7 @@ pub struct ListMember {
 /// `EXTERNAL fn_name(param1, param2)`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalDecl {
+    pub ptr: AstPtr<ast::ExternalDecl>,
     pub name: Name,
     pub param_count: u8,
 }

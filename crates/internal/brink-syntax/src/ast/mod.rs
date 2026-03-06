@@ -9,7 +9,7 @@ mod ptr;
 mod support;
 
 pub use nodes::*;
-pub use ptr::AstPtr;
+pub use ptr::{AstPtr, SyntaxNodePtr};
 
 use crate::SyntaxNode;
 

@@ -6,6 +6,74 @@ use crate::{SyntaxKind, SyntaxNode};
 
 use super::AstNode;
 
+// ─── SyntaxNodePtr (untyped) ────────────────────────────────────────
+
+/// An untyped lightweight pointer to a syntax node, resolvable against a tree.
+///
+/// Stores `SyntaxKind + TextRange` — the same data as [`AstPtr`] but without
+/// a type parameter, so it can point at nodes of heterogeneous kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SyntaxNodePtr {
+    kind: SyntaxKind,
+    range: TextRange,
+}
+
+impl SyntaxNodePtr {
+    /// Create a pointer from a live syntax node.
+    pub fn from_node(node: &SyntaxNode) -> Self {
+        Self {
+            kind: node.kind(),
+            range: node.text_range(),
+        }
+    }
+
+    /// The text range this pointer points to.
+    pub fn text_range(&self) -> TextRange {
+        self.range
+    }
+
+    /// The syntax kind of the pointed-to node.
+    pub fn syntax_kind(&self) -> SyntaxKind {
+        self.kind
+    }
+
+    /// Resolve this pointer back to a live syntax node.
+    pub fn resolve(&self, root: &SyntaxNode) -> Option<SyntaxNode> {
+        let mut node = root.covering_element(self.range);
+        loop {
+            match &node {
+                rowan::NodeOrToken::Node(n) => {
+                    if n.text_range() == self.range && n.kind() == self.kind {
+                        return Some(n.clone());
+                    }
+                    if n.text_range().start() < self.range.start() {
+                        return None;
+                    }
+                    match n.parent() {
+                        Some(parent) => node = rowan::NodeOrToken::Node(parent),
+                        None => return None,
+                    }
+                }
+                rowan::NodeOrToken::Token(t) => match t.parent() {
+                    Some(parent) => node = rowan::NodeOrToken::Node(parent),
+                    None => return None,
+                },
+            }
+        }
+    }
+}
+
+impl<N: AstNode> From<AstPtr<N>> for SyntaxNodePtr {
+    fn from(ptr: AstPtr<N>) -> Self {
+        Self {
+            kind: ptr.syntax_kind(),
+            range: ptr.text_range(),
+        }
+    }
+}
+
+// ─── AstPtr (typed) ─────────────────────────────────────────────────
+
 /// A lightweight pointer to an AST node, resolvable against a syntax tree.
 ///
 /// Stores the node's `SyntaxKind` and `TextRange` — enough to find it again

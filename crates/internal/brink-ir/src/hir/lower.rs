@@ -1,5 +1,5 @@
 use brink_syntax::SyntaxKind;
-use brink_syntax::ast::{self, AstNode, AstPtr};
+use brink_syntax::ast::{self, AstNode, AstPtr, SyntaxNodePtr};
 use rowan::TextRange;
 
 use crate::{
@@ -295,6 +295,7 @@ impl LowerCtx {
             && first.params.is_empty()
         {
             block.stmts.push(Stmt::Divert(Divert {
+                ptr: None,
                 target: DivertTarget {
                     path: DivertPath::Path(Path {
                         segments: vec![Name {
@@ -405,7 +406,11 @@ impl LowerCtx {
                 Expr::Null
             });
 
-        Some(VarDecl { name, value })
+        Some(VarDecl {
+            ptr: AstPtr::new(v),
+            name,
+            value,
+        })
     }
 
     fn lower_const_decl(&mut self, c: &ast::ConstDecl) -> Option<ConstDecl> {
@@ -427,7 +432,11 @@ impl LowerCtx {
                 Expr::Null
             });
 
-        Some(ConstDecl { name, value })
+        Some(ConstDecl {
+            ptr: AstPtr::new(c),
+            name,
+            value,
+        })
     }
 
     fn lower_list_decl(&mut self, l: &ast::ListDecl) -> Option<ListDecl> {
@@ -456,7 +465,11 @@ impl LowerCtx {
             self.declare(SymbolKind::ListItem, &qualified, member.name.range);
         }
 
-        Some(ListDecl { name, members })
+        Some(ListDecl {
+            ptr: AstPtr::new(l),
+            name,
+            members,
+        })
     }
 
     fn lower_external_decl(&mut self, e: &ast::ExternalDecl) -> Option<ExternalDecl> {
@@ -496,7 +509,11 @@ impl LowerCtx {
         )]
         let param_count = e.param_list().map_or(0, |pl| pl.params().count() as u8);
 
-        Some(ExternalDecl { name, param_count })
+        Some(ExternalDecl {
+            ptr: AstPtr::new(e),
+            name,
+            param_count,
+        })
     }
 }
 
@@ -741,7 +758,11 @@ impl LowerCtx {
             return line.divert().and_then(|d| self.lower_divert_node(&d));
         }
 
-        Some(Stmt::Content(Content { parts, tags }))
+        Some(Stmt::Content(Content {
+            ptr: Some(SyntaxNodePtr::from_node(line.syntax())),
+            parts,
+            tags,
+        }))
     }
 
     fn lower_mixed_content(&mut self, mc: &ast::MixedContent) -> Vec<ContentPart> {
@@ -776,6 +797,7 @@ impl LowerCtx {
                 .map(|b| self.lower_content_node_children(b.syntax()))
                 .collect();
             parts.push(ContentPart::InlineSequence(InlineSeq {
+                ptr: SyntaxNodePtr::from_node(imp.syntax()),
                 kind: SequenceType::STOPPING,
                 branches,
             }));
@@ -806,7 +828,10 @@ impl LowerCtx {
                     content: self.lower_content_node_children(branch_content.syntax()),
                 });
             }
-            return Some(InlineCond { branches });
+            return Some(InlineCond {
+                ptr: AstPtr::new(cond),
+                branches,
+            });
         }
 
         if let Some(inline_branches) = cond.inline_branches() {
@@ -824,7 +849,10 @@ impl LowerCtx {
                     content,
                 });
             }
-            return Some(InlineCond { branches });
+            return Some(InlineCond {
+                ptr: AstPtr::new(cond),
+                branches,
+            });
         }
 
         if let Some(ml_branches) = cond.multiline_branches() {
@@ -846,7 +874,10 @@ impl LowerCtx {
                     content,
                 });
             }
-            return Some(InlineCond { branches });
+            return Some(InlineCond {
+                ptr: AstPtr::new(cond),
+                branches,
+            });
         }
 
         None
@@ -874,7 +905,11 @@ impl LowerCtx {
             return None;
         };
 
-        Some(InlineSeq { kind, branches })
+        Some(InlineSeq {
+            ptr: SyntaxNodePtr::from_node(seq.syntax()),
+            kind,
+            branches,
+        })
     }
 
     fn lower_content_node_children(&mut self, node: &brink_syntax::SyntaxNode) -> Vec<ContentPart> {
@@ -977,7 +1012,10 @@ impl LowerCtx {
                 .filter_map(|t| self.lower_divert_target_with_args(&t))
                 .collect();
             if !targets.is_empty() {
-                return Some(Stmt::TunnelCall(TunnelCall { targets }));
+                return Some(Stmt::TunnelCall(TunnelCall {
+                    ptr: AstPtr::new(node),
+                    targets,
+                }));
             }
             self.emit(node.syntax().text_range(), DiagnosticCode::E012);
             return None;
@@ -995,7 +1033,10 @@ impl LowerCtx {
                 );
             }
             if !targets.is_empty() {
-                return Some(Stmt::TunnelCall(TunnelCall { targets }));
+                return Some(Stmt::TunnelCall(TunnelCall {
+                    ptr: AstPtr::new(node),
+                    targets,
+                }));
             }
             self.emit(node.syntax().text_range(), DiagnosticCode::E012);
             return None;
@@ -1008,9 +1049,13 @@ impl LowerCtx {
                 .collect();
             return match targets.len() {
                 1 => Some(Stmt::Divert(Divert {
+                    ptr: Some(SyntaxNodePtr::from_node(node.syntax())),
                     target: targets.into_iter().next()?,
                 })),
-                n if n > 1 => Some(Stmt::TunnelCall(TunnelCall { targets })),
+                n if n > 1 => Some(Stmt::TunnelCall(TunnelCall {
+                    ptr: AstPtr::new(node),
+                    targets,
+                })),
                 _ => {
                     self.emit(node.syntax().text_range(), DiagnosticCode::E012);
                     None
@@ -1034,6 +1079,7 @@ impl LowerCtx {
             .unwrap_or_default();
 
         Some(ThreadStart {
+            ptr: AstPtr::new(thread),
             target: DivertTarget {
                 path: DivertPath::Path(path),
                 args,
@@ -1070,6 +1116,7 @@ impl LowerCtx {
     fn lower_logic_line(&mut self, line: &ast::LogicLine) -> Option<Stmt> {
         if let Some(ret) = line.return_stmt() {
             return Some(Stmt::Return(Return {
+                ptr: AstPtr::new(&ret),
                 value: ret.value().and_then(|e| self.lower_expr(&e)),
             }));
         }
@@ -1077,7 +1124,11 @@ impl LowerCtx {
         if let Some(temp) = line.temp_decl() {
             let name = name_from_ident(&temp.identifier()?)?;
             let value = temp.value().and_then(|e| self.lower_expr(&e));
-            return Some(Stmt::TempDecl(TempDecl { name, value }));
+            return Some(Stmt::TempDecl(TempDecl {
+                ptr: AstPtr::new(&temp),
+                name,
+                value,
+            }));
         }
 
         if let Some(assign) = line.assignment() {
@@ -1090,7 +1141,12 @@ impl LowerCtx {
                     SyntaxKind::MINUS_EQ => AssignOp::Sub,
                     _ => AssignOp::Set,
                 });
-            return Some(Stmt::Assignment(Assignment { target, op, value }));
+            return Some(Stmt::Assignment(Assignment {
+                ptr: AstPtr::new(&assign),
+                target,
+                op,
+                value,
+            }));
         }
 
         // Bare expression statement: ~ expr
@@ -1137,16 +1193,19 @@ impl LowerCtx {
             .and_then(|e| self.lower_expr(&e));
 
         let start_content = choice.start_content().map(|sc| Content {
+            ptr: None,
             parts: self.lower_content_node_children(sc.syntax()),
             tags: Vec::new(),
         });
 
         let bracket_content = choice.bracket_content().map(|bc| Content {
+            ptr: None,
             parts: self.lower_content_node_children(bc.syntax()),
             tags: Vec::new(),
         });
 
         let inner_content = choice.inner_content().map(|ic| Content {
+            ptr: None,
             parts: self.lower_content_node_children(ic.syntax()),
             tags: Vec::new(),
         });
@@ -1157,7 +1216,10 @@ impl LowerCtx {
                 .targets()
                 .next()
                 .and_then(|t| self.lower_divert_target_with_args(&t))?;
-            Some(Divert { target })
+            Some(Divert {
+                ptr: Some(SyntaxNodePtr::from_node(d.syntax())),
+                target,
+            })
         });
 
         let tags = lower_tags(choice.tags());
@@ -1239,6 +1301,7 @@ impl LowerCtx {
         }
 
         let content = gather.mixed_content().map(|mc| Content {
+            ptr: None,
             parts: self.lower_mixed_content(&mc),
             tags: Vec::new(),
         });
@@ -1249,7 +1312,10 @@ impl LowerCtx {
                 .targets()
                 .next()
                 .and_then(|t| self.lower_divert_target_with_args(&t))?;
-            Some(Divert { target })
+            Some(Divert {
+                ptr: Some(SyntaxNodePtr::from_node(d.syntax())),
+                target,
+            })
         });
 
         let tags = lower_tags(gather.tags());
@@ -1319,6 +1385,7 @@ impl LowerCtx {
                         let tags = lower_tags(tl.tags());
                         if !tags.is_empty() {
                             items.push(WeaveItem::Stmt(Stmt::Content(Content {
+                                ptr: None,
                                 parts: Vec::new(),
                                 tags,
                             })));
@@ -1371,10 +1438,12 @@ impl LowerCtx {
     }
 
     fn lower_multiline_block(&mut self, mb: &ast::MultilineBlock) -> Option<Stmt> {
+        let ptr = SyntaxNodePtr::from_node(mb.syntax());
+
         if let Some(cond) = mb.conditional()
             && cond.multiline_branches().is_some()
         {
-            return Some(Stmt::Conditional(self.lower_block_conditional(&cond)));
+            return Some(Stmt::Conditional(self.lower_block_conditional(&cond, ptr)));
         }
 
         if let Some(seq) = mb.sequence()
@@ -1384,7 +1453,7 @@ impl LowerCtx {
         }
 
         if let Some(branches) = mb.branches_cond() {
-            let cond = self.lower_multiline_conditional_from_branches(&branches);
+            let cond = self.lower_multiline_conditional_from_branches(&branches, ptr);
             return Some(Stmt::Conditional(cond));
         }
 
@@ -1392,16 +1461,18 @@ impl LowerCtx {
     }
 
     fn lower_multiline_block_from_inline(&mut self, inline: &ast::InlineLogic) -> Option<Stmt> {
+        let ptr = SyntaxNodePtr::from_node(inline.syntax());
+
         if let Some(ml_cond) = inline.multiline_conditional() {
             return Some(Stmt::Conditional(
-                self.lower_multiline_conditional(&ml_cond),
+                self.lower_multiline_conditional(&ml_cond, ptr),
             ));
         }
 
         if let Some(cond) = inline.conditional()
             && cond.multiline_branches().is_some()
         {
-            return Some(Stmt::Conditional(self.lower_block_conditional(&cond)));
+            return Some(Stmt::Conditional(self.lower_block_conditional(&cond, ptr)));
         }
 
         if let Some(seq) = inline.sequence()
@@ -1413,20 +1484,26 @@ impl LowerCtx {
         None
     }
 
-    fn lower_multiline_conditional(&mut self, mc: &ast::MultilineConditional) -> Conditional {
-        self.lower_cond_branches(mc.branches())
+    fn lower_multiline_conditional(
+        &mut self,
+        mc: &ast::MultilineConditional,
+        ptr: SyntaxNodePtr,
+    ) -> Conditional {
+        self.lower_cond_branches(mc.branches(), ptr)
     }
 
     fn lower_multiline_conditional_from_branches(
         &mut self,
         mb: &ast::MultilineBranchesCond,
+        ptr: SyntaxNodePtr,
     ) -> Conditional {
-        self.lower_cond_branches(mb.branches())
+        self.lower_cond_branches(mb.branches(), ptr)
     }
 
     fn lower_cond_branches(
         &mut self,
         branches: impl Iterator<Item = ast::MultilineBranchCond>,
+        ptr: SyntaxNodePtr,
     ) -> Conditional {
         let branches = branches
             .map(|b| {
@@ -1441,10 +1518,14 @@ impl LowerCtx {
                 CondBranch { condition, body }
             })
             .collect();
-        Conditional { branches }
+        Conditional { ptr, branches }
     }
 
-    fn lower_block_conditional(&mut self, cond: &ast::ConditionalWithExpr) -> Conditional {
+    fn lower_block_conditional(
+        &mut self,
+        cond: &ast::ConditionalWithExpr,
+        ptr: SyntaxNodePtr,
+    ) -> Conditional {
         let outer_cond = cond.condition().and_then(|e| self.lower_expr(&e));
         let mut branches = Vec::new();
 
@@ -1471,10 +1552,11 @@ impl LowerCtx {
             });
         }
 
-        Conditional { branches }
+        Conditional { ptr, branches }
     }
 
     fn lower_block_sequence(&mut self, seq: &ast::SequenceWithAnnotation) -> BlockSequence {
+        let ptr = AstPtr::new(seq);
         let kind = lower_sequence_type(seq);
         let branches = seq.multiline_branches().map_or_else(Vec::new, |ml| {
             ml.branches()
@@ -1485,7 +1567,11 @@ impl LowerCtx {
                 })
                 .collect()
         });
-        BlockSequence { kind, branches }
+        BlockSequence {
+            ptr,
+            kind,
+            branches,
+        }
     }
 }
 
@@ -1620,6 +1706,7 @@ fn emit_standalone_gather(stmts: &mut Vec<Stmt>, gather: &Gather) {
         && (!content.parts.is_empty() || !gather.tags.is_empty())
     {
         stmts.push(Stmt::Content(Content {
+            ptr: None,
             parts: content.parts.clone(),
             tags: gather.tags.clone(),
         }));

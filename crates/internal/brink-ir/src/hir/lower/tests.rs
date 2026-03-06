@@ -590,6 +590,7 @@ fn fold_weave_is_public() {
 
     // Simple: just statements, no choices or gathers
     let items = vec![WeaveItem::Stmt(Stmt::Content(Content {
+        ptr: None,
         parts: vec![ContentPart::Text("hello".into())],
         tags: vec![],
     }))];
