@@ -10,7 +10,7 @@ use super::Parser;
 /// ```text
 /// gather_line = { gather_dashes ~ label? ~ mixed_content? ~ tags? ~ NEWLINE }
 /// ```
-pub(crate) fn gather_line(p: &mut Parser<'_>) {
+pub(crate) fn gather_line(p: &mut Parser<'_, '_>) {
     p.start_node(GATHER);
 
     // gather_dashes: (WS* ~ "-" ~ !">")+
@@ -52,7 +52,7 @@ pub(crate) fn gather_line(p: &mut Parser<'_>) {
 }
 
 /// Parse gather dashes: one or more `-` (with optional whitespace).
-fn gather_dashes(p: &mut Parser<'_>) {
+fn gather_dashes(p: &mut Parser<'_, '_>) {
     p.start_node(GATHER_DASHES);
     while p.current() == MINUS {
         p.bump();

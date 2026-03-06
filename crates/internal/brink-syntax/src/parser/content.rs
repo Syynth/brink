@@ -12,7 +12,7 @@ use super::Parser;
 /// ```
 ///
 /// A content line may start with mixed content, a divert, or both (text then divert).
-pub(crate) fn content_line(p: &mut Parser<'_>) {
+pub(crate) fn content_line(p: &mut Parser<'_, '_>) {
     p.start_node(CONTENT_LINE);
 
     // If we start at a divert, skip mixed_content and go straight to divert
@@ -53,7 +53,7 @@ pub(crate) fn content_line(p: &mut Parser<'_>) {
 /// mixed_content = { content_element+ }
 /// content_element = { inline_logic | glue | content_escape | text_content }
 /// ```
-pub(crate) fn mixed_content(p: &mut Parser<'_>) {
+pub(crate) fn mixed_content(p: &mut Parser<'_, '_>) {
     p.start_node(MIXED_CONTENT);
 
     loop {
@@ -104,7 +104,7 @@ pub(crate) fn mixed_content(p: &mut Parser<'_>) {
 ///
 /// Stop characters for `text_content` (from pest `TEXT_CHAR`):
 /// NEWLINE, `{`, `}`, `<>`, `->`, `->->`, `<-`, `//`, `/*`, `#`, `|`, `\`
-fn text_content(p: &mut Parser<'_>) {
+fn text_content(p: &mut Parser<'_, '_>) {
     p.start_node(TEXT);
 
     loop {

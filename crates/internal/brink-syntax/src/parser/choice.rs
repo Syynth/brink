@@ -23,7 +23,7 @@ use super::Parser;
 ///   ~ NEWLINE
 /// }
 /// ```
-pub(crate) fn choice(p: &mut Parser<'_>) {
+pub(crate) fn choice(p: &mut Parser<'_, '_>) {
     p.start_node(CHOICE);
 
     // choice_bullets: (WS* ~ ("*" | "+"))+
@@ -84,7 +84,7 @@ pub(crate) fn choice(p: &mut Parser<'_>) {
 }
 
 /// Parse choice bullets: one or more `*` or `+` (with optional whitespace).
-fn choice_bullets(p: &mut Parser<'_>) {
+fn choice_bullets(p: &mut Parser<'_, '_>) {
     p.start_node(CHOICE_BULLETS);
     while matches!(p.current(), STAR | PLUS) {
         p.bump();
@@ -95,7 +95,7 @@ fn choice_bullets(p: &mut Parser<'_>) {
 
 /// Parse a label: `( ident )`.
 /// Used by both choices and gathers.
-pub(crate) fn label(p: &mut Parser<'_>) {
+pub(crate) fn label(p: &mut Parser<'_, '_>) {
     p.start_node(LABEL);
     p.bump(); // L_PAREN
     p.skip_ws();
@@ -108,7 +108,7 @@ pub(crate) fn label(p: &mut Parser<'_>) {
 }
 
 /// Parse choice condition: `{ expr }`.
-fn choice_condition(p: &mut Parser<'_>) {
+fn choice_condition(p: &mut Parser<'_, '_>) {
     p.start_node(CHOICE_CONDITION);
     p.bump(); // L_BRACE
     p.skip_ws();
@@ -119,14 +119,14 @@ fn choice_condition(p: &mut Parser<'_>) {
 }
 
 /// Parse content before the bracket.
-fn choice_start_content(p: &mut Parser<'_>) {
+fn choice_start_content(p: &mut Parser<'_, '_>) {
     p.start_node(CHOICE_START_CONTENT);
     choice_content_elements(p);
     p.finish_node();
 }
 
 /// Parse bracketed content: `[ content ]`.
-fn choice_bracket_content(p: &mut Parser<'_>) {
+fn choice_bracket_content(p: &mut Parser<'_, '_>) {
     p.start_node(CHOICE_BRACKET_CONTENT);
     p.bump(); // L_BRACKET
     while p.current() != R_BRACKET && !matches!(p.current(), NEWLINE | EOF) {
@@ -146,14 +146,14 @@ fn choice_bracket_content(p: &mut Parser<'_>) {
 }
 
 /// Parse content after the bracket.
-fn choice_inner_content(p: &mut Parser<'_>) {
+fn choice_inner_content(p: &mut Parser<'_, '_>) {
     p.start_node(CHOICE_INNER_CONTENT);
     choice_content_elements(p);
     p.finish_node();
 }
 
 /// Parse choice content elements until a stop character.
-fn choice_content_elements(p: &mut Parser<'_>) {
+fn choice_content_elements(p: &mut Parser<'_, '_>) {
     while at_choice_content(p) && p.current() != L_BRACKET {
         let before = p.pos();
         choice_content_element(p);
@@ -167,7 +167,7 @@ fn choice_content_elements(p: &mut Parser<'_>) {
 }
 
 /// Parse a single choice content element.
-fn choice_content_element(p: &mut Parser<'_>) {
+fn choice_content_element(p: &mut Parser<'_, '_>) {
     match p.current() {
         L_BRACE => {
             super::inline::inline_logic(p);
@@ -190,7 +190,7 @@ fn choice_content_element(p: &mut Parser<'_>) {
 }
 
 /// Parse a run of choice text characters.
-fn choice_text(p: &mut Parser<'_>) {
+fn choice_text(p: &mut Parser<'_, '_>) {
     p.start_node(TEXT);
     loop {
         if p.at_eof() {
@@ -208,7 +208,7 @@ fn choice_text(p: &mut Parser<'_>) {
 }
 
 /// Returns `true` if we're at a choice content character.
-fn at_choice_content(p: &Parser<'_>) -> bool {
+fn at_choice_content(p: &Parser<'_, '_>) -> bool {
     !matches!(
         p.current(),
         NEWLINE | EOF | HASH | DIVERT | TUNNEL_ONWARDS | THREAD | PIPE | MINUS | R_BRACE

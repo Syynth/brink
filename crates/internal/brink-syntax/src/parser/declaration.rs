@@ -12,7 +12,7 @@ use super::Parser;
 /// include_statement = { "INCLUDE" ~ INLINE_WS+ ~ file_path }
 /// file_path = { (!NEWLINE ~ ANY)+ }
 /// ```
-pub(crate) fn include_statement(p: &mut Parser<'_>) {
+pub(crate) fn include_statement(p: &mut Parser<'_, '_>) {
     p.start_node(INCLUDE_STMT);
     p.bump(); // KW_INCLUDE
     p.skip_ws();
@@ -38,7 +38,7 @@ pub(crate) fn include_statement(p: &mut Parser<'_>) {
 /// ```text
 /// external_declaration = { "EXTERNAL" ~ INLINE_WS+ ~ identifier ~ "(" ~ function_param_list? ~ ")" ~ NEWLINE }
 /// ```
-pub(crate) fn external_declaration(p: &mut Parser<'_>) {
+pub(crate) fn external_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(EXTERNAL_DECL);
     p.bump(); // KW_EXTERNAL
     p.skip_ws();
@@ -63,7 +63,7 @@ pub(crate) fn external_declaration(p: &mut Parser<'_>) {
 }
 
 /// Parse `function_param_list = { identifier ~ ("," ~ identifier)* }`.
-fn function_param_list(p: &mut Parser<'_>) {
+fn function_param_list(p: &mut Parser<'_, '_>) {
     p.start_node(FUNCTION_PARAM_LIST);
     p.start_node(IDENTIFIER);
     p.bump(); // first identifier
@@ -86,7 +86,7 @@ fn function_param_list(p: &mut Parser<'_>) {
 /// ```text
 /// var_declaration = { "VAR" ~ INLINE_WS+ ~ identifier ~ INLINE_WS* ~ "=" ~ INLINE_WS* ~ expression ~ NEWLINE }
 /// ```
-pub(crate) fn var_declaration(p: &mut Parser<'_>) {
+pub(crate) fn var_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(VAR_DECL);
     p.bump(); // KW_VAR
     p.skip_ws();
@@ -104,7 +104,7 @@ pub(crate) fn var_declaration(p: &mut Parser<'_>) {
 }
 
 /// Parse `CONST ident = expr\n`.
-pub(crate) fn const_declaration(p: &mut Parser<'_>) {
+pub(crate) fn const_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(CONST_DECL);
     p.bump(); // KW_CONST
     p.skip_ws();
@@ -130,7 +130,7 @@ pub(crate) fn const_declaration(p: &mut Parser<'_>) {
 /// list_member_on = { "(" ~ identifier ~ ("=" ~ integer)? ~ ")" }
 /// list_member_off = { identifier ~ ("=" ~ integer)? }
 /// ```
-pub(crate) fn list_declaration(p: &mut Parser<'_>) {
+pub(crate) fn list_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(LIST_DECL);
     p.bump(); // KW_LIST
     p.skip_ws();
@@ -148,7 +148,7 @@ pub(crate) fn list_declaration(p: &mut Parser<'_>) {
     p.finish_node();
 }
 
-fn list_definition(p: &mut Parser<'_>) {
+fn list_definition(p: &mut Parser<'_, '_>) {
     p.start_node(LIST_DEF);
     list_member(p);
     loop {
@@ -162,7 +162,7 @@ fn list_definition(p: &mut Parser<'_>) {
     p.finish_node();
 }
 
-fn list_member(p: &mut Parser<'_>) {
+fn list_member(p: &mut Parser<'_, '_>) {
     p.start_node(LIST_MEMBER);
     if p.current() == L_PAREN {
         // list_member_on: (ident) or (ident = int)
@@ -195,7 +195,7 @@ fn list_member(p: &mut Parser<'_>) {
 }
 
 /// Returns `true` if the current token starts a declaration.
-pub(crate) fn at_declaration(p: &Parser<'_>) -> bool {
+pub(crate) fn at_declaration(p: &Parser<'_, '_>) -> bool {
     matches!(
         p.current(),
         KW_INCLUDE | KW_EXTERNAL | KW_VAR | KW_CONST | KW_LIST
@@ -205,12 +205,12 @@ pub(crate) fn at_declaration(p: &Parser<'_>) -> bool {
 /// Returns `true` if the current token starts a declaration that can appear
 /// inside a knot/stitch body. C# treats `VAR`, `CONST`, and `LIST` as
 /// valid at all statement levels — they don't terminate the body.
-pub(crate) fn at_inline_declaration(p: &Parser<'_>) -> bool {
+pub(crate) fn at_inline_declaration(p: &Parser<'_, '_>) -> bool {
     matches!(p.current(), KW_VAR | KW_CONST | KW_LIST)
 }
 
 /// Dispatch to the correct declaration parser.
-pub(crate) fn declaration(p: &mut Parser<'_>) {
+pub(crate) fn declaration(p: &mut Parser<'_, '_>) {
     match p.current() {
         KW_INCLUDE => include_statement(p),
         KW_EXTERNAL => external_declaration(p),

@@ -59,6 +59,22 @@ pub fn parse(source: &str) -> Parse {
     }
 }
 
+/// Parse with a shared [`rowan::NodeCache`] for green-node interning.
+///
+/// Re-parsing the same source through the same cache produces structurally
+/// identical subtrees that share the same `Arc` allocation, enabling O(1)
+/// pointer-equality checks via `GreenNode::eq`.
+pub fn parse_with_cache(source: &str, cache: &mut rowan::NodeCache) -> Parse {
+    let raw_tokens = lexer::lex(source);
+    let mut p = Parser::with_cache(&raw_tokens, cache);
+    story::source_file(&mut p);
+    let green = p.builder.finish();
+    Parse {
+        green,
+        errors: p.errors,
+    }
+}
+
 // ── Parser internals ────────────────────────────────────────────────
 
 /// Maximum nesting depth for recursive grammar rules (inline logic, expressions,
@@ -67,7 +83,7 @@ pub fn parse(source: &str) -> Parse {
 const MAX_DEPTH: u32 = 256;
 
 /// The parser. Holds a token stream and a `GreenNodeBuilder`.
-pub(crate) struct Parser<'t> {
+pub(crate) struct Parser<'t, 'c> {
     tokens: &'t [(SyntaxKind, &'t str)],
     pos: usize,
     depth: u32,
@@ -76,11 +92,11 @@ pub(crate) struct Parser<'t> {
     /// For `L_BRACE` positions, stores `PIPE`, `COLON`, or `EOF` indicating
     /// which delimiter appears first at depth-0 inside that brace pair.
     brace_scan: Vec<SyntaxKind>,
-    builder: rowan::GreenNodeBuilder<'static>,
+    builder: rowan::GreenNodeBuilder<'c>,
     errors: Vec<ParseError>,
 }
 
-impl<'t> Parser<'t> {
+impl<'t> Parser<'t, 'static> {
     fn new(tokens: &'t [(SyntaxKind, &'t str)]) -> Self {
         let brace_scan = Self::build_brace_scan(tokens);
         Self {
@@ -89,6 +105,20 @@ impl<'t> Parser<'t> {
             depth: 0,
             brace_scan,
             builder: rowan::GreenNodeBuilder::new(),
+            errors: Vec::new(),
+        }
+    }
+}
+
+impl<'t, 'c> Parser<'t, 'c> {
+    fn with_cache(tokens: &'t [(SyntaxKind, &'t str)], cache: &'c mut rowan::NodeCache) -> Self {
+        let brace_scan = Self::build_brace_scan(tokens);
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+            brace_scan,
+            builder: rowan::GreenNodeBuilder::with_cache(cache),
             errors: Vec::new(),
         }
     }

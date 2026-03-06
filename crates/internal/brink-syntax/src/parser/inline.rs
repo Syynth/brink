@@ -18,7 +18,7 @@ use super::Parser;
 /// ```text
 /// inline_logic = { "{" ~ inner_logic ~ "}" }
 /// ```
-pub(crate) fn inline_logic(p: &mut Parser<'_>) {
+pub(crate) fn inline_logic(p: &mut Parser<'_, '_>) {
     p.skip_ws(); // flush trivia to the parent before starting the node
     p.start_node(INLINE_LOGIC);
     let brace_pos = p.pos(); // raw position of the `{` for scan lookup
@@ -72,7 +72,7 @@ pub(crate) fn inline_logic(p: &mut Parser<'_>) {
 /// ```text
 /// multiline_block = { "{" ~ NEWLINE ~ inner_logic_multiline ~ "}" }
 /// ```
-pub(crate) fn multiline_block(p: &mut Parser<'_>) {
+pub(crate) fn multiline_block(p: &mut Parser<'_, '_>) {
     p.skip_ws(); // flush trivia to the parent before starting the node
     p.start_node(MULTILINE_BLOCK);
     p.bump(); // L_BRACE
@@ -120,7 +120,7 @@ pub(crate) fn multiline_block(p: &mut Parser<'_>) {
 ///   | inner_expression
 /// }
 /// ```
-fn inner_logic(p: &mut Parser<'_>, brace_pos: usize) {
+fn inner_logic(p: &mut Parser<'_, '_>, brace_pos: usize) {
     // 1. sequence_with_annotation: starts with annotation symbol or keyword
     if at_sequence_annotation(p) {
         sequence_with_annotation(p);
@@ -170,7 +170,7 @@ fn inner_logic(p: &mut Parser<'_>, brace_pos: usize) {
 }
 
 /// Parse the body after `expr :` in a conditional.
-fn conditional_body(p: &mut Parser<'_>) {
+fn conditional_body(p: &mut Parser<'_, '_>) {
     match p.current() {
         NEWLINE => {
             // Could be multiline branches or branchless body
@@ -193,7 +193,7 @@ fn conditional_body(p: &mut Parser<'_>) {
 
 // ── Sequence with annotation ────────────────────────────────────────
 
-fn at_sequence_annotation(p: &Parser<'_>) -> bool {
+fn at_sequence_annotation(p: &Parser<'_, '_>) -> bool {
     matches!(
         p.current(),
         AMP | BANG | TILDE | DOLLAR | KW_STOPPING | KW_CYCLE | KW_SHUFFLE | KW_ONCE
@@ -205,7 +205,7 @@ fn at_sequence_annotation(p: &Parser<'_>) -> bool {
 /// ```text
 /// sequence_with_annotation = { sequence_annotation ~ (multiline_branches_seq | inline_branches_seq) }
 /// ```
-fn sequence_with_annotation(p: &mut Parser<'_>) {
+fn sequence_with_annotation(p: &mut Parser<'_, '_>) {
     p.start_node(SEQUENCE_WITH_ANNOTATION);
 
     // Parse annotation
@@ -252,7 +252,7 @@ fn sequence_with_annotation(p: &mut Parser<'_>) {
 }
 
 /// Parse inline sequence branches: `content | content | ...`
-fn inline_branches_seq(p: &mut Parser<'_>) {
+fn inline_branches_seq(p: &mut Parser<'_, '_>) {
     p.start_node(INLINE_BRANCHES_SEQ);
     branch_content(p);
     while p.current() == PIPE {
@@ -264,7 +264,7 @@ fn inline_branches_seq(p: &mut Parser<'_>) {
 }
 
 /// Parse multiline sequence branches.
-fn multiline_branches_seq(p: &mut Parser<'_>) {
+fn multiline_branches_seq(p: &mut Parser<'_, '_>) {
     p.start_node(MULTILINE_BRANCHES_SEQ);
     // Consume leading newlines and whitespace
     while matches!(p.current(), NEWLINE) {
@@ -280,7 +280,7 @@ fn multiline_branches_seq(p: &mut Parser<'_>) {
 }
 
 /// Parse a single multiline sequence branch: `- content`.
-fn multiline_branch_seq(p: &mut Parser<'_>) {
+fn multiline_branch_seq(p: &mut Parser<'_, '_>) {
     p.start_node(MULTILINE_BRANCH_SEQ);
     // Skip newlines and whitespace before the branch marker `-`.
     while matches!(p.nth_raw(0), NEWLINE | WHITESPACE) {
@@ -296,7 +296,7 @@ fn multiline_branch_seq(p: &mut Parser<'_>) {
 
 /// Parse `expr : ...` as a standalone `conditional_with_expr`
 /// (used in multiline block context).
-fn conditional_with_expr_standalone(p: &mut Parser<'_>) {
+fn conditional_with_expr_standalone(p: &mut Parser<'_, '_>) {
     p.start_node(CONDITIONAL_WITH_EXPR);
     super::expression::expression(p);
     p.skip_ws();
@@ -311,7 +311,7 @@ fn conditional_with_expr_standalone(p: &mut Parser<'_>) {
 }
 
 /// Parse inline conditional branches: `true_content | false_content?`
-fn inline_branches_cond(p: &mut Parser<'_>) {
+fn inline_branches_cond(p: &mut Parser<'_, '_>) {
     p.start_node(INLINE_BRANCHES_COND);
     branch_content(p);
     if p.current() == PIPE {
@@ -323,7 +323,7 @@ fn inline_branches_cond(p: &mut Parser<'_>) {
 }
 
 /// Parse multiline conditional branches.
-fn multiline_branches_cond(p: &mut Parser<'_>) {
+fn multiline_branches_cond(p: &mut Parser<'_, '_>) {
     p.start_node(MULTILINE_BRANCHES_COND);
     while matches!(p.current(), NEWLINE) {
         p.bump();
@@ -338,7 +338,7 @@ fn multiline_branches_cond(p: &mut Parser<'_>) {
 }
 
 /// Parse a multiline conditional: just branches after a NEWLINE.
-fn multiline_conditional(p: &mut Parser<'_>) {
+fn multiline_conditional(p: &mut Parser<'_, '_>) {
     p.start_node(MULTILINE_CONDITIONAL);
     while matches!(p.current(), NEWLINE) {
         p.bump();
@@ -361,7 +361,7 @@ fn multiline_conditional(p: &mut Parser<'_>) {
 ///   ~ multiline_branch_body
 /// }
 /// ```
-fn multiline_branch_cond(p: &mut Parser<'_>) {
+fn multiline_branch_cond(p: &mut Parser<'_, '_>) {
     p.start_node(MULTILINE_BRANCH_COND);
     // Skip newlines and whitespace before the branch marker `-`.
     // The body parser breaks on the NEWLINE before the next branch,
@@ -399,7 +399,7 @@ fn multiline_branch_cond(p: &mut Parser<'_>) {
 
 /// Heuristic: does the current position start a condition (expression followed by `:`)?
 /// We scan ahead looking for `:` before NEWLINE or `}`.
-fn looks_like_condition(p: &Parser<'_>) -> bool {
+fn looks_like_condition(p: &Parser<'_, '_>) -> bool {
     let mut i = 0;
     let mut depth: u32 = 0;
     loop {
@@ -417,7 +417,7 @@ fn looks_like_condition(p: &Parser<'_>) -> bool {
 }
 
 /// Parse branchless conditional body (content after `:` with no `-` branch markers).
-fn branchless_cond_body(p: &mut Parser<'_>) {
+fn branchless_cond_body(p: &mut Parser<'_, '_>) {
     p.start_node(BRANCHLESS_COND_BODY);
 
     // Consume the leading NEWLINE
@@ -479,7 +479,7 @@ fn branchless_cond_body(p: &mut Parser<'_>) {
 }
 
 /// Parse an else branch at the end of a branchless conditional body.
-fn else_branch(p: &mut Parser<'_>) {
+fn else_branch(p: &mut Parser<'_, '_>) {
     p.start_node(ELSE_BRANCH);
     multiline_branch_cond(p);
     p.finish_node();
@@ -489,7 +489,7 @@ fn else_branch(p: &mut Parser<'_>) {
 
 /// Returns `true` if we're at a multiline branch start.
 /// Peeks past optional NEWLINE and whitespace to check for `-` not followed by `>`.
-fn at_multiline_branch_start(p: &Parser<'_>) -> bool {
+fn at_multiline_branch_start(p: &Parser<'_, '_>) -> bool {
     let mut i = 0;
     loop {
         match p.nth(i) {
@@ -511,7 +511,7 @@ fn at_multiline_branch_start(p: &Parser<'_>) -> bool {
 /// NOTE: Gathers (`-`) inside inner blocks are forbidden by the ink spec
 /// but we don't yet emit a diagnostic for them — the MINUS arm just breaks
 /// out of the body loop (same as a branch separator).
-fn multiline_branch_body(p: &mut Parser<'_>) {
+fn multiline_branch_body(p: &mut Parser<'_, '_>) {
     p.start_node(MULTILINE_BRANCH_BODY);
     loop {
         match p.current() {
@@ -568,7 +568,7 @@ fn multiline_branch_body(p: &mut Parser<'_>) {
 }
 
 /// Check if the line after the current NEWLINE starts a branch (WS* - !>).
-fn next_line_is_branch(p: &Parser<'_>) -> bool {
+fn next_line_is_branch(p: &Parser<'_, '_>) -> bool {
     let mut offset = 1; // skip past the NEWLINE
     loop {
         match p.nth(offset) {
@@ -580,7 +580,7 @@ fn next_line_is_branch(p: &Parser<'_>) -> bool {
 }
 
 /// Parse multiline branch text.
-fn multiline_branch_text(p: &mut Parser<'_>) {
+fn multiline_branch_text(p: &mut Parser<'_, '_>) {
     p.start_node(TEXT);
     loop {
         if p.at_eof() {
@@ -598,7 +598,7 @@ fn multiline_branch_text(p: &mut Parser<'_>) {
 // ── Shared inline branch content ────────────────────────────────────
 
 /// Parse branch content (inline): text, `inline_logic`, glue, escapes until `|` or `}`.
-fn branch_content(p: &mut Parser<'_>) {
+fn branch_content(p: &mut Parser<'_, '_>) {
     p.start_node(BRANCH_CONTENT);
     loop {
         match p.current() {
@@ -640,7 +640,7 @@ fn branch_content(p: &mut Parser<'_>) {
 }
 
 /// Parse a run of branch text characters.
-fn branch_text(p: &mut Parser<'_>) {
+fn branch_text(p: &mut Parser<'_, '_>) {
     p.start_node(TEXT);
     loop {
         if p.at_eof() {
@@ -657,7 +657,7 @@ fn branch_text(p: &mut Parser<'_>) {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn skip_blank_lines(p: &mut Parser<'_>) {
+fn skip_blank_lines(p: &mut Parser<'_, '_>) {
     while p.current() == NEWLINE {
         p.bump();
         p.skip_ws();

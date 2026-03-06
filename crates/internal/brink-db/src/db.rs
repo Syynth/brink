@@ -1,0 +1,382 @@
+use std::collections::HashMap;
+use std::io;
+
+use brink_analyzer::AnalysisResult;
+use brink_ir::{Diagnostic, FileId, HirFile, SymbolManifest, lower, lower_knot, lower_top_level};
+use brink_syntax::ast::AstNode as _;
+use brink_syntax::{Parse, parse_with_cache};
+use rowan::{GreenNode, NodeCache};
+use tracing::{debug, info};
+
+use crate::file_state::{FileState, TopLevelEntry};
+use crate::include_graph::IncludeGraph;
+use crate::knot_cache::KnotEntry;
+
+/// Stateful incremental project database.
+///
+/// Caches parsed trees and lowered HIR per file, enabling efficient re-analysis
+/// when individual files change. Both the compiler (one-shot) and LSP
+/// (long-lived) use this as their project model.
+pub struct ProjectDb {
+    files: HashMap<FileId, FileState>,
+    path_to_id: HashMap<String, FileId>,
+    id_to_path: HashMap<FileId, String>,
+    next_id: u32,
+    include_graph: IncludeGraph,
+    analysis: Option<AnalysisResult>,
+    node_cache: NodeCache,
+}
+
+impl ProjectDb {
+    /// Create an empty project database.
+    pub fn new() -> Self {
+        Self {
+            files: HashMap::new(),
+            path_to_id: HashMap::new(),
+            id_to_path: HashMap::new(),
+            next_id: 0,
+            include_graph: IncludeGraph::new(),
+            analysis: None,
+            node_cache: NodeCache::default(),
+        }
+    }
+
+    /// Add or replace a file. Performs full parse + lower + cache.
+    pub fn set_file(&mut self, path: &str, source: String) -> FileId {
+        let file_id = self.get_or_create_id(path);
+
+        let parse = parse_with_cache(&source, &mut self.node_cache);
+        let tree = parse.tree();
+
+        // Per-knot lowering
+        let knot_entries: Vec<KnotEntry> = tree
+            .knots()
+            .map(|knot_ast| {
+                let green = knot_ast.syntax().green().into();
+                let (knot, manifest, diagnostics) = lower_knot(&knot_ast);
+                KnotEntry {
+                    green,
+                    knot,
+                    manifest,
+                    diagnostics,
+                }
+            })
+            .collect();
+
+        // Top-level lowering
+        let top_level = Self::lower_top_level_entry(&tree);
+
+        // Assemble full HirFile and SymbolManifest
+        let (hir, manifest, diagnostics) = Self::assemble(&knot_entries, &top_level, &tree);
+
+        let state = FileState {
+            source,
+            parse,
+            knot_entries,
+            top_level,
+            hir,
+            manifest,
+            diagnostics,
+        };
+
+        // Update include graph
+        let include_ids: Vec<FileId> = state
+            .hir
+            .includes
+            .iter()
+            .filter_map(|inc| {
+                let resolved = resolve_include_path(path, &inc.file_path);
+                self.path_to_id.get(&resolved).copied()
+            })
+            .collect();
+        self.include_graph.update(file_id, include_ids);
+
+        self.files.insert(file_id, state);
+        self.analysis = None;
+
+        debug!(path, id = file_id.0, "set_file complete");
+        file_id
+    }
+
+    /// Incrementally update a file. Re-parses, diffs knots by green-node
+    /// identity, and only re-lowers changed knots.
+    pub fn update_file(&mut self, path: &str, source: String) -> FileId {
+        let file_id = self.get_or_create_id(path);
+
+        // If the file doesn't exist yet, fall through to set_file
+        if !self.files.contains_key(&file_id) {
+            return self.set_file(path, source);
+        }
+
+        let parse = parse_with_cache(&source, &mut self.node_cache);
+        let tree = parse.tree();
+
+        // Top-level is always re-lowered (cheap relative to knots)
+        let top_level = Self::lower_top_level_entry(&tree);
+
+        // Diff knots by green-node identity
+        let new_knot_asts: Vec<_> = tree.knots().collect();
+        let old_state = self.files.get(&file_id);
+
+        let mut knot_entries = Vec::with_capacity(new_knot_asts.len());
+        let mut reused = 0u32;
+
+        for (i, knot_ast) in new_knot_asts.iter().enumerate() {
+            let new_green: GreenNode = knot_ast.syntax().green().into();
+
+            let reuse_entry = old_state
+                .and_then(|s| s.knot_entries.get(i))
+                .filter(|old| old.green == new_green);
+
+            if let Some(old_entry) = reuse_entry {
+                knot_entries.push(KnotEntry {
+                    green: new_green,
+                    knot: old_entry.knot.clone(),
+                    manifest: old_entry.manifest.clone(),
+                    diagnostics: old_entry.diagnostics.clone(),
+                });
+                reused += 1;
+            } else {
+                let (knot, manifest, diagnostics) = lower_knot(knot_ast);
+                knot_entries.push(KnotEntry {
+                    green: new_green,
+                    knot,
+                    manifest,
+                    diagnostics,
+                });
+            }
+        }
+
+        debug!(
+            path,
+            total = new_knot_asts.len(),
+            reused,
+            "knot diff complete"
+        );
+
+        let (hir, manifest, diagnostics) = Self::assemble(&knot_entries, &top_level, &tree);
+
+        let state = FileState {
+            source,
+            parse,
+            knot_entries,
+            top_level,
+            hir,
+            manifest,
+            diagnostics,
+        };
+
+        // Update include graph
+        let include_ids: Vec<FileId> = state
+            .hir
+            .includes
+            .iter()
+            .filter_map(|inc| {
+                let resolved = resolve_include_path(path, &inc.file_path);
+                self.path_to_id.get(&resolved).copied()
+            })
+            .collect();
+        self.include_graph.update(file_id, include_ids);
+
+        self.files.insert(file_id, state);
+        self.analysis = None;
+        file_id
+    }
+
+    /// Remove a file from the database.
+    pub fn remove_file(&mut self, path: &str) {
+        if let Some(id) = self.path_to_id.remove(path) {
+            self.id_to_path.remove(&id);
+            self.files.remove(&id);
+            self.include_graph.remove(id);
+            self.analysis = None;
+        }
+    }
+
+    /// Look up a file's ID by path.
+    pub fn file_id(&self, path: &str) -> Option<FileId> {
+        self.path_to_id.get(path).copied()
+    }
+
+    /// Look up a file's path by ID.
+    pub fn file_path(&self, id: FileId) -> Option<&str> {
+        self.id_to_path.get(&id).map(String::as_str)
+    }
+
+    /// Iterate over all registered file IDs.
+    pub fn file_ids(&self) -> impl Iterator<Item = FileId> + '_ {
+        self.files.keys().copied()
+    }
+
+    /// Get the cached parse tree for a file.
+    pub fn parse(&self, id: FileId) -> Option<&Parse> {
+        self.files.get(&id).map(|s| &s.parse)
+    }
+
+    /// Get the cached HIR for a file.
+    pub fn hir(&self, id: FileId) -> Option<&HirFile> {
+        self.files.get(&id).map(|s| &s.hir)
+    }
+
+    /// Get the cached symbol manifest for a file.
+    pub fn manifest(&self, id: FileId) -> Option<&SymbolManifest> {
+        self.files.get(&id).map(|s| &s.manifest)
+    }
+
+    /// Get per-file diagnostics (parse + lowering).
+    pub fn file_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
+        self.files.get(&id).map(|s| s.diagnostics.as_slice())
+    }
+
+    /// Run cross-file analysis (or return cached result).
+    #[expect(
+        clippy::expect_used,
+        reason = "analysis is always Some after the if-block above"
+    )]
+    pub fn analyze(&mut self) -> &AnalysisResult {
+        if self.analysis.is_none() {
+            let files: Vec<_> = self
+                .files
+                .iter()
+                .map(|(&id, state)| (id, state.hir.clone(), state.manifest.clone()))
+                .collect();
+
+            info!(files = files.len(), "running cross-file analysis");
+            self.analysis = Some(brink_analyzer::analyze(files));
+        }
+        self.analysis.as_ref().expect("just set above")
+    }
+
+    /// BFS discovery of all files reachable via INCLUDEs from the entry point.
+    pub fn discover<F>(
+        &mut self,
+        entry: &str,
+        read_file: &mut F,
+    ) -> Result<(), crate::DiscoverError>
+    where
+        F: FnMut(&str) -> Result<String, io::Error>,
+    {
+        let mut queue: Vec<String> = vec![entry.to_string()];
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        while let Some(path) = queue.pop() {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+
+            let source = read_file(&path)?;
+            let file_id = self.set_file(&path, source);
+
+            // Discover INCLUDEs
+            if let Some(state) = self.files.get(&file_id) {
+                for include in &state.hir.includes {
+                    let resolved = resolve_include_path(&path, &include.file_path);
+                    if !seen.contains(&resolved) {
+                        debug!(from = path, include = resolved, "discovered INCLUDE");
+                        queue.push(resolved);
+                    }
+                }
+            }
+        }
+
+        info!(files = seen.len(), "discovery complete");
+        Ok(())
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────────
+
+    fn get_or_create_id(&mut self, path: &str) -> FileId {
+        if let Some(&id) = self.path_to_id.get(path) {
+            return id;
+        }
+        let id = FileId(self.next_id);
+        self.next_id += 1;
+        self.path_to_id.insert(path.to_string(), id);
+        self.id_to_path.insert(id, path.to_string());
+        id
+    }
+
+    fn lower_top_level_entry(tree: &brink_syntax::ast::SourceFile) -> TopLevelEntry {
+        let green_children = Self::collect_top_level_green(tree);
+        let (root_content, manifest, diagnostics) = lower_top_level(tree);
+        TopLevelEntry {
+            green_children,
+            root_content,
+            manifest,
+            diagnostics,
+        }
+    }
+
+    /// Collect green nodes of non-knot direct children for diffing.
+    fn collect_top_level_green(tree: &brink_syntax::ast::SourceFile) -> Vec<GreenNode> {
+        use brink_syntax::SyntaxKind;
+
+        tree.syntax()
+            .children()
+            .filter(|child| child.kind() != SyntaxKind::KNOT_DEF)
+            .map(|child| child.green().into())
+            .collect()
+    }
+
+    /// Assemble a complete `HirFile` and `SymbolManifest` from cached pieces.
+    fn assemble(
+        knot_entries: &[KnotEntry],
+        top_level: &TopLevelEntry,
+        tree: &brink_syntax::ast::SourceFile,
+    ) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
+        // We need declarations from the full lower to build HirFile.
+        // lower_top_level only returns (Block, SymbolManifest, diagnostics).
+        // For the declarations (variables, constants, lists, externals, includes),
+        // we need to call `lower()` or extract them from the AST.
+        //
+        // Approach: use `lower()` to get the full HirFile, then replace knots
+        // with our cached versions. This means top-level lowering happens twice
+        // on change, but it's simple and correct.
+        let (mut full_hir, _full_manifest, _full_diag) = lower(tree);
+
+        // Replace knots with our cached (possibly reused) versions
+        full_hir.knots = knot_entries.iter().filter_map(|e| e.knot.clone()).collect();
+        full_hir.root_content = top_level.root_content.clone();
+
+        // Merge manifests: top-level + all knots
+        let mut manifest = top_level.manifest.clone();
+        for entry in knot_entries {
+            merge_manifest_into(&mut manifest, &entry.manifest);
+        }
+
+        // Merge diagnostics
+        let mut diagnostics = top_level.diagnostics.clone();
+        for entry in knot_entries {
+            diagnostics.extend(entry.diagnostics.iter().cloned());
+        }
+
+        (full_hir, manifest, diagnostics)
+    }
+}
+
+impl Default for ProjectDb {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Merge `src` manifest fields into `dst`.
+fn merge_manifest_into(dst: &mut SymbolManifest, src: &SymbolManifest) {
+    dst.knots.extend(src.knots.iter().cloned());
+    dst.stitches.extend(src.stitches.iter().cloned());
+    dst.variables.extend(src.variables.iter().cloned());
+    dst.lists.extend(src.lists.iter().cloned());
+    dst.externals.extend(src.externals.iter().cloned());
+    dst.labels.extend(src.labels.iter().cloned());
+    dst.list_items.extend(src.list_items.iter().cloned());
+    dst.unresolved.extend(src.unresolved.iter().cloned());
+}
+
+/// Resolve an INCLUDE path relative to the including file's directory.
+fn resolve_include_path(from_file: &str, include_path: &str) -> String {
+    if let Some(dir) = std::path::Path::new(from_file).parent() {
+        dir.join(include_path).to_string_lossy().into_owned()
+    } else {
+        include_path.to_string()
+    }
+}

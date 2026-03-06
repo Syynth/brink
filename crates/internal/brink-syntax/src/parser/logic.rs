@@ -14,7 +14,7 @@ use super::Parser;
 /// ```text
 /// logic_line = { "~" ~ (return_statement | temp_declaration | assignment | expression) ~ NEWLINE? }
 /// ```
-pub(crate) fn logic_line(p: &mut Parser<'_>) {
+pub(crate) fn logic_line(p: &mut Parser<'_, '_>) {
     p.start_node(LOGIC_LINE);
     p.bump(); // TILDE
     p.skip_ws();
@@ -38,13 +38,13 @@ pub(crate) fn logic_line(p: &mut Parser<'_>) {
 
 /// Check if the identifier is followed by an assignment operator (=, +=, -=).
 /// We must not confuse `=` in `== knot ==` or bare `=` in stitch headers.
-fn is_assignment_ahead(p: &Parser<'_>) -> bool {
+fn is_assignment_ahead(p: &Parser<'_, '_>) -> bool {
     let next = p.nth(1);
     matches!(next, EQ | PLUS_EQ | MINUS_EQ) && !(next == EQ && p.nth(2) == EQ)
 }
 
 /// Parse `return expr?`.
-fn return_statement(p: &mut Parser<'_>) {
+fn return_statement(p: &mut Parser<'_, '_>) {
     p.start_node(RETURN_STMT);
     p.bump(); // KW_RETURN
     p.skip_ws();
@@ -56,7 +56,7 @@ fn return_statement(p: &mut Parser<'_>) {
 }
 
 /// Parse `temp ident = expr`.
-fn temp_declaration(p: &mut Parser<'_>) {
+fn temp_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(TEMP_DECL);
     p.bump(); // KW_TEMP
     p.skip_ws();
@@ -71,7 +71,7 @@ fn temp_declaration(p: &mut Parser<'_>) {
 }
 
 /// Parse `ident op= expr`.
-fn assignment(p: &mut Parser<'_>) {
+fn assignment(p: &mut Parser<'_, '_>) {
     p.start_node(ASSIGNMENT);
     super::divert::path(p);
     p.skip_ws();
@@ -83,7 +83,7 @@ fn assignment(p: &mut Parser<'_>) {
 
 /// Consume an assignment operator: `=`, `+=`, or `-=`.
 /// Bare `=` must not be `==`.
-fn assignment_op(p: &mut Parser<'_>) {
+fn assignment_op(p: &mut Parser<'_, '_>) {
     match p.current() {
         PLUS_EQ | MINUS_EQ | EQ => {
             p.bump();

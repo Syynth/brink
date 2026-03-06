@@ -7,7 +7,7 @@ use crate::SyntaxKind::{
 use super::Parser;
 
 /// Returns `true` if the current token starts a divert construct.
-pub(crate) fn at_divert(p: &Parser<'_>) -> bool {
+pub(crate) fn at_divert(p: &Parser<'_, '_>) -> bool {
     matches!(p.current(), DIVERT | TUNNEL_ONWARDS | THREAD)
 }
 
@@ -16,7 +16,7 @@ pub(crate) fn at_divert(p: &Parser<'_>) -> bool {
 /// ```text
 /// divert = { thread_start | tunnel_onwards | divert_chain }
 /// ```
-pub(crate) fn divert(p: &mut Parser<'_>) {
+pub(crate) fn divert(p: &mut Parser<'_, '_>) {
     p.start_node(DIVERT_NODE);
     match p.current() {
         THREAD => thread_start(p),
@@ -34,7 +34,7 @@ pub(crate) fn divert(p: &mut Parser<'_>) {
 /// ```text
 /// thread_start = { "<-" ~ path ~ ("(" ~ arg_list? ~ ")")? }
 /// ```
-fn thread_start(p: &mut Parser<'_>) {
+fn thread_start(p: &mut Parser<'_, '_>) {
     p.start_node(THREAD_START);
     p.bump(); // THREAD token `<-`
     p.skip_ws();
@@ -57,7 +57,7 @@ fn thread_start(p: &mut Parser<'_>) {
 /// ```text
 /// tunnel_onwards = { "->->" ~ divert_chain? }
 /// ```
-fn tunnel_onwards(p: &mut Parser<'_>) {
+fn tunnel_onwards(p: &mut Parser<'_, '_>) {
     p.start_node(TUNNEL_ONWARDS_NODE);
     p.bump(); // TUNNEL_ONWARDS token `->->`
     p.skip_ws();
@@ -76,7 +76,7 @@ fn tunnel_onwards(p: &mut Parser<'_>) {
 /// divert_chain = { "->" ~ divert_target_with_args? ~ ("->" ~ divert_target_with_args?)* }
 /// tunnel_call  = trailing `->` after targets -> `TUNNEL_CALL_NODE`
 /// ```
-fn divert_chain(p: &mut Parser<'_>) {
+fn divert_chain(p: &mut Parser<'_, '_>) {
     let checkpoint = p.checkpoint();
     p.bump(); // DIVERT token `->`
     p.skip_ws();
@@ -120,7 +120,7 @@ fn divert_chain(p: &mut Parser<'_>) {
 }
 
 /// Returns `true` if we're at a divert target (DONE, END, or identifier).
-fn at_divert_target(p: &Parser<'_>) -> bool {
+fn at_divert_target(p: &Parser<'_, '_>) -> bool {
     matches!(p.current(), KW_DONE | KW_END | IDENT)
 }
 
@@ -130,7 +130,7 @@ fn at_divert_target(p: &Parser<'_>) -> bool {
 /// divert_target_with_args = { divert_path ~ ("(" ~ arg_list? ~ ")")? }
 /// divert_path = { "DONE" | "END" | path }
 /// ```
-fn divert_target_with_args(p: &mut Parser<'_>) {
+fn divert_target_with_args(p: &mut Parser<'_, '_>) {
     p.start_node(DIVERT_TARGET_WITH_ARGS);
 
     // divert_path: DONE, END, or path
@@ -162,7 +162,7 @@ fn divert_target_with_args(p: &mut Parser<'_>) {
 }
 
 /// Parse a path: `ident.ident.ident`.
-pub(crate) fn path(p: &mut Parser<'_>) {
+pub(crate) fn path(p: &mut Parser<'_, '_>) {
     p.start_node(PATH);
     p.expect(IDENT);
     while p.current() == DOT && p.nth(1) == IDENT {
@@ -173,7 +173,7 @@ pub(crate) fn path(p: &mut Parser<'_>) {
 }
 
 /// Parse an argument list: `expr (, expr)*`.
-pub(crate) fn arg_list(p: &mut Parser<'_>) {
+pub(crate) fn arg_list(p: &mut Parser<'_, '_>) {
     p.start_node(ARG_LIST);
     super::expression::expression(p);
     loop {

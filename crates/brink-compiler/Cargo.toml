@@ -14,6 +14,7 @@ brink-ir = { path = "../internal/brink-ir" }
 brink-format = { path = "../internal/brink-format" }
 brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-syntax = { path = "../internal/brink-syntax" }
+brink-db = { path = "../internal/brink-db" }
 thiserror.workspace = true
 tracing.workspace = true
 

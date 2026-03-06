@@ -7,7 +7,7 @@ use super::Parser;
 /// ```text
 /// tag_line = { tags ~ NEWLINE }
 /// ```
-pub(crate) fn tag_line(p: &mut Parser<'_>) {
+pub(crate) fn tag_line(p: &mut Parser<'_, '_>) {
     p.start_node(TAG_LINE);
     tags(p);
     if p.at(NEWLINE) {
@@ -25,7 +25,7 @@ pub(crate) fn tag_line(p: &mut Parser<'_>) {
 /// tag  = { "#" ~ TAG_CHAR* }
 /// TAG_CHAR = { !(NEWLINE | "#") ~ ANY }
 /// ```
-pub(crate) fn tags(p: &mut Parser<'_>) {
+pub(crate) fn tags(p: &mut Parser<'_, '_>) {
     p.start_node(TAGS);
 
     while p.current() == HASH {
@@ -36,7 +36,7 @@ pub(crate) fn tags(p: &mut Parser<'_>) {
 }
 
 /// Parse a single tag: `# text-until-# or newline`.
-fn tag(p: &mut Parser<'_>) {
+fn tag(p: &mut Parser<'_, '_>) {
     p.start_node(TAG);
     p.skip_ws();
     p.bump_assert(HASH); // the `#`

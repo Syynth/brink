@@ -60,12 +60,12 @@ fn is_prefix_op(kind: SyntaxKind) -> bool {
 }
 
 /// Parse an expression using Pratt parsing.
-pub(crate) fn expression(p: &mut Parser<'_>) {
+pub(crate) fn expression(p: &mut Parser<'_, '_>) {
     expression_bp(p, Prec::None);
 }
 
 /// Pratt expression parser core.
-fn expression_bp(p: &mut Parser<'_>, min_bp: Prec) {
+fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
     let checkpoint = p.checkpoint();
 
     // -- Prefix --
@@ -146,7 +146,7 @@ fn expression_bp(p: &mut Parser<'_>, min_bp: Prec) {
 }
 
 /// Parse an atom. Returns `false` if no atom was found.
-fn atom(p: &mut Parser<'_>) -> bool {
+fn atom(p: &mut Parser<'_, '_>) -> bool {
     match p.current() {
         // Parenthesized expression or list expression
         // list_expr = ( dotted_id, dotted_id, ... ) -- needs lookahead
@@ -214,7 +214,7 @@ fn atom(p: &mut Parser<'_>) -> bool {
 ///
 /// `list_expr` = `(` `dotted_id` (`,` `dotted_id`)* `)`  or  `(` `)`
 /// We look for: `( )` or `( IDENT [DOT IDENT]* , ...`
-fn looks_like_list_expr(p: &Parser<'_>) -> bool {
+fn looks_like_list_expr(p: &Parser<'_, '_>) -> bool {
     // `()` is an empty list
     if p.nth(1) == R_PAREN {
         return true;
@@ -234,7 +234,7 @@ fn looks_like_list_expr(p: &Parser<'_>) -> bool {
 }
 
 /// Parse `( expr )`.
-fn paren_expr(p: &mut Parser<'_>) {
+fn paren_expr(p: &mut Parser<'_, '_>) {
     p.start_node(PAREN_EXPR);
     p.bump(); // (
 
@@ -274,7 +274,7 @@ fn paren_expr(p: &mut Parser<'_>) {
 }
 
 /// Parse `( dotted_id, dotted_id, ... )`.
-fn list_expr(p: &mut Parser<'_>) {
+fn list_expr(p: &mut Parser<'_, '_>) {
     p.start_node(LIST_EXPR);
     p.bump(); // (
     p.skip_ws();
@@ -295,7 +295,7 @@ fn list_expr(p: &mut Parser<'_>) {
 }
 
 /// Parse `-> dotted_identifier` (in expression context, for divert target values).
-fn divert_target_expr(p: &mut Parser<'_>) {
+fn divert_target_expr(p: &mut Parser<'_, '_>) {
     p.start_node(DIVERT_TARGET_EXPR);
     p.bump(); // DIVERT `->`
     p.skip_ws();
@@ -304,7 +304,7 @@ fn divert_target_expr(p: &mut Parser<'_>) {
 }
 
 /// Parse `ident ( arg_list? )`.
-fn function_call(p: &mut Parser<'_>) {
+fn function_call(p: &mut Parser<'_, '_>) {
     p.start_node(FUNCTION_CALL);
     // The identifier node
     p.start_node(IDENTIFIER);
@@ -322,7 +322,7 @@ fn function_call(p: &mut Parser<'_>) {
 }
 
 /// Parse a string literal: `"` `string_part`* `"`.
-fn string_literal(p: &mut Parser<'_>) {
+fn string_literal(p: &mut Parser<'_, '_>) {
     p.start_node(STRING_LIT);
     p.bump(); // opening QUOTE
 

@@ -6,7 +6,7 @@ use crate::SyntaxKind::{
 use super::Parser;
 
 /// Parse the entire source file.
-pub(crate) fn source_file(p: &mut Parser<'_>) {
+pub(crate) fn source_file(p: &mut Parser<'_, '_>) {
     p.start_node(SOURCE_FILE);
 
     while !p.at_eof() {
@@ -28,7 +28,7 @@ pub(crate) fn source_file(p: &mut Parser<'_>) {
 }
 
 /// Dispatch a single top-level statement.
-fn top_level_statement(p: &mut Parser<'_>) {
+fn top_level_statement(p: &mut Parser<'_, '_>) {
     if super::knot::at_knot(p) {
         super::knot::knot_definition(p);
         return;
@@ -50,7 +50,7 @@ fn top_level_statement(p: &mut Parser<'_>) {
 /// line = { empty_line | author_warning | logic_line | multiline_block
 ///        | choice | gather_line | stray_closing_brace | tag_line | content_line }
 /// ```
-pub(crate) fn line(p: &mut Parser<'_>) {
+pub(crate) fn line(p: &mut Parser<'_, '_>) {
     match p.current() {
         NEWLINE => {
             p.start_node(EMPTY_LINE);
@@ -90,7 +90,7 @@ pub(crate) fn line(p: &mut Parser<'_>) {
 
 /// Check if `{` starts a multiline block (followed by NEWLINE after optional whitespace).
 /// We use `nth_raw` to look at raw tokens including whitespace.
-fn is_multiline_block(p: &Parser<'_>) -> bool {
+fn is_multiline_block(p: &Parser<'_, '_>) -> bool {
     let mut i = 1; // skip past L_BRACE at nth_raw(0)
     loop {
         match p.nth_raw(i) {
@@ -102,7 +102,7 @@ fn is_multiline_block(p: &Parser<'_>) -> bool {
 }
 
 /// Parse `TODO: text\n`.
-fn author_warning(p: &mut Parser<'_>) {
+fn author_warning(p: &mut Parser<'_, '_>) {
     p.start_node(AUTHOR_WARNING);
     p.bump(); // KW_TODO
     // Consume everything until newline
@@ -116,7 +116,7 @@ fn author_warning(p: &mut Parser<'_>) {
 }
 
 /// Parse a stray `}` on its own line.
-fn stray_closing_brace(p: &mut Parser<'_>) {
+fn stray_closing_brace(p: &mut Parser<'_, '_>) {
     p.start_node(STRAY_CLOSING_BRACE);
     p.skip_ws();
     p.bump(); // R_BRACE

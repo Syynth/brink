@@ -206,6 +206,7 @@ name = "brink-compiler"
 version = "0.0.1"
 dependencies = [
  "brink-analyzer",
+ "brink-db",
  "brink-format",
  "brink-ir",
  "brink-syntax",
@@ -222,6 +223,18 @@ dependencies = [
  "insta",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "brink-db"
+version = "0.0.1"
+dependencies = [
+ "brink-analyzer",
+ "brink-ir",
+ "brink-syntax",
+ "rowan",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -265,6 +278,8 @@ dependencies = [
 name = "brink-lsp"
 version = "0.0.1"
 dependencies = [
+ "brink-ir",
+ "rowan",
  "tokio",
  "tower-lsp",
  "tracing",

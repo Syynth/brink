@@ -6,7 +6,7 @@ pub mod parser;
 pub mod syntax_kind;
 
 pub use lexer::lex;
-pub use parser::{Parse, ParseError, parse};
+pub use parser::{Parse, ParseError, parse, parse_with_cache};
 pub use syntax_kind::{InkLanguage, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
 impl Parse {

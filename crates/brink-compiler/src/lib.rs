@@ -46,3 +46,11 @@ pub enum CompileError {
     #[error("{} diagnostic(s) prevented compilation", .0.len())]
     Diagnostics(Vec<Diagnostic>),
 }
+
+impl From<brink_db::DiscoverError> for CompileError {
+    fn from(err: brink_db::DiscoverError) -> Self {
+        match err {
+            brink_db::DiscoverError::Io(e) => Self::Io(e),
+        }
+    }
+}
