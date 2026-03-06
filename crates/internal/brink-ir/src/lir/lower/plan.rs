@@ -7,25 +7,19 @@ use crate::hir;
 use crate::symbols::{SymbolIndex, SymbolKind};
 
 use super::context::IdAllocator;
-use super::lir;
 
-/// The result of container planning: maps HIR constructs to container shells.
+/// The result of container planning: pre-allocates IDs for all containers.
 pub struct ContainerPlan {
-    /// Ordered list of container shells (id, path, kind).
-    pub shells: Vec<ContainerShell>,
     /// Map from choice index key to the target container id.
     pub choice_targets: HashMap<ChoiceKey, DefinitionId>,
     /// Map from gather key to the gather container id.
     pub gather_targets: HashMap<GatherKey, DefinitionId>,
     /// The root container id.
     pub root_id: DefinitionId,
-}
-
-pub struct ContainerShell {
-    pub id: DefinitionId,
-    pub path: String,
-    pub kind: lir::ContainerKind,
-    pub scope_root: Option<DefinitionId>,
+    /// Knot name → `DefinitionId`.
+    pub knot_ids: HashMap<String, DefinitionId>,
+    /// Stitch path ("knot.stitch") → `DefinitionId`.
+    pub stitch_ids: HashMap<String, DefinitionId>,
 }
 
 /// Identifies a choice within the HIR structure.
@@ -51,73 +45,50 @@ impl ContainerPlan {
     /// containers exist.
     pub fn empty() -> Self {
         Self {
-            shells: Vec::new(),
             choice_targets: HashMap::new(),
             gather_targets: HashMap::new(),
             root_id: DefinitionId::new(DefinitionTag::Container, 0),
+            knot_ids: HashMap::new(),
+            stitch_ids: HashMap::new(),
         }
     }
 }
 
-/// Walk all HIR files and create container shells.
+/// Walk all HIR files and pre-allocate container IDs.
 pub fn plan_containers(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     ids: &mut IdAllocator,
 ) -> ContainerPlan {
     let mut plan = ContainerPlan {
-        shells: Vec::new(),
         choice_targets: HashMap::new(),
         gather_targets: HashMap::new(),
         root_id: ids.alloc_container(""),
+        knot_ids: HashMap::new(),
+        stitch_ids: HashMap::new(),
     };
-
-    // Root container
-    plan.shells.push(ContainerShell {
-        id: plan.root_id,
-        path: String::new(),
-        kind: lir::ContainerKind::Root,
-        scope_root: None,
-    });
 
     for &(file_id, hir_file) in files {
         // Root content gets choice/gather containers
-        plan_block_choices(
-            &hir_file.root_content,
-            file_id,
-            "",
-            plan.root_id,
-            ids,
-            &mut plan,
-        );
+        plan_block_choices(&hir_file.root_content, file_id, "", ids, &mut plan);
 
         for knot in &hir_file.knots {
             let knot_path = &knot.name.text;
             let knot_id = lookup_container_id(index, knot_path)
                 .unwrap_or_else(|| ids.alloc_container(knot_path));
 
-            plan.shells.push(ContainerShell {
-                id: knot_id,
-                path: knot_path.clone(),
-                kind: lir::ContainerKind::Knot,
-                scope_root: None,
-            });
+            plan.knot_ids.insert(knot_path.clone(), knot_id);
 
-            plan_block_choices(&knot.body, file_id, knot_path, knot_id, ids, &mut plan);
+            plan_block_choices(&knot.body, file_id, knot_path, ids, &mut plan);
 
             for stitch in &knot.stitches {
                 let stitch_path = format!("{knot_path}.{}", stitch.name.text);
                 let stitch_id = lookup_container_id(index, &stitch_path)
                     .unwrap_or_else(|| ids.alloc_container(&stitch_path));
 
-                plan.shells.push(ContainerShell {
-                    id: stitch_id,
-                    path: stitch_path.clone(),
-                    kind: lir::ContainerKind::Stitch,
-                    scope_root: Some(knot_id),
-                });
+                plan.stitch_ids.insert(stitch_path.clone(), stitch_id);
 
-                plan_block_choices(&stitch.body, file_id, &stitch_path, knot_id, ids, &mut plan);
+                plan_block_choices(&stitch.body, file_id, &stitch_path, ids, &mut plan);
             }
         }
     }
@@ -129,7 +100,6 @@ fn plan_block_choices(
     block: &hir::Block,
     file: FileId,
     scope_path: &str,
-    scope_root: DefinitionId,
     ids: &mut IdAllocator,
     plan: &mut ContainerPlan,
 ) {
@@ -141,7 +111,6 @@ fn plan_block_choices(
             stmt,
             file,
             scope_path,
-            scope_root,
             ids,
             plan,
             &mut choice_counter,
@@ -150,12 +119,10 @@ fn plan_block_choices(
     }
 }
 
-#[expect(clippy::too_many_arguments)]
 fn plan_stmt_choices(
     stmt: &hir::Stmt,
     file: FileId,
     scope_path: &str,
-    scope_root: DefinitionId,
     ids: &mut IdAllocator,
     plan: &mut ContainerPlan,
     choice_counter: &mut usize,
@@ -173,24 +140,7 @@ fn plan_stmt_choices(
                     path
                 };
 
-                let gather_id = if gather.label.is_some() {
-                    lookup_label_id(
-                        &plan.shells,
-                        scope_path,
-                        gather.label.as_ref().map(|n| n.text.as_str()),
-                        ids,
-                        &gather_path,
-                    )
-                } else {
-                    ids.alloc_container(&gather_path)
-                };
-
-                plan.shells.push(ContainerShell {
-                    id: gather_id,
-                    path: gather_path.clone(),
-                    kind: super::lir::ContainerKind::Gather,
-                    scope_root: Some(scope_root),
-                });
+                let gather_id = ids.alloc_container(&gather_path);
 
                 plan.gather_targets.insert(
                     GatherKey {
@@ -207,13 +157,6 @@ fn plan_stmt_choices(
                 let choice_path = format!("{scope_path}.c{choice_counter}");
                 let choice_id = ids.alloc_container(&choice_path);
                 *choice_counter += 1;
-
-                plan.shells.push(ContainerShell {
-                    id: choice_id,
-                    path: choice_path,
-                    kind: super::lir::ContainerKind::ChoiceTarget,
-                    scope_root: Some(scope_root),
-                });
 
                 plan.choice_targets.insert(
                     ChoiceKey {
@@ -232,7 +175,6 @@ fn plan_stmt_choices(
                         body_stmt,
                         file,
                         &format!("{scope_path}.c{}", *choice_counter - 1),
-                        scope_root,
                         ids,
                         plan,
                         &mut nested_choice_counter,
@@ -246,7 +188,7 @@ fn plan_stmt_choices(
                 let mut bc = 0;
                 let mut bg = 0;
                 for s in &branch.body.stmts {
-                    plan_stmt_choices(s, file, scope_path, scope_root, ids, plan, &mut bc, &mut bg);
+                    plan_stmt_choices(s, file, scope_path, ids, plan, &mut bc, &mut bg);
                 }
             }
         }
@@ -255,7 +197,7 @@ fn plan_stmt_choices(
                 let mut bc = 0;
                 let mut bg = 0;
                 for s in &branch.stmts {
-                    plan_stmt_choices(s, file, scope_path, scope_root, ids, plan, &mut bc, &mut bg);
+                    plan_stmt_choices(s, file, scope_path, ids, plan, &mut bc, &mut bg);
                 }
             }
         }
@@ -274,17 +216,4 @@ fn lookup_container_id(index: &SymbolIndex, name: &str) -> Option<DefinitionId> 
             })
             .copied()
     })
-}
-
-fn lookup_label_id(
-    _shells: &[ContainerShell],
-    _scope_path: &str,
-    _label: Option<&str>,
-    ids: &mut IdAllocator,
-    gather_path: &str,
-) -> DefinitionId {
-    // Labels are in the symbol index, but we may not find them there
-    // if the gather label wasn't declared as a separate symbol.
-    // Fall back to allocating a new id.
-    ids.alloc_container(gather_path)
 }

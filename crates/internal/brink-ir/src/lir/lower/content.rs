@@ -37,15 +37,7 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
                 .iter()
                 .map(|b| {
                     let condition = b.condition.as_ref().map(|e| lower_expr(e, ctx));
-                    let mut bc = 0;
-                    let mut bg = 0;
-                    let body = super::stmts::lower_block(
-                        &b.body,
-                        ctx,
-                        &super::plan::ContainerPlan::empty(),
-                        &mut bc,
-                        &mut bg,
-                    );
+                    let body = lower_inline_block(&b.body, ctx);
                     lir::CondBranch { condition, body }
                 })
                 .collect();
@@ -55,17 +47,7 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
             let branches = seq
                 .branches
                 .iter()
-                .map(|b| {
-                    let mut bc = 0;
-                    let mut bg = 0;
-                    super::stmts::lower_block(
-                        b,
-                        ctx,
-                        &super::plan::ContainerPlan::empty(),
-                        &mut bc,
-                        &mut bg,
-                    )
-                })
+                .map(|b| lower_inline_block(b, ctx))
                 .collect();
             lir::ContentPart::InlineSequence(lir::Sequence {
                 kind: seq.kind,
@@ -73,4 +55,18 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
             })
         }
     }
+}
+
+/// Lower a block in inline content context (no choice/gather children possible).
+fn lower_inline_block(block: &hir::Block, ctx: &mut LowerCtx<'_>) -> Vec<lir::Stmt> {
+    let empty_plan = super::plan::ContainerPlan::empty();
+    let mut cc = 0;
+    let mut gc = 0;
+    let mut stmts = Vec::new();
+    for stmt in &block.stmts {
+        if let Some(s) = super::stmts::lower_stmt(stmt, ctx, &empty_plan, &mut cc, &mut gc) {
+            stmts.push(s);
+        }
+    }
+    stmts
 }

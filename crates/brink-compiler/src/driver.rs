@@ -8,8 +8,8 @@ use tracing::info;
 
 use crate::CompileError;
 
-/// Run the full compilation pipeline.
-pub fn compile<F>(entry: &str, mut read_file: F) -> Result<StoryData, CompileError>
+/// Run the full compilation pipeline through LIR lowering.
+fn compile_lir<F>(entry: &str, mut read_file: F) -> Result<brink_ir::lir::Program, CompileError>
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
@@ -42,11 +42,25 @@ where
         .collect();
     let program = brink_ir::lir::lower_to_program(&files, &result.index, &result.resolutions);
 
-    info!(
-        containers = program.containers.len(),
-        globals = program.globals.len(),
-        "LIR lowering complete"
-    );
+    info!(globals = program.globals.len(), "LIR lowering complete");
+
+    Ok(program)
+}
+
+/// Compile to LIR — public for the JSON backend.
+pub fn compile_to_lir<F>(entry: &str, read_file: F) -> Result<brink_ir::lir::Program, CompileError>
+where
+    F: FnMut(&str) -> Result<String, io::Error>,
+{
+    compile_lir(entry, read_file)
+}
+
+/// Run the full compilation pipeline.
+pub fn compile<F>(entry: &str, read_file: F) -> Result<StoryData, CompileError>
+where
+    F: FnMut(&str) -> Result<String, io::Error>,
+{
+    let program = compile_lir(entry, read_file)?;
 
     // ── Pass 6b: Codegen ────────────────────────────────────────────
     // TODO: bytecode::emit(&program) or json::emit(&program)

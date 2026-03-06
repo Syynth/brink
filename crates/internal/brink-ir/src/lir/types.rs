@@ -7,10 +7,10 @@ use crate::{AssignOp, InfixOp, PostfixOp, PrefixOp, SequenceType};
 /// The complete LIR program — a single merged, resolved representation
 /// of all source files, ready for backend consumption.
 pub struct Program {
-    /// All containers in the program (root, knots, stitches, gathers,
-    /// choice targets). Flat list — no nesting. Order is not significant;
-    /// relationships are expressed via `DefinitionId` references.
-    pub containers: Vec<Container>,
+    /// The root container — the top of the container tree.
+    /// Child containers (knots, stitches, gathers, choice targets)
+    /// are nested via `Container.children`.
+    pub root: Container,
 
     /// Global variable definitions (VAR and CONST), with evaluated defaults.
     pub globals: Vec<GlobalDef>,
@@ -91,20 +91,21 @@ pub enum ConstValue {
 /// Every knot, stitch, gather, and choice target body is a container.
 /// At this level there is no distinction between them — that's what
 /// `kind` is for (diagnostics, debug output, and counting flag defaults).
+///
+/// Containers form a tree: the root contains knots, knots contain stitches
+/// and choice/gather children, etc. The `children` vec holds nested containers.
 pub struct Container {
     pub id: DefinitionId,
-    /// Fully qualified path (e.g. `"tavern.order.served"`). Used for
-    /// debug output and hashing.
-    pub path: String,
+    /// Local name of this container (e.g. `"order"` for stitch `tavern.order`).
+    /// `None` for the root container and anonymous gathers.
+    pub name: Option<String>,
     pub kind: ContainerKind,
-    /// The enclosing scope root (knot or function). Containers within
-    /// the same scope share a call frame for temp variables. `None` for
-    /// the root container and top-level knots/functions themselves.
-    pub scope_root: Option<DefinitionId>,
     /// Parameters (only meaningful for knots/stitches/functions).
     pub params: Vec<Param>,
     /// The body — a sequence of structured statements.
     pub body: Vec<Stmt>,
+    /// Nested child containers (stitches, choice targets, gathers).
+    pub children: Vec<Container>,
     pub counting_flags: CountingFlags,
     /// Total temp slot count for this scope. Only meaningful on scope
     /// roots (knots/functions). Child containers share the parent's
@@ -156,7 +157,11 @@ pub enum Stmt {
     ThreadStart(ThreadStart),
 
     /// `~ temp x = expr` — declare a temp variable at a slot index.
-    DeclareTemp { slot: u16, value: Option<Expr> },
+    DeclareTemp {
+        slot: u16,
+        name: NameId,
+        value: Option<Expr>,
+    },
 
     /// `~ x = expr` / `~ x += expr` — assign to a variable.
     Assign {

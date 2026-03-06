@@ -28,7 +28,7 @@ pub fn lower_to_program(
     let mut names = NameTable::new();
     let mut ids = context::IdAllocator::new();
 
-    // ── Step 1: Plan containers ─────────────────────────────────────
+    // ── Step 1: Plan containers (pre-allocate IDs) ─────────────────
     let plan = plan::plan_containers(files, index, &mut ids);
 
     // ── Step 2: Collect declarations ────────────────────────────────
@@ -36,22 +36,15 @@ pub fn lower_to_program(
     let (lists, list_items) = decls::collect_lists(files, index, &mut names);
     let externals = decls::collect_externals(files, index, &mut names);
 
-    // ── Step 3: Lower containers ────────────────────────────────────
-    let mut containers = Vec::with_capacity(plan.shells.len());
+    // ── Step 3: Lower containers as a tree ──────────────────────────
+    let root = lower_root(files, &resolutions, index, &mut names, &plan);
 
-    for shell in &plan.shells {
-        let container = lower_container_shell(files, shell, &resolutions, index, &mut names, &plan);
-        containers.push(container);
-    }
-
-    // ── Step 4: Implicit structure ──────────────────────────────────
-    apply_implicit_structure(&mut containers, &plan);
-
-    // ── Step 5: Counting flags ──────────────────────────────────────
-    apply_counting_flags(&mut containers);
+    // ── Step 4: Counting flags ──────────────────────────────────────
+    let mut root = root;
+    apply_counting_flags(&mut root);
 
     lir::Program {
-        containers,
+        root,
         globals,
         lists,
         list_items,
@@ -60,40 +53,383 @@ pub fn lower_to_program(
     }
 }
 
-// ─── Container lowering ─────────────────────────────────────────────
+// ─── Tree-building lowering ─────────────────────────────────────────
 
-fn lower_container_shell(
+fn lower_root(
     files: &[(FileId, &hir::HirFile)],
-    shell: &plan::ContainerShell,
     resolutions: &ResolutionLookup,
     index: &SymbolIndex,
     names: &mut NameTable,
-    plan_data: &plan::ContainerPlan,
+    plan: &plan::ContainerPlan,
 ) -> lir::Container {
-    match shell.kind {
-        lir::ContainerKind::Root => {
-            lower_root_container(files, shell, resolutions, index, plan_data)
-        }
-        lir::ContainerKind::Knot => {
-            lower_knot_container(files, shell, resolutions, index, names, plan_data)
-        }
-        lir::ContainerKind::Stitch => {
-            lower_stitch_container(files, shell, resolutions, index, names, plan_data)
-        }
-        lir::ContainerKind::ChoiceTarget => {
-            lower_choice_target_container(files, shell, resolutions, index, plan_data)
-        }
-        lir::ContainerKind::Gather => {
-            lower_gather_container(files, shell, resolutions, index, plan_data)
+    let mut body = Vec::new();
+    let mut children = Vec::new();
+    let temp_map = TempMap::new();
+
+    for &(file_id, hir_file) in files {
+        let mut ctx = make_ctx(file_id, resolutions, index, &temp_map, names, String::new());
+        let mut cc = 0;
+        let mut gc = 0;
+        let (stmts, mut block_children) =
+            lower_block_with_children(&hir_file.root_content, &mut ctx, plan, &mut cc, &mut gc);
+        body.extend(stmts);
+        children.append(&mut block_children);
+
+        // Add knots as children of root
+        for knot in &hir_file.knots {
+            children.push(lower_knot(
+                file_id,
+                hir_file,
+                knot,
+                resolutions,
+                index,
+                names,
+                plan,
+            ));
         }
     }
+
+    // Implicit DONE at end of root
+    let ends_with_divert = body
+        .last()
+        .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)));
+    if !ends_with_divert {
+        body.push(lir::Stmt::Divert(lir::Divert {
+            target: lir::DivertTarget::Done,
+            args: Vec::new(),
+        }));
+    }
+
+    lir::Container {
+        id: plan.root_id,
+        name: None,
+        kind: lir::ContainerKind::Root,
+        params: Vec::new(),
+        body,
+        children,
+        counting_flags: CountingFlags::empty(),
+        temp_slot_count: 0,
+    }
 }
+
+fn lower_knot(
+    file_id: FileId,
+    _hir_file: &hir::HirFile,
+    knot: &hir::Knot,
+    resolutions: &ResolutionLookup,
+    index: &SymbolIndex,
+    names: &mut NameTable,
+    plan: &plan::ContainerPlan,
+) -> lir::Container {
+    let knot_name = &knot.name.text;
+    let knot_id = plan
+        .knot_ids
+        .get(knot_name.as_str())
+        .copied()
+        .unwrap_or(plan.root_id);
+
+    let mut scope_blocks: Vec<&hir::Block> = vec![&knot.body];
+    for stitch in &knot.stitches {
+        scope_blocks.push(&stitch.body);
+    }
+
+    let temp_map = temps::alloc_temps(&knot.params, &scope_blocks);
+    let temp_count = temp_map.total_slots();
+    let params = lower_params(&knot.params, names, &temp_map);
+
+    let mut ctx = make_ctx(
+        file_id,
+        resolutions,
+        index,
+        &temp_map,
+        names,
+        knot_name.clone(),
+    );
+    let mut cc = 0;
+    let mut gc = 0;
+    let (body, mut children) =
+        lower_block_with_children(&knot.body, &mut ctx, plan, &mut cc, &mut gc);
+
+    // Add stitches as children
+    for stitch in &knot.stitches {
+        children.push(lower_stitch(
+            file_id,
+            knot,
+            stitch,
+            &temp_map,
+            resolutions,
+            index,
+            names,
+            plan,
+        ));
+    }
+
+    // First-stitch auto-enter: if knot body is empty, divert to first stitch
+    let mut final_body = body;
+    if final_body.is_empty()
+        && !knot.stitches.is_empty()
+        && let Some(first_stitch) = children
+            .iter()
+            .find(|c| c.kind == lir::ContainerKind::Stitch)
+    {
+        final_body.push(lir::Stmt::Divert(lir::Divert {
+            target: lir::DivertTarget::Container(first_stitch.id),
+            args: Vec::new(),
+        }));
+    }
+
+    lir::Container {
+        id: knot_id,
+        name: Some(knot_name.clone()),
+        kind: lir::ContainerKind::Knot,
+        params,
+        body: final_body,
+        children,
+        counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
+        temp_slot_count: temp_count,
+    }
+}
+
+#[expect(clippy::too_many_arguments)]
+fn lower_stitch(
+    file_id: FileId,
+    knot: &hir::Knot,
+    stitch: &hir::Stitch,
+    temp_map: &TempMap,
+    resolutions: &ResolutionLookup,
+    index: &SymbolIndex,
+    names: &mut NameTable,
+    plan: &plan::ContainerPlan,
+) -> lir::Container {
+    let stitch_name = &stitch.name.text;
+    let stitch_path = format!("{}.{stitch_name}", knot.name.text);
+    let stitch_id = plan
+        .stitch_ids
+        .get(stitch_path.as_str())
+        .copied()
+        .unwrap_or(plan.root_id);
+    let params = lower_params(&stitch.params, names, temp_map);
+
+    let mut ctx = make_ctx(file_id, resolutions, index, temp_map, names, stitch_path);
+    let mut cc = 0;
+    let mut gc = 0;
+    let (body, children) =
+        lower_block_with_children(&stitch.body, &mut ctx, plan, &mut cc, &mut gc);
+
+    lir::Container {
+        id: stitch_id,
+        name: Some(stitch_name.clone()),
+        kind: lir::ContainerKind::Stitch,
+        params,
+        body,
+        children,
+        counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
+        temp_slot_count: 0,
+    }
+}
+
+/// Lower a block, returning both statements and any child containers
+/// (choice targets, gathers) produced by choice sets within the block.
+///
+/// When a `ChoiceSet` with a gather is encountered, remaining statements
+/// go into the gather's body (not the current block).
+fn lower_block_with_children(
+    block: &hir::Block,
+    ctx: &mut LowerCtx<'_>,
+    plan: &plan::ContainerPlan,
+    choice_counter: &mut usize,
+    gather_counter: &mut usize,
+) -> (Vec<lir::Stmt>, Vec<lir::Container>) {
+    let mut stmts = Vec::new();
+    let mut children = Vec::new();
+
+    for (pos, stmt) in block.stmts.iter().enumerate() {
+        match stmt {
+            hir::Stmt::ChoiceSet(cs) => {
+                let gather_target = if cs.gather.is_some() {
+                    find_gather_target(ctx, plan, gather_counter)
+                } else {
+                    None
+                };
+
+                // Build choice target children
+                let mut choice_children = Vec::new();
+                let choices: Vec<lir::Choice> = cs
+                    .choices
+                    .iter()
+                    .map(|choice| {
+                        let (lir_choice, child) = lower_choice_with_child(
+                            choice,
+                            ctx,
+                            plan,
+                            choice_counter,
+                            gather_target,
+                        );
+                        if let Some(c) = child {
+                            choice_children.push(c);
+                        }
+                        lir_choice
+                    })
+                    .collect();
+
+                stmts.push(lir::Stmt::ChoiceSet(lir::ChoiceSet {
+                    choices,
+                    gather_target,
+                }));
+                children.append(&mut choice_children);
+
+                // If there's a gather, build it with trailing statements
+                if let Some(ref gather) = cs.gather {
+                    let gather_container =
+                        build_gather_container(gather, block, pos, ctx, plan, gather_target);
+                    children.push(gather_container);
+                    // Trailing statements went into the gather — stop here
+                    break;
+                }
+            }
+            _ => {
+                if let Some(s) = stmts::lower_stmt(stmt, ctx, plan, choice_counter, gather_counter)
+                {
+                    stmts.push(s);
+                }
+            }
+        }
+    }
+
+    (stmts, children)
+}
+
+fn lower_choice_with_child(
+    choice: &hir::Choice,
+    ctx: &mut LowerCtx<'_>,
+    plan: &plan::ContainerPlan,
+    choice_counter: &mut usize,
+    _gather_target: Option<brink_format::DefinitionId>,
+) -> (lir::Choice, Option<lir::Container>) {
+    let key = plan::ChoiceKey {
+        file: ctx.file,
+        scope: ctx.scope_path.clone(),
+        index: *choice_counter,
+    };
+    *choice_counter += 1;
+
+    let target = plan
+        .choice_targets
+        .get(&key)
+        .copied()
+        .unwrap_or(plan.root_id);
+
+    // Combine display content: start + bracket
+    let display = combine_content(
+        choice.start_content.as_ref(),
+        choice.bracket_content.as_ref(),
+        ctx,
+    );
+
+    // Combine output content: start + inner
+    let output = combine_content(
+        choice.start_content.as_ref(),
+        choice.inner_content.as_ref(),
+        ctx,
+    );
+
+    let condition = choice.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
+    let tags = choice.tags.iter().map(|t| t.text.clone()).collect();
+
+    // Lower choice body into a child container
+    let mut cc = 0;
+    let mut gc = 0;
+    let (mut body, children) = lower_block_with_children(&choice.body, ctx, plan, &mut cc, &mut gc);
+
+    if let Some(ref divert) = choice.divert {
+        body.push(lir::Stmt::Divert(lower_hir_divert(divert, ctx)));
+    }
+
+    let child_name = format!("c{}", *choice_counter - 1);
+    let child = lir::Container {
+        id: target,
+        name: Some(child_name),
+        kind: lir::ContainerKind::ChoiceTarget,
+        params: Vec::new(),
+        body,
+        children,
+        counting_flags: CountingFlags::empty(),
+        temp_slot_count: 0,
+    };
+
+    let lir_choice = lir::Choice {
+        is_sticky: choice.is_sticky,
+        is_fallback: choice.is_fallback,
+        condition,
+        display,
+        output,
+        target,
+        tags,
+    };
+
+    (lir_choice, Some(child))
+}
+
+fn build_gather_container(
+    gather: &hir::Gather,
+    parent_block: &hir::Block,
+    choice_set_pos: usize,
+    ctx: &mut LowerCtx<'_>,
+    plan: &plan::ContainerPlan,
+    gather_id: Option<brink_format::DefinitionId>,
+) -> lir::Container {
+    let id = gather_id.unwrap_or(plan.root_id);
+    let name = gather.label.as_ref().map(|l| l.text.clone());
+    let display_name = name.clone().unwrap_or_else(|| {
+        // Anonymous gathers use gN naming
+        "g-anon".to_string()
+    });
+
+    let mut body = Vec::new();
+
+    // Emit gather's inline content
+    if let Some(ref c) = gather.content {
+        body.push(lir::Stmt::EmitContent(content::lower_content(c, ctx)));
+    }
+    if let Some(ref d) = gather.divert {
+        body.push(lir::Stmt::Divert(lower_hir_divert(d, ctx)));
+    }
+
+    // Lower trailing statements from the parent block after the ChoiceSet
+    let mut cc = 0;
+    let mut gc = 0;
+    let trailing_block = hir::Block {
+        stmts: parent_block.stmts[choice_set_pos + 1..].to_vec(),
+    };
+    let (trailing, children) =
+        lower_block_with_children(&trailing_block, ctx, plan, &mut cc, &mut gc);
+    body.extend(trailing);
+
+    lir::Container {
+        id,
+        name: if gather.label.is_some() {
+            Some(display_name)
+        } else {
+            // Use the planned name (gN) from the plan
+            Some(display_name)
+        },
+        kind: lir::ContainerKind::Gather,
+        params: Vec::new(),
+        body,
+        children,
+        counting_flags: CountingFlags::empty(),
+        temp_slot_count: 0,
+    }
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────
 
 fn make_ctx<'a>(
     file: FileId,
     resolutions: &'a ResolutionLookup,
     index: &'a SymbolIndex,
     temps: &'a TempMap,
+    names: &'a mut NameTable,
     scope_path: String,
 ) -> LowerCtx<'a> {
     LowerCtx {
@@ -101,184 +437,10 @@ fn make_ctx<'a>(
         resolutions,
         index,
         temps,
+        names,
         scope_path,
     }
 }
-
-fn lower_root_container(
-    files: &[(FileId, &hir::HirFile)],
-    shell: &plan::ContainerShell,
-    resolutions: &ResolutionLookup,
-    index: &SymbolIndex,
-    plan_data: &plan::ContainerPlan,
-) -> lir::Container {
-    let mut body = Vec::new();
-    let temp_map = TempMap::new();
-
-    for &(file_id, hir_file) in files {
-        let mut ctx = make_ctx(file_id, resolutions, index, &temp_map, String::new());
-        let mut cc = 0;
-        let mut gc = 0;
-        let stmts = stmts::lower_block(
-            &hir_file.root_content,
-            &mut ctx,
-            plan_data,
-            &mut cc,
-            &mut gc,
-        );
-        body.extend(stmts);
-    }
-
-    lir::Container {
-        id: shell.id,
-        path: shell.path.clone(),
-        kind: lir::ContainerKind::Root,
-        scope_root: None,
-        params: Vec::new(),
-        body,
-        counting_flags: CountingFlags::empty(),
-        temp_slot_count: 0,
-    }
-}
-
-fn lower_knot_container(
-    files: &[(FileId, &hir::HirFile)],
-    shell: &plan::ContainerShell,
-    resolutions: &ResolutionLookup,
-    index: &SymbolIndex,
-    names: &mut NameTable,
-    plan_data: &plan::ContainerPlan,
-) -> lir::Container {
-    for &(file_id, hir_file) in files {
-        for knot in &hir_file.knots {
-            if knot.name.text != shell.path {
-                continue;
-            }
-            let mut scope_blocks: Vec<&hir::Block> = vec![&knot.body];
-            for stitch in &knot.stitches {
-                scope_blocks.push(&stitch.body);
-            }
-
-            let temp_map = temps::alloc_temps(&knot.params, &scope_blocks);
-            let temp_count = temp_map.total_slots();
-            let params = lower_params(&knot.params, names, &temp_map);
-
-            let mut ctx = make_ctx(file_id, resolutions, index, &temp_map, shell.path.clone());
-            let mut cc = 0;
-            let mut gc = 0;
-            let body = stmts::lower_block(&knot.body, &mut ctx, plan_data, &mut cc, &mut gc);
-
-            return lir::Container {
-                id: shell.id,
-                path: shell.path.clone(),
-                kind: lir::ContainerKind::Knot,
-                scope_root: None,
-                params,
-                body,
-                counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
-                temp_slot_count: temp_count,
-            };
-        }
-    }
-    empty_container(shell)
-}
-
-fn lower_stitch_container(
-    files: &[(FileId, &hir::HirFile)],
-    shell: &plan::ContainerShell,
-    resolutions: &ResolutionLookup,
-    index: &SymbolIndex,
-    names: &mut NameTable,
-    plan_data: &plan::ContainerPlan,
-) -> lir::Container {
-    let parts: Vec<&str> = shell.path.splitn(2, '.').collect();
-    let (knot_name, stitch_name) = match parts.as_slice() {
-        [k, s] => (*k, *s),
-        _ => return empty_container(shell),
-    };
-
-    for &(file_id, hir_file) in files {
-        for knot in &hir_file.knots {
-            if knot.name.text != knot_name {
-                continue;
-            }
-            for stitch in &knot.stitches {
-                if stitch.name.text != stitch_name {
-                    continue;
-                }
-                let mut scope_blocks: Vec<&hir::Block> = vec![&knot.body];
-                for s in &knot.stitches {
-                    scope_blocks.push(&s.body);
-                }
-                let temp_map = temps::alloc_temps(&knot.params, &scope_blocks);
-                let params = lower_params(&stitch.params, names, &temp_map);
-
-                let mut ctx = make_ctx(file_id, resolutions, index, &temp_map, shell.path.clone());
-                let mut cc = 0;
-                let mut gc = 0;
-                let body = stmts::lower_block(&stitch.body, &mut ctx, plan_data, &mut cc, &mut gc);
-
-                return lir::Container {
-                    id: shell.id,
-                    path: shell.path.clone(),
-                    kind: lir::ContainerKind::Stitch,
-                    scope_root: shell.scope_root,
-                    params,
-                    body,
-                    counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
-                    temp_slot_count: 0,
-                };
-            }
-        }
-    }
-    empty_container(shell)
-}
-
-fn lower_choice_target_container(
-    files: &[(FileId, &hir::HirFile)],
-    shell: &plan::ContainerShell,
-    resolutions: &ResolutionLookup,
-    index: &SymbolIndex,
-    plan_data: &plan::ContainerPlan,
-) -> lir::Container {
-    if let Some(body) = find_choice_body(files, shell, resolutions, index, plan_data) {
-        return lir::Container {
-            id: shell.id,
-            path: shell.path.clone(),
-            kind: lir::ContainerKind::ChoiceTarget,
-            scope_root: shell.scope_root,
-            params: Vec::new(),
-            body,
-            counting_flags: CountingFlags::empty(),
-            temp_slot_count: 0,
-        };
-    }
-    empty_container(shell)
-}
-
-fn lower_gather_container(
-    files: &[(FileId, &hir::HirFile)],
-    shell: &plan::ContainerShell,
-    resolutions: &ResolutionLookup,
-    index: &SymbolIndex,
-    plan_data: &plan::ContainerPlan,
-) -> lir::Container {
-    if let Some(body) = find_gather_body(files, shell, resolutions, index, plan_data) {
-        return lir::Container {
-            id: shell.id,
-            path: shell.path.clone(),
-            kind: lir::ContainerKind::Gather,
-            scope_root: shell.scope_root,
-            params: Vec::new(),
-            body,
-            counting_flags: CountingFlags::empty(),
-            temp_slot_count: 0,
-        };
-    }
-    empty_container(shell)
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────
 
 fn lower_params(
     params: &[hir::Param],
@@ -298,237 +460,6 @@ fn lower_params(
             }
         })
         .collect()
-}
-
-fn empty_container(shell: &plan::ContainerShell) -> lir::Container {
-    lir::Container {
-        id: shell.id,
-        path: shell.path.clone(),
-        kind: shell.kind,
-        scope_root: shell.scope_root,
-        params: Vec::new(),
-        body: Vec::new(),
-        counting_flags: CountingFlags::empty(),
-        temp_slot_count: 0,
-    }
-}
-
-fn find_choice_body(
-    files: &[(FileId, &hir::HirFile)],
-    shell: &plan::ContainerShell,
-    resolutions: &ResolutionLookup,
-    index: &SymbolIndex,
-    plan_data: &plan::ContainerPlan,
-) -> Option<Vec<lir::Stmt>> {
-    for (key, &target_id) in &plan_data.choice_targets {
-        if target_id != shell.id {
-            continue;
-        }
-        let choice = find_hir_choice(files, key)?;
-        let temp_map = build_scope_temp_map(files, shell);
-
-        let mut ctx = make_ctx(key.file, resolutions, index, &temp_map, key.scope.clone());
-        let mut cc = 0;
-        let mut gc = 0;
-        let mut body = stmts::lower_block(&choice.body, &mut ctx, plan_data, &mut cc, &mut gc);
-
-        if let Some(ref divert) = choice.divert {
-            let d = lower_hir_divert(divert, &mut ctx);
-            body.push(lir::Stmt::Divert(d));
-        }
-
-        return Some(body);
-    }
-    None
-}
-
-fn find_gather_body(
-    files: &[(FileId, &hir::HirFile)],
-    shell: &plan::ContainerShell,
-    resolutions: &ResolutionLookup,
-    index: &SymbolIndex,
-    plan_data: &plan::ContainerPlan,
-) -> Option<Vec<lir::Stmt>> {
-    for (key, &target_id) in &plan_data.gather_targets {
-        if target_id != shell.id {
-            continue;
-        }
-        let (gather, parent_block, choice_set_pos) = find_hir_gather_with_context(files, key)?;
-        let temp_map = build_scope_temp_map(files, shell);
-
-        let mut ctx = make_ctx(key.file, resolutions, index, &temp_map, key.scope.clone());
-        let mut body = Vec::new();
-
-        // Emit gather's inline content
-        if let Some(ref c) = gather.content {
-            body.push(lir::Stmt::EmitContent(content::lower_content(c, &mut ctx)));
-        }
-        if let Some(ref d) = gather.divert {
-            body.push(lir::Stmt::Divert(lower_hir_divert(d, &mut ctx)));
-        }
-
-        // Lower trailing statements from the parent block after the ChoiceSet.
-        // These are the continuation — they belong in the gather container.
-        let mut cc = 0;
-        let mut gc = 0;
-        let trailing = stmts::lower_block_from(
-            parent_block,
-            choice_set_pos + 1,
-            &mut ctx,
-            plan_data,
-            &mut cc,
-            &mut gc,
-        );
-        body.extend(trailing);
-
-        return Some(body);
-    }
-    None
-}
-
-fn find_hir_choice<'a>(
-    files: &'a [(FileId, &hir::HirFile)],
-    key: &plan::ChoiceKey,
-) -> Option<&'a hir::Choice> {
-    let (_, hir_file) = files.iter().find(|&&(id, _)| id == key.file)?;
-    let scope_parts: Vec<&str> = if key.scope.is_empty() {
-        Vec::new()
-    } else {
-        key.scope.split('.').collect()
-    };
-
-    let block = find_scope_block(hir_file, &scope_parts)?;
-    let mut counter = 0usize;
-    find_choice_in_block(block, key.index, &mut counter)
-}
-
-fn find_choice_in_block<'a>(
-    block: &'a hir::Block,
-    target_index: usize,
-    counter: &mut usize,
-) -> Option<&'a hir::Choice> {
-    for stmt in &block.stmts {
-        if let hir::Stmt::ChoiceSet(cs) = stmt {
-            for choice in &cs.choices {
-                if *counter == target_index {
-                    return Some(choice);
-                }
-                *counter += 1;
-            }
-        }
-    }
-    None
-}
-
-/// Find a gather in the HIR, returning it along with its parent block and the
-/// position of the `ChoiceSet` within that block (needed for trailing stmts).
-fn find_hir_gather_with_context<'a>(
-    files: &'a [(FileId, &hir::HirFile)],
-    key: &plan::GatherKey,
-) -> Option<(&'a hir::Gather, &'a hir::Block, usize)> {
-    let (_, hir_file) = files.iter().find(|&&(id, _)| id == key.file)?;
-    let scope_parts: Vec<&str> = if key.scope.is_empty() {
-        Vec::new()
-    } else {
-        key.scope.split('.').collect()
-    };
-
-    let block = find_scope_block(hir_file, &scope_parts)?;
-    let mut counter = 0usize;
-    for (pos, stmt) in block.stmts.iter().enumerate() {
-        if let hir::Stmt::ChoiceSet(cs) = stmt
-            && let Some(ref gather) = cs.gather
-        {
-            if counter == key.index {
-                return Some((gather, block, pos));
-            }
-            counter += 1;
-        }
-    }
-    None
-}
-
-fn find_scope_block<'a>(
-    hir_file: &'a hir::HirFile,
-    scope_parts: &[&str],
-) -> Option<&'a hir::Block> {
-    if scope_parts.is_empty() {
-        return Some(&hir_file.root_content);
-    }
-
-    // Resolve base block: knot, or knot.stitch
-    let knot = hir_file
-        .knots
-        .iter()
-        .find(|k| k.name.text == scope_parts[0])?;
-    let mut rest = &scope_parts[1..];
-
-    let mut block = if let Some(&next) = rest.first() {
-        if !next.starts_with('c') && !next.starts_with('g') {
-            // It's a stitch name
-            let stitch = knot.stitches.iter().find(|s| s.name.text == next)?;
-            rest = &rest[1..];
-            &stitch.body
-        } else {
-            &knot.body
-        }
-    } else {
-        return Some(&knot.body);
-    };
-
-    // Traverse remaining cN/gN segments into nested choice/gather bodies
-    for &segment in rest {
-        if let Some(idx_str) = segment.strip_prefix('c') {
-            let idx: usize = idx_str.parse().ok()?;
-            block = find_nth_choice_body(block, idx)?;
-        } else {
-            // Unknown segment type — bail
-            return None;
-        }
-    }
-
-    Some(block)
-}
-
-/// Find the body of the Nth choice (across all choice sets) in a block.
-fn find_nth_choice_body(block: &hir::Block, target_index: usize) -> Option<&hir::Block> {
-    let mut counter = 0usize;
-    for stmt in &block.stmts {
-        if let hir::Stmt::ChoiceSet(cs) = stmt {
-            for choice in &cs.choices {
-                if counter == target_index {
-                    return Some(&choice.body);
-                }
-                counter += 1;
-            }
-        }
-    }
-    None
-}
-
-fn build_scope_temp_map(
-    files: &[(FileId, &hir::HirFile)],
-    shell: &plan::ContainerShell,
-) -> TempMap {
-    let scope_knot = if shell.path.contains('.') {
-        shell.path.split('.').next().unwrap_or("")
-    } else {
-        &shell.path
-    };
-
-    for &(_, hir_file) in files {
-        for knot in &hir_file.knots {
-            if knot.name.text == scope_knot {
-                let mut scope_blocks: Vec<&hir::Block> = vec![&knot.body];
-                for stitch in &knot.stitches {
-                    scope_blocks.push(&stitch.body);
-                }
-                return temps::alloc_temps(&knot.params, &scope_blocks);
-            }
-        }
-    }
-
-    TempMap::new()
 }
 
 fn lower_hir_divert(divert: &hir::Divert, ctx: &mut LowerCtx<'_>) -> lir::Divert {
@@ -559,60 +490,80 @@ fn lower_hir_divert(divert: &hir::Divert, ctx: &mut LowerCtx<'_>) -> lir::Divert
     lir::Divert { target, args }
 }
 
-// ─── Implicit structure ─────────────────────────────────────────────
-
-fn apply_implicit_structure(containers: &mut [lir::Container], plan: &plan::ContainerPlan) {
-    // 1. First-stitch auto-enter
-    let stitch_ids: Vec<(String, brink_format::DefinitionId)> = containers
-        .iter()
-        .filter(|c| c.kind == lir::ContainerKind::Stitch)
-        .map(|c| (c.path.clone(), c.id))
-        .collect();
-
-    for container in containers.iter_mut() {
-        if container.kind == lir::ContainerKind::Knot && container.body.is_empty() {
-            let prefix = format!("{}.", container.path);
-            if let Some((_, stitch_id)) = stitch_ids.iter().find(|(p, _)| p.starts_with(&prefix)) {
-                container.body.push(lir::Stmt::Divert(lir::Divert {
-                    target: lir::DivertTarget::Container(*stitch_id),
-                    args: Vec::new(),
-                }));
+fn combine_content(
+    a: Option<&hir::Content>,
+    b: Option<&hir::Content>,
+    ctx: &mut LowerCtx<'_>,
+) -> Option<lir::Content> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(content), None) | (None, Some(content)) => Some(content::lower_content(content, ctx)),
+        (Some(a_content), Some(b_content)) => {
+            let mut parts = Vec::new();
+            for p in &a_content.parts {
+                parts.push(content::lower_content_part_pub(p, ctx));
             }
-        }
-    }
-
-    // 2. Root container implicit DONE
-    if let Some(root) = containers.iter_mut().find(|c| c.id == plan.root_id) {
-        let ends_with_divert = root
-            .body
-            .last()
-            .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)));
-        if !ends_with_divert {
-            root.body.push(lir::Stmt::Divert(lir::Divert {
-                target: lir::DivertTarget::Done,
-                args: Vec::new(),
-            }));
+            for p in &b_content.parts {
+                parts.push(content::lower_content_part_pub(p, ctx));
+            }
+            let mut tags: Vec<String> = a_content.tags.iter().map(|t| t.text.clone()).collect();
+            tags.extend(b_content.tags.iter().map(|t| t.text.clone()));
+            Some(lir::Content { parts, tags })
         }
     }
 }
 
+fn find_gather_target(
+    ctx: &LowerCtx<'_>,
+    plan: &plan::ContainerPlan,
+    gather_counter: &mut usize,
+) -> Option<brink_format::DefinitionId> {
+    let key = plan::GatherKey {
+        file: ctx.file,
+        scope: ctx.scope_path.clone(),
+        index: *gather_counter,
+    };
+    *gather_counter += 1;
+    plan.gather_targets.get(&key).copied()
+}
+
 // ─── Counting flags ─────────────────────────────────────────────────
 
-fn apply_counting_flags(containers: &mut [lir::Container]) {
+fn apply_counting_flags(root: &mut lir::Container) {
     let mut visit_ids = Vec::new();
     let mut turns_ids = Vec::new();
 
-    for container in containers.iter() {
-        collect_counting_refs(&container.body, &mut visit_ids, &mut turns_ids);
-    }
+    // Collect phase: walk entire tree
+    collect_counting_refs_tree(root, &mut visit_ids, &mut turns_ids);
 
-    for container in containers.iter_mut() {
-        if visit_ids.contains(&container.id) {
-            container.counting_flags |= CountingFlags::VISITS;
-        }
-        if turns_ids.contains(&container.id) {
-            container.counting_flags |= CountingFlags::TURNS;
-        }
+    // Apply phase: walk entire tree
+    apply_counting_flags_tree(root, &visit_ids, &turns_ids);
+}
+
+fn collect_counting_refs_tree(
+    container: &lir::Container,
+    visit_ids: &mut Vec<brink_format::DefinitionId>,
+    turns_ids: &mut Vec<brink_format::DefinitionId>,
+) {
+    collect_counting_refs(&container.body, visit_ids, turns_ids);
+    for child in &container.children {
+        collect_counting_refs_tree(child, visit_ids, turns_ids);
+    }
+}
+
+fn apply_counting_flags_tree(
+    container: &mut lir::Container,
+    visit_ids: &[brink_format::DefinitionId],
+    turns_ids: &[brink_format::DefinitionId],
+) {
+    if visit_ids.contains(&container.id) {
+        container.counting_flags |= CountingFlags::VISITS;
+    }
+    if turns_ids.contains(&container.id) {
+        container.counting_flags |= CountingFlags::TURNS;
+    }
+    for child in &mut container.children {
+        apply_counting_flags_tree(child, visit_ids, turns_ids);
     }
 }
 

@@ -20,21 +20,37 @@ fn lower_ink(source: &str) -> lir::Program {
     lir::lower_to_program(&files_for_lir, &result.index, &result.resolutions)
 }
 
-/// Find a container by path.
-fn find_container<'a>(program: &'a lir::Program, path: &str) -> &'a lir::Container {
-    program
-        .containers
+/// Get the root container.
+fn root(program: &lir::Program) -> &lir::Container {
+    &program.root
+}
+
+/// Find a direct child of a container by name.
+fn find_child<'a>(container: &'a lir::Container, name: &str) -> &'a lir::Container {
+    container
+        .children
         .iter()
-        .find(|c| c.path == path)
+        .find(|c| c.name.as_deref() == Some(name))
         .unwrap_or_else(|| {
-            let paths: Vec<&str> = program.containers.iter().map(|c| c.path.as_str()).collect();
-            panic!("no container with path {path:?}, available: {paths:?}")
+            let names: Vec<Option<&str>> = container
+                .children
+                .iter()
+                .map(|c| c.name.as_deref())
+                .collect();
+            panic!("no child named {name:?}, available: {names:?}")
         })
 }
 
-/// Find the root container.
-fn root(program: &lir::Program) -> &lir::Container {
-    find_container(program, "")
+/// Find a container by dot-separated path from root.
+fn find_by_path<'a>(program: &'a lir::Program, path: &str) -> &'a lir::Container {
+    if path.is_empty() {
+        return &program.root;
+    }
+    let mut current = &program.root;
+    for segment in path.split('.') {
+        current = find_child(current, segment);
+    }
+    current
 }
 
 /// Find a global by checking if its name matches via the name table.
@@ -46,9 +62,18 @@ fn find_global<'a>(program: &'a lir::Program, name: &str) -> &'a lir::GlobalDef 
         .unwrap_or_else(|| panic!("no global named {name:?}"))
 }
 
-/// Count containers of a given kind.
-fn count_kind(program: &lir::Program, kind: lir::ContainerKind) -> usize {
-    program.containers.iter().filter(|c| c.kind == kind).count()
+/// Recursively count containers of a given kind in the tree.
+fn count_kind(container: &lir::Container, kind: lir::ContainerKind) -> usize {
+    let mut count = usize::from(container.kind == kind);
+    for child in &container.children {
+        count += count_kind(child, kind);
+    }
+    count
+}
+
+/// Count all containers in the tree (including the root itself).
+fn count_all(container: &lir::Container) -> usize {
+    1 + container.children.iter().map(count_all).sum::<usize>()
 }
 
 /// Extract text from `EmitContent` statements.
@@ -77,17 +102,40 @@ fn ends_with_divert(stmts: &[lir::Stmt]) -> bool {
         .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)))
 }
 
+/// Recursively find any container matching a predicate.
+fn find_any<'a>(
+    container: &'a lir::Container,
+    pred: &dyn Fn(&lir::Container) -> bool,
+) -> Option<&'a lir::Container> {
+    if pred(container) {
+        return Some(container);
+    }
+    for child in &container.children {
+        if let Some(found) = find_any(child, pred) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Collect all containers of a given kind from the tree.
+fn collect_kind(container: &lir::Container, kind: lir::ContainerKind) -> Vec<&lir::Container> {
+    let mut result = Vec::new();
+    if container.kind == kind {
+        result.push(container);
+    }
+    for child in &container.children {
+        result.extend(collect_kind(child, kind));
+    }
+    result
+}
+
 // ─── Basic content ──────────────────────────────────────────────────
 
 #[test]
 fn minimal_story_has_root_container() {
     let p = lower_ink("Hello, world!\n");
-    assert!(
-        p.containers
-            .iter()
-            .any(|c| c.kind == lir::ContainerKind::Root),
-        "program must have a root container"
-    );
+    assert_eq!(p.root.kind, lir::ContainerKind::Root);
 }
 
 #[test]
@@ -128,15 +176,15 @@ fn multiple_content_lines() {
 #[test]
 fn knot_creates_container() {
     let p = lower_ink("== greet ==\nHello!\n-> END\n");
-    assert_eq!(count_kind(&p, lir::ContainerKind::Knot), 1);
-    let knot = find_container(&p, "greet");
+    assert_eq!(count_kind(&p.root, lir::ContainerKind::Knot), 1);
+    let knot = find_child(&p.root, "greet");
     assert_eq!(knot.kind, lir::ContainerKind::Knot);
 }
 
 #[test]
 fn knot_body_has_content() {
     let p = lower_ink("== greet ==\nWelcome.\n-> END\n");
-    let knot = find_container(&p, "greet");
+    let knot = find_child(&p.root, "greet");
     let texts = collect_text(&knot.body);
     assert_eq!(texts, vec!["Welcome."]);
 }
@@ -144,7 +192,7 @@ fn knot_body_has_content() {
 #[test]
 fn knot_divert_to_end() {
     let p = lower_ink("== greet ==\nHi.\n-> END\n");
-    let knot = find_container(&p, "greet");
+    let knot = find_child(&p.root, "greet");
     assert!(ends_with_divert(&knot.body));
     if let Some(lir::Stmt::Divert(d)) = knot.body.last() {
         assert!(matches!(d.target, lir::DivertTarget::End));
@@ -164,9 +212,9 @@ Second.
 -> END
 ",
     );
-    assert_eq!(count_kind(&p, lir::ContainerKind::Knot), 2);
-    let a = find_container(&p, "alpha");
-    let b = find_container(&p, "beta");
+    assert_eq!(count_kind(&p.root, lir::ContainerKind::Knot), 2);
+    let a = find_child(&p.root, "alpha");
+    let b = find_child(&p.root, "beta");
     assert_eq!(collect_text(&a.body), vec!["First."]);
     assert_eq!(collect_text(&b.body), vec!["Second."]);
 }
@@ -175,9 +223,8 @@ Second.
 fn root_divert_to_knot_resolves() {
     let p = lower_ink("-> greet\n== greet ==\nHi.\n-> END\n");
     let r = root(&p);
-    let knot = find_container(&p, "greet");
+    let knot = find_child(&p.root, "greet");
 
-    // Root should have a divert whose target matches the knot's id.
     let has_divert_to_knot = r.body.iter().any(|stmt| {
         if let lir::Stmt::Divert(d) = stmt {
             matches!(d.target, lir::DivertTarget::Container(id) if id == knot.id)
@@ -200,8 +247,8 @@ What'll it be?
 -> END
 ",
     );
-    assert_eq!(count_kind(&p, lir::ContainerKind::Stitch), 1);
-    let stitch = find_container(&p, "tavern.order");
+    assert_eq!(count_kind(&p.root, lir::ContainerKind::Stitch), 1);
+    let stitch = find_by_path(&p, "tavern.order");
     assert_eq!(stitch.kind, lir::ContainerKind::Stitch);
     assert_eq!(collect_text(&stitch.body), vec!["What'll it be?"]);
 }
@@ -219,17 +266,16 @@ Paying.
 -> END
 ",
     );
-    let _knot = find_container(&p, "tavern");
-    let stitch_order = find_container(&p, "tavern.order");
-    let stitch_pay = find_container(&p, "tavern.pay");
+    let _knot = find_child(&p.root, "tavern");
+    let stitch_order = find_by_path(&p, "tavern.order");
+    let stitch_pay = find_by_path(&p, "tavern.pay");
 
-    // Both stitches should exist and have content
     assert_eq!(collect_text(&stitch_order.body), vec!["Ordering."]);
     assert_eq!(collect_text(&stitch_pay.body), vec!["Paying."]);
 }
 
 #[test]
-fn stitch_scope_root_points_to_knot() {
+fn stitch_is_child_of_knot() {
     let p = lower_ink(
         "\
 == tavern ==
@@ -238,9 +284,9 @@ Hi.
 -> END
 ",
     );
-    let knot = find_container(&p, "tavern");
-    let stitch = find_container(&p, "tavern.order");
-    assert_eq!(stitch.scope_root, Some(knot.id));
+    let knot = find_child(&p.root, "tavern");
+    let stitch = find_child(knot, "order");
+    assert_eq!(stitch.kind, lir::ContainerKind::Stitch);
 }
 
 // ─── Variables and constants ────────────────────────────────────────
@@ -301,7 +347,6 @@ fn list_declaration() {
     assert_eq!(p.lists.len(), 1);
     assert_eq!(p.list_items.len(), 3);
 
-    // Check ordinals: auto-increment from 1
     let ordinals: Vec<i32> = p.list_items.iter().map(|i| i.ordinal).collect();
     assert_eq!(ordinals, vec![1, 2, 3]);
 }
@@ -354,13 +399,14 @@ fn temp_decl_in_knot() {
 -> END
 ",
     );
-    let knot = find_container(&p, "func");
+    let knot = find_child(&p.root, "func");
     let has_temp = knot.body.iter().any(|s| {
         matches!(
             s,
             lir::Stmt::DeclareTemp {
                 slot: 0,
-                value: Some(lir::Expr::Int(42))
+                value: Some(lir::Expr::Int(42)),
+                ..
             }
         )
     });
@@ -376,13 +422,12 @@ fn params_occupy_first_temp_slots() {
 -> END
 ",
     );
-    let knot = find_container(&p, "func");
+    let knot = find_child(&p.root, "func");
     assert_eq!(knot.params.len(), 2);
     assert_eq!(knot.params[0].slot, 0);
     assert_eq!(knot.params[1].slot, 1);
-    assert_eq!(knot.temp_slot_count, 3); // 2 params + 1 temp
+    assert_eq!(knot.temp_slot_count, 3);
 
-    // The temp 'c' should be at slot 2
     let has_temp_at_2 = knot
         .body
         .iter()
@@ -405,9 +450,9 @@ fn choice_set_creates_containers() {
 -> END
 ",
     );
-    // Should have choice target containers and a gather
-    assert!(count_kind(&p, lir::ContainerKind::ChoiceTarget) >= 2);
-    assert!(count_kind(&p, lir::ContainerKind::Gather) >= 1);
+    let scene = find_child(&p.root, "scene");
+    assert!(count_kind(scene, lir::ContainerKind::ChoiceTarget) >= 2);
+    assert!(count_kind(scene, lir::ContainerKind::Gather) >= 1);
 }
 
 #[test]
@@ -423,7 +468,7 @@ fn choice_set_in_knot_body() {
 -> END
 ",
     );
-    let knot = find_container(&p, "scene");
+    let knot = find_child(&p.root, "scene");
     let has_choice_set = knot
         .body
         .iter()
@@ -444,14 +489,10 @@ fn choice_targets_have_body_content() {
 -> END
 ",
     );
-    let choice_targets: Vec<&lir::Container> = p
-        .containers
-        .iter()
-        .filter(|c| c.kind == lir::ContainerKind::ChoiceTarget)
-        .collect();
+    let scene = find_child(&p.root, "scene");
+    let choice_targets = collect_kind(scene, lir::ContainerKind::ChoiceTarget);
     assert_eq!(choice_targets.len(), 2);
 
-    // At least one should have body content
     let any_has_content = choice_targets
         .iter()
         .any(|c| !collect_text(&c.body).is_empty());
@@ -471,11 +512,8 @@ fn gather_has_content() {
 -> END
 ",
     );
-    let gathers: Vec<&lir::Container> = p
-        .containers
-        .iter()
-        .filter(|c| c.kind == lir::ContainerKind::Gather)
-        .collect();
+    let scene = find_child(&p.root, "scene");
+    let gathers = collect_kind(scene, lir::ContainerKind::Gather);
     assert!(!gathers.is_empty(), "should have at least one gather");
 
     let gather_texts: Vec<String> = gathers.iter().flat_map(|g| collect_text(&g.body)).collect();
@@ -497,15 +535,10 @@ More content after gather.
 -> END
 ",
     );
-    let gathers: Vec<&lir::Container> = p
-        .containers
-        .iter()
-        .filter(|c| c.kind == lir::ContainerKind::Gather)
-        .collect();
+    let scene = find_child(&p.root, "scene");
+    let gathers = collect_kind(scene, lir::ContainerKind::Gather);
     assert!(!gathers.is_empty());
 
-    // The gather container should include "More content after gather."
-    // and the -> END divert (trailing statements from parent block)
     let gather = &gathers[0];
     let texts = collect_text(&gather.body);
     assert!(
@@ -531,7 +564,7 @@ fn choice_set_has_gather_target() {
 -> END
 ",
     );
-    let knot = find_container(&p, "scene");
+    let knot = find_child(&p.root, "scene");
     let cs = knot.body.iter().find_map(|s| {
         if let lir::Stmt::ChoiceSet(cs) = s {
             Some(cs)
@@ -548,10 +581,10 @@ fn choice_set_has_gather_target() {
 
     // The gather target should match a gather container's id
     let gather_id = cs.gather_target.unwrap();
-    let gather_exists = p
-        .containers
-        .iter()
-        .any(|c| c.id == gather_id && c.kind == lir::ContainerKind::Gather);
+    let gather_exists = find_any(&p.root, &|c| {
+        c.id == gather_id && c.kind == lir::ContainerKind::Gather
+    })
+    .is_some();
     assert!(
         gather_exists,
         "gather_target should reference an existing gather container"
@@ -569,7 +602,7 @@ fn sticky_choice_flag() {
 -> END
 ",
     );
-    let knot = find_container(&p, "scene");
+    let knot = find_child(&p.root, "scene");
     let choice = knot.body.iter().find_map(|s| {
         if let lir::Stmt::ChoiceSet(cs) = s {
             cs.choices.first()
@@ -592,7 +625,7 @@ fn once_only_choice_flag() {
 -> END
 ",
     );
-    let knot = find_container(&p, "scene");
+    let knot = find_child(&p.root, "scene");
     let choice = knot.body.iter().find_map(|s| {
         if let lir::Stmt::ChoiceSet(cs) = s {
             cs.choices.first()
@@ -626,8 +659,8 @@ fn nested_choices_create_nested_containers() {
 -> END
 ",
     );
-    // Should have ChoiceTarget containers for both outer and inner choices
-    let choice_targets = count_kind(&p, lir::ContainerKind::ChoiceTarget);
+    let scene = find_child(&p.root, "scene");
+    let choice_targets = count_kind(scene, lir::ContainerKind::ChoiceTarget);
     assert!(
         choice_targets >= 4,
         "should have at least 4 choice targets (2 outer + 2 inner), got {choice_targets}"
@@ -647,11 +680,9 @@ fn nested_choice_bodies_have_content() {
 -> END
 ",
     );
-    // Find a choice target that contains "Inner body text."
-    let has_inner = p
-        .containers
+    let scene = find_child(&p.root, "scene");
+    let has_inner = collect_kind(scene, lir::ContainerKind::ChoiceTarget)
         .iter()
-        .filter(|c| c.kind == lir::ContainerKind::ChoiceTarget)
         .any(|c| {
             collect_text(&c.body)
                 .iter()
@@ -702,8 +733,8 @@ The end.
 -> END
 ",
     );
-    let start = find_container(&p, "start");
-    let middle = find_container(&p, "middle");
+    let start = find_child(&p.root, "start");
+    let middle = find_child(&p.root, "middle");
 
     let start_diverts_to_middle = start.body.iter().any(|s| {
         matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Container(id) if id == middle.id))
@@ -723,8 +754,8 @@ One ale, please.
 -> END
 ",
     );
-    let knot = find_container(&p, "tavern");
-    let stitch = find_container(&p, "tavern.order");
+    let knot = find_child(&p.root, "tavern");
+    let stitch = find_child(knot, "order");
 
     let diverts_to_stitch = knot.body.iter().any(|s| {
         matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Container(id) if id == stitch.id))
@@ -1009,7 +1040,7 @@ VAR t = 0
 -> END
 ",
     );
-    let knot = find_container(&p, "scene");
+    let knot = find_child(&p.root, "scene");
     let has_turns = knot.body.iter().any(|s| {
         matches!(
             s,
@@ -1030,7 +1061,7 @@ VAR t = 0
 #[test]
 fn knots_have_visit_counting_by_default() {
     let p = lower_ink("== greet ==\nHi.\n-> END\n");
-    let knot = find_container(&p, "greet");
+    let knot = find_child(&p.root, "greet");
     assert!(
         knot.counting_flags
             .contains(brink_format::CountingFlags::VISITS),
@@ -1050,7 +1081,7 @@ fn visit_count_reference_sets_flag() {
 -> END
 ",
     );
-    let scene = find_container(&p, "scene");
+    let scene = find_child(&p.root, "scene");
     assert!(
         scene
             .counting_flags
@@ -1064,8 +1095,8 @@ fn visit_count_reference_sets_flag() {
 #[test]
 fn empty_program_has_only_root() {
     let p = lower_ink("");
-    assert_eq!(p.containers.len(), 1);
-    assert_eq!(p.containers[0].kind, lir::ContainerKind::Root);
+    assert_eq!(count_all(&p.root), 1);
+    assert_eq!(p.root.kind, lir::ContainerKind::Root);
 }
 
 #[test]
@@ -1101,9 +1132,9 @@ Three.
 -> END
 ",
     );
-    assert_eq!(count_kind(&p, lir::ContainerKind::Root), 1);
-    assert_eq!(count_kind(&p, lir::ContainerKind::Knot), 2);
-    assert_eq!(count_kind(&p, lir::ContainerKind::Stitch), 2);
+    assert_eq!(count_kind(&p.root, lir::ContainerKind::Root), 1);
+    assert_eq!(count_kind(&p.root, lir::ContainerKind::Knot), 2);
+    assert_eq!(count_kind(&p.root, lir::ContainerKind::Stitch), 2);
 }
 
 // ─── Knot parameters ───────────────────────────────────────────────
@@ -1117,7 +1148,7 @@ Hello.
 -> END
 ",
     );
-    let knot = find_container(&p, "greet");
+    let knot = find_child(&p.root, "greet");
     assert_eq!(knot.params.len(), 1);
     assert_eq!(knot.params[0].slot, 0);
     assert!(!knot.params[0].is_ref);
@@ -1132,7 +1163,7 @@ fn knot_with_ref_param() {
 -> END
 ",
     );
-    let knot = find_container(&p, "modify");
+    let knot = find_child(&p.root, "modify");
     assert_eq!(knot.params.len(), 1);
     assert!(knot.params[0].is_ref);
 }
@@ -1153,7 +1184,7 @@ Helping.
 ->->
 ",
     );
-    let start = find_container(&p, "start");
+    let start = find_child(&p.root, "start");
     let has_tunnel = start
         .body
         .iter()
@@ -1177,7 +1208,7 @@ Background.
 -> DONE
 ",
     );
-    let knot = find_container(&p, "main");
+    let knot = find_child(&p.root, "main");
     let has_thread = knot
         .body
         .iter()
@@ -1195,7 +1226,7 @@ fn return_from_function() {
 ~ return x * 2
 ",
     );
-    let knot = find_container(&p, "double");
+    let knot = find_child(&p.root, "double");
     let has_return = knot
         .body
         .iter()
@@ -1263,10 +1294,10 @@ Stalls line the street.
     );
 
     // Structural assertions
-    assert_eq!(count_kind(&p, lir::ContainerKind::Root), 1);
-    assert_eq!(count_kind(&p, lir::ContainerKind::Knot), 3);
-    assert!(count_kind(&p, lir::ContainerKind::ChoiceTarget) >= 4);
-    assert!(count_kind(&p, lir::ContainerKind::Gather) >= 1);
+    assert_eq!(count_kind(&p.root, lir::ContainerKind::Root), 1);
+    assert_eq!(count_kind(&p.root, lir::ContainerKind::Knot), 3);
+    assert!(count_kind(&p.root, lir::ContainerKind::ChoiceTarget) >= 4);
+    assert!(count_kind(&p.root, lir::ContainerKind::Gather) >= 1);
 
     // Globals
     assert_eq!(p.globals.len(), 1);
@@ -1276,14 +1307,14 @@ Stalls line the street.
 
     // Root diverts to town_square
     let r = root(&p);
-    let town = find_container(&p, "town_square");
+    let town = find_child(&p.root, "town_square");
     let root_diverts = r.body.iter().any(|s| {
         matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Container(id) if id == town.id))
     });
     assert!(root_diverts, "root should divert to town_square");
 
     // Inn has assignment to visited_inn
-    let inn = find_container(&p, "inn");
+    let inn = find_child(&p.root, "inn");
     let has_assign = inn
         .body
         .iter()
@@ -1291,7 +1322,7 @@ Stalls line the street.
     assert!(has_assign, "inn should assign visited_inn = true");
 
     // Market has a conditional (checking visited_inn)
-    let market = find_container(&p, "market");
+    let market = find_child(&p.root, "market");
     let has_cond = market.body.iter().any(|s| {
         if let lir::Stmt::EmitContent(c) = s {
             c.parts
@@ -1325,19 +1356,15 @@ fn multiple_choice_sets_cascade_gathers() {
 -> END
 ",
     );
-    // Should have 2 gathers
-    let gather_count = count_kind(&p, lir::ContainerKind::Gather);
+    let scene = find_child(&p.root, "scene");
+    let gather_count = count_kind(scene, lir::ContainerKind::Gather);
     assert!(
         gather_count >= 2,
         "should have at least 2 gathers, got {gather_count}"
     );
 
-    // Second gather should contain -> END
-    let gathers: Vec<&lir::Container> = p
-        .containers
-        .iter()
-        .filter(|c| c.kind == lir::ContainerKind::Gather)
-        .collect();
+    // One gather should contain -> END
+    let gathers = collect_kind(scene, lir::ContainerKind::Gather);
     let any_gather_has_end = gathers.iter().any(|g| {
         g.body.iter().any(
             |s| matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::End)),
@@ -1352,11 +1379,9 @@ fn multiple_choice_sets_cascade_gathers() {
 #[test]
 fn list_variable_default_references_items() {
     let p = lower_ink("LIST mood = (happy), sad, (excited)\n");
-    // The list is declared, items exist
     assert_eq!(p.lists.len(), 1);
     assert_eq!(p.list_items.len(), 3);
 
-    // List items should have correct ordinals
     let ordinals: Vec<i32> = p.list_items.iter().map(|i| i.ordinal).collect();
     assert_eq!(ordinals, vec![1, 2, 3]);
 }
