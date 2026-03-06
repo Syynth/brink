@@ -20,7 +20,7 @@ Things where both the spec and code address the same concept but disagree.
 
 ### 1d. External function resolution API surface
 
-**Spec is correct, implementation needs to catch up.** `resolve_external` and `invoke_fallback` should be public methods on Flow so callers can bypass Story.
+**RESOLVED.** `resolve_external`, `invoke_fallback`, and `has_pending_external` added as public methods on `Story`. `Flow` remains `pub(crate)` — callers use the Story forwarding API.
 
 ### 1e. ExternalResult — no Pending variant
 
@@ -64,7 +64,7 @@ Spec concepts that have zero or stub-only implementation.
 | **Locale overlay loading** (§ Locale overlay loading) | **RESOLVED.** Spec updated — `load_locale` with `Strict`/`Overlay` modes, `Program` composition (`LinkedBinary` + `LinkedLocale`), locale switching. No `.inkl` loading code yet. | **High — implement.** |
 | **Save/load serialization** | Context comment says "(deferred)". No serialization code. Mostly involves making Context data cleanly marshallable in/out of a buffer for the host. | **Medium — blocked on Context design** (`FLOW VAR` shared/instance split). |
 | **Line template resolution** (§ Output buffer + format-spec templates) | `resolve_line` returns `"[template]"` for all `LineContent::Template` — hard-coded stub. The entire `PluralResolver` / `LinePart::Select` / slot interpolation system is non-functional. Ties into `BeginStringEval`/`EndStringEval` review — need to understand how string eval and line templates interact for localization. | **Needs review and design.** |
-| **`flow.resolve_external()` / `flow.invoke_fallback()`** as Flow methods | Resolution is Story-internal only. See §1d. | Spec is correct, implementation needs to catch up. |
+| **`flow.resolve_external()` / `flow.invoke_fallback()`** as Flow methods | Resolution is Story-internal only. See §1d. | **RESOLVED.** See §1d — public methods added on Story. |
 | **`ExternalResult::Pending`** async path | Not implemented. See §1e. | Spec is correct, implementation needs to catch up. |
 
 ## 4. Stubs and dead code

@@ -824,6 +824,43 @@ impl<R: StoryRng> Story<R> {
         &self.default.stats
     }
 
+    /// Returns `true` if the default flow has a pending external call
+    /// (an `External` frame on top of the call stack).
+    pub fn has_pending_external(&self) -> bool {
+        self.default.flow.external_fn_id().is_some()
+    }
+
+    /// Resolve a pending external call on the default flow by providing
+    /// the return value. For fire-and-forget calls, pass `Value::Null`.
+    ///
+    /// After resolving, call [`step`](Story::step) to continue execution.
+    pub fn resolve_external(&mut self, value: Value) {
+        self.default.flow.resolve_external(value);
+    }
+
+    /// Resolve a pending external call on the default flow by invoking
+    /// the ink-defined fallback body. The fallback is a function call
+    /// whose output becomes the return value.
+    ///
+    /// After invoking, call [`step`](Story::step) to continue execution.
+    pub fn invoke_fallback(&mut self, program: &Program) -> Result<(), RuntimeError> {
+        let fn_id = self
+            .default
+            .flow
+            .external_fn_id()
+            .ok_or(RuntimeError::CallStackUnderflow)?;
+        let entry = program.external_fn(fn_id);
+        let fallback_id = entry
+            .and_then(|e| e.fallback)
+            .ok_or(RuntimeError::UnresolvedExternalCall(fn_id))?;
+        let container_idx = program
+            .resolve_container(fallback_id)
+            .ok_or(RuntimeError::UnresolvedDefinition(fallback_id))?;
+        self.default.flow.output.begin_capture();
+        self.default.flow.invoke_fallback(container_idx);
+        Ok(())
+    }
+
     // ── Named flow API ──────────────────────────────────────────────
 
     /// Spawn a new flow instance starting at the given entry point.
