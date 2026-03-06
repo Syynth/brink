@@ -7,12 +7,12 @@ use brink_ir::{
 /// Resolve all unresolved references across files.
 pub fn resolve_refs(
     index: &SymbolIndex,
-    files: &[(FileId, SymbolManifest)],
+    files: &[(FileId, &SymbolManifest)],
 ) -> (ResolutionMap, Vec<Diagnostic>) {
     let mut map = ResolutionMap::new();
     let mut diagnostics = Vec::new();
 
-    for &(file_id, ref manifest) in files {
+    for &(file_id, manifest) in files {
         for uref in &manifest.unresolved {
             match uref.kind {
                 RefKind::Divert => {
@@ -544,7 +544,7 @@ mod tests {
             &[],
             vec![uref("start", RefKind::Divert, None, None)],
         );
-        let files = vec![(FileId(0), manifest)];
+        let files = vec![(FileId(0), &manifest)];
         let (index, merge_diags) = merge_manifests(&files);
         let (resolutions, resolve_diags) = resolve_refs(&index, &files);
 
@@ -565,7 +565,7 @@ mod tests {
             &[],
             vec![uref("kitchen.look_around", RefKind::Divert, None, None)],
         );
-        let files = vec![(FileId(0), manifest)];
+        let files = vec![(FileId(0), &manifest)];
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
@@ -584,7 +584,7 @@ mod tests {
             &[],
             vec![uref("look", RefKind::Divert, Some("bedroom"), None)],
         );
-        let files = vec![(FileId(0), manifest)];
+        let files = vec![(FileId(0), &manifest)];
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
@@ -606,7 +606,7 @@ mod tests {
             &[],
             vec![uref("nonexistent", RefKind::Divert, None, None)],
         );
-        let files = vec![(FileId(0), manifest)];
+        let files = vec![(FileId(0), &manifest)];
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
@@ -623,7 +623,7 @@ mod tests {
         // Give m2 different ranges so they don't collide
         m1.knots[0].range = range(0, 5);
 
-        let files = vec![(FileId(0), m1), (FileId(1), m2)];
+        let files = vec![(FileId(0), &m1), (FileId(1), &m2)];
         let (_index, diags) = merge_manifests(&files);
 
         assert_eq!(diags.len(), 1);
@@ -641,7 +641,7 @@ mod tests {
             &[],
             vec![uref("red", RefKind::Variable, None, None)],
         );
-        let files = vec![(FileId(0), manifest)];
+        let files = vec![(FileId(0), &manifest)];
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
@@ -665,7 +665,7 @@ mod tests {
             &[],
             vec![], // No unresolved refs for END/DONE
         );
-        let files = vec![(FileId(0), manifest)];
+        let files = vec![(FileId(0), &manifest)];
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
@@ -684,7 +684,7 @@ mod tests {
             &["meeting.greet"],
             vec![uref("greet", RefKind::Divert, Some("meeting"), None)],
         );
-        let files = vec![(FileId(0), manifest)];
+        let files = vec![(FileId(0), &manifest)];
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
@@ -705,7 +705,7 @@ mod tests {
             &[],
             vec![uref("print_debug", RefKind::Function, None, None)],
         );
-        let files = vec![(FileId(0), manifest)];
+        let files = vec![(FileId(0), &manifest)];
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
@@ -724,7 +724,7 @@ mod tests {
             &[],
             vec![uref("player_name", RefKind::Variable, None, None)],
         );
-        let files = vec![(FileId(0), manifest)];
+        let files = vec![(FileId(0), &manifest)];
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
@@ -743,7 +743,7 @@ mod tests {
             &[],
             vec![uref("red", RefKind::Variable, None, None)],
         );
-        let files = vec![(FileId(0), manifest)];
+        let files = vec![(FileId(0), &manifest)];
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
@@ -763,7 +763,7 @@ mod tests {
             &[],
             vec![uref("Color.red", RefKind::Variable, None, None)],
         );
-        let files = vec![(FileId(0), manifest)];
+        let files = vec![(FileId(0), &manifest)];
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
