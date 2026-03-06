@@ -21,7 +21,7 @@ Loading, hot-reload, and patching all flow through the same linker step:
 1. **Normal startup:** load `.inkb` → optionally overlay `.inkl` → populate unlinked layer → link → run
 2. **Hot-reload (full):** replace entire unlinked layer → re-link → reconcile instances
 3. **Hot-reload (patch):** update changed definitions in unlinked layer → re-link → reconcile instances
-4. **Locale switch:** swap per-container line tables + audio table from a different `.inkl` → re-link
+4. **Locale switch:** load a different `.inkl` → construct new `LinkedLocale` → pair with existing `LinkedBinary` into a new `Program`. No re-linking.
 
 ### Linker step
 
@@ -33,7 +33,7 @@ The linker reads all definitions from the unlinked layer and:
 4. Resolves all `DefinitionId` references in bytecode to runtime indices
 5. Indexes external function definitions (assigns runtime indices, builds name lookup tables). Resolution to host bindings or ink fallbacks is a runtime concern, not a link-time concern.
 6. Initializes global variables from their default values
-7. Builds per-container line tables, name table, and other content structures
+7. Splits per-container line tables out of the `.inkb` into the base `LinkedLocale`. Builds name table and other content structures for the `LinkedBinary`.
 8. Produces an immutable, shareable `Program`
 
 One codepath processes all definition types uniformly. The tag determines which table, but the resolution mechanism is the same.
@@ -52,7 +52,7 @@ A Flow is a fully isolated execution context — analogous to a separate convers
 - **Pending choices** — choices awaiting player selection, each with a thread fork snapshot
 - **Tag state** — current tags, in-tag flag
 
-All persistent positions within a flow use `(DefinitionId, offset)` for recompilation stability.
+Positions within a flow use resolved runtime indices — `(u32 container_idx, usize offset)` — for fast execution. Translation to/from symbolic `DefinitionId` happens at reconciliation (`story.reload`) and save/load boundaries, not during execution.
 
 ### Context (game state / save state)
 
@@ -68,7 +68,7 @@ Context is the natural serialization boundary — saving a story means serializi
 
 ### Program (immutable, shared)
 
-The linked program — containers, bytecode, line tables, definitions, name table. Loaded once, shared across all story instances and flows. Never mutated after linking.
+The `Program` is a `(Arc<LinkedBinary>, Arc<LinkedLocale>)` pair. The binary half (containers, bytecode, globals, lists, externals, labels, name table) is linked once and `Arc`-shared across all story instances and locale variants. The locale half (per-container line tables with content and audio refs) is `Arc`-shared across all instances using the same locale. `LinkedBinary` has no line tables — it is purely structural. The `Program` is never mutated after construction. Switching locales constructs a new `Program` with a different locale half — the binary half is reused. `Program` construction is cheap (two `Arc` clones); building the halves is the expensive step.
 
 ## Execution model
 
@@ -98,28 +98,53 @@ All runtime errors (type errors, stack underflow, unresolved external calls, etc
 
 When the VM yields `ExternalCall`, it has popped the arguments from the value stack and pushed an `External` call frame. The caller must resolve the external call before the next `step` — see [External function handling](#external-function-handling).
 
-### Layer 1: Line-level continuation
+### Layer 1: Line-level continuation (`continue_line`)
 
-Loops the VM step until a complete line of dialogue is ready:
+Public API. Loops the VM step until a complete line is ready or a yield point is reached.
 
-- Detects newline boundaries in the output buffer (a newline followed by non-glue content confirms the line)
-- Handles glue lookahead (a newline is tentative until the next step confirms it wasn't consumed by glue)
-- Resolves external function calls via registered handlers
-- Returns one line of text with its associated tags
+```
+story.continue_line() -> Result<LineResult>
+```
+
+Termination conditions:
+1. **Confirmed newline** — non-glue content after a newline confirms the previous line is complete. The new content stays in the buffer for the next `continue_line()` call. Returns `LineResult::Complete`.
+2. **Yield point** — `Done`, `Ended`, or choice set. Returns the appropriate terminal `LineResult` variant.
+3. **Pending external** — handler returned `Pending`. Returns `LineResult::PendingExternal`. Buffer is untouched.
+
+Line assembly within one `continue_line()` call:
+1. VM steps, pushing text/newlines/glue/tags/SpanStart into the output buffer.
+2. Events may fire (VM yields `ExternalCall`, `is_event` returns true) — Story layer accumulates them in a temporary `Vec<Event>`.
+3. When a line is complete, flush the output buffer for that single line — produces `(Vec<Span>, Vec<String>)` (resolved spans + tags).
+4. Assemble `Line { spans, events, tags }` from the flush result and accumulated events.
+5. Return the `Line` in the appropriate `LineResult` variant.
+
+Event accumulation scope is exactly one `continue_line()` call. No cross-line correlation or index tracking needed.
 
 This is equivalent to the reference ink runtime's `Continue()`.
 
-### Layer 2: Passage-level continuation
+### Layer 2: Passage-level continuation (`continue_maximally`)
 
-Loops line-level continuation until a yield point (choices available, done, or ended). Returns all accumulated lines. This is equivalent to the reference ink runtime's `ContinueMaximally()` and the current behavior of `step()`.
+Public API. Loops line-level continuation until a yield point. Returns all accumulated lines.
+
+```
+story.continue_maximally() -> Result<InkOutcome>
+```
+
+Collects `LineResult::Complete` lines, stops at any terminal variant, and assembles `InkOutcome`. See [Public API types](#public-api-types) for the assembly pseudocode.
+
+This is equivalent to the reference ink runtime's `ContinueMaximally()`.
 
 ### Layer 3: Story orchestrator
 
 The `Story` manages one or more flows and their contexts, providing the convenient public API:
 
-- **Single-flow** (common case): one flow, one context. API behaves like `ContinueMaximally` — step and get text + choices.
-- **External function binding**: register handlers at the Story level. Line/passage-level continuation resolves external calls transparently.
+- **Single-flow** (common case): one flow, one context.
+- **External function handling**: `ExternalFnHandler` trait registered at the Story level. `continue_line()` resolves external calls transparently. See [ExternalFnHandler trait](#externalfnhandler-trait).
+- **Event capture**: Story layer captures events during `continue_line()` and associates them with the line being built. See [Event capture](#event-capture).
 - **Choice selection**: `choose(index)` is a flow-level operation — restores the thread fork, sets execution position, clears pending choices.
+- **Global variable access**: `get_global(name) -> ExternalValue`, `set_global(name, ExternalValue)`. Uses `ExternalValue` at the boundary.
+- **Pending external query**: `has_pending_external() -> bool` — distinguishes "blocked on async external" from "actual error" when `continue_maximally()` returns `Err(UnresolvedExternalCall)`.
+- **External resolution**: `resolve_external(value: ExternalValue)` — provides the result for a pending external call. The next `continue_maximally()` or `continue_line()` call continues from where it froze.
 
 ### Flows and instancing
 
@@ -128,9 +153,9 @@ Every flow in the Story is a named **(Flow, Context) pair**. Multi-flow and inst
 - **Named flows**: the Story manages a collection of named (Flow, Context) pairs. The "default" flow is just the one created at startup. Additional flows can be created with their own entry points and contexts.
 - **Instanced flows**: multiple (Flow, Context) pairs can share the same scene template (entry point in the Program). Each instance has a unique identity (e.g., `"shopkeeper:npc_42"`) and fully independent state.
 
-**Variable scoping for instances** uses explicit registration. When setting up an instance template, the game developer declares which globals are **shared** (readable/writable across all instances, backed by a common store). Everything else in the Context is **per-instance by default** — visit counts, turn counts, turn index, RNG, and all unregistered globals get their own copy per instance. The VM sees a flat key-value store; the backing store handles the shared/instance split transparently.
+**Variable scoping for instances** is determined at the ink source level via the `FLOW VAR` keyword. `VAR x = 0` (the default) declares a shared global — readable/writable across all instances, backed by a common store. `FLOW VAR x = 0` declares a per-instance variable — each flow instance gets its own copy. The instance flag is a single bit on `GlobalVarDef` in the format. The linker partitions globals into shared and instance ranges. The Context provides a split backing store transparent to the VM — `GetGlobal`/`SetGlobal` don't branch on scoping. Visit counts, turn counts, turn index, and RNG are always per-instance.
 
-**Lifecycle, persistence, and synchronization** are Story-layer or engine/caller-layer concerns — the Flow and VM know nothing about them. The Story (or the engine above it) decides when to spawn or destroy instances, how to serialize their contexts, and whether/how to propagate state between flows. The primitives (named (Flow, Context) pairs, explicit shared-global registration) are designed to support a range of policies without prescribing one.
+**Lifecycle, persistence, and synchronization** are Story-layer or engine/caller-layer concerns — the Flow and VM know nothing about them. The Story (or the engine above it) decides when to spawn or destroy instances, how to serialize their contexts, and whether/how to propagate state between flows. The primitives (named (Flow, Context) pairs, source-level variable scoping) are designed to support a range of policies without prescribing one.
 
 Consumers who need maximum control can bypass the Story and work directly with flows, contexts, and `vm::step`. The Story is a convenience layer that does not sacrifice performance or control.
 
@@ -144,11 +169,16 @@ The VM distinguishes two kinds of entry into a container:
 Each call frame contains:
 
 ```
+ContainerPosition {
+    container_idx: u32,
+    offset: usize,
+}
+
 CallFrame {
     frame_type: CallFrameType,
-    return_address: (DefinitionId, offset),
-    temps: Vec<Value>,                        // frame-local temp variable slots
-    container_stack: Vec<(DefinitionId, offset)>,  // flow positions within this call
+    return_address: Option<ContainerPosition>,   // None for Root frames
+    temps: Vec<Value>,                           // frame-local temp variable slots
+    container_stack: Vec<ContainerPosition>,      // flow positions within this call
 }
 ```
 
@@ -187,35 +217,100 @@ The caller resolves the external call via methods on the Flow:
 - **Provide a result**: `flow.resolve_external(value)` — pops the `External` frame and pushes the return value onto the value stack. For fire-and-forget calls (e.g., `~ play_sound(...)`), the caller provides `Value::Null` and the next opcode (`Pop`) discards it.
 - **Invoke the ink fallback**: `flow.invoke_fallback(program)` — replaces the `External` frame with a `Function` frame pointing at the ink-defined fallback container. The next `step` call executes the fallback using the existing function call machinery (output capture, return value, frame pop). No special-case VM code needed.
 
-### Story-level integration
+### ExternalFnHandler trait
 
-Higher-level APIs (line/passage continuation) resolve external calls transparently via an `ExternalFnHandler` trait passed to the orchestration layer. The handler receives the function name and arguments, and returns a resolution:
+Per-call dispatch for external function resolution. The trait answers "is this an event or a function?" and resolves function calls.
 
-- `Resolved(Value)` — call completed, push return value
-- `Fallback` — use the ink-defined fallback body
-- `Pending` — async resolution; caller resolves later via `flow.resolve_external()`
+```
+trait ExternalFnHandler {
+    fn is_event(&self, name: &str) -> bool;
+    fn call(&self, name: &str, args: &[ExternalValue]) -> ExternalResult;
+}
+
+enum ExternalResult {
+    Resolved(ExternalValue),
+    Fallback,
+    Pending,
+}
+```
+
+| Variant | Meaning | Runtime behavior |
+|---------|---------|-----------------|
+| `Resolved(ExternalValue)` | Function call completed | Push return value via `flow.resolve_external()` |
+| `Fallback` | Use the ink-defined fallback body | Invoke fallback via `flow.invoke_fallback()` |
+| `Pending` | Async resolution; caller resolves later | Yield `Err(RuntimeError::UnresolvedExternalCall)` to caller |
+
+**`is_event` is always called first.** If it returns `true`, `call` is never invoked for that external. Common implementations use upfront declarative registration (e.g., a `HashSet<String>` of event names and a `HashMap<String, Box<dyn Fn>>` of function bindings), but power users can implement custom per-call logic.
 
 When `continue_line` encounters `Stepped::ExternalCall`:
 
 1. Read name from `flow.external_name(program)` and args from `flow.external_args()`
-2. Call the handler trait method
-3. **Resolved**: use `flow.resolve_external(result)`, continue stepping
-4. **Fallback**: use `flow.invoke_fallback(program)`, continue stepping
-5. **Pending**: yield to caller for async resolution
-6. **Handler error**: propagate to caller with descriptive context (handler name, args, underlying cause)
+2. Call `handler.is_event(name)`:
+   - **Event**: capture `Event { name, args }` in the Story layer's event accumulator, resolve external with `Value::Null`, continue stepping. The handler's `call()` is never invoked. See [Event capture](#event-capture).
+3. If not an event, call `handler.call(name, args)`:
+   - **Resolved**: use `flow.resolve_external(result)`, continue stepping
+   - **Fallback**: use `flow.invoke_fallback(program)`, continue stepping
+   - **Pending**: return `Err(RuntimeError::UnresolvedExternalCall)` to caller
 
-The trait approach lets different consumers use different resolution strategies (closure map, ECS lookup, async bridge) without coupling the runtime to any specific pattern.
+### Event capture
+
+Events are fire-and-forget external call records. They are structurally replay-safe: the handler's `call()` method is never invoked for events.
+
+- **Output buffer**: text-domain only. No event awareness. Handles text, newlines, glue, tags, SpanStart, captures.
+- **Event capture**: Story/continuation layer responsibility. Separate from the output buffer.
+- **Line assembly**: Story layer attaches accumulated events to the `Line` produced by the current `continue_line()` call. Event accumulation scope is exactly one `continue_line()` invocation.
 
 ## Output buffer
 
-The output buffer lives in each Flow and tracks per-line structure as content is emitted:
+The output buffer lives in each Flow and tracks per-line structure as content is emitted. It is purely text-domain — no events.
 
-- The VM calls `push_text`, `push_newline`, `push_glue`, `begin_tag`/`end_tag` — it does not know about lines.
-- The buffer internally groups text and tags into line segments, separated by newline boundaries.
-- Glue resolution collapses line boundaries (a glue followed by a newline merges the adjacent lines).
-- Callers query the buffer for structured output: completed lines with their associated tags, whether a partial line is in progress, etc.
+### OutputPart variants
 
-This design solves per-line tag association (e.g., the i18n test case where tags must attach to the line they follow, not the entire passage) without adding complexity to the VM.
+```
+enum OutputPart {
+    Text(String),
+    Newline,
+    Glue,
+    Tag(String),
+    Checkpoint,
+    SpanStart(LineId),
+}
+```
+
+`SpanStart(LineId)` is pushed by the VM when executing `EmitLine(idx)`. The VM constructs the `LineId` from the current container's `DefinitionId` and the local line index, then pushes `SpanStart(LineId)` followed by the resolved text content. The VM does NOT resolve audio refs — that happens at flush time.
+
+Text pushed without a preceding `SpanStart` (from `EmitValue`, string evaluation, or inline expressions) has no `LineId` and forms identity-less spans.
+
+### Span boundary rules
+
+- A new span starts at every `SpanStart`.
+- Text without a preceding `SpanStart` forms an identity-less span.
+- Adjacent identity-less text segments are coalesced into a single span.
+- Glue fuses lines by concatenating their span vectors. Span boundaries within a fused line are preserved.
+
+### Single-line flush
+
+The output buffer provides a single-line flush operation used by `continue_line()`:
+
+1. Extract parts up to and including the confirmed newline boundary (or end-of-buffer for terminal lines).
+2. Resolve glue (same algorithm as today — mark newlines consumed by glue, stitch text across boundaries).
+3. Walk the resolved parts, building spans:
+   - On `SpanStart(line_id)`: start a new span. Look up `line_id` in the `LinkedLocale` to get `audio_ref`.
+   - On `Text(s)`: append to the current span. If no current span exists, start an identity-less span (no `LineId`, no audio ref).
+   - On `Text(s)` when current span is identity-less: coalesce (append text to existing span).
+   - On `Tag(t)`: collect into the line's tag list.
+   - Skip resolved Glue/Newline/Checkpoint markers.
+4. Return `(Vec<Span>, Vec<String>)` — resolved spans and tags for the line.
+
+`LineId` is consumed during step 3 (used to look up audio ref) and does not appear in the returned `Span` structs.
+
+### Capture interaction
+
+Existing capture semantics (begin/end capture for string evaluation and function calls) are unchanged. `SpanStart` markers inside a captured region are consumed by the capture — they do not leak into the outer buffer. Captured content produces a flat string (same as today), not spans.
+
+### Whitespace handling
+
+The runtime de-duplicates consecutive newlines and suppresses leading newlines in the output stream (matching the reference ink runtime). Per-line whitespace normalization strips leading/trailing inline whitespace and collapses internal whitespace runs to a single space.
 
 ## Choice forks
 
@@ -243,38 +338,227 @@ All persistent references in story instances use `DefinitionId`, not runtime ind
 
 ## Multi-instance management
 
-A `NarrativeRuntime` (or equivalent) host interface manages:
+The `Story` type covers multi-instance management directly via named flows. Each named flow is a `(Flow, Context)` pair with independent state. The Story handles:
 
-- Loading/unloading programs (via the linker step)
-- Spawning/destroying story instances (each with its own flows and contexts)
-- Stepping instances and collecting results
-- Registering external function handlers
-- Hot-reloading programs and reconciling instances
+- Spawning/destroying named flow instances (`spawn_flow`, `destroy_flow`)
+- Stepping individual flows and collecting results (`step_flow`, `choose_flow`)
+- Registering external function handlers (passed to `step_with` / `step_flow_with`)
+- Hot-reloading programs and reconciling all flow instances
 - Save/load for contexts and flow state
 
-## Voice acting
+No separate `NarrativeRuntime` host interface is needed — Story is the top-level API for both single-flow and multi-instance use cases.
 
-Every text emission has a stable `LineId = (DefinitionId, u16)` — its container identity plus local line index. This is the same identity used for localization, so voice acting and text localization share a single addressing scheme.
+## Public API types
 
-Audio asset references live in the `.inkl` audio table, keyed by `LineId`. Authors can associate explicit recording IDs with lines via tags (`#voice:blacksmith_greeting_01`).
+### ExternalValue
 
-The runtime's text output includes `LineId` so the host can look up audio:
+The single public boundary type for all value exchange between host and runtime. Used for: event arguments, external function arguments, external function return values, and host get/set of global variables.
 
 ```
-struct TextOutput {
+enum ExternalValue {
+    Int(i32),
+    Float(f32),
+    Bool(bool),
+    String(String),
+    List(ExternalList),
+    Null,
+}
+```
+
+`ExternalList` uses resolved string names for items and origins. Internal `DefinitionId`s never appear in the public API.
+
+```
+struct ExternalList {
+    items: Vec<String>,       // resolved item names (e.g., "Emotion.happy")
+    origins: Vec<String>,     // resolved list definition names (e.g., "Emotion")
+}
+```
+
+The runtime translates between internal `Value` (which includes `DivertTarget`, `VariablePointer`, and `DefinitionId`-based list representations) and `ExternalValue` at the API boundary. `DivertTarget` and `VariablePointer` are internal-only and never cross the boundary.
+
+### Span
+
+A segment of resolved text output with optional audio reference.
+
+```
+struct Span {
     text: String,
-    line_id: LineId,
     audio_ref: Option<AudioRef>,
 }
 ```
 
-The host handles playback — brink provides the mapping.
+`AudioRef` is a `String` (or newtype wrapper) — an opaque audio asset identifier interpreted by the host (filenames, FMOD events, Wwise events, etc.). The runtime does not interpret it.
 
-## Locale overlay loading
+`LineId` is NOT present in `Span`. It is an internal addressing mechanism used during output buffer flush to resolve text content and audio refs from the `LinkedLocale`. By the time a `Span` reaches the consumer, everything is resolved and `LineId` is discarded.
 
-At runtime, loading a `.inkl` overlay replaces per-container line content and adds the audio table. The bytecode is unchanged — `EmitLine(2)` still references local line index 2, but the content behind that index is now in the target locale. Since lines are scoped to containers, only containers present in the `.inkl` have their lines replaced; others retain the base locale content.
+### Event
 
-The `.inkl` header includes the base `.inkb` checksum. The runtime validates this on load — a mismatched `.inkl` (compiled against a different `.inkb` version) is rejected.
+A fire-and-forget external call record. Events are replay-safe by construction — the handler is never invoked for events (see [Event capture](#event-capture)).
+
+```
+struct Event {
+    name: String,
+    args: Vec<ExternalValue>,
+}
+```
+
+### Line
+
+One line of dialogue output. Combines resolved text spans, events that fired during the line's production, and ink tags.
+
+```
+struct Line {
+    spans: Vec<Span>,
+    events: Vec<Event>,
+    tags: Vec<String>,
+}
+```
+
+- **`spans`**: always `Vec<Span>`, even for the common single-span case.
+  - Simple case (most common): one span from a single `EmitLine` opcode.
+  - Glued case: multiple spans from lines fused by glue, each preserving its own audio ref.
+  - Dynamic case: spans with no audio ref, from `EmitValue` or string evaluation.
+  - Mixed case: `EmitLine` spans interleaved with dynamic spans.
+- **`events`**: events that fired during this line's `continue_line()` invocation. See [Event capture](#event-capture).
+- **`tags`**: ink tags associated with this line. Per-line, not per-span.
+
+### Choice
+
+A single choice presented to the player. Uniform structure with `Line`.
+
+```
+struct Choice {
+    spans: Vec<Span>,
+    events: Vec<Event>,
+    tags: Vec<String>,
+    index: usize,
+}
+```
+
+Events during choice construction (between `BeginChoice` and `EndChoice`) attach to the choice, not to preceding lines.
+
+### LineResult
+
+Return type of `continue_line()` — the line-level continuation API.
+
+```
+enum LineResult {
+    Complete(Line),
+    Final(Line),
+    Choices(Line, Vec<Choice>),
+    PendingExternal,
+    Ended(Line),
+}
+```
+
+| Variant | Meaning | Caller action |
+|---------|---------|---------------|
+| `Complete(Line)` | Confirmed line, more content may follow | Call `continue_line()` again |
+| `Final(Line)` | Trailing content before `Done` opcode; story can resume later | Consume line; may call `continue_maximally()` again later |
+| `Choices(Line, Vec<Choice>)` | Trailing content + choice set | Consume line, present choices, call `choose()` |
+| `PendingExternal` | Blocked on external; no line produced, buffer untouched | Resolve external via `story.resolve_external(value)`, then call `continue_line()` again |
+| `Ended(Line)` | Trailing content before `End` opcode; story permanently finished | Consume line; story is done |
+
+Terminal variants always carry a `Line`. The `Line` may have empty spans — this is valid (e.g., tag-only lines, yield points with no preceding text). Validated against the reference C# ink runtime: `Continue()` returns `""` with tags populated for tag-only lines, and returns `""` when choices appear with no preceding content.
+
+### InkOutcome
+
+Return type of `continue_maximally()` — the passage-level continuation API. Assembled by looping `continue_line()`.
+
+```
+enum InkOutcome {
+    Done {
+        lines: Vec<Line>,
+    },
+    Choices {
+        lines: Vec<Line>,
+        choices: Vec<Choice>,
+    },
+    Ended {
+        lines: Vec<Line>,
+    },
+}
+
+impl InkOutcome {
+    fn lines(&self) -> &[Line];              // all variants
+    fn choices(&self) -> Option<&[Choice]>;  // Choices variant only
+    fn is_ended(&self) -> bool;              // Ended variant
+}
+```
+
+`continue_maximally()` is a mechanical loop:
+
+```
+fn continue_maximally() -> Result<InkOutcome>:
+    let mut lines = Vec::new()
+    loop:
+        match continue_line():
+            Complete(line)         => lines.push(line)
+            Final(line)            => lines.push(line); return Ok(Done { lines })
+            Choices(line, choices) => lines.push(line); return Ok(Choices { lines, choices })
+            PendingExternal        => return Err(RuntimeError::UnresolvedExternalCall)
+            Ended(line)            => lines.push(line); return Ok(Ended { lines })
+```
+
+`continue_maximally()` does not filter empty trailing lines. Empty-span lines with tags are valid output (matches reference runtime behavior). The consumer receives them as-is.
+
+## Program composition
+
+### Line entry
+
+Each line entry in the `LinkedLocale`:
+
+```
+struct LineEntry {
+    content: LineContent,          // Plain(String) or Template(LineTemplate)
+    audio_ref: Option<String>,     // audio asset identifier, if any
+}
+```
+
+`audio_ref` lives alongside content in the same entry, not in a separate audio table. Both explicit audio refs (from `#voice:` tags) and derived audio refs (from tooling) are stored here by the compiler/tooling.
+
+### resolve_line
+
+```
+resolve_line(locale: &LinkedLocale, line_id: LineId) -> &LineEntry
+```
+
+Always goes through the locale. No fallback logic, no "check locale then check base" branching. The `LinkedLocale` is always complete.
+
+## Locale loading
+
+### Base locale from .inkb
+
+Loading a `.inkb` and linking produces `(LinkedBinary, LinkedLocale)`. The `.inkb`'s per-container line sub-tables are split out of the binary half and become the base `LinkedLocale`. On disk, the `.inkb` is self-contained (line tables are present). In memory, the runtime separates them.
+
+### .inkl overlay loading
+
+```
+load_locale(inkb: &[u8], inkl: &[u8], mode: LocaleMode) -> Result<LinkedLocale>
+
+enum LocaleMode {
+    Strict,
+    Overlay,
+}
+```
+
+- **`Strict`**: the `.inkl` must provide line tables for every container in the `.inkb`. Missing containers produce a load error. Use for full translations (e.g., en-US to ja-JP).
+- **`Overlay`**: the `.inkl` can be partial. Missing containers are filled from the base `.inkb` line tables. Use for dialect patches (e.g., en-US to en-UK where only some lines differ).
+
+Either mode produces a complete `LinkedLocale`. No runtime fallback needed.
+
+The `.inkl` header includes the base `.inkb` checksum. Mismatched checksums (`.inkl` compiled against a different `.inkb` version) produce a load error.
+
+### Locale switching
+
+Switching locales = constructing a new `Program` with a different `Arc<LinkedLocale>`:
+
+```
+let french = load_locale(&inkb_bytes, &french_inkl_bytes, LocaleMode::Strict)?;
+let program = Program::new(binary.clone(), Arc::new(french));
+```
+
+No re-linking. The `LinkedBinary` is reused. Running story instances that reference the old `Program` continue using it; new steps use the new `Program`.
 
 ## Ink semantics (runtime perspective)
 

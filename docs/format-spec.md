@@ -26,6 +26,7 @@ The linker resolves all `DefinitionId` references uniformly to compact runtime i
 | `0x03` | List definition | Name, items (name + ordinal each) |
 | `0x04` | List item | Origin list `DefinitionId`, ordinal |
 | `0x05` | External function | Name, arg count, optional fallback `DefinitionId` |
+| `0x06` | Label | Container `DefinitionId` + byte offset (intra-container jump target) |
 
 ## Containers (tag `0x01`)
 
@@ -79,8 +80,10 @@ Temporary variables (`temp`) have no format-level definition. They are call-fram
 GetGlobal(DefinitionId)     // push global variable value
 SetGlobal(DefinitionId)     // pop stack → assign to global (runtime error if immutable)
 DeclareTemp(u16)            // declare temp at local slot index in current frame
-GetTemp(u16)                // push temp value from frame slot
-SetTemp(u16)                // pop stack → assign to frame slot
+GetTemp(u16)                // push temp value from frame slot (auto-dereferences VariablePointer)
+GetTempRaw(u16)             // push raw temp value without dereferencing VariablePointer
+SetTemp(u16)                // pop stack → assign to frame slot (writes through VariablePointer)
+PushVarPointer(DefinitionId) // push a VariablePointer referencing a global variable
 ```
 
 Globals use `DefinitionId` (resolved by linker to fast runtime index). Temps use call-frame-local slot indices assigned by the compiler across the entire knot/function scope — no `DefinitionId`, no linker involvement. Child containers reached by flow entry share the parent's call frame and use the same slot namespace.
@@ -147,20 +150,22 @@ The runtime is a stack-based bytecode VM.
 ### Value type
 
 ```
-Int(i32) | Float(f32) | Bool(bool) | String | List | DivertTarget | Null
+Int(i32) | Float(f32) | Bool(bool) | String | List | DivertTarget | VariablePointer | Null
 ```
 
 `DivertTarget` holds a `DefinitionId` pointing to a container — used for variable divert targets (`VAR x = -> some_knot`).
+
+`VariablePointer` holds a `DefinitionId` pointing to a global variable — used for `ref` parameters. When a temp slot holds a `VariablePointer`, `SetTemp` writes through to the pointed-to global and `GetTemp` auto-dereferences to the global's value. `GetTempRaw` pushes the raw `VariablePointer` without dereferencing. **STATUS: needs review** — the write-through/auto-deref semantics are implemented but have not been validated against the full ref parameter design.
 
 ### Opcode categories
 
 The instruction set covers:
 
-- **Stack & literals:** push int/float/bool/string/list/divert-target/null, pop, duplicate
+- **Stack & literals:** push int/float/bool/string/list/divert-target/var-pointer/null, pop, duplicate
 - **Arithmetic:** add (including string concat), sub, mul, div, mod, negate
 - **Comparison & logic:** equal, not-equal, greater, less, etc., not, and, or
 - **Global variables:** get global (`DefinitionId`), set global (`DefinitionId`)
-- **Temp variables:** declare temp (slot), get temp (slot), set temp (slot)
+- **Temp variables:** declare temp (slot), get temp (slot, auto-deref), get temp raw (slot, no deref), set temp (slot, write-through)
 - **Control flow:** jump, conditional jump, divert (`DefinitionId` — goto, replaces current position), conditional divert, variable divert
 - **Container flow:** enter container (`DefinitionId` — push position, resume at caller when child ends), exit container (pop position)
 - **Functions & tunnels:** call (push call frame + enter), return (pop call frame), tunnel call, tunnel return
@@ -193,14 +198,14 @@ The exact opcode encoding is defined in `brink-format`.
 ## File formats
 
 - **`.inkb`** — binary format. Definition tables (containers with per-container line sub-tables, variables, lists, externals), name table, and metadata. All cross-definition references are symbolic (`DefinitionId`). No resolved indices.
-- **`.inkl`** — locale overlay. Per-container replacement line tables and audio mappings for a specific locale. Keyed by `LineId = (DefinitionId, u16)` for stability across recompilation.
+- **`.inkl`** — locale overlay. Per-container replacement line tables for a specific locale. Each entry contains localized content and an optional audio ref. Keyed by container `DefinitionId` + local line index for stability across recompilation.
 - **`.inkt`** — textual format. Human-readable representation of the bytecode, like WAT is to WASM. Container paths as labels, opcodes as mnemonics. For debugging, inspection, and diffing.
 
 ### `.inkb` sections
 
 - Header (magic, format version, section offsets, checksum)
 - Container section (per container: `DefinitionId` + bytecode blob + content hash + counting flags + line sub-table)
-  - Line sub-table: per line entry: content (plain text or `LineTemplate`) + source text content hash
+  - Line sub-table: per line entry: content (plain text or `LineTemplate`) + source text content hash + optional audio ref
 - Variable section (`DefinitionId` + `NameId` + type + default + mutable per entry)
 - List definition section (`DefinitionId` + `NameId` + items per entry)
 - List item section (`DefinitionId` + origin + ordinal per entry)
@@ -211,8 +216,9 @@ The exact opcode encoding is defined in `brink-format`.
 ### `.inkl` sections
 
 - Header: magic `b"INKL"`, format version, BCP 47 locale tag, base `.inkb` checksum (must match)
-- Per-container line tables (keyed by container `DefinitionId`, each entry: local line index → localized content)
-- Audio table (`LineId` → audio asset reference)
+- Per-container line tables (keyed by container `DefinitionId`, each entry: local line index, localized content, optional audio ref)
+
+There is no separate audio table. Audio refs are stored per-line alongside content in the per-container line tables.
 
 ### Line template types
 
