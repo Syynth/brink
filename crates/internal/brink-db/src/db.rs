@@ -245,11 +245,11 @@ impl ProjectDb {
             let files: Vec<_> = self
                 .files
                 .iter()
-                .map(|(&id, state)| (id, state.hir.clone(), state.manifest.clone()))
+                .map(|(&id, state)| (id, &state.hir, &state.manifest))
                 .collect();
 
             info!(files = files.len(), "running cross-file analysis");
-            self.analysis = Some(brink_analyzer::analyze(files));
+            self.analysis = Some(brink_analyzer::analyze(&files));
         }
         self.analysis.as_ref().expect("just set above")
     }

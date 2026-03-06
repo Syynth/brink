@@ -9,16 +9,16 @@ use brink_ir::{
 /// Merge per-file symbol manifests into a unified symbol index.
 ///
 /// Returns the index and any diagnostics (e.g. duplicate definitions).
-pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<Diagnostic>) {
+pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec<Diagnostic>) {
     let mut index = SymbolIndex::default();
     let mut diagnostics = Vec::new();
 
-    for (file_id, manifest) in files {
+    for &(file_id, manifest) in files {
         for sym in &manifest.knots {
             insert_symbol(
                 &mut index,
                 &mut diagnostics,
-                *file_id,
+                file_id,
                 sym,
                 SymbolKind::Knot,
                 DiagnosticCode::E022,
@@ -28,7 +28,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
             insert_symbol(
                 &mut index,
                 &mut diagnostics,
-                *file_id,
+                file_id,
                 sym,
                 SymbolKind::Stitch,
                 DiagnosticCode::E022,
@@ -38,7 +38,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
             insert_symbol(
                 &mut index,
                 &mut diagnostics,
-                *file_id,
+                file_id,
                 sym,
                 SymbolKind::Variable,
                 DiagnosticCode::E023,
@@ -48,7 +48,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
             insert_symbol(
                 &mut index,
                 &mut diagnostics,
-                *file_id,
+                file_id,
                 sym,
                 SymbolKind::List,
                 DiagnosticCode::E023,
@@ -58,7 +58,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
             insert_symbol(
                 &mut index,
                 &mut diagnostics,
-                *file_id,
+                file_id,
                 sym,
                 SymbolKind::External,
                 DiagnosticCode::E023,
@@ -68,7 +68,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
             insert_symbol(
                 &mut index,
                 &mut diagnostics,
-                *file_id,
+                file_id,
                 sym,
                 SymbolKind::Label,
                 DiagnosticCode::E022,
@@ -78,7 +78,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
             insert_symbol(
                 &mut index,
                 &mut diagnostics,
-                *file_id,
+                file_id,
                 sym,
                 SymbolKind::ListItem,
                 DiagnosticCode::E026,

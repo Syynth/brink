@@ -222,8 +222,9 @@ proptest! {
         let total_refs = manifest.unresolved.len();
         let ref_ranges: Vec<_> = manifest.unresolved.iter().map(|r| r.range).collect();
 
-        let files = vec![(FileId(0), empty_hir(), manifest)];
-        let result = analyze(files);
+        let hir = empty_hir();
+        let files = vec![(FileId(0), &hir, &manifest)];
+        let result = analyze(&files);
 
         let resolved_ranges: std::collections::HashSet<_> = result
             .resolutions
@@ -264,8 +265,9 @@ proptest! {
     /// Every resolved `DefinitionId` exists in the symbol index.
     #[test]
     fn resolved_ids_are_valid(manifest in arb_manifest()) {
-        let files = vec![(FileId(0), empty_hir(), manifest)];
-        let result = analyze(files);
+        let hir = empty_hir();
+        let files = vec![(FileId(0), &hir, &manifest)];
+        let result = analyze(&files);
 
         for resolved in &result.resolutions {
             prop_assert!(
@@ -281,8 +283,9 @@ proptest! {
     /// `symbols` appears in `by_name` under its name.
     #[test]
     fn by_name_consistent_with_symbols(manifest in arb_manifest()) {
-        let files = vec![(FileId(0), empty_hir(), manifest)];
-        let result = analyze(files);
+        let hir = empty_hir();
+        let files = vec![(FileId(0), &hir, &manifest)];
+        let result = analyze(&files);
 
         // Forward: every ID in by_name exists in symbols
         for (name, ids) in &result.index.by_name {
@@ -318,12 +321,14 @@ proptest! {
     fn resolution_is_deterministic(manifest in arb_manifest()) {
         let m1 = manifest.clone();
         let m2 = manifest;
+        let hir1 = empty_hir();
+        let hir2 = empty_hir();
 
-        let files1 = vec![(FileId(0), empty_hir(), m1)];
-        let result1 = analyze(files1);
+        let files1 = vec![(FileId(0), &hir1, &m1)];
+        let result1 = analyze(&files1);
 
-        let files2 = vec![(FileId(0), empty_hir(), m2)];
-        let result2 = analyze(files2);
+        let files2 = vec![(FileId(0), &hir2, &m2)];
+        let result2 = analyze(&files2);
 
         prop_assert_eq!(
             result1.resolutions.len(),
@@ -363,12 +368,14 @@ proptest! {
                     }],
             ..Default::default()
         };
+        let hir1 = empty_hir();
+        let hir2 = empty_hir();
 
         let files = vec![
-            (FileId(0), empty_hir(), m1),
-            (FileId(1), empty_hir(), m2),
+            (FileId(0), &hir1, &m1),
+            (FileId(1), &hir2, &m2),
         ];
-        let result = analyze(files);
+        let result = analyze(&files);
 
         let dup_diags: Vec<_> = result
             .diagnostics
@@ -406,12 +413,14 @@ proptest! {
                     }],
             ..Default::default()
         };
+        let hir1 = empty_hir();
+        let hir2 = empty_hir();
 
         let files = vec![
-            (FileId(0), empty_hir(), m1),
-            (FileId(1), empty_hir(), m2),
+            (FileId(0), &hir1, &m1),
+            (FileId(1), &hir2, &m2),
         ];
-        let result = analyze(files);
+        let result = analyze(&files);
 
         let dup_diags: Vec<_> = result
             .diagnostics
@@ -455,8 +464,9 @@ proptest! {
             scope: Scope::default(),
         });
 
-        let files = vec![(FileId(0), empty_hir(), manifest)];
-        let result = analyze(files);
+        let hir = empty_hir();
+        let files = vec![(FileId(0), &hir, &manifest)];
+        let result = analyze(&files);
 
         let target_range = range(5000, missing.len() as u32);
         let has_resolution = result.resolutions.iter().any(|r| r.range == target_range);
@@ -479,12 +489,14 @@ proptest! {
 
     /// No duplicate diagnostics are emitted for the same range+code.
     #[test]
-    fn no_duplicate_diagnostics(files in arb_two_file_manifests()) {
-        let inputs: Vec<_> = files
-            .into_iter()
-            .map(|(id, m)| (id, empty_hir(), m))
+    fn no_duplicate_diagnostics(manifests in arb_two_file_manifests()) {
+        let hirs: Vec<_> = manifests.iter().map(|_| empty_hir()).collect();
+        let inputs: Vec<_> = manifests
+            .iter()
+            .zip(hirs.iter())
+            .map(|((id, m), h)| (*id, h, m))
             .collect();
-        let result = analyze(inputs);
+        let result = analyze(&inputs);
 
         let mut seen = HashSet::new();
         for d in &result.diagnostics {
@@ -505,7 +517,8 @@ proptest! {
 fn analyze_ink(source: &str) -> brink_analyzer::AnalysisResult {
     let parsed = brink_syntax::parse(source);
     let (hir, manifest, _lowering_diags) = brink_ir::lower(FileId(0), &parsed.tree());
-    analyze(vec![(FileId(0), hir, manifest)])
+    let files = vec![(FileId(0), &hir, &manifest)];
+    analyze(&files)
 }
 
 /// Two-file analysis from ink sources.
@@ -520,7 +533,8 @@ fn analyze_ink_multi(sources: &[&str]) -> brink_analyzer::AnalysisResult {
             (file_id, hir, manifest)
         })
         .collect();
-    analyze(files)
+    let refs: Vec<_> = files.iter().map(|(id, h, m)| (*id, h, m)).collect();
+    analyze(&refs)
 }
 
 #[test]

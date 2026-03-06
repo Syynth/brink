@@ -29,10 +29,10 @@ pub struct AnalysisResult {
 /// Each entry is a `(FileId, HirFile, SymbolManifest)` tuple produced by
 /// per-file HIR lowering. Returns the unified symbol index, resolution map,
 /// and any diagnostics.
-pub fn analyze(files: Vec<(FileId, HirFile, SymbolManifest)>) -> AnalysisResult {
-    let manifest_inputs: Vec<(FileId, SymbolManifest)> = files
-        .into_iter()
-        .map(|(id, _hir, manifest)| (id, manifest))
+pub fn analyze(files: &[(FileId, &HirFile, &SymbolManifest)]) -> AnalysisResult {
+    let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
+        .iter()
+        .map(|&(id, _hir, manifest)| (id, manifest))
         .collect();
 
     let (index, mut diagnostics) = manifest::merge_manifests(&manifest_inputs);
