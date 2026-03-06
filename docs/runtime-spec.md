@@ -304,21 +304,182 @@ The output buffer provides a single-line flush operation used by `continue_line(
 
 `LineId` is consumed during step 3 (used to look up audio ref) and does not appear in the returned `Span` structs.
 
-### Capture interaction
+### Output capture
 
-Existing capture semantics (begin/end capture for string evaluation and function calls) are unchanged. `SpanStart` markers inside a captured region are consumed by the capture — they do not leak into the outer buffer. Captured content produces a flat string (same as today), not spans.
+The output buffer supports a checkpoint-based capture mechanism used by function calls, string evaluation, and tag collection. Captures nest correctly — inner captures complete before outer ones.
+
+#### API
+
+- `begin_capture()` — pushes a `Checkpoint` marker into the buffer.
+- `end_capture() -> Option<String>` — finds the rightmost `Checkpoint`, drains everything after it, resolves glue within the captured region, and returns the result as a flat string. Returns `None` if no checkpoint exists.
+- `discard_capture()` — removes the rightmost `Checkpoint` without capturing. Text after the checkpoint remains in the buffer.
+- `has_checkpoint() -> bool` — returns whether any capture is active.
+
+#### Usage by the VM
+
+| Context | begin | end | Notes |
+|---------|-------|-----|-------|
+| **Function call** (`Call` opcode) | At call site, before pushing `Function` frame | At frame pop (implicit return) | Captured text becomes the function's return value (pushed to value stack). Trailing newlines are trimmed — inline callers (`{f()}`) expect clean text. |
+| **Explicit return** (`~return`) | Same as above | `discard_capture()` at frame pop | Return value is already on the value stack from `~return`; capture is discarded, text stays in the output buffer. |
+| **String evaluation** (`BeginStringEval` / `EndStringEval`) | `BeginStringEval` | `EndStringEval` | Captured text pushed to value stack as `Value::String`. Used for inline expressions like `{"hello"}`. |
+| **Tag collection** (`BeginTag` / `EndTag`) | `BeginTag` | `EndTag` | Captured text becomes the tag string. If inside another capture (`has_checkpoint()` is true), the tag is stored in `flow.current_tags` for the enclosing choice/function. Otherwise, it is pushed to the output buffer as `OutputPart::Tag`. |
+| **Fallback invocation** | At fallback site, before switching `External` frame to `Function` | Same as function call | Ink fallback for an external function — output capture makes it behave identically to a normal function call. |
+
+#### Nesting
+
+Captures are discovered via rightmost-checkpoint search, so nesting works naturally:
+
+```
+begin_capture()           // Outer: function call
+  push_text("prefix")
+  begin_capture()         // Inner: string eval
+    push_text("value")
+  end_capture()           // → "value" (pushed to value stack)
+  push_text("suffix")
+end_capture()             // → "prefixsuffix"
+```
+
+`SpanStart` markers inside a captured region are consumed by the capture — they do not leak into the outer buffer. Captured content produces a flat string, not spans. Span identity is meaningless inside a capture.
+
+Checkpoints are transparent to glue resolution — they don't block the search for preceding newlines or affect text joining.
+
+`CaptureUnderflow` is a `RuntimeError` raised when `end_capture()` returns `None` in a context that requires it (e.g., `EndStringEval`, implicit function return).
 
 ### Whitespace handling
 
-The runtime de-duplicates consecutive newlines and suppresses leading newlines in the output stream (matching the reference ink runtime). Per-line whitespace normalization strips leading/trailing inline whitespace and collapses internal whitespace runs to a single space.
+The runtime applies whitespace normalization matching the reference ink runtime:
 
-## Choice forks
+- **Newline de-duplication**: consecutive newlines are collapsed. Leading newlines in the output stream are suppressed.
+- **Per-line inline whitespace normalization** (`clean_output_whitespace`): applied to each line at flush time.
+  - Strips all leading spaces/tabs from each line.
+  - Strips all trailing spaces/tabs before `\n` or end of string.
+  - Collapses consecutive space/tab runs within a line to a single space.
+  - Only affects inline whitespace (space and tab). Newlines are preserved.
 
-When a choice is created (`BeginChoice`), the VM captures a **thread fork** — a snapshot of the current thread's call stack. This fork is stored on the `PendingChoice` and restored when the player selects that choice.
+## Choice evaluation
+
+### Choice opcodes
+
+The VM processes choices via a `BeginChoiceSet` / `BeginChoice` + `EndChoice` / end-of-set sequence:
+
+1. `BeginChoiceSet` — clears the pending choices list.
+2. For each choice: `BeginChoice(flags, target_id)` ... `EndChoice`.
+3. After all choices are processed, the Story layer inspects `pending_choices` to decide what to yield.
+
+`ChoiceFlags` is a packed byte on `BeginChoice`:
+
+| Flag | Bit | Meaning |
+|------|-----|---------|
+| `has_condition` | 0x01 | Condition value is on the stack |
+| `has_start_content` | 0x02 | Start content (shown to player + printed on selection) is on the stack |
+| `has_choice_only_content` | 0x04 | Choice-only content (shown to player, not printed on selection) is on the stack |
+| `once_only` | 0x08 | Skip if target container already visited |
+| `is_invisible_default` | 0x10 | Fallback choice — not presented to the player |
+
+### Choice skipping (`skipping_choice`)
+
+When `BeginChoice` determines a choice should be skipped (condition is false, or once-only and already visited), it sets `flow.skipping_choice = true` and pops any text values from the stack to keep it balanced. While `skipping_choice` is true, `Goto` opcodes execute as no-ops — this allows the bytecode between `BeginChoice` and `EndChoice` to be traversed without executing diverts. `EndChoice` always clears `skipping_choice` to `false`.
+
+The skip evaluation order within `BeginChoice`:
+1. If `has_condition`: pop and evaluate. If falsy → skip (pop remaining text values, set `skipping_choice`).
+2. If `once_only`: check `visit_counts[target_id]`. If > 0 → skip (pop remaining text values, set `skipping_choice`).
+3. If not skipped: pop text values, build display text, fork thread, create `PendingChoice`.
+
+### Thread forks
+
+When a choice is created, the VM captures a **thread fork** — a snapshot of the current thread's call stack. This fork is stored on the `PendingChoice` and restored when the player selects that choice.
 
 Choice forks capture **Flow state only** (call stack, temps). The Context (globals, visit counts) is **not** captured or rolled back — modifications to globals between fork creation and choice selection remain visible. This matches the reference ink runtime's behavior.
 
 **Guiding invariant:** the multi-flow model must produce identical results to a single-flow story when only one flow is present. Choice forks are a Flow-local operation and do not interact with Context synchronization.
+
+### Invisible default choice auto-selection
+
+Choices with `is_invisible_default` are fallback choices — they exist to prevent dead ends but should never be presented to the player. After all choices in a set are processed:
+
+- **All choices are invisible defaults**: auto-select the first one and continue execution without yielding. The Story layer calls `select_choice(0)` internally and loops back to stepping.
+- **Any visible choice exists**: filter out invisible defaults from the choice set before yielding `Choices` to the caller. Invisible defaults are never presented to the player.
+
+This matches the reference ink runtime's behavior for fallback choices (e.g., `+ [<auto>] -> somewhere`).
+
+## Sequence semantics
+
+Ink sequences (`stopping`, `cycle`, `once`, `shuffle`) are compiled into a `Sequence(kind, count)` opcode. The VM evaluates the opcode and pushes a branch index onto the value stack; subsequent bytecode uses that index to select the appropriate branch.
+
+### Sequence kinds
+
+| Kind | Branch index | Behavior |
+|------|-------------|----------|
+| `Cycle` | `visit_count % count` | Wraps around to the first branch after exhausting all branches |
+| `Stopping` | `visit_count.min(count - 1)` | Stays on the last branch once reached |
+| `OnceOnly` | `visit_count < count ? visit_count : count` | Returns `count` (past-the-end) after exhausting all branches, causing all to be skipped |
+| `Shuffle` | Fisher-Yates partial shuffle | Random permutation, re-shuffled each full loop |
+
+For non-shuffle sequences, the VM pops a `DivertTarget(DefinitionId)` from the value stack and looks up the container's visit count. Visit counts are 0-based for sequence purposes (`CurrentVisitCount` subtracts 1 from the raw visit count).
+
+### Shuffle algorithm
+
+Shuffle sequences use a partial Fisher-Yates algorithm seeded deterministically. The VM pops `numElements` (branch count) and `seqCount` (total visits) from the value stack, then:
+
+1. Compute `loop_index = seqCount / numElements` (which full permutation cycle we're in).
+2. Compute `iteration_index = seqCount % numElements` (position within the current permutation).
+3. Seed: `path_hash + loop_index + rng_seed` (wrapping `i32` addition, matching reference).
+4. Create a fresh RNG from the seed.
+5. Partial Fisher-Yates: maintain an unpicked list `[0..numElements)`, pick `iteration_index + 1` elements using the RNG, return the last picked index.
+
+The same `path_hash + loop_index` combination always produces the same permutation. Re-visiting the sequence with a different `loop_index` produces a different permutation.
+
+### Container path hash (`path_hash`)
+
+Each `LinkedContainer` carries a `path_hash: i32` — the sum of the Unicode code points of the container's ink path string (e.g., `"knot.stitch"` → sum of char values). This provides a container-specific seed component for shuffle sequences, ensuring different containers produce different random orderings even with the same story seed.
+
+## Deterministic RNG
+
+The runtime uses pluggable RNG via the `StoryRng` trait:
+
+```
+trait StoryRng {
+    fn from_seed(seed: i32) -> Self;
+    fn next_int(&mut self) -> i32;    // non-negative
+}
+```
+
+A fresh RNG instance is created per random operation (shuffle sequence, `LIST_RANDOM`) with a deterministic composite seed derived from story state. This ensures:
+
+- **Reproducibility**: same story seed + same choices → identical random outcomes.
+- **Container isolation**: different containers get different seeds via `path_hash`.
+- **Progression**: revisiting a shuffle sequence produces a new permutation via `loop_index`.
+
+### Included implementations
+
+| Type | Algorithm | Use case |
+|------|-----------|----------|
+| `FastRng` | Xorshift32 | Default for production. Fast, decent distribution. |
+| `DotNetRng` | Knuth subtractive (port of .NET `System.Random`) | Reference compatibility. Reproduces the exact random sequence of the C# ink runtime for corpus test matching. |
+
+`Story` is generic over `R: StoryRng`, defaulting to `FastRng`. Use `Story::<DotNetRng>::new(...)` for .NET-compatible output.
+
+## Execution statistics
+
+The `Stats` struct provides always-on execution counters accessible via `story.stats()`. Incrementing a `u64` is effectively free compared to opcode dispatch, so stats are unconditionally collected.
+
+```
+struct Stats {
+    opcodes: u64,                // total bytecode instructions dispatched
+    steps: u64,                  // total vm::step calls from the outer loop
+    threads_created: u64,        // thread forks (ThreadCall + choice creation)
+    threads_completed: u64,      // threads that completed and were popped
+    frames_pushed: u64,          // call frames pushed (calls, tunnels, externals)
+    frames_popped: u64,          // call frames popped (returns)
+    choices_presented: u64,      // choice sets yielded to the player
+    choices_selected: u64,       // individual choices selected
+    snapshot_cache_hits: u64,    // call stack snapshot reuse (CoW hit)
+    snapshot_cache_misses: u64,  // call stack snapshot allocation (CoW miss)
+    materializations: u64,       // call stack materializations (CoW flatten)
+}
+```
+
+Stats are read-only from the public API and do not affect execution. They serve as a diagnostic tool for profiling, benchmarking, and debugging story performance.
 
 ## Hot-reload reconciliation
 

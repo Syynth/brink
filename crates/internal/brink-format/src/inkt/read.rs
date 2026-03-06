@@ -1019,8 +1019,6 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "list_contains" => Ok(Opcode::ListContains),
         "list_not_contains" => Ok(Opcode::ListNotContains),
         "list_intersect" => Ok(Opcode::ListIntersect),
-        "list_union" => Ok(Opcode::ListUnion),
-        "list_except" => Ok(Opcode::ListExcept),
         "list_all" => Ok(Opcode::ListAll),
         "list_invert" => Ok(Opcode::ListInvert),
         "list_count" => Ok(Opcode::ListCount),

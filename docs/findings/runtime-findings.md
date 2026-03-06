@@ -24,7 +24,7 @@ Things where both the spec and code address the same concept but disagree.
 
 ### 1e. ExternalResult — no Pending variant
 
-**Spec is correct, implementation needs to catch up.** `Pending` variant not yet implemented.
+**RESOLVED.** `Pending` variant added to `ExternalResult`. Handler returning `Pending` yields `RuntimeError::UnresolvedExternalCall` with the `External` frame intact.
 
 ### 1f. Value type enum
 
@@ -40,16 +40,16 @@ Behaviors and mechanisms in the code with no corresponding spec text.
 
 | Feature | Location | Resolution |
 |---------|----------|------------|
-| `BeginStringEval` / `EndStringEval` opcodes | `vm.rs` | **Needs review.** Must verify we're accounting for localization and not duplicating functionality with the line template system. |
+| `BeginStringEval` / `EndStringEval` opcodes | `vm.rs` | **Partially resolved.** Documented in runtime spec under Output capture. Still **needs review** to verify localization interaction with line template system. |
 | Copy-on-write `CallStack` (inherited `Rc<[CallFrame]>` + own `Vec`) | `story.rs` | **No spec needed.** Implementation detail — spec describes fork semantics, CoW is just the optimization. |
-| `MAX_OPS_PER_STEP = 1_000_000` safety limit | `story.rs:468` | **Remove.** Vestige of monolithic `step()`. Now that `vm::step` does one opcode and Story loops, callers control the loop. |
-| `Stats` struct (always-on counters) | `story.rs` | **Needs spec coverage** and a feature flag to compile it out. |
-| `path_hash: i32` on `LinkedContainer` | `program.rs` | **Needs spec coverage** as part of sequence semantics documentation. |
-| `skipping_choice` flag on `Flow` | `story.rs` / `vm.rs` | **Needs format spec coverage** in the choice opcode documentation — it's a bytecode contract detail. |
-| Invisible default choice auto-selection | `story.rs` | **Needs runtime spec coverage** in the choice section. Matches reference ink behavior. |
-| `clean_output_whitespace` | `output.rs` | **Needs runtime spec coverage** in the output buffer section. |
-| `DotNetRng` | `rng.rs` | **Needs runtime spec coverage.** Spec should explain that RNG is pluggable via `StoryRng` trait, why, and list included implementations (`FastRng` default, `DotNetRng` for reference compat). |
-| Output capture mechanism (`begin_capture`/`end_capture`/`Checkpoint`) | `output.rs` | **Needs thorough spec coverage.** Core VM machinery used by function return values, string eval, and tag capture. Spec mentions function output capture but doesn't explain the mechanism. |
+| `MAX_OPS_PER_STEP = 1_000_000` safety limit | `story.rs:468` | **RESOLVED.** Removed — callers control the loop now that `vm::step` does one opcode. |
+| `Stats` struct (always-on counters) | `story.rs` | **RESOLVED.** Documented in runtime spec under Execution statistics. |
+| `path_hash: i32` on `LinkedContainer` | `program.rs` | **RESOLVED.** Documented in runtime spec under Sequence semantics. |
+| `skipping_choice` flag on `Flow` | `story.rs` / `vm.rs` | **RESOLVED.** Documented in runtime spec under Choice evaluation. |
+| Invisible default choice auto-selection | `story.rs` | **RESOLVED.** Documented in runtime spec under Choice evaluation. |
+| `clean_output_whitespace` | `output.rs` | **RESOLVED.** Documented in runtime spec under Whitespace handling. |
+| `DotNetRng` | `rng.rs` | **RESOLVED.** Documented in runtime spec under Deterministic RNG. |
+| Output capture mechanism (`begin_capture`/`end_capture`/`Checkpoint`) | `output.rs` | **RESOLVED.** Documented in runtime spec under Output capture. |
 | `smallvec` dependency | `Cargo.toml` | **RESOLVED.** Removed — was unused. |
 
 ## 3. Spec sections with no implementation
@@ -71,7 +71,7 @@ Spec concepts that have zero or stub-only implementation.
 
 | Item | Location | Resolution |
 |------|----------|------------|
-| `ListUnion` / `ListExcept` opcodes | `vm.rs:779` — return `Unimplemented`. Equivalent operations exist via `Add`/`Subtract` on lists in `value_ops`. | **Remove.** Redundant with binary operators. |
+| `ListUnion` / `ListExcept` opcodes | `vm.rs:779` — return `Unimplemented`. Equivalent operations exist via `Add`/`Subtract` on lists in `value_ops`. | **RESOLVED.** Removed from `brink-format` and `brink-runtime` entirely. Add/Subtract on lists cover these operations. |
 | `GlobalSlot.id` and `GlobalSlot.name` | `program.rs` | **RESOLVED.** Added reason to `#[expect]` — needed for save/load and debugging. |
 | `PendingChoice.original_index` and `.output_line_idx` | `story.rs` | **RESOLVED.** Added reason to `#[expect]` — needs research, likely needed for structured output / voice acting. |
 | `Thread.thread_index` and `Flow.thread_counter` | `story.rs` | **RESOLVED.** Removed — unused and unclear purpose. |

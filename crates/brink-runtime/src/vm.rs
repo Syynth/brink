@@ -774,11 +774,6 @@ pub(crate) fn step<R: StoryRng>(
             stats.frames_pushed += 1;
             return Ok(Stepped::ExternalCall);
         }
-
-        // ── Deferred ────────────────────────────────────────────────
-        Opcode::ListUnion | Opcode::ListExcept => {
-            return Err(RuntimeError::Unimplemented(format!("{op:?}")));
-        }
     }
 
     Ok(Stepped::Continue)

@@ -286,7 +286,6 @@ fn write_bytecode(w: &mut dyn fmt::Write, bytecode: &[u8]) -> fmt::Result {
     Ok(())
 }
 
-#[expect(clippy::too_many_lines)]
 fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
     match op {
         // Stack & literals
@@ -406,8 +405,6 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::ListContains => write!(w, "list_contains"),
         Opcode::ListNotContains => write!(w, "list_not_contains"),
         Opcode::ListIntersect => write!(w, "list_intersect"),
-        Opcode::ListUnion => write!(w, "list_union"),
-        Opcode::ListExcept => write!(w, "list_except"),
         Opcode::ListAll => write!(w, "list_all"),
         Opcode::ListInvert => write!(w, "list_invert"),
         Opcode::ListCount => write!(w, "list_count"),

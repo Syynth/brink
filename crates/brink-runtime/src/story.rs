@@ -427,6 +427,10 @@ pub enum ExternalResult {
     Resolved(Value),
     /// The handler declined — use the ink fallback body if available.
     Fallback,
+    /// The handler cannot resolve the call yet (async resolution).
+    /// The VM freezes with the `External` frame intact. The caller must
+    /// resolve via `story.resolve_external(value)` before continuing.
+    Pending,
 }
 
 /// Trait for handling external function calls from ink.
@@ -464,9 +468,6 @@ pub(crate) struct FlowInstance<R: StoryRng = FastRng> {
     pub(crate) status: StoryStatus,
     pub(crate) stats: Stats,
 }
-
-/// Maximum opcodes per step to prevent infinite loops.
-const MAX_OPS_PER_STEP: u32 = 1_000_000;
 
 impl<R: StoryRng> FlowInstance<R> {
     /// Create a new flow instance starting at the root container.
@@ -566,19 +567,8 @@ impl<R: StoryRng> FlowInstance<R> {
         }
 
         let mut all_lines: Vec<(String, Vec<String>)> = Vec::new();
-        let mut op_count: u32 = 0;
 
         loop {
-            op_count += 1;
-            if op_count > MAX_OPS_PER_STEP {
-                // Safety limit — treat as Done to avoid infinite loops.
-                extend_lines(&mut all_lines, self.flow.output.flush_lines());
-                self.context.turn_index += 1;
-                self.status = StoryStatus::Done;
-                let (text, tags) = finalize_lines(&all_lines);
-                return Ok(StepResult::Done { text, tags });
-            }
-
             self.stats.steps += 1;
             let stepped = vm::step(&mut self.flow, &mut self.context, &mut self.stats, program)?;
             self.stats.materializations += self.flow.drain_materializations();
@@ -735,6 +725,11 @@ fn resolve_external_call(
             } else {
                 return Err(RuntimeError::UnresolvedExternalCall(fn_id));
             }
+        }
+        ExternalResult::Pending => {
+            // Leave the External frame intact — the caller must resolve
+            // via story.resolve_external(value) before continuing.
+            return Err(RuntimeError::UnresolvedExternalCall(fn_id));
         }
     }
     Ok(())

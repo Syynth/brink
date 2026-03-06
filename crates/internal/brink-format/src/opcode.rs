@@ -122,8 +122,6 @@ const CALL_EXTERNAL: u8 = 0xA0;
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
 const LIST_INTERSECT: u8 = 0xB2;
-const LIST_UNION: u8 = 0xB3;
-const LIST_EXCEPT: u8 = 0xB4;
 const LIST_ALL: u8 = 0xB5;
 const LIST_INVERT: u8 = 0xB6;
 const LIST_COUNT: u8 = 0xB7;
@@ -424,8 +422,6 @@ pub enum Opcode {
     ListContains,
     ListNotContains,
     ListIntersect,
-    ListUnion,
-    ListExcept,
     ListAll,
     ListInvert,
     ListCount,
@@ -657,8 +653,6 @@ impl Opcode {
             Self::ListContains => write_u8(buf, LIST_CONTAINS),
             Self::ListNotContains => write_u8(buf, LIST_NOT_CONTAINS),
             Self::ListIntersect => write_u8(buf, LIST_INTERSECT),
-            Self::ListUnion => write_u8(buf, LIST_UNION),
-            Self::ListExcept => write_u8(buf, LIST_EXCEPT),
             Self::ListAll => write_u8(buf, LIST_ALL),
             Self::ListInvert => write_u8(buf, LIST_INVERT),
             Self::ListCount => write_u8(buf, LIST_COUNT),
@@ -821,8 +815,6 @@ impl Opcode {
             LIST_CONTAINS => Self::ListContains,
             LIST_NOT_CONTAINS => Self::ListNotContains,
             LIST_INTERSECT => Self::ListIntersect,
-            LIST_UNION => Self::ListUnion,
-            LIST_EXCEPT => Self::ListExcept,
             LIST_ALL => Self::ListAll,
             LIST_INVERT => Self::ListInvert,
             LIST_COUNT => Self::ListCount,
@@ -1086,8 +1078,6 @@ mod tests {
             Opcode::ListContains,
             Opcode::ListNotContains,
             Opcode::ListIntersect,
-            Opcode::ListUnion,
-            Opcode::ListExcept,
             Opcode::ListAll,
             Opcode::ListInvert,
             Opcode::ListCount,
