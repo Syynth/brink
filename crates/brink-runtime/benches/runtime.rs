@@ -28,6 +28,9 @@ const HANOI_3_INPUT: &str = include_str!("../../../tests/tier3/lists/tower-of-ha
 const HANOI_10_JSON: &str = include_str!("../../../benchmarks/stories/hanoi-10/story.ink.json");
 const HANOI_10_INPUT: &str = include_str!("../../../benchmarks/stories/hanoi-10/input.txt");
 
+const CRUCIBLE_8_JSON: &str = include_str!("../../../benchmarks/stories/crucible-8/story.ink.json");
+const CRUCIBLE_8_INPUT: &str = include_str!("../../../benchmarks/stories/crucible-8/input.txt");
+
 #[expect(clippy::unwrap_used)]
 fn parse_inputs(s: &str) -> Vec<usize> {
     s.lines()
@@ -55,6 +58,11 @@ fn scenarios() -> &'static [Scenario] {
                     name: "hanoi-10",
                     json: HANOI_10_JSON,
                     inputs: parse_inputs(HANOI_10_INPUT),
+                },
+                Scenario {
+                    name: "crucible-8",
+                    json: CRUCIBLE_8_JSON,
+                    inputs: parse_inputs(CRUCIBLE_8_INPUT),
                 },
             ]
         })
@@ -179,9 +187,35 @@ fn print_hanoi_10_stats() {
     eprintln!("───────────────────────────────────────────────\n");
 }
 
+#[expect(clippy::unwrap_used, clippy::print_stderr)]
+fn print_crucible_8_stats() {
+    let data = parse_and_convert(CRUCIBLE_8_JSON);
+    let program = brink_runtime::link(&data).unwrap();
+    let inputs = parse_inputs(CRUCIBLE_8_INPUT);
+    let stats = run_to_completion(&program, &inputs);
+
+    eprintln!("\n── crucible-8 VM stats ────────────────────────");
+    eprintln!("  opcodes:              {:>10}", stats.opcodes);
+    eprintln!("  steps:                {:>10}", stats.steps);
+    eprintln!("  threads_created:      {:>10}", stats.threads_created);
+    eprintln!("  threads_completed:    {:>10}", stats.threads_completed);
+    eprintln!("  frames_pushed:        {:>10}", stats.frames_pushed);
+    eprintln!("  frames_popped:        {:>10}", stats.frames_popped);
+    eprintln!("  choices_presented:    {:>10}", stats.choices_presented);
+    eprintln!("  choices_selected:     {:>10}", stats.choices_selected);
+    eprintln!("  snapshot_cache_hits:  {:>10}", stats.snapshot_cache_hits);
+    eprintln!(
+        "  snapshot_cache_misses:{:>10}",
+        stats.snapshot_cache_misses
+    );
+    eprintln!("  materializations:     {:>10}", stats.materializations);
+    eprintln!("───────────────────────────────────────────────\n");
+}
+
 fn main() {
     // Force scenario initialization before benchmarks run.
     let _ = scenarios();
     print_hanoi_10_stats();
+    print_crucible_8_stats();
     divan::main();
 }

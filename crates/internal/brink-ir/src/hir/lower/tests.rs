@@ -2,7 +2,7 @@
 
 use brink_syntax::parse;
 
-use crate::lower::lower;
+use crate::hir::lower::lower;
 use crate::*;
 
 fn lower_ink(source: &str) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
@@ -585,8 +585,8 @@ EXTERNAL doThing(a)
 
 #[test]
 fn fold_weave_is_public() {
-    use crate::lower::WeaveItem;
-    use crate::lower::fold_weave;
+    use crate::hir::lower::WeaveItem;
+    use crate::hir::lower::fold_weave;
 
     // Simple: just statements, no choices or gathers
     let items = vec![WeaveItem::Stmt(Stmt::Content(Content {

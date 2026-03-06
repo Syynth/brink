@@ -77,13 +77,14 @@ Temporary variables (`temp`) have no format-level definition. They are call-fram
 ### Bytecode instructions for variables
 
 ```
-GetGlobal(DefinitionId)     // push global variable value
-SetGlobal(DefinitionId)     // pop stack → assign to global (runtime error if immutable)
-DeclareTemp(u16)            // declare temp at local slot index in current frame
-GetTemp(u16)                // push temp value from frame slot (auto-dereferences VariablePointer)
-GetTempRaw(u16)             // push raw temp value without dereferencing VariablePointer
-SetTemp(u16)                // pop stack → assign to frame slot (writes through VariablePointer)
+GetGlobal(DefinitionId)      // push global variable value
+SetGlobal(DefinitionId)      // pop stack → assign to global (runtime error if immutable)
+DeclareTemp(u16)             // declare temp at local slot index in current frame
+GetTemp(u16)                 // push temp value (auto-dereferences VariablePointer and TempPointer)
+GetTempRaw(u16)              // push raw temp value without dereferencing
+SetTemp(u16)                 // pop stack → assign to frame slot (writes through pointers)
 PushVarPointer(DefinitionId) // push a VariablePointer referencing a global variable
+PushTempPointer(u16)         // push a TempPointer referencing a temp slot in the current frame
 ```
 
 Globals use `DefinitionId` (resolved by linker to fast runtime index). Temps use call-frame-local slot indices assigned by the compiler across the entire knot/function scope — no `DefinitionId`, no linker involvement. Child containers reached by flow entry share the parent's call frame and use the same slot namespace.
@@ -150,22 +151,26 @@ The runtime is a stack-based bytecode VM.
 ### Value type
 
 ```
-Int(i32) | Float(f32) | Bool(bool) | String | List | DivertTarget | VariablePointer | Null
+Int(i32) | Float(f32) | Bool(bool) | String | List | DivertTarget | VariablePointer | TempPointer | Null
 ```
 
 `DivertTarget` holds a `DefinitionId` pointing to a container — used for variable divert targets (`VAR x = -> some_knot`).
 
-`VariablePointer` holds a `DefinitionId` pointing to a global variable — used for `ref` parameters. When a temp slot holds a `VariablePointer`, `SetTemp` writes through to the pointed-to global and `GetTemp` auto-dereferences to the global's value. `GetTempRaw` pushes the raw `VariablePointer` without dereferencing. **STATUS: needs review** — the write-through/auto-deref semantics are implemented but have not been validated against the full ref parameter design.
+`VariablePointer(DefinitionId)` — a pointer to a global variable, used for `ref` parameters that target globals. The converter emits `PushVarPointer` to create these.
+
+`TempPointer { slot: u16, frame_depth: u16 }` — a runtime-only pointer to a temp variable in a specific call frame, used for `ref` parameters that target temps. The converter emits `PushTempPointer(slot)`, and the runtime resolves it to `TempPointer { slot, frame_depth: current_frame }` at execution time. `TempPointer` never appears in `.inkb` files — it exists only on the value stack and in call-frame temp slots during execution.
+
+**Pointer semantics:** When a temp slot holds a `VariablePointer` or `TempPointer`, `SetTemp` writes through to the pointed-to location (global or target frame's temp) and `GetTemp` auto-dereferences to the pointed-to value. `GetTempRaw` pushes the raw value without dereferencing. `PushTempPointer` flattens double-indirection: if the temp already holds a pointer (`VariablePointer` or `TempPointer`), the existing pointer is pushed as-is rather than wrapping it in another `TempPointer`. This ensures nested ref passthrough (e.g., `fn_a(ref x)` calling `fn_b(ref x)`) works correctly.
 
 ### Opcode categories
 
 The instruction set covers:
 
-- **Stack & literals:** push int/float/bool/string/list/divert-target/var-pointer/null, pop, duplicate
+- **Stack & literals:** push int/float/bool/string/list/divert-target/var-pointer/temp-pointer/null, pop, duplicate
 - **Arithmetic:** add (including string concat), sub, mul, div, mod, negate
 - **Comparison & logic:** equal, not-equal, greater, less, etc., not, and, or
 - **Global variables:** get global (`DefinitionId`), set global (`DefinitionId`)
-- **Temp variables:** declare temp (slot), get temp (slot, auto-deref), get temp raw (slot, no deref), set temp (slot, write-through)
+- **Temp variables:** declare temp (slot), get temp (slot, auto-deref pointers), get temp raw (slot, no deref), set temp (slot, write-through pointers), push temp pointer (slot)
 - **Control flow:** jump, conditional jump, divert (`DefinitionId` — goto, replaces current position), conditional divert, variable divert
 - **Container flow:** enter container (`DefinitionId` — push position, resume at caller when child ends), exit container (pop position)
 - **Functions & tunnels:** call (push call frame + enter), return (pop call frame), tunnel call, tunnel return

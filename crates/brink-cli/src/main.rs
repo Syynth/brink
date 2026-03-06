@@ -17,6 +17,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Compile an .ink story (native pipeline)
+    Compile {
+        /// Entry-point .ink file
+        input: PathBuf,
+        /// Output file (format inferred from extension, defaults to stdout as .inkt)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Convert between ink formats (.ink.json, .inkb, .inkt)
     Convert {
         /// Input file (.ink.json, .inkb, or .inkt)
@@ -47,6 +55,12 @@ fn main() -> ExitCode {
 
     if let Some(command) = cli.command {
         match command {
+            Commands::Compile { input, output } => {
+                if let Err(e) = run_compile(&input, output.as_deref()) {
+                    tracing::error!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
             Commands::Convert { input, output } => {
                 if let Err(e) = run_convert(&input, output.as_deref()) {
                     tracing::error!("{e}");
@@ -63,6 +77,41 @@ fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn run_compile(
+    input: &std::path::Path,
+    output: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let data = brink_compiler::compile_path(input)?;
+
+    let out_ext = output
+        .and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        .unwrap_or("inkt");
+
+    if out_ext == "inkb" {
+        let mut buf = Vec::new();
+        brink_format::write_inkb(&data, &mut buf);
+        if let Some(path) = output {
+            std::fs::write(path, &buf)?;
+        } else {
+            std::io::stdout().lock().write_all(&buf)?;
+        }
+    } else {
+        let mut buf = String::new();
+        brink_format::write_inkt(&data, &mut buf)?;
+        if let Some(path) = output {
+            std::fs::write(path, &buf)?;
+        } else {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            handle.write_all(buf.as_bytes())?;
+            handle.write_all(b"\n")?;
+        }
+    }
+
+    Ok(())
 }
 
 fn load_story_data(

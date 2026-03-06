@@ -179,8 +179,9 @@ name = "brink-analyzer"
 version = "0.0.1"
 dependencies = [
  "brink-format",
- "brink-hir",
+ "brink-ir",
  "brink-syntax",
+ "proptest",
  "rowan",
 ]
 
@@ -188,6 +189,7 @@ dependencies = [
 name = "brink-cli"
 version = "0.0.1"
 dependencies = [
+ "brink-compiler",
  "brink-converter",
  "brink-format",
  "brink-json",
@@ -205,8 +207,10 @@ version = "0.0.1"
 dependencies = [
  "brink-analyzer",
  "brink-format",
- "brink-hir",
+ "brink-ir",
  "brink-syntax",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -236,10 +240,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "brink-hir"
+name = "brink-ir"
 version = "0.0.1"
 dependencies = [
  "bitflags 2.11.0",
+ "brink-format",
  "brink-syntax",
  "insta",
  "rowan",

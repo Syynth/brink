@@ -535,7 +535,7 @@ struct ExternalList {
 }
 ```
 
-The runtime translates between internal `Value` (which includes `DivertTarget`, `VariablePointer`, and `DefinitionId`-based list representations) and `ExternalValue` at the API boundary. `DivertTarget` and `VariablePointer` are internal-only and never cross the boundary.
+The runtime translates between internal `Value` (which includes `DivertTarget`, `VariablePointer`, `TempPointer`, and `DefinitionId`-based list representations) and `ExternalValue` at the API boundary. `DivertTarget`, `VariablePointer`, and `TempPointer` are internal-only and never cross the boundary.
 
 ### Span
 

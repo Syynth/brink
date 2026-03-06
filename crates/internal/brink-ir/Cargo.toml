@@ -1,5 +1,5 @@
 [package]
-name = "brink-hir"
+name = "brink-ir"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,11 +7,12 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "HIR types and per-file lowering for inkle's ink narrative scripting language"
+description = "Intermediate representations for inkle's ink narrative scripting language"
 publish = false
 
 [dependencies]
 brink-syntax = { path = "../brink-syntax" }
+brink-format = { path = "../brink-format" }
 rowan.workspace = true
 bitflags.workspace = true
 

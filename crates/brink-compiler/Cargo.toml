@@ -9,5 +9,13 @@ keywords.workspace = true
 categories.workspace = true
 description = "Compiler for inkle's ink narrative scripting language"
 
+[dependencies]
+brink-ir = { path = "../internal/brink-ir" }
+brink-format = { path = "../internal/brink-format" }
+brink-analyzer = { path = "../internal/brink-analyzer" }
+brink-syntax = { path = "../internal/brink-syntax" }
+thiserror.workspace = true
+tracing.workspace = true
+
 [lints]
 workspace = true
