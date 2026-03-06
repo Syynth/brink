@@ -7,7 +7,7 @@ description = "Ink narrative scripting language support"
 
 [grammars.ink]
 repository = "file:///Users/syynth/code/rs/brink/tree-sitter-ink"
-rev = "a65c53d8c892a621f0ffd8f6fe959a26fa10f78c"
+rev = "6a9e3225f8536c530a99955b3b134b97327bd5e2"
 
 [language_servers.brink-lsp]
 languages = ["Ink"]

@@ -47,5 +47,8 @@
 ; Tags
 (tag) @attribute
 
+; Function keyword
+(knot "function" @keyword)
+
 ; Knot header delimiters
 (knot "==" @punctuation.delimiter)
