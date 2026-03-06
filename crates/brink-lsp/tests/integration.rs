@@ -447,11 +447,10 @@ fn folding_ranges_for_dice_rolling_functions() {
         "missing outer conditional in _keep_rolling"
     );
     // TODO: nested conditional at lines 26-35 is not emitted because the outer
-    // `{ expr: ... - else: ... }` is lowered as InlineCond instead of Stmt::Conditional,
-    // and the inner block-level conditional is lost in the InlineBranch content.
-    // Fix requires promoting ConditionalWithExpr+multiline_branches to Stmt::Conditional
-    // in lower.rs. Uncomment once the lowering fix lands:
-    // assert!(has_fold(26, 35, "{...}"), "missing nested conditional in _keep_rolling");
+    assert!(
+        has_fold(26, 35, "{...}"),
+        "missing nested conditional in _keep_rolling"
+    );
 
     // player_roll: conditional (lines 52-56)
     assert!(

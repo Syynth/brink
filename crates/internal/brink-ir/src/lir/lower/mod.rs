@@ -678,11 +678,12 @@ fn collect_counting_refs_content(
                     if let Some(ref e) = branch.condition {
                         collect_counting_refs_expr(e, visit_ids, turns_ids);
                     }
-                    for p in &branch.content {
-                        if let lir::ContentPart::Interpolation(e) = p {
-                            collect_counting_refs_expr(e, visit_ids, turns_ids);
-                        }
-                    }
+                    collect_counting_refs(&branch.body, visit_ids, turns_ids);
+                }
+            }
+            lir::ContentPart::InlineSequence(seq) => {
+                for branch in &seq.branches {
+                    collect_counting_refs(branch, visit_ids, turns_ids);
                 }
             }
             _ => {}

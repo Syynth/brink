@@ -985,7 +985,7 @@ impl BranchlessCondBody {
 // ── ElseBranch ───────────────────────────────────────────────────────
 
 impl ElseBranch {
-    pub fn branch(&self) -> Option<BranchContent> {
+    pub fn branch(&self) -> Option<MultilineBranchCond> {
         support::child(&self.syntax)
     }
 }

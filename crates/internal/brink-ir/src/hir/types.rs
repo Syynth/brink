@@ -114,7 +114,7 @@ pub enum Stmt {
     /// Multiline `{ - cond: ... }`
     Conditional(Conditional),
     /// Multiline `{stopping: - ... - ...}`
-    Sequence(BlockSequence),
+    Sequence(Sequence),
     /// `~ expr` — expression evaluated for side effects (e.g. function call).
     ExprStmt(Expr),
 }
@@ -191,32 +191,9 @@ pub enum ContentPart {
     /// `{expr}` — expression interpolation.
     Interpolation(Expr),
     /// `{cond: a | b}` — inline conditional.
-    InlineConditional(InlineCond),
+    InlineConditional(Conditional),
     /// `{&a|b|c}` — inline sequence.
-    InlineSequence(InlineSeq),
-}
-
-/// An inline conditional within content.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InlineCond {
-    pub ptr: AstPtr<ast::ConditionalWithExpr>,
-    pub branches: Vec<InlineBranch>,
-}
-
-/// A branch within an inline conditional.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InlineBranch {
-    /// `None` for the else branch.
-    pub condition: Option<Expr>,
-    pub content: Vec<ContentPart>,
-}
-
-/// An inline sequence within content.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InlineSeq {
-    pub ptr: SyntaxNodePtr,
-    pub kind: SequenceType,
-    pub branches: Vec<Vec<ContentPart>>,
+    InlineSequence(Sequence),
 }
 
 // ─── Sequence types ─────────────────────────────────────────────────
@@ -259,10 +236,10 @@ pub struct CondBranch {
     pub body: Block,
 }
 
-/// A multiline sequence block.
+/// A sequence block (stopping, cycle, once, shuffle).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlockSequence {
-    pub ptr: AstPtr<ast::SequenceWithAnnotation>,
+pub struct Sequence {
+    pub ptr: SyntaxNodePtr,
     pub kind: SequenceType,
     pub branches: Vec<Block>,
 }

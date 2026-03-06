@@ -311,27 +311,9 @@ pub enum ContentPart {
     /// `{expr}` — interpolated expression, resolved.
     Interpolation(Expr),
     /// `{cond: a | b}` — inline conditional with resolved conditions.
-    InlineConditional(InlineCond),
+    InlineConditional(Conditional),
     /// `{&a|b|c}` — inline sequence.
-    InlineSequence(InlineSeq),
-}
-
-/// An inline conditional within content.
-pub struct InlineCond {
-    pub branches: Vec<InlineBranch>,
-}
-
-/// A branch within an inline conditional.
-pub struct InlineBranch {
-    /// `None` for the else branch.
-    pub condition: Option<Expr>,
-    pub content: Vec<ContentPart>,
-}
-
-/// An inline sequence within content.
-pub struct InlineSeq {
-    pub kind: SequenceType,
-    pub branches: Vec<Vec<ContentPart>>,
+    InlineSequence(Sequence),
 }
 
 // ─── Expressions ─────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use brink_format::DefinitionId;
+use brink_format::{DefinitionId, DefinitionTag};
 
 use crate::FileId;
 use crate::hir;
@@ -44,6 +44,19 @@ pub struct GatherKey {
     pub file: FileId,
     pub scope: String,
     pub index: usize,
+}
+
+impl ContainerPlan {
+    /// An empty plan for inline lowering contexts where no choice/gather
+    /// containers exist.
+    pub fn empty() -> Self {
+        Self {
+            shells: Vec::new(),
+            choice_targets: HashMap::new(),
+            gather_targets: HashMap::new(),
+            root_id: DefinitionId::new(DefinitionTag::Container, 0),
+        }
+    }
 }
 
 /// Walk all HIR files and create container shells.

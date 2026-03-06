@@ -3,12 +3,12 @@ use brink_syntax::ast::{self, AstNode, AstPtr, SyntaxNodePtr};
 use rowan::TextRange;
 
 use crate::{
-    AssignOp, Assignment, Block, BlockSequence, Choice, ChoiceSet, CondBranch, Conditional,
-    ConstDecl, Content, ContentPart, DeclaredSymbol, Diagnostic, DiagnosticCode, Divert,
-    DivertPath, DivertTarget, Expr, ExternalDecl, FileId, FloatBits, Gather, HirFile, IncludeSite,
-    InfixOp, InlineBranch, InlineCond, InlineSeq, Knot, ListDecl, ListMember, Name, Param, Path,
-    PostfixOp, PrefixOp, RefKind, Return, Scope, SequenceType, Stitch, Stmt, StringExpr,
-    StringPart, SymbolManifest, Tag, TempDecl, ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
+    AssignOp, Assignment, Block, Choice, ChoiceSet, CondBranch, Conditional, ConstDecl, Content,
+    ContentPart, DeclaredSymbol, Diagnostic, DiagnosticCode, Divert, DivertPath, DivertTarget,
+    Expr, ExternalDecl, FileId, FloatBits, Gather, HirFile, IncludeSite, InfixOp, Knot, ListDecl,
+    ListMember, Name, Param, Path, PostfixOp, PrefixOp, RefKind, Return, Scope, Sequence,
+    SequenceType, Stitch, Stmt, StringExpr, StringPart, SymbolManifest, Tag, TempDecl, ThreadStart,
+    TunnelCall, UnresolvedRef, VarDecl,
 };
 
 #[cfg(test)]
@@ -794,11 +794,11 @@ impl LowerCtx {
         }
 
         if let Some(imp) = inline.implicit_sequence() {
-            let branches: Vec<Vec<ContentPart>> = imp
+            let branches: Vec<Block> = imp
                 .branches()
-                .map(|b| self.lower_content_node_children(b.syntax()))
+                .map(|b| self.wrap_content_as_block(b.syntax()))
                 .collect();
-            parts.push(ContentPart::InlineSequence(InlineSeq {
+            parts.push(ContentPart::InlineSequence(Sequence {
                 ptr: SyntaxNodePtr::from_node(imp.syntax()),
                 kind: SequenceType::STOPPING,
                 branches,
@@ -806,7 +806,8 @@ impl LowerCtx {
         }
     }
 
-    fn lower_inline_conditional(&mut self, cond: &ast::ConditionalWithExpr) -> Option<InlineCond> {
+    fn lower_inline_conditional(&mut self, cond: &ast::ConditionalWithExpr) -> Option<Conditional> {
+        let ptr = SyntaxNodePtr::from_node(cond.syntax());
         let condition = cond
             .condition()
             .and_then(|e| self.lower_expr(&e))
@@ -814,92 +815,295 @@ impl LowerCtx {
                 self.emit(cond.syntax().text_range(), DiagnosticCode::E020);
                 None
             })?;
+
+        Some(self.lower_conditional_with_expr(cond, &condition, ptr))
+    }
+
+    /// Unified lowering for `ConditionalWithExpr` — handles all patterns:
+    /// branchless body, inline branches, multiline branches, or bare condition.
+    fn lower_conditional_with_expr(
+        &mut self,
+        cond: &ast::ConditionalWithExpr,
+        condition: &Expr,
+        ptr: SyntaxNodePtr,
+    ) -> Conditional {
         let mut branches = Vec::new();
 
         if let Some(body) = cond.branchless_body() {
-            let content = self.lower_content_node_children(body.syntax());
-            branches.push(InlineBranch {
+            let block = self.lower_branchless_body(&body);
+            branches.push(CondBranch {
                 condition: Some(condition.clone()),
-                content,
+                body: block,
             });
             if let Some(else_branch) = body.else_branch()
-                && let Some(branch_content) = else_branch.branch()
+                && let Some(ml_branch) = else_branch.branch()
             {
-                branches.push(InlineBranch {
+                let else_body = ml_branch
+                    .body()
+                    .map_or_else(Block::default, |body| self.lower_branch_body(body.syntax()));
+                branches.push(CondBranch {
                     condition: None,
-                    content: self.lower_content_node_children(branch_content.syntax()),
+                    body: else_body,
                 });
             }
-            return Some(InlineCond {
-                ptr: AstPtr::new(cond),
-                branches,
-            });
+            return Conditional { ptr, branches };
         }
 
         if let Some(inline_branches) = cond.inline_branches() {
             let mut first = true;
             for b in inline_branches.branches() {
-                let content = self.lower_content_node_children(b.syntax());
                 let cond_expr = if first {
                     first = false;
                     Some(condition.clone())
                 } else {
                     None
                 };
-                branches.push(InlineBranch {
+                branches.push(CondBranch {
                     condition: cond_expr,
-                    content,
+                    body: self.wrap_content_as_block(b.syntax()),
                 });
             }
-            return Some(InlineCond {
-                ptr: AstPtr::new(cond),
-                branches,
-            });
+            return Conditional { ptr, branches };
         }
 
         if let Some(ml_branches) = cond.multiline_branches() {
-            branches.push(InlineBranch {
-                condition: Some(condition),
-                content: Vec::new(),
-            });
             for b in ml_branches.branches() {
                 let cond_expr = if b.is_else() {
                     None
                 } else {
                     b.condition().and_then(|e| self.lower_expr(&e))
                 };
-                let content = b.body().map_or_else(Vec::new, |body| {
-                    self.lower_content_node_children(body.syntax())
-                });
-                branches.push(InlineBranch {
+                let body = b
+                    .body()
+                    .map_or_else(Block::default, |body| self.lower_branch_body(body.syntax()));
+                branches.push(CondBranch {
                     condition: cond_expr,
-                    content,
+                    body,
                 });
             }
-            return Some(InlineCond {
-                ptr: AstPtr::new(cond),
-                branches,
-            });
+            return Conditional { ptr, branches };
         }
 
-        None
+        // Fallback: bare condition, no body
+        branches.push(CondBranch {
+            condition: Some(condition.clone()),
+            body: Block::default(),
+        });
+        Conditional { ptr, branches }
     }
 
-    fn lower_inline_sequence(&mut self, seq: &ast::SequenceWithAnnotation) -> Option<InlineSeq> {
+    /// Lower a `BranchlessCondBody` to a `Block`.
+    ///
+    /// Children are a mix of block-level (`LOGIC_LINE`, `INLINE_LOGIC`, `DIVERT_NODE`)
+    /// and content-level (`TEXT`, `GLUE_NODE`, `ESCAPE`). We accumulate content parts
+    /// and flush them as `Stmt::Content` when a block-level node is hit or at end.
+    fn lower_branchless_body(&mut self, body: &ast::BranchlessCondBody) -> Block {
+        let mut stmts = Vec::new();
+        let mut parts = Vec::new();
+
+        for child in body.syntax().children() {
+            match child.kind() {
+                SyntaxKind::ELSE_BRANCH => {
+                    // Stop — caller handles the else branch separately
+                    break;
+                }
+                SyntaxKind::CONTENT_LINE => {
+                    if let Some(cl) = ast::ContentLine::cast(child) {
+                        let line_parts = cl
+                            .mixed_content()
+                            .map_or_else(Vec::new, |mc| self.lower_mixed_content(&mc));
+                        parts.extend(line_parts);
+                        let tags = lower_tags(cl.tags());
+                        if !parts.is_empty() || !tags.is_empty() {
+                            stmts.push(Stmt::Content(Content {
+                                ptr: None,
+                                parts: std::mem::take(&mut parts),
+                                tags,
+                            }));
+                        }
+                        if let Some(dn) = cl.divert()
+                            && let Some(s) = self.lower_divert_node(&dn)
+                        {
+                            stmts.push(s);
+                        }
+                    }
+                }
+                SyntaxKind::LOGIC_LINE => {
+                    flush_content_parts(&mut parts, &mut stmts);
+                    if let Some(ll) = ast::LogicLine::cast(child)
+                        && let Some(stmt) = self.lower_logic_line(&ll)
+                    {
+                        stmts.push(stmt);
+                    }
+                }
+                SyntaxKind::DIVERT_NODE => {
+                    flush_content_parts(&mut parts, &mut stmts);
+                    if let Some(dn) = ast::DivertNode::cast(child)
+                        && let Some(stmt) = self.lower_divert_node(&dn)
+                    {
+                        stmts.push(stmt);
+                    }
+                }
+                SyntaxKind::INLINE_LOGIC => {
+                    if let Some(il) = ast::InlineLogic::cast(child) {
+                        // Check if this is a multiline block first
+                        if let Some(stmt) = self.lower_multiline_block_from_inline(&il) {
+                            flush_content_parts(&mut parts, &mut stmts);
+                            stmts.push(stmt);
+                        } else {
+                            self.lower_inline_logic(&il, &mut parts);
+                        }
+                    }
+                }
+                SyntaxKind::TEXT => {
+                    let text = child.text().to_string();
+                    if !text.is_empty() {
+                        parts.push(ContentPart::Text(text));
+                    }
+                }
+                SyntaxKind::GLUE_NODE => parts.push(ContentPart::Glue),
+                SyntaxKind::ESCAPE => {
+                    let text = child.text().to_string();
+                    if text.len() > 1 {
+                        parts.push(ContentPart::Text(text[1..].to_string()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        flush_content_parts(&mut parts, &mut stmts);
+        Block { stmts }
+    }
+
+    /// Lower a `MultilineBranchBody` to a `Block`.
+    ///
+    /// Branch bodies contain a mix of block-level (`LOGIC_LINE`, `INLINE_LOGIC`,
+    /// `CHOICE`, `DIVERT_NODE`) and content-level (`TEXT`, `GLUE_NODE`, `ESCAPE`) nodes.
+    /// We accumulate content parts and flush them when block-level nodes appear.
+    fn lower_branch_body(&mut self, body: &brink_syntax::SyntaxNode) -> Block {
+        let mut stmts = Vec::new();
+        let mut parts = Vec::new();
+
+        for child in body.children() {
+            match child.kind() {
+                SyntaxKind::CONTENT_LINE => {
+                    if let Some(cl) = ast::ContentLine::cast(child) {
+                        // Check multiline block promotion
+                        if let Some(mc) = cl.mixed_content()
+                            && let Some(il) = mc.inline_logics().next()
+                            && let Some(stmt) = self.lower_multiline_block_from_inline(&il)
+                        {
+                            flush_content_parts(&mut parts, &mut stmts);
+                            stmts.push(stmt);
+                            continue;
+                        }
+                        let line_parts = cl
+                            .mixed_content()
+                            .map_or_else(Vec::new, |mc| self.lower_mixed_content(&mc));
+                        parts.extend(line_parts);
+                        let tags = lower_tags(cl.tags());
+                        if !parts.is_empty() || !tags.is_empty() {
+                            stmts.push(Stmt::Content(Content {
+                                ptr: None,
+                                parts: std::mem::take(&mut parts),
+                                tags,
+                            }));
+                        }
+                        if let Some(dn) = cl.divert()
+                            && let Some(s) = self.lower_divert_node(&dn)
+                        {
+                            stmts.push(s);
+                        }
+                    }
+                }
+                SyntaxKind::LOGIC_LINE => {
+                    flush_content_parts(&mut parts, &mut stmts);
+                    if let Some(ll) = ast::LogicLine::cast(child)
+                        && let Some(stmt) = self.lower_logic_line(&ll)
+                    {
+                        stmts.push(stmt);
+                    }
+                }
+                SyntaxKind::DIVERT_NODE => {
+                    flush_content_parts(&mut parts, &mut stmts);
+                    if let Some(dn) = ast::DivertNode::cast(child)
+                        && let Some(stmt) = self.lower_divert_node(&dn)
+                    {
+                        stmts.push(stmt);
+                    }
+                }
+                SyntaxKind::INLINE_LOGIC => {
+                    if let Some(il) = ast::InlineLogic::cast(child) {
+                        if let Some(stmt) = self.lower_multiline_block_from_inline(&il) {
+                            flush_content_parts(&mut parts, &mut stmts);
+                            stmts.push(stmt);
+                        } else {
+                            self.lower_inline_logic(&il, &mut parts);
+                        }
+                    }
+                }
+                SyntaxKind::TEXT => {
+                    let text = child.text().to_string();
+                    if !text.is_empty() {
+                        parts.push(ContentPart::Text(text));
+                    }
+                }
+                SyntaxKind::GLUE_NODE => parts.push(ContentPart::Glue),
+                SyntaxKind::ESCAPE => {
+                    let text = child.text().to_string();
+                    if text.len() > 1 {
+                        parts.push(ContentPart::Text(text[1..].to_string()));
+                    }
+                }
+                SyntaxKind::CHOICE => {
+                    flush_content_parts(&mut parts, &mut stmts);
+                    if let Some(c) = ast::Choice::cast(child)
+                        && let Some(choice) = self.lower_choice(&c)
+                    {
+                        // Choices inside branch bodies need to be captured
+                        // but don't participate in weave folding at this level
+                        stmts.push(Stmt::ChoiceSet(ChoiceSet {
+                            choices: vec![choice],
+                            gather: None,
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+        flush_content_parts(&mut parts, &mut stmts);
+        Block { stmts }
+    }
+
+    /// Wrap content-level children as a single-statement Block (for inline branches).
+    fn wrap_content_as_block(&mut self, node: &brink_syntax::SyntaxNode) -> Block {
+        let parts = self.lower_content_node_children(node);
+        if parts.is_empty() {
+            return Block::default();
+        }
+        Block {
+            stmts: vec![Stmt::Content(Content {
+                ptr: None,
+                parts,
+                tags: Vec::new(),
+            })],
+        }
+    }
+
+    fn lower_inline_sequence(&mut self, seq: &ast::SequenceWithAnnotation) -> Option<Sequence> {
         let kind = lower_sequence_type(seq);
 
         let branches = if let Some(inline_branches) = seq.inline_branches() {
             inline_branches
                 .branches()
-                .map(|b| self.lower_content_node_children(b.syntax()))
+                .map(|b| self.wrap_content_as_block(b.syntax()))
                 .collect()
         } else if let Some(ml_branches) = seq.multiline_branches() {
             ml_branches
                 .branches()
                 .map(|b| {
-                    b.body().map_or_else(Vec::new, |body| {
-                        self.lower_content_node_children(body.syntax())
-                    })
+                    b.body()
+                        .map_or_else(Block::default, |body| self.lower_branch_body(body.syntax()))
                 })
                 .collect()
         } else {
@@ -907,7 +1111,7 @@ impl LowerCtx {
             return None;
         };
 
-        Some(InlineSeq {
+        Some(Sequence {
             ptr: SyntaxNodePtr::from_node(seq.syntax()),
             kind,
             branches,
@@ -942,6 +1146,16 @@ impl LowerCtx {
             }
         }
         parts
+    }
+}
+
+fn flush_content_parts(parts: &mut Vec<ContentPart>, stmts: &mut Vec<Stmt>) {
+    if !parts.is_empty() {
+        stmts.push(Stmt::Content(Content {
+            ptr: None,
+            parts: std::mem::take(parts),
+            tags: Vec::new(),
+        }));
     }
 }
 
@@ -1442,10 +1656,13 @@ impl LowerCtx {
     fn lower_multiline_block(&mut self, mb: &ast::MultilineBlock) -> Option<Stmt> {
         let ptr = SyntaxNodePtr::from_node(mb.syntax());
 
-        if let Some(cond) = mb.conditional()
-            && cond.multiline_branches().is_some()
-        {
-            return Some(Stmt::Conditional(self.lower_block_conditional(&cond, ptr)));
+        if let Some(cond) = mb.conditional() {
+            if let Some(condition) = cond.condition().and_then(|e| self.lower_expr(&e)) {
+                return Some(Stmt::Conditional(
+                    self.lower_conditional_with_expr(&cond, &condition, ptr),
+                ));
+            }
+            return None;
         }
 
         if let Some(seq) = mb.sequence()
@@ -1471,10 +1688,15 @@ impl LowerCtx {
             ));
         }
 
-        if let Some(cond) = inline.conditional()
-            && cond.multiline_branches().is_some()
-        {
-            return Some(Stmt::Conditional(self.lower_block_conditional(&cond, ptr)));
+        if let Some(cond) = inline.conditional() {
+            if (cond.multiline_branches().is_some() || cond.branchless_body().is_some())
+                && let Some(condition) = cond.condition().and_then(|e| self.lower_expr(&e))
+            {
+                return Some(Stmt::Conditional(
+                    self.lower_conditional_with_expr(&cond, &condition, ptr),
+                ));
+            }
+            return None;
         }
 
         if let Some(seq) = inline.sequence()
@@ -1514,63 +1736,27 @@ impl LowerCtx {
                 } else {
                     b.condition().and_then(|e| self.lower_expr(&e))
                 };
-                let body = b.body().map_or_else(Block::default, |body| {
-                    self.lower_body_children(body.syntax())
-                });
+                let body = b
+                    .body()
+                    .map_or_else(Block::default, |body| self.lower_branch_body(body.syntax()));
                 CondBranch { condition, body }
             })
             .collect();
         Conditional { ptr, branches }
     }
 
-    fn lower_block_conditional(
-        &mut self,
-        cond: &ast::ConditionalWithExpr,
-        ptr: SyntaxNodePtr,
-    ) -> Conditional {
-        let outer_cond = cond.condition().and_then(|e| self.lower_expr(&e));
-        let mut branches = Vec::new();
-
-        if let Some(ml) = cond.multiline_branches() {
-            for b in ml.branches() {
-                let condition = if b.is_else() {
-                    None
-                } else {
-                    b.condition().and_then(|e| self.lower_expr(&e))
-                };
-                let body = b.body().map_or_else(Block::default, |body| {
-                    self.lower_body_children(body.syntax())
-                });
-                branches.push(CondBranch { condition, body });
-            }
-        }
-
-        if branches.is_empty()
-            && let Some(c) = outer_cond
-        {
-            branches.push(CondBranch {
-                condition: Some(c),
-                body: Block::default(),
-            });
-        }
-
-        Conditional { ptr, branches }
-    }
-
-    fn lower_block_sequence(&mut self, seq: &ast::SequenceWithAnnotation) -> BlockSequence {
-        let ptr = AstPtr::new(seq);
+    fn lower_block_sequence(&mut self, seq: &ast::SequenceWithAnnotation) -> Sequence {
         let kind = lower_sequence_type(seq);
         let branches = seq.multiline_branches().map_or_else(Vec::new, |ml| {
             ml.branches()
                 .map(|b| {
-                    b.body().map_or_else(Block::default, |body| {
-                        self.lower_body_children(body.syntax())
-                    })
+                    b.body()
+                        .map_or_else(Block::default, |body| self.lower_branch_body(body.syntax()))
                 })
                 .collect()
         });
-        BlockSequence {
-            ptr,
+        Sequence {
+            ptr: SyntaxNodePtr::from_node(seq.syntax()),
             kind,
             branches,
         }

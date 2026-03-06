@@ -1635,16 +1635,10 @@ fn diag_e021_inline_seq_no_branches() {
     expect_diag_or_parse_error("Hello {stopping:}\n", DiagnosticCode::E021);
 }
 
-// ─── Nested conditional structure ───────────────────────────────────
+// ─── Branchless conditional structure ────────────────────────────────
 
-// TODO: `{ expr: ... - else: ... }` with block-level content in branches
-// is currently lowered as InlineCond (inside Content) instead of being
-// promoted to Stmt::Conditional. The inner nested conditional is lost
-// because InlineBranch.content (Vec<ContentPart>) can't represent
-// block-level constructs. This needs a lowering fix to promote
-// ConditionalWithExpr+multiline_branches to Stmt::Conditional.
 #[test]
-fn conditional_with_expr_and_multiline_branches_lowers_as_inline() {
+fn conditional_with_expr_branchless_body_lowers_as_conditional() {
     let source = "\
 === function f(x) ===
 { x > 0:
@@ -1657,12 +1651,76 @@ fn conditional_with_expr_and_multiline_branches_lowers_as_inline() {
     assert!(diags.is_empty(), "unexpected diags: {diags:?}");
 
     let knot = &hir.knots[0];
-    // Currently this is lowered as Content(InlineConditional), not Stmt::Conditional
-    let has_inline_cond = knot.body.stmts.iter().any(|s| {
-        matches!(s, Stmt::Content(c) if c.parts.iter().any(|p| matches!(p, ContentPart::InlineConditional(_))))
-    });
+    let cond = knot
+        .body
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::Conditional(c) => Some(c),
+            _ => None,
+        })
+        .expect("expected Stmt::Conditional for `{ expr: ... - else: ... }`");
+    assert_eq!(cond.branches.len(), 2, "expected 2 branches (true + else)");
     assert!(
-        has_inline_cond,
-        "expected `{{ expr: ... - else: ... }}` to be lowered as InlineConditional in Content"
+        cond.branches[0].condition.is_some(),
+        "first branch should have condition"
     );
+    assert!(
+        cond.branches[1].condition.is_none(),
+        "second branch should be else (no condition)"
+    );
+    // First branch should have content "hello"
+    assert!(
+        !cond.branches[0].body.stmts.is_empty(),
+        "first branch body should have statements"
+    );
+    // Second branch should have content "world"
+    assert!(
+        !cond.branches[1].body.stmts.is_empty(),
+        "else branch body should have statements"
+    );
+}
+
+#[test]
+fn branchless_conditional_with_temp_decl() {
+    let source = "\
+=== function f(x) ===
+{ x:
+    ~ temp y = 1
+    Some text.
+- else:
+    Other text.
+}
+";
+    let (hir, _, diags) = lower_ink(source);
+    assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+
+    let knot = &hir.knots[0];
+    let cond = knot.body.stmts.iter().find_map(|s| match s {
+        Stmt::Conditional(c) => Some(c),
+        _ => None,
+    });
+    let cond = cond.expect("expected Stmt::Conditional");
+    assert_eq!(cond.branches.len(), 2);
+
+    // First branch should contain TempDecl and Content
+    let first_body = &cond.branches[0].body;
+    let has_temp = first_body
+        .stmts
+        .iter()
+        .any(|s| matches!(s, Stmt::TempDecl(_)));
+    let has_content = first_body
+        .stmts
+        .iter()
+        .any(|s| matches!(s, Stmt::Content(_)));
+    assert!(has_temp, "first branch should contain TempDecl");
+    assert!(has_content, "first branch should contain Content");
+
+    // Second branch should contain Content
+    let second_body = &cond.branches[1].body;
+    let has_content = second_body
+        .stmts
+        .iter()
+        .any(|s| matches!(s, Stmt::Content(_)));
+    assert!(has_content, "else branch should contain Content");
 }

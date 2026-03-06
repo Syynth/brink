@@ -35,20 +35,39 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
             let branches = cond
                 .branches
                 .iter()
-                .map(|b| lir::InlineBranch {
-                    condition: b.condition.as_ref().map(|e| lower_expr(e, ctx)),
-                    content: lower_content_parts(&b.content, ctx),
+                .map(|b| {
+                    let condition = b.condition.as_ref().map(|e| lower_expr(e, ctx));
+                    let mut bc = 0;
+                    let mut bg = 0;
+                    let body = super::stmts::lower_block(
+                        &b.body,
+                        ctx,
+                        &super::plan::ContainerPlan::empty(),
+                        &mut bc,
+                        &mut bg,
+                    );
+                    lir::CondBranch { condition, body }
                 })
                 .collect();
-            lir::ContentPart::InlineConditional(lir::InlineCond { branches })
+            lir::ContentPart::InlineConditional(lir::Conditional { branches })
         }
         hir::ContentPart::InlineSequence(seq) => {
             let branches = seq
                 .branches
                 .iter()
-                .map(|parts| lower_content_parts(parts, ctx))
+                .map(|b| {
+                    let mut bc = 0;
+                    let mut bg = 0;
+                    super::stmts::lower_block(
+                        b,
+                        ctx,
+                        &super::plan::ContainerPlan::empty(),
+                        &mut bc,
+                        &mut bg,
+                    )
+                })
                 .collect();
-            lir::ContentPart::InlineSequence(lir::InlineSeq {
+            lir::ContentPart::InlineSequence(lir::Sequence {
                 kind: seq.kind,
                 branches,
             })

@@ -1010,13 +1010,13 @@ fn collect_content_part_folds(
             brink_ir::ContentPart::InlineConditional(cond) => {
                 push_fold(cond.ptr.text_range(), Some("{...}".to_owned()), idx, out);
                 for branch in &cond.branches {
-                    collect_content_part_folds(&branch.content, idx, out);
+                    collect_block_folds(&branch.body, idx, out);
                 }
             }
             brink_ir::ContentPart::InlineSequence(seq) => {
                 push_fold(seq.ptr.text_range(), Some("{...}".to_owned()), idx, out);
                 for branch in &seq.branches {
-                    collect_content_part_folds(branch, idx, out);
+                    collect_block_folds(branch, idx, out);
                 }
             }
             _ => {}
