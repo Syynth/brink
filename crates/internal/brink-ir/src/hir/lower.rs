@@ -5,10 +5,10 @@ use rowan::TextRange;
 use crate::{
     AssignOp, Assignment, Block, BlockSequence, Choice, ChoiceSet, CondBranch, Conditional,
     ConstDecl, Content, ContentPart, DeclaredSymbol, Diagnostic, DiagnosticCode, Divert,
-    DivertPath, DivertTarget, Expr, ExternalDecl, FloatBits, Gather, HirFile, IncludeSite, InfixOp,
-    InlineBranch, InlineCond, InlineSeq, Knot, ListDecl, ListMember, Name, Param, Path, PostfixOp,
-    PrefixOp, RefKind, Return, Scope, SequenceType, Stitch, Stmt, StringExpr, StringPart,
-    SymbolManifest, Tag, TempDecl, ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
+    DivertPath, DivertTarget, Expr, ExternalDecl, FileId, FloatBits, Gather, HirFile, IncludeSite,
+    InfixOp, InlineBranch, InlineCond, InlineSeq, Knot, ListDecl, ListMember, Name, Param, Path,
+    PostfixOp, PrefixOp, RefKind, Return, Scope, SequenceType, Stitch, Stmt, StringExpr,
+    StringPart, SymbolManifest, Tag, TempDecl, ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
 };
 
 #[cfg(test)]
@@ -16,8 +16,11 @@ mod tests;
 
 // ─── Public API ──────────────────────────────────────────────────────
 
-pub fn lower(file: &ast::SourceFile) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
-    let mut ctx = LowerCtx::new();
+pub fn lower(
+    file_id: FileId,
+    file: &ast::SourceFile,
+) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
+    let mut ctx = LowerCtx::new(file_id);
     let hir = ctx.lower_source_file(file);
     (hir, ctx.manifest, ctx.diagnostics)
 }
@@ -25,8 +28,11 @@ pub fn lower(file: &ast::SourceFile) -> (HirFile, SymbolManifest, Vec<Diagnostic
 /// Lower a single knot definition in isolation.
 ///
 /// Returns `None` for the knot if the AST node is malformed (e.g. missing header).
-pub fn lower_knot(knot: &ast::KnotDef) -> (Option<Knot>, SymbolManifest, Vec<Diagnostic>) {
-    let mut ctx = LowerCtx::new();
+pub fn lower_knot(
+    file_id: FileId,
+    knot: &ast::KnotDef,
+) -> (Option<Knot>, SymbolManifest, Vec<Diagnostic>) {
+    let mut ctx = LowerCtx::new(file_id);
     let result = ctx.lower_knot(knot);
     (result, ctx.manifest, ctx.diagnostics)
 }
@@ -34,8 +40,11 @@ pub fn lower_knot(knot: &ast::KnotDef) -> (Option<Knot>, SymbolManifest, Vec<Dia
 /// Lower only the top-level content and declarations of a file, skipping knots.
 ///
 /// Useful for incremental analysis where knots are lowered separately.
-pub fn lower_top_level(file: &ast::SourceFile) -> (Block, SymbolManifest, Vec<Diagnostic>) {
-    let mut ctx = LowerCtx::new();
+pub fn lower_top_level(
+    file_id: FileId,
+    file: &ast::SourceFile,
+) -> (Block, SymbolManifest, Vec<Diagnostic>) {
+    let mut ctx = LowerCtx::new(file_id);
 
     // Lower declarations (registers symbols in manifest)
     let _variables: Vec<_> = file
@@ -63,6 +72,7 @@ pub fn lower_top_level(file: &ast::SourceFile) -> (Block, SymbolManifest, Vec<Di
 // ─── Lowering context ────────────────────────────────────────────────
 
 struct LowerCtx {
+    file_id: FileId,
     diagnostics: Vec<Diagnostic>,
     manifest: SymbolManifest,
     current_knot: Option<String>,
@@ -70,8 +80,9 @@ struct LowerCtx {
 }
 
 impl LowerCtx {
-    fn new() -> Self {
+    fn new(file_id: FileId) -> Self {
         Self {
+            file_id,
             diagnostics: Vec::new(),
             manifest: SymbolManifest::default(),
             current_knot: None,
@@ -96,6 +107,7 @@ impl LowerCtx {
 
     fn emit(&mut self, range: TextRange, code: DiagnosticCode) {
         self.diagnostics.push(Diagnostic {
+            file: self.file_id,
             range,
             message: code.title().to_string(),
             code,

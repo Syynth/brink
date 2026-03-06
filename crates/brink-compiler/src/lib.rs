@@ -45,17 +45,16 @@ pub enum CompileError {
     /// One or more diagnostics prevented compilation.
     #[error("{} diagnostic(s) prevented compilation", .0.len())]
     Diagnostics(Vec<Diagnostic>),
+    /// Circular INCLUDE dependency detected.
+    #[error("circular INCLUDE dependency: {0}")]
+    CircularInclude(String),
 }
 
 impl From<brink_db::DiscoverError> for CompileError {
     fn from(err: brink_db::DiscoverError) -> Self {
         match err {
             brink_db::DiscoverError::Io(e) => Self::Io(e),
-            brink_db::DiscoverError::CircularInclude(msg) => Self::Diagnostics(vec![Diagnostic {
-                range: rowan::TextRange::default(),
-                message: format!("circular INCLUDE dependency: {msg}"),
-                code: brink_ir::DiagnosticCode::E028,
-            }]),
+            brink_db::DiscoverError::CircularInclude(msg) => Self::CircularInclude(msg),
         }
     }
 }

@@ -104,6 +104,7 @@ fn insert_symbol(
             .any(|id| index.symbols.get(id).is_some_and(|info| info.kind == kind));
         if has_dup {
             diagnostics.push(Diagnostic {
+                file,
                 range: sym.range,
                 message: format!("{}: `{}` is already defined", dup_code.title(), sym.name),
                 code: dup_code,

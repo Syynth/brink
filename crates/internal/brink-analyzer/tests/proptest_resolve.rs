@@ -225,9 +225,14 @@ proptest! {
         let files = vec![(FileId(0), empty_hir(), manifest)];
         let result = analyze(files);
 
+        let resolved_ranges: std::collections::HashSet<_> = result
+            .resolutions
+            .iter()
+            .map(|r| r.range)
+            .collect();
         let resolved_count = ref_ranges
             .iter()
-            .filter(|r| result.resolutions.contains_key(r))
+            .filter(|r| resolved_ranges.contains(r))
             .count();
 
         // Diagnostics that are resolution errors (E024, E025, or E027)
@@ -262,11 +267,11 @@ proptest! {
         let files = vec![(FileId(0), empty_hir(), manifest)];
         let result = analyze(files);
 
-        for def_id in result.resolutions.values() {
+        for resolved in &result.resolutions {
             prop_assert!(
-                result.index.symbols.contains_key(def_id),
+                result.index.symbols.contains_key(&resolved.target),
                 "resolved to {:?} which is not in the index",
-                def_id,
+                resolved.target,
             );
         }
     }
@@ -326,12 +331,12 @@ proptest! {
             "different number of resolutions",
         );
 
-        for (range, id) in &result1.resolutions {
-            prop_assert_eq!(
-                result2.resolutions.get(range),
-                Some(id),
-                "resolution differs for range {:?}",
-                range,
+        for r1 in &result1.resolutions {
+            let found = result2.resolutions.iter().find(|r2| r2.range == r1.range && r2.file == r1.file);
+            prop_assert!(
+                found.is_some_and(|r2| r2.target == r1.target),
+                "resolution differs for range {:?} in file {:?}",
+                r1.range, r1.file,
             );
         }
     }
@@ -453,7 +458,8 @@ proptest! {
         let files = vec![(FileId(0), empty_hir(), manifest)];
         let result = analyze(files);
 
-        let has_resolution = result.resolutions.contains_key(&range(5000, missing.len() as u32));
+        let target_range = range(5000, missing.len() as u32);
+        let has_resolution = result.resolutions.iter().any(|r| r.range == target_range);
         prop_assert!(
             !has_resolution,
             "expected `{}` to NOT resolve, but it did", missing,
@@ -498,7 +504,7 @@ proptest! {
 /// Parse ink source, lower it, and run analysis. Returns the analysis result.
 fn analyze_ink(source: &str) -> brink_analyzer::AnalysisResult {
     let parsed = brink_syntax::parse(source);
-    let (hir, manifest, _lowering_diags) = brink_ir::lower(&parsed.tree());
+    let (hir, manifest, _lowering_diags) = brink_ir::lower(FileId(0), &parsed.tree());
     analyze(vec![(FileId(0), hir, manifest)])
 }
 
@@ -509,8 +515,9 @@ fn analyze_ink_multi(sources: &[&str]) -> brink_analyzer::AnalysisResult {
         .enumerate()
         .map(|(i, source)| {
             let parsed = brink_syntax::parse(source);
-            let (hir, manifest, _) = brink_ir::lower(&parsed.tree());
-            (FileId(i as u32), hir, manifest)
+            let file_id = FileId(i as u32);
+            let (hir, manifest, _) = brink_ir::lower(file_id, &parsed.tree());
+            (file_id, hir, manifest)
         })
         .collect();
     analyze(files)

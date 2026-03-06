@@ -73,6 +73,22 @@ impl SymbolKind {
     }
 }
 
+// ─── Resolution types ───────────────────────────────────────────────
+
+/// A resolved reference: a use-site that has been matched to a definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRef {
+    /// Which file the reference appears in.
+    pub file: FileId,
+    /// Source span of the reference.
+    pub range: TextRange,
+    /// The definition this reference resolves to.
+    pub target: DefinitionId,
+}
+
+/// Maps reference use-sites to their resolved definitions, with file provenance.
+pub type ResolutionMap = Vec<ResolvedRef>;
+
 /// Resolution context — identifies the current knot/stitch for relative
 /// path lookup.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

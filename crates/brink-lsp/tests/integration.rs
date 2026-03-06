@@ -177,3 +177,129 @@ Some text.
     drop(stdout);
     let _ = child.wait();
 }
+
+#[test]
+fn diagnostics_for_scene1_ink() {
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+
+    let mut child = std::process::Command::new(bin)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    // --- initialize ---
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": null,
+            }
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+
+    // --- initialized ---
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    // --- didOpen with the scene1.ink file ---
+    let ink_source =
+        include_str!("../../../tests/tests_patched/wildwinter__Ink-Explorer/tests/dink/scene1.ink");
+    let file_uri = "file:///tmp/scene1.ink";
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": ink_source,
+                }
+            }
+        }),
+    );
+
+    // Send a dummy request so we can collect notifications that arrived
+    // between didOpen and this response.
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/documentSymbol",
+            "params": {
+                "textDocument": { "uri": file_uri }
+            }
+        }),
+    );
+
+    let (_symbols_resp, notifications) = recv_response(&mut stdout, 2);
+
+    // Find publishDiagnostics notifications
+    let diag_notifications: Vec<&Value> = notifications
+        .iter()
+        .filter(|n| n["method"] == "textDocument/publishDiagnostics")
+        .collect();
+
+    // Print diagnostics for inspection
+    for note in &diag_notifications {
+        let diags = note["params"]["diagnostics"]
+            .as_array()
+            .expect("diagnostics should be array");
+        eprintln!(
+            "=== publishDiagnostics for {} ({} diagnostics) ===",
+            note["params"]["uri"],
+            diags.len()
+        );
+        for d in diags {
+            let range = &d["range"];
+            let start = &range["start"];
+            let end = &range["end"];
+            eprintln!(
+                "  [{severity}] {line}:{col}-{eline}:{ecol}: {msg}",
+                severity = d["severity"],
+                line = start["line"],
+                col = start["character"],
+                eline = end["line"],
+                ecol = end["character"],
+                msg = d["message"],
+            );
+        }
+    }
+
+    // Assert we got at least one publishDiagnostics notification
+    assert!(
+        !diag_notifications.is_empty(),
+        "expected at least one publishDiagnostics notification"
+    );
+
+    // For now, just report what we got. We can tighten assertions later.
+    let all_diags: Vec<&Value> = diag_notifications
+        .iter()
+        .flat_map(|n| n["params"]["diagnostics"].as_array().unwrap().iter())
+        .collect();
+    eprintln!("\nTotal diagnostics: {}", all_diags.len());
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+}

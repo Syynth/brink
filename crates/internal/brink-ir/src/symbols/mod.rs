@@ -8,5 +8,7 @@
 mod index;
 mod manifest;
 
-pub use index::{ParamInfo, Scope, SymbolIndex, SymbolInfo, SymbolKind};
+pub use index::{
+    ParamInfo, ResolutionMap, ResolvedRef, Scope, SymbolIndex, SymbolInfo, SymbolKind,
+};
 pub use manifest::{DeclaredSymbol, RefKind, SymbolManifest, UnresolvedRef};

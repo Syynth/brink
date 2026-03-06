@@ -1,13 +1,8 @@
-use std::collections::HashMap;
-
 use brink_format::DefinitionId;
 use brink_ir::{
-    Diagnostic, DiagnosticCode, FileId, RefKind, SymbolIndex, SymbolKind, SymbolManifest,
+    Diagnostic, DiagnosticCode, FileId, RefKind, ResolutionMap, ResolvedRef, SymbolIndex,
+    SymbolKind, SymbolManifest,
 };
-use rowan::TextRange;
-
-/// Maps a reference's source range to the definition it resolved to.
-pub type ResolutionMap = HashMap<TextRange, DefinitionId>;
 
 /// Resolve all unresolved references across files.
 pub fn resolve_refs(
@@ -17,13 +12,21 @@ pub fn resolve_refs(
     let mut map = ResolutionMap::new();
     let mut diagnostics = Vec::new();
 
-    for (_file_id, manifest) in files {
+    for &(file_id, ref manifest) in files {
         for uref in &manifest.unresolved {
             match uref.kind {
-                RefKind::Divert => resolve_divert(index, uref, &mut map, &mut diagnostics),
-                RefKind::Variable => resolve_variable(index, uref, &mut map, &mut diagnostics),
-                RefKind::Function => resolve_function(index, uref, &mut map, &mut diagnostics),
-                RefKind::List => resolve_list_ref(index, uref, &mut map, &mut diagnostics),
+                RefKind::Divert => {
+                    resolve_divert(index, file_id, uref, &mut map, &mut diagnostics);
+                }
+                RefKind::Variable => {
+                    resolve_variable(index, file_id, uref, &mut map, &mut diagnostics);
+                }
+                RefKind::Function => {
+                    resolve_function(index, file_id, uref, &mut map, &mut diagnostics);
+                }
+                RefKind::List => {
+                    resolve_list_ref(index, file_id, uref, &mut map, &mut diagnostics);
+                }
             }
         }
     }
@@ -33,6 +36,7 @@ pub fn resolve_refs(
 
 fn resolve_divert(
     index: &SymbolIndex,
+    file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
     map: &mut ResolutionMap,
     diagnostics: &mut Vec<Diagnostic>,
@@ -43,9 +47,18 @@ fn resolve_divert(
     if path.contains('.') {
         let found = lookup_by_name(index, path, &[SymbolKind::Stitch, SymbolKind::Label]);
         if let Some(id) = found {
-            map.insert(uref.range, id);
+            map.push(ResolvedRef {
+                file: file_id,
+                range: uref.range,
+                target: id,
+            });
         } else {
-            diagnostics.push(unresolved_diag(uref.range, path, DiagnosticCode::E024));
+            diagnostics.push(unresolved_diag(
+                file_id,
+                uref.range,
+                path,
+                DiagnosticCode::E024,
+            ));
         }
         return;
     }
@@ -57,7 +70,11 @@ fn resolve_divert(
         if let Some(id) =
             lookup_by_name(index, &qualified, &[SymbolKind::Stitch, SymbolKind::Label])
         {
-            map.insert(uref.range, id);
+            map.push(ResolvedRef {
+                file: file_id,
+                range: uref.range,
+                target: id,
+            });
             return;
         }
 
@@ -69,14 +86,22 @@ fn resolve_divert(
                 &[SymbolKind::Label],
             )
         {
-            map.insert(uref.range, id);
+            map.push(ResolvedRef {
+                file: file_id,
+                range: uref.range,
+                target: id,
+            });
             return;
         }
     }
 
     // 2. Knot at top level
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Knot]) {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
@@ -84,15 +109,25 @@ fn resolve_divert(
     if let Some(knot) = &uref.scope.knot
         && let Some(id) = lookup_label_in_knot(index, knot, path)
     {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
-    diagnostics.push(unresolved_diag(uref.range, path, DiagnosticCode::E024));
+    diagnostics.push(unresolved_diag(
+        file_id,
+        uref.range,
+        path,
+        DiagnosticCode::E024,
+    ));
 }
 
 fn resolve_variable(
     index: &SymbolIndex,
+    file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
     map: &mut ResolutionMap,
     diagnostics: &mut Vec<Diagnostic>,
@@ -101,18 +136,26 @@ fn resolve_variable(
 
     // Try global variables / constants
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Variable, SymbolKind::Constant]) {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
     // Try list items by bare name (e.g. `myItem` matches `SomeList.myItem`)
     match lookup_list_item_bare(index, path) {
         BareItemResult::Unique(id) => {
-            map.insert(uref.range, id);
+            map.push(ResolvedRef {
+                file: file_id,
+                range: uref.range,
+                target: id,
+            });
             return;
         }
         BareItemResult::Ambiguous => {
-            diagnostics.push(ambiguous_diag(uref.range, path));
+            diagnostics.push(ambiguous_diag(file_id, uref.range, path));
             return;
         }
         BareItemResult::NotFound => {}
@@ -122,19 +165,31 @@ fn resolve_variable(
     if path.contains('.')
         && let Some(id) = lookup_by_name(index, path, &[SymbolKind::ListItem])
     {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
     // Try list names
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::List]) {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
     // Try knots (ink allows knot references as variables, e.g. visit counts)
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Knot]) {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
@@ -142,7 +197,11 @@ fn resolve_variable(
     if let Some(knot) = &uref.scope.knot
         && let Some(id) = lookup_by_name(index, &format!("{knot}.{path}"), &[SymbolKind::Stitch])
     {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
@@ -150,15 +209,25 @@ fn resolve_variable(
     if let Some(knot) = &uref.scope.knot
         && let Some(id) = lookup_label_in_knot(index, knot, path)
     {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
-    diagnostics.push(unresolved_diag(uref.range, path, DiagnosticCode::E025));
+    diagnostics.push(unresolved_diag(
+        file_id,
+        uref.range,
+        path,
+        DiagnosticCode::E025,
+    ));
 }
 
 fn resolve_function(
     index: &SymbolIndex,
+    file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
     map: &mut ResolutionMap,
     diagnostics: &mut Vec<Diagnostic>,
@@ -167,21 +236,35 @@ fn resolve_function(
 
     // Try externals first
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::External]) {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
     // Try knots (ink allows knots as functions via tunnels)
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Knot]) {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
-    diagnostics.push(unresolved_diag(uref.range, path, DiagnosticCode::E025));
+    diagnostics.push(unresolved_diag(
+        file_id,
+        uref.range,
+        path,
+        DiagnosticCode::E025,
+    ));
 }
 
 fn resolve_list_ref(
     index: &SymbolIndex,
+    file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
     map: &mut ResolutionMap,
     diagnostics: &mut Vec<Diagnostic>,
@@ -192,18 +275,26 @@ fn resolve_list_ref(
     if path.contains('.')
         && let Some(id) = lookup_by_name(index, path, &[SymbolKind::ListItem])
     {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
     // Try bare list item name
     match lookup_list_item_bare(index, path) {
         BareItemResult::Unique(id) => {
-            map.insert(uref.range, id);
+            map.push(ResolvedRef {
+                file: file_id,
+                range: uref.range,
+                target: id,
+            });
             return;
         }
         BareItemResult::Ambiguous => {
-            diagnostics.push(ambiguous_diag(uref.range, path));
+            diagnostics.push(ambiguous_diag(file_id, uref.range, path));
             return;
         }
         BareItemResult::NotFound => {}
@@ -211,11 +302,20 @@ fn resolve_list_ref(
 
     // Try list name
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::List]) {
-        map.insert(uref.range, id);
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
-    diagnostics.push(unresolved_diag(uref.range, path, DiagnosticCode::E025));
+    diagnostics.push(unresolved_diag(
+        file_id,
+        uref.range,
+        path,
+        DiagnosticCode::E025,
+    ));
 }
 
 // ─── Lookup helpers ─────────────────────────────────────────────────
@@ -294,8 +394,9 @@ fn lookup_label_in_knot(index: &SymbolIndex, knot: &str, label: &str) -> Option<
     None
 }
 
-fn ambiguous_diag(range: TextRange, path: &str) -> Diagnostic {
+fn ambiguous_diag(file: FileId, range: rowan::TextRange, path: &str) -> Diagnostic {
     Diagnostic {
+        file,
         range,
         message: format!(
             "{}: `{path}` — qualify with the list name (e.g., `ListName.{path}`)",
@@ -305,8 +406,14 @@ fn ambiguous_diag(range: TextRange, path: &str) -> Diagnostic {
     }
 }
 
-fn unresolved_diag(range: TextRange, path: &str, code: DiagnosticCode) -> Diagnostic {
+fn unresolved_diag(
+    file: FileId,
+    range: rowan::TextRange,
+    path: &str,
+    code: DiagnosticCode,
+) -> Diagnostic {
     Diagnostic {
+        file,
         range,
         message: format!("{}: `{path}`", code.title()),
         code,
@@ -444,6 +551,7 @@ mod tests {
         assert!(merge_diags.is_empty());
         assert!(resolve_diags.is_empty());
         assert_eq!(resolutions.len(), 1);
+        assert_eq!(resolutions[0].file, FileId(0));
     }
 
     #[test]
@@ -483,8 +591,7 @@ mod tests {
         assert!(diags.is_empty());
         assert_eq!(resolutions.len(), 1);
         // The resolved ID should be for bedroom.look
-        let resolved_id = resolutions.values().next().unwrap();
-        let info = index.symbols.get(resolved_id).unwrap();
+        let info = index.symbols.get(&resolutions[0].target).unwrap();
         assert_eq!(info.name, "bedroom.look");
     }
 
@@ -540,8 +647,7 @@ mod tests {
 
         assert!(diags.is_empty());
         assert_eq!(resolutions.len(), 1);
-        let resolved_id = resolutions.values().next().unwrap();
-        let info = index.symbols.get(resolved_id).unwrap();
+        let info = index.symbols.get(&resolutions[0].target).unwrap();
         assert_eq!(info.name, "Colors.red");
     }
 
@@ -584,8 +690,7 @@ mod tests {
 
         assert!(diags.is_empty());
         assert_eq!(resolutions.len(), 1);
-        let resolved_id = resolutions.values().next().unwrap();
-        let info = index.symbols.get(resolved_id).unwrap();
+        let info = index.symbols.get(&resolutions[0].target).unwrap();
         assert_eq!(info.name, "meeting.greet");
     }
 
@@ -664,8 +769,7 @@ mod tests {
 
         assert!(diags.is_empty());
         assert_eq!(resolutions.len(), 1);
-        let resolved_id = resolutions.values().next().unwrap();
-        let info = index.symbols.get(resolved_id).unwrap();
+        let info = index.symbols.get(&resolutions[0].target).unwrap();
         assert_eq!(info.name, "Color.red");
     }
 }

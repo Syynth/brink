@@ -8,7 +8,7 @@ use crate::*;
 fn lower_ink(source: &str) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
     let parsed = parse(source);
     let tree = parsed.tree();
-    lower(&tree)
+    lower(FileId(0), &tree)
 }
 
 fn diags_for(source: &str) -> Vec<Diagnostic> {
@@ -31,7 +31,7 @@ fn expect_diag(diags: &[Diagnostic], code: DiagnosticCode) -> &Diagnostic {
 fn expect_diag_or_parse_error(source: &str, code: DiagnosticCode) {
     let parsed = parse(source);
     let tree = parsed.tree();
-    let (_, _, diags) = lower(&tree);
+    let (_, _, diags) = lower(FileId(0), &tree);
     let has_hir_diag = diags.iter().any(|d| d.code == code);
     let has_parse_error = !parsed.errors().is_empty();
     assert!(
@@ -503,12 +503,12 @@ Hello from knot.
     let tree = parsed.tree();
 
     // Full lower
-    let (hir, _, _) = lower(&tree);
+    let (hir, _, _) = lower(FileId(0), &tree);
     let full_knot = &hir.knots[0];
 
     // Per-knot lower
     let ast_knot = tree.knots().next().unwrap();
-    let (knot, manifest, diags) = crate::lower_knot(&ast_knot);
+    let (knot, manifest, diags) = crate::lower_knot(FileId(0), &ast_knot);
     let knot = knot.unwrap();
 
     assert!(diags.is_empty());
@@ -528,7 +528,7 @@ fn lower_knot_function_with_params() {
     let tree = parsed.tree();
 
     let ast_knot = tree.knots().next().unwrap();
-    let (knot, manifest, diags) = crate::lower_knot(&ast_knot);
+    let (knot, manifest, diags) = crate::lower_knot(FileId(0), &ast_knot);
     let knot = knot.unwrap();
 
     assert!(diags.is_empty());
@@ -550,7 +550,7 @@ Knot content.
     let parsed = parse(source);
     let tree = parsed.tree();
 
-    let (block, manifest, diags) = crate::lower_top_level(&tree);
+    let (block, manifest, diags) = crate::lower_top_level(FileId(0), &tree);
 
     assert!(diags.is_empty());
     // Should have root content
@@ -572,7 +572,7 @@ EXTERNAL doThing(a)
     let parsed = parse(source);
     let tree = parsed.tree();
 
-    let (_block, manifest, diags) = crate::lower_top_level(&tree);
+    let (_block, manifest, diags) = crate::lower_top_level(FileId(0), &tree);
 
     assert!(diags.is_empty());
     assert!(manifest.variables.iter().any(|s| s.name == "x"));

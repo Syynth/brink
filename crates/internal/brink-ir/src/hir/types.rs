@@ -472,9 +472,11 @@ pub struct IncludeSite {
 
 // ─── Diagnostics ────────────────────────────────────────────────────
 
-/// A diagnostic produced during HIR lowering.
+/// A diagnostic produced during HIR lowering or cross-file analysis.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
+    /// Which file this diagnostic belongs to.
+    pub file: FileId,
     /// The source span this diagnostic points at.
     pub range: TextRange,
     /// Human-readable message describing the problem.

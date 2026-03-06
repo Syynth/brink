@@ -53,7 +53,7 @@ impl ProjectDb {
             .knots()
             .map(|knot_ast| {
                 let green = knot_ast.syntax().green().into();
-                let (knot, manifest, diagnostics) = lower_knot(&knot_ast);
+                let (knot, manifest, diagnostics) = lower_knot(file_id, &knot_ast);
                 KnotEntry {
                     green,
                     knot,
@@ -64,10 +64,11 @@ impl ProjectDb {
             .collect();
 
         // Top-level lowering
-        let top_level = Self::lower_top_level_entry(&tree);
+        let top_level = Self::lower_top_level_entry(file_id, &tree);
 
         // Assemble full HirFile and SymbolManifest
-        let (hir, manifest, diagnostics) = Self::assemble(&knot_entries, &top_level, &tree);
+        let (hir, manifest, diagnostics) =
+            Self::assemble(file_id, &knot_entries, &top_level, &tree);
 
         let state = FileState {
             source,
@@ -112,7 +113,7 @@ impl ProjectDb {
         let tree = parse.tree();
 
         // Top-level is always re-lowered (cheap relative to knots)
-        let top_level = Self::lower_top_level_entry(&tree);
+        let top_level = Self::lower_top_level_entry(file_id, &tree);
 
         // Diff knots by green-node identity
         let new_knot_asts: Vec<_> = tree.knots().collect();
@@ -137,7 +138,7 @@ impl ProjectDb {
                 });
                 reused += 1;
             } else {
-                let (knot, manifest, diagnostics) = lower_knot(knot_ast);
+                let (knot, manifest, diagnostics) = lower_knot(file_id, knot_ast);
                 knot_entries.push(KnotEntry {
                     green: new_green,
                     knot,
@@ -154,7 +155,8 @@ impl ProjectDb {
             "knot diff complete"
         );
 
-        let (hir, manifest, diagnostics) = Self::assemble(&knot_entries, &top_level, &tree);
+        let (hir, manifest, diagnostics) =
+            Self::assemble(file_id, &knot_entries, &top_level, &tree);
 
         let state = FileState {
             source,
@@ -332,9 +334,12 @@ impl ProjectDb {
         id
     }
 
-    fn lower_top_level_entry(tree: &brink_syntax::ast::SourceFile) -> TopLevelEntry {
+    fn lower_top_level_entry(
+        file_id: FileId,
+        tree: &brink_syntax::ast::SourceFile,
+    ) -> TopLevelEntry {
         let green_children = Self::collect_top_level_green(tree);
-        let (root_content, manifest, diagnostics) = lower_top_level(tree);
+        let (root_content, manifest, diagnostics) = lower_top_level(file_id, tree);
         TopLevelEntry {
             green_children,
             root_content,
@@ -356,6 +361,7 @@ impl ProjectDb {
 
     /// Assemble a complete `HirFile` and `SymbolManifest` from cached pieces.
     fn assemble(
+        file_id: FileId,
         knot_entries: &[KnotEntry],
         top_level: &TopLevelEntry,
         tree: &brink_syntax::ast::SourceFile,
@@ -368,7 +374,7 @@ impl ProjectDb {
         // Approach: use `lower()` to get the full HirFile, then replace knots
         // with our cached versions. This means top-level lowering happens twice
         // on change, but it's simple and correct.
-        let (mut full_hir, _full_manifest, _full_diag) = lower(tree);
+        let (mut full_hir, _full_manifest, _full_diag) = lower(file_id, tree);
 
         // Replace knots with our cached (possibly reused) versions
         full_hir.knots = knot_entries.iter().filter_map(|e| e.knot.clone()).collect();

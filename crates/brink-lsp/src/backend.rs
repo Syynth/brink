@@ -8,12 +8,12 @@ use tower_lsp::lsp_types::{
     CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, DocumentFormattingParams, DocumentRangeFormattingParams,
-    DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams,
-    FoldingRangeProviderCapability, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InlayHint,
-    InlayHintParams, Location, MarkupContent, MarkupKind, OneOf, PrepareRenameResponse,
-    ReferenceParams, RenameOptions, RenameParams, SaveOptions, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeKind,
+    FoldingRangeParams, FoldingRangeProviderCapability, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, InlayHint, InlayHintParams, Location, MarkupContent, MarkupKind, OneOf,
+    PrepareRenameResponse, ReferenceParams, RenameOptions, RenameParams, SaveOptions,
+    SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
     SignatureHelpOptions, SignatureHelpParams, SymbolInformation, TextDocumentPositionParams,
@@ -65,7 +65,7 @@ impl Backend {
             // Cross-file diagnostics filtered to this file
             let analysis = db.analyze().clone();
             for diag in &analysis.diagnostics {
-                if is_range_in_file(diag.range, file_id, &analysis) {
+                if diag.file == file_id {
                     diags.push(convert::diagnostic_to_lsp(diag, &idx));
                 }
             }
@@ -77,20 +77,6 @@ impl Backend {
             .publish_diagnostics(uri.clone(), lsp_diags, None)
             .await;
     }
-}
-
-/// Check if a diagnostic range belongs to a file by checking if any symbol
-/// in the index from that file contains or matches the range.
-fn is_range_in_file(
-    range: rowan::TextRange,
-    file_id: brink_ir::FileId,
-    analysis: &AnalysisResult,
-) -> bool {
-    analysis
-        .index
-        .symbols
-        .values()
-        .any(|info| info.file == file_id && info.range.contains_range(range))
 }
 
 fn lock_db(db: &Arc<Mutex<brink_db::ProjectDb>>) -> std::sync::MutexGuard<'_, brink_db::ProjectDb> {
@@ -328,16 +314,14 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
 
-        // Find a resolution whose range contains the cursor
-        let Some(&def_id) = snap
-            .analysis
-            .resolutions
-            .iter()
-            .find(|(range, _)| range.contains(offset) || range.start() == offset)
-            .map(|(_, id)| id)
-        else {
+        // Find a resolution whose range contains the cursor (in this file)
+        let Some(resolved) = snap.analysis.resolutions.iter().find(|r| {
+            r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset)
+        }) else {
             return Ok(None);
         };
+
+        let def_id = resolved.target;
 
         let Some(info) = snap.analysis.index.symbols.get(&def_id) else {
             return Ok(None);
@@ -384,8 +368,10 @@ impl LanguageServer for Backend {
             .analysis
             .resolutions
             .iter()
-            .find(|(range, _)| range.contains(offset) || range.start() == offset)
-            .map(|(_, &id)| id)
+            .find(|r| {
+                r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset)
+            })
+            .map(|r| r.target)
             .or_else(|| {
                 // Maybe the cursor is on a definition site
                 snap.analysis
@@ -420,28 +406,22 @@ impl LanguageServer for Backend {
         }
 
         // Collect all reference sites that resolve to this definition.
-        // Since ResolutionMap doesn't carry file IDs, we check each file's
-        // unresolved refs to match ranges.
-        for (ref_range, &id) in &snap.analysis.resolutions {
-            if id != def_id {
+        for resolved in &snap.analysis.resolutions {
+            if resolved.target != def_id {
                 continue;
             }
 
-            // Find which file this range belongs to by checking manifests
-            for (_fid, file_path, file_source) in &snap.all_files {
-                let file_len = u32::try_from(file_source.len()).unwrap_or(u32::MAX);
-                if u32::from(ref_range.end()) <= file_len {
-                    if let Ok(uri) = Url::from_file_path(file_path) {
-                        let file_idx = LineIndex::new(file_source);
-                        locations.push(Location {
-                            uri,
-                            range: convert::to_lsp_range(*ref_range, &file_idx),
-                        });
-                    }
-                    // For single-file projects this is correct; multi-file
-                    // will need file-tagged resolutions in the analyzer.
-                    break;
-                }
+            if let Some((_, file_path, file_source)) = snap
+                .all_files
+                .iter()
+                .find(|(fid, _, _)| *fid == resolved.file)
+                && let Ok(uri) = Url::from_file_path(file_path)
+            {
+                let file_idx = LineIndex::new(file_source);
+                locations.push(Location {
+                    uri,
+                    range: convert::to_lsp_range(resolved.range, &file_idx),
+                });
             }
         }
 
@@ -477,8 +457,10 @@ impl LanguageServer for Backend {
             .analysis
             .resolutions
             .iter()
-            .find(|(range, _)| range.contains(offset) || range.start() == offset)
-            .map(|(_, &id)| id)
+            .find(|r| {
+                r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset)
+            })
+            .map(|r| r.target)
             .or_else(|| {
                 snap.analysis
                     .index
@@ -550,9 +532,11 @@ impl LanguageServer for Backend {
         let hover_range = snap
             .analysis
             .resolutions
-            .keys()
-            .find(|range| range.contains(offset) || range.start() == offset)
-            .map(|range| convert::to_lsp_range(*range, &idx));
+            .iter()
+            .find(|r| {
+                r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset)
+            })
+            .map(|r| convert::to_lsp_range(r.range, &idx));
 
         Ok(Some(Hover {
             contents: tower_lsp::lsp_types::HoverContents::Markup(MarkupContent {
@@ -870,7 +854,58 @@ impl LanguageServer for Backend {
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
         tracing::debug!(uri = %params.text_document.uri, "folding_range");
-        Ok(None)
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let db = lock_db(&self.db);
+        let Some(file_id) = db.file_id(&path) else {
+            return Ok(None);
+        };
+        let Some(source) = db.source(file_id) else {
+            return Ok(None);
+        };
+        let Some(hir) = db.hir(file_id) else {
+            return Ok(None);
+        };
+
+        let idx = LineIndex::new(source);
+        let mut ranges = Vec::new();
+
+        for knot in &hir.knots {
+            let knot_range = knot.ptr.text_range();
+            let (start_line, _) = idx.line_col(knot_range.start());
+            let (end_line, _) = idx.line_col(knot_range.end());
+            if end_line > start_line {
+                ranges.push(FoldingRange {
+                    start_line,
+                    start_character: None,
+                    end_line,
+                    end_character: None,
+                    kind: Some(FoldingRangeKind::Region),
+                    collapsed_text: Some(format!("== {} ==", knot.name.text)),
+                });
+            }
+
+            for stitch in &knot.stitches {
+                let stitch_range = stitch.ptr.text_range();
+                let (s_start, _) = idx.line_col(stitch_range.start());
+                let (s_end, _) = idx.line_col(stitch_range.end());
+                if s_end > s_start {
+                    ranges.push(FoldingRange {
+                        start_line: s_start,
+                        start_character: None,
+                        end_line: s_end,
+                        end_character: None,
+                        kind: Some(FoldingRangeKind::Region),
+                        collapsed_text: Some(format!("= {}", stitch.name.text)),
+                    });
+                }
+            }
+        }
+
+        Ok(Some(ranges))
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {

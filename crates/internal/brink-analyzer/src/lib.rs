@@ -9,7 +9,7 @@ mod manifest;
 mod resolve;
 
 pub use brink_ir::FileId;
-pub use resolve::ResolutionMap;
+pub use brink_ir::ResolutionMap;
 
 use brink_ir::{Diagnostic, HirFile, SymbolIndex, SymbolManifest};
 

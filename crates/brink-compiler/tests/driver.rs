@@ -82,11 +82,10 @@ fn compile_circular_includes_detected() {
     ]);
 
     let err = compile_mem("a.ink", &files).unwrap_err();
-    let brink_compiler::CompileError::Diagnostics(diags) = err else {
-        unreachable!("expected Diagnostics variant");
-    };
-    assert_eq!(diags.len(), 1);
-    assert_eq!(diags[0].code, brink_ir::DiagnosticCode::E028);
+    assert!(
+        matches!(err, brink_compiler::CompileError::CircularInclude(_)),
+        "expected CircularInclude variant, got: {err}"
+    );
 }
 
 // ── Relative path resolution ────────────────────────────────────────
