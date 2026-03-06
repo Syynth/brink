@@ -1,0 +1,23 @@
+[package]
+name = "brink-analyzer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Cross-file semantic analysis for inkle's ink narrative scripting language"
+publish = false
+
+[dependencies]
+brink-ir = { path = "../brink-ir" }
+brink-format = { path = "../brink-format" }
+rowan.workspace = true
+
+[dev-dependencies]
+brink-syntax = { path = "../brink-syntax" }
+proptest.workspace = true
+
+[lints]
+workspace = true
