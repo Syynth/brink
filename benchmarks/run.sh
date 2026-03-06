@@ -26,7 +26,7 @@ for scenario_toml in benchmarks/scenarios/*/scenario.toml; do
 
     # Parse scenario.toml (simple grep-based — no toml parser needed)
     story="$(grep '^story' "$scenario_toml" | sed 's/.*= *"//' | sed 's/".*//')"
-    input="$(grep '^input' "$scenario_toml" | sed 's/.*= *"//' | sed 's/".*//')"
+    input="$(grep '^input ' "$scenario_toml" | sed 's/.*= *"//' | sed 's/".*//')"
 
     if [[ ! -f "$story" ]]; then
         echo "ERROR: story file not found: $story"

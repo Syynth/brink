@@ -1,0 +1,30 @@
+description = "5-phase runtime torture test exercising all major VM subsystems"
+mode = "runtime"
+
+[source]
+origin = "brink"
+
+[classification]
+tier = 0
+feature = "benchmark"
+tags = [
+    "recursion",
+    "arithmetic",
+    "list-ops",
+    "ref-params",
+    "threads",
+    "random",
+    "turns-since",
+    "choice-count",
+    "sequences",
+    "tunnels",
+    "variable-tunnel",
+    "external-function",
+    "type-coercion",
+    "string-eval",
+]
+
+[benchmark]
+depth = 8
+choice_count = 28
+input_indexing = "0-based"

@@ -26,6 +26,7 @@ const inputLines = readFileSync(inputPath, "utf-8")
 
 function runOnce() {
   const story = new Story(jsonStr);
+  story.allowExternalFunctionFallbacks = true;
   let inputIdx = 0;
 
   while (story.canContinue || story.currentChoices.length > 0) {
