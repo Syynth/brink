@@ -1,0 +1,5 @@
+name = "Ink"
+grammar = "ink"
+path_suffixes = ["ink"]
+line_comments = ["//"]
+tab_size = 4

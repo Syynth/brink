@@ -1,0 +1,14 @@
+/Users/syynth/code/rs/brink/crates/zed-brink/target/wasm32-wasip1/debug/deps/serde-057f34f296a41e66.d: /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/syynth/code/rs/brink/crates/zed-brink/target/wasm32-wasip1/debug/build/serde-0597741ea4455201/out/private.rs
+
+/Users/syynth/code/rs/brink/crates/zed-brink/target/wasm32-wasip1/debug/deps/libserde-057f34f296a41e66.rlib: /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/syynth/code/rs/brink/crates/zed-brink/target/wasm32-wasip1/debug/build/serde-0597741ea4455201/out/private.rs
+
+/Users/syynth/code/rs/brink/crates/zed-brink/target/wasm32-wasip1/debug/deps/libserde-057f34f296a41e66.rmeta: /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/syynth/code/rs/brink/crates/zed-brink/target/wasm32-wasip1/debug/build/serde-0597741ea4455201/out/private.rs
+
+/Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/syynth/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/syynth/code/rs/brink/crates/zed-brink/target/wasm32-wasip1/debug/build/serde-0597741ea4455201/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/syynth/code/rs/brink/crates/zed-brink/target/wasm32-wasip1/debug/build/serde-0597741ea4455201/out

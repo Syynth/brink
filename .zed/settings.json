@@ -1,0 +1,14 @@
+{
+  "project_name": "Brink",
+  "languages": {
+    "Ink": {
+      "tab_size": 4,
+      "language_servers": ["brink-lsp"]
+    }
+  },
+  "lsp": {
+    "brink-lsp": {
+      "initialization_options": {}
+    }
+  }
+}

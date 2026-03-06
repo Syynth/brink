@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/brink-*", "crates/brink", "crates/internal/*"]
-exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-format/fuzz", "benchmarks/tools/gen-input", "benchmarks/drivers/brink-loop"]
+exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-format/fuzz", "benchmarks/tools/gen-input", "benchmarks/drivers/brink-loop", "crates/zed-brink"]
 resolver = "2"
 
 [workspace.package]
