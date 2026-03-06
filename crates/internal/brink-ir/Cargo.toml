@@ -17,6 +17,7 @@ rowan.workspace = true
 bitflags.workspace = true
 
 [dev-dependencies]
+brink-analyzer = { path = "../brink-analyzer" }
 insta.workspace = true
 
 [lints]

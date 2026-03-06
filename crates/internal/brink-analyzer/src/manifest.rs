@@ -44,6 +44,16 @@ pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec
                 DiagnosticCode::E023,
             );
         }
+        for sym in &manifest.constants {
+            insert_symbol(
+                &mut index,
+                &mut diagnostics,
+                file_id,
+                sym,
+                SymbolKind::Constant,
+                DiagnosticCode::E023,
+            );
+        }
         for sym in &manifest.lists {
             insert_symbol(
                 &mut index,

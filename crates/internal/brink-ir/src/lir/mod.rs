@@ -26,6 +26,8 @@
 //!   temp slot index (`u16`). The LIR never needs the `SymbolIndex` or
 //!   `ResolutionMap` — all lookups are done during lowering.
 
+pub mod lower;
 mod types;
 
+pub use lower::lower_to_program;
 pub use types::*;

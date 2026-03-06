@@ -23,7 +23,7 @@ where
     info!(file_count, "all files parsed and lowered");
 
     // ── Pass 3-5: Analyze ───────────────────────────────────────────
-    let result = db.analyze();
+    let result = db.analyze().clone();
 
     info!(
         symbols = result.index.symbols.len(),
@@ -32,15 +32,26 @@ where
     );
 
     if !result.diagnostics.is_empty() {
-        return Err(CompileError::Diagnostics(result.diagnostics.clone()));
+        return Err(CompileError::Diagnostics(result.diagnostics));
     }
 
-    // ── Pass 6: Codegen ─────────────────────────────────────────────
-    // TODO: Build LIR from HIR + SymbolIndex, then run codegen backend.
+    // ── Pass 6a: Build LIR ────────────────────────────────────────
+    let files: Vec<_> = db
+        .file_ids()
+        .filter_map(|id| db.hir(id).map(|hir| (id, hir)))
+        .collect();
+    let program = brink_ir::lir::lower_to_program(&files, &result.index, &result.resolutions);
+
     info!(
-        files = file_count,
-        "codegen stub — returning empty StoryData"
+        containers = program.containers.len(),
+        globals = program.globals.len(),
+        "LIR lowering complete"
     );
+
+    // ── Pass 6b: Codegen ────────────────────────────────────────────
+    // TODO: bytecode::emit(&program) or json::emit(&program)
+    // For now, return an empty StoryData — backends are a separate task.
+    let _ = program;
 
     Ok(StoryData {
         containers: Vec::new(),

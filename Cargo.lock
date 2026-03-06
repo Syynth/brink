@@ -258,6 +258,7 @@ name = "brink-ir"
 version = "0.0.1"
 dependencies = [
  "bitflags 2.11.0",
+ "brink-analyzer",
  "brink-format",
  "brink-syntax",
  "insta",

@@ -1,0 +1,1397 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
+
+use brink_ir::lir;
+use brink_ir::{FileId, HirFile, SymbolManifest};
+
+// ─── Test harness ───────────────────────────────────────────────────
+
+/// Parse ink source → HIR lower → analyze → LIR lower. Returns the full Program.
+fn lower_ink(source: &str) -> lir::Program {
+    let parsed = brink_syntax::parse(source);
+    let tree = parsed.tree();
+    let file_id = FileId(0);
+    let (hir, manifest, _diags) = brink_ir::hir::lower(file_id, &tree);
+
+    let files_for_analysis: Vec<(FileId, &HirFile, &SymbolManifest)> =
+        vec![(file_id, &hir, &manifest)];
+    let result = brink_analyzer::analyze(&files_for_analysis);
+
+    let files_for_lir: Vec<(FileId, &HirFile)> = vec![(file_id, &hir)];
+    lir::lower_to_program(&files_for_lir, &result.index, &result.resolutions)
+}
+
+/// Find a container by path.
+fn find_container<'a>(program: &'a lir::Program, path: &str) -> &'a lir::Container {
+    program
+        .containers
+        .iter()
+        .find(|c| c.path == path)
+        .unwrap_or_else(|| {
+            let paths: Vec<&str> = program.containers.iter().map(|c| c.path.as_str()).collect();
+            panic!("no container with path {path:?}, available: {paths:?}")
+        })
+}
+
+/// Find the root container.
+fn root(program: &lir::Program) -> &lir::Container {
+    find_container(program, "")
+}
+
+/// Find a global by checking if its name matches via the name table.
+fn find_global<'a>(program: &'a lir::Program, name: &str) -> &'a lir::GlobalDef {
+    program
+        .globals
+        .iter()
+        .find(|g| program.name_table[g.name.0 as usize] == name)
+        .unwrap_or_else(|| panic!("no global named {name:?}"))
+}
+
+/// Count containers of a given kind.
+fn count_kind(program: &lir::Program, kind: lir::ContainerKind) -> usize {
+    program.containers.iter().filter(|c| c.kind == kind).count()
+}
+
+/// Extract text from `EmitContent` statements.
+fn collect_text(stmts: &[lir::Stmt]) -> Vec<String> {
+    let mut texts = Vec::new();
+    for stmt in stmts {
+        if let lir::Stmt::EmitContent(content) = stmt {
+            let mut line = String::new();
+            for part in &content.parts {
+                if let lir::ContentPart::Text(t) = part {
+                    line.push_str(t);
+                }
+            }
+            if !line.is_empty() {
+                texts.push(line);
+            }
+        }
+    }
+    texts
+}
+
+/// Check if a statement list ends with a divert.
+fn ends_with_divert(stmts: &[lir::Stmt]) -> bool {
+    stmts
+        .last()
+        .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)))
+}
+
+// ─── Basic content ──────────────────────────────────────────────────
+
+#[test]
+fn minimal_story_has_root_container() {
+    let p = lower_ink("Hello, world!\n");
+    assert!(
+        p.containers
+            .iter()
+            .any(|c| c.kind == lir::ContainerKind::Root),
+        "program must have a root container"
+    );
+}
+
+#[test]
+fn root_content_emits_text() {
+    let p = lower_ink("Hello, world!\n");
+    let r = root(&p);
+    let texts = collect_text(&r.body);
+    assert_eq!(texts, vec!["Hello, world!"]);
+}
+
+#[test]
+fn root_has_implicit_done() {
+    let p = lower_ink("Hello!\n");
+    let r = root(&p);
+    assert!(
+        ends_with_divert(&r.body),
+        "root should end with implicit DONE"
+    );
+    if let Some(lir::Stmt::Divert(d)) = r.body.last() {
+        assert!(
+            matches!(d.target, lir::DivertTarget::Done),
+            "root should end with DONE, not {:?}",
+            std::mem::discriminant(&d.target)
+        );
+    }
+}
+
+#[test]
+fn multiple_content_lines() {
+    let p = lower_ink("Line one.\nLine two.\nLine three.\n");
+    let r = root(&p);
+    let texts = collect_text(&r.body);
+    assert_eq!(texts, vec!["Line one.", "Line two.", "Line three."]);
+}
+
+// ─── Knots ──────────────────────────────────────────────────────────
+
+#[test]
+fn knot_creates_container() {
+    let p = lower_ink("== greet ==\nHello!\n-> END\n");
+    assert_eq!(count_kind(&p, lir::ContainerKind::Knot), 1);
+    let knot = find_container(&p, "greet");
+    assert_eq!(knot.kind, lir::ContainerKind::Knot);
+}
+
+#[test]
+fn knot_body_has_content() {
+    let p = lower_ink("== greet ==\nWelcome.\n-> END\n");
+    let knot = find_container(&p, "greet");
+    let texts = collect_text(&knot.body);
+    assert_eq!(texts, vec!["Welcome."]);
+}
+
+#[test]
+fn knot_divert_to_end() {
+    let p = lower_ink("== greet ==\nHi.\n-> END\n");
+    let knot = find_container(&p, "greet");
+    assert!(ends_with_divert(&knot.body));
+    if let Some(lir::Stmt::Divert(d)) = knot.body.last() {
+        assert!(matches!(d.target, lir::DivertTarget::End));
+    }
+}
+
+#[test]
+fn multiple_knots() {
+    let p = lower_ink(
+        "\
+== alpha ==
+First.
+-> END
+
+== beta ==
+Second.
+-> END
+",
+    );
+    assert_eq!(count_kind(&p, lir::ContainerKind::Knot), 2);
+    let a = find_container(&p, "alpha");
+    let b = find_container(&p, "beta");
+    assert_eq!(collect_text(&a.body), vec!["First."]);
+    assert_eq!(collect_text(&b.body), vec!["Second."]);
+}
+
+#[test]
+fn root_divert_to_knot_resolves() {
+    let p = lower_ink("-> greet\n== greet ==\nHi.\n-> END\n");
+    let r = root(&p);
+    let knot = find_container(&p, "greet");
+
+    // Root should have a divert whose target matches the knot's id.
+    let has_divert_to_knot = r.body.iter().any(|stmt| {
+        if let lir::Stmt::Divert(d) = stmt {
+            matches!(d.target, lir::DivertTarget::Container(id) if id == knot.id)
+        } else {
+            false
+        }
+    });
+    assert!(has_divert_to_knot, "root should divert to knot 'greet'");
+}
+
+// ─── Stitches ───────────────────────────────────────────────────────
+
+#[test]
+fn stitch_creates_container() {
+    let p = lower_ink(
+        "\
+== tavern ==
+= order
+What'll it be?
+-> END
+",
+    );
+    assert_eq!(count_kind(&p, lir::ContainerKind::Stitch), 1);
+    let stitch = find_container(&p, "tavern.order");
+    assert_eq!(stitch.kind, lir::ContainerKind::Stitch);
+    assert_eq!(collect_text(&stitch.body), vec!["What'll it be?"]);
+}
+
+#[test]
+fn knot_with_stitches_and_no_own_body() {
+    let p = lower_ink(
+        "\
+== tavern ==
+= order
+Ordering.
+-> END
+= pay
+Paying.
+-> END
+",
+    );
+    let _knot = find_container(&p, "tavern");
+    let stitch_order = find_container(&p, "tavern.order");
+    let stitch_pay = find_container(&p, "tavern.pay");
+
+    // Both stitches should exist and have content
+    assert_eq!(collect_text(&stitch_order.body), vec!["Ordering."]);
+    assert_eq!(collect_text(&stitch_pay.body), vec!["Paying."]);
+}
+
+#[test]
+fn stitch_scope_root_points_to_knot() {
+    let p = lower_ink(
+        "\
+== tavern ==
+= order
+Hi.
+-> END
+",
+    );
+    let knot = find_container(&p, "tavern");
+    let stitch = find_container(&p, "tavern.order");
+    assert_eq!(stitch.scope_root, Some(knot.id));
+}
+
+// ─── Variables and constants ────────────────────────────────────────
+
+#[test]
+fn var_declaration_creates_mutable_global() {
+    let p = lower_ink("VAR x = 5\n");
+    let g = find_global(&p, "x");
+    assert!(g.mutable);
+    assert!(matches!(g.default, lir::ConstValue::Int(5)));
+}
+
+#[test]
+fn const_declaration_creates_immutable_global() {
+    let p = lower_ink("CONST y = 10\n");
+    let g = find_global(&p, "y");
+    assert!(!g.mutable);
+    assert!(matches!(g.default, lir::ConstValue::Int(10)));
+}
+
+#[test]
+fn var_float_default() {
+    let p = lower_ink("VAR f = 2.5\n");
+    let g = find_global(&p, "f");
+    if let lir::ConstValue::Float(v) = g.default {
+        assert!((v - 2.5).abs() < 0.01);
+    } else {
+        panic!("expected Float default, got something else");
+    }
+}
+
+#[test]
+fn var_string_default() {
+    let p = lower_ink("VAR name = \"hello\"\n");
+    let g = find_global(&p, "name");
+    assert!(matches!(&g.default, lir::ConstValue::String(s) if s == "hello"));
+}
+
+#[test]
+fn var_bool_default() {
+    let p = lower_ink("VAR flag = true\n");
+    let g = find_global(&p, "flag");
+    assert!(matches!(g.default, lir::ConstValue::Bool(true)));
+}
+
+#[test]
+fn var_negative_default() {
+    let p = lower_ink("VAR n = -42\n");
+    let g = find_global(&p, "n");
+    assert!(matches!(g.default, lir::ConstValue::Int(-42)));
+}
+
+// ─── Lists ──────────────────────────────────────────────────────────
+
+#[test]
+fn list_declaration() {
+    let p = lower_ink("LIST colors = red, green, blue\n");
+    assert_eq!(p.lists.len(), 1);
+    assert_eq!(p.list_items.len(), 3);
+
+    // Check ordinals: auto-increment from 1
+    let ordinals: Vec<i32> = p.list_items.iter().map(|i| i.ordinal).collect();
+    assert_eq!(ordinals, vec![1, 2, 3]);
+}
+
+#[test]
+fn list_items_reference_origin() {
+    let p = lower_ink("LIST mood = happy, sad, angry\n");
+    let list_id = p.lists[0].id;
+    for item in &p.list_items {
+        assert_eq!(
+            item.origin, list_id,
+            "each list item should reference its origin list"
+        );
+    }
+}
+
+#[test]
+fn list_explicit_ordinals() {
+    let p = lower_ink("LIST rank = private = 1, corporal = 5, sergeant = 10\n");
+    let ordinals: Vec<i32> = p.list_items.iter().map(|i| i.ordinal).collect();
+    assert_eq!(ordinals, vec![1, 5, 10]);
+}
+
+// ─── Externals ──────────────────────────────────────────────────────
+
+#[test]
+fn external_declaration() {
+    let p = lower_ink("EXTERNAL multiply(a, b)\n");
+    assert_eq!(p.externals.len(), 1);
+    assert_eq!(p.externals[0].arg_count, 2);
+}
+
+#[test]
+fn multiple_externals() {
+    let p = lower_ink("EXTERNAL foo(x)\nEXTERNAL bar(a, b, c)\n");
+    assert_eq!(p.externals.len(), 2);
+    let arg_counts: Vec<u8> = p.externals.iter().map(|e| e.arg_count).collect();
+    assert!(arg_counts.contains(&1));
+    assert!(arg_counts.contains(&3));
+}
+
+// ─── Temp variables ─────────────────────────────────────────────────
+
+#[test]
+fn temp_decl_in_knot() {
+    let p = lower_ink(
+        "\
+== func ==
+~ temp x = 42
+-> END
+",
+    );
+    let knot = find_container(&p, "func");
+    let has_temp = knot.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::DeclareTemp {
+                slot: 0,
+                value: Some(lir::Expr::Int(42))
+            }
+        )
+    });
+    assert!(has_temp, "knot should have temp declaration at slot 0");
+}
+
+#[test]
+fn params_occupy_first_temp_slots() {
+    let p = lower_ink(
+        "\
+== func(a, b) ==
+~ temp c = 0
+-> END
+",
+    );
+    let knot = find_container(&p, "func");
+    assert_eq!(knot.params.len(), 2);
+    assert_eq!(knot.params[0].slot, 0);
+    assert_eq!(knot.params[1].slot, 1);
+    assert_eq!(knot.temp_slot_count, 3); // 2 params + 1 temp
+
+    // The temp 'c' should be at slot 2
+    let has_temp_at_2 = knot
+        .body
+        .iter()
+        .any(|s| matches!(s, lir::Stmt::DeclareTemp { slot: 2, .. }));
+    assert!(has_temp_at_2, "temp 'c' should be at slot 2 (after params)");
+}
+
+// ─── Choices ────────────────────────────────────────────────────────
+
+#[test]
+fn choice_set_creates_containers() {
+    let p = lower_ink(
+        "\
+== scene ==
+* Choice A
+  After A.
+* Choice B
+  After B.
+- Gathered.
+-> END
+",
+    );
+    // Should have choice target containers and a gather
+    assert!(count_kind(&p, lir::ContainerKind::ChoiceTarget) >= 2);
+    assert!(count_kind(&p, lir::ContainerKind::Gather) >= 1);
+}
+
+#[test]
+fn choice_set_in_knot_body() {
+    let p = lower_ink(
+        "\
+== scene ==
+* Choice A
+  After A.
+* Choice B
+  After B.
+- Gathered.
+-> END
+",
+    );
+    let knot = find_container(&p, "scene");
+    let has_choice_set = knot
+        .body
+        .iter()
+        .any(|s| matches!(s, lir::Stmt::ChoiceSet(_)));
+    assert!(has_choice_set, "knot should contain a ChoiceSet statement");
+}
+
+#[test]
+fn choice_targets_have_body_content() {
+    let p = lower_ink(
+        "\
+== scene ==
+* First
+  Content after first.
+* Second
+  Content after second.
+- Gather point.
+-> END
+",
+    );
+    let choice_targets: Vec<&lir::Container> = p
+        .containers
+        .iter()
+        .filter(|c| c.kind == lir::ContainerKind::ChoiceTarget)
+        .collect();
+    assert_eq!(choice_targets.len(), 2);
+
+    // At least one should have body content
+    let any_has_content = choice_targets
+        .iter()
+        .any(|c| !collect_text(&c.body).is_empty());
+    assert!(any_has_content, "choice targets should have body content");
+}
+
+#[test]
+fn gather_has_content() {
+    let p = lower_ink(
+        "\
+== scene ==
+* Choice A
+  A body.
+* Choice B
+  B body.
+- Gathered here.
+-> END
+",
+    );
+    let gathers: Vec<&lir::Container> = p
+        .containers
+        .iter()
+        .filter(|c| c.kind == lir::ContainerKind::Gather)
+        .collect();
+    assert!(!gathers.is_empty(), "should have at least one gather");
+
+    let gather_texts: Vec<String> = gathers.iter().flat_map(|g| collect_text(&g.body)).collect();
+    assert!(
+        gather_texts.iter().any(|t| t.contains("Gathered here")),
+        "gather should contain its inline content, got: {gather_texts:?}"
+    );
+}
+
+#[test]
+fn gather_includes_trailing_statements() {
+    let p = lower_ink(
+        "\
+== scene ==
+* Choice A
+  A.
+- Gather.
+More content after gather.
+-> END
+",
+    );
+    let gathers: Vec<&lir::Container> = p
+        .containers
+        .iter()
+        .filter(|c| c.kind == lir::ContainerKind::Gather)
+        .collect();
+    assert!(!gathers.is_empty());
+
+    // The gather container should include "More content after gather."
+    // and the -> END divert (trailing statements from parent block)
+    let gather = &gathers[0];
+    let texts = collect_text(&gather.body);
+    assert!(
+        texts.iter().any(|t| t.contains("More content")),
+        "gather should include trailing statements from parent block, got: {texts:?}"
+    );
+    assert!(
+        ends_with_divert(&gather.body),
+        "gather should include trailing divert from parent block"
+    );
+}
+
+#[test]
+fn choice_set_has_gather_target() {
+    let p = lower_ink(
+        "\
+== scene ==
+* Alpha
+  A.
+* Beta
+  B.
+- Meet here.
+-> END
+",
+    );
+    let knot = find_container(&p, "scene");
+    let cs = knot.body.iter().find_map(|s| {
+        if let lir::Stmt::ChoiceSet(cs) = s {
+            Some(cs)
+        } else {
+            None
+        }
+    });
+    assert!(cs.is_some(), "knot should have a ChoiceSet");
+    let cs = cs.unwrap();
+    assert!(
+        cs.gather_target.is_some(),
+        "ChoiceSet should have a gather target"
+    );
+
+    // The gather target should match a gather container's id
+    let gather_id = cs.gather_target.unwrap();
+    let gather_exists = p
+        .containers
+        .iter()
+        .any(|c| c.id == gather_id && c.kind == lir::ContainerKind::Gather);
+    assert!(
+        gather_exists,
+        "gather_target should reference an existing gather container"
+    );
+}
+
+#[test]
+fn sticky_choice_flag() {
+    let p = lower_ink(
+        "\
+== scene ==
++ Sticky choice
+  Body.
+- Done.
+-> END
+",
+    );
+    let knot = find_container(&p, "scene");
+    let choice = knot.body.iter().find_map(|s| {
+        if let lir::Stmt::ChoiceSet(cs) = s {
+            cs.choices.first()
+        } else {
+            None
+        }
+    });
+    assert!(choice.is_some());
+    assert!(choice.unwrap().is_sticky, "'+' choice should be sticky");
+}
+
+#[test]
+fn once_only_choice_flag() {
+    let p = lower_ink(
+        "\
+== scene ==
+* Once-only choice
+  Body.
+- Done.
+-> END
+",
+    );
+    let knot = find_container(&p, "scene");
+    let choice = knot.body.iter().find_map(|s| {
+        if let lir::Stmt::ChoiceSet(cs) = s {
+            cs.choices.first()
+        } else {
+            None
+        }
+    });
+    assert!(choice.is_some());
+    assert!(
+        !choice.unwrap().is_sticky,
+        "'*' choice should NOT be sticky"
+    );
+}
+
+// ─── Nested choices ─────────────────────────────────────────────────
+
+#[test]
+fn nested_choices_create_nested_containers() {
+    let p = lower_ink(
+        "\
+== scene ==
+* Outer A
+  ** Inner A1
+     Deep.
+  ** Inner A2
+     Also deep.
+  - Inner gather.
+* Outer B
+  B body.
+- Outer gather.
+-> END
+",
+    );
+    // Should have ChoiceTarget containers for both outer and inner choices
+    let choice_targets = count_kind(&p, lir::ContainerKind::ChoiceTarget);
+    assert!(
+        choice_targets >= 4,
+        "should have at least 4 choice targets (2 outer + 2 inner), got {choice_targets}"
+    );
+}
+
+#[test]
+fn nested_choice_bodies_have_content() {
+    let p = lower_ink(
+        "\
+== scene ==
+* Outer
+  ** Inner choice
+     Inner body text.
+  - Inner gather.
+- Outer gather.
+-> END
+",
+    );
+    // Find a choice target that contains "Inner body text."
+    let has_inner = p
+        .containers
+        .iter()
+        .filter(|c| c.kind == lir::ContainerKind::ChoiceTarget)
+        .any(|c| {
+            collect_text(&c.body)
+                .iter()
+                .any(|t| t.contains("Inner body"))
+        });
+    assert!(
+        has_inner,
+        "nested choice target should have inner body content"
+    );
+}
+
+// ─── Diverts ────────────────────────────────────────────────────────
+
+#[test]
+fn divert_to_done() {
+    let p = lower_ink("-> DONE\n");
+    let r = root(&p);
+    let has_done = r
+        .body
+        .iter()
+        .any(|s| matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Done)));
+    assert!(has_done, "should have a DONE divert");
+}
+
+#[test]
+fn divert_to_end() {
+    let p = lower_ink("-> END\n");
+    let r = root(&p);
+    let has_end = r
+        .body
+        .iter()
+        .any(|s| matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::End)));
+    assert!(has_end, "should have an END divert");
+}
+
+#[test]
+fn divert_between_knots() {
+    let p = lower_ink(
+        "\
+== start ==
+-> middle
+
+== middle ==
+-> finish
+
+== finish ==
+The end.
+-> END
+",
+    );
+    let start = find_container(&p, "start");
+    let middle = find_container(&p, "middle");
+
+    let start_diverts_to_middle = start.body.iter().any(|s| {
+        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Container(id) if id == middle.id))
+    });
+    assert!(start_diverts_to_middle);
+}
+
+#[test]
+fn divert_to_stitch() {
+    let p = lower_ink(
+        "\
+== tavern ==
+-> tavern.order
+
+= order
+One ale, please.
+-> END
+",
+    );
+    let knot = find_container(&p, "tavern");
+    let stitch = find_container(&p, "tavern.order");
+
+    let diverts_to_stitch = knot.body.iter().any(|s| {
+        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Container(id) if id == stitch.id))
+    });
+    assert!(diverts_to_stitch, "knot should divert to its stitch");
+}
+
+// ─── Assignments ────────────────────────────────────────────────────
+
+#[test]
+fn assignment_to_global() {
+    let p = lower_ink("VAR x = 0\n~ x = 5\n");
+    let r = root(&p);
+    let has_assign = r.body.iter().any(|s| matches!(s, lir::Stmt::Assign { .. }));
+    assert!(has_assign, "root should have an assignment statement");
+}
+
+#[test]
+fn assignment_with_operator() {
+    let p = lower_ink("VAR score = 0\n~ score += 10\n");
+    let r = root(&p);
+    let has_assign = r.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::Assign {
+                op: brink_ir::AssignOp::Add,
+                ..
+            }
+        )
+    });
+    assert!(has_assign, "should have += assignment");
+}
+
+// ─── Expressions ────────────────────────────────────────────────────
+
+#[test]
+fn interpolation_in_content() {
+    let p = lower_ink("VAR name = \"world\"\nHello {name}!\n");
+    let r = root(&p);
+    let has_interpolation = r.body.iter().any(|s| {
+        if let lir::Stmt::EmitContent(c) = s {
+            c.parts
+                .iter()
+                .any(|p| matches!(p, lir::ContentPart::Interpolation(_)))
+        } else {
+            false
+        }
+    });
+    assert!(has_interpolation, "content should have an interpolation");
+}
+
+#[test]
+fn infix_expression_in_assignment() {
+    let p = lower_ink("VAR x = 0\n~ x = 2 + 3\n");
+    let r = root(&p);
+    let has_infix = r.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::Assign {
+                value: lir::Expr::Infix(_, brink_ir::InfixOp::Add, _),
+                ..
+            }
+        )
+    });
+    assert!(has_infix, "assignment should have infix Add expression");
+}
+
+#[test]
+fn prefix_negate() {
+    let p = lower_ink("VAR x = 0\n~ x = -x\n");
+    let r = root(&p);
+    let has_prefix = r.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::Assign {
+                value: lir::Expr::Prefix(brink_ir::PrefixOp::Negate, _),
+                ..
+            }
+        )
+    });
+    assert!(has_prefix, "assignment should have prefix negate");
+}
+
+#[test]
+fn boolean_not() {
+    let p = lower_ink("VAR flag = true\n~ flag = not flag\n");
+    let r = root(&p);
+    let has_not = r.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::Assign {
+                value: lir::Expr::Prefix(brink_ir::PrefixOp::Not, _),
+                ..
+            }
+        )
+    });
+    assert!(has_not, "assignment should have prefix not");
+}
+
+// ─── Conditionals ───────────────────────────────────────────────────
+
+#[test]
+fn block_conditional() {
+    let p = lower_ink(
+        "\
+VAR x = true
+{
+    - x:
+        Yes.
+    - else:
+        No.
+}
+",
+    );
+    let r = root(&p);
+    let has_cond = r
+        .body
+        .iter()
+        .any(|s| matches!(s, lir::Stmt::Conditional(_)));
+    assert!(has_cond, "should have a Conditional statement");
+}
+
+#[test]
+fn conditional_branch_count() {
+    let p = lower_ink(
+        "\
+VAR x = 1
+{
+    - x == 1:
+        One.
+    - x == 2:
+        Two.
+    - else:
+        Other.
+}
+",
+    );
+    let r = root(&p);
+    let cond = r.body.iter().find_map(|s| {
+        if let lir::Stmt::Conditional(c) = s {
+            Some(c)
+        } else {
+            None
+        }
+    });
+    assert!(cond.is_some());
+    assert_eq!(cond.unwrap().branches.len(), 3, "should have 3 branches");
+}
+
+#[test]
+fn conditional_else_has_no_condition() {
+    let p = lower_ink(
+        "\
+VAR x = 1
+{
+    - x == 1:
+        One.
+    - else:
+        Other.
+}
+",
+    );
+    let r = root(&p);
+    let cond = r.body.iter().find_map(|s| {
+        if let lir::Stmt::Conditional(c) = s {
+            Some(c)
+        } else {
+            None
+        }
+    });
+    let cond = cond.unwrap();
+    assert!(
+        cond.branches.last().unwrap().condition.is_none(),
+        "else branch should have no condition"
+    );
+}
+
+// ─── Sequences ──────────────────────────────────────────────────────
+
+#[test]
+fn stopping_sequence() {
+    let p = lower_ink(
+        "\
+{stopping:
+    - First time.
+    - Every other time.
+}
+",
+    );
+    let r = root(&p);
+    let has_seq = r.body.iter().any(
+        |s| matches!(s, lir::Stmt::Sequence(seq) if seq.kind == brink_ir::SequenceType::STOPPING),
+    );
+    assert!(has_seq, "should have a Stopping sequence");
+}
+
+#[test]
+fn cycle_sequence() {
+    let p = lower_ink(
+        "\
+{cycle:
+    - A.
+    - B.
+    - C.
+}
+",
+    );
+    let r = root(&p);
+    let seq = r.body.iter().find_map(|s| {
+        if let lir::Stmt::Sequence(s) = s {
+            Some(s)
+        } else {
+            None
+        }
+    });
+    assert!(seq.is_some());
+    let seq = seq.unwrap();
+    assert_eq!(seq.kind, brink_ir::SequenceType::CYCLE);
+    assert_eq!(seq.branches.len(), 3);
+}
+
+// ─── Inline content elements ────────────────────────────────────────
+
+#[test]
+fn inline_conditional_in_content() {
+    let p = lower_ink("VAR happy = true\nI'm {happy:very|not} pleased.\n");
+    let r = root(&p);
+    let has_inline_cond = r.body.iter().any(|s| {
+        if let lir::Stmt::EmitContent(c) = s {
+            c.parts
+                .iter()
+                .any(|p| matches!(p, lir::ContentPart::InlineConditional(_)))
+        } else {
+            false
+        }
+    });
+    assert!(has_inline_cond, "content should have inline conditional");
+}
+
+#[test]
+fn glue_in_content() {
+    let p = lower_ink("Hello<>\n, world!\n");
+    let r = root(&p);
+    let has_glue = r.body.iter().any(|s| {
+        if let lir::Stmt::EmitContent(c) = s {
+            c.parts.iter().any(|p| matches!(p, lir::ContentPart::Glue))
+        } else {
+            false
+        }
+    });
+    assert!(has_glue, "content should have Glue element");
+}
+
+// ─── Builtin functions ──────────────────────────────────────────────
+
+#[test]
+fn builtin_random_recognized() {
+    let p = lower_ink("VAR x = 0\n~ x = RANDOM(1, 10)\n");
+    let r = root(&p);
+    let has_builtin = r.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::Assign {
+                value: lir::Expr::CallBuiltin {
+                    builtin: lir::BuiltinFn::Random,
+                    ..
+                },
+                ..
+            }
+        )
+    });
+    assert!(has_builtin, "RANDOM should be recognized as builtin");
+}
+
+#[test]
+fn builtin_turns_since() {
+    let p = lower_ink(
+        "\
+VAR t = 0
+== scene ==
+~ t = TURNS_SINCE(-> scene)
+-> END
+",
+    );
+    let knot = find_container(&p, "scene");
+    let has_turns = knot.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::Assign {
+                value: lir::Expr::CallBuiltin {
+                    builtin: lir::BuiltinFn::TurnsSince,
+                    ..
+                },
+                ..
+            }
+        )
+    });
+    assert!(has_turns, "TURNS_SINCE should be recognized as builtin");
+}
+
+// ─── Counting flags ─────────────────────────────────────────────────
+
+#[test]
+fn knots_have_visit_counting_by_default() {
+    let p = lower_ink("== greet ==\nHi.\n-> END\n");
+    let knot = find_container(&p, "greet");
+    assert!(
+        knot.counting_flags
+            .contains(brink_format::CountingFlags::VISITS),
+        "knots should have VISITS counting flag"
+    );
+}
+
+#[test]
+fn visit_count_reference_sets_flag() {
+    let p = lower_ink(
+        "\
+== scene ==
+-> END
+
+== check ==
+{scene > 0: Already visited.}
+-> END
+",
+    );
+    let scene = find_container(&p, "scene");
+    assert!(
+        scene
+            .counting_flags
+            .contains(brink_format::CountingFlags::VISITS),
+        "referenced container should have VISITS flag"
+    );
+}
+
+// ─── Container counts and structure ─────────────────────────────────
+
+#[test]
+fn empty_program_has_only_root() {
+    let p = lower_ink("");
+    assert_eq!(p.containers.len(), 1);
+    assert_eq!(p.containers[0].kind, lir::ContainerKind::Root);
+}
+
+#[test]
+fn name_table_contains_definitions() {
+    let p = lower_ink("VAR score = 0\nLIST colors = red, green\n");
+    assert!(
+        p.name_table.iter().any(|n| n == "score"),
+        "name table should contain 'score'"
+    );
+    assert!(
+        p.name_table.iter().any(|n| n == "colors"),
+        "name table should contain 'colors'"
+    );
+}
+
+#[test]
+fn container_count_knots_stitches() {
+    let p = lower_ink(
+        "\
+Start.
+-> knot_a
+
+== knot_a ==
+= stitch_1
+One.
+-> END
+= stitch_2
+Two.
+-> END
+
+== knot_b ==
+Three.
+-> END
+",
+    );
+    assert_eq!(count_kind(&p, lir::ContainerKind::Root), 1);
+    assert_eq!(count_kind(&p, lir::ContainerKind::Knot), 2);
+    assert_eq!(count_kind(&p, lir::ContainerKind::Stitch), 2);
+}
+
+// ─── Knot parameters ───────────────────────────────────────────────
+
+#[test]
+fn knot_with_params() {
+    let p = lower_ink(
+        "\
+== greet(name) ==
+Hello.
+-> END
+",
+    );
+    let knot = find_container(&p, "greet");
+    assert_eq!(knot.params.len(), 1);
+    assert_eq!(knot.params[0].slot, 0);
+    assert!(!knot.params[0].is_ref);
+}
+
+#[test]
+fn knot_with_ref_param() {
+    let p = lower_ink(
+        "\
+== modify(ref x) ==
+~ x = 10
+-> END
+",
+    );
+    let knot = find_container(&p, "modify");
+    assert_eq!(knot.params.len(), 1);
+    assert!(knot.params[0].is_ref);
+}
+
+// ─── Tunnel calls ───────────────────────────────────────────────────
+
+#[test]
+fn tunnel_call_statement() {
+    let p = lower_ink(
+        "\
+== start ==
+-> helper ->
+Done.
+-> END
+
+== helper ==
+Helping.
+->->
+",
+    );
+    let start = find_container(&p, "start");
+    let has_tunnel = start
+        .body
+        .iter()
+        .any(|s| matches!(s, lir::Stmt::TunnelCall(_)));
+    assert!(has_tunnel, "should have a TunnelCall statement");
+}
+
+// ─── Thread starts ──────────────────────────────────────────────────
+
+#[test]
+fn thread_start_statement() {
+    let p = lower_ink(
+        "\
+== main ==
+<- background
+Main content.
+-> END
+
+== background ==
+Background.
+-> DONE
+",
+    );
+    let knot = find_container(&p, "main");
+    let has_thread = knot
+        .body
+        .iter()
+        .any(|s| matches!(s, lir::Stmt::ThreadStart(_)));
+    assert!(has_thread, "should have a ThreadStart statement");
+}
+
+// ─── Return statement ───────────────────────────────────────────────
+
+#[test]
+fn return_from_function() {
+    let p = lower_ink(
+        "\
+== function double(x) ==
+~ return x * 2
+",
+    );
+    let knot = find_container(&p, "double");
+    let has_return = knot
+        .body
+        .iter()
+        .any(|s| matches!(s, lir::Stmt::Return(Some(_))));
+    assert!(has_return, "function should have a Return statement");
+}
+
+// ─── Tags ───────────────────────────────────────────────────────────
+
+#[test]
+fn content_tags() {
+    let p = lower_ink("Hello. # greeting # friendly\n");
+    let r = root(&p);
+    let tags: Vec<&[String]> = r
+        .body
+        .iter()
+        .filter_map(|s| {
+            if let lir::Stmt::EmitContent(c) = s
+                && !c.tags.is_empty()
+            {
+                return Some(c.tags.as_slice());
+            }
+            None
+        })
+        .collect();
+    assert!(!tags.is_empty(), "content should have tags");
+    let all_tags: Vec<&str> = tags
+        .iter()
+        .flat_map(|t| t.iter().map(String::as_str))
+        .collect();
+    assert!(all_tags.iter().any(|t| t.contains("greeting")));
+    assert!(all_tags.iter().any(|t| t.contains("friendly")));
+}
+
+// ─── Complex integration scenarios ──────────────────────────────────
+
+#[test]
+fn full_story_structure() {
+    let p = lower_ink(
+        "\
+VAR visited_inn = false
+
+-> town_square
+
+== town_square ==
+You stand in the town square.
+* [Go to the inn] -> inn
+* [Go to the market] -> market
+
+== inn ==
+~ visited_inn = true
+The inn is warm and cozy.
+* Order a drink
+  You order an ale.
+* Sit by the fire
+  The fire crackles.
+- The innkeeper nods.
+-> town_square
+
+== market ==
+{visited_inn: The innkeeper waves from across the square.}
+Stalls line the street.
+-> END
+",
+    );
+
+    // Structural assertions
+    assert_eq!(count_kind(&p, lir::ContainerKind::Root), 1);
+    assert_eq!(count_kind(&p, lir::ContainerKind::Knot), 3);
+    assert!(count_kind(&p, lir::ContainerKind::ChoiceTarget) >= 4);
+    assert!(count_kind(&p, lir::ContainerKind::Gather) >= 1);
+
+    // Globals
+    assert_eq!(p.globals.len(), 1);
+    let visited = find_global(&p, "visited_inn");
+    assert!(matches!(visited.default, lir::ConstValue::Bool(false)));
+    assert!(visited.mutable);
+
+    // Root diverts to town_square
+    let r = root(&p);
+    let town = find_container(&p, "town_square");
+    let root_diverts = r.body.iter().any(|s| {
+        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Container(id) if id == town.id))
+    });
+    assert!(root_diverts, "root should divert to town_square");
+
+    // Inn has assignment to visited_inn
+    let inn = find_container(&p, "inn");
+    let has_assign = inn
+        .body
+        .iter()
+        .any(|s| matches!(s, lir::Stmt::Assign { .. }));
+    assert!(has_assign, "inn should assign visited_inn = true");
+
+    // Market has a conditional (checking visited_inn)
+    let market = find_container(&p, "market");
+    let has_cond = market.body.iter().any(|s| {
+        if let lir::Stmt::EmitContent(c) = s {
+            c.parts
+                .iter()
+                .any(|p| matches!(p, lir::ContentPart::InlineConditional(_)))
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_cond,
+        "market should have inline conditional for visited_inn"
+    );
+}
+
+#[test]
+fn multiple_choice_sets_cascade_gathers() {
+    let p = lower_ink(
+        "\
+== scene ==
+* A
+  A body.
+* B
+  B body.
+- First gather.
+* C
+  C body.
+* D
+  D body.
+- Second gather.
+-> END
+",
+    );
+    // Should have 2 gathers
+    let gather_count = count_kind(&p, lir::ContainerKind::Gather);
+    assert!(
+        gather_count >= 2,
+        "should have at least 2 gathers, got {gather_count}"
+    );
+
+    // Second gather should contain -> END
+    let gathers: Vec<&lir::Container> = p
+        .containers
+        .iter()
+        .filter(|c| c.kind == lir::ContainerKind::Gather)
+        .collect();
+    let any_gather_has_end = gathers.iter().any(|g| {
+        g.body.iter().any(
+            |s| matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::End)),
+        )
+    });
+    assert!(
+        any_gather_has_end,
+        "one gather should contain the -> END divert"
+    );
+}
+
+#[test]
+fn list_variable_default_references_items() {
+    let p = lower_ink("LIST mood = (happy), sad, (excited)\n");
+    // The list is declared, items exist
+    assert_eq!(p.lists.len(), 1);
+    assert_eq!(p.list_items.len(), 3);
+
+    // List items should have correct ordinals
+    let ordinals: Vec<i32> = p.list_items.iter().map(|i| i.ordinal).collect();
+    assert_eq!(ordinals, vec![1, 2, 3]);
+}
+
+#[test]
+fn divert_with_arguments() {
+    let p = lower_ink("-> greet(42)\n\n== greet(name) ==\nHello.\n-> END\n");
+    let r = root(&p);
+    let divert = r.body.iter().find_map(|s| {
+        if let lir::Stmt::Divert(d) = s
+            && matches!(d.target, lir::DivertTarget::Container(_))
+        {
+            return Some(d);
+        }
+        None
+    });
+    assert!(divert.is_some(), "should have a divert with args");
+    assert!(
+        !divert.unwrap().args.is_empty(),
+        "divert should have arguments"
+    );
+}
+
+#[test]
+fn expr_statement() {
+    let p = lower_ink(
+        "\
+EXTERNAL do_something()
+~ do_something()
+",
+    );
+    let r = root(&p);
+    let has_expr_stmt = r.body.iter().any(|s| matches!(s, lir::Stmt::ExprStmt(_)));
+    assert!(
+        has_expr_stmt,
+        "should have an ExprStmt for the function call"
+    );
+}

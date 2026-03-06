@@ -407,6 +407,7 @@ fn merge_manifest_into(dst: &mut SymbolManifest, src: &SymbolManifest) {
     dst.knots.extend(src.knots.iter().cloned());
     dst.stitches.extend(src.stitches.iter().cloned());
     dst.variables.extend(src.variables.iter().cloned());
+    dst.constants.extend(src.constants.iter().cloned());
     dst.lists.extend(src.lists.iter().cloned());
     dst.externals.extend(src.externals.iter().cloned());
     dst.labels.extend(src.labels.iter().cloned());

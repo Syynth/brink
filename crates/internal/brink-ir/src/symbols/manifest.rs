@@ -9,8 +9,10 @@ pub struct SymbolManifest {
     pub knots: Vec<DeclaredSymbol>,
     /// Declared stitch names (qualified: `knot.stitch`).
     pub stitches: Vec<DeclaredSymbol>,
-    /// Declared global variable names (VAR + CONST).
+    /// Declared global variable names (VAR).
     pub variables: Vec<DeclaredSymbol>,
+    /// Declared constant names (CONST).
+    pub constants: Vec<DeclaredSymbol>,
     /// Declared list names.
     pub lists: Vec<DeclaredSymbol>,
     /// Declared external function names.

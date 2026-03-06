@@ -136,6 +136,7 @@ impl LowerCtx {
             SymbolKind::Knot => self.manifest.knots.push(sym),
             SymbolKind::Stitch => self.manifest.stitches.push(sym),
             SymbolKind::Variable => self.manifest.variables.push(sym),
+            SymbolKind::Constant => self.manifest.constants.push(sym),
             SymbolKind::List => self.manifest.lists.push(sym),
             SymbolKind::External => self.manifest.externals.push(sym),
             SymbolKind::Label => self.manifest.labels.push(sym),
@@ -158,6 +159,7 @@ enum SymbolKind {
     Knot,
     Stitch,
     Variable,
+    Constant,
     List,
     External,
     Label,
@@ -422,7 +424,7 @@ impl LowerCtx {
             self.emit(c.syntax().text_range(), DiagnosticCode::E006);
             None
         })?;
-        self.declare(SymbolKind::Variable, &name.text, name.range);
+        self.declare(SymbolKind::Constant, &name.text, name.range);
 
         let value = c
             .value()
