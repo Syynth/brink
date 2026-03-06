@@ -873,6 +873,9 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(source);
         let mut ranges = Vec::new();
 
+        // Root-level block content
+        collect_block_folds(&hir.root_content, &idx, &mut ranges);
+
         for knot in &hir.knots {
             let knot_range = knot.ptr.text_range();
             let (start_line, _) = idx.line_col(knot_range.start());
@@ -888,6 +891,8 @@ impl LanguageServer for Backend {
                 });
             }
 
+            collect_block_folds(&knot.body, &idx, &mut ranges);
+
             for stitch in &knot.stitches {
                 let stitch_range = stitch.ptr.text_range();
                 let (s_start, _) = idx.line_col(stitch_range.start());
@@ -902,6 +907,8 @@ impl LanguageServer for Backend {
                         collapsed_text: Some(format!("= {}", stitch.name.text)),
                     });
                 }
+
+                collect_block_folds(&stitch.body, &idx, &mut ranges);
             }
         }
 
@@ -921,5 +928,98 @@ impl LanguageServer for Backend {
     async fn code_lens_resolve(&self, lens: CodeLens) -> Result<CodeLens> {
         tracing::debug!("code_lens_resolve");
         Ok(lens)
+    }
+}
+
+// ─── Folding range helpers ──────────────────────────────────────────
+
+fn push_fold(
+    range: rowan::TextRange,
+    collapsed: Option<String>,
+    idx: &LineIndex,
+    out: &mut Vec<FoldingRange>,
+) {
+    let (start_line, _) = idx.line_col(range.start());
+    let (end_line, _) = idx.line_col(range.end());
+    if end_line > start_line {
+        out.push(FoldingRange {
+            start_line,
+            start_character: None,
+            end_line,
+            end_character: None,
+            kind: Some(FoldingRangeKind::Region),
+            collapsed_text: collapsed,
+        });
+    }
+}
+
+fn collect_block_folds(block: &brink_ir::Block, idx: &LineIndex, out: &mut Vec<FoldingRange>) {
+    for stmt in &block.stmts {
+        collect_stmt_folds(stmt, idx, out);
+    }
+}
+
+fn collect_stmt_folds(stmt: &brink_ir::Stmt, idx: &LineIndex, out: &mut Vec<FoldingRange>) {
+    match stmt {
+        brink_ir::Stmt::ChoiceSet(cs) => {
+            for choice in &cs.choices {
+                push_fold(choice.ptr.text_range(), None, idx, out);
+                collect_block_folds(&choice.body, idx, out);
+            }
+            if let Some(gather) = &cs.gather {
+                // Gather content may contain inline folds
+                if let Some(content) = &gather.content {
+                    collect_content_folds(content, idx, out);
+                }
+            }
+        }
+        brink_ir::Stmt::Conditional(cond) => {
+            push_fold(cond.ptr.text_range(), Some("{...}".to_owned()), idx, out);
+            for branch in &cond.branches {
+                collect_block_folds(&branch.body, idx, out);
+            }
+        }
+        brink_ir::Stmt::Sequence(seq) => {
+            push_fold(seq.ptr.text_range(), Some("{...}".to_owned()), idx, out);
+            for branch in &seq.branches {
+                collect_block_folds(branch, idx, out);
+            }
+        }
+        brink_ir::Stmt::Content(content) => {
+            collect_content_folds(content, idx, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_content_folds(
+    content: &brink_ir::Content,
+    idx: &LineIndex,
+    out: &mut Vec<FoldingRange>,
+) {
+    collect_content_part_folds(&content.parts, idx, out);
+}
+
+fn collect_content_part_folds(
+    parts: &[brink_ir::ContentPart],
+    idx: &LineIndex,
+    out: &mut Vec<FoldingRange>,
+) {
+    for part in parts {
+        match part {
+            brink_ir::ContentPart::InlineConditional(cond) => {
+                push_fold(cond.ptr.text_range(), Some("{...}".to_owned()), idx, out);
+                for branch in &cond.branches {
+                    collect_content_part_folds(&branch.content, idx, out);
+                }
+            }
+            brink_ir::ContentPart::InlineSequence(seq) => {
+                push_fold(seq.ptr.text_range(), Some("{...}".to_owned()), idx, out);
+                for branch in &seq.branches {
+                    collect_content_part_folds(branch, idx, out);
+                }
+            }
+            _ => {}
+        }
     }
 }

@@ -576,7 +576,7 @@ EXTERNAL doThing(a)
 
     assert!(diags.is_empty());
     assert!(manifest.variables.iter().any(|s| s.name == "x"));
-    assert!(manifest.variables.iter().any(|s| s.name == "y"));
+    assert!(manifest.constants.iter().any(|s| s.name == "y"));
     assert!(manifest.lists.iter().any(|s| s.name == "colors"));
     assert!(manifest.externals.iter().any(|s| s.name == "doThing"));
 }
@@ -1633,4 +1633,36 @@ fn diag_e020_inline_cond_missing_condition() {
 #[test]
 fn diag_e021_inline_seq_no_branches() {
     expect_diag_or_parse_error("Hello {stopping:}\n", DiagnosticCode::E021);
+}
+
+// ─── Nested conditional structure ───────────────────────────────────
+
+// TODO: `{ expr: ... - else: ... }` with block-level content in branches
+// is currently lowered as InlineCond (inside Content) instead of being
+// promoted to Stmt::Conditional. The inner nested conditional is lost
+// because InlineBranch.content (Vec<ContentPart>) can't represent
+// block-level constructs. This needs a lowering fix to promote
+// ConditionalWithExpr+multiline_branches to Stmt::Conditional.
+#[test]
+fn conditional_with_expr_and_multiline_branches_lowers_as_inline() {
+    let source = "\
+=== function f(x) ===
+{ x > 0:
+    hello
+- else:
+    world
+}
+";
+    let (hir, _, diags) = lower_ink(source);
+    assert!(diags.is_empty(), "unexpected diags: {diags:?}");
+
+    let knot = &hir.knots[0];
+    // Currently this is lowered as Content(InlineConditional), not Stmt::Conditional
+    let has_inline_cond = knot.body.stmts.iter().any(|s| {
+        matches!(s, Stmt::Content(c) if c.parts.iter().any(|p| matches!(p, ContentPart::InlineConditional(_))))
+    });
+    assert!(
+        has_inline_cond,
+        "expected `{{ expr: ... - else: ... }}` to be lowered as InlineConditional in Content"
+    );
 }
