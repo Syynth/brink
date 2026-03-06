@@ -175,6 +175,16 @@ name = "brink"
 version = "0.0.1"
 
 [[package]]
+name = "brink-analyzer"
+version = "0.0.1"
+dependencies = [
+ "brink-format",
+ "brink-hir",
+ "brink-syntax",
+ "rowan",
+]
+
+[[package]]
 name = "brink-cli"
 version = "0.0.1"
 dependencies = [
@@ -192,6 +202,12 @@ dependencies = [
 [[package]]
 name = "brink-compiler"
 version = "0.0.1"
+dependencies = [
+ "brink-analyzer",
+ "brink-format",
+ "brink-hir",
+ "brink-syntax",
+]
 
 [[package]]
 name = "brink-converter"
@@ -259,7 +275,6 @@ dependencies = [
  "brink-json",
  "divan",
  "serde_json",
- "smallvec",
  "thiserror 2.0.18",
 ]
 

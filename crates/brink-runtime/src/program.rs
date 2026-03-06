@@ -38,9 +38,9 @@ pub(crate) struct LinkedContainer {
 }
 
 pub(crate) struct GlobalSlot {
-    #[expect(dead_code)]
+    #[expect(dead_code, reason = "needed for save/load serialization and debugging")]
     pub id: DefinitionId,
-    #[expect(dead_code)]
+    #[expect(dead_code, reason = "needed for save/load serialization and debugging")]
     pub name: NameId,
     pub default: Value,
 }

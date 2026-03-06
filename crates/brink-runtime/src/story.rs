@@ -236,8 +236,6 @@ impl CallStack {
 #[derive(Debug, Clone)]
 pub(crate) struct Thread {
     pub call_stack: CallStack,
-    #[expect(dead_code)]
-    pub thread_index: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -247,9 +245,15 @@ pub(crate) struct PendingChoice {
     pub target_idx: u32,
     pub target_offset: usize,
     pub flags: ChoiceFlags,
-    #[expect(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "needs research — likely needed for structured output / voice acting"
+    )]
     pub original_index: usize,
-    #[expect(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "needs research — likely needed for structured output / voice acting"
+    )]
     pub output_line_idx: Option<u16>,
     /// Tags collected during choice evaluation.
     pub tags: Vec<String>,
@@ -262,7 +266,6 @@ pub(crate) struct PendingChoice {
 /// Per-flow execution context. Owns threads, eval stack, output, choices.
 pub(crate) struct Flow {
     pub threads: Vec<Thread>,
-    pub thread_counter: u32,
     pub value_stack: Vec<Value>,
     pub output: OutputBuffer,
     pub pending_choices: Vec<PendingChoice>,
@@ -322,7 +325,6 @@ impl Flow {
 
     /// Fork a new thread from the current one. Returns `(thread, snapshot_cache_hit)`.
     pub fn fork_thread(&mut self) -> (Thread, bool) {
-        self.thread_counter += 1;
         let (shared, cache_hit) = self.current_thread_mut().call_stack.snapshot();
         (
             Thread {
@@ -332,7 +334,6 @@ impl Flow {
                     cached_snapshot: None,
                     materialization_count: 0,
                 },
-                thread_index: self.thread_counter,
             },
             cache_hit,
         )
@@ -465,7 +466,7 @@ pub(crate) struct FlowInstance<R: StoryRng = FastRng> {
 }
 
 /// Maximum opcodes per step to prevent infinite loops.
-const MAX_OPS_PER_STEP: u32 = 100_000;
+const MAX_OPS_PER_STEP: u32 = 1_000_000;
 
 impl<R: StoryRng> FlowInstance<R> {
     /// Create a new flow instance starting at the root container.
@@ -483,12 +484,10 @@ impl<R: StoryRng> FlowInstance<R> {
         };
         let initial_thread = Thread {
             call_stack: CallStack::new(initial_frame),
-            thread_index: 0,
         };
         Self {
             flow: Flow {
                 threads: vec![initial_thread],
-                thread_counter: 0,
                 value_stack: Vec::new(),
                 output: OutputBuffer::new(),
                 pending_choices: Vec::new(),
@@ -525,12 +524,10 @@ impl<R: StoryRng> FlowInstance<R> {
         };
         let initial_thread = Thread {
             call_stack: CallStack::new(initial_frame),
-            thread_index: 0,
         };
         Self {
             flow: Flow {
                 threads: vec![initial_thread],
-                thread_counter: 0,
                 value_stack: Vec::new(),
                 output: OutputBuffer::new(),
                 pending_choices: Vec::new(),
