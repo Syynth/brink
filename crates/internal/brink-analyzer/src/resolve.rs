@@ -344,6 +344,8 @@ mod tests {
             manifest.knots.push(DeclaredSymbol {
                 name: name.to_string(),
                 range: r,
+                params: Vec::new(),
+                detail: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -352,6 +354,8 @@ mod tests {
             manifest.stitches.push(DeclaredSymbol {
                 name: name.to_string(),
                 range: r,
+                params: Vec::new(),
+                detail: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -360,6 +364,8 @@ mod tests {
             manifest.variables.push(DeclaredSymbol {
                 name: name.to_string(),
                 range: r,
+                params: Vec::new(),
+                detail: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -368,6 +374,8 @@ mod tests {
             manifest.lists.push(DeclaredSymbol {
                 name: list_name.to_string(),
                 range: r,
+                params: Vec::new(),
+                detail: None,
             });
             offset += list_name.len() as u32 + 1;
             for &item in items {
@@ -376,6 +384,8 @@ mod tests {
                 manifest.list_items.push(DeclaredSymbol {
                     name: qualified,
                     range: r,
+                    params: Vec::new(),
+                    detail: None,
                 });
                 offset += item.len() as u32 + 1;
             }
@@ -385,6 +395,8 @@ mod tests {
             manifest.externals.push(DeclaredSymbol {
                 name: name.to_string(),
                 range: r,
+                params: Vec::new(),
+                detail: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -393,6 +405,8 @@ mod tests {
             manifest.labels.push(DeclaredSymbol {
                 name: name.to_string(),
                 range: r,
+                params: Vec::new(),
+                detail: None,
             });
             offset += name.len() as u32 + 1;
         }

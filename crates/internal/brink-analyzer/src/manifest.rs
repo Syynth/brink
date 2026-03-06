@@ -19,8 +19,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
                 &mut index,
                 &mut diagnostics,
                 *file_id,
-                &sym.name,
-                sym.range,
+                sym,
                 SymbolKind::Knot,
                 DiagnosticCode::E022,
             );
@@ -30,8 +29,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
                 &mut index,
                 &mut diagnostics,
                 *file_id,
-                &sym.name,
-                sym.range,
+                sym,
                 SymbolKind::Stitch,
                 DiagnosticCode::E022,
             );
@@ -41,8 +39,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
                 &mut index,
                 &mut diagnostics,
                 *file_id,
-                &sym.name,
-                sym.range,
+                sym,
                 SymbolKind::Variable,
                 DiagnosticCode::E023,
             );
@@ -52,8 +49,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
                 &mut index,
                 &mut diagnostics,
                 *file_id,
-                &sym.name,
-                sym.range,
+                sym,
                 SymbolKind::List,
                 DiagnosticCode::E023,
             );
@@ -63,8 +59,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
                 &mut index,
                 &mut diagnostics,
                 *file_id,
-                &sym.name,
-                sym.range,
+                sym,
                 SymbolKind::External,
                 DiagnosticCode::E023,
             );
@@ -74,8 +69,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
                 &mut index,
                 &mut diagnostics,
                 *file_id,
-                &sym.name,
-                sym.range,
+                sym,
                 SymbolKind::Label,
                 DiagnosticCode::E022,
             );
@@ -85,8 +79,7 @@ pub fn merge_manifests(files: &[(FileId, SymbolManifest)]) -> (SymbolIndex, Vec<
                 &mut index,
                 &mut diagnostics,
                 *file_id,
-                &sym.name,
-                sym.range,
+                sym,
                 SymbolKind::ListItem,
                 DiagnosticCode::E026,
             );
@@ -100,20 +93,19 @@ fn insert_symbol(
     index: &mut SymbolIndex,
     diagnostics: &mut Vec<Diagnostic>,
     file: FileId,
-    name: &str,
-    range: rowan::TextRange,
+    sym: &brink_ir::DeclaredSymbol,
     kind: SymbolKind,
     dup_code: DiagnosticCode,
 ) {
     // Check for duplicates of the same kind
-    if let Some(existing_ids) = index.by_name.get(name) {
+    if let Some(existing_ids) = index.by_name.get(&sym.name) {
         let has_dup = existing_ids
             .iter()
             .any(|id| index.symbols.get(id).is_some_and(|info| info.kind == kind));
         if has_dup {
             diagnostics.push(Diagnostic {
-                range,
-                message: format!("{}: `{name}` is already defined", dup_code.title()),
+                range: sym.range,
+                message: format!("{}: `{}` is already defined", dup_code.title(), sym.name),
                 code: dup_code,
             });
             return;
@@ -121,7 +113,7 @@ fn insert_symbol(
     }
 
     let tag = kind.definition_tag();
-    let hash = hash_name(name, tag);
+    let hash = hash_name(&sym.name, tag);
     let id = DefinitionId::new(tag, hash);
 
     index.symbols.insert(
@@ -129,12 +121,14 @@ fn insert_symbol(
         SymbolInfo {
             kind,
             file,
-            range,
+            range: sym.range,
             id,
-            name: name.to_string(),
+            name: sym.name.clone(),
+            params: sym.params.clone(),
+            detail: sym.detail.clone(),
         },
     );
-    index.by_name.entry(name.to_string()).or_default().push(id);
+    index.by_name.entry(sym.name.clone()).or_default().push(id);
 }
 
 fn hash_name(name: &str, tag: DefinitionTag) -> u64 {

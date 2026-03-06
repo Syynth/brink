@@ -30,6 +30,21 @@ pub struct SymbolInfo {
     pub id: DefinitionId,
     /// The canonical/qualified name.
     pub name: String,
+    /// Parameter names (for knots, stitches, externals).
+    pub params: Vec<ParamInfo>,
+    /// Additional detail (e.g. "function" for function knots).
+    pub detail: Option<String>,
+}
+
+/// Parameter metadata for hover/signature help.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamInfo {
+    /// Parameter name.
+    pub name: String,
+    /// `ref` parameter — passed by reference.
+    pub is_ref: bool,
+    /// `->` parameter — divert target.
+    pub is_divert: bool,
 }
 
 /// The kind of a declared symbol.

@@ -210,6 +210,7 @@ dependencies = [
  "brink-format",
  "brink-ir",
  "brink-syntax",
+ "rowan",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -278,6 +279,8 @@ dependencies = [
 name = "brink-lsp"
 version = "0.0.1"
 dependencies = [
+ "brink-analyzer",
+ "brink-db",
  "brink-ir",
  "rowan",
  "tokio",

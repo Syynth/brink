@@ -562,6 +562,8 @@ pub enum DiagnosticCode {
     E026,
     /// Ambiguous bare list item reference.
     E027,
+    /// Circular INCLUDE dependency.
+    E028,
 }
 
 impl DiagnosticCode {
@@ -596,6 +598,7 @@ impl DiagnosticCode {
             Self::E025 => "E025",
             Self::E026 => "E026",
             Self::E027 => "E027",
+            Self::E028 => "E028",
         }
     }
 
@@ -630,6 +633,7 @@ impl DiagnosticCode {
             Self::E025 => "unresolved variable reference",
             Self::E026 => "duplicate list item",
             Self::E027 => "ambiguous bare list item reference",
+            Self::E028 => "circular INCLUDE dependency",
         }
     }
 

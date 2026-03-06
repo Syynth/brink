@@ -1,34 +1,135 @@
+use std::sync::{Arc, Mutex};
+
+use brink_analyzer::AnalysisResult;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionParams, CodeActionProviderCapability,
     CodeActionResponse, CodeLens, CodeLensOptions, CodeLensParams, CompletionItem,
-    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    DocumentFormattingParams, DocumentRangeFormattingParams, DocumentSymbolParams,
-    DocumentSymbolResponse, FoldingRange, FoldingRangeParams, FoldingRangeProviderCapability,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InlayHint, InlayHintParams, Location, OneOf,
-    PrepareRenameResponse, ReferenceParams, RenameOptions, RenameParams, SaveOptions,
-    SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams, DocumentFormattingParams, DocumentRangeFormattingParams,
+    DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams,
+    FoldingRangeProviderCapability, GotoDefinitionParams, GotoDefinitionResponse, Hover,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InlayHint,
+    InlayHintParams, Location, MarkupContent, MarkupKind, OneOf, PrepareRenameResponse,
+    ReferenceParams, RenameOptions, RenameParams, SaveOptions, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
     SignatureHelpOptions, SignatureHelpParams, SymbolInformation, TextDocumentPositionParams,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, TextEdit, WorkDoneProgressOptions, WorkspaceEdit,
+    TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
     WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
+use crate::convert::{self, LineIndex};
 use crate::semantic_tokens;
 
 pub struct Backend {
     client: Client,
-    // Future: db: Arc<Mutex<brink_db::Database>>,
+    db: Arc<Mutex<brink_db::ProjectDb>>,
 }
 
 impl Backend {
-    pub fn new(client: Client) -> Self {
-        Self { client }
+    pub fn new(client: Client, db: Arc<Mutex<brink_db::ProjectDb>>) -> Self {
+        Self { client, db }
+    }
+
+    fn uri_to_path(uri: &Url) -> Option<String> {
+        uri.to_file_path()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    async fn publish_diagnostics_for_file(&self, uri: &Url, path: &str) {
+        let lsp_diags = {
+            let mut db = lock_db(&self.db);
+            let Some(file_id) = db.file_id(path) else {
+                return;
+            };
+
+            let Some(source) = db.source(file_id).map(str::to_owned) else {
+                return;
+            };
+            let idx = LineIndex::new(&source);
+
+            // Per-file diagnostics (parse + lowering)
+            let mut diags: Vec<_> = db
+                .file_diagnostics(file_id)
+                .unwrap_or_default()
+                .iter()
+                .map(|d| convert::diagnostic_to_lsp(d, &idx))
+                .collect();
+
+            // Cross-file diagnostics filtered to this file
+            let analysis = db.analyze().clone();
+            for diag in &analysis.diagnostics {
+                if is_range_in_file(diag.range, file_id, &analysis) {
+                    diags.push(convert::diagnostic_to_lsp(diag, &idx));
+                }
+            }
+
+            diags
+        };
+
+        self.client
+            .publish_diagnostics(uri.clone(), lsp_diags, None)
+            .await;
+    }
+}
+
+/// Check if a diagnostic range belongs to a file by checking if any symbol
+/// in the index from that file contains or matches the range.
+fn is_range_in_file(
+    range: rowan::TextRange,
+    file_id: brink_ir::FileId,
+    analysis: &AnalysisResult,
+) -> bool {
+    analysis
+        .index
+        .symbols
+        .values()
+        .any(|info| info.file == file_id && info.range.contains_range(range))
+}
+
+fn lock_db(db: &Arc<Mutex<brink_db::ProjectDb>>) -> std::sync::MutexGuard<'_, brink_db::ProjectDb> {
+    match db.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Snapshot of analysis + per-file data needed for navigation handlers.
+struct NavigationSnapshot {
+    analysis: AnalysisResult,
+    source: String,
+    file_id: brink_ir::FileId,
+    /// (`FileId`, path, source) for all files in the db.
+    all_files: Vec<(brink_ir::FileId, String, String)>,
+}
+
+impl Backend {
+    /// Take a consistent snapshot under a single lock acquisition.
+    fn navigation_snapshot(&self, path: &str) -> Option<NavigationSnapshot> {
+        let mut db = lock_db(&self.db);
+        let file_id = db.file_id(path)?;
+        let source = db.source(file_id)?.to_owned();
+        let analysis = db.analyze().clone();
+        let all_files: Vec<_> = db
+            .file_ids()
+            .filter_map(|fid| {
+                let p = db.file_path(fid)?.to_owned();
+                let s = db.source(fid)?.to_owned();
+                Some((fid, p, s))
+            })
+            .collect();
+        Some(NavigationSnapshot {
+            analysis,
+            source,
+            file_id,
+            all_files,
+        })
     }
 }
 
@@ -132,7 +233,18 @@ impl LanguageServer for Backend {
             language_id = %params.text_document.language_id,
             "did_open",
         );
-        let _ = &self.client;
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return;
+        };
+
+        {
+            let mut db = lock_db(&self.db);
+            db.set_file(&path, params.text_document.text);
+        }
+
+        self.publish_diagnostics_for_file(&params.text_document.uri, &path)
+            .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -141,14 +253,56 @@ impl LanguageServer for Backend {
             version = params.text_document.version,
             "did_change",
         );
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return;
+        };
+
+        // Full sync — take the last content change (there should be exactly one)
+        let Some(change) = params.content_changes.into_iter().last() else {
+            return;
+        };
+
+        {
+            let mut db = lock_db(&self.db);
+            db.update_file(&path, change.text);
+        }
+
+        self.publish_diagnostics_for_file(&params.text_document.uri, &path)
+            .await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         tracing::debug!(uri = %params.text_document.uri, "did_save");
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return;
+        };
+
+        if let Some(text) = params.text {
+            let mut db = lock_db(&self.db);
+            db.update_file(&path, text);
+        }
+
+        self.publish_diagnostics_for_file(&params.text_document.uri, &path)
+            .await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         tracing::debug!(uri = %params.text_document.uri, "did_close");
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return;
+        };
+
+        {
+            let mut db = lock_db(&self.db);
+            db.remove_file(&path);
+        }
+
+        self.client
+            .publish_diagnostics(params.text_document.uri, vec![], None)
+            .await;
     }
 
     // ── Navigation ───────────────────────────────────────────────────
@@ -161,7 +315,51 @@ impl LanguageServer for Backend {
             uri = %params.text_document_position_params.text_document.uri,
             "goto_definition",
         );
-        Ok(None)
+
+        let Some(path) = Self::uri_to_path(&params.text_document_position_params.text_document.uri)
+        else {
+            return Ok(None);
+        };
+
+        let Some(snap) = self.navigation_snapshot(&path) else {
+            return Ok(None);
+        };
+
+        let idx = LineIndex::new(&snap.source);
+        let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
+
+        // Find a resolution whose range contains the cursor
+        let Some(&def_id) = snap
+            .analysis
+            .resolutions
+            .iter()
+            .find(|(range, _)| range.contains(offset) || range.start() == offset)
+            .map(|(_, id)| id)
+        else {
+            return Ok(None);
+        };
+
+        let Some(info) = snap.analysis.index.symbols.get(&def_id) else {
+            return Ok(None);
+        };
+
+        // Find the target file in our snapshot
+        let Some((_, target_path, target_source)) =
+            snap.all_files.iter().find(|(fid, _, _)| *fid == info.file)
+        else {
+            return Ok(None);
+        };
+
+        let target_idx = LineIndex::new(target_source);
+        let target_range = convert::to_lsp_range(info.range, &target_idx);
+        let Ok(target_uri) = Url::from_file_path(target_path) else {
+            return Ok(None);
+        };
+
+        Ok(Some(GotoDefinitionResponse::Scalar(Location {
+            uri: target_uri,
+            range: target_range,
+        })))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
@@ -169,7 +367,89 @@ impl LanguageServer for Backend {
             uri = %params.text_document_position.text_document.uri,
             "references",
         );
-        Ok(None)
+
+        let Some(path) = Self::uri_to_path(&params.text_document_position.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let Some(snap) = self.navigation_snapshot(&path) else {
+            return Ok(None);
+        };
+
+        let idx = LineIndex::new(&snap.source);
+        let offset = convert::to_text_size(params.text_document_position.position, &idx);
+
+        // Find which definition the cursor is on
+        let def_id = snap
+            .analysis
+            .resolutions
+            .iter()
+            .find(|(range, _)| range.contains(offset) || range.start() == offset)
+            .map(|(_, &id)| id)
+            .or_else(|| {
+                // Maybe the cursor is on a definition site
+                snap.analysis
+                    .index
+                    .symbols
+                    .values()
+                    .find(|info| {
+                        info.file == snap.file_id
+                            && (info.range.contains(offset) || info.range.start() == offset)
+                    })
+                    .map(|info| info.id)
+            });
+
+        let Some(def_id) = def_id else {
+            return Ok(None);
+        };
+
+        let mut locations = Vec::new();
+
+        // Include the definition itself if requested
+        if params.context.include_declaration
+            && let Some(info) = snap.analysis.index.symbols.get(&def_id)
+            && let Some((_, def_path, def_source)) =
+                snap.all_files.iter().find(|(fid, _, _)| *fid == info.file)
+            && let Ok(uri) = Url::from_file_path(def_path)
+        {
+            let def_idx = LineIndex::new(def_source);
+            locations.push(Location {
+                uri,
+                range: convert::to_lsp_range(info.range, &def_idx),
+            });
+        }
+
+        // Collect all reference sites that resolve to this definition.
+        // Since ResolutionMap doesn't carry file IDs, we check each file's
+        // unresolved refs to match ranges.
+        for (ref_range, &id) in &snap.analysis.resolutions {
+            if id != def_id {
+                continue;
+            }
+
+            // Find which file this range belongs to by checking manifests
+            for (_fid, file_path, file_source) in &snap.all_files {
+                let file_len = u32::try_from(file_source.len()).unwrap_or(u32::MAX);
+                if u32::from(ref_range.end()) <= file_len {
+                    if let Ok(uri) = Url::from_file_path(file_path) {
+                        let file_idx = LineIndex::new(file_source);
+                        locations.push(Location {
+                            uri,
+                            range: convert::to_lsp_range(*ref_range, &file_idx),
+                        });
+                    }
+                    // For single-file projects this is correct; multi-file
+                    // will need file-tagged resolutions in the analyzer.
+                    break;
+                }
+            }
+        }
+
+        if locations.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(locations))
+        }
     }
 
     // ── Info ─────────────────────────────────────────────────────────
@@ -179,7 +459,108 @@ impl LanguageServer for Backend {
             uri = %params.text_document_position_params.text_document.uri,
             "hover",
         );
-        Ok(None)
+
+        let Some(path) = Self::uri_to_path(&params.text_document_position_params.text_document.uri)
+        else {
+            return Ok(None);
+        };
+
+        let Some(snap) = self.navigation_snapshot(&path) else {
+            return Ok(None);
+        };
+
+        let idx = LineIndex::new(&snap.source);
+        let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
+
+        // Find what the cursor is on
+        let def_id = snap
+            .analysis
+            .resolutions
+            .iter()
+            .find(|(range, _)| range.contains(offset) || range.start() == offset)
+            .map(|(_, &id)| id)
+            .or_else(|| {
+                snap.analysis
+                    .index
+                    .symbols
+                    .values()
+                    .find(|info| {
+                        info.file == snap.file_id
+                            && (info.range.contains(offset) || info.range.start() == offset)
+                    })
+                    .map(|info| info.id)
+            });
+
+        let Some(def_id) = def_id else {
+            return Ok(None);
+        };
+
+        let Some(info) = snap.analysis.index.symbols.get(&def_id) else {
+            return Ok(None);
+        };
+
+        let kind_str = match info.kind {
+            brink_ir::SymbolKind::Knot => "knot",
+            brink_ir::SymbolKind::Stitch => "stitch",
+            brink_ir::SymbolKind::Variable => "variable",
+            brink_ir::SymbolKind::Constant => "constant",
+            brink_ir::SymbolKind::List => "list",
+            brink_ir::SymbolKind::ListItem => "list item",
+            brink_ir::SymbolKind::External => "external function",
+            brink_ir::SymbolKind::Label => "label",
+        };
+
+        let params_str = if info.params.is_empty() {
+            String::new()
+        } else {
+            let parts: Vec<_> = info
+                .params
+                .iter()
+                .map(|p| {
+                    let mut s = String::new();
+                    if p.is_ref {
+                        s.push_str("ref ");
+                    }
+                    if p.is_divert {
+                        s.push_str("-> ");
+                    }
+                    s.push_str(&p.name);
+                    s
+                })
+                .collect();
+            format!("({})", parts.join(", "))
+        };
+
+        let detail_str = info
+            .detail
+            .as_deref()
+            .map_or(String::new(), |d| format!(" [{d}]"));
+
+        let file_note = snap
+            .all_files
+            .iter()
+            .find(|(fid, _, _)| *fid == info.file)
+            .map_or(String::new(), |(_, p, _)| format!("\n\n*Defined in `{p}`*"));
+
+        let value = format!(
+            "**{kind_str}** `{}{params_str}`{detail_str}{file_note}",
+            info.name
+        );
+
+        let hover_range = snap
+            .analysis
+            .resolutions
+            .keys()
+            .find(|range| range.contains(offset) || range.start() == offset)
+            .map(|range| convert::to_lsp_range(*range, &idx));
+
+        Ok(Some(Hover {
+            contents: tower_lsp::lsp_types::HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            range: hover_range,
+        }))
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
@@ -197,7 +578,55 @@ impl LanguageServer for Backend {
             uri = %params.text_document_position.text_document.uri,
             "completion",
         );
-        Ok(None)
+
+        let Some(path) = Self::uri_to_path(&params.text_document_position.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let Some(snap) = self.navigation_snapshot(&path) else {
+            return Ok(None);
+        };
+
+        let items: Vec<CompletionItem> = snap
+            .analysis
+            .index
+            .symbols
+            .values()
+            .map(|info| {
+                let kind = match info.kind {
+                    brink_ir::SymbolKind::Knot => CompletionItemKind::MODULE,
+                    brink_ir::SymbolKind::Stitch | brink_ir::SymbolKind::External => {
+                        CompletionItemKind::FUNCTION
+                    }
+                    brink_ir::SymbolKind::Variable | brink_ir::SymbolKind::Constant => {
+                        CompletionItemKind::VARIABLE
+                    }
+                    brink_ir::SymbolKind::List => CompletionItemKind::ENUM,
+                    brink_ir::SymbolKind::ListItem => CompletionItemKind::ENUM_MEMBER,
+                    brink_ir::SymbolKind::Label => CompletionItemKind::REFERENCE,
+                };
+
+                let detail = match info.kind {
+                    brink_ir::SymbolKind::Knot if info.detail.as_deref() == Some("function") => {
+                        Some("function knot".to_string())
+                    }
+                    _ if !info.params.is_empty() => {
+                        let params: Vec<_> = info.params.iter().map(|p| p.name.as_str()).collect();
+                        Some(format!("({})", params.join(", ")))
+                    }
+                    _ => None,
+                };
+
+                CompletionItem {
+                    label: info.name.clone(),
+                    kind: Some(kind),
+                    detail,
+                    ..Default::default()
+                }
+            })
+            .collect();
+
+        Ok(Some(CompletionResponse::Array(items)))
     }
 
     async fn completion_resolve(&self, item: CompletionItem) -> Result<CompletionItem> {
@@ -212,7 +641,104 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         tracing::debug!(uri = %params.text_document.uri, "document_symbol");
-        Ok(Some(DocumentSymbolResponse::Flat(vec![])))
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return Ok(Some(DocumentSymbolResponse::Flat(vec![])));
+        };
+
+        let db = lock_db(&self.db);
+        let Some(file_id) = db.file_id(&path) else {
+            return Ok(Some(DocumentSymbolResponse::Flat(vec![])));
+        };
+        let Some(source) = db.source(file_id) else {
+            return Ok(Some(DocumentSymbolResponse::Flat(vec![])));
+        };
+        let Some(hir) = db.hir(file_id) else {
+            return Ok(Some(DocumentSymbolResponse::Flat(vec![])));
+        };
+        let Some(manifest) = db.manifest(file_id) else {
+            return Ok(Some(DocumentSymbolResponse::Flat(vec![])));
+        };
+
+        let idx = LineIndex::new(source);
+        let mut symbols = Vec::new();
+
+        // Knots with their stitches as children
+        for knot in &hir.knots {
+            let children: Vec<_> = knot
+                .stitches
+                .iter()
+                .map(|stitch| {
+                    #[expect(deprecated, reason = "DocumentSymbol requires this field")]
+                    tower_lsp::lsp_types::DocumentSymbol {
+                        name: stitch.name.text.clone(),
+                        detail: None,
+                        kind: tower_lsp::lsp_types::SymbolKind::METHOD,
+                        tags: None,
+                        deprecated: None,
+                        range: convert::to_lsp_range(stitch.name.range, &idx),
+                        selection_range: convert::to_lsp_range(stitch.name.range, &idx),
+                        children: None,
+                    }
+                })
+                .collect();
+
+            #[expect(deprecated, reason = "DocumentSymbol requires this field")]
+            let sym = tower_lsp::lsp_types::DocumentSymbol {
+                name: knot.name.text.clone(),
+                detail: if knot.is_function {
+                    Some("function".to_owned())
+                } else {
+                    None
+                },
+                kind: tower_lsp::lsp_types::SymbolKind::FUNCTION,
+                tags: None,
+                deprecated: None,
+                range: convert::to_lsp_range(knot.name.range, &idx),
+                selection_range: convert::to_lsp_range(knot.name.range, &idx),
+                children: if children.is_empty() {
+                    None
+                } else {
+                    Some(children)
+                },
+            };
+            symbols.push(sym);
+        }
+
+        // Top-level declarations from manifest
+        let decl_groups: &[(
+            &[brink_ir::DeclaredSymbol],
+            tower_lsp::lsp_types::SymbolKind,
+        )] = &[
+            (
+                &manifest.variables,
+                tower_lsp::lsp_types::SymbolKind::VARIABLE,
+            ),
+            (&manifest.lists, tower_lsp::lsp_types::SymbolKind::ENUM),
+            (
+                &manifest.externals,
+                tower_lsp::lsp_types::SymbolKind::FUNCTION,
+            ),
+        ];
+
+        for (decls, kind) in decl_groups {
+            for decl in *decls {
+                #[expect(deprecated, reason = "DocumentSymbol requires this field")]
+                let sym = tower_lsp::lsp_types::DocumentSymbol {
+                    name: decl.name.clone(),
+                    detail: None,
+                    kind: *kind,
+                    tags: None,
+                    deprecated: None,
+                    range: convert::to_lsp_range(decl.range, &idx),
+                    selection_range: convert::to_lsp_range(decl.range, &idx),
+                    children: None,
+                };
+                symbols.push(sym);
+            }
+        }
+
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
     async fn symbol(
@@ -220,7 +746,56 @@ impl LanguageServer for Backend {
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
         tracing::debug!(query = %params.query, "workspace_symbol");
-        Ok(Some(vec![]))
+
+        let (analysis, all_files) = {
+            let mut db = lock_db(&self.db);
+            let analysis = db.analyze().clone();
+            let files: Vec<_> = db
+                .file_ids()
+                .filter_map(|fid| {
+                    let p = db.file_path(fid)?.to_owned();
+                    let s = db.source(fid)?.to_owned();
+                    Some((fid, p, s))
+                })
+                .collect();
+            (analysis, files)
+        };
+
+        let query = params.query.to_lowercase();
+        let mut results = Vec::new();
+
+        for info in analysis.index.symbols.values() {
+            if !query.is_empty() && !info.name.to_lowercase().contains(&query) {
+                continue;
+            }
+
+            let Some((_, file_path, file_source)) =
+                all_files.iter().find(|(fid, _, _)| *fid == info.file)
+            else {
+                continue;
+            };
+            let Ok(uri) = Url::from_file_path(file_path) else {
+                continue;
+            };
+
+            let idx = LineIndex::new(file_source);
+
+            #[expect(deprecated, reason = "SymbolInformation requires this field")]
+            let sym = SymbolInformation {
+                name: info.name.clone(),
+                kind: convert::symbol_kind_to_lsp(info.kind),
+                tags: None,
+                deprecated: None,
+                location: Location {
+                    uri,
+                    range: convert::to_lsp_range(info.range, &idx),
+                },
+                container_name: None,
+            };
+            results.push(sym);
+        }
+
+        Ok(Some(results))
     }
 
     // ── Semantic tokens ──────────────────────────────────────────────

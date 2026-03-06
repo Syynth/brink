@@ -102,6 +102,20 @@ pub fn severity_to_lsp(sev: brink_ir::Severity) -> lsp_types::DiagnosticSeverity
     }
 }
 
+pub fn diagnostic_to_lsp(diag: &brink_ir::Diagnostic, idx: &LineIndex) -> lsp_types::Diagnostic {
+    lsp_types::Diagnostic {
+        range: to_lsp_range(diag.range, idx),
+        severity: Some(severity_to_lsp(diag.code.severity())),
+        code: Some(lsp_types::NumberOrString::String(format!(
+            "{:?}",
+            diag.code
+        ))),
+        source: Some("brink".to_owned()),
+        message: diag.message.clone(),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

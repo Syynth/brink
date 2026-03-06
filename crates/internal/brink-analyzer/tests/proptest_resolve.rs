@@ -107,6 +107,8 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                     manifest.knots.push(DeclaredSymbol {
                         name: name.clone(),
                         range: range(offset, name.len() as u32),
+                        params: Vec::new(),
+                        detail: None,
                     });
                     offset += name.len() as u32 + 1;
                 }
@@ -115,6 +117,8 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                     manifest.variables.push(DeclaredSymbol {
                         name: name.clone(),
                         range: range(offset, name.len() as u32),
+                        params: Vec::new(),
+                        detail: None,
                     });
                     offset += name.len() as u32 + 1;
                 }
@@ -123,6 +127,8 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                     manifest.lists.push(DeclaredSymbol {
                         name: list_name.clone(),
                         range: range(offset, list_name.len() as u32),
+                        params: Vec::new(),
+                        detail: None,
                     });
                     offset += list_name.len() as u32 + 1;
 
@@ -131,6 +137,8 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                         manifest.list_items.push(DeclaredSymbol {
                             name: qualified,
                             range: range(offset, item.len() as u32),
+                            params: Vec::new(),
+                            detail: None,
                         });
                         offset += item.len() as u32 + 1;
                     }
@@ -140,6 +148,8 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                     manifest.externals.push(DeclaredSymbol {
                         name: name.clone(),
                         range: range(offset, name.len() as u32),
+                        params: Vec::new(),
+                        detail: None,
                     });
                     offset += name.len() as u32 + 1;
                 }
@@ -334,14 +344,18 @@ proptest! {
             knots: vec![DeclaredSymbol {
                 name: name.clone(),
                 range: range(0, name.len() as u32),
-            }],
+                        params: Vec::new(),
+                        detail: None,
+                    }],
             ..Default::default()
         };
         let m2 = SymbolManifest {
             knots: vec![DeclaredSymbol {
                 name: name.clone(),
                 range: range(100, name.len() as u32),
-            }],
+                        params: Vec::new(),
+                        detail: None,
+                    }],
             ..Default::default()
         };
 
@@ -373,14 +387,18 @@ proptest! {
             variables: vec![DeclaredSymbol {
                 name: name.clone(),
                 range: range(0, name.len() as u32),
-            }],
+                        params: Vec::new(),
+                        detail: None,
+                    }],
             ..Default::default()
         };
         let m2 = SymbolManifest {
             variables: vec![DeclaredSymbol {
                 name: name.clone(),
                 range: range(100, name.len() as u32),
-            }],
+                        params: Vec::new(),
+                        detail: None,
+                    }],
             ..Default::default()
         };
 
@@ -420,7 +438,9 @@ proptest! {
             manifest.knots.push(DeclaredSymbol {
                 name: name.clone(),
                 range: range(offset, name.len() as u32),
-            });
+                        params: Vec::new(),
+                        detail: None,
+                    });
             offset += name.len() as u32 + 1;
         }
         manifest.unresolved.push(UnresolvedRef {

@@ -1,10 +1,8 @@
 mod backend;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "plumbing for future handler implementations")
-)]
 mod convert;
 mod semantic_tokens;
+
+use std::sync::{Arc, Mutex};
 
 use tower_lsp::{LspService, Server};
 
@@ -19,6 +17,7 @@ async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::new(Backend::new);
+    let db = Arc::new(Mutex::new(brink_db::ProjectDb::new()));
+    let (service, socket) = LspService::new(|client| Backend::new(client, Arc::clone(&db)));
     Server::new(stdin, stdout, socket).serve(service).await;
 }

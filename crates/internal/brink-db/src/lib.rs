@@ -19,4 +19,7 @@ pub enum DiscoverError {
     /// File I/O error during discovery.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// Circular INCLUDE dependency detected.
+    #[error("circular INCLUDE: {0}")]
+    CircularInclude(String),
 }

@@ -51,6 +51,11 @@ impl From<brink_db::DiscoverError> for CompileError {
     fn from(err: brink_db::DiscoverError) -> Self {
         match err {
             brink_db::DiscoverError::Io(e) => Self::Io(e),
+            brink_db::DiscoverError::CircularInclude(msg) => Self::Diagnostics(vec![Diagnostic {
+                range: rowan::TextRange::default(),
+                message: format!("circular INCLUDE dependency: {msg}"),
+                code: brink_ir::DiagnosticCode::E028,
+            }]),
         }
     }
 }

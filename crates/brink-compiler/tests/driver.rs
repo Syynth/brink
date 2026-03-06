@@ -74,16 +74,19 @@ fn compile_nested_includes() {
 }
 
 #[test]
-fn compile_circular_includes_do_not_loop() {
-    // Each file includes the other. The driver should visit each once,
-    // not loop forever.
+fn compile_circular_includes_detected() {
+    // Each file includes the other — should be detected as a circular dependency.
     let files: HashMap<&str, &str> = HashMap::from([
         ("a.ink", "INCLUDE b.ink\nContent A.\n"),
         ("b.ink", "INCLUDE a.ink\nContent B.\n"),
     ]);
 
-    let story = compile_mem("a.ink", &files).unwrap();
-    assert!(story.containers.is_empty(), "codegen is stubbed");
+    let err = compile_mem("a.ink", &files).unwrap_err();
+    let brink_compiler::CompileError::Diagnostics(diags) = err else {
+        unreachable!("expected Diagnostics variant");
+    };
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].code, brink_ir::DiagnosticCode::E028);
 }
 
 // ── Relative path resolution ────────────────────────────────────────

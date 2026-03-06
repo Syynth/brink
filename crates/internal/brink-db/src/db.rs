@@ -223,6 +223,11 @@ impl ProjectDb {
         self.files.get(&id).map(|s| &s.manifest)
     }
 
+    /// Get the source text for a file.
+    pub fn source(&self, id: FileId) -> Option<&str> {
+        self.files.get(&id).map(|s| s.source.as_str())
+    }
+
     /// Get per-file diagnostics (parse + lowering).
     pub fn file_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
         self.files.get(&id).map(|s| s.diagnostics.as_slice())
@@ -277,6 +282,37 @@ impl ProjectDb {
                     }
                 }
             }
+        }
+
+        // Rebuild include graph now that all files are loaded
+        let file_list: Vec<(FileId, String)> = self
+            .files
+            .keys()
+            .filter_map(|&id| self.id_to_path.get(&id).map(|p| (id, p.clone())))
+            .collect();
+
+        for (file_id, file_path) in &file_list {
+            if let Some(state) = self.files.get(file_id) {
+                let include_ids: Vec<FileId> = state
+                    .hir
+                    .includes
+                    .iter()
+                    .filter_map(|inc| {
+                        let resolved = resolve_include_path(file_path, &inc.file_path);
+                        self.path_to_id.get(&resolved).copied()
+                    })
+                    .collect();
+                self.include_graph.update(*file_id, include_ids);
+            }
+        }
+
+        // Detect circular includes
+        if let Some(cycle) = self.include_graph.find_cycle() {
+            let names: Vec<_> = cycle
+                .iter()
+                .filter_map(|id| self.id_to_path.get(id).map(String::as_str))
+                .collect();
+            return Err(crate::DiscoverError::CircularInclude(names.join(" -> ")));
         }
 
         info!(files = seen.len(), "discovery complete");

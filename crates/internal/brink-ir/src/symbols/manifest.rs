@@ -28,6 +28,10 @@ pub struct SymbolManifest {
 pub struct DeclaredSymbol {
     pub name: String,
     pub range: TextRange,
+    /// Parameter info (for knots, stitches, externals).
+    pub params: Vec<super::ParamInfo>,
+    /// Additional detail (e.g. "function" for function knots).
+    pub detail: Option<String>,
 }
 
 /// An unresolved reference that needs cross-file resolution.

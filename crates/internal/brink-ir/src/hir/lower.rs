@@ -103,9 +103,22 @@ impl LowerCtx {
     }
 
     fn declare(&mut self, list: SymbolKind, name: &str, range: TextRange) {
+        self.declare_with(list, name, range, Vec::new(), None);
+    }
+
+    fn declare_with(
+        &mut self,
+        list: SymbolKind,
+        name: &str,
+        range: TextRange,
+        params: Vec<crate::ParamInfo>,
+        detail: Option<String>,
+    ) {
         let sym = DeclaredSymbol {
             name: name.to_string(),
             range,
+            params,
+            detail,
         };
         match list {
             SymbolKind::Knot => self.manifest.knots.push(sym),
@@ -214,10 +227,29 @@ impl LowerCtx {
         })?;
         let name = make_name(name_text.clone(), ident.syntax().text_range());
 
-        self.declare(SymbolKind::Knot, &name_text, ident.syntax().text_range());
-
         let is_function = header.is_function();
         let params = self.lower_knot_params(header.params());
+
+        let param_infos: Vec<crate::ParamInfo> = params
+            .iter()
+            .map(|p| crate::ParamInfo {
+                name: p.name.text.clone(),
+                is_ref: p.is_ref,
+                is_divert: p.is_divert,
+            })
+            .collect();
+        let detail = if is_function {
+            Some("function".to_owned())
+        } else {
+            None
+        };
+        self.declare_with(
+            SymbolKind::Knot,
+            &name_text,
+            ident.syntax().text_range(),
+            param_infos,
+            detail,
+        );
 
         self.current_knot = Some(name_text.clone());
         let (body, stitches) = knot.body().map_or_else(
@@ -283,10 +315,24 @@ impl LowerCtx {
         let name = make_name(name_text.clone(), ident.syntax().text_range());
 
         let qualified = format!("{knot_name}.{name_text}");
-        self.declare(SymbolKind::Stitch, &qualified, ident.syntax().text_range());
 
         self.current_stitch = Some(name_text.clone());
         let params = self.lower_knot_params(header.params());
+        let param_infos: Vec<crate::ParamInfo> = params
+            .iter()
+            .map(|p| crate::ParamInfo {
+                name: p.name.text.clone(),
+                is_ref: p.is_ref,
+                is_divert: p.is_divert,
+            })
+            .collect();
+        self.declare_with(
+            SymbolKind::Stitch,
+            &qualified,
+            ident.syntax().text_range(),
+            param_infos,
+            None,
+        );
         let body = stitch
             .body()
             .map_or_else(Block::default, |b| self.lower_body_children(b.syntax()));
@@ -410,7 +456,27 @@ impl LowerCtx {
             self.emit(e.syntax().text_range(), DiagnosticCode::E010);
             None
         })?;
-        self.declare(SymbolKind::External, &name.text, name.range);
+
+        let param_infos: Vec<crate::ParamInfo> = e
+            .param_list()
+            .into_iter()
+            .flat_map(|pl| pl.params().collect::<Vec<_>>())
+            .filter_map(|p| {
+                p.name().map(|n| crate::ParamInfo {
+                    name: n,
+                    is_ref: false,
+                    is_divert: false,
+                })
+            })
+            .collect();
+
+        self.declare_with(
+            SymbolKind::External,
+            &name.text,
+            name.range,
+            param_infos,
+            None,
+        );
 
         #[expect(
             clippy::cast_possible_truncation,
