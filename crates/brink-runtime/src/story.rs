@@ -186,13 +186,34 @@ impl CallStack {
         self.own.last_mut()
     }
 
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.inherited.as_ref().map_or(0, |h| h.len()) + self.own.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.own.is_empty() && self.inherited.as_ref().is_none_or(|h| h.is_empty())
+    }
+
+    /// Get a frame by absolute index (0 = bottom of stack).
+    pub fn get(&self, index: usize) -> Option<&CallFrame> {
+        let inherited_len = self.inherited.as_ref().map_or(0, |h| h.len());
+        if index < inherited_len {
+            self.inherited.as_ref().and_then(|h| h.get(index))
+        } else {
+            self.own.get(index - inherited_len)
+        }
+    }
+
+    /// Get a mutable reference to a frame by absolute index.
+    /// Materializes the inherited prefix if the target is in it.
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut CallFrame> {
+        let inherited_len = self.inherited.as_ref().map_or(0, |h| h.len());
+        if index < inherited_len {
+            self.materialize();
+            self.own.get_mut(index)
+        } else {
+            self.own.get_mut(index - inherited_len)
+        }
     }
 
     /// Build an `Rc<[CallFrame]>` snapshot of the full stack (inherited + own).

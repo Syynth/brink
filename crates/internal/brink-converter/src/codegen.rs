@@ -161,8 +161,8 @@ impl<'a> ContainerEmitter<'a> {
 
             Element::Value(InkValue::VariablePointer(var)) => {
                 if let Some(slot) = temps.get(var) {
-                    // Temp holds a pointer — pass it through without auto-deref.
-                    self.emit(&Opcode::GetTempRaw(slot));
+                    // Temp ref — push a pointer to the temp slot.
+                    self.emit(&Opcode::PushTempPointer(slot));
                 } else {
                     // Global variable — push a pointer to it.
                     let id = self

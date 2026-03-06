@@ -1,0 +1,11 @@
+description = "Ref parameter write-through on temp variable"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "temp-ref-write-through"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = ["variables", "ref-parameters"]

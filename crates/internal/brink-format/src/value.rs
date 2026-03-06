@@ -12,6 +12,7 @@ pub enum ValueType {
     List,
     DivertTarget,
     VariablePointer,
+    TempPointer,
     Null,
 }
 
@@ -31,6 +32,12 @@ pub enum Value {
     DivertTarget(DefinitionId),
     /// A reference to a global variable, used for `ref` parameters.
     VariablePointer(DefinitionId),
+    /// A runtime-only pointer to a temp in a specific call frame.
+    /// Used for `ref` parameters that target temp variables.
+    TempPointer {
+        slot: u16,
+        frame_depth: u16,
+    },
     Null,
 }
 
@@ -45,6 +52,7 @@ impl Value {
             Self::List(_) => ValueType::List,
             Self::DivertTarget(_) => ValueType::DivertTarget,
             Self::VariablePointer(_) => ValueType::VariablePointer,
+            Self::TempPointer { .. } => ValueType::TempPointer,
             Self::Null => ValueType::Null,
         }
     }

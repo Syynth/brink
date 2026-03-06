@@ -313,32 +313,54 @@ pub(crate) fn step<R: StoryRng>(
             frame.temps[idx] = val;
         }
         Opcode::SetTemp(slot) => {
-            // Write-through: if the temp holds a VariablePointer,
-            // write the new value to the pointed-to global instead.
+            // Write-through: if the temp holds a pointer, write the new
+            // value to the pointed-to location instead.
             let val = flow.pop_value()?;
             let thread = flow.current_thread_mut();
             let frame = thread
                 .call_stack
-                .last_mut()
+                .last()
                 .ok_or(RuntimeError::CallStackUnderflow)?;
             let idx = slot as usize;
             let current = frame.temps.get(idx).cloned().unwrap_or(Value::Null);
-            if let Value::VariablePointer(target_id) = current {
-                // Write through to the global.
-                let global_idx = program
-                    .resolve_global(target_id)
-                    .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
-                context.globals[global_idx as usize] = val;
-            } else {
-                while frame.temps.len() <= idx {
-                    frame.temps.push(Value::Null);
+            match current {
+                Value::VariablePointer(target_id) => {
+                    let global_idx = program
+                        .resolve_global(target_id)
+                        .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                    context.globals[global_idx as usize] = val;
                 }
-                frame.temps[idx] = val;
+                Value::TempPointer {
+                    slot: target_slot,
+                    frame_depth,
+                } => {
+                    let thread = flow.current_thread_mut();
+                    let target = thread
+                        .call_stack
+                        .get_mut(frame_depth as usize)
+                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                    let ti = target_slot as usize;
+                    while target.temps.len() <= ti {
+                        target.temps.push(Value::Null);
+                    }
+                    target.temps[ti] = val;
+                }
+                _ => {
+                    let thread = flow.current_thread_mut();
+                    let frame = thread
+                        .call_stack
+                        .last_mut()
+                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                    while frame.temps.len() <= idx {
+                        frame.temps.push(Value::Null);
+                    }
+                    frame.temps[idx] = val;
+                }
             }
         }
         Opcode::GetTemp(slot) => {
-            // Auto-dereference: if temp holds a VariablePointer,
-            // push the pointed-to global's value instead.
+            // Auto-dereference: if temp holds a pointer, push the
+            // pointed-to value instead.
             let thread = flow.current_thread();
             let frame = thread
                 .call_stack
@@ -349,14 +371,33 @@ pub(crate) fn step<R: StoryRng>(
                 .get(slot as usize)
                 .cloned()
                 .unwrap_or(Value::Null);
-            if let Value::VariablePointer(target_id) = val {
-                let global_idx = program
-                    .resolve_global(target_id)
-                    .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
-                let global_val = context.globals[global_idx as usize].clone();
-                flow.value_stack.push(global_val);
-            } else {
-                flow.value_stack.push(val);
+            match val {
+                Value::VariablePointer(target_id) => {
+                    let global_idx = program
+                        .resolve_global(target_id)
+                        .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                    let global_val = context.globals[global_idx as usize].clone();
+                    flow.value_stack.push(global_val);
+                }
+                Value::TempPointer {
+                    slot: target_slot,
+                    frame_depth,
+                } => {
+                    let thread = flow.current_thread();
+                    let target = thread
+                        .call_stack
+                        .get(frame_depth as usize)
+                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                    let target_val = target
+                        .temps
+                        .get(target_slot as usize)
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    flow.value_stack.push(target_val);
+                }
+                _ => {
+                    flow.value_stack.push(val);
+                }
             }
         }
         Opcode::GetTempRaw(slot) => {
@@ -372,6 +413,36 @@ pub(crate) fn step<R: StoryRng>(
                 .cloned()
                 .unwrap_or(Value::Null);
             flow.value_stack.push(val);
+        }
+        Opcode::PushTempPointer(slot) => {
+            // Push a pointer to a temp variable. If the temp already holds
+            // a pointer (VariablePointer or TempPointer), flatten through
+            // to prevent double-indirection.
+            let thread = flow.current_thread();
+            let frame = thread
+                .call_stack
+                .last()
+                .ok_or(RuntimeError::CallStackUnderflow)?;
+            let current = frame
+                .temps
+                .get(slot as usize)
+                .cloned()
+                .unwrap_or(Value::Null);
+            match current {
+                Value::VariablePointer(_) | Value::TempPointer { .. } => {
+                    // Flatten: pass the existing pointer through.
+                    flow.value_stack.push(current);
+                }
+                _ => {
+                    let thread = flow.current_thread();
+                    #[expect(clippy::cast_possible_truncation)]
+                    let depth = (thread.call_stack.len() - 1) as u16;
+                    flow.value_stack.push(Value::TempPointer {
+                        slot,
+                        frame_depth: depth,
+                    });
+                }
+            }
         }
 
         // ── Casts ───────────────────────────────────────────────────

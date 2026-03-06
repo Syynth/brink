@@ -52,6 +52,7 @@ const GET_TEMP_RAW: u8 = 0x37;
 
 // Variable pointers
 const PUSH_VAR_POINTER: u8 = 0x38;
+const PUSH_TEMP_POINTER: u8 = 0x39;
 
 // Control flow
 const JUMP: u8 = 0x40;
@@ -350,6 +351,8 @@ pub enum Opcode {
     // ── Variable pointers ──────────────────────────────────────────────
     /// Push a pointer to a global variable onto the eval stack.
     PushVarPointer(DefinitionId),
+    /// Push a pointer to a temp variable onto the eval stack.
+    PushTempPointer(u16),
 
     // ── Control flow ────────────────────────────────────────────────────
     Jump(i32),
@@ -534,6 +537,10 @@ impl Opcode {
             Self::PushVarPointer(id) => {
                 write_u8(buf, PUSH_VAR_POINTER);
                 write_def_id(buf, id);
+            }
+            Self::PushTempPointer(slot) => {
+                write_u8(buf, PUSH_TEMP_POINTER);
+                write_u16(buf, slot);
             }
 
             // Control flow
@@ -733,6 +740,7 @@ impl Opcode {
 
             // Variable pointers
             PUSH_VAR_POINTER => Self::PushVarPointer(read_def_id(buf, offset)?),
+            PUSH_TEMP_POINTER => Self::PushTempPointer(read_u16(buf, offset)?),
 
             // Control flow
             JUMP => Self::Jump(read_i32(buf, offset)?),
@@ -946,6 +954,8 @@ mod tests {
     #[test]
     fn roundtrip_var_pointer() {
         roundtrip(&Opcode::PushVarPointer(global_id()));
+        roundtrip(&Opcode::PushTempPointer(0));
+        roundtrip(&Opcode::PushTempPointer(u16::MAX));
     }
 
     #[test]

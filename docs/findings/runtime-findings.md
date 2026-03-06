@@ -28,7 +28,7 @@ Things where both the spec and code address the same concept but disagree.
 
 ### 1f. Value type enum
 
-**RESOLVED.** Format spec updated to include `VariablePointer(DefinitionId)` with `PushVarPointer`, `GetTempRaw` opcodes and write-through/auto-deref semantics on `SetTemp`/`GetTemp`. Flagged as **needs review** — semantics are implemented but not validated against the full ref parameter design.
+**RESOLVED.** Format spec updated to include `VariablePointer(DefinitionId)` with `PushVarPointer`, `GetTempRaw` opcodes and write-through/auto-deref semantics on `SetTemp`/`GetTemp`. Added `TempPointer { slot, frame_depth }` value variant and `PushTempPointer(u16)` opcode for ref-to-temp support. Converter emits `PushTempPointer` instead of `GetTempRaw` for temp variable pointers. `GetTemp`/`SetTemp` extended to deref/write-through `TempPointer` by accessing the target frame by index. Double-indirection flattening prevents pointer wrapping.
 
 ### 1g. Definition tags
 

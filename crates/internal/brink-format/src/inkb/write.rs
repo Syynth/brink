@@ -233,7 +233,8 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         ValueType::List => VAL_LIST,
         ValueType::DivertTarget => VAL_DIVERT_TARGET,
         ValueType::VariablePointer => VAL_VAR_POINTER,
-        ValueType::Null => VAL_NULL,
+        // TempPointer is runtime-only and should never appear in .inkb files.
+        ValueType::TempPointer | ValueType::Null => VAL_NULL,
     };
     write_u8(buf, tag);
 }
@@ -276,7 +277,8 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u8(buf, VAL_VAR_POINTER);
             write_def_id(buf, *id);
         }
-        Value::Null => {
+        // TempPointer is runtime-only and should never appear in .inkb files.
+        Value::TempPointer { .. } | Value::Null => {
             write_u8(buf, VAL_NULL);
         }
     }

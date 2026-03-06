@@ -1,0 +1,11 @@
+description = "Nested ref parameter passthrough on temp variable"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "temp-ref-passthrough"
+
+[classification]
+tier = 1
+feature = "variables"
+tags = ["variables", "ref-parameters"]

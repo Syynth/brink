@@ -196,6 +196,7 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "list" => Ok(ValueType::List),
         "divert_target" => Ok(ValueType::DivertTarget),
         "var_pointer" => Ok(ValueType::VariablePointer),
+        "temp_pointer" => Ok(ValueType::TempPointer),
         "null" => Ok(ValueType::Null),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
@@ -894,6 +895,9 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
 
         // Variable pointers
         "push_var_pointer" => Ok(Opcode::PushVarPointer(parse_operand_def_id(
+            &operands, 0, mnemonic,
+        )?)),
+        "push_temp_pointer" => Ok(Opcode::PushTempPointer(parse_operand_u16(
             &operands, 0, mnemonic,
         )?)),
 

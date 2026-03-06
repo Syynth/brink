@@ -15,7 +15,7 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         Value::Float(n) => *n != 0.0,
         Value::String(s) => !s.is_empty(),
         Value::Null => false,
-        Value::DivertTarget(_) | Value::VariablePointer(_) => true,
+        Value::DivertTarget(_) | Value::VariablePointer(_) | Value::TempPointer { .. } => true,
         Value::List(lv) => !lv.items.is_empty(),
     }
 }
@@ -30,6 +30,9 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
         Value::Null => String::new(),
         Value::List(lv) => stringify_list(lv, program),
         Value::DivertTarget(id) | Value::VariablePointer(id) => format!("{id}"),
+        Value::TempPointer { slot, frame_depth } => {
+            format!("TempPointer({slot}@{frame_depth})")
+        }
     }
 }
 

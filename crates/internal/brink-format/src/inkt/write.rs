@@ -286,6 +286,7 @@ fn write_bytecode(w: &mut dyn fmt::Write, bytecode: &[u8]) -> fmt::Result {
     Ok(())
 }
 
+#[expect(clippy::too_many_lines)]
 fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
     match op {
         // Stack & literals
@@ -332,6 +333,7 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
 
         // Variable pointers
         Opcode::PushVarPointer(id) => write!(w, "push_var_pointer {id}"),
+        Opcode::PushTempPointer(slot) => write!(w, "push_temp_pointer {slot}"),
 
         // Control flow
         Opcode::Jump(off) => write!(w, "jump {off}"),
@@ -476,6 +478,7 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::List => "list",
         ValueType::DivertTarget => "divert_target",
         ValueType::VariablePointer => "var_pointer",
+        ValueType::TempPointer => "temp_pointer",
         ValueType::Null => "null",
     }
 }
@@ -507,6 +510,9 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
         }
         Value::DivertTarget(id) => write!(w, "{id}"),
         Value::VariablePointer(id) => write!(w, "(var_pointer {id})"),
+        Value::TempPointer { slot, frame_depth } => {
+            write!(w, "(temp_pointer {slot} {frame_depth})")
+        }
         Value::Null => write!(w, "null"),
     }
 }
