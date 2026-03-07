@@ -3,7 +3,8 @@
   "languages": {
     "Ink": {
       "tab_size": 4,
-      "language_servers": ["brink-lsp"]
+      "language_servers": ["brink-lsp"],
+      "document_folding_ranges": "on"
     }
   },
   "lsp": {
