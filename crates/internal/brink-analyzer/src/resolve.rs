@@ -146,110 +146,105 @@ fn resolve_variable(
 ) {
     let path = &uref.path;
 
-    // Built-in functions can appear in variable contexts (e.g. CHOICE_COUNT)
     if is_builtin_function(path) {
         return;
     }
 
-    // Try locals (params/temps) in scope first — they shadow globals
-    if let Some(id) = lookup_local_in_scope(index, path, &uref.scope) {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
-    }
-
-    // Try global variables / constants
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Variable, SymbolKind::Constant]) {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
-    }
-
-    // Try list items by bare name (e.g. `myItem` matches `SomeList.myItem`)
-    match lookup_list_item_bare(index, path) {
-        BareItemResult::Unique(id) => {
+    match lookup_variable(index, uref) {
+        VarResult::Found(id) => {
             map.push(ResolvedRef {
                 file: file_id,
                 range: uref.range,
                 target: id,
             });
-            return;
         }
-        BareItemResult::Ambiguous => {
+        VarResult::Ambiguous => {
             diagnostics.push(ambiguous_diag(file_id, uref.range, path));
-            return;
         }
+        VarResult::NotFound => {
+            diagnostics.push(unresolved_diag(
+                file_id,
+                uref.range,
+                path,
+                DiagnosticCode::E025,
+            ));
+        }
+    }
+}
+
+enum VarResult {
+    Found(DefinitionId),
+    Ambiguous,
+    NotFound,
+}
+
+/// Hierarchical variable lookup — returns the first match in priority order.
+fn lookup_variable(index: &SymbolIndex, uref: &brink_ir::UnresolvedRef) -> VarResult {
+    let path = &uref.path;
+
+    // 1. Locals (params/temps) in scope — they shadow globals
+    if let Some(id) = lookup_local_in_scope(index, path, &uref.scope) {
+        return VarResult::Found(id);
+    }
+
+    // 2. Global variables / constants
+    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Variable, SymbolKind::Constant]) {
+        return VarResult::Found(id);
+    }
+
+    // 3. List items by bare name
+    match lookup_list_item_bare(index, path) {
+        BareItemResult::Unique(id) => return VarResult::Found(id),
+        BareItemResult::Ambiguous => return VarResult::Ambiguous,
         BareItemResult::NotFound => {}
     }
 
-    // Try qualified list item (e.g. `ListName.ItemName`)
+    // 4. Qualified list item (ListName.ItemName)
     if path.contains('.')
         && let Some(id) = lookup_by_name(index, path, &[SymbolKind::ListItem])
     {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
+        return VarResult::Found(id);
     }
 
-    // Try list names
+    // 5. List names
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::List]) {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
+        return VarResult::Found(id);
     }
 
-    // Try knots (ink allows knot references as variables, e.g. visit counts)
+    // 6. Knots (visit counts)
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Knot]) {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
+        return VarResult::Found(id);
     }
 
-    // Try stitches in current knot scope
+    // 7. Stitches in current knot scope
     if let Some(knot) = &uref.scope.knot
         && let Some(id) = lookup_by_name(index, &format!("{knot}.{path}"), &[SymbolKind::Stitch])
     {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
+        return VarResult::Found(id);
     }
 
-    // Try labels
+    // 8. Qualified stitch/label (e.g. `knot.stitch` or `knot.stitch.label` visit count)
+    if path.contains('.')
+        && let Some(id) = lookup_by_name(index, path, &[SymbolKind::Stitch, SymbolKind::Label])
+    {
+        return VarResult::Found(id);
+    }
+
+    // 9. Labels in current knot
     if let Some(knot) = &uref.scope.knot
         && let Some(id) = lookup_label_in_knot(index, knot, path)
     {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
+        return VarResult::Found(id);
     }
 
-    diagnostics.push(unresolved_diag(
-        file_id,
-        uref.range,
-        path,
-        DiagnosticCode::E025,
-    ));
+    // 10. Labels at top level (no knot scope)
+    if uref.scope.knot.is_none()
+        && let Some(id) = lookup_by_name(index, path, &[SymbolKind::Label])
+    {
+        return VarResult::Found(id);
+    }
+
+    VarResult::NotFound
 }
 
 fn resolve_function(

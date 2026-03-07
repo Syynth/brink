@@ -277,7 +277,12 @@ fn collect_diffs(expected: &Value, actual: &Value, path: &str, out: &mut Vec<Str
 fn truncate_json(v: &Value) -> String {
     let s = serde_json::to_string(v).unwrap_or_else(|_| format!("{v:?}"));
     if s.len() > 120 {
-        format!("{}...", &s[..117])
+        // Find a char boundary at or before byte 117
+        let mut end = 117;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
     } else {
         s
     }
