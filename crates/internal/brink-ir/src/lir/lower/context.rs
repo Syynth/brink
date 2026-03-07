@@ -108,6 +108,7 @@ pub struct LowerCtx<'a> {
     pub resolutions: &'a ResolutionLookup,
     pub index: &'a SymbolIndex,
     pub temps: &'a TempMap,
+    pub names: &'a mut NameTable,
     /// Current container path prefix (e.g. `"knot"`, `"knot.stitch"`).
     pub scope_path: String,
 }
