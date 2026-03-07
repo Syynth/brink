@@ -273,6 +273,16 @@ fn resolve_function(
         return;
     }
 
+    // Try variables (ink allows calling a variable holding a function ref)
+    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Variable]) {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+        return;
+    }
+
     diagnostics.push(unresolved_diag(
         file_id,
         uref.range,
