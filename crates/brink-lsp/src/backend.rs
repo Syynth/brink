@@ -314,16 +314,7 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
 
-        // Find a resolution whose range contains the cursor (in this file)
-        let Some(resolved) = snap.analysis.resolutions.iter().find(|r| {
-            r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset)
-        }) else {
-            return Ok(None);
-        };
-
-        let def_id = resolved.target;
-
-        let Some(info) = snap.analysis.index.symbols.get(&def_id) else {
+        let Some(info) = find_def_at_offset(&snap, offset) else {
             return Ok(None);
         };
 
