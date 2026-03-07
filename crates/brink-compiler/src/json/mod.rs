@@ -17,15 +17,9 @@ use brink_json::{
 pub fn emit(program: &lir::Program) -> InkJson {
     let lookups = Lookups::build(program);
 
-    // Build the nested container tree by walking the LIR tree
-    let mut root = build_container(&program.root, "", &lookups);
-
-    // Add global declarations container
-    let global_decl = build_global_decl_container(program, &lookups);
-    if !global_decl.contents.is_empty() {
-        root.named_content
-            .insert("global decl".to_string(), Element::Container(global_decl));
-    }
+    // Build the root container with inklecate's special wrapping:
+    //   root = [ inner_container, "done", { knots + global_decl } ]
+    let root = build_root(&program.root, program, &lookups);
 
     // Build list definitions
     let list_defs = build_list_defs(program, &lookups);
@@ -38,6 +32,87 @@ pub fn emit(program: &lir::Program) -> InkJson {
 }
 
 // ─── Container tree emission ────────────────────────────────────────
+
+/// Build the root container with inklecate's special wrapping.
+///
+/// In inklecate's format, the root serializes as:
+/// ```json
+/// [ inner_container, "done", { knots_and_metadata } ]
+/// ```
+/// - `inner_container`: anonymous container with root body + non-knot children
+///   (gathers, choice targets) as inline indexed elements
+/// - `"done"`: root-level done
+/// - metadata object: knots as named content, plus `"global decl"` if present
+fn build_root(root: &lir::Container, program: &lir::Program, lookups: &Lookups) -> Container {
+    let cctx = emit::ContainerCtx::build_from_tree(root, lookups, "");
+
+    // Emit body elements for the inner container
+    let (mut inner_contents, inner_named) = emit::emit_body(&root.body, lookups, &cctx);
+
+    // Partition children: knots go to root named_content, everything else
+    // (gathers, choice targets) goes to the inner container's named_content
+    let mut inner_named_content = inner_named;
+    let mut root_named_content: HashMap<String, Element> = HashMap::new();
+
+    for child in &root.children {
+        let child_name = child.name.as_deref().unwrap_or("_anon");
+        let child_container = build_container(child, child_name, lookups);
+
+        match child.kind {
+            lir::ContainerKind::Knot => {
+                root_named_content
+                    .insert(child_name.to_string(), Element::Container(child_container));
+            }
+            _ => {
+                inner_named_content
+                    .insert(child_name.to_string(), Element::Container(child_container));
+            }
+        }
+    }
+
+    // Inklecate wraps the trailing "done" in the inner container inside a
+    // named "g-0" gather container. Remove the trailing done from the body
+    // (if present) and always append a g-0 wrapper.
+    let trailing_done = matches!(
+        inner_contents.last(),
+        Some(Element::ControlCommand(ControlCommand::Done))
+    );
+    if trailing_done {
+        inner_contents.pop();
+    }
+    inner_contents.push(Element::Container(Container {
+        flags: None,
+        name: Some("g-0".to_string()),
+        named_content: HashMap::new(),
+        contents: vec![Element::ControlCommand(ControlCommand::Done)],
+    }));
+
+    let inner = Container {
+        flags: None,
+        name: None,
+        named_content: inner_named_content,
+        contents: inner_contents,
+    };
+
+    // Build root contents: [inner_container, "done"]
+    let root_contents = vec![
+        Element::Container(inner),
+        Element::ControlCommand(ControlCommand::Done),
+    ];
+
+    // Add global declarations container to root named_content
+    let global_decl = build_global_decl_container(program, lookups);
+    if !global_decl.contents.is_empty() {
+        root_named_content.insert("global decl".to_string(), Element::Container(global_decl));
+    }
+
+    Container {
+        flags: None,
+        name: None,
+        named_content: root_named_content,
+        contents: root_contents,
+    }
+}
 
 fn build_container(container: &lir::Container, path: &str, lookups: &Lookups) -> Container {
     let cctx = emit::ContainerCtx::build_from_tree(container, lookups, path);
