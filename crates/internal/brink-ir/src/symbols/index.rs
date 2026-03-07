@@ -34,6 +34,8 @@ pub struct SymbolInfo {
     pub params: Vec<ParamInfo>,
     /// Additional detail (e.g. "function" for function knots).
     pub detail: Option<String>,
+    /// Scope context — `Some` for locals (params/temps), `None` for globals.
+    pub scope: Option<Scope>,
 }
 
 /// Parameter metadata for hover/signature help.

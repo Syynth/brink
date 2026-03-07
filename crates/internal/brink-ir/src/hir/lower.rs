@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::symbols::LocalSymbol;
 use brink_syntax::SyntaxKind;
 use brink_syntax::ast::{self, AstNode, AstPtr, SyntaxNodePtr};
@@ -49,17 +47,24 @@ pub fn lower_top_level(
 ) -> (Block, SymbolManifest, Vec<Diagnostic>) {
     let mut ctx = LowerCtx::new(file_id);
 
-    // Lower declarations (registers symbols in manifest)
+    // Lower declarations (registers symbols in manifest).
+    // Walk descendants — VAR/CONST/LIST are global regardless of nesting.
     let _variables: Vec<_> = file
-        .var_decls()
+        .syntax()
+        .descendants()
+        .filter_map(ast::VarDecl::cast)
         .filter_map(|v| ctx.lower_var_decl(&v))
         .collect();
     let _constants: Vec<_> = file
-        .const_decls()
+        .syntax()
+        .descendants()
+        .filter_map(ast::ConstDecl::cast)
         .filter_map(|c| ctx.lower_const_decl(&c))
         .collect();
     let _lists: Vec<_> = file
-        .list_decls()
+        .syntax()
+        .descendants()
+        .filter_map(ast::ListDecl::cast)
         .filter_map(|l| ctx.lower_list_decl(&l))
         .collect();
     let _externals: Vec<_> = file
@@ -80,9 +85,6 @@ struct LowerCtx {
     manifest: SymbolManifest,
     current_knot: Option<String>,
     current_stitch: Option<String>,
-    /// Names that are local to the current scope (params + temps).
-    /// Variable references to these names don't need cross-file resolution.
-    locals: HashSet<String>,
 }
 
 impl LowerCtx {
@@ -93,7 +95,6 @@ impl LowerCtx {
             manifest: SymbolManifest::default(),
             current_knot: None,
             current_stitch: None,
-            locals: HashSet::new(),
         }
     }
 
@@ -152,12 +153,6 @@ impl LowerCtx {
     }
 
     fn add_unresolved(&mut self, path: &str, range: TextRange, kind: RefKind) {
-        // Don't generate unresolved refs for names that are local to the
-        // current scope (params, temps). These are resolved by name in
-        // LIR lowering via the temp map — they never need cross-file resolution.
-        if kind == RefKind::Variable && self.locals.contains(path) {
-            return;
-        }
         self.manifest.unresolved.push(UnresolvedRef {
             path: path.to_string(),
             range,
@@ -205,16 +200,25 @@ fn path_full_name(path: &Path) -> String {
 
 impl LowerCtx {
     fn lower_source_file(&mut self, file: &ast::SourceFile) -> HirFile {
+        // In ink, VAR/CONST/LIST are always global regardless of where they
+        // appear (even inside knot/stitch bodies). Walk the entire tree to
+        // collect them all, matching the reference compiler's hoisting.
         let variables: Vec<_> = file
-            .var_decls()
+            .syntax()
+            .descendants()
+            .filter_map(ast::VarDecl::cast)
             .filter_map(|v| self.lower_var_decl(&v))
             .collect();
         let constants: Vec<_> = file
-            .const_decls()
+            .syntax()
+            .descendants()
+            .filter_map(ast::ConstDecl::cast)
             .filter_map(|c| self.lower_const_decl(&c))
             .collect();
         let lists: Vec<_> = file
-            .list_decls()
+            .syntax()
+            .descendants()
+            .filter_map(ast::ListDecl::cast)
             .filter_map(|l| self.lower_list_decl(&l))
             .collect();
         let externals: Vec<_> = file
@@ -279,9 +283,7 @@ impl LowerCtx {
         );
 
         self.current_knot = Some(name_text.clone());
-        self.locals.clear();
         for p in &params {
-            self.locals.insert(p.name.text.clone());
             self.manifest.locals.push(LocalSymbol {
                 name: p.name.text.clone(),
                 range: p.name.range,
@@ -295,7 +297,6 @@ impl LowerCtx {
         );
         self.current_knot = None;
         self.current_stitch = None;
-        self.locals.clear();
 
         Some(Knot {
             ptr: AstPtr::new(knot),
@@ -372,10 +373,7 @@ impl LowerCtx {
             param_infos,
             None,
         );
-        // Stitch params are local — save/restore parent locals
-        let saved_locals = self.locals.clone();
         for p in &params {
-            self.locals.insert(p.name.text.clone());
             self.manifest.locals.push(LocalSymbol {
                 name: p.name.text.clone(),
                 range: p.name.range,
@@ -387,7 +385,6 @@ impl LowerCtx {
             .body()
             .map_or_else(Block::default, |b| self.lower_body_children(b.syntax()));
         self.current_stitch = None;
-        self.locals = saved_locals;
 
         Some(Stitch {
             ptr: AstPtr::new(stitch),
@@ -1379,9 +1376,8 @@ impl LowerCtx {
         if let Some(temp) = line.temp_decl() {
             let name = name_from_ident(&temp.identifier()?)?;
             let value = temp.value().and_then(|e| self.lower_expr(&e));
-            // Add to locals *after* lowering the initializer so
+            // Emit the local *after* lowering the initializer so
             // `~ temp x = x` doesn't accidentally self-reference.
-            self.locals.insert(name.text.clone());
             self.manifest.locals.push(LocalSymbol {
                 name: name.text.clone(),
                 range: name.range,

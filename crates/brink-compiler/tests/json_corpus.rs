@@ -142,8 +142,14 @@ fn walkdir_ink_json(dir: &Path) -> Vec<PathBuf> {
 #[derive(Debug)]
 enum CompareResult {
     Pass,
-    CompileError(String),
-    JsonMismatch { diff: String },
+    CompileError {
+        message: String,
+        /// Diagnostic codes from `CompileError::Diagnostics`, if any.
+        codes: Vec<String>,
+    },
+    JsonMismatch {
+        diff: String,
+    },
 }
 
 fn compare_one(case: &TestCase) -> CompareResult {
@@ -153,7 +159,13 @@ fn compare_one(case: &TestCase) -> CompareResult {
                 .map_err(|e| std::io::Error::new(e.kind(), format!("{p}: {e}")))
         }) {
             Ok(j) => j,
-            Err(e) => return CompareResult::CompileError(format!("{e}")),
+            Err(e) => {
+                let codes = extract_error_codes(&e);
+                return CompareResult::CompileError {
+                    message: format!("{e}"),
+                    codes,
+                };
+            }
         };
 
     let our_value: Value = serde_json::to_value(&our_json).unwrap();
@@ -161,7 +173,12 @@ fn compare_one(case: &TestCase) -> CompareResult {
     let ref_text = std::fs::read_to_string(&case.json_path).unwrap();
     let ref_value: Value = match serde_json::from_str(&ref_text) {
         Ok(v) => v,
-        Err(e) => return CompareResult::CompileError(format!("bad reference json: {e}")),
+        Err(e) => {
+            return CompareResult::CompileError {
+                message: format!("bad reference json: {e}"),
+                codes: Vec::new(),
+            };
+        }
     };
 
     if our_value == ref_value {
@@ -169,6 +186,15 @@ fn compare_one(case: &TestCase) -> CompareResult {
     } else {
         let diff = structural_diff(&ref_value, &our_value, "");
         CompareResult::JsonMismatch { diff }
+    }
+}
+
+fn extract_error_codes(err: &brink_compiler::CompileError) -> Vec<String> {
+    match err {
+        brink_compiler::CompileError::Diagnostics(diags) => {
+            diags.iter().map(|d| d.code.as_str().to_string()).collect()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -270,6 +296,12 @@ fn json_corpus() {
     let mut cat_pass: BTreeMap<String, usize> = BTreeMap::new();
     let mut cat_fail: BTreeMap<String, usize> = BTreeMap::new();
 
+    // Per-error-code: how many diagnostics total, and how many files hit it.
+    let mut code_diag_count: BTreeMap<String, usize> = BTreeMap::new();
+    let mut code_file_count: BTreeMap<String, usize> = BTreeMap::new();
+    let mut files_with_diag_codes: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+
     // Only the first failure diff is shown — fix this one next.
     let mut first_failure: Option<(String, String)> = None;
     let mut failures: Vec<String> = Vec::new();
@@ -284,12 +316,26 @@ fn json_corpus() {
                 *suite_pass.entry(suite_key).or_default() += 1;
                 *cat_pass.entry(cat_key).or_default() += 1;
             }
-            CompareResult::CompileError(msg) => {
+            CompareResult::CompileError { message, codes } => {
                 *suite_error.entry(suite_key).or_default() += 1;
                 *cat_fail.entry(cat_key).or_default() += 1;
-                failures.push(format!("  COMPILE ERROR: {}: {msg}", case.rel_path));
+                failures.push(format!("  COMPILE ERROR: {}: {message}", case.rel_path));
                 if first_failure.is_none() {
-                    first_failure = Some((case.rel_path.clone(), format!("Compile error: {msg}")));
+                    first_failure =
+                        Some((case.rel_path.clone(), format!("Compile error: {message}")));
+                }
+
+                // Track per-code frequencies
+                if !codes.is_empty() {
+                    files_with_diag_codes.insert(case.rel_path.clone());
+                }
+                let mut seen_codes = std::collections::BTreeSet::new();
+                for code in codes {
+                    *code_diag_count.entry(code.clone()).or_default() += 1;
+                    seen_codes.insert(code.clone());
+                }
+                for code in seen_codes {
+                    *code_file_count.entry(code).or_default() += 1;
                 }
             }
             CompareResult::JsonMismatch { diff } => {
@@ -303,12 +349,64 @@ fn json_corpus() {
         }
     }
 
-    // ── Summary ─────────────────────────────────────────────────────
     let total = cases.len();
     let total_pass: usize = suite_pass.values().sum();
     let total_fail: usize = suite_fail.values().sum();
     let total_error: usize = suite_error.values().sum();
 
+    let summary = format_summary(
+        total,
+        total_pass,
+        total_fail,
+        total_error,
+        &suite_pass,
+        &suite_fail,
+        &suite_error,
+        &cat_pass,
+        &cat_fail,
+        &code_diag_count,
+        &code_file_count,
+        files_with_diag_codes.len(),
+    );
+    eprintln!("{summary}");
+
+    if let Some((path, diff)) = &first_failure {
+        eprintln!("─── First failure (fix this one next): {path} ───");
+        eprintln!("{diff}");
+        eprintln!("────────────────────────────────────────────────────────");
+    }
+
+    if !failures.is_empty() {
+        eprintln!("\nAll failures ({}):", failures.len());
+        for f in &failures {
+            eprintln!("{f}");
+        }
+    }
+
+    assert!(total > 0, "should have found test cases");
+
+    // Ratchet: pass count must not drop below the established baseline.
+    assert!(
+        total_pass >= RATCHET_PASS_COUNT,
+        "REGRESSION: pass count {total_pass} dropped below ratchet {RATCHET_PASS_COUNT}"
+    );
+}
+
+#[expect(clippy::too_many_arguments)]
+fn format_summary(
+    total: usize,
+    total_pass: usize,
+    total_fail: usize,
+    total_error: usize,
+    suite_pass: &BTreeMap<String, usize>,
+    suite_fail: &BTreeMap<String, usize>,
+    suite_error: &BTreeMap<String, usize>,
+    cat_pass: &BTreeMap<String, usize>,
+    cat_fail: &BTreeMap<String, usize>,
+    code_diag_count: &BTreeMap<String, usize>,
+    code_file_count: &BTreeMap<String, usize>,
+    files_with_diag_codes: usize,
+) -> String {
     let mut summary = String::new();
     summary.push_str("\n╔══════════════════════════════════════════════════════════╗\n");
     let _ = writeln!(
@@ -348,28 +446,24 @@ fn json_corpus() {
         let _ = writeln!(summary, "║  {marker} {cat:<40}  {p:>3}/{:>3}", p + f);
     }
 
-    summary.push_str("╚══════════════════════════════════════════════════════════╝\n");
-
-    eprintln!("{summary}");
-
-    if let Some((path, diff)) = &first_failure {
-        eprintln!("─── First failure (fix this one next): {path} ───");
-        eprintln!("{diff}");
-        eprintln!("────────────────────────────────────────────────────────");
-    }
-
-    if !failures.is_empty() {
-        eprintln!("\nAll failures ({}):", failures.len());
-        for f in &failures {
-            eprintln!("{f}");
+    if total_error > 0 {
+        summary.push_str("╠══════════════════════════════════════════════════════════╣\n");
+        summary.push_str("║  Error codes (diagnostics / files affected):            ║\n");
+        let mut codes: Vec<_> = code_diag_count.iter().collect();
+        codes.sort_by(|a, b| b.1.cmp(a.1));
+        for (code, diag_n) in &codes {
+            let file_n = code_file_count.get(*code).copied().unwrap_or(0);
+            let _ = writeln!(summary, "║    {code}  {diag_n:>5} diags  {file_n:>5} files");
+        }
+        let non_diag_errors = total_error.saturating_sub(files_with_diag_codes);
+        if non_diag_errors > 0 {
+            let _ = writeln!(
+                summary,
+                "║    (I/O / bad ref json)         {non_diag_errors:>5} files"
+            );
         }
     }
 
-    assert!(total > 0, "should have found test cases");
-
-    // Ratchet: pass count must not drop below the established baseline.
-    assert!(
-        total_pass >= RATCHET_PASS_COUNT,
-        "REGRESSION: pass count {total_pass} dropped below ratchet {RATCHET_PASS_COUNT}"
-    );
+    summary.push_str("╚══════════════════════════════════════════════════════════╝\n");
+    summary
 }

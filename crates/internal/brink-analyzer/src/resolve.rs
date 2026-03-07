@@ -117,6 +117,18 @@ fn resolve_divert(
         return;
     }
 
+    // 4. Top-level label (no knot scope) — stored as bare name
+    if uref.scope.knot.is_none()
+        && let Some(id) = lookup_by_name(index, path, &[SymbolKind::Label])
+    {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+        return;
+    }
+
     diagnostics.push(unresolved_diag(
         file_id,
         uref.range,
@@ -342,24 +354,48 @@ fn resolve_list_ref(
 
 /// Look up a local variable (param or temp) by bare name within the given scope.
 ///
-/// A local matches if its name equals the bare name AND its scope is compatible
-/// (same knot, and same-or-parent stitch). The HIR lowering already suppresses
-/// unresolved refs for names in `locals`, so this is a backup for cases where
-/// the name appears in the symbol index.
+/// A local matches if its name equals the bare name AND its scope is compatible:
+/// same knot, and either same stitch or a knot-level param (stitch=None) which
+/// is visible in all stitches. When multiple candidates match (e.g. a param and
+/// a temp with the same name), picks the closest-preceding declaration.
 fn lookup_local_in_scope(
     index: &SymbolIndex,
     bare_name: &str,
-    _scope: &brink_ir::Scope,
+    scope: &brink_ir::Scope,
 ) -> Option<DefinitionId> {
     let ids = index.by_name.get(bare_name)?;
-    for id in ids {
-        if let Some(info) = index.symbols.get(id)
-            && matches!(info.kind, SymbolKind::Param | SymbolKind::Temp)
-        {
-            return Some(*id);
+    let mut best: Option<(DefinitionId, rowan::TextRange)> = None;
+
+    for &id in ids {
+        let info = index.symbols.get(&id)?;
+        if !matches!(info.kind, SymbolKind::Param | SymbolKind::Temp) {
+            continue;
+        }
+        let Some(sym_scope) = &info.scope else {
+            continue;
+        };
+        // Knot must match
+        if sym_scope.knot != scope.knot {
+            continue;
+        }
+        // A knot-level local (stitch=None) is visible in all stitches.
+        // A stitch-level local is only visible in that stitch.
+        if sym_scope.stitch.is_some() && sym_scope.stitch != scope.stitch {
+            continue;
+        }
+        // Pick closest-preceding by range start
+        match &best {
+            Some((_, prev_range)) if info.range.start() > prev_range.start() => {
+                best = Some((id, info.range));
+            }
+            None => {
+                best = Some((id, info.range));
+            }
+            _ => {}
         }
     }
-    None
+
+    best.map(|(id, _)| id)
 }
 
 /// Ink built-in functions that are resolved at LIR lowering, not by the symbol index.

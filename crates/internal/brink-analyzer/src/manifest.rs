@@ -141,6 +141,7 @@ fn insert_symbol(
             name: sym.name.clone(),
             params: sym.params.clone(),
             detail: sym.detail.clone(),
+            scope: None,
         },
     );
     index.by_name.entry(sym.name.clone()).or_default().push(id);
@@ -169,6 +170,7 @@ fn insert_local(index: &mut SymbolIndex, file: FileId, local: &LocalSymbol) {
             name: local.name.clone(),
             params: Vec::new(),
             detail: None,
+            scope: Some(local.scope.clone()),
         },
     );
     index
