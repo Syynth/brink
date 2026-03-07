@@ -945,20 +945,28 @@ fn find_def_at_offset(
 
     // 3. Local variable (param/temp) by token text — these are suppressed
     //    from the resolution map but exist in the symbol index.
+    //    When multiple locals share the same name (e.g. param `x` in two knots),
+    //    pick the one whose declaration is closest-preceding the cursor.
     let word = word_at_offset(&snap.source, offset)?;
     let ids = snap.analysis.index.by_name.get(word)?;
-    ids.iter().find_map(|id| {
-        let info = snap.analysis.index.symbols.get(id)?;
-        if matches!(
+    let mut best: Option<&brink_ir::SymbolInfo> = None;
+    for id in ids {
+        let Some(info) = snap.analysis.index.symbols.get(id) else {
+            continue;
+        };
+        if !matches!(
             info.kind,
             brink_ir::SymbolKind::Param | brink_ir::SymbolKind::Temp
-        ) && info.file == snap.file_id
+        ) || info.file != snap.file_id
+            || info.range.start() > offset
         {
-            Some(info)
-        } else {
-            None
+            continue;
         }
-    })
+        if best.is_none_or(|b| info.range.start() > b.range.start()) {
+            best = Some(info);
+        }
+    }
+    best
 }
 
 // ─── Builtin hover ─────────────────────────────────────────────────
