@@ -452,32 +452,7 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
 
-        // Find what the cursor is on
-        let def_id = snap
-            .analysis
-            .resolutions
-            .iter()
-            .find(|r| {
-                r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset)
-            })
-            .map(|r| r.target)
-            .or_else(|| {
-                snap.analysis
-                    .index
-                    .symbols
-                    .values()
-                    .find(|info| {
-                        info.file == snap.file_id
-                            && (info.range.contains(offset) || info.range.start() == offset)
-                    })
-                    .map(|info| info.id)
-            });
-
-        let Some(def_id) = def_id else {
-            return Ok(None);
-        };
-
-        let Some(info) = snap.analysis.index.symbols.get(&def_id) else {
+        let Some(info) = find_def_at_offset(&snap, offset) else {
             return Ok(None);
         };
 
@@ -932,6 +907,79 @@ impl LanguageServer for Backend {
         tracing::debug!("code_lens_resolve");
         Ok(lens)
     }
+}
+
+// ─── Definition lookup ─────────────────────────────────────────────
+
+/// Find the definition id for the symbol at `offset`.
+///
+/// Tries, in order: resolved references, declaration sites, then local
+/// variables (params/temps) by identifier text.
+fn find_def_at_offset(
+    snap: &NavigationSnapshot,
+    offset: rowan::TextSize,
+) -> Option<&brink_ir::SymbolInfo> {
+    // 1. Resolved reference at this position
+    let def_id = snap
+        .analysis
+        .resolutions
+        .iter()
+        .find(|r| r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset))
+        .map(|r| r.target)
+        // 2. Declaration site at this position
+        .or_else(|| {
+            snap.analysis
+                .index
+                .symbols
+                .values()
+                .find(|info| {
+                    info.file == snap.file_id
+                        && (info.range.contains(offset) || info.range.start() == offset)
+                })
+                .map(|info| info.id)
+        });
+
+    if let Some(id) = def_id {
+        return snap.analysis.index.symbols.get(&id);
+    }
+
+    // 3. Local variable (param/temp) by token text — these are suppressed
+    //    from the resolution map but exist in the symbol index.
+    let word = word_at_offset(&snap.source, offset)?;
+    let ids = snap.analysis.index.by_name.get(word)?;
+    ids.iter().find_map(|id| {
+        let info = snap.analysis.index.symbols.get(id)?;
+        if matches!(
+            info.kind,
+            brink_ir::SymbolKind::Param | brink_ir::SymbolKind::Temp
+        ) && info.file == snap.file_id
+        {
+            Some(info)
+        } else {
+            None
+        }
+    })
+}
+
+// ─── Hover helpers ─────────────────────────────────────────────────
+
+/// Extract the identifier word surrounding `offset` in `source`.
+fn word_at_offset(source: &str, offset: rowan::TextSize) -> Option<&str> {
+    let pos: usize = offset.into();
+    if pos > source.len() {
+        return None;
+    }
+    let bytes = source.as_bytes();
+    let start = (0..pos)
+        .rev()
+        .take_while(|&i| bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+        .last()?;
+    let end = (pos..source.len())
+        .take_while(|&i| bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+        .last()
+        .map_or(pos, |i| i + 1);
+    let word = &source[start..end];
+    if word.is_empty() { None } else { Some(word) }
 }
 
 // ─── Folding range helpers ──────────────────────────────────────────
