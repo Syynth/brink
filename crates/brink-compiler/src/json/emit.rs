@@ -810,9 +810,16 @@ fn build_choice_target(
         emit_content(inner, lookups, cctx, &mut contents);
         contents.extend(body_contents);
     } else if choice.start_content.is_some() {
-        // Has preamble — body comes first, then \n
+        // Has preamble — inline diverts (from `-> target` on the choice line)
+        // come before the \n separator, body content comes after.
+        let split = body_contents
+            .iter()
+            .position(|el| !is_inline_divert_element(el))
+            .unwrap_or(body_contents.len());
+        let after_newline = body_contents.split_off(split);
         contents.extend(body_contents);
         contents.push(Element::Value(InkValue::String("\n".to_string())));
+        contents.extend(after_newline);
     } else {
         // Bracket-only (no preamble) — \n comes first, then body
         contents.push(Element::Value(InkValue::String("\n".to_string())));
@@ -1019,6 +1026,16 @@ fn emit_call_arg(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
+
+/// Returns true if the element is a divert-like instruction that should appear
+/// before the `\n` separator in a choice target (inline diverts from the choice
+/// line itself, e.g. `* choice -> DONE`).
+fn is_inline_divert_element(el: &Element) -> bool {
+    matches!(
+        el,
+        Element::Divert(_) | Element::ControlCommand(ControlCommand::Done | ControlCommand::End)
+    )
+}
 
 fn ev() -> Element {
     Element::ControlCommand(ControlCommand::BeginLogicalEval)
