@@ -129,6 +129,16 @@ fn resolve_divert(
         return;
     }
 
+    // 5. Variable divert target (`VAR x = -> knot`, then `-> x`)
+    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Variable]) {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+        return;
+    }
+
     diagnostics.push(unresolved_diag(
         file_id,
         uref.range,
@@ -273,6 +283,16 @@ fn resolve_function(
 
     // Try knots (ink allows knots as functions via tunnels)
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Knot]) {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+        return;
+    }
+
+    // Try list names (ink allows `list(n)` as type conversion)
+    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::List]) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
