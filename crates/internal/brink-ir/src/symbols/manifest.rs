@@ -21,6 +21,8 @@ pub struct SymbolManifest {
     pub labels: Vec<DeclaredSymbol>,
     /// Declared list items (qualified: `ListName.ItemName`).
     pub list_items: Vec<DeclaredSymbol>,
+    /// Local variables: params and temps, scoped to a container.
+    pub locals: Vec<LocalSymbol>,
     /// Unresolved references (divert targets, variable accesses).
     pub unresolved: Vec<UnresolvedRef>,
 }
@@ -34,6 +36,19 @@ pub struct DeclaredSymbol {
     pub params: Vec<super::ParamInfo>,
     /// Additional detail (e.g. "function" for function knots).
     pub detail: Option<String>,
+}
+
+/// A local variable (param or temp) scoped to a container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalSymbol {
+    /// Bare name (e.g. `x`).
+    pub name: String,
+    /// Source span of the declaration.
+    pub range: TextRange,
+    /// The scope this local belongs to.
+    pub scope: Scope,
+    /// Whether this is a param or a temp.
+    pub kind: super::SymbolKind,
 }
 
 /// An unresolved reference that needs cross-file resolution.

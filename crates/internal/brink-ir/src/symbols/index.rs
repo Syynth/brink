@@ -58,6 +58,10 @@ pub enum SymbolKind {
     ListItem,
     External,
     Label,
+    /// A knot/stitch/function parameter.
+    Param,
+    /// A `~ temp` local variable.
+    Temp,
 }
 
 impl SymbolKind {
@@ -69,6 +73,7 @@ impl SymbolKind {
             Self::List => DefinitionTag::ListDef,
             Self::ListItem => DefinitionTag::ListItem,
             Self::External => DefinitionTag::ExternalFn,
+            Self::Param | Self::Temp => DefinitionTag::LocalVar,
         }
     }
 }

@@ -10,6 +10,8 @@ pub enum DefinitionTag {
     ListItem = 0x04,
     ExternalFn = 0x05,
     Label = 0x06,
+    /// Params and temps — scoped to a container, not serialized in bytecode.
+    LocalVar = 0x07,
 }
 
 impl DefinitionTag {
@@ -22,6 +24,7 @@ impl DefinitionTag {
             0x04 => Some(Self::ListItem),
             0x05 => Some(Self::ExternalFn),
             0x06 => Some(Self::Label),
+            0x07 => Some(Self::LocalVar),
             _ => None,
         }
     }

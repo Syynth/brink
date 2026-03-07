@@ -134,6 +134,16 @@ fn resolve_variable(
 ) {
     let path = &uref.path;
 
+    // Try locals (params/temps) in scope first — they shadow globals
+    if let Some(id) = lookup_local_in_scope(index, path, &uref.scope) {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+        return;
+    }
+
     // Try global variables / constants
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Variable, SymbolKind::Constant]) {
         map.push(ResolvedRef {
@@ -319,6 +329,28 @@ fn resolve_list_ref(
 }
 
 // ─── Lookup helpers ─────────────────────────────────────────────────
+
+/// Look up a local variable (param or temp) by bare name within the given scope.
+///
+/// A local matches if its name equals the bare name AND its scope is compatible
+/// (same knot, and same-or-parent stitch). The HIR lowering already suppresses
+/// unresolved refs for names in `locals`, so this is a backup for cases where
+/// the name appears in the symbol index.
+fn lookup_local_in_scope(
+    index: &SymbolIndex,
+    bare_name: &str,
+    _scope: &brink_ir::Scope,
+) -> Option<DefinitionId> {
+    let ids = index.by_name.get(bare_name)?;
+    for id in ids {
+        if let Some(info) = index.symbols.get(id)
+            && matches!(info.kind, SymbolKind::Param | SymbolKind::Temp)
+        {
+            return Some(*id);
+        }
+    }
+    None
+}
 
 fn lookup_by_name(index: &SymbolIndex, name: &str, kinds: &[SymbolKind]) -> Option<DefinitionId> {
     let ids = index.by_name.get(name)?;

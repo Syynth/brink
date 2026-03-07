@@ -89,7 +89,9 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
             SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label => {
                 lir::Expr::VisitCount(info.id)
             }
-            SymbolKind::External => lir::Expr::Null,
+            // Params/temps should already be caught by temp_slot above;
+            // externals used as values are meaningless — fall back to null.
+            SymbolKind::External | SymbolKind::Param | SymbolKind::Temp => lir::Expr::Null,
         }
     } else {
         lir::Expr::Null

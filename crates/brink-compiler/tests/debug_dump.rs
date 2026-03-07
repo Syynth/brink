@@ -51,3 +51,79 @@ fn dump_cases() {
     compare("one_choice", "tier1/choices/one");
     compare("cond_choice", "tier1/choices/conditional-choice");
 }
+
+fn try_compile(name: &str, ink_rel: &str) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests");
+    let ink_path = root.join(ink_rel).join("story.ink");
+    match brink_compiler::compile_to_json(ink_path.to_str().unwrap(), |p| {
+        std::fs::read_to_string(p).map_err(|e| std::io::Error::new(e.kind(), format!("{p}: {e}")))
+    }) {
+        Ok(_) => eprintln!("=== {name}: OK (no error)"),
+        Err(brink_compiler::CompileError::Diagnostics(diags)) => {
+            eprintln!("=== {name}: {} diagnostic(s):", diags.len());
+            for d in &diags {
+                eprintln!("    [{:?}] {}", d.code, d.message);
+            }
+        }
+        Err(e) => eprintln!("=== {name}: {e}"),
+    }
+}
+
+#[test]
+fn dump_errors() {
+    try_compile(
+        "I077-fallback-choice-on-thread",
+        "tier1/choices/I077-fallback-choice-on-thread",
+    );
+    try_compile(
+        "I079-once-only-choices-can-link-back-to-self",
+        "tier1/choices/I079-once-only-choices-can-link-back-to-self",
+    );
+    try_compile(
+        "I083-choice-thread-forking",
+        "tier1/choices/I083-choice-thread-forking",
+    );
+    try_compile(
+        "I090-various-default-choices",
+        "tier1/choices/I090-various-default-choices",
+    );
+    try_compile("I091-choice-count", "tier1/choices/I091-choice-count");
+    try_compile("I093-default-choices", "tier1/choices/I093-default-choices");
+    try_compile("choice-count", "tier1/choices/choice-count");
+    try_compile(
+        "choice-thread-forking",
+        "tier1/choices/choice-thread-forking",
+    );
+    try_compile(
+        "conditional-choice-in-weave",
+        "tier1/choices/conditional-choice-in-weave",
+    );
+    try_compile("default-choices", "tier1/choices/default-choices");
+    try_compile(
+        "fallback-choice-on-thread",
+        "tier1/choices/fallback-choice-on-thread",
+    );
+    try_compile("label-scope", "tier1/choices/label-scope");
+    try_compile(
+        "once-only-choices-can-link-back-to-self",
+        "tier1/choices/once-only-choices-can-link-back-to-self",
+    );
+    try_compile(
+        "I056-divert-targets-with-parameters",
+        "tier1/diverts/I056-divert-targets-with-parameters",
+    );
+    try_compile(
+        "I060-tunnel-onwards-divert-after-with-arg",
+        "tier1/diverts/I060-tunnel-onwards-divert-after-with-arg",
+    );
+    try_compile("I062-complex-tunnels", "tier1/diverts/I062-complex-tunnels");
+    try_compile(
+        "I065-tunnel-onwards-with-param-default-choice",
+        "tier1/diverts/I065-tunnel-onwards-with-param-default-choice",
+    );
+    try_compile("I003-tunnel-to-death", "tier1/basics/I003-tunnel-to-death");
+    try_compile(
+        "I004-print-number-as-english",
+        "tier1/basics/I004-print-number-as-english",
+    );
+}

@@ -490,6 +490,8 @@ impl LanguageServer for Backend {
             brink_ir::SymbolKind::ListItem => "list item",
             brink_ir::SymbolKind::External => "external function",
             brink_ir::SymbolKind::Label => "label",
+            brink_ir::SymbolKind::Param => "parameter",
+            brink_ir::SymbolKind::Temp => "temp variable",
         };
 
         let params_str = if info.params.is_empty() {
@@ -582,9 +584,10 @@ impl LanguageServer for Backend {
                     brink_ir::SymbolKind::Stitch | brink_ir::SymbolKind::External => {
                         CompletionItemKind::FUNCTION
                     }
-                    brink_ir::SymbolKind::Variable | brink_ir::SymbolKind::Constant => {
-                        CompletionItemKind::VARIABLE
-                    }
+                    brink_ir::SymbolKind::Variable
+                    | brink_ir::SymbolKind::Constant
+                    | brink_ir::SymbolKind::Param
+                    | brink_ir::SymbolKind::Temp => CompletionItemKind::VARIABLE,
                     brink_ir::SymbolKind::List => CompletionItemKind::ENUM,
                     brink_ir::SymbolKind::ListItem => CompletionItemKind::ENUM_MEMBER,
                     brink_ir::SymbolKind::Label => CompletionItemKind::REFERENCE,

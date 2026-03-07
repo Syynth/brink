@@ -3,7 +3,8 @@ use std::hash::{Hash, Hasher};
 
 use brink_format::{DefinitionId, DefinitionTag};
 use brink_ir::{
-    Diagnostic, DiagnosticCode, FileId, SymbolIndex, SymbolInfo, SymbolKind, SymbolManifest,
+    Diagnostic, DiagnosticCode, FileId, LocalSymbol, SymbolIndex, SymbolInfo, SymbolKind,
+    SymbolManifest,
 };
 
 /// Merge per-file symbol manifests into a unified symbol index.
@@ -94,6 +95,9 @@ pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec
                 DiagnosticCode::E026,
             );
         }
+        for local in &manifest.locals {
+            insert_local(&mut index, file_id, local);
+        }
     }
 
     (index, diagnostics)
@@ -140,6 +144,38 @@ fn insert_symbol(
         },
     );
     index.by_name.entry(sym.name.clone()).or_default().push(id);
+}
+
+fn insert_local(index: &mut SymbolIndex, file: FileId, local: &LocalSymbol) {
+    let tag = local.kind.definition_tag();
+    // Scope-qualify the hash so identically-named locals in different
+    // containers get distinct DefinitionIds.
+    let scope_prefix = match (&local.scope.knot, &local.scope.stitch) {
+        (Some(k), Some(s)) => format!("{k}.{s}."),
+        (Some(k), None) => format!("{k}."),
+        _ => String::new(),
+    };
+    let qualified = format!("{scope_prefix}{}", local.name);
+    let hash = hash_name(&qualified, tag);
+    let id = DefinitionId::new(tag, hash);
+
+    index.symbols.insert(
+        id,
+        SymbolInfo {
+            kind: local.kind,
+            file,
+            range: local.range,
+            id,
+            name: local.name.clone(),
+            params: Vec::new(),
+            detail: None,
+        },
+    );
+    index
+        .by_name
+        .entry(local.name.clone())
+        .or_default()
+        .push(id);
 }
 
 fn hash_name(name: &str, tag: DefinitionTag) -> u64 {

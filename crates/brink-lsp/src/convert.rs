@@ -87,7 +87,9 @@ pub fn symbol_kind_to_lsp(kind: brink_ir::SymbolKind) -> lsp_types::SymbolKind {
             lsp_types::SymbolKind::FUNCTION
         }
         brink_ir::SymbolKind::Stitch => lsp_types::SymbolKind::METHOD,
-        brink_ir::SymbolKind::Variable => lsp_types::SymbolKind::VARIABLE,
+        brink_ir::SymbolKind::Variable
+        | brink_ir::SymbolKind::Param
+        | brink_ir::SymbolKind::Temp => lsp_types::SymbolKind::VARIABLE,
         brink_ir::SymbolKind::Constant => lsp_types::SymbolKind::CONSTANT,
         brink_ir::SymbolKind::List => lsp_types::SymbolKind::ENUM,
         brink_ir::SymbolKind::ListItem => lsp_types::SymbolKind::ENUM_MEMBER,

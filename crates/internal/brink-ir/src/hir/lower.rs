@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+
+use crate::symbols::LocalSymbol;
 use brink_syntax::SyntaxKind;
 use brink_syntax::ast::{self, AstNode, AstPtr, SyntaxNodePtr};
 use rowan::TextRange;
@@ -77,6 +80,9 @@ struct LowerCtx {
     manifest: SymbolManifest,
     current_knot: Option<String>,
     current_stitch: Option<String>,
+    /// Names that are local to the current scope (params + temps).
+    /// Variable references to these names don't need cross-file resolution.
+    locals: HashSet<String>,
 }
 
 impl LowerCtx {
@@ -87,6 +93,7 @@ impl LowerCtx {
             manifest: SymbolManifest::default(),
             current_knot: None,
             current_stitch: None,
+            locals: HashSet::new(),
         }
     }
 
@@ -145,6 +152,12 @@ impl LowerCtx {
     }
 
     fn add_unresolved(&mut self, path: &str, range: TextRange, kind: RefKind) {
+        // Don't generate unresolved refs for names that are local to the
+        // current scope (params, temps). These are resolved by name in
+        // LIR lowering via the temp map — they never need cross-file resolution.
+        if kind == RefKind::Variable && self.locals.contains(path) {
+            return;
+        }
         self.manifest.unresolved.push(UnresolvedRef {
             path: path.to_string(),
             range,
@@ -266,12 +279,23 @@ impl LowerCtx {
         );
 
         self.current_knot = Some(name_text.clone());
+        self.locals.clear();
+        for p in &params {
+            self.locals.insert(p.name.text.clone());
+            self.manifest.locals.push(LocalSymbol {
+                name: p.name.text.clone(),
+                range: p.name.range,
+                scope: self.current_scope(),
+                kind: crate::SymbolKind::Param,
+            });
+        }
         let (body, stitches) = knot.body().map_or_else(
             || (Block::default(), Vec::new()),
             |b| self.lower_knot_body(&b, &name_text),
         );
         self.current_knot = None;
         self.current_stitch = None;
+        self.locals.clear();
 
         Some(Knot {
             ptr: AstPtr::new(knot),
@@ -348,10 +372,22 @@ impl LowerCtx {
             param_infos,
             None,
         );
+        // Stitch params are local — save/restore parent locals
+        let saved_locals = self.locals.clone();
+        for p in &params {
+            self.locals.insert(p.name.text.clone());
+            self.manifest.locals.push(LocalSymbol {
+                name: p.name.text.clone(),
+                range: p.name.range,
+                scope: self.current_scope(),
+                kind: crate::SymbolKind::Param,
+            });
+        }
         let body = stitch
             .body()
             .map_or_else(Block::default, |b| self.lower_body_children(b.syntax()));
         self.current_stitch = None;
+        self.locals = saved_locals;
 
         Some(Stitch {
             ptr: AstPtr::new(stitch),
@@ -1343,6 +1379,15 @@ impl LowerCtx {
         if let Some(temp) = line.temp_decl() {
             let name = name_from_ident(&temp.identifier()?)?;
             let value = temp.value().and_then(|e| self.lower_expr(&e));
+            // Add to locals *after* lowering the initializer so
+            // `~ temp x = x` doesn't accidentally self-reference.
+            self.locals.insert(name.text.clone());
+            self.manifest.locals.push(LocalSymbol {
+                name: name.text.clone(),
+                range: name.range,
+                scope: self.current_scope(),
+                kind: crate::SymbolKind::Temp,
+            });
             return Some(Stmt::TempDecl(TempDecl {
                 ptr: AstPtr::new(&temp),
                 name,
