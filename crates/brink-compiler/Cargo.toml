@@ -12,12 +12,16 @@ description = "Compiler for inkle's ink narrative scripting language"
 [dependencies]
 brink-ir = { path = "../internal/brink-ir" }
 brink-format = { path = "../internal/brink-format" }
+brink-json = { path = "../internal/brink-json" }
 brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-syntax = { path = "../internal/brink-syntax" }
 brink-db = { path = "../internal/brink-db" }
 rowan.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

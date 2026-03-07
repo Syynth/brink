@@ -209,8 +209,10 @@ dependencies = [
  "brink-db",
  "brink-format",
  "brink-ir",
+ "brink-json",
  "brink-syntax",
  "rowan",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]

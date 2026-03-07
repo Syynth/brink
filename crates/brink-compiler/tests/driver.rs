@@ -25,9 +25,11 @@ fn compile_minimal_story() {
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", "Hello, world!\n")]);
 
     let story = compile_mem("main.ink", &files).unwrap();
-    // Codegen is stubbed, so we get an empty StoryData — but the driver
-    // ran without errors (parsed, lowered, analyzed).
-    assert!(story.containers.is_empty(), "codegen is stubbed");
+    // The driver ran without errors (parsed, lowered, analyzed, codegen).
+    assert!(
+        !story.containers.is_empty(),
+        "expected non-empty containers"
+    );
 }
 
 #[test]
@@ -45,7 +47,10 @@ Welcome to the story.
     )]);
 
     let story = compile_mem("main.ink", &files).unwrap();
-    assert!(story.containers.is_empty(), "codegen is stubbed");
+    assert!(
+        !story.containers.is_empty(),
+        "expected non-empty containers"
+    );
 }
 
 // ── INCLUDE discovery ───────────────────────────────────────────────
@@ -58,7 +63,10 @@ fn compile_follows_includes() {
     ]);
 
     let story = compile_mem("main.ink", &files).unwrap();
-    assert!(story.containers.is_empty(), "codegen is stubbed");
+    assert!(
+        !story.containers.is_empty(),
+        "expected non-empty containers"
+    );
 }
 
 #[test]
@@ -70,7 +78,10 @@ fn compile_nested_includes() {
     ]);
 
     let story = compile_mem("main.ink", &files).unwrap();
-    assert!(story.containers.is_empty(), "codegen is stubbed");
+    assert!(
+        !story.containers.is_empty(),
+        "expected non-empty containers"
+    );
 }
 
 #[test]
@@ -98,7 +109,10 @@ fn compile_resolves_relative_include_paths() {
     ]);
 
     let story = compile_mem("src/main.ink", &files).unwrap();
-    assert!(story.containers.is_empty(), "codegen is stubbed");
+    assert!(
+        !story.containers.is_empty(),
+        "expected non-empty containers"
+    );
 }
 
 // ── Error cases ─────────────────────────────────────────────────────
@@ -133,7 +147,10 @@ fn compile_path_reads_from_disk() {
         .join("../../tests/tier1/basics/I001-minimal-story/story.ink");
 
     let story = brink_compiler::compile_path(&path).unwrap();
-    assert!(story.containers.is_empty(), "codegen is stubbed");
+    assert!(
+        !story.containers.is_empty(),
+        "expected non-empty containers"
+    );
 }
 
 #[test]
@@ -142,5 +159,8 @@ fn compile_path_nested_includes_from_disk() {
         .join("../../tests/tier3/misc/I025-nested-includes/story.ink");
 
     let story = brink_compiler::compile_path(&path).unwrap();
-    assert!(story.containers.is_empty(), "codegen is stubbed");
+    assert!(
+        !story.containers.is_empty(),
+        "expected non-empty containers"
+    );
 }

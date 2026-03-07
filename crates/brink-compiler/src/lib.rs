@@ -5,7 +5,9 @@
 //! (`brink-analyzer`), and codegen into the `brink-format` binary
 //! representation consumed by `brink-runtime`.
 
+mod bytecode;
 mod driver;
+pub mod json;
 
 pub use brink_ir::FileId;
 
@@ -34,6 +36,22 @@ where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
     driver::compile(entry, read_file)
+}
+
+/// Compile an ink story to the ink.json format (same as inklecate output).
+///
+/// Useful for diffing brink's output against the reference compiler.
+pub fn compile_to_json<F>(entry: &str, read_file: F) -> Result<brink_json::InkJson, CompileError>
+where
+    F: FnMut(&str) -> Result<String, io::Error>,
+{
+    let program = driver::compile_to_lir(entry, read_file)?;
+    Ok(json::emit(&program))
+}
+
+/// Compile ink source from a string to the ink.json format.
+pub fn compile_string_to_json(source: &str) -> Result<brink_json::InkJson, CompileError> {
+    compile_to_json("<string>", |_| Ok(source.to_string()))
 }
 
 /// Errors that can occur during compilation.

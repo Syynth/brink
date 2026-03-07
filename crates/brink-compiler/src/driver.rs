@@ -63,19 +63,5 @@ where
     let program = compile_lir(entry, read_file)?;
 
     // ── Pass 6b: Codegen ────────────────────────────────────────────
-    // TODO: bytecode::emit(&program) or json::emit(&program)
-    // For now, return an empty StoryData — backends are a separate task.
-    let _ = program;
-
-    Ok(StoryData {
-        containers: Vec::new(),
-        line_tables: Vec::new(),
-        variables: Vec::new(),
-        list_defs: Vec::new(),
-        list_items: Vec::new(),
-        externals: Vec::new(),
-        labels: Vec::new(),
-        name_table: Vec::new(),
-        list_literals: Vec::new(),
-    })
+    Ok(crate::bytecode::emit(&program))
 }
