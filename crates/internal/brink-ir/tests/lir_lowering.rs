@@ -1059,13 +1059,12 @@ VAR t = 0
 // ─── Counting flags ─────────────────────────────────────────────────
 
 #[test]
-fn knots_have_visit_counting_by_default() {
+fn knots_have_empty_counting_flags_by_default() {
     let p = lower_ink("== greet ==\nHi.\n-> END\n");
     let knot = find_child(&p.root, "greet");
     assert!(
-        knot.counting_flags
-            .contains(brink_format::CountingFlags::VISITS),
-        "knots should have VISITS counting flag"
+        knot.counting_flags.is_empty(),
+        "knots should have empty counting flags by default (VISITS added only when referenced)"
     );
 }
 

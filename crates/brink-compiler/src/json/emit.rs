@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 
+use brink_format::DefinitionId;
 use brink_ir::lir;
 use brink_json::{
-    ChoicePoint, ChoicePointFlags, Container, ContainerFlags, ControlCommand, Divert, Element,
-    InkList, InkValue, NativeFunction, ReadCountReference, VariableAssignment, VariableReference,
+    ChoicePoint, ChoicePointFlags, Container, ControlCommand, Divert, Element, InkList, InkValue,
+    NativeFunction, ReadCountReference, VariableAssignment, VariableReference,
 };
 
 use super::Lookups;
@@ -549,6 +550,7 @@ fn emit_choice_set(
                 choice,
                 &child_path,
                 outer_index,
+                cs.gather_target,
                 lookups,
                 cctx,
             );
@@ -740,6 +742,7 @@ fn build_choice_target(
     choice: &lir::Choice,
     child_path: &str,
     outer_index: usize,
+    gather_target: Option<DefinitionId>,
     lookups: &Lookups,
     cctx: &ContainerCtx,
 ) -> Container {
@@ -776,24 +779,52 @@ fn build_choice_target(
         }));
     }
 
+    // Emit the choice body, excluding the trailing gather divert (emitted separately below).
+    let (mut body_contents, body_named) = emit_body(child, lookups, &child_cctx);
+
+    // The LIR body may end with a divert to the gather container. In inklecate's
+    // format this divert comes AFTER the \n separator, so we pop it and re-add it
+    // after the newline. Any other trailing divert (e.g. Done from `-> DONE`)
+    // stays in place — the gather divert will be appended after it.
+    let gather_divert_element = if let Some(gather_id) = gather_target {
+        let gather_path = lookups.container_path(gather_id);
+        // Check if the body ends with a divert to the gather — if so, pop it.
+        let last_is_gather = body_contents.last().is_some_and(
+            |el| matches!(el, Element::Divert(Divert::Target { path, .. }) if *path == gather_path),
+        );
+        if last_is_gather {
+            body_contents.pop();
+        }
+        // Always emit the gather divert after \n.
+        Some(Element::Divert(Divert::Target {
+            conditional: false,
+            path: gather_path,
+        }))
+    } else {
+        None
+    };
+
     // Emit the choice's inner_content (text after `]`) before the body.
-    // In inklecate's format, this appears right after the $r2 preamble.
     if let Some(ref inner) = choice.inner_content {
+        // emit_content includes a trailing \n — goes before body
         emit_content(inner, lookups, cctx, &mut contents);
-    } else if choice.start_content.is_none() {
-        // When there's no start content and no inner content (bracket-only choice),
-        // inklecate emits a standalone newline as the first element.
+        contents.extend(body_contents);
+    } else if choice.start_content.is_some() {
+        // Has preamble — body comes first, then \n
+        contents.extend(body_contents);
         contents.push(Element::Value(InkValue::String("\n".to_string())));
+    } else {
+        // Bracket-only (no preamble) — \n comes first, then body
+        contents.push(Element::Value(InkValue::String("\n".to_string())));
+        contents.extend(body_contents);
     }
 
-    // Emit the choice body
-    let (body_contents, body_named) = emit_body(child, lookups, &child_cctx);
-    contents.extend(body_contents);
+    // Always emit the gather divert after the \n separator.
+    if let Some(gd) = gather_divert_element {
+        contents.push(gd);
+    }
 
-    // The LIR body already contains the gather divert — no need to add one here.
-
-    // Always set counting flags: VISITS | COUNT_START_ONLY
-    let flags = ContainerFlags::VISITS | ContainerFlags::COUNT_START_ONLY;
+    let flags = super::convert_counting_flags(child.counting_flags);
 
     Container {
         flags: Some(flags),

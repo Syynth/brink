@@ -167,7 +167,7 @@ fn build_container(container: &lir::Container, path: &str, lookups: &Lookups) ->
     }
 }
 
-fn convert_counting_flags(flags: brink_format::CountingFlags) -> ContainerFlags {
+pub(crate) fn convert_counting_flags(flags: brink_format::CountingFlags) -> ContainerFlags {
     let mut out = ContainerFlags::empty();
     if flags.contains(brink_format::CountingFlags::VISITS) {
         out |= ContainerFlags::VISITS;

@@ -1457,8 +1457,15 @@ impl LowerCtx {
     }
 
     fn lower_choice_body(&mut self, choice: &ast::Choice) -> Block {
+        // The choice-level divert (e.g. `* choice -> DONE`) is already captured
+        // in `Choice.divert`. Skip it here to avoid duplication in the body.
+        let choice_divert_range = choice.divert().map(|d| d.syntax().text_range());
+
         let mut stmts = Vec::new();
         for child in choice.syntax().children() {
+            if choice_divert_range.is_some_and(|r| r == child.text_range()) {
+                continue;
+            }
             self.lower_body_child(child, &mut stmts);
         }
         Block { stmts }

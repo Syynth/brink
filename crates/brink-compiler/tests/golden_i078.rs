@@ -171,7 +171,7 @@ fn i078_hir() {
 //             Divert(Divert { target: Container(<g-0>), args: [] }),
 //           ],
 //           children: [],
-//           counting_flags: empty,
+//           counting_flags: VISITS | COUNT_START_ONLY,
 //         },
 //         Container {
 //           name: Some("g-0"),

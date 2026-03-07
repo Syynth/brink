@@ -185,7 +185,7 @@ fn lower_knot(
         params,
         body: final_body,
         children,
-        counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
+        counting_flags: CountingFlags::empty(),
         temp_slot_count: temp_count,
     }
 }
@@ -223,7 +223,7 @@ fn lower_stitch(
         params,
         body,
         children,
-        counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
+        counting_flags: CountingFlags::empty(),
         temp_slot_count: 0,
     }
 }
@@ -372,7 +372,7 @@ fn lower_choice_with_child(
         params: Vec::new(),
         body,
         children,
-        counting_flags: CountingFlags::empty(),
+        counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
         temp_slot_count: 0,
     };
 
