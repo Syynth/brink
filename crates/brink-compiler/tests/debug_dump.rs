@@ -41,5 +41,13 @@ fn compare(name: &str, ink_rel: &str) {
 
 #[test]
 fn dump_cases() {
-    compare("I054", "tier1/diverts/I054-basic-tunnel");
+    compare("I044", "tier1/glue/I044-implicit-inline-glue-c");
+    compare("I046", "tier1/glue/I046-left-right-glue-matching");
+    compare("I055", "tier1/diverts/I055-same-line-divert-is-inline");
+    compare("I086", "tier1/choices/I086-default-simple-gather");
+    compare("I092", "tier1/choices/I092-should-not-gather-due-to-choice");
+    compare("simple_divert", "tier1/divert/simple-divert");
+    compare("sticky_choice", "tier1/choices/sticky-choice");
+    compare("one_choice", "tier1/choices/one");
+    compare("cond_choice", "tier1/choices/conditional-choice");
 }

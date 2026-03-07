@@ -86,6 +86,10 @@ impl ContainerEmitter<'_> {
                 self.emit_expr(expr);
                 self.emit(Opcode::Pop);
             }
+
+            lir::Stmt::EndOfLine => {
+                self.emit(Opcode::EmitNewline);
+            }
         }
     }
 

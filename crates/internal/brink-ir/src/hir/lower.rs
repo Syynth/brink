@@ -1489,6 +1489,9 @@ impl LowerCtx {
                     {
                         out.push(s);
                     }
+                    if was_content {
+                        out.push(Stmt::EndOfLine);
+                    }
                 }
             }
             SyntaxKind::LOGIC_LINE => {
@@ -1597,6 +1600,9 @@ impl LowerCtx {
                         {
                             items.push(WeaveItem::Stmt(s));
                         }
+                        if was_content {
+                            items.push(WeaveItem::Stmt(Stmt::EndOfLine));
+                        }
                     }
                 }
                 SyntaxKind::LOGIC_LINE => {
@@ -1615,6 +1621,7 @@ impl LowerCtx {
                                 parts: Vec::new(),
                                 tags,
                             })));
+                            items.push(WeaveItem::Stmt(Stmt::EndOfLine));
                         }
                     }
                 }

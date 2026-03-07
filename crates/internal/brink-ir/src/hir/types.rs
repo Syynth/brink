@@ -117,6 +117,8 @@ pub enum Stmt {
     Sequence(Sequence),
     /// `~ expr` — expression evaluated for side effects (e.g. function call).
     ExprStmt(Expr),
+    /// End-of-line marker — marks the end of a content output line.
+    EndOfLine,
 }
 
 // ─── Weave structure ────────────────────────────────────────────────

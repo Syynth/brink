@@ -185,6 +185,11 @@ pub enum Stmt {
 
     /// `~ expr` — expression evaluated for side effects.
     ExprStmt(Expr),
+
+    /// End-of-line marker — emitted after content (and any trailing inline
+    /// divert on the same line). JSON backend emits `"\n"`, bytecode backend
+    /// emits `EmitNewline` opcode.
+    EndOfLine,
 }
 
 /// The resolved target of an assignment.

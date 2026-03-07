@@ -212,6 +212,10 @@ fn emit_stmt(
         lir::Stmt::Conditional(cond) => emit_conditional(cond, lookups, cctx, out, named),
 
         lir::Stmt::Sequence(seq) => emit_sequence(seq, lookups, cctx, out, named),
+
+        lir::Stmt::EndOfLine => {
+            out.push(Element::Value(InkValue::String("\n".to_string())));
+        }
     }
 }
 
@@ -251,8 +255,6 @@ fn emit_content(
         out.push(Element::Value(InkValue::String(tag.clone())));
         out.push(Element::ControlCommand(ControlCommand::EndTag));
     }
-
-    out.push(Element::Value(InkValue::String("\n".to_string())));
 }
 
 // ─── Divert emission ────────────────────────────────────────────────
@@ -380,52 +382,97 @@ fn emit_conditional(
     lookups: &Lookups,
     cctx: &ContainerCtx,
     out: &mut Vec<Element>,
-    named: &mut HashMap<String, Element>,
+    _named: &mut HashMap<String, Element>,
 ) {
-    // Emit conditions + conditional diverts
-    for (i, branch) in cond.branches.iter().enumerate() {
+    // We'll fill in nop_index after emitting all branches.
+    // For now, use a placeholder and patch later.
+    let mut branch_merge_indices: Vec<usize> = Vec::new();
+
+    for branch in &cond.branches {
         if let Some(ref condition) = branch.condition {
+            // Emit condition evaluation in the parent container
             out.push(ev());
             emit_expr(condition, lookups, cctx, out);
             out.push(end_ev());
-            out.push(Element::Divert(Divert::Target {
+
+            // Wrap conditional divert + branch body in anonymous container
+            let wrapper_contents = vec![Element::Divert(Divert::Target {
                 conditional: true,
-                path: format!(".^.b{i}"),
+                path: ".^.b".to_string(),
+            })];
+
+            let inner_cctx = ContainerCtx {
+                temp_names: cctx.temp_names.clone(),
+                path: String::new(), // Branch body uses relative paths
+            };
+
+            let (mut body_elems, sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
+
+            // Placeholder merge divert — will be patched after we know nop_index
+            let merge_divert_idx = body_elems.len();
+            body_elems.push(Element::Divert(Divert::Target {
+                conditional: false,
+                path: String::new(), // placeholder
             }));
+
+            let mut branch_named = sub_named;
+            branch_named.insert(
+                "b".to_string(),
+                Element::Container(Container {
+                    flags: None,
+                    name: None,
+                    named_content: HashMap::new(),
+                    contents: body_elems,
+                }),
+            );
+
+            // Track where the merge divert is so we can patch it
+            let wrapper_idx = out.len();
+            out.push(Element::Container(Container {
+                flags: None,
+                name: None,
+                named_content: branch_named,
+                contents: wrapper_contents,
+            }));
+            branch_merge_indices.push(wrapper_idx);
+            let _ = merge_divert_idx;
+        } else {
+            // Else branch — emit body inline (no wrapper)
+            let inner_cctx = ContainerCtx {
+                temp_names: cctx.temp_names.clone(),
+                path: cctx.path.clone(),
+            };
+            let (body_elems, _sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
+            out.extend(body_elems);
         }
     }
 
-    // Nop as merge point
+    // Emit nop merge point — index is the element's position in the container
+    let nop_index = out.len();
     out.push(Element::ControlCommand(ControlCommand::NoOperation));
 
-    // Emit branch containers in named_content
-    for (i, branch) in cond.branches.iter().enumerate() {
-        let bname = format!("b{i}");
-        let inner_cctx = ContainerCtx {
-            temp_names: cctx.temp_names.clone(),
-            path: if cctx.path.is_empty() {
-                bname.clone()
-            } else {
-                format!("{}.{bname}", cctx.path)
-            },
-        };
+    // Compute merge path
+    let merge_path = if cctx.path.is_empty() {
+        format!("{nop_index}")
+    } else {
+        format!("{}.{nop_index}", cctx.path)
+    };
 
-        let (mut body_elems, sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
-
-        // Each branch diverts past the nop to continue
-        body_elems.push(Element::Divert(Divert::Target {
-            conditional: false,
-            path: ".^.^.nop".to_string(),
-        }));
-
-        let container = Container {
-            flags: None,
-            name: None,
-            named_content: sub_named,
-            contents: body_elems,
-        };
-
-        named.insert(bname, Element::Container(container));
+    // Patch merge diverts in each branch
+    for &wrapper_idx in &branch_merge_indices {
+        if let Element::Container(ref mut wrapper) = out[wrapper_idx]
+            && let Some(Element::Container(branch_container)) = wrapper.named_content.get_mut("b")
+        {
+            // The last element before null should be the merge divert
+            if let Some(el) = branch_container.contents.iter_mut().rev().find(
+                |e| matches!(e, Element::Divert(Divert::Target { path, .. }) if path.is_empty()),
+            ) {
+                *el = Element::Divert(Divert::Target {
+                    conditional: false,
+                    path: merge_path.clone(),
+                });
+            }
+        }
     }
 }
 
@@ -809,8 +856,8 @@ fn build_choice_target(
 
     // Emit the choice's inner_content (text after `]`) before the body.
     if let Some(ref inner) = choice.inner_content {
-        // emit_content includes a trailing \n — goes before body
         emit_content(inner, lookups, cctx, &mut contents);
+        contents.push(Element::Value(InkValue::String("\n".to_string())));
         contents.extend(body_contents);
     } else if choice.start_content.is_some() {
         // Has preamble — inline diverts (from `-> target` on the choice line)

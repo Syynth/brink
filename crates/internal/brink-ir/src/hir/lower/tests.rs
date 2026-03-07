@@ -55,7 +55,7 @@ fn empty_file() {
 fn plain_text_content() {
     let (hir, _, diags) = lower_ink("Hello, world!\n");
     assert!(diags.is_empty());
-    assert_eq!(hir.root_content.stmts.len(), 1);
+    assert_eq!(hir.root_content.stmts.len(), 2);
     match &hir.root_content.stmts[0] {
         Stmt::Content(c) => {
             assert!(!c.parts.is_empty());
@@ -63,6 +63,7 @@ fn plain_text_content() {
         }
         other => panic!("expected Content, got {other:?}"),
     }
+    assert!(matches!(&hir.root_content.stmts[1], Stmt::EndOfLine));
 }
 
 #[test]
@@ -675,8 +676,8 @@ More content after gather.
     );
     assert!(diags.is_empty());
     let body = &hir.knots[0].body;
-    // ChoiceSet with gather, then Content, then Divert — all siblings
-    assert_eq!(body.stmts.len(), 3, "stmts: {:#?}", body.stmts);
+    // ChoiceSet with gather, then Content + EndOfLine, then Divert — all siblings
+    assert_eq!(body.stmts.len(), 4, "stmts: {:#?}", body.stmts);
     assert!(
         matches!(&body.stmts[0], Stmt::ChoiceSet(cs) if cs.gather.is_some()),
         "first stmt should be ChoiceSet with gather"
@@ -687,9 +688,14 @@ More content after gather.
         body.stmts[1]
     );
     assert!(
-        matches!(&body.stmts[2], Stmt::Divert(_)),
-        "third stmt should be Divert, got {:?}",
+        matches!(&body.stmts[2], Stmt::EndOfLine),
+        "third stmt should be EndOfLine, got {:?}",
         body.stmts[2]
+    );
+    assert!(
+        matches!(&body.stmts[3], Stmt::Divert(_)),
+        "fourth stmt should be Divert, got {:?}",
+        body.stmts[3]
     );
 }
 
@@ -736,9 +742,11 @@ Preamble text.
     );
     assert!(diags.is_empty());
     let body = &hir.knots[0].body;
-    assert_eq!(body.stmts.len(), 2, "stmts: {:#?}", body.stmts);
+    // [Content("Preamble text."), EndOfLine, ChoiceSet(A, B, gather)]
+    assert_eq!(body.stmts.len(), 3, "stmts: {:#?}", body.stmts);
     assert!(matches!(&body.stmts[0], Stmt::Content(_)));
-    assert!(matches!(&body.stmts[1], Stmt::ChoiceSet(_)));
+    assert!(matches!(&body.stmts[1], Stmt::EndOfLine));
+    assert!(matches!(&body.stmts[2], Stmt::ChoiceSet(_)));
 }
 
 /// A standalone gather (no preceding choices) emits its content as a Content stmt.
@@ -1038,18 +1046,24 @@ After everything.
     );
     assert!(diags.is_empty());
     let body = &hir.knots[0].body;
-    // Expected flat structure:
+    // Expected flat structure (EndOfLine follows each Content):
     // [0] Content("Before first.")
-    // [1] ChoiceSet(A1, A2, gather: "Gather one.")
-    // [2] Content("Between sets.")
-    // [3] ChoiceSet(B1, B2, gather: "Gather two.")
-    // [4] Content("After everything.")
-    assert_eq!(body.stmts.len(), 5, "stmts: {:#?}", body.stmts);
+    // [1] EndOfLine
+    // [2] ChoiceSet(A1, A2, gather: "Gather one.")
+    // [3] Content("Between sets.")
+    // [4] EndOfLine
+    // [5] ChoiceSet(B1, B2, gather: "Gather two.")
+    // [6] Content("After everything.")
+    // [7] EndOfLine
+    assert_eq!(body.stmts.len(), 8, "stmts: {:#?}", body.stmts);
     assert!(matches!(&body.stmts[0], Stmt::Content(_)));
-    assert!(matches!(&body.stmts[1], Stmt::ChoiceSet(_)));
-    assert!(matches!(&body.stmts[2], Stmt::Content(_)));
-    assert!(matches!(&body.stmts[3], Stmt::ChoiceSet(_)));
-    assert!(matches!(&body.stmts[4], Stmt::Content(_)));
+    assert!(matches!(&body.stmts[1], Stmt::EndOfLine));
+    assert!(matches!(&body.stmts[2], Stmt::ChoiceSet(_)));
+    assert!(matches!(&body.stmts[3], Stmt::Content(_)));
+    assert!(matches!(&body.stmts[4], Stmt::EndOfLine));
+    assert!(matches!(&body.stmts[5], Stmt::ChoiceSet(_)));
+    assert!(matches!(&body.stmts[6], Stmt::Content(_)));
+    assert!(matches!(&body.stmts[7], Stmt::EndOfLine));
 }
 
 // ─── Inline logic lowering ──────────────────────────────────────────

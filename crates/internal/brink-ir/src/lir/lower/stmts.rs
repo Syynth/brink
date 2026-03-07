@@ -108,6 +108,8 @@ pub(super) fn lower_stmt(
                 branches,
             }))
         }
+
+        hir::Stmt::EndOfLine => Some(lir::Stmt::EndOfLine),
     }
 }
 
