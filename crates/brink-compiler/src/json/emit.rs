@@ -190,11 +190,14 @@ fn emit_stmt(
             out.push(ev());
             if let Some(e) = expr {
                 emit_expr(e, lookups, cctx, out);
+                out.push(end_ev());
+                out.push(Element::ControlCommand(ControlCommand::FunctionReturn));
             } else {
+                // Bare return (->->) is a tunnel return
                 out.push(Element::Void);
+                out.push(end_ev());
+                out.push(Element::ControlCommand(ControlCommand::TunnelReturn));
             }
-            out.push(end_ev());
-            out.push(Element::ControlCommand(ControlCommand::FunctionReturn));
         }
 
         lir::Stmt::ExprStmt(expr) => {

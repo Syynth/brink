@@ -41,5 +41,5 @@ fn compare(name: &str, ink_rel: &str) {
 
 #[test]
 fn dump_cases() {
-    compare("I082", "tier1/choices/I082-choice-diverts-to-done");
+    compare("I054", "tier1/diverts/I054-basic-tunnel");
 }

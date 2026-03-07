@@ -285,10 +285,10 @@ pub enum DivertPath {
     End,
 }
 
-/// `~ return expr`
+/// `~ return expr` or bare `->->` (tunnel return).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Return {
-    pub ptr: AstPtr<ast::ReturnStmt>,
+    pub ptr: Option<AstPtr<ast::ReturnStmt>>,
     pub value: Option<Expr>,
 }
 

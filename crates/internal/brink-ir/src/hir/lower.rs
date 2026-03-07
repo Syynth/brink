@@ -1254,8 +1254,11 @@ impl LowerCtx {
                     targets,
                 }));
             }
-            self.emit(node.syntax().text_range(), DiagnosticCode::E012);
-            return None;
+            // Bare `->->` with no targets — tunnel return
+            return Some(Stmt::Return(Return {
+                ptr: None,
+                value: None,
+            }));
         }
 
         if let Some(simple) = node.simple_divert() {
@@ -1332,7 +1335,7 @@ impl LowerCtx {
     fn lower_logic_line(&mut self, line: &ast::LogicLine) -> Option<Stmt> {
         if let Some(ret) = line.return_stmt() {
             return Some(Stmt::Return(Return {
-                ptr: AstPtr::new(&ret),
+                ptr: Some(AstPtr::new(&ret)),
                 value: ret.value().and_then(|e| self.lower_expr(&e)),
             }));
         }
