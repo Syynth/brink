@@ -134,6 +134,11 @@ fn resolve_variable(
 ) {
     let path = &uref.path;
 
+    // Built-in functions can appear in variable contexts (e.g. CHOICE_COUNT)
+    if is_builtin_function(path) {
+        return;
+    }
+
     // Try locals (params/temps) in scope first — they shadow globals
     if let Some(id) = lookup_local_in_scope(index, path, &uref.scope) {
         map.push(ResolvedRef {
@@ -244,6 +249,11 @@ fn resolve_function(
 ) {
     let path = &uref.path;
 
+    // Built-in functions don't need resolution — they're handled at LIR lowering.
+    if is_builtin_function(path) {
+        return;
+    }
+
     // Try externals first
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::External]) {
         map.push(ResolvedRef {
@@ -350,6 +360,34 @@ fn lookup_local_in_scope(
         }
     }
     None
+}
+
+/// Ink built-in functions that are resolved at LIR lowering, not by the symbol index.
+fn is_builtin_function(name: &str) -> bool {
+    matches!(
+        name,
+        "TURNS_SINCE"
+            | "CHOICE_COUNT"
+            | "RANDOM"
+            | "SEED_RANDOM"
+            | "INT"
+            | "FLOAT"
+            | "FLOOR"
+            | "CEILING"
+            | "POW"
+            | "MIN"
+            | "MAX"
+            | "LIST_COUNT"
+            | "LIST_MIN"
+            | "LIST_MAX"
+            | "LIST_ALL"
+            | "LIST_INVERT"
+            | "LIST_RANGE"
+            | "LIST_RANDOM"
+            | "LIST_VALUE"
+            | "LIST_FROM_INT"
+            | "READ_COUNT"
+    )
 }
 
 fn lookup_by_name(index: &SymbolIndex, name: &str, kinds: &[SymbolKind]) -> Option<DefinitionId> {

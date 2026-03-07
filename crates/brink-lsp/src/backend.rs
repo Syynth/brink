@@ -452,59 +452,63 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
 
-        let Some(info) = find_def_at_offset(&snap, offset) else {
+        let value = if let Some(info) = find_def_at_offset(&snap, offset) {
+            let kind_str = match info.kind {
+                brink_ir::SymbolKind::Knot => "knot",
+                brink_ir::SymbolKind::Stitch => "stitch",
+                brink_ir::SymbolKind::Variable => "variable",
+                brink_ir::SymbolKind::Constant => "constant",
+                brink_ir::SymbolKind::List => "list",
+                brink_ir::SymbolKind::ListItem => "list item",
+                brink_ir::SymbolKind::External => "external function",
+                brink_ir::SymbolKind::Label => "label",
+                brink_ir::SymbolKind::Param => "parameter",
+                brink_ir::SymbolKind::Temp => "temp variable",
+            };
+
+            let params_str = if info.params.is_empty() {
+                String::new()
+            } else {
+                let parts: Vec<_> = info
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let mut s = String::new();
+                        if p.is_ref {
+                            s.push_str("ref ");
+                        }
+                        if p.is_divert {
+                            s.push_str("-> ");
+                        }
+                        s.push_str(&p.name);
+                        s
+                    })
+                    .collect();
+                format!("({})", parts.join(", "))
+            };
+
+            let detail_str = info
+                .detail
+                .as_deref()
+                .map_or(String::new(), |d| format!(" [{d}]"));
+
+            let file_note = snap
+                .all_files
+                .iter()
+                .find(|(fid, _, _)| *fid == info.file)
+                .map_or(String::new(), |(_, p, _)| format!("\n\n*Defined in `{p}`*"));
+
+            format!(
+                "**{kind_str}** `{}{params_str}`{detail_str}{file_note}",
+                info.name
+            )
+        } else if let Some(builtin) =
+            word_at_offset(&snap.source, offset).and_then(builtin_hover_text)
+        {
+            builtin
+        } else {
             return Ok(None);
         };
-
-        let kind_str = match info.kind {
-            brink_ir::SymbolKind::Knot => "knot",
-            brink_ir::SymbolKind::Stitch => "stitch",
-            brink_ir::SymbolKind::Variable => "variable",
-            brink_ir::SymbolKind::Constant => "constant",
-            brink_ir::SymbolKind::List => "list",
-            brink_ir::SymbolKind::ListItem => "list item",
-            brink_ir::SymbolKind::External => "external function",
-            brink_ir::SymbolKind::Label => "label",
-            brink_ir::SymbolKind::Param => "parameter",
-            brink_ir::SymbolKind::Temp => "temp variable",
-        };
-
-        let params_str = if info.params.is_empty() {
-            String::new()
-        } else {
-            let parts: Vec<_> = info
-                .params
-                .iter()
-                .map(|p| {
-                    let mut s = String::new();
-                    if p.is_ref {
-                        s.push_str("ref ");
-                    }
-                    if p.is_divert {
-                        s.push_str("-> ");
-                    }
-                    s.push_str(&p.name);
-                    s
-                })
-                .collect();
-            format!("({})", parts.join(", "))
-        };
-
-        let detail_str = info
-            .detail
-            .as_deref()
-            .map_or(String::new(), |d| format!(" [{d}]"));
-
-        let file_note = snap
-            .all_files
-            .iter()
-            .find(|(fid, _, _)| *fid == info.file)
-            .map_or(String::new(), |(_, p, _)| format!("\n\n*Defined in `{p}`*"));
-
-        let value = format!(
-            "**{kind_str}** `{}{params_str}`{detail_str}{file_note}",
-            info.name
-        );
 
         let hover_range = snap
             .analysis
@@ -959,6 +963,52 @@ fn find_def_at_offset(
             None
         }
     })
+}
+
+// ─── Builtin hover ─────────────────────────────────────────────────
+
+/// Return hover markdown for an ink built-in function, or `None` if not a builtin.
+fn builtin_hover_text(name: &str) -> Option<String> {
+    let (signature, description) = match name {
+        "CHOICE_COUNT" => ("CHOICE_COUNT()", "Number of currently available choices"),
+        "TURNS_SINCE" => (
+            "TURNS_SINCE(-> knot)",
+            "Turns since a knot was last visited (-1 if never)",
+        ),
+        "READ_COUNT" => (
+            "READ_COUNT(-> knot)",
+            "Number of times a knot has been visited",
+        ),
+        "RANDOM" => (
+            "RANDOM(min, max)",
+            "Random integer between min and max (inclusive)",
+        ),
+        "SEED_RANDOM" => ("SEED_RANDOM(seed)", "Seed the random number generator"),
+        "INT" => ("INT(value)", "Cast to integer"),
+        "FLOAT" => ("FLOAT(value)", "Cast to float"),
+        "FLOOR" => ("FLOOR(value)", "Round down to nearest integer"),
+        "CEILING" => ("CEILING(value)", "Round up to nearest integer"),
+        "POW" => ("POW(base, exp)", "Raise base to the power of exp"),
+        "MIN" => ("MIN(a, b)", "Minimum of two values"),
+        "MAX" => ("MAX(a, b)", "Maximum of two values"),
+        "LIST_COUNT" => ("LIST_COUNT(list)", "Number of items in a list value"),
+        "LIST_MIN" => ("LIST_MIN(list)", "Lowest-valued item in a list"),
+        "LIST_MAX" => ("LIST_MAX(list)", "Highest-valued item in a list"),
+        "LIST_ALL" => ("LIST_ALL(list)", "All possible items for a list's type"),
+        "LIST_INVERT" => ("LIST_INVERT(list)", "Items not in the list (from its type)"),
+        "LIST_RANGE" => (
+            "LIST_RANGE(list, min, max)",
+            "Items in list between min and max",
+        ),
+        "LIST_RANDOM" => ("LIST_RANDOM(list)", "Random item from a list"),
+        "LIST_VALUE" => ("LIST_VALUE(item)", "Numeric value of a list item"),
+        "LIST_FROM_INT" => (
+            "LIST_FROM_INT(list, n)",
+            "Item at numeric position n in a list type",
+        ),
+        _ => return None,
+    };
+    Some(format!("**built-in** `{signature}`\n\n{description}"))
 }
 
 // ─── Hover helpers ─────────────────────────────────────────────────
