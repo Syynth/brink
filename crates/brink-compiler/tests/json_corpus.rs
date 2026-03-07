@@ -171,7 +171,8 @@ fn compare_one(case: &TestCase) -> CompareResult {
     let our_value: Value = serde_json::to_value(&our_json).unwrap();
 
     let ref_text = std::fs::read_to_string(&case.json_path).unwrap();
-    let ref_value: Value = match serde_json::from_str(&ref_text) {
+    let ref_text = ref_text.strip_prefix('\u{FEFF}').unwrap_or(&ref_text);
+    let ref_value: Value = match serde_json::from_str(ref_text) {
         Ok(v) => v,
         Err(e) => {
             return CompareResult::CompileError {
