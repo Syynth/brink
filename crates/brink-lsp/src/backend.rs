@@ -517,7 +517,12 @@ impl LanguageServer for Backend {
             .find(|r| {
                 r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset)
             })
-            .map(|r| convert::to_lsp_range(r.range, &idx));
+            .map(|r| convert::to_lsp_range(r.range, &idx))
+            .or_else(|| {
+                // For locals/builtins matched by word text, compute range from word bounds.
+                let word_range = word_range_at_offset(&snap.source, offset)?;
+                Some(convert::to_lsp_range(word_range, &idx))
+            });
 
         Ok(Some(Hover {
             contents: tower_lsp::lsp_types::HoverContents::Markup(MarkupContent {
@@ -1034,6 +1039,33 @@ fn word_at_offset(source: &str, offset: rowan::TextSize) -> Option<&str> {
         end += 1;
     }
     Some(&source[start..end])
+}
+
+/// Like `word_at_offset` but returns the `TextRange` of the word.
+fn word_range_at_offset(source: &str, offset: rowan::TextSize) -> Option<rowan::TextRange> {
+    let pos: usize = offset.into();
+    if pos >= source.len() {
+        return None;
+    }
+    let bytes = source.as_bytes();
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    if !is_word(bytes[pos]) {
+        return None;
+    }
+    let mut start = pos;
+    while start > 0 && is_word(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = pos + 1;
+    while end < bytes.len() && is_word(bytes[end]) {
+        end += 1;
+    }
+    let start = u32::try_from(start).ok()?;
+    let end = u32::try_from(end).ok()?;
+    Some(rowan::TextRange::new(
+        rowan::TextSize::from(start),
+        rowan::TextSize::from(end),
+    ))
 }
 
 // ─── Folding range helpers ──────────────────────────────────────────
