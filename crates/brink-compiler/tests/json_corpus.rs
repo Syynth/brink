@@ -6,13 +6,20 @@
 //! Run with: `cargo test -p brink-compiler --test json_corpus`
 //!
 //! The test emits a tier-by-tier summary at the end and prints a detailed
-//! diff for the first failure encountered.
+//! diff for **only the first failure** encountered. This is intentional —
+//! fix this one next, then bump the ratchet and repeat.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+
+// ─── Ratchet ────────────────────────────────────────────────────────
+//
+// Bump this after each fix. The test fails if the pass count drops
+// below this threshold, preventing regressions.
+const RATCHET_PASS_COUNT: usize = 45;
 
 // ─── Discovery ──────────────────────────────────────────────────────
 
@@ -21,7 +28,7 @@ struct TestCase {
     rel_path: String,
     ink_path: PathBuf,
     json_path: PathBuf,
-    tier: String,
+    suite: String,
     category: String,
 }
 
@@ -29,12 +36,13 @@ fn discover_corpus() -> Vec<TestCase> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests");
     let mut cases = Vec::new();
 
+    // Tiered suites: tests/tier{1,2,3}/**/story.ink + story.ink.json
     for tier in &["tier1", "tier2", "tier3"] {
         let tier_dir = root.join(tier);
         if !tier_dir.exists() {
             continue;
         }
-        for entry in walkdir(&tier_dir) {
+        for entry in walkdir_story(&tier_dir) {
             let ink = entry.join("story.ink");
             let json = entry.join("story.ink.json");
             if ink.exists() && json.exists() {
@@ -49,10 +57,42 @@ fn discover_corpus() -> Vec<TestCase> {
                     rel_path: rel,
                     ink_path: ink,
                     json_path: json,
-                    tier: (*tier).to_string(),
+                    suite: (*tier).to_string(),
                     category,
                 });
             }
+        }
+    }
+
+    // GitHub and patched suites: tests/tests_{github,patched}/**/*.ink + *.ink.json
+    for suite in &["tests_github", "tests_patched"] {
+        let suite_dir = root.join(suite);
+        if !suite_dir.exists() {
+            continue;
+        }
+        for json_path in walkdir_ink_json(&suite_dir) {
+            let ink_path =
+                PathBuf::from(json_path.to_string_lossy().strip_suffix(".json").unwrap());
+            if !ink_path.exists() {
+                continue;
+            }
+            let rel = json_path
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+                .strip_suffix(".ink.json")
+                .unwrap()
+                .to_string();
+            let parts: Vec<&str> = rel.split('/').collect();
+            let category = parts.get(1).unwrap_or(&"unknown").to_string();
+            cases.push(TestCase {
+                rel_path: rel,
+                ink_path,
+                json_path,
+                suite: (*suite).to_string(),
+                category,
+            });
         }
     }
 
@@ -61,7 +101,7 @@ fn discover_corpus() -> Vec<TestCase> {
 }
 
 /// Recursively find directories containing story.ink files.
-fn walkdir(dir: &Path) -> Vec<PathBuf> {
+fn walkdir_story(dir: &Path) -> Vec<PathBuf> {
     let mut results = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -70,7 +110,27 @@ fn walkdir(dir: &Path) -> Vec<PathBuf> {
                 if path.join("story.ink").exists() {
                     results.push(path.clone());
                 }
-                results.extend(walkdir(&path));
+                results.extend(walkdir_story(&path));
+            }
+        }
+    }
+    results
+}
+
+/// Recursively find *.ink.json files.
+fn walkdir_ink_json(dir: &Path) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                results.extend(walkdir_ink_json(&path));
+            } else if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".ink.json"))
+            {
+                results.push(path);
             }
         }
     }
@@ -99,7 +159,10 @@ fn compare_one(case: &TestCase) -> CompareResult {
     let our_value: Value = serde_json::to_value(&our_json).unwrap();
 
     let ref_text = std::fs::read_to_string(&case.json_path).unwrap();
-    let ref_value: Value = serde_json::from_str(&ref_text).unwrap();
+    let ref_value: Value = match serde_json::from_str(&ref_text) {
+        Ok(v) => v,
+        Err(e) => return CompareResult::CompileError(format!("bad reference json: {e}")),
+    };
 
     if our_value == ref_value {
         CompareResult::Pass
@@ -201,27 +264,28 @@ fn json_corpus() {
     let cases = discover_corpus();
     assert!(!cases.is_empty(), "no test cases found");
 
-    let mut tier_pass: BTreeMap<String, usize> = BTreeMap::new();
-    let mut tier_fail: BTreeMap<String, usize> = BTreeMap::new();
-    let mut tier_error: BTreeMap<String, usize> = BTreeMap::new();
+    let mut suite_pass: BTreeMap<String, usize> = BTreeMap::new();
+    let mut suite_fail: BTreeMap<String, usize> = BTreeMap::new();
+    let mut suite_error: BTreeMap<String, usize> = BTreeMap::new();
     let mut cat_pass: BTreeMap<String, usize> = BTreeMap::new();
     let mut cat_fail: BTreeMap<String, usize> = BTreeMap::new();
 
+    // Only the first failure diff is shown — fix this one next.
     let mut first_failure: Option<(String, String)> = None;
     let mut failures: Vec<String> = Vec::new();
 
     for case in &cases {
         let result = compare_one(case);
-        let tier_key = case.tier.clone();
-        let cat_key = format!("{}/{}", case.tier, case.category);
+        let suite_key = case.suite.clone();
+        let cat_key = format!("{}/{}", case.suite, case.category);
 
         match &result {
             CompareResult::Pass => {
-                *tier_pass.entry(tier_key).or_default() += 1;
+                *suite_pass.entry(suite_key).or_default() += 1;
                 *cat_pass.entry(cat_key).or_default() += 1;
             }
             CompareResult::CompileError(msg) => {
-                *tier_error.entry(tier_key).or_default() += 1;
+                *suite_error.entry(suite_key).or_default() += 1;
                 *cat_fail.entry(cat_key).or_default() += 1;
                 failures.push(format!("  COMPILE ERROR: {}: {msg}", case.rel_path));
                 if first_failure.is_none() {
@@ -229,7 +293,7 @@ fn json_corpus() {
                 }
             }
             CompareResult::JsonMismatch { diff } => {
-                *tier_fail.entry(tier_key).or_default() += 1;
+                *suite_fail.entry(suite_key).or_default() += 1;
                 *cat_fail.entry(cat_key).or_default() += 1;
                 failures.push(format!("  MISMATCH: {}", case.rel_path));
                 if first_failure.is_none() {
@@ -241,9 +305,9 @@ fn json_corpus() {
 
     // ── Summary ─────────────────────────────────────────────────────
     let total = cases.len();
-    let total_pass: usize = tier_pass.values().sum();
-    let total_fail: usize = tier_fail.values().sum();
-    let total_error: usize = tier_error.values().sum();
+    let total_pass: usize = suite_pass.values().sum();
+    let total_fail: usize = suite_fail.values().sum();
+    let total_error: usize = suite_error.values().sum();
 
     let mut summary = String::new();
     summary.push_str("\n╔══════════════════════════════════════════════════════════╗\n");
@@ -253,16 +317,16 @@ fn json_corpus() {
     );
     summary.push_str("╠══════════════════════════════════════════════════════════╣\n");
 
-    for tier in &["tier1", "tier2", "tier3"] {
-        let t = (*tier).to_string();
-        let p = tier_pass.get(&t).copied().unwrap_or(0);
-        let f = tier_fail.get(&t).copied().unwrap_or(0);
-        let e = tier_error.get(&t).copied().unwrap_or(0);
+    for suite in &["tier1", "tier2", "tier3", "tests_github", "tests_patched"] {
+        let t = (*suite).to_string();
+        let p = suite_pass.get(&t).copied().unwrap_or(0);
+        let f = suite_fail.get(&t).copied().unwrap_or(0);
+        let e = suite_error.get(&t).copied().unwrap_or(0);
         let tot = p + f + e;
         if tot > 0 {
             let _ = writeln!(
                 summary,
-                "║  {tier:6}  {p:>4} pass  {f:>4} fail  {e:>4} err   ({tot} total)"
+                "║  {suite:14}  {p:>4} pass  {f:>4} fail  {e:>4} err   ({tot} total)"
             );
         }
     }
@@ -281,7 +345,7 @@ fn json_corpus() {
         let p = cat_pass.get(*cat).copied().unwrap_or(0);
         let f = cat_fail.get(*cat).copied().unwrap_or(0);
         let marker = if f > 0 { "✗" } else { "✓" };
-        let _ = writeln!(summary, "║  {marker} {cat:<30}  {p:>3}/{:>3}", p + f);
+        let _ = writeln!(summary, "║  {marker} {cat:<40}  {p:>3}/{:>3}", p + f);
     }
 
     summary.push_str("╚══════════════════════════════════════════════════════════╝\n");
@@ -289,7 +353,7 @@ fn json_corpus() {
     eprintln!("{summary}");
 
     if let Some((path, diff)) = &first_failure {
-        eprintln!("─── First failure: {path} ───");
+        eprintln!("─── First failure (fix this one next): {path} ───");
         eprintln!("{diff}");
         eprintln!("────────────────────────────────────────────────────────");
     }
@@ -302,4 +366,10 @@ fn json_corpus() {
     }
 
     assert!(total > 0, "should have found test cases");
+
+    // Ratchet: pass count must not drop below the established baseline.
+    assert!(
+        total_pass >= RATCHET_PASS_COUNT,
+        "REGRESSION: pass count {total_pass} dropped below ratchet {RATCHET_PASS_COUNT}"
+    );
 }
