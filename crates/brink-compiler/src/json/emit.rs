@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use brink_ir::lir;
 use brink_json::{
-    ChoicePoint, ChoicePointFlags, Container, ControlCommand, Divert, Element, InkList, InkValue,
-    NativeFunction, ReadCountReference, VariableAssignment, VariableReference,
+    ChoicePoint, ChoicePointFlags, Container, ContainerFlags, ControlCommand, Divert, Element,
+    InkList, InkValue, NativeFunction, ReadCountReference, VariableAssignment, VariableReference,
 };
 
 use super::Lookups;
@@ -66,7 +66,33 @@ fn collect_temp_names(stmt: &lir::Stmt, lookups: &Lookups, out: &mut HashMap<u16
 
 // ─── Statement emission ─────────────────────────────────────────────
 
+/// Emit a container's body, with access to the container's children for
+/// building choice target containers inline.
 pub fn emit_body(
+    container: &lir::Container,
+    lookups: &Lookups,
+    cctx: &ContainerCtx,
+) -> (Vec<Element>, HashMap<String, Element>) {
+    let mut contents = Vec::new();
+    let mut named = HashMap::new();
+
+    for stmt in &container.body {
+        emit_stmt(
+            stmt,
+            lookups,
+            cctx,
+            &mut contents,
+            &mut named,
+            &container.children,
+        );
+    }
+
+    (contents, named)
+}
+
+/// Emit a list of statements (for branch bodies in conditionals/sequences
+/// that don't have their own children).
+fn emit_stmts(
     stmts: &[lir::Stmt],
     lookups: &Lookups,
     cctx: &ContainerCtx,
@@ -75,7 +101,7 @@ pub fn emit_body(
     let mut named = HashMap::new();
 
     for stmt in stmts {
-        emit_stmt(stmt, lookups, cctx, &mut contents, &mut named);
+        emit_stmt(stmt, lookups, cctx, &mut contents, &mut named, &[]);
     }
 
     (contents, named)
@@ -87,6 +113,7 @@ fn emit_stmt(
     cctx: &ContainerCtx,
     out: &mut Vec<Element>,
     named: &mut HashMap<String, Element>,
+    siblings: &[lir::Container],
 ) {
     match stmt {
         lir::Stmt::EmitContent(content) => emit_content(content, lookups, cctx, out),
@@ -176,7 +203,7 @@ fn emit_stmt(
             out.push(end_ev());
         }
 
-        lir::Stmt::ChoiceSet(cs) => emit_choice_set(cs, lookups, cctx, out, named),
+        lir::Stmt::ChoiceSet(cs) => emit_choice_set(cs, lookups, cctx, out, named, siblings),
 
         lir::Stmt::Conditional(cond) => emit_conditional(cond, lookups, cctx, out, named),
 
@@ -379,7 +406,7 @@ fn emit_conditional(
             },
         };
 
-        let (mut body_elems, sub_named) = emit_body(&branch.body, lookups, &inner_cctx);
+        let (mut body_elems, sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
 
         // Each branch diverts past the nop to continue
         body_elems.push(Element::Divert(Divert::Target {
@@ -462,7 +489,7 @@ fn emit_sequence(
         // Pop the sequence index off the stack
         branch_contents.push(Element::ControlCommand(ControlCommand::Pop));
 
-        let (body_contents, branch_named) = emit_body(branch, lookups, &inner_cctx);
+        let (body_contents, branch_named) = emit_stmts(branch, lookups, &inner_cctx);
         branch_contents.extend(body_contents);
 
         // Divert to merge point
@@ -488,36 +515,173 @@ fn emit_choice_set(
     lookups: &Lookups,
     cctx: &ContainerCtx,
     out: &mut Vec<Element>,
-    _named: &mut HashMap<String, Element>,
+    named: &mut HashMap<String, Element>,
+    siblings: &[lir::Container],
 ) {
-    for choice in &cs.choices {
-        emit_choice(choice, lookups, cctx, out);
+    // Record the contents index before each outer container so we can
+    // compute the path for the $r2 → s divert in the choice targets.
+    let mut choice_outer_indices: Vec<usize> = Vec::new();
+
+    for (i, choice) in cs.choices.iter().enumerate() {
+        let c_name = format!("c-{i}");
+        choice_outer_indices.push(out.len());
+        emit_choice_outer(choice, lookups, cctx, out, &c_name);
+    }
+
+    // Build the c-N choice target containers and add to named_content.
+    for (i, choice) in cs.choices.iter().enumerate() {
+        let c_name = format!("c-{i}");
+        let outer_index = choice_outer_indices[i];
+
+        // Find the matching ChoiceTarget child container by DefinitionId.
+        let child = siblings
+            .iter()
+            .find(|c| c.id == choice.target && c.kind == lir::ContainerKind::ChoiceTarget);
+
+        if let Some(child_container) = child {
+            let child_path = if cctx.path.is_empty() {
+                c_name.clone()
+            } else {
+                format!("{}.{c_name}", cctx.path)
+            };
+            let target_container = build_choice_target(
+                child_container,
+                choice,
+                &child_path,
+                outer_index,
+                lookups,
+                cctx,
+            );
+            named.insert(c_name, Element::Container(target_container));
+        }
+    }
+
+    // Build gather container and add to named_content.
+    // The LIR always provides a gather (implicit or explicit) for every choice set.
+    if let Some(gather_id) = cs.gather_target
+        && let Some(gather) = siblings
+            .iter()
+            .find(|c| c.id == gather_id && c.kind == lir::ContainerKind::Gather)
+    {
+        let gather_name = gather.name.as_deref().unwrap_or("g-0");
+        let gather_path = if cctx.path.is_empty() {
+            gather_name.to_string()
+        } else {
+            format!("{}.{gather_name}", cctx.path)
+        };
+        let gather_cctx = ContainerCtx::build_from_tree(gather, lookups, &gather_path);
+        let (gather_contents, gather_named) = emit_body(gather, lookups, &gather_cctx);
+        named.insert(
+            gather_name.to_string(),
+            Element::Container(Container {
+                flags: None,
+                name: None,
+                named_content: gather_named,
+                contents: gather_contents,
+            }),
+        );
     }
 }
 
-fn emit_choice(
+/// Emit a choice's outer container (inline in parent contents).
+///
+/// Contains the $r return variable pattern, start content in "s" sub-container,
+/// choice-only content, condition, and `ChoicePoint`.
+#[expect(clippy::too_many_lines)]
+fn emit_choice_outer(
     choice: &lir::Choice,
     lookups: &Lookups,
     cctx: &ContainerCtx,
     out: &mut Vec<Element>,
+    c_name: &str,
 ) {
+    let has_start = choice
+        .start_content
+        .as_ref()
+        .is_some_and(|c| !c.parts.is_empty());
+    let has_choice_only = choice
+        .choice_only_content
+        .as_ref()
+        .is_some_and(|c| !c.parts.is_empty());
+
+    let mut outer_contents = Vec::new();
+    let mut outer_named: HashMap<String, Element> = HashMap::new();
+
+    // Compute the path for this outer container based on its index in the
+    // parent's contents array.
+    let outer_index = out.len();
+    let outer_path = if cctx.path.is_empty() {
+        format!("{outer_index}")
+    } else {
+        format!("{}.{outer_index}", cctx.path)
+    };
+
+    if has_start || has_choice_only || choice.condition.is_some() {
+        outer_contents.push(ev());
+    }
+
+    if has_start {
+        // $r = $r1 (store return address pointing to $r1 label)
+        let r1_path = format!("{outer_path}.$r1");
+        outer_contents.push(Element::Value(InkValue::DivertTarget(r1_path)));
+        outer_contents.push(Element::VariableAssignment(
+            VariableAssignment::TemporaryAssignment {
+                variable: "$r".to_string(),
+                reassign: false,
+            },
+        ));
+
+        // BeginString, divert to .^.s, return label $r1, EndString
+        outer_contents.push(Element::ControlCommand(ControlCommand::BeginStringEval));
+        outer_contents.push(Element::Divert(Divert::Target {
+            conditional: false,
+            path: ".^.s".to_string(),
+        }));
+        outer_contents.push(Element::Container(Container {
+            flags: None,
+            name: Some("$r1".to_string()),
+            named_content: HashMap::new(),
+            contents: Vec::new(),
+        }));
+        outer_contents.push(Element::ControlCommand(ControlCommand::EndStringEval));
+
+        // Build the "s" container with start content + -> $r variable divert
+        let mut s_contents = Vec::new();
+        if let Some(ref start) = choice.start_content {
+            emit_content_parts_inline(&start.parts, lookups, cctx, &mut s_contents);
+        }
+        s_contents.push(Element::Divert(Divert::Variable {
+            conditional: false,
+            path: "$r".to_string(),
+        }));
+        outer_named.insert(
+            "s".to_string(),
+            Element::Container(Container {
+                flags: None,
+                name: None,
+                named_content: HashMap::new(),
+                contents: s_contents,
+            }),
+        );
+    }
+
+    // Choice-only content
+    if has_choice_only {
+        outer_contents.push(Element::ControlCommand(ControlCommand::BeginStringEval));
+        if let Some(ref choice_only) = choice.choice_only_content {
+            emit_content_parts_inline(&choice_only.parts, lookups, cctx, &mut outer_contents);
+        }
+        outer_contents.push(Element::ControlCommand(ControlCommand::EndStringEval));
+    }
+
     // Condition
     if let Some(ref cond) = choice.condition {
-        out.push(ev());
-        emit_expr(cond, lookups, cctx, out);
-        out.push(end_ev());
+        emit_expr(cond, lookups, cctx, &mut outer_contents);
     }
 
-    // Start content (becomes part of display string)
-    out.push(ev());
-    out.push(Element::ControlCommand(ControlCommand::BeginStringEval));
-
-    if let Some(ref display) = choice.display {
-        emit_choice_content(display, lookups, cctx, out);
+    if has_start || has_choice_only || choice.condition.is_some() {
+        outer_contents.push(end_ev());
     }
-
-    out.push(Element::ControlCommand(ControlCommand::EndStringEval));
-    out.push(end_ev());
 
     // Build flags
     let mut flags = ChoicePointFlags::empty();
@@ -530,34 +694,124 @@ fn emit_choice(
     if choice.condition.is_some() {
         flags |= ChoicePointFlags::HAS_CONDITION;
     }
-    if choice.display.is_some() {
+    if has_start {
         flags |= ChoicePointFlags::HAS_START_CONTENT;
     }
-    if choice.output.is_some() && choice.display.is_some() {
+    if has_choice_only {
         flags |= ChoicePointFlags::HAS_CHOICE_ONLY_CONTENT;
     }
 
-    let target_path = lookups.container_path(choice.target);
-    out.push(Element::ChoicePoint(ChoicePoint {
-        target: target_path,
+    let c_path = if cctx.path.is_empty() {
+        c_name.to_string()
+    } else {
+        format!("{}.{c_name}", cctx.path)
+    };
+    outer_contents.push(Element::ChoicePoint(ChoicePoint {
+        target: c_path,
         flags,
     }));
 
     // Tags
     for tag in &choice.tags {
-        out.push(Element::ControlCommand(ControlCommand::Tag));
-        out.push(Element::Value(InkValue::String(tag.clone())));
-        out.push(Element::ControlCommand(ControlCommand::EndTag));
+        outer_contents.push(Element::ControlCommand(ControlCommand::Tag));
+        outer_contents.push(Element::Value(InkValue::String(tag.clone())));
+        outer_contents.push(Element::ControlCommand(ControlCommand::EndTag));
+    }
+
+    // Choices with start content use an outer container (for the $r/$r1/s pattern).
+    // Bracket-only choices (no start content) emit their elements inline.
+    if has_start {
+        out.push(Element::Container(Container {
+            flags: None,
+            name: None,
+            named_content: outer_named,
+            contents: outer_contents,
+        }));
+    } else {
+        out.extend(outer_contents);
     }
 }
 
-fn emit_choice_content(
-    content: &lir::Content,
+/// Build a choice target container (c-N) with the $r2 preamble for replaying
+/// start content, followed by the choice body, divert to gather, and
+/// counting flags.
+fn build_choice_target(
+    child: &lir::Container,
+    choice: &lir::Choice,
+    child_path: &str,
+    outer_index: usize,
+    lookups: &Lookups,
+    cctx: &ContainerCtx,
+) -> Container {
+    let child_cctx = ContainerCtx::build_from_tree(child, lookups, child_path);
+    let mut contents = Vec::new();
+
+    // $r2 preamble: replay start content from the outer container's "s"
+    if choice.start_content.is_some() {
+        let r2_path = format!("{child_path}.$r2");
+        let s_path = if cctx.path.is_empty() {
+            format!("{outer_index}.s")
+        } else {
+            format!("{}.{outer_index}.s", cctx.path)
+        };
+
+        contents.push(ev());
+        contents.push(Element::Value(InkValue::DivertTarget(r2_path)));
+        contents.push(end_ev());
+        contents.push(Element::VariableAssignment(
+            VariableAssignment::TemporaryAssignment {
+                variable: "$r".to_string(),
+                reassign: false,
+            },
+        ));
+        contents.push(Element::Divert(Divert::Target {
+            conditional: false,
+            path: s_path,
+        }));
+        contents.push(Element::Container(Container {
+            flags: None,
+            name: Some("$r2".to_string()),
+            named_content: HashMap::new(),
+            contents: Vec::new(),
+        }));
+    }
+
+    // Emit the choice's inner_content (text after `]`) before the body.
+    // In inklecate's format, this appears right after the $r2 preamble.
+    if let Some(ref inner) = choice.inner_content {
+        emit_content(inner, lookups, cctx, &mut contents);
+    } else if choice.start_content.is_none() {
+        // When there's no start content and no inner content (bracket-only choice),
+        // inklecate emits a standalone newline as the first element.
+        contents.push(Element::Value(InkValue::String("\n".to_string())));
+    }
+
+    // Emit the choice body
+    let (body_contents, body_named) = emit_body(child, lookups, &child_cctx);
+    contents.extend(body_contents);
+
+    // The LIR body already contains the gather divert — no need to add one here.
+
+    // Always set counting flags: VISITS | COUNT_START_ONLY
+    let flags = ContainerFlags::VISITS | ContainerFlags::COUNT_START_ONLY;
+
+    Container {
+        flags: Some(flags),
+        name: None,
+        named_content: body_named,
+        contents,
+    }
+}
+
+/// Emit content parts inline (without trailing newline), for use in
+/// choice start content and choice-only content.
+fn emit_content_parts_inline(
+    parts: &[lir::ContentPart],
     lookups: &Lookups,
     cctx: &ContainerCtx,
     out: &mut Vec<Element>,
 ) {
-    for part in &content.parts {
+    for part in parts {
         match part {
             lir::ContentPart::Text(s) => {
                 out.push(Element::Value(InkValue::String(s.clone())));

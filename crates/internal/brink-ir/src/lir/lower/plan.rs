@@ -130,27 +130,30 @@ fn plan_stmt_choices(
 ) {
     match stmt {
         hir::Stmt::ChoiceSet(choice_set) => {
-            // Plan gather container first (if present)
-            if let Some(ref gather) = choice_set.gather {
-                let gather_path = if let Some(ref label) = gather.label {
-                    format!("{scope_path}.{}", label.text)
-                } else {
-                    let path = format!("{scope_path}.g{gather_counter}");
-                    *gather_counter += 1;
-                    path
-                };
+            // Always plan a gather container — even without an explicit
+            // gather in the source, both backends need a convergence
+            // point (inklecate always emits g-0).
+            let gather_path = if let Some(ref gather) = choice_set.gather
+                && let Some(ref label) = gather.label
+            {
+                format!("{scope_path}.{}", label.text)
+            } else {
+                let path = format!("{scope_path}.g-{gather_counter}");
+                *gather_counter += 1;
+                path
+            };
 
-                let gather_id = ids.alloc_container(&gather_path);
+            let gather_id = ids.alloc_container(&gather_path);
 
-                plan.gather_targets.insert(
-                    GatherKey {
-                        file,
-                        scope: scope_path.to_string(),
-                        index: *gather_counter - usize::from(gather.label.is_none()),
-                    },
-                    gather_id,
-                );
-            }
+            plan.gather_targets.insert(
+                GatherKey {
+                    file,
+                    scope: scope_path.to_string(),
+                    index: *gather_counter
+                        - usize::from(choice_set.gather.as_ref().is_none_or(|g| g.label.is_none())),
+                },
+                gather_id,
+            );
 
             // Plan each choice target
             for choice in &choice_set.choices {

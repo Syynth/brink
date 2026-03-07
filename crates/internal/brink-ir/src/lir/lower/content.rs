@@ -19,11 +19,6 @@ fn lower_content_parts(
     parts.iter().map(|p| lower_content_part(p, ctx)).collect()
 }
 
-/// Lower a single content part (public for use by stmts.rs content combining).
-pub fn lower_content_part_pub(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::ContentPart {
-    lower_content_part(part, ctx)
-}
-
 fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::ContentPart {
     match part {
         hir::ContentPart::Text(t) => lir::ContentPart::Text(t.clone()),

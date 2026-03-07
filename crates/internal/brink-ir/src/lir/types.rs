@@ -143,6 +143,7 @@ pub struct Param {
 
 /// A statement within a container body. Structured — branches and
 /// choice sets preserve their shape for both backends to consume.
+#[derive(Clone)]
 pub enum Stmt {
     /// Emit a line of text content (with optional inline elements and tags).
     EmitContent(Content),
@@ -187,6 +188,7 @@ pub enum Stmt {
 }
 
 /// The resolved target of an assignment.
+#[derive(Clone)]
 pub enum AssignTarget {
     Global(DefinitionId),
     Temp(u16),
@@ -195,6 +197,7 @@ pub enum AssignTarget {
 // ─── Control flow ────────────────────────────────────────────────────
 
 /// A divert — goto another container, DONE, or END.
+#[derive(Clone)]
 pub struct Divert {
     pub target: DivertTarget,
     pub args: Vec<CallArg>,
@@ -202,23 +205,27 @@ pub struct Divert {
 
 /// A tunnel call — push return point, enter target.
 /// Chained tunnels (`->-> a ->-> b`) produce multiple targets.
+#[derive(Clone)]
 pub struct TunnelCall {
     pub targets: Vec<TunnelTarget>,
 }
 
 /// A single target in a tunnel call chain.
+#[derive(Clone)]
 pub struct TunnelTarget {
     pub target: DivertTarget,
     pub args: Vec<CallArg>,
 }
 
 /// A thread fork — `<- target`.
+#[derive(Clone)]
 pub struct ThreadStart {
     pub target: DivertTarget,
     pub args: Vec<CallArg>,
 }
 
 /// A resolved divert destination.
+#[derive(Clone)]
 pub enum DivertTarget {
     /// A named container.
     Container(DefinitionId),
@@ -231,6 +238,7 @@ pub enum DivertTarget {
 }
 
 /// An argument at a call site, with ref-passing resolved.
+#[derive(Clone)]
 pub enum CallArg {
     /// A normal value argument.
     Value(Expr),
@@ -244,6 +252,7 @@ pub enum CallArg {
 
 /// A set of choices presented to the player, with container boundaries
 /// already decided.
+#[derive(Clone)]
 pub struct ChoiceSet {
     pub choices: Vec<Choice>,
     /// The gather container that loose-end choices implicitly divert to.
@@ -253,12 +262,13 @@ pub struct ChoiceSet {
 
 /// A single choice within a choice set.
 ///
-/// Display and output content are pre-combined from the HIR's three-part
-/// split (start/bracket/inner):
-/// - **display** = start + bracket (shown in the choice list)
-/// - **output** = start + inner (emitted after selection)
+/// Content is stored as the original three-part split from the HIR:
+/// - `start_content` = text before `[` — shared between display and output
+/// - `choice_only_content` = text inside `[...]` — display only
+/// - `inner_content` = text after `]` — output only
 ///
 /// The choice body lives in a separate `Container` referenced by `target`.
+#[derive(Clone)]
 pub struct Choice {
     /// `+` (sticky) vs `*` (once-only).
     pub is_sticky: bool,
@@ -266,10 +276,12 @@ pub struct Choice {
     pub is_fallback: bool,
     /// Condition expression — choice is only available when true.
     pub condition: Option<Expr>,
-    /// Text shown in the choice list (start + bracket content).
-    pub display: Option<Content>,
-    /// Text emitted after the player selects this choice (start + inner content).
-    pub output: Option<Content>,
+    /// Text before `[` — appears in both choice list and output.
+    pub start_content: Option<Content>,
+    /// Text inside `[...]` — appears only in the choice list.
+    pub choice_only_content: Option<Content>,
+    /// Text after `]` — appears only after selection.
+    pub inner_content: Option<Content>,
     /// The container holding the choice body (content after selection).
     pub target: DefinitionId,
     pub tags: Vec<String>,
@@ -278,11 +290,13 @@ pub struct Choice {
 // ─── Conditionals and sequences ──────────────────────────────────────
 
 /// A block-level conditional with resolved branch conditions.
+#[derive(Clone)]
 pub struct Conditional {
     pub branches: Vec<CondBranch>,
 }
 
 /// A single branch in a conditional.
+#[derive(Clone)]
 pub struct CondBranch {
     /// `None` for the else branch.
     pub condition: Option<Expr>,
@@ -290,6 +304,7 @@ pub struct CondBranch {
 }
 
 /// A block-level sequence (stopping, cycle, once, shuffle).
+#[derive(Clone)]
 pub struct Sequence {
     pub kind: SequenceType,
     pub branches: Vec<Vec<Stmt>>,
@@ -302,12 +317,14 @@ pub struct Sequence {
 /// Each `Content` maps to one line table entry in the bytecode output.
 /// Backends decide the entry format: plain text for content with no
 /// dynamic parts, or a template with slots for interpolated content.
+#[derive(Clone)]
 pub struct Content {
     pub parts: Vec<ContentPart>,
     pub tags: Vec<String>,
 }
 
 /// A fragment within a content line.
+#[derive(Clone)]
 pub enum ContentPart {
     /// Literal text.
     Text(String),
@@ -325,6 +342,7 @@ pub enum ContentPart {
 
 /// A resolved expression. All paths have been replaced with concrete
 /// targets (global `DefinitionId`, temp slot, visit count, etc.).
+#[derive(Clone)]
 pub enum Expr {
     // ── Literals ─────────────────────────────────────────────────
     Int(i32),
@@ -375,11 +393,13 @@ pub enum Expr {
 }
 
 /// A string literal, possibly with interpolation.
+#[derive(Clone)]
 pub struct StringExpr {
     pub parts: Vec<StringPart>,
 }
 
 /// A part of a string literal.
+#[derive(Clone)]
 pub enum StringPart {
     /// Literal text.
     Literal(String),

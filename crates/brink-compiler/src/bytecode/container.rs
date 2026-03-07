@@ -155,10 +155,22 @@ impl ContainerEmitter<'_> {
     }
 
     fn emit_choice(&mut self, choice: &lir::Choice) {
+        // Reconstruct display (start + choice_only) and output (start + inner)
+        // from the three-part split for the bytecode protocol.
+        let has_start = choice.start_content.is_some();
+        let has_choice_only = choice.choice_only_content.is_some();
+
+        let display = combine_choice_content(
+            choice.start_content.as_ref(),
+            choice.choice_only_content.as_ref(),
+        );
+        let output =
+            combine_choice_content(choice.start_content.as_ref(), choice.inner_content.as_ref());
+
         let flags = ChoiceFlags {
             has_condition: choice.condition.is_some(),
-            has_start_content: choice.display.is_some(),
-            has_choice_only_content: choice.display.is_some() && choice.output.is_some(),
+            has_start_content: has_start,
+            has_choice_only_content: has_start && has_choice_only,
             once_only: !choice.is_sticky,
             is_invisible_default: choice.is_fallback,
         };
@@ -171,14 +183,14 @@ impl ContainerEmitter<'_> {
         }
 
         // Display content (start content + choice-only content)
-        if let Some(ref display) = choice.display {
+        if let Some(ref display) = display {
             self.emit(Opcode::BeginStringEval);
             self.emit_choice_content(display);
             self.emit(Opcode::EndStringEval);
         }
 
         // Output content
-        if let Some(ref output) = choice.output {
+        if let Some(ref output) = output {
             let mut line_text = String::new();
             for part in &output.parts {
                 if let lir::ContentPart::Text(s) = part {
@@ -267,6 +279,24 @@ impl ContainerEmitter<'_> {
         // Patch all end jumps
         for site in end_jumps {
             self.patch_jump(site);
+        }
+    }
+}
+
+/// Reconstruct combined content from two optional parts (e.g. start + bracket).
+fn combine_choice_content(
+    a: Option<&lir::Content>,
+    b: Option<&lir::Content>,
+) -> Option<lir::Content> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(content), None) | (None, Some(content)) => Some(content.clone()),
+        (Some(a_content), Some(b_content)) => {
+            let mut parts = a_content.parts.clone();
+            parts.extend(b_content.parts.clone());
+            let mut tags = a_content.tags.clone();
+            tags.extend(b_content.tags.clone());
+            Some(lir::Content { parts, tags })
         }
     }
 }

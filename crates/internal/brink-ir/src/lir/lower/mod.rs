@@ -246,11 +246,8 @@ fn lower_block_with_children(
     for (pos, stmt) in block.stmts.iter().enumerate() {
         match stmt {
             hir::Stmt::ChoiceSet(cs) => {
-                let gather_target = if cs.gather.is_some() {
-                    find_gather_target(ctx, plan, gather_counter)
-                } else {
-                    None
-                };
+                // Every choice set gets a gather target — explicit or implicit.
+                let gather_target = find_gather_target(ctx, plan, gather_counter);
 
                 // Build choice target children
                 let mut choice_children = Vec::new();
@@ -278,14 +275,25 @@ fn lower_block_with_children(
                 }));
                 children.append(&mut choice_children);
 
-                // If there's a gather, build it with trailing statements
                 if let Some(ref gather) = cs.gather {
-                    let gather_container =
-                        build_gather_container(gather, block, pos, ctx, plan, gather_target);
+                    // Explicit gather — build it with trailing statements
+                    let gather_container = build_gather_container(
+                        gather,
+                        block,
+                        pos,
+                        ctx,
+                        plan,
+                        gather_target,
+                        *gather_counter - 1,
+                    );
                     children.push(gather_container);
                     // Trailing statements went into the gather — stop here
                     break;
                 }
+
+                // No explicit gather — build an implicit one with just DONE.
+                let implicit_gather_id = gather_target.unwrap_or(plan.root_id);
+                children.push(build_implicit_gather(implicit_gather_id, gather_counter));
             }
             _ => {
                 if let Some(s) = stmts::lower_stmt(stmt, ctx, plan, choice_counter, gather_counter)
@@ -304,7 +312,7 @@ fn lower_choice_with_child(
     ctx: &mut LowerCtx<'_>,
     plan: &plan::ContainerPlan,
     choice_counter: &mut usize,
-    _gather_target: Option<brink_format::DefinitionId>,
+    gather_target: Option<brink_format::DefinitionId>,
 ) -> (lir::Choice, Option<lir::Container>) {
     let key = plan::ChoiceKey {
         file: ctx.file,
@@ -319,19 +327,19 @@ fn lower_choice_with_child(
         .copied()
         .unwrap_or(plan.root_id);
 
-    // Combine display content: start + bracket
-    let display = combine_content(
-        choice.start_content.as_ref(),
-        choice.bracket_content.as_ref(),
-        ctx,
-    );
-
-    // Combine output content: start + inner
-    let output = combine_content(
-        choice.start_content.as_ref(),
-        choice.inner_content.as_ref(),
-        ctx,
-    );
+    // Preserve the three-part content split for codegen backends.
+    let start_content = choice
+        .start_content
+        .as_ref()
+        .map(|c| content::lower_content(c, ctx));
+    let choice_only_content = choice
+        .bracket_content
+        .as_ref()
+        .map(|c| content::lower_content(c, ctx));
+    let inner_content = choice
+        .inner_content
+        .as_ref()
+        .map(|c| content::lower_content(c, ctx));
 
     let condition = choice.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
     let tags = choice.tags.iter().map(|t| t.text.clone()).collect();
@@ -345,7 +353,18 @@ fn lower_choice_with_child(
         body.push(lir::Stmt::Divert(lower_hir_divert(divert, ctx)));
     }
 
-    let child_name = format!("c{}", *choice_counter - 1);
+    // If the body doesn't end with a divert, add one to the gather.
+    let ends_with_divert = body
+        .last()
+        .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)));
+    if !ends_with_divert && let Some(gather_id) = gather_target {
+        body.push(lir::Stmt::Divert(lir::Divert {
+            target: lir::DivertTarget::Container(gather_id),
+            args: Vec::new(),
+        }));
+    }
+
+    let child_name = format!("c-{}", *choice_counter - 1);
     let child = lir::Container {
         id: target,
         name: Some(child_name),
@@ -361,8 +380,9 @@ fn lower_choice_with_child(
         is_sticky: choice.is_sticky,
         is_fallback: choice.is_fallback,
         condition,
-        display,
-        output,
+        start_content,
+        choice_only_content,
+        inner_content,
         target,
         tags,
     };
@@ -377,13 +397,13 @@ fn build_gather_container(
     ctx: &mut LowerCtx<'_>,
     plan: &plan::ContainerPlan,
     gather_id: Option<brink_format::DefinitionId>,
+    gather_index: usize,
 ) -> lir::Container {
     let id = gather_id.unwrap_or(plan.root_id);
-    let name = gather.label.as_ref().map(|l| l.text.clone());
-    let display_name = name.clone().unwrap_or_else(|| {
-        // Anonymous gathers use gN naming
-        "g-anon".to_string()
-    });
+    let display_name = gather
+        .label
+        .as_ref()
+        .map_or_else(|| format!("g-{gather_index}"), |l| l.text.clone());
 
     let mut body = Vec::new();
 
@@ -407,16 +427,32 @@ fn build_gather_container(
 
     lir::Container {
         id,
-        name: if gather.label.is_some() {
-            Some(display_name)
-        } else {
-            // Use the planned name (gN) from the plan
-            Some(display_name)
-        },
+        name: Some(display_name),
         kind: lir::ContainerKind::Gather,
         params: Vec::new(),
         body,
         children,
+        counting_flags: CountingFlags::empty(),
+        temp_slot_count: 0,
+    }
+}
+
+/// Build an implicit gather container (no content, just DONE).
+fn build_implicit_gather(
+    id: brink_format::DefinitionId,
+    gather_counter: &mut usize,
+) -> lir::Container {
+    let name = format!("g-{}", *gather_counter - 1);
+    lir::Container {
+        id,
+        name: Some(name),
+        kind: lir::ContainerKind::Gather,
+        params: Vec::new(),
+        body: vec![lir::Stmt::Divert(lir::Divert {
+            target: lir::DivertTarget::Done,
+            args: Vec::new(),
+        })],
+        children: Vec::new(),
         counting_flags: CountingFlags::empty(),
         temp_slot_count: 0,
     }
@@ -488,29 +524,6 @@ fn lower_hir_divert(divert: &hir::Divert, ctx: &mut LowerCtx<'_>) -> lir::Divert
     };
 
     lir::Divert { target, args }
-}
-
-fn combine_content(
-    a: Option<&hir::Content>,
-    b: Option<&hir::Content>,
-    ctx: &mut LowerCtx<'_>,
-) -> Option<lir::Content> {
-    match (a, b) {
-        (None, None) => None,
-        (Some(content), None) | (None, Some(content)) => Some(content::lower_content(content, ctx)),
-        (Some(a_content), Some(b_content)) => {
-            let mut parts = Vec::new();
-            for p in &a_content.parts {
-                parts.push(content::lower_content_part_pub(p, ctx));
-            }
-            for p in &b_content.parts {
-                parts.push(content::lower_content_part_pub(p, ctx));
-            }
-            let mut tags: Vec<String> = a_content.tags.iter().map(|t| t.text.clone()).collect();
-            tags.extend(b_content.tags.iter().map(|t| t.text.clone()));
-            Some(lir::Content { parts, tags })
-        }
-    }
 }
 
 fn find_gather_target(
@@ -588,11 +601,14 @@ fn collect_counting_refs(
                     if let Some(ref cond) = choice.condition {
                         collect_counting_refs_expr(cond, visit_ids, turns_ids);
                     }
-                    if let Some(ref d) = choice.display {
-                        collect_counting_refs_content(d, visit_ids, turns_ids);
+                    if let Some(ref c) = choice.start_content {
+                        collect_counting_refs_content(c, visit_ids, turns_ids);
                     }
-                    if let Some(ref o) = choice.output {
-                        collect_counting_refs_content(o, visit_ids, turns_ids);
+                    if let Some(ref c) = choice.choice_only_content {
+                        collect_counting_refs_content(c, visit_ids, turns_ids);
+                    }
+                    if let Some(ref c) = choice.inner_content {
+                        collect_counting_refs_content(c, visit_ids, turns_ids);
                     }
                 }
             }

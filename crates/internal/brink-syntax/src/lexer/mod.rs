@@ -93,6 +93,21 @@ impl<'src> Lexer<'src> {
             return;
         }
 
+        // Brackets — emit as L_BRACKET/R_BRACKET even in string mode so the
+        // parser can find choice bracket boundaries regardless of context.
+        // In ink, `[` and `]` in choice content are always bracket delimiters
+        // even when they appear inside quoted text like `"tired[."]`.
+        if b == b'[' {
+            self.pos += 1;
+            self.emit(SyntaxKind::L_BRACKET, start);
+            return;
+        }
+        if b == b']' {
+            self.pos += 1;
+            self.emit(SyntaxKind::R_BRACKET, start);
+            return;
+        }
+
         // Newline terminates an unterminated string
         if b == b'\n' || b == b'\r' {
             self.pos += 1;
@@ -108,7 +123,7 @@ impl<'src> Lexer<'src> {
         self.pos += 1;
         while self.pos < self.bytes.len() {
             match self.bytes[self.pos] {
-                b'"' | b'\\' | b'{' | b'\n' | b'\r' => break,
+                b'"' | b'\\' | b'{' | b'\n' | b'\r' | b'[' | b']' => break,
                 _ => self.pos += 1,
             }
         }

@@ -44,10 +44,12 @@ pub fn emit(program: &lir::Program) -> InkJson {
 /// - `"done"`: root-level done
 /// - metadata object: knots as named content, plus `"global decl"` if present
 fn build_root(root: &lir::Container, program: &lir::Program, lookups: &Lookups) -> Container {
-    let cctx = emit::ContainerCtx::build_from_tree(root, lookups, "");
+    // The inner container is element [0] of root in the JSON format,
+    // so all paths within it are prefixed with "0.".
+    let cctx = emit::ContainerCtx::build_from_tree(root, lookups, "0");
 
     // Emit body elements for the inner container
-    let (mut inner_contents, inner_named) = emit::emit_body(&root.body, lookups, &cctx);
+    let (mut inner_contents, inner_named) = emit::emit_body(root, lookups, &cctx);
 
     // Partition children: knots go to root named_content, everything else
     // (gathers, choice targets) goes to the inner container's named_content
@@ -55,6 +57,15 @@ fn build_root(root: &lir::Container, program: &lir::Program, lookups: &Lookups) 
     let mut root_named_content: HashMap<String, Element> = HashMap::new();
 
     for child in &root.children {
+        // ChoiceTarget and Gather children are built by emit_choice_set
+        // inside emit_body, so skip them here to avoid double-emission.
+        if matches!(
+            child.kind,
+            lir::ContainerKind::ChoiceTarget | lir::ContainerKind::Gather
+        ) {
+            continue;
+        }
+
         let child_name = child.name.as_deref().unwrap_or("_anon");
         let child_container = build_container(child, child_name, lookups);
 
@@ -70,22 +81,27 @@ fn build_root(root: &lir::Container, program: &lir::Program, lookups: &Lookups) 
         }
     }
 
-    // Inklecate wraps the trailing "done" in the inner container inside a
-    // named "g-0" gather container. Remove the trailing done from the body
-    // (if present) and always append a g-0 wrapper.
-    let trailing_done = matches!(
+    // Always strip trailing "done" from the inner contents — it either
+    // moves into a g-0 gather container or was already handled by choices.
+    if matches!(
         inner_contents.last(),
         Some(Element::ControlCommand(ControlCommand::Done))
-    );
-    if trailing_done {
+    ) {
         inner_contents.pop();
     }
-    inner_contents.push(Element::Container(Container {
-        flags: None,
-        name: Some("g-0".to_string()),
-        named_content: HashMap::new(),
-        contents: vec![Element::ControlCommand(ControlCommand::Done)],
-    }));
+
+    // Inklecate wraps the trailing "done" in the inner container.
+    // When choices are present, the gather (g-0) is already built by
+    // emit_choice_set in named_content — don't add a duplicate.
+    // When no choices exist, wrap done in an inline g-0.
+    if !inner_named_content.contains_key("g-0") {
+        inner_contents.push(Element::Container(Container {
+            flags: None,
+            name: Some("g-0".to_string()),
+            named_content: HashMap::new(),
+            contents: vec![Element::ControlCommand(ControlCommand::Done)],
+        }));
+    }
 
     let inner = Container {
         flags: None,
@@ -118,10 +134,18 @@ fn build_container(container: &lir::Container, path: &str, lookups: &Lookups) ->
     let cctx = emit::ContainerCtx::build_from_tree(container, lookups, path);
 
     // Emit body elements
-    let (contents, mut named_content) = emit::emit_body(&container.body, lookups, &cctx);
+    let (contents, mut named_content) = emit::emit_body(container, lookups, &cctx);
 
-    // Recursively build child containers and add to named_content
+    // Recursively build child containers and add to named_content.
+    // ChoiceTarget and Gather children are built by emit_choice_set
+    // inside emit_body, so skip them here to avoid double-emission.
     for child in &container.children {
+        if matches!(
+            child.kind,
+            lir::ContainerKind::ChoiceTarget | lir::ContainerKind::Gather
+        ) {
+            continue;
+        }
         let child_name = child.name.as_deref().unwrap_or("_anon");
         let child_path = if path.is_empty() {
             child_name.to_string()
@@ -237,15 +261,27 @@ impl Lookups {
 }
 
 /// Recursively walk the container tree to build `DefinitionId → path` map.
+///
+/// For the root container, knots get simple name paths (e.g., `"greet"`),
+/// while non-knot children (gathers, choice targets) get paths prefixed
+/// with `"0."` because they live inside the inner container at index 0
+/// of the serialized root array.
 fn collect_container_paths(
     container: &lir::Container,
     path: &str,
     out: &mut HashMap<DefinitionId, String>,
 ) {
     out.insert(container.id, path.to_string());
+    let is_root = container.kind == lir::ContainerKind::Root;
     for child in &container.children {
         let child_name = child.name.as_deref().unwrap_or("_anon");
-        let child_path = if path.is_empty() {
+        let child_path = if is_root && child.kind == lir::ContainerKind::Knot {
+            // Knots go in root named_content — path is just the name.
+            child_name.to_string()
+        } else if is_root {
+            // Non-knot root children go in the inner container at index 0.
+            format!("0.{child_name}")
+        } else if path.is_empty() {
             child_name.to_string()
         } else {
             format!("{path}.{child_name}")
