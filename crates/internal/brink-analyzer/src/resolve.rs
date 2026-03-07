@@ -41,44 +41,40 @@ fn resolve_divert(
     map: &mut ResolutionMap,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    if let Some(id) = lookup_divert(index, uref) {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+    } else {
+        diagnostics.push(unresolved_diag(
+            file_id,
+            uref.range,
+            &uref.path,
+            DiagnosticCode::E024,
+        ));
+    }
+}
+
+fn lookup_divert(index: &SymbolIndex, uref: &brink_ir::UnresolvedRef) -> Option<DefinitionId> {
     let path = &uref.path;
 
     // Dotted path — try exact qualified lookup
     if path.contains('.') {
-        let found = lookup_by_name(index, path, &[SymbolKind::Stitch, SymbolKind::Label]);
-        if let Some(id) = found {
-            map.push(ResolvedRef {
-                file: file_id,
-                range: uref.range,
-                target: id,
-            });
-        } else {
-            diagnostics.push(unresolved_diag(
-                file_id,
-                uref.range,
-                path,
-                DiagnosticCode::E024,
-            ));
-        }
-        return;
+        return lookup_by_name(index, path, &[SymbolKind::Stitch, SymbolKind::Label]);
     }
 
     // Single segment — ink's hierarchical resolution:
-    // 1. Stitch in current knot
+    // 1. Stitch or label in current knot
     if let Some(knot) = &uref.scope.knot {
         let qualified = format!("{knot}.{path}");
         if let Some(id) =
             lookup_by_name(index, &qualified, &[SymbolKind::Stitch, SymbolKind::Label])
         {
-            map.push(ResolvedRef {
-                file: file_id,
-                range: uref.range,
-                target: id,
-            });
-            return;
+            return Some(id);
         }
-
-        // Also check knot.stitch.label for labels in current stitch
+        // Label in current stitch (knot.stitch.label)
         if let Some(stitch) = &uref.scope.stitch
             && let Some(id) = lookup_by_name(
                 index,
@@ -86,65 +82,41 @@ fn resolve_divert(
                 &[SymbolKind::Label],
             )
         {
-            map.push(ResolvedRef {
-                file: file_id,
-                range: uref.range,
-                target: id,
-            });
-            return;
+            return Some(id);
         }
     }
 
     // 2. Knot at top level
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Knot]) {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
+        return Some(id);
     }
 
-    // 3. Label anywhere in current knot (search by suffix)
+    // 3. Top-level stitch (bare name, no parent knot)
+    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Stitch]) {
+        return Some(id);
+    }
+
+    // 4. Label anywhere in current knot (search by suffix)
     if let Some(knot) = &uref.scope.knot
         && let Some(id) = lookup_label_in_knot(index, knot, path)
     {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
+        return Some(id);
     }
 
-    // 4. Top-level label (no knot scope) — stored as bare name
+    // 5. Top-level label (no knot scope) — stored as bare name
     if uref.scope.knot.is_none()
         && let Some(id) = lookup_by_name(index, path, &[SymbolKind::Label])
     {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
+        return Some(id);
     }
 
-    // 5. Variable divert target (`VAR x = -> knot`, then `-> x`)
+    // 6. Variable divert target (`VAR x = -> knot`, then `-> x`)
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Variable]) {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
+        return Some(id);
     }
 
-    diagnostics.push(unresolved_diag(
-        file_id,
-        uref.range,
-        path,
-        DiagnosticCode::E024,
-    ));
+    // 7. Divert parameter in scope (`=== knot(-> x) ===` then `-> x`)
+    lookup_local_in_scope(index, path, &uref.scope)
 }
 
 fn resolve_variable(

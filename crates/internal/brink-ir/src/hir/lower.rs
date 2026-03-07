@@ -71,6 +71,10 @@ pub fn lower_top_level(
         .externals()
         .filter_map(|e| ctx.lower_external_decl(&e))
         .collect();
+    // Top-level stitches (no parent knot) — declare with bare name.
+    for stitch in file.stitches() {
+        ctx.lower_top_level_stitch(&stitch);
+    }
 
     let root_content = ctx.lower_body_children(file.syntax());
 
@@ -230,6 +234,10 @@ impl LowerCtx {
             .filter_map(|i| self.lower_include(&i))
             .collect();
         let knots: Vec<_> = file.knots().filter_map(|k| self.lower_knot(&k)).collect();
+        // Top-level stitches (no parent knot) — declare with bare name.
+        for stitch in file.stitches() {
+            self.lower_top_level_stitch(&stitch);
+        }
         let root_content = self.lower_body_children(file.syntax());
 
         HirFile {
@@ -337,6 +345,37 @@ impl LowerCtx {
         }
 
         (block, stitches)
+    }
+
+    /// Declare a top-level stitch (no parent knot) — registers the symbol
+    /// with its bare name so `-> stitch_name` resolves at file level.
+    fn lower_top_level_stitch(&mut self, stitch: &ast::StitchDef) {
+        let Some(header) = stitch.header() else {
+            return;
+        };
+        let Some(ident) = header.identifier() else {
+            return;
+        };
+        let Some(name_text) = header.name() else {
+            return;
+        };
+
+        let params = self.lower_knot_params(header.params());
+        let param_infos: Vec<crate::ParamInfo> = params
+            .iter()
+            .map(|p| crate::ParamInfo {
+                name: p.name.text.clone(),
+                is_ref: p.is_ref,
+                is_divert: p.is_divert,
+            })
+            .collect();
+        self.declare_with(
+            SymbolKind::Stitch,
+            &name_text,
+            ident.syntax().text_range(),
+            param_infos,
+            None,
+        );
     }
 
     fn lower_stitch(&mut self, stitch: &ast::StitchDef, knot_name: &str) -> Option<Stitch> {

@@ -286,6 +286,10 @@ impl SourceFile {
         support::children(&self.syntax)
     }
 
+    pub fn stitches(&self) -> impl Iterator<Item = StitchDef> {
+        support::children(&self.syntax)
+    }
+
     pub fn var_decls(&self) -> impl Iterator<Item = VarDecl> {
         support::children(&self.syntax)
     }
