@@ -412,6 +412,7 @@ fn merge_manifest_into(dst: &mut SymbolManifest, src: &SymbolManifest) {
     dst.externals.extend(src.externals.iter().cloned());
     dst.labels.extend(src.labels.iter().cloned());
     dst.list_items.extend(src.list_items.iter().cloned());
+    dst.locals.extend(src.locals.iter().cloned());
     dst.unresolved.extend(src.unresolved.iter().cloned());
 }
 

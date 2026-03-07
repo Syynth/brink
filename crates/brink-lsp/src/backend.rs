@@ -966,20 +966,24 @@ fn find_def_at_offset(
 /// Extract the identifier word surrounding `offset` in `source`.
 fn word_at_offset(source: &str, offset: rowan::TextSize) -> Option<&str> {
     let pos: usize = offset.into();
-    if pos > source.len() {
+    if pos >= source.len() {
         return None;
     }
     let bytes = source.as_bytes();
-    let start = (0..pos)
-        .rev()
-        .take_while(|&i| bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
-        .last()?;
-    let end = (pos..source.len())
-        .take_while(|&i| bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
-        .last()
-        .map_or(pos, |i| i + 1);
-    let word = &source[start..end];
-    if word.is_empty() { None } else { Some(word) }
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    // The cursor must be on a word character
+    if !is_word(bytes[pos]) {
+        return None;
+    }
+    let mut start = pos;
+    while start > 0 && is_word(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = pos + 1;
+    while end < bytes.len() && is_word(bytes[end]) {
+        end += 1;
+    }
+    Some(&source[start..end])
 }
 
 // ─── Folding range helpers ──────────────────────────────────────────
