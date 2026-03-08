@@ -73,7 +73,7 @@ When working on JSON corpus conformance (`tests/tier1/`, `tier2/`, `tier3/`), fo
 4. **Implement, verify, commit** — fix, re-run corpus to confirm progress (pass count should increase), commit.
 5. **Repeat from step 1.**
 
-**Do not shop for test cases.** The corpus is sorted by priority (tier1 → tier2 → tier3 → patched → github). Always fix the first reported failure — do not skip ahead looking for easier wins.
+**Do not shop for test cases.** The corpus reports the first failure for a reason — fix THAT test, not a different one. Do not scan other categories, do not look for "simpler" or "quicker" wins, do not skip a hard test hoping to find low-hanging fruit elsewhere. Complex failures often have multiple constituent issues (e.g., wrong path format AND missing switch/case pattern AND extra whitespace). Break them down into individual sub-problems and tackle them one at a time — each sub-fix should compile and not regress the corpus. If a sub-fix requires implementing a missing feature (switch/case, new emit pattern, etc.), implement it.
 
 The corpus test file is `crates/brink-compiler/tests/json_corpus.rs`. Test cases live in `tests/tier{1,2,3}/` — each has `story.ink` (source) and `story.ink.json` (expected inklecate output).
 

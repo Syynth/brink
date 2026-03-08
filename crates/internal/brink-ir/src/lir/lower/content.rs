@@ -36,7 +36,10 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
                     lir::CondBranch { condition, body }
                 })
                 .collect();
-            lir::ContentPart::InlineConditional(lir::Conditional { branches })
+            lir::ContentPart::InlineConditional(lir::Conditional {
+                switch_expr: None,
+                branches,
+            })
         }
         hir::ContentPart::InlineSequence(seq) => {
             let branches = seq

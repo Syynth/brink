@@ -134,7 +134,8 @@ fn emit_stmt(
                     }
                     out.push(end_ev());
                 }
-                let path = divert_target_path(&target.target, lookups);
+                let abs = divert_target_path(&target.target, lookups);
+                let path = compact_path(&cctx.path, 1, &abs);
                 let divert = match &target.target {
                     lir::DivertTarget::Variable(_) => Divert::TunnelVariable {
                         conditional: false,
@@ -158,7 +159,8 @@ fn emit_stmt(
                 out.push(end_ev());
             }
             out.push(Element::ControlCommand(ControlCommand::Thread));
-            let path = divert_target_path(&thread.target, lookups);
+            let abs = divert_target_path(&thread.target, lookups);
+            let path = compact_path(&cctx.path, 1, &abs);
             out.push(Element::Divert(Divert::Target {
                 conditional: false,
                 path,
@@ -213,7 +215,7 @@ fn emit_stmt(
 
         lir::Stmt::ChoiceSet(cs) => emit_choice_set(cs, lookups, cctx, out, named, siblings),
 
-        lir::Stmt::Conditional(cond) => emit_conditional(cond, lookups, cctx, out, named),
+        lir::Stmt::Conditional(cond) => emit_conditional(cond, lookups, cctx, out, named, false),
 
         lir::Stmt::Sequence(seq) => emit_sequence(seq, lookups, cctx, out, named),
 
@@ -246,7 +248,7 @@ fn emit_content(
                 out.push(end_ev());
             }
             lir::ContentPart::InlineConditional(cond) => {
-                emit_conditional(cond, lookups, cctx, out, &mut HashMap::new());
+                emit_conditional(cond, lookups, cctx, out, &mut HashMap::new(), true);
             }
             lir::ContentPart::InlineSequence(seq) => {
                 emit_sequence(seq, lookups, cctx, out, &mut HashMap::new());
@@ -278,7 +280,8 @@ fn emit_divert(
         }
         lir::DivertTarget::Container(id) => {
             if divert.args.is_empty() {
-                let path = lookups.container_path(*id);
+                let abs = lookups.container_path(*id);
+                let path = compact_path(&cctx.path, 1, &abs);
                 out.push(Element::Divert(Divert::Target {
                     conditional: false,
                     path,
@@ -289,8 +292,10 @@ fn emit_divert(
                     emit_call_arg(arg, lookups, cctx, out);
                 }
                 out.push(end_ev());
-                let path = lookups.container_path(*id);
-                out.push(Element::Divert(Divert::Function {
+                let abs = lookups.container_path(*id);
+                let path = compact_path(&cctx.path, 1, &abs);
+                // Regular divert with args — NOT a function call (no return address).
+                out.push(Element::Divert(Divert::Target {
                     conditional: false,
                     path,
                 }));
@@ -393,9 +398,23 @@ fn emit_conditional(
     cctx: &ContainerCtx,
     out: &mut Vec<Element>,
     _named: &mut HashMap<String, Element>,
+    is_inline: bool,
 ) {
-    // We'll fill in nop_index after emitting all branches.
-    // For now, use a placeholder and patch later.
+    if cond.switch_expr.is_some() {
+        emit_switch_conditional(cond, lookups, cctx, out, is_inline);
+    } else {
+        emit_if_conditional(cond, lookups, cctx, out, is_inline);
+    }
+}
+
+/// Emit an if/else-if/else conditional (no switch expression).
+fn emit_if_conditional(
+    cond: &lir::Conditional,
+    lookups: &Lookups,
+    cctx: &ContainerCtx,
+    out: &mut Vec<Element>,
+    is_inline: bool,
+) {
     let mut branch_merge_indices: Vec<usize> = Vec::new();
     let is_single_branch = cond.branches.len() == 1;
 
@@ -406,10 +425,8 @@ fn emit_conditional(
             param_offset: 0,
         };
 
-        // Build the branch body for the "b" sub-container.
         let (mut body_elems, sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
-        // Inklecate prepends "\n" to each multiline branch body.
-        if !is_single_branch {
+        if !is_inline {
             body_elems.insert(0, Element::Value(InkValue::String("\n".to_string())));
         }
 
@@ -430,19 +447,13 @@ fn emit_conditional(
             }),
         );
 
-        // Build wrapper contents.
-        // Single-branch (branchless) conditionals: condition eval goes OUTSIDE
-        // the wrapper, wrapper only has the conditional divert.
-        // Multi-branch (switch/if-else): condition eval goes INSIDE each wrapper.
         let mut wrapper_contents = Vec::new();
         if let Some(ref condition) = branch.condition {
             if is_single_branch {
-                // Condition eval outside wrapper
                 out.push(ev());
                 emit_expr(condition, lookups, cctx, out);
                 out.push(end_ev());
             } else {
-                // Condition eval inside wrapper
                 wrapper_contents.push(ev());
                 emit_expr(condition, lookups, cctx, &mut wrapper_contents);
                 wrapper_contents.push(end_ev());
@@ -468,32 +479,148 @@ fn emit_conditional(
         branch_merge_indices.push(wrapper_idx);
     }
 
-    // Emit nop merge point — index is the element's position in the container.
-    // Account for param temp= elements that are prepended by build_container.
     let nop_index = out.len() + cctx.param_offset;
     out.push(Element::ControlCommand(ControlCommand::NoOperation));
 
-    // Compute merge path
-    let merge_path = if cctx.path.is_empty() {
+    if !is_inline {
+        out.push(Element::Value(InkValue::String("\n".to_string())));
+    }
+
+    let merge_abs = if cctx.path.is_empty() {
         format!("{nop_index}")
     } else {
         format!("{}.{nop_index}", cctx.path)
     };
+    let merge_path = compact_path(&cctx.path, 3, &merge_abs);
 
-    // Patch merge diverts in each branch
     for &wrapper_idx in &branch_merge_indices {
         if let Element::Container(ref mut wrapper) = out[wrapper_idx]
             && let Some(Element::Container(branch_container)) = wrapper.named_content.get_mut("b")
-        {
-            // The last element before null should be the merge divert
-            if let Some(el) = branch_container.contents.iter_mut().rev().find(
+            && let Some(el) = branch_container.contents.iter_mut().rev().find(
                 |e| matches!(e, Element::Divert(Divert::Target { path, .. }) if path.is_empty()),
-            ) {
-                *el = Element::Divert(Divert::Target {
-                    conditional: false,
-                    path: merge_path.clone(),
-                });
-            }
+            )
+        {
+            *el = Element::Divert(Divert::Target {
+                conditional: false,
+                path: merge_path.clone(),
+            });
+        }
+    }
+}
+
+/// Emit a switch conditional using the "du" (duplicate) pattern.
+///
+/// Structure: `ev, <switch_expr>, /ev, [du, ev, <case>, ==, /ev, cond_divert, {b: [pop, \n, ...body, merge_divert]}], ...`
+fn emit_switch_conditional(
+    cond: &lir::Conditional,
+    lookups: &Lookups,
+    cctx: &ContainerCtx,
+    out: &mut Vec<Element>,
+    is_inline: bool,
+) {
+    let Some(switch_expr) = cond.switch_expr.as_ref() else {
+        return;
+    };
+
+    // Evaluate the switch expression once
+    out.push(ev());
+    emit_expr(switch_expr, lookups, cctx, out);
+    out.push(end_ev());
+
+    let mut branch_merge_indices: Vec<usize> = Vec::new();
+
+    for branch in &cond.branches {
+        let inner_cctx = ContainerCtx {
+            temp_names: cctx.temp_names.clone(),
+            path: String::new(),
+            param_offset: 0,
+        };
+
+        let (mut body_elems, sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
+
+        // Switch branch bodies start with "pop" (remove duplicated value)
+        // followed by "\n" for multiline
+        body_elems.insert(0, Element::ControlCommand(ControlCommand::Pop));
+        if !is_inline {
+            body_elems.insert(1, Element::Value(InkValue::String("\n".to_string())));
+        }
+
+        // Placeholder merge divert
+        body_elems.push(Element::Divert(Divert::Target {
+            conditional: false,
+            path: String::new(),
+        }));
+
+        let mut branch_named = sub_named;
+        branch_named.insert(
+            "b".to_string(),
+            Element::Container(Container {
+                flags: None,
+                name: None,
+                named_content: HashMap::new(),
+                contents: body_elems,
+            }),
+        );
+
+        let mut wrapper_contents = Vec::new();
+        if let Some(ref case_value) = branch.condition {
+            // "du" — duplicate the switch value on the stack
+            wrapper_contents.push(Element::ControlCommand(ControlCommand::Duplicate));
+            // ev, <case_value>, ==, /ev
+            wrapper_contents.push(ev());
+            emit_expr(case_value, lookups, cctx, &mut wrapper_contents);
+            wrapper_contents.push(Element::NativeFunction(NativeFunction::Equal));
+            wrapper_contents.push(end_ev());
+            wrapper_contents.push(Element::Divert(Divert::Target {
+                conditional: true,
+                path: ".^.b".to_string(),
+            }));
+        } else {
+            // else branch — unconditional divert
+            wrapper_contents.push(Element::Divert(Divert::Target {
+                conditional: false,
+                path: ".^.b".to_string(),
+            }));
+        }
+
+        let wrapper_idx = out.len();
+        out.push(Element::Container(Container {
+            flags: None,
+            name: None,
+            named_content: branch_named,
+            contents: wrapper_contents,
+        }));
+        branch_merge_indices.push(wrapper_idx);
+    }
+
+    // Pop the switch value remaining on the stack after all branches
+    out.push(Element::ControlCommand(ControlCommand::Pop));
+
+    let nop_index = out.len() + cctx.param_offset;
+    out.push(Element::ControlCommand(ControlCommand::NoOperation));
+
+    if !is_inline {
+        out.push(Element::Value(InkValue::String("\n".to_string())));
+    }
+
+    let merge_abs = if cctx.path.is_empty() {
+        format!("{nop_index}")
+    } else {
+        format!("{}.{nop_index}", cctx.path)
+    };
+    let merge_path = compact_path(&cctx.path, 3, &merge_abs);
+
+    for &wrapper_idx in &branch_merge_indices {
+        if let Element::Container(ref mut wrapper) = out[wrapper_idx]
+            && let Some(Element::Container(branch_container)) = wrapper.named_content.get_mut("b")
+            && let Some(el) = branch_container.contents.iter_mut().rev().find(
+                |e| matches!(e, Element::Divert(Divert::Target { path, .. }) if path.is_empty()),
+            )
+        {
+            *el = Element::Divert(Divert::Target {
+                conditional: false,
+                path: merge_path.clone(),
+            });
         }
     }
 }
@@ -645,7 +772,28 @@ fn emit_choice_set(
             format!("{}.{gather_name}", cctx.path)
         };
         let gather_cctx = ContainerCtx::build_from_tree(gather, lookups, &gather_path);
-        let (gather_contents, gather_named) = emit_body(gather, lookups, &gather_cctx);
+        let (mut gather_contents, gather_named) = emit_body(gather, lookups, &gather_cctx);
+
+        // Inklecate appends a "done" sub-container named g-{N+1} after
+        // explicit gather bodies that have text content (not just a bare divert).
+        let has_content = gather
+            .body
+            .iter()
+            .any(|s| matches!(s, lir::Stmt::EmitContent(_)));
+        if has_content {
+            let next_gather_index = gather_name
+                .strip_prefix("g-")
+                .and_then(|s| s.parse::<usize>().ok())
+                .map_or_else(|| format!("{gather_name}-done"), |i| format!("g-{}", i + 1));
+            let done_container = Element::Container(Container {
+                flags: None,
+                name: Some(next_gather_index),
+                named_content: HashMap::new(),
+                contents: vec![Element::ControlCommand(ControlCommand::Done)],
+            });
+            gather_contents.push(done_container);
+        }
+
         named.insert(
             gather_name.to_string(),
             Element::Container(Container {
@@ -776,11 +924,14 @@ fn emit_choice_outer(
         flags |= ChoicePointFlags::HAS_CHOICE_ONLY_CONTENT;
     }
 
-    let c_path = if cctx.path.is_empty() {
+    // Choice point target: c-N is in named_content of the same container.
+    // Source depth=1 (choice point is a content element in the container).
+    let c_abs = if cctx.path.is_empty() {
         c_name.to_string()
     } else {
         format!("{}.{c_name}", cctx.path)
     };
+    let c_path = compact_path(&cctx.path, 1, &c_abs);
     outer_contents.push(Element::ChoicePoint(ChoicePoint {
         target: c_path,
         flags,
@@ -810,6 +961,7 @@ fn emit_choice_outer(
 /// Build a choice target container (c-N) with the $r2 preamble for replaying
 /// start content, followed by the choice body, divert to gather, and
 /// counting flags.
+#[expect(clippy::too_many_lines)]
 fn build_choice_target(
     child: &lir::Container,
     choice: &lir::Choice,
@@ -819,17 +971,26 @@ fn build_choice_target(
     lookups: &Lookups,
     cctx: &ContainerCtx,
 ) -> Container {
+    // Check if the choice target has nested choice/gather children.
+    let has_nested_choices = child.children.iter().any(|c| {
+        matches!(
+            c.kind,
+            lir::ContainerKind::ChoiceTarget | lir::ContainerKind::Gather
+        )
+    });
+
     let child_cctx = ContainerCtx::build_from_tree(child, lookups, child_path);
     let mut contents = Vec::new();
 
     // $r2 preamble: replay start content from the outer container's "s"
     if choice.start_content.is_some() {
         let r2_path = format!("{child_path}.$r2");
-        let s_path = if cctx.path.is_empty() {
+        let s_abs = if cctx.path.is_empty() {
             format!("{outer_index}.s")
         } else {
             format!("{}.{outer_index}.s", cctx.path)
         };
+        let s_path = compact_path(child_path, 1, &s_abs);
 
         contents.push(ev());
         contents.push(Element::Value(InkValue::DivertTarget(r2_path)));
@@ -852,23 +1013,24 @@ fn build_choice_target(
         }));
     }
 
-    // Emit the choice body, excluding the trailing gather divert (emitted separately below).
+    // Emit the choice body.
     let (mut body_contents, body_named) = emit_body(child, lookups, &child_cctx);
 
     // The LIR body may end with a divert to the gather container. In inklecate's
     // format this divert comes AFTER the \n separator, so we pop it and re-add it
-    // after the newline. Any other trailing divert (e.g. Done from `-> DONE`)
-    // stays in place — the gather divert will be appended after it.
-    let gather_divert_element = if let Some(gather_id) = gather_target {
-        let gather_path = lookups.container_path(gather_id);
-        // Check if the body ends with a divert to the gather — if so, pop it.
+    // after the newline. Skip this for nested choices — their gather diverts
+    // are inside the nested choice targets, not at this level.
+    let gather_divert_element = if has_nested_choices {
+        None
+    } else if let Some(gather_id) = gather_target {
+        let gather_abs = lookups.container_path(gather_id);
         let last_is_gather = body_contents.last().is_some_and(
-            |el| matches!(el, Element::Divert(Divert::Target { path, .. }) if *path == gather_path),
+            |el| matches!(el, Element::Divert(Divert::Target { path, .. }) if *path == gather_abs),
         );
         if last_is_gather {
             body_contents.pop();
         }
-        // Always emit the gather divert after \n.
+        let gather_path = compact_path(child_path, 1, &gather_abs);
         Some(Element::Divert(Divert::Target {
             conditional: false,
             path: gather_path,
@@ -906,11 +1068,62 @@ fn build_choice_target(
 
     let flags = super::convert_counting_flags(child.counting_flags);
 
-    Container {
-        flags: Some(flags),
-        name: None,
-        named_content: body_named,
-        contents,
+    if has_nested_choices {
+        // When the choice target has nested choices, the body text stays
+        // flat and the choice set content wraps in an inner anonymous container.
+        // Split at the start of the first choice's eval block — find the first
+        // ChoicePoint and scan back to its matching BeginLogicalEval.
+        let first_cp = contents
+            .iter()
+            .position(|el| matches!(el, Element::ChoicePoint(_)))
+            .unwrap_or(contents.len());
+        let split_idx = contents[..first_cp]
+            .iter()
+            .rposition(|el| {
+                matches!(
+                    el,
+                    Element::ControlCommand(ControlCommand::BeginLogicalEval)
+                )
+            })
+            .unwrap_or(first_cp);
+
+        let mut choice_content = contents.split_off(split_idx);
+
+        // Remove trailing gather diverts from the inner container — nested
+        // choice targets have their own gather diverts.
+        while choice_content
+            .last()
+            .is_some_and(|el| matches!(el, Element::Divert(Divert::Target { .. })))
+        {
+            choice_content.pop();
+        }
+
+        // The gather container (g-0) belongs at the outer level, not inside
+        // the nested choice inner container. Only choice targets go inside.
+        let mut inner_named = body_named;
+        inner_named.retain(|k, _| !k.starts_with("g-"));
+
+        let inner = Container {
+            flags: None,
+            name: None,
+            named_content: inner_named,
+            contents: choice_content,
+        };
+        contents.push(Element::Container(inner));
+
+        Container {
+            flags: Some(flags),
+            name: None,
+            named_content: HashMap::new(),
+            contents,
+        }
+    } else {
+        Container {
+            flags: Some(flags),
+            name: None,
+            named_content: body_named,
+            contents,
+        }
     }
 }
 
@@ -937,7 +1150,7 @@ fn emit_content_parts_inline(
                 out.push(end_ev());
             }
             lir::ContentPart::InlineConditional(cond) => {
-                emit_conditional(cond, lookups, cctx, out, &mut HashMap::new());
+                emit_conditional(cond, lookups, cctx, out, &mut HashMap::new(), true);
             }
             lir::ContentPart::InlineSequence(seq) => {
                 emit_sequence(seq, lookups, cctx, out, &mut HashMap::new());
@@ -1050,7 +1263,8 @@ pub fn emit_expr(expr: &lir::Expr, lookups: &Lookups, cctx: &ContainerCtx, out: 
             for arg in args {
                 emit_call_arg(arg, lookups, cctx, out);
             }
-            let path = lookups.container_path(*target);
+            let abs = lookups.container_path(*target);
+            let path = compact_path(&cctx.path, 1, &abs);
             out.push(Element::Divert(Divert::Function {
                 conditional: false,
                 path,
@@ -1124,6 +1338,57 @@ fn divert_target_path(target: &lir::DivertTarget, lookups: &Lookups) -> String {
         lir::DivertTarget::Variable(id) => lookups.global_name(*id),
         lir::DivertTarget::Done => "done".to_string(),
         lir::DivertTarget::End => "end".to_string(),
+    }
+}
+
+/// Compute the compact (shortest) path string, like inklecate's `CompactPathString`.
+///
+/// `source_container` is the dot-separated path of the container holding the
+/// source object. `source_depth` is how many levels deeper the source is
+/// (1 for a direct content element, 2 for an element inside a named child, etc.).
+/// `target` is the absolute path of the target.
+///
+/// Returns the shorter of the relative (`.^...`) and absolute representations.
+fn compact_path(source_container: &str, source_depth: usize, target: &str) -> String {
+    let src_comps: Vec<&str> = if source_container.is_empty() {
+        vec![]
+    } else {
+        source_container.split('.').collect()
+    };
+    let tgt_comps: Vec<&str> = if target.is_empty() {
+        return target.to_string();
+    } else {
+        target.split('.').collect()
+    };
+
+    // Find length of shared prefix between source container and target.
+    let min_len = src_comps.len().min(tgt_comps.len());
+    let mut shared = 0;
+    for i in 0..min_len {
+        if src_comps[i] == tgt_comps[i] {
+            shared = i + 1;
+        } else {
+            break;
+        }
+    }
+
+    if shared == 0 {
+        return target.to_string();
+    }
+
+    // Upward moves: from source object up to the shared ancestor.
+    let ups = (src_comps.len() - shared) + source_depth;
+    let downs = &tgt_comps[shared..];
+
+    let mut parts = vec!["^"; ups];
+    parts.extend_from_slice(downs);
+
+    let relative = format!(".{}", parts.join("."));
+
+    if relative.len() < target.len() {
+        relative
+    } else {
+        target.to_string()
     }
 }
 

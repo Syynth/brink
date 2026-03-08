@@ -449,6 +449,7 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
                 inline_logic(p);
             }
             DIVERT | TUNNEL_ONWARDS | THREAD => {
+                p.skip_ws();
                 super::divert::divert(p);
             }
             GLUE => {

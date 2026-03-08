@@ -297,6 +297,9 @@ pub struct Choice {
 /// A block-level conditional with resolved branch conditions.
 #[derive(Clone)]
 pub struct Conditional {
+    /// For switch statements, the expression being switched on.
+    /// Branch conditions are case values compared with `==`.
+    pub switch_expr: Option<Expr>,
     pub branches: Vec<CondBranch>,
 }
 

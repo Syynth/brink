@@ -227,6 +227,9 @@ bitflags::bitflags! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conditional {
     pub ptr: SyntaxNodePtr,
+    /// For switch statements (`{ x / 10: - 2: twenty ... }`), the expression
+    /// being switched on. Branch conditions are case values, not full booleans.
+    pub switch_expr: Option<Expr>,
     pub branches: Vec<CondBranch>,
 }
 

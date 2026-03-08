@@ -131,7 +131,27 @@ fn build_root(root: &lir::Container, program: &lir::Program, lookups: &Lookups) 
 }
 
 fn build_container(container: &lir::Container, path: &str, lookups: &Lookups) -> Container {
-    let cctx = emit::ContainerCtx::build_from_tree(container, lookups, path);
+    // Detect whether this container has choice/gather children, which
+    // requires wrapping the body in an inner anonymous container (index 0).
+    let has_choice_children = container.children.iter().any(|c| {
+        matches!(
+            c.kind,
+            lir::ContainerKind::ChoiceTarget | lir::ContainerKind::Gather
+        )
+    });
+
+    // When wrapping, the body lives inside an inner container at index 0,
+    // so paths within the body are prefixed with "{path}.0".
+    let body_path = if has_choice_children {
+        if path.is_empty() {
+            "0".to_string()
+        } else {
+            format!("{path}.0")
+        }
+    } else {
+        path.to_string()
+    };
+    let cctx = emit::ContainerCtx::build_from_tree(container, lookups, &body_path);
 
     // Emit body elements
     let (mut contents, mut named_content) = emit::emit_body(container, lookups, &cctx);
@@ -153,9 +173,9 @@ fn build_container(container: &lir::Container, path: &str, lookups: &Lookups) ->
         contents.splice(0..0, param_elems);
     }
 
-    // Recursively build child containers and add to named_content.
+    // Recursively build non-choice child containers.
     // ChoiceTarget and Gather children are built by emit_choice_set
-    // inside emit_body, so skip them here to avoid double-emission.
+    // inside emit_body and go into the inner container's named_content.
     for child in &container.children {
         if matches!(
             child.kind,
@@ -176,11 +196,28 @@ fn build_container(container: &lir::Container, path: &str, lookups: &Lookups) ->
     // Convert counting flags
     let flags = convert_counting_flags(container.counting_flags);
 
-    Container {
-        flags: if flags.is_empty() { None } else { Some(flags) },
-        name: None,
-        named_content,
-        contents,
+    if has_choice_children {
+        // Wrap body + choice-related named_content in an inner anonymous container.
+        // The outer container becomes [inner_container, null].
+        let inner = Container {
+            flags: None,
+            name: None,
+            named_content,
+            contents,
+        };
+        Container {
+            flags: if flags.is_empty() { None } else { Some(flags) },
+            name: None,
+            named_content: HashMap::new(),
+            contents: vec![Element::Container(inner)],
+        }
+    } else {
+        Container {
+            flags: if flags.is_empty() { None } else { Some(flags) },
+            name: None,
+            named_content,
+            contents,
+        }
     }
 }
 
@@ -283,10 +320,9 @@ impl Lookups {
 
 /// Recursively walk the container tree to build `DefinitionId → path` map.
 ///
-/// For the root container, knots get simple name paths (e.g., `"greet"`),
-/// while non-knot children (gathers, choice targets) get paths prefixed
-/// with `"0."` because they live inside the inner container at index 0
-/// of the serialized root array.
+/// Paths must reflect the **JSON** tree structure, not the LIR tree.
+/// When a container has choice/gather children, its body gets wrapped
+/// in an inner anonymous container at index 0, shifting all child paths.
 fn collect_container_paths(
     container: &lir::Container,
     path: &str,
@@ -294,6 +330,17 @@ fn collect_container_paths(
 ) {
     out.insert(container.id, path.to_string());
     let is_root = container.kind == lir::ContainerKind::Root;
+
+    // Non-root containers with choice/gather children wrap their body
+    // in an inner container at index 0, so named children live under ".0".
+    let will_wrap = !is_root
+        && container.children.iter().any(|c| {
+            matches!(
+                c.kind,
+                lir::ContainerKind::ChoiceTarget | lir::ContainerKind::Gather
+            )
+        });
+
     for child in &container.children {
         let child_name = child.name.as_deref().unwrap_or("_anon");
         let child_path = if is_root && child.kind == lir::ContainerKind::Knot {
@@ -302,6 +349,13 @@ fn collect_container_paths(
         } else if is_root {
             // Non-knot root children go in the inner container at index 0.
             format!("0.{child_name}")
+        } else if will_wrap {
+            // Children go into the inner container at index 0.
+            if path.is_empty() {
+                format!("0.{child_name}")
+            } else {
+                format!("{path}.0.{child_name}")
+            }
         } else if path.is_empty() {
             child_name.to_string()
         } else {

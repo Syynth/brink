@@ -1776,3 +1776,39 @@ Sorry, you're dead
         "branch body should contain EndOfLine after content"
     );
 }
+
+#[test]
+fn branchless_conditional_tunnel_return_count() {
+    let (hir, _, _) = lower_ink(
+        "\
+=== get_hit(x) ===
+~ hp = hp - x
+{ is_alive():
+    ->->
+}
+-> death(beaten)
+",
+    );
+
+    let knot = &hir.knots[0];
+    let cond = knot.body.stmts.iter().find_map(|s| {
+        if let Stmt::Conditional(c) = s {
+            Some(c)
+        } else {
+            None
+        }
+    });
+    let cond = cond.expect("should have a conditional");
+    assert_eq!(cond.branches.len(), 1, "branchless should have 1 branch");
+
+    let body = &cond.branches[0].body;
+    let return_count = body
+        .stmts
+        .iter()
+        .filter(|s| matches!(s, Stmt::Return(_)))
+        .count();
+    assert_eq!(
+        return_count, 1,
+        "branch body should have exactly 1 Return, got {return_count}"
+    );
+}

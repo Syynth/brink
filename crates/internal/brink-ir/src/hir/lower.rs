@@ -921,7 +921,11 @@ impl LowerCtx {
                     body: else_body,
                 });
             }
-            return Conditional { ptr, branches };
+            return Conditional {
+                ptr,
+                switch_expr: None,
+                branches,
+            };
         }
 
         if let Some(inline_branches) = cond.inline_branches() {
@@ -938,7 +942,11 @@ impl LowerCtx {
                     body: self.wrap_content_as_block(b.syntax()),
                 });
             }
-            return Conditional { ptr, branches };
+            return Conditional {
+                ptr,
+                switch_expr: None,
+                branches,
+            };
         }
 
         if let Some(ml_branches) = cond.multiline_branches() {
@@ -956,7 +964,12 @@ impl LowerCtx {
                     body,
                 });
             }
-            return Conditional { ptr, branches };
+            // Multiline branches with a switch expression use the "du" pattern
+            return Conditional {
+                ptr,
+                switch_expr: Some(condition.clone()),
+                branches,
+            };
         }
 
         // Fallback: bare condition, no body
@@ -964,7 +977,11 @@ impl LowerCtx {
             condition: Some(condition.clone()),
             body: Block::default(),
         });
-        Conditional { ptr, branches }
+        Conditional {
+            ptr,
+            switch_expr: None,
+            branches,
+        }
     }
 
     /// Lower a `BranchlessCondBody` to a `Block`.
@@ -1868,7 +1885,11 @@ impl LowerCtx {
                 CondBranch { condition, body }
             })
             .collect();
-        Conditional { ptr, branches }
+        Conditional {
+            ptr,
+            switch_expr: None,
+            branches,
+        }
     }
 
     fn lower_block_sequence(&mut self, seq: &ast::SequenceWithAnnotation) -> Sequence {
