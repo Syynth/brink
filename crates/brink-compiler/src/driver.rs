@@ -63,5 +63,5 @@ where
     let program = compile_lir(entry, read_file)?;
 
     // ── Pass 6b: Codegen ────────────────────────────────────────────
-    Ok(crate::bytecode::emit(&program))
+    Ok(brink_codegen_inkb::emit(&program))
 }

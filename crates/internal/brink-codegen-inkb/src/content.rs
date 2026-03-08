@@ -3,7 +3,7 @@
 use brink_format::Opcode;
 use brink_ir::lir;
 
-use super::ContainerEmitter;
+use crate::ContainerEmitter;
 
 impl ContainerEmitter<'_> {
     pub(super) fn emit_content(&mut self, content: &lir::Content) {

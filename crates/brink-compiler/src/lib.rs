@@ -5,9 +5,7 @@
 //! (`brink-analyzer`), and codegen into the `brink-format` binary
 //! representation consumed by `brink-runtime`.
 
-mod bytecode;
 mod driver;
-pub mod json;
 
 pub use brink_ir::FileId;
 
@@ -46,7 +44,7 @@ where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
     let program = driver::compile_to_lir(entry, read_file)?;
-    Ok(json::emit(&program))
+    Ok(brink_codegen_json::emit(&program))
 }
 
 /// Compile ink source from a string to the ink.json format.

@@ -3,7 +3,7 @@
 use brink_format::{ChoiceFlags, Opcode, SequenceKind};
 use brink_ir::lir;
 
-use super::ContainerEmitter;
+use crate::ContainerEmitter;
 
 impl ContainerEmitter<'_> {
     pub(super) fn emit_body(&mut self, stmts: &[lir::Stmt]) {

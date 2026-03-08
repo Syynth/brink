@@ -9,7 +9,7 @@ use brink_json::{
     NativeFunction, ReadCountReference, VariableAssignment, VariableReference,
 };
 
-use super::Lookups;
+use crate::Lookups;
 
 // ─── Per-container emission context ─────────────────────────────────
 
@@ -1066,7 +1066,7 @@ fn build_choice_target(
         contents.push(gd);
     }
 
-    let flags = super::convert_counting_flags(child.counting_flags);
+    let flags = crate::convert_counting_flags(child.counting_flags);
 
     if has_nested_choices {
         // When the choice target has nested choices, the body text stays

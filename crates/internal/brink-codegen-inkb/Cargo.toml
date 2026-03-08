@@ -1,0 +1,15 @@
+[package]
+name = "brink-codegen-inkb"
+description = "Bytecode codegen backend: LIR → StoryData (inkb format)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+brink-ir = { path = "../brink-ir" }
+brink-format = { path = "../brink-format" }
+
+[lints]
+workspace = true

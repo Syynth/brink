@@ -202,10 +202,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "brink-codegen-inkb"
+version = "0.0.1"
+dependencies = [
+ "brink-format",
+ "brink-ir",
+]
+
+[[package]]
+name = "brink-codegen-json"
+version = "0.0.1"
+dependencies = [
+ "brink-format",
+ "brink-ir",
+ "brink-json",
+]
+
+[[package]]
 name = "brink-compiler"
 version = "0.0.1"
 dependencies = [
  "brink-analyzer",
+ "brink-codegen-inkb",
+ "brink-codegen-json",
  "brink-db",
  "brink-format",
  "brink-ir",

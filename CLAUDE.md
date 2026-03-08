@@ -7,7 +7,7 @@ An Ink compiler and runtime in Rust. Implements [inkle's ink](https://github.com
 | Crate | Path | Purpose |
 |-------|------|---------|
 | `brink` | `crates/brink/` | Public API — re-exports from compiler and runtime |
-| `brink-compiler` | `crates/brink-compiler/` | Pipeline driver + codegen backends |
+| `brink-compiler` | `crates/brink-compiler/` | Pipeline driver — orchestrates parsing, analysis, and codegen |
 | `brink-runtime` | `crates/brink-runtime/` | Bytecode VM for executing compiled stories |
 | `brink-cli` | `crates/brink-cli/` | CLI for compiling and running ink stories |
 | `brink-lsp` | `crates/brink-lsp/` | Language server for ink files |
@@ -18,6 +18,8 @@ An Ink compiler and runtime in Rust. Implements [inkle's ink](https://github.com
 | `brink-db` | `crates/internal/brink-db/` | Incremental project database with per-file/per-knot caching |
 | `brink-format` | `crates/internal/brink-format/` | Binary interface between compiler and runtime (the firewall) |
 | `brink-json` | `crates/internal/brink-json/` | Parser for inklecate .ink.json output format |
+| `brink-codegen-json` | `crates/internal/brink-codegen-json/` | JSON codegen backend: LIR → ink.json format |
+| `brink-codegen-inkb` | `crates/internal/brink-codegen-inkb/` | Bytecode codegen backend: LIR → StoryData (inkb format) |
 | `brink-converter` | `crates/internal/brink-converter/` | Converts .ink.json to .inkb (bootstraps runtime testing) |
 
 Crates under `crates/internal/` are workspace-only and have `publish = false`. They are not published to crates.io. `brink-runtime` depends ONLY on `brink-format` — see `docs/spec.md` for the full dependency graph.
