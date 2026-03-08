@@ -120,10 +120,9 @@ impl Serialize for InkValue {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VariableAssignment {
-    /// { "VAR=": "money", "re": true }
-    /// Pop a value from the evaluation stack, and assign it to the
-    /// already-declared global variable money.
-    GlobalAssignment { variable: String },
+    /// { "VAR=": "money" } for initial declaration,
+    /// { "VAR=": "money", "re": true } for reassignment.
+    GlobalAssignment { variable: String, reassign: bool },
 
     /// { "temp=": "x" }
     /// Pop a value from the evaluation stack, and assign it to a newly
@@ -134,10 +133,13 @@ pub enum VariableAssignment {
 impl Serialize for VariableAssignment {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            VariableAssignment::GlobalAssignment { variable } => {
-                let mut map = serializer.serialize_map(Some(2))?;
+            VariableAssignment::GlobalAssignment { variable, reassign } => {
+                let len = 1 + usize::from(*reassign);
+                let mut map = serializer.serialize_map(Some(len))?;
                 map.serialize_entry("VAR=", variable)?;
-                map.serialize_entry("re", &true)?;
+                if *reassign {
+                    map.serialize_entry("re", &true)?;
+                }
                 map.end()
             }
             VariableAssignment::TemporaryAssignment { variable, reassign } => {
@@ -162,8 +164,10 @@ impl<'de> Deserialize<'de> for VariableAssignment {
 
         // Global assignment: { "VAR=": "money", "re": true }
         if let Some(name) = obj.get("VAR=").and_then(Value::as_str) {
+            let reassign = obj.get("re").and_then(Value::as_bool).unwrap_or(false);
             return Ok(VariableAssignment::GlobalAssignment {
                 variable: name.to_string(),
+                reassign,
             });
         }
 

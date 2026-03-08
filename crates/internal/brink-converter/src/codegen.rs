@@ -394,7 +394,7 @@ impl<'a> ContainerEmitter<'a> {
         temps: &mut TempScope,
     ) -> Result<(), ConvertError> {
         match assign {
-            VariableAssignment::GlobalAssignment { variable } => {
+            VariableAssignment::GlobalAssignment { variable, .. } => {
                 // "VAR=" with "re":true can target either a global or a temp
                 // that was previously declared with "temp=".
                 if let Some(slot) = temps.get(variable) {
@@ -673,7 +673,7 @@ pub fn extract_globals(
                 pending_value = Some(ink_value_to_format_value(ink_val, index));
             }
             Element::VariableAssignment(
-                VariableAssignment::GlobalAssignment { variable }
+                VariableAssignment::GlobalAssignment { variable, .. }
                 | VariableAssignment::TemporaryAssignment {
                     variable,
                     reassign: false,

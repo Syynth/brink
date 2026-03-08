@@ -191,7 +191,7 @@ fn register_container(
 fn scan_global_decls(index: &mut StoryIndex, container: &Container) -> Result<(), ConvertError> {
     for element in &container.contents {
         if let Element::VariableAssignment(
-            VariableAssignment::GlobalAssignment { variable }
+            VariableAssignment::GlobalAssignment { variable, .. }
             | VariableAssignment::TemporaryAssignment {
                 variable,
                 reassign: false,

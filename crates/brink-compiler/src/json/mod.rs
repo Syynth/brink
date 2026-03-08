@@ -134,7 +134,24 @@ fn build_container(container: &lir::Container, path: &str, lookups: &Lookups) ->
     let cctx = emit::ContainerCtx::build_from_tree(container, lookups, path);
 
     // Emit body elements
-    let (contents, mut named_content) = emit::emit_body(container, lookups, &cctx);
+    let (mut contents, mut named_content) = emit::emit_body(container, lookups, &cctx);
+
+    // Prepend parameter declarations — inklecate emits {"temp=":"name"} for
+    // each knot/function parameter at the start of the container body.
+    if !container.params.is_empty() {
+        let param_elems: Vec<Element> = container
+            .params
+            .iter()
+            .rev()
+            .map(|p| {
+                Element::VariableAssignment(VariableAssignment::TemporaryAssignment {
+                    variable: lookups.name(p.name).to_string(),
+                    reassign: false,
+                })
+            })
+            .collect();
+        contents.splice(0..0, param_elems);
+    }
 
     // Recursively build child containers and add to named_content.
     // ChoiceTarget and Gather children are built by emit_choice_set
@@ -215,11 +232,15 @@ impl Lookups {
             list_names.insert(list.id, list_name.clone());
         }
         for item in &program.list_items {
-            let item_name = &program.name_table[item.name.0 as usize];
+            let full = &program.name_table[item.name.0 as usize];
+            // Name table stores qualified "ListName.ItemName"; extract bare name
+            let bare = full.rsplit('.').next().unwrap_or(full);
             if let Some(origin_name) = list_names.get(&item.origin) {
-                let qualified = format!("{origin_name}.{item_name}");
+                let qualified = format!("{origin_name}.{bare}");
                 list_item_info.insert(item.id, (qualified, item.ordinal));
             }
+            // List items are also addressable as global variables by bare name
+            global_names.insert(item.id, bare.to_string());
         }
 
         for ext in &program.externals {
@@ -294,20 +315,56 @@ fn collect_container_paths(
 
 fn build_global_decl_container(program: &lir::Program, lookups: &Lookups) -> Container {
     let mut contents = Vec::new();
+    let mut has_decls = false;
+
+    // Single ev block wrapping all declarations
+    contents.push(Element::ControlCommand(ControlCommand::BeginLogicalEval));
 
     for global in &program.globals {
         let name = lookups.global_name(global.id);
-
-        contents.push(Element::ControlCommand(ControlCommand::BeginLogicalEval));
         emit_const_value(&global.default, lookups, &mut contents);
-        contents.push(Element::ControlCommand(ControlCommand::EndLogicalEval));
         contents.push(Element::VariableAssignment(
-            VariableAssignment::GlobalAssignment { variable: name },
+            VariableAssignment::GlobalAssignment {
+                variable: name,
+                reassign: false,
+            },
         ));
+        has_decls = true;
     }
 
-    if !contents.is_empty() {
+    // List variables — emit each list as an empty list value with origins
+    for list in &program.lists {
+        let list_name = lookups.name(list.name).to_string();
+        // Determine initial list value: items that are initially set
+        // For now, emit empty list with the list as origin
+        let items = HashMap::new();
+        let origins = vec![list_name.clone()];
+        contents.push(Element::Value(InkValue::List(brink_json::InkList {
+            items,
+            origins,
+        })));
+        contents.push(Element::VariableAssignment(
+            VariableAssignment::GlobalAssignment {
+                variable: list_name,
+                reassign: false,
+            },
+        ));
+        has_decls = true;
+    }
+
+    contents.push(Element::ControlCommand(ControlCommand::EndLogicalEval));
+
+    if has_decls {
         contents.push(Element::ControlCommand(ControlCommand::End));
+    }
+
+    if !has_decls {
+        return Container {
+            flags: None,
+            name: None,
+            named_content: HashMap::new(),
+            contents: Vec::new(),
+        };
     }
 
     Container {
@@ -361,8 +418,11 @@ fn build_list_defs(
         let list_name = lookups.name(list.name).to_string();
         let mut items = HashMap::new();
         for &(item_name_id, ordinal) in &list.items {
-            let item_name = lookups.name(item_name_id).to_string();
-            items.insert(item_name, i64::from(ordinal));
+            let full = lookups.name(item_name_id);
+            // Item names are stored qualified ("ListName.ItemName") in the name
+            // table, but inklecate's listDefs uses bare item names.
+            let bare = full.rsplit('.').next().unwrap_or(full);
+            items.insert(bare.to_string(), i64::from(ordinal));
         }
         defs.insert(list_name, items);
     }

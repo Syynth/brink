@@ -321,7 +321,10 @@ fn emit_assign(
                 lir::AssignTarget::Global(id) => {
                     let name = lookups.global_name(*id);
                     out.push(Element::VariableAssignment(
-                        VariableAssignment::GlobalAssignment { variable: name },
+                        VariableAssignment::GlobalAssignment {
+                            variable: name,
+                            reassign: true,
+                        },
                     ));
                 }
                 lir::AssignTarget::Temp(slot) => {
@@ -352,7 +355,10 @@ fn emit_assign(
                     out.push(Element::NativeFunction(op_fn));
                     out.push(end_ev());
                     out.push(Element::VariableAssignment(
-                        VariableAssignment::GlobalAssignment { variable: name },
+                        VariableAssignment::GlobalAssignment {
+                            variable: name,
+                            reassign: true,
+                        },
                     ));
                 }
                 lir::AssignTarget::Temp(slot) => {
@@ -389,62 +395,56 @@ fn emit_conditional(
     let mut branch_merge_indices: Vec<usize> = Vec::new();
 
     for branch in &cond.branches {
-        if let Some(ref condition) = branch.condition {
-            // Emit condition evaluation in the parent container
-            out.push(ev());
-            emit_expr(condition, lookups, cctx, out);
-            out.push(end_ev());
+        let inner_cctx = ContainerCtx {
+            temp_names: cctx.temp_names.clone(),
+            path: String::new(),
+        };
 
-            // Wrap conditional divert + branch body in anonymous container
-            let wrapper_contents = vec![Element::Divert(Divert::Target {
-                conditional: true,
-                path: ".^.b".to_string(),
-            })];
+        // Build the branch body for the "b" sub-container
+        let (mut body_elems, sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
 
-            let inner_cctx = ContainerCtx {
-                temp_names: cctx.temp_names.clone(),
-                path: String::new(), // Branch body uses relative paths
-            };
+        // Placeholder merge divert — patched after we know nop_index
+        body_elems.push(Element::Divert(Divert::Target {
+            conditional: false,
+            path: String::new(),
+        }));
 
-            let (mut body_elems, sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
-
-            // Placeholder merge divert — will be patched after we know nop_index
-            let merge_divert_idx = body_elems.len();
-            body_elems.push(Element::Divert(Divert::Target {
-                conditional: false,
-                path: String::new(), // placeholder
-            }));
-
-            let mut branch_named = sub_named;
-            branch_named.insert(
-                "b".to_string(),
-                Element::Container(Container {
-                    flags: None,
-                    name: None,
-                    named_content: HashMap::new(),
-                    contents: body_elems,
-                }),
-            );
-
-            // Track where the merge divert is so we can patch it
-            let wrapper_idx = out.len();
-            out.push(Element::Container(Container {
+        let mut branch_named = sub_named;
+        branch_named.insert(
+            "b".to_string(),
+            Element::Container(Container {
                 flags: None,
                 name: None,
-                named_content: branch_named,
-                contents: wrapper_contents,
+                named_content: HashMap::new(),
+                contents: body_elems,
+            }),
+        );
+
+        // Build wrapper contents: condition eval + divert, or just divert for else
+        let mut wrapper_contents = Vec::new();
+        if let Some(ref condition) = branch.condition {
+            wrapper_contents.push(ev());
+            emit_expr(condition, lookups, cctx, &mut wrapper_contents);
+            wrapper_contents.push(end_ev());
+            wrapper_contents.push(Element::Divert(Divert::Target {
+                conditional: true,
+                path: ".^.b".to_string(),
             }));
-            branch_merge_indices.push(wrapper_idx);
-            let _ = merge_divert_idx;
         } else {
-            // Else branch — emit body inline (no wrapper)
-            let inner_cctx = ContainerCtx {
-                temp_names: cctx.temp_names.clone(),
-                path: cctx.path.clone(),
-            };
-            let (body_elems, _sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
-            out.extend(body_elems);
+            wrapper_contents.push(Element::Divert(Divert::Target {
+                conditional: false,
+                path: ".^.b".to_string(),
+            }));
         }
+
+        let wrapper_idx = out.len();
+        out.push(Element::Container(Container {
+            flags: None,
+            name: None,
+            named_content: branch_named,
+            contents: wrapper_contents,
+        }));
+        branch_merge_indices.push(wrapper_idx);
     }
 
     // Emit nop merge point — index is the element's position in the container
