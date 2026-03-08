@@ -14,8 +14,6 @@ use crate::Lookups;
 // ─── Per-container emission context ─────────────────────────────────
 
 pub struct ContainerCtx {
-    /// Reverse map: temp slot → variable name.
-    pub temp_names: HashMap<u16, String>,
     /// Fully qualified container path.
     pub path: String,
     /// Number of param `temp=` elements prepended before the body.
@@ -28,16 +26,8 @@ pub struct ContainerCtx {
 }
 
 impl ContainerCtx {
-    pub fn build_from_tree(container: &lir::Container, lookups: &Lookups, path: &str) -> Self {
-        let mut temp_names = HashMap::new();
-        for p in &container.params {
-            temp_names.insert(p.slot, lookups.name(p.name).to_string());
-        }
-        for stmt in &container.body {
-            collect_temp_names(stmt, lookups, &mut temp_names);
-        }
+    pub fn build_from_tree(container: &lir::Container, _lookups: &Lookups, path: &str) -> Self {
         ContainerCtx {
-            temp_names,
             path: path.to_string(),
             param_offset: container.params.len(),
             depth_offset: 0,
@@ -46,35 +36,6 @@ impl ContainerCtx {
 
     pub fn compact_path(&self, base_depth: usize, target: &str) -> String {
         compact_path(&self.path, base_depth + self.depth_offset, target)
-    }
-
-    pub fn temp_name(&self, slot: u16) -> &str {
-        self.temp_names
-            .get(&slot)
-            .map_or("_unknown", String::as_str)
-    }
-}
-
-fn collect_temp_names(stmt: &lir::Stmt, lookups: &Lookups, out: &mut HashMap<u16, String>) {
-    if let lir::Stmt::DeclareTemp { slot, name, .. } = stmt {
-        out.insert(*slot, lookups.name(*name).to_string());
-    }
-    match stmt {
-        lir::Stmt::Conditional(c) => {
-            for branch in &c.branches {
-                for s in &branch.body {
-                    collect_temp_names(s, lookups, out);
-                }
-            }
-        }
-        lir::Stmt::Sequence(s) => {
-            for branch in &s.branches {
-                for st in branch {
-                    collect_temp_names(st, lookups, out);
-                }
-            }
-        }
-        _ => {}
     }
 }
 
@@ -345,8 +306,8 @@ fn emit_assign(
                         },
                     ));
                 }
-                lir::AssignTarget::Temp(slot) => {
-                    let name = cctx.temp_name(*slot).to_string();
+                lir::AssignTarget::Temp(_slot, name_id) => {
+                    let name = lookups.name(*name_id).to_string();
                     out.push(Element::VariableAssignment(
                         VariableAssignment::TemporaryAssignment {
                             variable: name,
@@ -379,8 +340,8 @@ fn emit_assign(
                         },
                     ));
                 }
-                lir::AssignTarget::Temp(slot) => {
-                    let name = cctx.temp_name(*slot).to_string();
+                lir::AssignTarget::Temp(_slot, name_id) => {
+                    let name = lookups.name(*name_id).to_string();
                     out.push(Element::VariableReference(VariableReference {
                         variable: name.clone(),
                     }));
@@ -435,7 +396,6 @@ fn emit_if_conditional(
         // for this shift in param_offset so nested merge paths are correct.
         let newline_offset = usize::from(!is_inline);
         let inner_cctx = ContainerCtx {
-            temp_names: cctx.temp_names.clone(),
             path: cctx.path.clone(),
             param_offset: newline_offset,
             depth_offset: cctx.depth_offset + 2,
@@ -551,7 +511,6 @@ fn emit_switch_conditional(
         // merge paths are correct.
         let prepend_count = 1 + usize::from(!is_inline);
         let inner_cctx = ContainerCtx {
-            temp_names: cctx.temp_names.clone(),
             path: cctx.path.clone(),
             param_offset: prepend_count,
             depth_offset: cctx.depth_offset + 2,
@@ -700,7 +659,6 @@ fn emit_sequence(
     for (i, branch) in seq.branches.iter().enumerate() {
         let sname = format!("s{i}");
         let inner_cctx = ContainerCtx {
-            temp_names: cctx.temp_names.clone(),
             path: if cctx.path.is_empty() {
                 sname.clone()
             } else {
@@ -1216,8 +1174,8 @@ pub fn emit_expr(expr: &lir::Expr, lookups: &Lookups, cctx: &ContainerCtx, out: 
             }));
         }
 
-        lir::Expr::GetTemp(slot) => {
-            let name = cctx.temp_name(*slot).to_string();
+        lir::Expr::GetTemp(_slot, name_id) => {
+            let name = lookups.name(*name_id).to_string();
             out.push(Element::VariableReference(VariableReference {
                 variable: name,
             }));
@@ -1329,8 +1287,8 @@ fn emit_call_arg(
             let name = lookups.global_name(*id);
             out.push(Element::Value(InkValue::VariablePointer(name)));
         }
-        lir::CallArg::RefTemp(slot) => {
-            let name = cctx.temp_name(*slot).to_string();
+        lir::CallArg::RefTemp(_slot, name_id) => {
+            let name = lookups.name(*name_id).to_string();
             out.push(Element::Value(InkValue::VariablePointer(name)));
         }
     }

@@ -196,7 +196,7 @@ pub enum Stmt {
 #[derive(Clone)]
 pub enum AssignTarget {
     Global(DefinitionId),
-    Temp(u16),
+    Temp(u16, NameId),
 }
 
 // ─── Control flow ────────────────────────────────────────────────────
@@ -250,7 +250,7 @@ pub enum CallArg {
     /// `ref` argument targeting a global variable — emits `PushVarPointer`.
     RefGlobal(DefinitionId),
     /// `ref` argument targeting a temp variable — emits `PushTempPointer`.
-    RefTemp(u16),
+    RefTemp(u16, NameId),
 }
 
 // ─── Choice sets ─────────────────────────────────────────────────────
@@ -373,8 +373,8 @@ pub enum Expr {
     // ── Resolved references ─────────────────────────────────────
     /// Read a global variable (VAR, CONST, or list variable).
     GetGlobal(DefinitionId),
-    /// Read a temp variable by slot index.
-    GetTemp(u16),
+    /// Read a temp variable by slot index and name.
+    GetTemp(u16, NameId),
     /// The visit count of a container (knot/stitch/label name used
     /// in expression context).
     VisitCount(DefinitionId),

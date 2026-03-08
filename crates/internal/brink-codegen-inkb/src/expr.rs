@@ -16,7 +16,7 @@ impl ContainerEmitter<'_> {
             lir::Expr::String(s) => self.emit_string_expr(s),
 
             lir::Expr::GetGlobal(id) => self.emit(Opcode::GetGlobal(*id)),
-            lir::Expr::GetTemp(slot) => self.emit(Opcode::GetTemp(*slot)),
+            lir::Expr::GetTemp(slot, _) => self.emit(Opcode::GetTemp(*slot)),
 
             lir::Expr::VisitCount(id) => {
                 self.emit(Opcode::PushDivertTarget(*id));
@@ -92,7 +92,7 @@ impl ContainerEmitter<'_> {
         match arg {
             lir::CallArg::Value(expr) => self.emit_expr(expr),
             lir::CallArg::RefGlobal(id) => self.emit(Opcode::PushVarPointer(*id)),
-            lir::CallArg::RefTemp(slot) => self.emit(Opcode::PushTempPointer(*slot)),
+            lir::CallArg::RefTemp(slot, _) => self.emit(Opcode::PushTempPointer(*slot)),
         }
     }
 

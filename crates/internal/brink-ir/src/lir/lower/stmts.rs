@@ -171,7 +171,8 @@ fn lower_assign_target(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> Option<lir::
         hir::Expr::Path(path) => {
             let name = path_to_string(path);
             if let Some(slot) = ctx.temp_slot(&name) {
-                return Some(lir::AssignTarget::Temp(slot));
+                let name_id = ctx.names.intern(&name);
+                return Some(lir::AssignTarget::Temp(slot, name_id));
             }
             if let Some(id) = ctx.resolve_id(path.range) {
                 return Some(lir::AssignTarget::Global(id));

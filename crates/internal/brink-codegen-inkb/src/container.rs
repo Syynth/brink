@@ -127,7 +127,7 @@ impl ContainerEmitter<'_> {
             brink_ir::AssignOp::Add => {
                 match target {
                     lir::AssignTarget::Global(id) => self.emit(Opcode::GetGlobal(*id)),
-                    lir::AssignTarget::Temp(slot) => self.emit(Opcode::GetTemp(*slot)),
+                    lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::GetTemp(*slot)),
                 }
                 self.emit_expr(value);
                 self.emit(Opcode::Add);
@@ -135,7 +135,7 @@ impl ContainerEmitter<'_> {
             brink_ir::AssignOp::Sub => {
                 match target {
                     lir::AssignTarget::Global(id) => self.emit(Opcode::GetGlobal(*id)),
-                    lir::AssignTarget::Temp(slot) => self.emit(Opcode::GetTemp(*slot)),
+                    lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::GetTemp(*slot)),
                 }
                 self.emit_expr(value);
                 self.emit(Opcode::Subtract);
@@ -144,7 +144,7 @@ impl ContainerEmitter<'_> {
 
         match target {
             lir::AssignTarget::Global(id) => self.emit(Opcode::SetGlobal(*id)),
-            lir::AssignTarget::Temp(slot) => self.emit(Opcode::SetTemp(*slot)),
+            lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::SetTemp(*slot)),
         }
     }
 

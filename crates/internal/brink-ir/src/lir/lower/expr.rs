@@ -76,7 +76,8 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     // Check temp map first (for shadowing)
     let name = path_to_string(path);
     if let Some(slot) = ctx.temp_slot(&name) {
-        return lir::Expr::GetTemp(slot);
+        let name_id = ctx.names.intern(&name);
+        return lir::Expr::GetTemp(slot, name_id);
     }
 
     // Resolve via resolution map
@@ -148,7 +149,8 @@ fn lower_call_args(
                     hir::Expr::Path(path) => {
                         let name = path_to_string(path);
                         if let Some(slot) = ctx.temp_slot(&name) {
-                            return lir::CallArg::RefTemp(slot);
+                            let name_id = ctx.names.intern(&name);
+                            return lir::CallArg::RefTemp(slot, name_id);
                         }
                         if let Some(id) = ctx.resolve_id(path.range) {
                             return lir::CallArg::RefGlobal(id);
