@@ -21,6 +21,10 @@ pub struct ContainerCtx {
     /// Number of param `temp=` elements prepended before the body.
     /// Internal index references must be offset by this amount.
     pub param_offset: usize,
+    /// Extra nesting levels not reflected in `path` (e.g., inside a
+    /// conditional branch body `{b: [...]}`). Added to `source_depth`
+    /// in `compact_path` calls.
+    pub depth_offset: usize,
 }
 
 impl ContainerCtx {
@@ -36,7 +40,12 @@ impl ContainerCtx {
             temp_names,
             path: path.to_string(),
             param_offset: container.params.len(),
+            depth_offset: 0,
         }
+    }
+
+    pub fn compact_path(&self, base_depth: usize, target: &str) -> String {
+        compact_path(&self.path, base_depth + self.depth_offset, target)
     }
 
     pub fn temp_name(&self, slot: u16) -> &str {
@@ -135,7 +144,7 @@ fn emit_stmt(
                     out.push(end_ev());
                 }
                 let abs = divert_target_path(&target.target, lookups);
-                let path = compact_path(&cctx.path, 1, &abs);
+                let path = cctx.compact_path(1, &abs);
                 let divert = match &target.target {
                     lir::DivertTarget::Variable(_) => Divert::TunnelVariable {
                         conditional: false,
@@ -160,7 +169,7 @@ fn emit_stmt(
             }
             out.push(Element::ControlCommand(ControlCommand::Thread));
             let abs = divert_target_path(&thread.target, lookups);
-            let path = compact_path(&cctx.path, 1, &abs);
+            let path = cctx.compact_path(1, &abs);
             out.push(Element::Divert(Divert::Target {
                 conditional: false,
                 path,
@@ -281,7 +290,7 @@ fn emit_divert(
         lir::DivertTarget::Container(id) => {
             if divert.args.is_empty() {
                 let abs = lookups.container_path(*id);
-                let path = compact_path(&cctx.path, 1, &abs);
+                let path = cctx.compact_path(1, &abs);
                 out.push(Element::Divert(Divert::Target {
                     conditional: false,
                     path,
@@ -293,7 +302,7 @@ fn emit_divert(
                 }
                 out.push(end_ev());
                 let abs = lookups.container_path(*id);
-                let path = compact_path(&cctx.path, 1, &abs);
+                let path = cctx.compact_path(1, &abs);
                 // Regular divert with args — NOT a function call (no return address).
                 out.push(Element::Divert(Divert::Target {
                     conditional: false,
@@ -424,8 +433,9 @@ fn emit_if_conditional(
     for branch in &cond.branches {
         let inner_cctx = ContainerCtx {
             temp_names: cctx.temp_names.clone(),
-            path: String::new(),
+            path: cctx.path.clone(),
             param_offset: 0,
+            depth_offset: cctx.depth_offset + 2,
         };
 
         let (mut body_elems, sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
@@ -494,7 +504,7 @@ fn emit_if_conditional(
     } else {
         format!("{}.{nop_index}", cctx.path)
     };
-    let merge_path = compact_path(&cctx.path, 3, &merge_abs);
+    let merge_path = cctx.compact_path(3, &merge_abs);
 
     for &wrapper_idx in &branch_merge_indices {
         if let Element::Container(ref mut wrapper) = out[wrapper_idx]
@@ -532,8 +542,9 @@ fn emit_switch_conditional(
     for branch in branches {
         let inner_cctx = ContainerCtx {
             temp_names: cctx.temp_names.clone(),
-            path: String::new(),
+            path: cctx.path.clone(),
             param_offset: 0,
+            depth_offset: cctx.depth_offset + 2,
         };
 
         let (mut body_elems, sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
@@ -608,7 +619,7 @@ fn emit_switch_conditional(
     } else {
         format!("{}.{nop_index}", cctx.path)
     };
-    let merge_path = compact_path(&cctx.path, 3, &merge_abs);
+    let merge_path = cctx.compact_path(3, &merge_abs);
 
     for &wrapper_idx in &branch_merge_indices {
         if let Element::Container(ref mut wrapper) = out[wrapper_idx]
@@ -684,6 +695,7 @@ fn emit_sequence(
                 format!("{}.{sname}", cctx.path)
             },
             param_offset: 0,
+            depth_offset: 0,
         };
 
         let mut branch_contents = Vec::new();
@@ -931,7 +943,7 @@ fn emit_choice_outer(
     } else {
         format!("{}.{c_name}", cctx.path)
     };
-    let c_path = compact_path(&cctx.path, 1, &c_abs);
+    let c_path = cctx.compact_path(1, &c_abs);
     outer_contents.push(Element::ChoicePoint(ChoicePoint {
         target: c_path,
         flags,
@@ -1264,7 +1276,7 @@ pub fn emit_expr(expr: &lir::Expr, lookups: &Lookups, cctx: &ContainerCtx, out: 
                 emit_call_arg(arg, lookups, cctx, out);
             }
             let abs = lookups.container_path(*target);
-            let path = compact_path(&cctx.path, 1, &abs);
+            let path = cctx.compact_path(1, &abs);
             out.push(Element::Divert(Divert::Function {
                 conditional: false,
                 path,

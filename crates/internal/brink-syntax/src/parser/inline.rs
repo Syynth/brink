@@ -526,6 +526,9 @@ fn multiline_branch_body(p: &mut Parser<'_, '_>) {
                     break;
                 }
                 p.bump();
+                // Strip leading indentation on the next line so it doesn't
+                // leak into text content (inklecate strips it too).
+                p.skip_ws();
             }
             STAR | PLUS => {
                 // Choices participate in the outer weave structure.
