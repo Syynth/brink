@@ -173,6 +173,7 @@ fn choice_content_element(p: &mut Parser<'_, '_>) {
             super::inline::inline_logic(p);
         }
         GLUE => {
+            p.skip_ws();
             p.start_node(GLUE_NODE);
             p.bump();
             p.finish_node();

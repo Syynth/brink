@@ -994,20 +994,21 @@ impl LowerCtx {
         let mut stmts = Vec::new();
         let mut parts = Vec::new();
 
-        for child in body.syntax().children() {
+        for child in body.syntax().children_with_tokens() {
             match child.kind() {
                 SyntaxKind::ELSE_BRANCH => {
                     // Stop — caller handles the else branch separately
                     break;
                 }
                 SyntaxKind::CONTENT_LINE => {
-                    if let Some(cl) = ast::ContentLine::cast(child) {
+                    if let Some(cl) = child.into_node().and_then(ast::ContentLine::cast) {
                         let line_parts = cl
                             .mixed_content()
                             .map_or_else(Vec::new, |mc| self.lower_mixed_content(&mc));
                         parts.extend(line_parts);
                         let tags = lower_tags(cl.tags());
-                        if !parts.is_empty() || !tags.is_empty() {
+                        let has_content = !parts.is_empty() || !tags.is_empty();
+                        if has_content {
                             stmts.push(Stmt::Content(Content {
                                 ptr: None,
                                 parts: std::mem::take(&mut parts),
@@ -1019,11 +1020,14 @@ impl LowerCtx {
                         {
                             stmts.push(s);
                         }
+                        if has_content {
+                            stmts.push(Stmt::EndOfLine);
+                        }
                     }
                 }
                 SyntaxKind::LOGIC_LINE => {
                     flush_content_parts(&mut parts, &mut stmts);
-                    if let Some(ll) = ast::LogicLine::cast(child)
+                    if let Some(ll) = child.into_node().and_then(ast::LogicLine::cast)
                         && let Some(stmt) = self.lower_logic_line(&ll)
                     {
                         stmts.push(stmt);
@@ -1031,14 +1035,14 @@ impl LowerCtx {
                 }
                 SyntaxKind::DIVERT_NODE => {
                     flush_content_parts(&mut parts, &mut stmts);
-                    if let Some(dn) = ast::DivertNode::cast(child)
+                    if let Some(dn) = child.into_node().and_then(ast::DivertNode::cast)
                         && let Some(stmt) = self.lower_divert_node(&dn)
                     {
                         stmts.push(stmt);
                     }
                 }
                 SyntaxKind::INLINE_LOGIC => {
-                    if let Some(il) = ast::InlineLogic::cast(child) {
+                    if let Some(il) = child.into_node().and_then(ast::InlineLogic::cast) {
                         // Check if this is a multiline block first
                         if let Some(stmt) = self.lower_multiline_block_from_inline(&il) {
                             flush_content_parts(&mut parts, &mut stmts);
@@ -1049,21 +1053,27 @@ impl LowerCtx {
                     }
                 }
                 SyntaxKind::TEXT => {
-                    let text = child.text().to_string();
+                    let text = child.to_string();
                     if !text.is_empty() {
                         parts.push(ContentPart::Text(text));
                     }
                 }
+                SyntaxKind::NEWLINE => {
+                    if !parts.is_empty() {
+                        flush_content_parts(&mut parts, &mut stmts);
+                        stmts.push(Stmt::EndOfLine);
+                    }
+                }
                 SyntaxKind::GLUE_NODE => parts.push(ContentPart::Glue),
                 SyntaxKind::ESCAPE => {
-                    let text = child.text().to_string();
+                    let text = child.to_string();
                     if text.len() > 1 {
                         parts.push(ContentPart::Text(text[1..].to_string()));
                     }
                 }
                 SyntaxKind::CHOICE => {
                     flush_content_parts(&mut parts, &mut stmts);
-                    if let Some(c) = ast::Choice::cast(child)
+                    if let Some(c) = child.into_node().and_then(ast::Choice::cast)
                         && let Some(choice) = self.lower_choice(&c)
                     {
                         stmts.push(Stmt::ChoiceSet(ChoiceSet {

@@ -453,6 +453,7 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
                 super::divert::divert(p);
             }
             GLUE => {
+                p.skip_ws();
                 p.start_node(GLUE_NODE);
                 p.bump();
                 p.finish_node();
@@ -542,6 +543,7 @@ fn multiline_branch_body(p: &mut Parser<'_, '_>) {
                 inline_logic(p);
             }
             GLUE => {
+                p.skip_ws();
                 p.start_node(GLUE_NODE);
                 p.bump();
                 p.finish_node();
@@ -614,6 +616,7 @@ fn branch_content(p: &mut Parser<'_, '_>) {
                 inline_logic(p);
             }
             GLUE => {
+                p.skip_ws();
                 p.start_node(GLUE_NODE);
                 p.bump();
                 p.finish_node();
