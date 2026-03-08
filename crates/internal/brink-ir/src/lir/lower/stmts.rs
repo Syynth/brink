@@ -91,6 +91,7 @@ pub(super) fn lower_stmt(
                 })
                 .collect();
             let kind = match &cond.kind {
+                hir::CondKind::InitialCondition => lir::CondKind::InitialCondition,
                 hir::CondKind::IfElse => lir::CondKind::IfElse,
                 hir::CondKind::Switch(expr) => lir::CondKind::Switch(lower_expr(expr, ctx)),
             };

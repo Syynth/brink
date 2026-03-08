@@ -223,10 +223,18 @@ bitflags::bitflags! {
 
 // ─── Block-level conditional and sequence ───────────────────────────
 
-/// Distinguishes the two semantic forms of conditional blocks.
+/// Distinguishes the semantic forms of conditional blocks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CondKind {
-    /// Each branch has an independent boolean condition.
+    /// The condition belongs to the conditional itself (inklecate's
+    /// `initialCondition`). The first branch's condition is the initial
+    /// condition; it is emitted flat. Produced by `{expr: body}` and
+    /// `{expr: body | else_body}` inline syntax, and `{expr:\n  body\n-
+    /// else:\n  body2}` branchless-body syntax.
+    InitialCondition,
+    /// Each branch has an independent boolean condition evaluated inside its
+    /// own container (inklecate's `ownExpression`). Produced by multiline
+    /// `{ - cond1: ... - cond2: ... }` syntax without a switch expression.
     IfElse,
     /// One expression evaluated once; each branch is a case value compared with `==`.
     /// Produced by `{expr: - val: ...}` syntax (`ConditionalWithExpr` with multiline branches).

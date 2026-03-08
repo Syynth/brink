@@ -413,7 +413,7 @@ fn emit_conditional(
         lir::CondKind::Switch(switch_expr) => {
             emit_switch_conditional(switch_expr, &cond.branches, lookups, cctx, out, is_inline);
         }
-        lir::CondKind::IfElse => {
+        lir::CondKind::InitialCondition | lir::CondKind::IfElse => {
             emit_if_conditional(cond, lookups, cctx, out, is_inline);
         }
     }
@@ -428,7 +428,7 @@ fn emit_if_conditional(
     is_inline: bool,
 ) {
     let mut branch_merge_indices: Vec<usize> = Vec::new();
-    let is_single_branch = cond.branches.len() == 1;
+    let condition_is_flat = matches!(cond.kind, lir::CondKind::InitialCondition);
 
     for branch in &cond.branches {
         let inner_cctx = ContainerCtx {
@@ -462,7 +462,7 @@ fn emit_if_conditional(
 
         let mut wrapper_contents = Vec::new();
         if let Some(ref condition) = branch.condition {
-            if is_single_branch {
+            if condition_is_flat {
                 out.push(ev());
                 emit_expr(condition, lookups, cctx, out);
                 out.push(end_ev());

@@ -294,10 +294,14 @@ pub struct Choice {
 
 // ─── Conditionals and sequences ──────────────────────────────────────
 
-/// Distinguishes the two semantic forms of conditional blocks in LIR.
+/// Distinguishes the semantic forms of conditional blocks in LIR.
 #[derive(Clone)]
 pub enum CondKind {
-    /// Each branch has an independent boolean condition.
+    /// The first branch's condition is the initial condition of the
+    /// conditional itself (emitted flat, not wrapped in the branch container).
+    InitialCondition,
+    /// Each branch has an independent boolean condition (wrapped inside
+    /// its own container).
     IfElse,
     /// One expression evaluated once; each branch is a case value compared with `==`.
     Switch(Expr),

@@ -37,7 +37,7 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
                 })
                 .collect();
             lir::ContentPart::InlineConditional(lir::Conditional {
-                kind: lir::CondKind::IfElse,
+                kind: lir::CondKind::InitialCondition,
                 branches,
             })
         }

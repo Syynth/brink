@@ -1919,8 +1919,8 @@ fn logical_or_conditional_not_sequence() {
         .expect("should lower to a conditional, not a sequence");
 
     assert!(
-        matches!(cond.kind, CondKind::IfElse),
-        "inline conditional should be IfElse, got {:?}",
+        matches!(cond.kind, CondKind::InitialCondition),
+        "inline conditional should be InitialCondition, got {:?}",
         cond.kind,
     );
     assert_eq!(

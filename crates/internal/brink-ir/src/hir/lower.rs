@@ -923,7 +923,7 @@ impl LowerCtx {
             }
             return Conditional {
                 ptr,
-                kind: CondKind::IfElse,
+                kind: CondKind::InitialCondition,
                 branches,
             };
         }
@@ -944,7 +944,7 @@ impl LowerCtx {
             }
             return Conditional {
                 ptr,
-                kind: CondKind::IfElse,
+                kind: CondKind::InitialCondition,
                 branches,
             };
         }
@@ -980,7 +980,7 @@ impl LowerCtx {
         });
         Conditional {
             ptr,
-            kind: CondKind::IfElse,
+            kind: CondKind::InitialCondition,
             branches,
         }
     }
