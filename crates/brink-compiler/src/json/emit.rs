@@ -397,6 +397,7 @@ fn emit_conditional(
     // We'll fill in nop_index after emitting all branches.
     // For now, use a placeholder and patch later.
     let mut branch_merge_indices: Vec<usize> = Vec::new();
+    let is_single_branch = cond.branches.len() == 1;
 
     for branch in &cond.branches {
         let inner_cctx = ContainerCtx {
@@ -406,9 +407,11 @@ fn emit_conditional(
         };
 
         // Build the branch body for the "b" sub-container.
-        // Inklecate prepends "\n" to each multiline branch body.
         let (mut body_elems, sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
-        body_elems.insert(0, Element::Value(InkValue::String("\n".to_string())));
+        // Inklecate prepends "\n" to each multiline branch body.
+        if !is_single_branch {
+            body_elems.insert(0, Element::Value(InkValue::String("\n".to_string())));
+        }
 
         // Placeholder merge divert — patched after we know nop_index
         body_elems.push(Element::Divert(Divert::Target {
@@ -427,12 +430,23 @@ fn emit_conditional(
             }),
         );
 
-        // Build wrapper contents: condition eval + divert, or just divert for else
+        // Build wrapper contents.
+        // Single-branch (branchless) conditionals: condition eval goes OUTSIDE
+        // the wrapper, wrapper only has the conditional divert.
+        // Multi-branch (switch/if-else): condition eval goes INSIDE each wrapper.
         let mut wrapper_contents = Vec::new();
         if let Some(ref condition) = branch.condition {
-            wrapper_contents.push(ev());
-            emit_expr(condition, lookups, cctx, &mut wrapper_contents);
-            wrapper_contents.push(end_ev());
+            if is_single_branch {
+                // Condition eval outside wrapper
+                out.push(ev());
+                emit_expr(condition, lookups, cctx, out);
+                out.push(end_ev());
+            } else {
+                // Condition eval inside wrapper
+                wrapper_contents.push(ev());
+                emit_expr(condition, lookups, cctx, &mut wrapper_contents);
+                wrapper_contents.push(end_ev());
+            }
             wrapper_contents.push(Element::Divert(Divert::Target {
                 conditional: true,
                 path: ".^.b".to_string(),
