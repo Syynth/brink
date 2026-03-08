@@ -90,11 +90,11 @@ pub(super) fn lower_stmt(
                     lir::CondBranch { condition, body }
                 })
                 .collect();
-            let switch_expr = cond.switch_expr.as_ref().map(|e| lower_expr(e, ctx));
-            Some(lir::Stmt::Conditional(lir::Conditional {
-                switch_expr,
-                branches,
-            }))
+            let kind = match &cond.kind {
+                hir::CondKind::IfElse => lir::CondKind::IfElse,
+                hir::CondKind::Switch(expr) => lir::CondKind::Switch(lower_expr(expr, ctx)),
+            };
+            Some(lir::Stmt::Conditional(lir::Conditional { kind, branches }))
         }
 
         hir::Stmt::Sequence(seq) => {

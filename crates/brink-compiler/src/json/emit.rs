@@ -400,10 +400,13 @@ fn emit_conditional(
     _named: &mut HashMap<String, Element>,
     is_inline: bool,
 ) {
-    if cond.switch_expr.is_some() {
-        emit_switch_conditional(cond, lookups, cctx, out, is_inline);
-    } else {
-        emit_if_conditional(cond, lookups, cctx, out, is_inline);
+    match &cond.kind {
+        lir::CondKind::Switch(switch_expr) => {
+            emit_switch_conditional(switch_expr, &cond.branches, lookups, cctx, out, is_inline);
+        }
+        lir::CondKind::IfElse => {
+            emit_if_conditional(cond, lookups, cctx, out, is_inline);
+        }
     }
 }
 
@@ -512,16 +515,13 @@ fn emit_if_conditional(
 ///
 /// Structure: `ev, <switch_expr>, /ev, [du, ev, <case>, ==, /ev, cond_divert, {b: [pop, \n, ...body, merge_divert]}], ...`
 fn emit_switch_conditional(
-    cond: &lir::Conditional,
+    switch_expr: &lir::Expr,
+    branches: &[lir::CondBranch],
     lookups: &Lookups,
     cctx: &ContainerCtx,
     out: &mut Vec<Element>,
     is_inline: bool,
 ) {
-    let Some(switch_expr) = cond.switch_expr.as_ref() else {
-        return;
-    };
-
     // Evaluate the switch expression once
     out.push(ev());
     emit_expr(switch_expr, lookups, cctx, out);
@@ -529,7 +529,7 @@ fn emit_switch_conditional(
 
     let mut branch_merge_indices: Vec<usize> = Vec::new();
 
-    for branch in &cond.branches {
+    for branch in branches {
         let inner_cctx = ContainerCtx {
             temp_names: cctx.temp_names.clone(),
             path: String::new(),

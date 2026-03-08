@@ -223,13 +223,21 @@ bitflags::bitflags! {
 
 // ─── Block-level conditional and sequence ───────────────────────────
 
+/// Distinguishes the two semantic forms of conditional blocks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CondKind {
+    /// Each branch has an independent boolean condition.
+    IfElse,
+    /// One expression evaluated once; each branch is a case value compared with `==`.
+    /// Produced by `{expr: - val: ...}` syntax (`ConditionalWithExpr` with multiline branches).
+    Switch(Expr),
+}
+
 /// A multiline conditional block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conditional {
     pub ptr: SyntaxNodePtr,
-    /// For switch statements (`{ x / 10: - 2: twenty ... }`), the expression
-    /// being switched on. Branch conditions are case values, not full booleans.
-    pub switch_expr: Option<Expr>,
+    pub kind: CondKind,
     pub branches: Vec<CondBranch>,
 }
 

@@ -1812,3 +1812,85 @@ fn branchless_conditional_tunnel_return_count() {
         "branch body should have exactly 1 Return, got {return_count}"
     );
 }
+
+#[test]
+fn print_num_else_branch_captures_both_conditionals() {
+    let (hir, _, _diags) = lower_ink(
+        "\
+=== function print_num(x)
+{
+    - x >= 1000:
+        {print_num(x / 1000)} thousand
+    - x >= 100:
+        {print_num(x / 100)} hundred
+    - x == 0:
+        zero
+    - else:
+        { x >= 20:
+            hello
+        }
+        { x < 10 || x > 20:
+            world
+        - else:
+            other
+        }
+}
+",
+    );
+    // Find the top-level conditional
+    let body = &hir.knots[0].body;
+    let cond = body
+        .stmts
+        .iter()
+        .find_map(|s| {
+            if let Stmt::Conditional(c) = s {
+                Some(c)
+            } else {
+                None
+            }
+        })
+        .expect("should have a conditional");
+
+    // Should have 4 branches: x>=1000, x>=100, x==0, else
+    assert_eq!(
+        cond.branches.len(),
+        4,
+        "top-level conditional should have 4 branches, got {}: {:?}",
+        cond.branches.len(),
+        cond.branches
+            .iter()
+            .map(|b| format!(
+                "cond={} body_stmts={}",
+                b.condition.is_some(),
+                b.body.stmts.len()
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    // The else branch body should contain 2 conditionals
+    let else_branch = &cond.branches[3];
+    assert!(else_branch.condition.is_none(), "4th branch should be else");
+    let cond_count = else_branch
+        .body
+        .stmts
+        .iter()
+        .filter(|s| matches!(s, Stmt::Conditional(_)))
+        .count();
+    assert_eq!(
+        cond_count,
+        2,
+        "else branch should have 2 sub-conditionals, got {}: {:?}",
+        cond_count,
+        else_branch
+            .body
+            .stmts
+            .iter()
+            .map(|s| match s {
+                Stmt::Content(_) => "Content",
+                Stmt::EndOfLine => "EndOfLine",
+                Stmt::Conditional(_) => "Conditional",
+                _ => "Other",
+            })
+            .collect::<Vec<_>>()
+    );
+}

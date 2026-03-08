@@ -4,12 +4,12 @@ use brink_syntax::ast::{self, AstNode, AstPtr, SyntaxNodePtr};
 use rowan::TextRange;
 
 use crate::{
-    AssignOp, Assignment, Block, Choice, ChoiceSet, CondBranch, Conditional, ConstDecl, Content,
-    ContentPart, DeclaredSymbol, Diagnostic, DiagnosticCode, Divert, DivertPath, DivertTarget,
-    Expr, ExternalDecl, FileId, FloatBits, Gather, HirFile, IncludeSite, InfixOp, Knot, ListDecl,
-    ListMember, Name, Param, Path, PostfixOp, PrefixOp, RefKind, Return, Scope, Sequence,
-    SequenceType, Stitch, Stmt, StringExpr, StringPart, SymbolManifest, Tag, TempDecl, ThreadStart,
-    TunnelCall, UnresolvedRef, VarDecl,
+    AssignOp, Assignment, Block, Choice, ChoiceSet, CondBranch, CondKind, Conditional, ConstDecl,
+    Content, ContentPart, DeclaredSymbol, Diagnostic, DiagnosticCode, Divert, DivertPath,
+    DivertTarget, Expr, ExternalDecl, FileId, FloatBits, Gather, HirFile, IncludeSite, InfixOp,
+    Knot, ListDecl, ListMember, Name, Param, Path, PostfixOp, PrefixOp, RefKind, Return, Scope,
+    Sequence, SequenceType, Stitch, Stmt, StringExpr, StringPart, SymbolManifest, Tag, TempDecl,
+    ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
 };
 
 #[cfg(test)]
@@ -923,7 +923,7 @@ impl LowerCtx {
             }
             return Conditional {
                 ptr,
-                switch_expr: None,
+                kind: CondKind::IfElse,
                 branches,
             };
         }
@@ -944,7 +944,7 @@ impl LowerCtx {
             }
             return Conditional {
                 ptr,
-                switch_expr: None,
+                kind: CondKind::IfElse,
                 branches,
             };
         }
@@ -964,10 +964,11 @@ impl LowerCtx {
                     body,
                 });
             }
-            // Multiline branches with a switch expression use the "du" pattern
+            // ConditionalWithExpr + multiline branches = switch statement:
+            // the parser only produces ConditionalWithExpr for `{expr: ...}` syntax.
             return Conditional {
                 ptr,
-                switch_expr: Some(condition.clone()),
+                kind: CondKind::Switch(condition.clone()),
                 branches,
             };
         }
@@ -979,7 +980,7 @@ impl LowerCtx {
         });
         Conditional {
             ptr,
-            switch_expr: None,
+            kind: CondKind::IfElse,
             branches,
         }
     }
@@ -1887,7 +1888,7 @@ impl LowerCtx {
             .collect();
         Conditional {
             ptr,
-            switch_expr: None,
+            kind: CondKind::IfElse,
             branches,
         }
     }
