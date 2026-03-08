@@ -431,10 +431,13 @@ fn emit_if_conditional(
     let condition_is_flat = matches!(cond.kind, lir::CondKind::InitialCondition);
 
     for branch in &cond.branches {
+        // Non-inline branches get a "\n" prepended after emission. Account
+        // for this shift in param_offset so nested merge paths are correct.
+        let newline_offset = usize::from(!is_inline);
         let inner_cctx = ContainerCtx {
             temp_names: cctx.temp_names.clone(),
             path: cctx.path.clone(),
-            param_offset: 0,
+            param_offset: newline_offset,
             depth_offset: cctx.depth_offset + 2,
         };
 
@@ -504,7 +507,10 @@ fn emit_if_conditional(
     } else {
         format!("{}.{nop_index}", cctx.path)
     };
-    let merge_path = cctx.compact_path(3, &merge_abs);
+    // The merge target (nop) is in the same output vector as the branch
+    // wrappers. The branch body is always 3 levels deep (wrapper → named "b"
+    // → body), so use a fixed depth of 3 without depth_offset.
+    let merge_path = compact_path(&cctx.path, 3, &merge_abs);
 
     for &wrapper_idx in &branch_merge_indices {
         if let Element::Container(ref mut wrapper) = out[wrapper_idx]
@@ -540,10 +546,14 @@ fn emit_switch_conditional(
     let mut branch_merge_indices: Vec<usize> = Vec::new();
 
     for branch in branches {
+        // Switch branches get "pop" (always) and "\n" (non-inline) prepended
+        // after emission. Account for this shift in param_offset so nested
+        // merge paths are correct.
+        let prepend_count = 1 + usize::from(!is_inline);
         let inner_cctx = ContainerCtx {
             temp_names: cctx.temp_names.clone(),
             path: cctx.path.clone(),
-            param_offset: 0,
+            param_offset: prepend_count,
             depth_offset: cctx.depth_offset + 2,
         };
 
@@ -619,7 +629,9 @@ fn emit_switch_conditional(
     } else {
         format!("{}.{nop_index}", cctx.path)
     };
-    let merge_path = cctx.compact_path(3, &merge_abs);
+    // Same as if-conditional: merge target is in the same output vector,
+    // branch body is 3 levels deep, no depth_offset needed.
+    let merge_path = compact_path(&cctx.path, 3, &merge_abs);
 
     for &wrapper_idx in &branch_merge_indices {
         if let Element::Container(ref mut wrapper) = out[wrapper_idx]
