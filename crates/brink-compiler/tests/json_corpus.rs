@@ -96,7 +96,22 @@ fn discover_corpus() -> Vec<TestCase> {
         }
     }
 
-    cases.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    // Sort tiers first (tier1, tier2, tier3), then github/patched suites.
+    cases.sort_by(|a, b| {
+        fn suite_order(s: &str) -> u8 {
+            match s {
+                "tier1" => 0,
+                "tier2" => 1,
+                "tier3" => 2,
+                "tests_patched" => 3,
+                "tests_github" => 4,
+                _ => 5,
+            }
+        }
+        suite_order(&a.suite)
+            .cmp(&suite_order(&b.suite))
+            .then_with(|| a.rel_path.cmp(&b.rel_path))
+    });
     cases
 }
 
