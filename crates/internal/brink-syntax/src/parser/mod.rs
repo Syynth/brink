@@ -123,16 +123,64 @@ impl<'t, 'c> Parser<'t, 'c> {
         }
     }
 
-    /// One O(n) pre-pass over the token stream. For each `{`, determines whether
-    /// `PIPE` or `COLON` appears first at depth-0 inside that brace pair.
-    /// Stores the result so `scan_for_pipe_or_colon` becomes an O(1) lookup.
+    /// O(n) pre-pass: for each `L_BRACE`, classify the brace pair as `COLON`
+    /// (conditional), `PIPE` (sequence), or `EOF` (bare expression).
+    ///
+    /// Classification rules (`||`-aware):
+    ///  1. If a **single** `|` (not part of `||`) appears at depth-0 →
+    ///     sequence (`PIPE`), regardless of any COLON.
+    ///  2. Else if `COLON` appears at depth-0 → conditional (`COLON`).
+    ///  3. Else if `||` appears (no single `|`, no COLON) → sequence (`PIPE`),
+    ///     since `||` without a conditional colon means two separators.
+    ///  4. Neither → bare expression (`EOF`).
+    ///
+    /// Examples:
+    ///  - `{a|b:c}` — single `|` → sequence (rule 1)
+    ///  - `{x || y: body}` — no single `|`, has COLON → conditional (rule 2)
+    ///  - `{a||b}` — `||` only, no COLON → sequence (rule 3)
+    ///  - `{x}` — neither → bare expression (rule 4)
     fn build_brace_scan(tokens: &[(SyntaxKind, &str)]) -> Vec<SyntaxKind> {
+        // Stack entries track what we've seen at depth-0 inside each brace pair.
+        // `single_pipe_before_colon` is the key signal: a lone `|` that appears
+        // before any `:` means this brace pair is a sequence, not a conditional
+        // (the `|` is a separator, not part of a conditional body like `{x: a|b}`).
+        struct Entry {
+            brace_pos: usize,
+            has_colon: bool,
+            has_pipe: bool,
+            single_pipe_before_colon: bool,
+        }
+
+        fn classify(e: &Entry) -> SyntaxKind {
+            if e.single_pipe_before_colon {
+                PIPE // rule 1: single `|` before `:` → sequence
+            } else if e.has_colon {
+                COLON // rule 2: colon (with only `||` or no pipe before it) → conditional
+            } else if e.has_pipe {
+                PIPE // rule 3: `||` without colon → sequence separators
+            } else {
+                EOF // rule 4: bare expression
+            }
+        }
+
         let n = tokens.len();
         let mut result = vec![EOF; n];
 
-        // Stack of (brace_raw_pos, first_delimiter_seen).
-        // `first_delimiter_seen` is PIPE, COLON, or EOF (neither yet).
-        let mut stack: Vec<(usize, SyntaxKind)> = Vec::new();
+        // Precompute: for each token position, the next non-trivia token index.
+        let next_nt = {
+            let mut v = vec![n; n];
+            let mut last = n;
+            for i in (0..n).rev() {
+                v[i] = last;
+                if !tokens[i].0.is_trivia() {
+                    last = i;
+                }
+            }
+            v
+        };
+
+        let mut stack: Vec<Entry> = Vec::new();
+        let mut prev_nt = EOF;
 
         for (i, &(kind, _)) in tokens.iter().enumerate() {
             if kind.is_trivia() {
@@ -140,43 +188,54 @@ impl<'t, 'c> Parser<'t, 'c> {
             }
             match kind {
                 L_BRACE => {
-                    stack.push((i, EOF));
+                    stack.push(Entry {
+                        brace_pos: i,
+                        has_colon: false,
+                        has_pipe: false,
+                        single_pipe_before_colon: false,
+                    });
+                    prev_nt = L_BRACE;
                 }
                 R_BRACE => {
-                    if let Some((brace_pos, delim)) = stack.pop() {
-                        result[brace_pos] = delim;
+                    if let Some(entry) = stack.pop() {
+                        result[entry.brace_pos] = classify(&entry);
                     }
-                    // Unmatched `}` — ignore
-                }
-                PIPE => {
-                    // Only affects the innermost open brace (depth-0 relative to it)
-                    if let Some((_, delim)) = stack.last_mut()
-                        && *delim == EOF
-                    {
-                        *delim = PIPE;
-                    }
+                    prev_nt = R_BRACE;
                 }
                 COLON => {
-                    if let Some((_, delim)) = stack.last_mut()
-                        && *delim == EOF
-                    {
-                        *delim = COLON;
+                    if let Some(e) = stack.last_mut() {
+                        e.has_colon = true;
                     }
+                    prev_nt = COLON;
+                }
+                PIPE => {
+                    if let Some(e) = stack.last_mut() {
+                        e.has_pipe = true;
+                        // Determine if this is a single `|` (not part of `||`).
+                        let next_is_pipe = next_nt[i] < n && tokens[next_nt[i]].0 == PIPE;
+                        let prev_is_pipe = prev_nt == PIPE;
+                        let is_single = !next_is_pipe && !prev_is_pipe;
+                        // Only matters if we haven't seen COLON yet.
+                        if is_single && !e.has_colon {
+                            e.single_pipe_before_colon = true;
+                        }
+                    }
+                    prev_nt = PIPE;
                 }
                 NEWLINE => {
-                    // Newline terminates unclosed braces on the current line.
-                    // Pop all open braces — they're unclosed within this line.
-                    while let Some((brace_pos, delim)) = stack.pop() {
-                        result[brace_pos] = delim;
+                    while let Some(entry) = stack.pop() {
+                        result[entry.brace_pos] = classify(&entry);
                     }
+                    prev_nt = NEWLINE;
                 }
-                _ => {}
+                _ => {
+                    prev_nt = kind;
+                }
             }
         }
 
-        // Anything left on the stack is unclosed at EOF
-        for (brace_pos, delim) in stack {
-            result[brace_pos] = delim;
+        for entry in stack {
+            result[entry.brace_pos] = classify(&entry);
         }
 
         result

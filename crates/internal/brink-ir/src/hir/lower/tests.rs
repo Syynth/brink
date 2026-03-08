@@ -1894,3 +1894,39 @@ fn print_num_else_branch_captures_both_conditionals() {
             .collect::<Vec<_>>()
     );
 }
+
+/// `{ x < 10 || x > 20: body }` must lower to a conditional, not a sequence.
+///
+/// The `||` operator shares `|` with the sequence separator. `brace_scan`
+/// currently sees the first `|` and classifies the brace pair as a sequence,
+/// so HIR lowering never produces a `Conditional` node.
+#[test]
+fn logical_or_conditional_not_sequence() {
+    let (hir, _, diags) = lower_ink("{x < 10 || x > 20: body}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    let cond = hir
+        .root_content
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::Content(c) => c.parts.iter().find_map(|p| match p {
+                ContentPart::InlineConditional(c) => Some(c),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("should lower to a conditional, not a sequence");
+
+    assert!(
+        matches!(cond.kind, CondKind::IfElse),
+        "inline conditional should be IfElse, got {:?}",
+        cond.kind,
+    );
+    assert_eq!(
+        cond.branches.len(),
+        1,
+        "one true branch expected, got {}",
+        cond.branches.len(),
+    );
+}

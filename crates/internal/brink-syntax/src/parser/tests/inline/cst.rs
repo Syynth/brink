@@ -2131,7 +2131,307 @@ fn error_empty_braces() {
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
 }
 
-// ── Section P: Choices inside multiline conditional branches ────────
+// ── Section P: Pipe / colon / double-pipe disambiguation ───────────
+//
+// These tests form a matrix covering the interaction between `|` (sequence
+// separator), `||` (logical OR), and `:` (conditional marker) inside
+// `{...}` blocks. The presence of `:` at depth-0 determines whether `||`
+// is logical OR (conditional) or two sequence separators (sequence).
+//
+// Cases marked "RED" currently fail because the brace-pair pre-scan
+// misclassifies `||` as a sequence separator even when `:` follows.
+//
+// | # | Input            | COLON? | Single PIPE? | `||`? | Expected      |
+// |---|------------------|--------|-------------|-------|---------------|
+// | 7 | {x || y: body}   | yes    | no          | yes   | conditional   |
+// | 8 | {x || y}         | no     | no          | yes   | bare expr     |
+// | 9 | {a|b:c}          | yes    | yes (before) | no   | sequence      |
+// |10 | {x<10||x>20:body}| yes    | no          | yes   | conditional   |
+// |11 | {a||b:c}         | yes    | no          | yes   | conditional   |
+// |12 | {a|b||c}         | no     | yes         | yes   | sequence      |
+// |13 | {x||y||z:w}      | yes    | no          | yes   | conditional   |
+//
+// Cases 1–6 are covered by existing tests in sections A–C.
+
+/// Case 7: `{x || y: body}` — `||` + COLON → conditional.
+#[test]
+fn pipe_pipe_with_colon_is_conditional() {
+    assert_equivalent(
+        parse("{x || y: body}\n"),
+        cst!(SOURCE_FILE {
+            CONTENT_LINE {
+                MIXED_CONTENT {
+                    INLINE_LOGIC {
+                        CONDITIONAL_WITH_EXPR {
+                            INFIX_EXPR [PIPE, PIPE] {
+                                PATH
+                                PATH
+                            }
+                            INLINE_BRANCHES_COND {
+                                BRANCH_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Case 8: `{x || y}` — `||` without COLON → sequence.
+///
+/// No COLON at depth-0. The reference tries `InnerSequence` before
+/// `InnerExpression`, and both `|` tokens act as sequence separators,
+/// yielding three branches: `x `, empty, ` y`. This matches the
+/// existing `{a||c}` behavior (case 6, `implicit_seq_empty_middle`).
+#[test]
+fn pipe_pipe_no_colon_is_sequence() {
+    assert_equivalent(
+        parse("{x || y}\n"),
+        cst!(SOURCE_FILE {
+            CONTENT_LINE {
+                MIXED_CONTENT {
+                    INLINE_LOGIC {
+                        IMPLICIT_SEQUENCE {
+                            BRANCH_CONTENT {
+                                TEXT
+                            }
+                            BRANCH_CONTENT
+                            BRANCH_CONTENT {
+                                TEXT
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Case 9: `{a|b:c}` — single PIPE before COLON → sequence.
+///
+/// The PIPE at depth-0 appears before the COLON, so this is a sequence
+/// (branches: `a`, `b:c`). The `:` is literal text inside the second branch.
+#[test]
+fn single_pipe_before_colon_is_sequence() {
+    assert_equivalent(
+        parse("{a|b:c}\n"),
+        cst!(SOURCE_FILE {
+            CONTENT_LINE {
+                MIXED_CONTENT {
+                    INLINE_LOGIC {
+                        IMPLICIT_SEQUENCE {
+                            BRANCH_CONTENT {
+                                TEXT
+                            }
+                            BRANCH_CONTENT {
+                                TEXT
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Case 10: `{x < 10 || x > 20: body}` — compound `||` expr + COLON → conditional.
+#[test]
+fn compound_logical_or_conditional() {
+    assert_equivalent(
+        parse("{x < 10 || x > 20: body}\n"),
+        cst!(SOURCE_FILE {
+            CONTENT_LINE {
+                MIXED_CONTENT {
+                    INLINE_LOGIC {
+                        CONDITIONAL_WITH_EXPR {
+                            INFIX_EXPR {
+                                INFIX_EXPR {
+                                    PATH
+                                    INTEGER_LIT
+                                }
+                                INFIX_EXPR {
+                                    PATH
+                                    INTEGER_LIT
+                                }
+                            }
+                            INLINE_BRANCHES_COND {
+                                BRANCH_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Case 11: `{a||b:c}` — `||` + COLON → conditional (condition = `a || b`).
+///
+/// Despite `a||b` looking like it could be a sequence with empty middle,
+/// the COLON makes this a conditional. The reference parser tries
+/// `ConditionExpression` first: parses `a || b` as expression, finds `:`,
+/// commits to conditional.
+#[test]
+fn pipe_pipe_colon_is_conditional_not_sequence() {
+    assert_equivalent(
+        parse("{a||b:c}\n"),
+        cst!(SOURCE_FILE {
+            CONTENT_LINE {
+                MIXED_CONTENT {
+                    INLINE_LOGIC {
+                        CONDITIONAL_WITH_EXPR {
+                            INFIX_EXPR [PIPE, PIPE] {
+                                PATH
+                                PATH
+                            }
+                            INLINE_BRANCHES_COND {
+                                BRANCH_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Case 12: `{a|b||c}` — single PIPE + `||`, no COLON → sequence.
+///
+/// No COLON at depth-0, so this can't be a conditional. The single `|`
+/// and `||` are all sequence separators: branches `a`, `b`, empty, `c`.
+#[test]
+fn mixed_pipe_and_pipe_pipe_no_colon_is_sequence() {
+    assert_equivalent(
+        parse("{a|b||c}\n"),
+        cst!(SOURCE_FILE {
+            CONTENT_LINE {
+                MIXED_CONTENT {
+                    INLINE_LOGIC {
+                        IMPLICIT_SEQUENCE {
+                            BRANCH_CONTENT {
+                                TEXT
+                            }
+                            BRANCH_CONTENT {
+                                TEXT
+                            }
+                            BRANCH_CONTENT
+                            BRANCH_CONTENT {
+                                TEXT
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Case 13: `{x || y || z: w}` — chained `||` + COLON → conditional.
+#[test]
+fn chained_logical_or_conditional() {
+    assert_equivalent(
+        parse("{x || y || z: w}\n"),
+        cst!(SOURCE_FILE {
+            CONTENT_LINE {
+                MIXED_CONTENT {
+                    INLINE_LOGIC {
+                        CONDITIONAL_WITH_EXPR {
+                            INFIX_EXPR {
+                                INFIX_EXPR [PIPE, PIPE] {
+                                    PATH
+                                    PATH
+                                }
+                                PATH
+                            }
+                            INLINE_BRANCHES_COND {
+                                BRANCH_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Multiline else branch body with `||` in a nested branchless conditional.
+///
+/// The second `{...}` block uses `||` in its condition. With the current
+/// bug, the pre-scan classifies it as a sequence, causing the `- else:`
+/// inside to leak as a 5th branch of the outer conditional.
+#[test]
+fn else_body_with_logical_or_nested_conditional() {
+    assert_equivalent(
+        parse(
+            "\
+{
+    - x >= 10:
+        big
+    - else:
+        { x < 5 || x > 20:
+            out of range
+        - else:
+            in range
+        }
+}
+",
+        ),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                MULTILINE_BRANCHES_COND {
+                    MULTILINE_BRANCH_COND {
+                        INFIX_EXPR {
+                            PATH
+                            INTEGER_LIT
+                        }
+                        MULTILINE_BRANCH_BODY {
+                            TEXT
+                        }
+                    }
+                    MULTILINE_BRANCH_COND {
+                        MULTILINE_BRANCH_BODY {
+                            INLINE_LOGIC {
+                                CONDITIONAL_WITH_EXPR {
+                                    INFIX_EXPR {
+                                        INFIX_EXPR {
+                                            PATH
+                                            INTEGER_LIT
+                                        }
+                                        INFIX_EXPR {
+                                            PATH
+                                            INTEGER_LIT
+                                        }
+                                    }
+                                    BRANCHLESS_COND_BODY {
+                                        TEXT
+                                        ELSE_BRANCH {
+                                            MULTILINE_BRANCH_COND {
+                                                MULTILINE_BRANCH_BODY {
+                                                    TEXT
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+// ── Section Q: Choices inside multiline conditional branches ────────
 
 /// Single choice inside a conditional branch.
 #[test]
