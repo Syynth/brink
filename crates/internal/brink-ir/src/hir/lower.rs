@@ -1066,6 +1066,7 @@ impl LowerCtx {
     /// Branch bodies contain a mix of block-level (`LOGIC_LINE`, `INLINE_LOGIC`,
     /// `CHOICE`, `DIVERT_NODE`) and content-level (`TEXT`, `GLUE_NODE`, `ESCAPE`) nodes.
     /// We accumulate content parts and flush them when block-level nodes appear.
+    #[expect(clippy::too_many_lines)]
     fn lower_branch_body(&mut self, body: &brink_syntax::SyntaxNode) -> Block {
         let mut stmts = Vec::new();
         let mut parts = Vec::new();
@@ -1088,6 +1089,7 @@ impl LowerCtx {
                             .map_or_else(Vec::new, |mc| self.lower_mixed_content(&mc));
                         parts.extend(line_parts);
                         let tags = lower_tags(cl.tags());
+                        let has_divert = cl.divert().is_some();
                         if !parts.is_empty() || !tags.is_empty() {
                             stmts.push(Stmt::Content(Content {
                                 ptr: None,
@@ -1099,6 +1101,9 @@ impl LowerCtx {
                             && let Some(s) = self.lower_divert_node(&dn)
                         {
                             stmts.push(s);
+                        }
+                        if !has_divert {
+                            stmts.push(Stmt::EndOfLine);
                         }
                     }
                 }
@@ -1134,6 +1139,13 @@ impl LowerCtx {
                         parts.push(ContentPart::Text(text));
                     }
                 }
+                SyntaxKind::NEWLINE => {
+                    // Newline after text content → flush and emit EndOfLine
+                    if !parts.is_empty() {
+                        flush_content_parts(&mut parts, &mut stmts);
+                        stmts.push(Stmt::EndOfLine);
+                    }
+                }
                 SyntaxKind::GLUE_NODE => parts.push(ContentPart::Glue),
                 SyntaxKind::ESCAPE => {
                     let text = child.text().to_string();
@@ -1157,7 +1169,10 @@ impl LowerCtx {
                 _ => {}
             }
         }
-        flush_content_parts(&mut parts, &mut stmts);
+        if !parts.is_empty() {
+            flush_content_parts(&mut parts, &mut stmts);
+            stmts.push(Stmt::EndOfLine);
+        }
         Block { stmts }
     }
 

@@ -18,6 +18,9 @@ pub struct ContainerCtx {
     pub temp_names: HashMap<u16, String>,
     /// Fully qualified container path.
     pub path: String,
+    /// Number of param `temp=` elements prepended before the body.
+    /// Internal index references must be offset by this amount.
+    pub param_offset: usize,
 }
 
 impl ContainerCtx {
@@ -32,6 +35,7 @@ impl ContainerCtx {
         ContainerCtx {
             temp_names,
             path: path.to_string(),
+            param_offset: container.params.len(),
         }
     }
 
@@ -398,10 +402,13 @@ fn emit_conditional(
         let inner_cctx = ContainerCtx {
             temp_names: cctx.temp_names.clone(),
             path: String::new(),
+            param_offset: 0,
         };
 
-        // Build the branch body for the "b" sub-container
+        // Build the branch body for the "b" sub-container.
+        // Inklecate prepends "\n" to each multiline branch body.
         let (mut body_elems, sub_named) = emit_stmts(&branch.body, lookups, &inner_cctx);
+        body_elems.insert(0, Element::Value(InkValue::String("\n".to_string())));
 
         // Placeholder merge divert — patched after we know nop_index
         body_elems.push(Element::Divert(Divert::Target {
@@ -447,8 +454,9 @@ fn emit_conditional(
         branch_merge_indices.push(wrapper_idx);
     }
 
-    // Emit nop merge point — index is the element's position in the container
-    let nop_index = out.len();
+    // Emit nop merge point — index is the element's position in the container.
+    // Account for param temp= elements that are prepended by build_container.
+    let nop_index = out.len() + cctx.param_offset;
     out.push(Element::ControlCommand(ControlCommand::NoOperation));
 
     // Compute merge path
@@ -534,6 +542,7 @@ fn emit_sequence(
             } else {
                 format!("{}.{sname}", cctx.path)
             },
+            param_offset: 0,
         };
 
         let mut branch_contents = Vec::new();

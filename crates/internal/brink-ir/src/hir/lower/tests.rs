@@ -1738,3 +1738,41 @@ fn branchless_conditional_with_temp_decl() {
         .any(|s| matches!(s, Stmt::Content(_)));
     assert!(has_content, "else branch should contain Content");
 }
+
+#[test]
+fn conditional_branch_body_has_endofline() {
+    let (hir, _, _) = lower_ink(
+        "\
+=== death(reason) ===
+{
+- reason ? beaten:
+You've been beaten to death.
+- else:
+Sorry, you're dead
+}
+-> END
+",
+    );
+
+    let knot = &hir.knots[0];
+    // Find the Conditional statement
+    let cond = knot.body.stmts.iter().find_map(|s| {
+        if let Stmt::Conditional(c) = s {
+            Some(c)
+        } else {
+            None
+        }
+    });
+    let cond = cond.expect("should have a conditional");
+    // First branch (reason ? beaten) body should have Content + EndOfLine
+    let first_branch = &cond.branches[0];
+    let has_eol = first_branch
+        .body
+        .stmts
+        .iter()
+        .any(|s| matches!(s, Stmt::EndOfLine));
+    assert!(
+        has_eol,
+        "branch body should contain EndOfLine after content"
+    );
+}
