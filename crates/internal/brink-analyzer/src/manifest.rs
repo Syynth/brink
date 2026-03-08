@@ -105,24 +105,18 @@ pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec
 
 fn insert_symbol(
     index: &mut SymbolIndex,
-    diagnostics: &mut Vec<Diagnostic>,
+    _diagnostics: &mut Vec<Diagnostic>,
     file: FileId,
     sym: &brink_ir::DeclaredSymbol,
     kind: SymbolKind,
-    dup_code: DiagnosticCode,
+    _dup_code: DiagnosticCode,
 ) {
-    // Check for duplicates of the same kind
+    // Skip duplicates of the same kind silently — inklecate permits redefinition.
     if let Some(existing_ids) = index.by_name.get(&sym.name) {
         let has_dup = existing_ids
             .iter()
             .any(|id| index.symbols.get(id).is_some_and(|info| info.kind == kind));
         if has_dup {
-            diagnostics.push(Diagnostic {
-                file,
-                range: sym.range,
-                message: format!("{}: `{}` is already defined", dup_code.title(), sym.name),
-                code: dup_code,
-            });
             return;
         }
     }

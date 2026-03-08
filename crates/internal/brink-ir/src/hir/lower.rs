@@ -157,6 +157,9 @@ impl LowerCtx {
     }
 
     fn add_unresolved(&mut self, path: &str, range: TextRange, kind: RefKind) {
+        if path.is_empty() {
+            return;
+        }
         self.manifest.unresolved.push(UnresolvedRef {
             path: path.to_string(),
             range,
@@ -1038,6 +1041,17 @@ impl LowerCtx {
                     let text = child.text().to_string();
                     if text.len() > 1 {
                         parts.push(ContentPart::Text(text[1..].to_string()));
+                    }
+                }
+                SyntaxKind::CHOICE => {
+                    flush_content_parts(&mut parts, &mut stmts);
+                    if let Some(c) = ast::Choice::cast(child)
+                        && let Some(choice) = self.lower_choice(&c)
+                    {
+                        stmts.push(Stmt::ChoiceSet(ChoiceSet {
+                            choices: vec![choice],
+                            gather: None,
+                        }));
                     }
                 }
                 _ => {}

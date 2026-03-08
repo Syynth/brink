@@ -346,8 +346,8 @@ proptest! {
         }
     }
 
-    /// When two files declare a knot with the same name, exactly one
-    /// duplicate diagnostic is produced.
+    /// When two files declare a knot with the same name, duplicates are
+    /// silently accepted (inklecate permits redefinition).
     #[test]
     fn duplicate_knots_across_files(name in arb_ident()) {
         let m1 = SymbolManifest {
@@ -385,14 +385,14 @@ proptest! {
 
         prop_assert_eq!(
             dup_diags.len(),
-            1,
-            "expected exactly 1 duplicate diagnostic for knot `{}`, got {}",
+            0,
+            "expected no duplicate diagnostics for knot `{}`, got {}",
             name, dup_diags.len(),
         );
     }
 
-    /// When two files declare a global variable with the same name, exactly
-    /// one duplicate diagnostic is produced.
+    /// When two files declare a global variable with the same name, duplicates
+    /// are silently accepted (inklecate permits redefinition).
     #[test]
     fn duplicate_variables_across_files(name in arb_ident()) {
         let m1 = SymbolManifest {
@@ -430,8 +430,8 @@ proptest! {
 
         prop_assert_eq!(
             dup_diags.len(),
-            1,
-            "expected exactly 1 duplicate diagnostic for variable `{}`, got {}",
+            0,
+            "expected no duplicate diagnostics for variable `{}`, got {}",
             name, dup_diags.len(),
         );
     }
@@ -723,7 +723,8 @@ fn integration_duplicate_knot_across_files() {
         .iter()
         .filter(|d| d.code == DiagnosticCode::E022)
         .collect();
-    assert_eq!(dups.len(), 1);
+    // Duplicates are silently accepted (inklecate permits redefinition)
+    assert!(dups.is_empty());
 }
 
 #[test]
@@ -897,4 +898,172 @@ LIST Color = red, blue
         .filter(|d| d.code == DiagnosticCode::E025)
         .collect();
     assert!(unresolved.is_empty(), "unresolved: {unresolved:?}");
+}
+
+// ── Tests for corpus fix patterns ───────────────────────────────────
+
+#[test]
+fn integration_turns_builtin() {
+    let result = analyze_ink(
+        "\
+=== function came_from(-> x) ===
+~ return TURNS_SINCE(x) == 0
+
+=== test ===
+- (begin)
+~ temp t = TURNS()
+{t > 0: hello}
+-> END
+",
+    );
+    let unresolved: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E025)
+        .collect();
+    assert!(
+        unresolved.is_empty(),
+        "TURNS() should be a builtin: {unresolved:?}",
+    );
+}
+
+#[test]
+fn integration_duplicate_knot_no_error() {
+    let result = analyze_ink_multi(&[
+        "VAR x = 0\n== shared ==\n~ x = 1\n-> END\n",
+        "== shared ==\n{x} -> END\n",
+    ]);
+    // Duplicates should not prevent compilation
+    assert!(
+        result.diagnostics.is_empty(),
+        "duplicates should be silently accepted: {:?}",
+        result.diagnostics,
+    );
+}
+
+#[test]
+fn integration_qualified_label_visit_count() {
+    // `adventure.encounter` where encounter is a label inside a stitch
+    let result = analyze_ink(
+        "\
+=== adventure ===
+= prints
+* (encounter) Option A
+  Hello
+- -> END
+
+=== other ===
+{adventure.encounter: Already met!}
+-> END
+",
+    );
+    let unresolved: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E025)
+        .collect();
+    assert!(
+        unresolved.is_empty(),
+        "adventure.encounter should resolve as knot.stitch.label visit count: {unresolved:?}",
+    );
+}
+
+#[test]
+fn integration_choice_label_in_branchless_conditional() {
+    let result = analyze_ink(
+        "\
+=== play_game ===
+{ true:
+  + (burny) [Burn]
+    Hello
+}
+- -> burny
+-> END
+",
+    );
+    let unresolved: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E024)
+        .collect();
+    assert!(
+        unresolved.is_empty(),
+        "choice label inside branchless conditional should be declared: {unresolved:?}",
+    );
+}
+
+#[test]
+fn integration_cross_scope_label_divert() {
+    // `-> begin` from inside a knot, where `begin` is a top-level gather label
+    let result = analyze_ink(
+        "\
+- (begin)
+-> example
+
+=== example ===
+~ temp t = TURNS_SINCE(-> begin)
+-> END
+",
+    );
+    let unresolved: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E024)
+        .collect();
+    assert!(
+        unresolved.is_empty(),
+        "top-level label should be visible from inside a knot: {unresolved:?}",
+    );
+}
+
+#[test]
+fn integration_temp_as_function_name() {
+    let result = analyze_ink(
+        "\
+=== test ===
+~ temp myFunc = -> helper
+~ myFunc()
+-> END
+
+=== helper ===
+-> END
+",
+    );
+    let unresolved: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E025)
+        .collect();
+    assert!(
+        unresolved.is_empty(),
+        "temp used as function name should resolve: {unresolved:?}",
+    );
+}
+
+#[test]
+fn integration_qualified_stitch_divert_from_knot_scope() {
+    // `-> a_package.forest` inside `adventure` knot should resolve
+    // as `adventure.a_package.forest` (stitch.label)
+    let result = analyze_ink(
+        "\
+=== adventure ===
+= a_package
+* (forest) Go to forest
+  Trees!
+- -> END
+
+=== other ===
+-> adventure.a_package.forest
+-> END
+",
+    );
+    let unresolved: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E024)
+        .collect();
+    assert!(
+        unresolved.is_empty(),
+        "qualified stitch.label divert should resolve: {unresolved:?}",
+    );
 }

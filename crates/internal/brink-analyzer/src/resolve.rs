@@ -60,9 +60,21 @@ fn resolve_divert(
 fn lookup_divert(index: &SymbolIndex, uref: &brink_ir::UnresolvedRef) -> Option<DefinitionId> {
     let path = &uref.path;
 
-    // Dotted path — try exact qualified lookup
+    // Dotted path — try exact qualified lookup, then qualify with current knot
     if path.contains('.') {
-        return lookup_by_name(index, path, &[SymbolKind::Stitch, SymbolKind::Label]);
+        if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Stitch, SymbolKind::Label]) {
+            return Some(id);
+        }
+        // Try qualifying with current knot scope (e.g., `a_package.forest` → `adventure.a_package.forest`)
+        if let Some(knot) = &uref.scope.knot {
+            let qualified = format!("{knot}.{path}");
+            if let Some(id) =
+                lookup_by_name(index, &qualified, &[SymbolKind::Stitch, SymbolKind::Label])
+            {
+                return Some(id);
+            }
+        }
+        return None;
     }
 
     // Single segment — ink's hierarchical resolution:
@@ -103,10 +115,8 @@ fn lookup_divert(index: &SymbolIndex, uref: &brink_ir::UnresolvedRef) -> Option<
         return Some(id);
     }
 
-    // 5. Top-level label (no knot scope) — stored as bare name
-    if uref.scope.knot.is_none()
-        && let Some(id) = lookup_by_name(index, path, &[SymbolKind::Label])
-    {
+    // 5. Top-level label — stored as bare name (visible from any scope)
+    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Label]) {
         return Some(id);
     }
 
@@ -206,10 +216,17 @@ fn lookup_variable(index: &SymbolIndex, uref: &brink_ir::UnresolvedRef) -> VarRe
     }
 
     // 8. Qualified stitch/label (e.g. `knot.stitch` or `knot.stitch.label` visit count)
-    if path.contains('.')
-        && let Some(id) = lookup_by_name(index, path, &[SymbolKind::Stitch, SymbolKind::Label])
-    {
-        return VarResult::Found(id);
+    if path.contains('.') {
+        if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Stitch, SymbolKind::Label]) {
+            return VarResult::Found(id);
+        }
+        // Try `knot.label` where label is stored as `knot.*.label` (label inside a stitch)
+        if let Some((knot, label)) = path.split_once('.')
+            && !label.contains('.')
+            && let Some(id) = lookup_label_in_knot(index, knot, label)
+        {
+            return VarResult::Found(id);
+        }
     }
 
     // 9. Labels in current knot
@@ -275,6 +292,16 @@ fn resolve_function(
 
     // Try variables (ink allows calling a variable holding a function ref)
     if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Variable]) {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+        return;
+    }
+
+    // Try locals (temps/params used as function names, e.g. `{storyletFunction(args)}`)
+    if let Some(id) = lookup_local_in_scope(index, path, &uref.scope) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -420,6 +447,7 @@ fn is_builtin_function(name: &str) -> bool {
             | "LIST_VALUE"
             | "LIST_FROM_INT"
             | "READ_COUNT"
+            | "TURNS"
     )
 }
 
@@ -719,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_knot_emits_diagnostic() {
+    fn duplicate_knot_is_silently_accepted() {
         let mut m1 = make_manifest(&["start"], &[], &[], &[], &[], &[], vec![]);
         let m2 = make_manifest(&["start"], &[], &[], &[], &[], &[], vec![]);
 
@@ -729,8 +757,8 @@ mod tests {
         let files = vec![(FileId(0), &m1), (FileId(1), &m2)];
         let (_index, diags) = merge_manifests(&files);
 
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code, DiagnosticCode::E022);
+        // Inklecate permits duplicate definitions — no diagnostic emitted.
+        assert!(diags.is_empty());
     }
 
     #[test]

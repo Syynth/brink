@@ -438,6 +438,9 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
                 }
                 p.bump();
             }
+            STAR | PLUS => {
+                super::choice::choice(p);
+            }
             TILDE => {
                 p.skip_ws();
                 super::logic::logic_line(p);

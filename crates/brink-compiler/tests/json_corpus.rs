@@ -192,9 +192,10 @@ fn compare_one(case: &TestCase) -> CompareResult {
 
 fn extract_error_codes(err: &brink_compiler::CompileError) -> Vec<String> {
     match err {
-        brink_compiler::CompileError::Diagnostics(diags) => {
-            diags.iter().map(|d| d.code.as_str().to_string()).collect()
-        }
+        brink_compiler::CompileError::Diagnostics(diags) => diags
+            .iter()
+            .map(|d| format!("{}:{}", d.code.as_str(), d.message))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -326,6 +327,9 @@ fn json_corpus() {
                 *suite_error.entry(suite_key).or_default() += 1;
                 *cat_fail.entry(cat_key).or_default() += 1;
                 failures.push(format!("  COMPILE ERROR: {}: {message}", case.rel_path));
+                for code in codes {
+                    failures.push(format!("    {code}"));
+                }
                 if first_failure.is_none() {
                     first_failure =
                         Some((case.rel_path.clone(), format!("Compile error: {message}")));
