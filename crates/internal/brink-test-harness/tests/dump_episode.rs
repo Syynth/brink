@@ -51,6 +51,32 @@ fn dump_minimal() {
     let json = load("../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
     let ep = record_from_ink_json(&json, &[]);
     print_episode(&ep, "I001 — minimal story (no choices)");
+
+    // Also dump as JSON to verify serde roundtrip
+    let serialized = serde_json::to_string_pretty(&ep).unwrap();
+    eprintln!("── JSON ──");
+    eprintln!("{serialized}");
+
+    // Roundtrip
+    let deserialized: brink_test_harness::Episode = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(deserialized.choice_path, ep.choice_path);
+    assert_eq!(deserialized.steps.len(), ep.steps.len());
+    assert_eq!(deserialized.steps[0].text, ep.steps[0].text);
+}
+
+#[test]
+fn dump_once_only_json() {
+    let json = load(
+        "../../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink.json",
+    );
+    let ep = record_from_ink_json(&json, &[0, 0]);
+    let serialized = serde_json::to_string_pretty(&ep).unwrap();
+    eprintln!("── I079 JSON ──");
+    eprintln!("{serialized}");
+
+    let deserialized: brink_test_harness::Episode = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(deserialized.choice_path, ep.choice_path);
+    assert_eq!(deserialized.steps.len(), ep.steps.len());
 }
 
 #[test]

@@ -1,5 +1,7 @@
 use core::fmt;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 /// Tag discriminant stored in the high byte of a [`DefinitionId`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -73,6 +75,31 @@ impl DefinitionId {
         let byte = (raw >> 56) as u8;
         DefinitionTag::from_u8(byte)?;
         Some(Self(raw))
+    }
+}
+
+impl Serialize for DefinitionId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Serialize as "$tt_hhhhhhhhhhhhhh" — tag byte + 56-bit hash.
+        serializer.serialize_str(&format!("{self}"))
+    }
+}
+
+impl<'de> Deserialize<'de> for DefinitionId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = <&str>::deserialize(deserializer)?;
+        // Parse "$tt_hhhhhhhhhhhhhh"
+        if !s.starts_with('$') || s.len() != 18 || s.as_bytes()[3] != b'_' {
+            return Err(serde::de::Error::custom(format!(
+                "invalid DefinitionId: {s:?}"
+            )));
+        }
+        let tag_byte = u8::from_str_radix(&s[1..3], 16).map_err(serde::de::Error::custom)?;
+        let tag = DefinitionTag::from_u8(tag_byte).ok_or_else(|| {
+            serde::de::Error::custom(format!("invalid tag byte: {tag_byte:#04x}"))
+        })?;
+        let hash = u64::from_str_radix(&s[4..], 16).map_err(serde::de::Error::custom)?;
+        Ok(Self::new(tag, hash))
     }
 }
 

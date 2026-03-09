@@ -12,6 +12,7 @@ brink-runtime = { path = "../../brink-runtime" }
 brink-format = { path = "../brink-format" }
 brink-converter = { path = "../brink-converter" }
 brink-json = { path = "../brink-json" }
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [lints]

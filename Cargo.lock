@@ -342,6 +342,7 @@ dependencies = [
  "brink-format",
  "brink-json",
  "brink-runtime",
+ "serde",
  "serde_json",
 ]
 

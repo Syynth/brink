@@ -1,9 +1,11 @@
 use std::rc::Rc;
 
+use serde::{Deserialize, Serialize};
+
 use crate::id::DefinitionId;
 
 /// The runtime type of a [`Value`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ValueType {
     Int,
     Float,
@@ -22,7 +24,7 @@ pub enum ValueType {
 /// cloning a `Value` is always O(1) — a refcount bump, not a deep copy.
 /// This matches C#'s reference-type semantics and makes call-frame cloning
 /// (during `fork_thread`) essentially free.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     Int(i32),
     Float(f32),
@@ -59,7 +61,7 @@ impl Value {
 }
 
 /// An ink list value: a set of list items plus their origin list definitions.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ListValue {
     /// The active items in this list (each a `ListItem` `DefinitionId`).
     pub items: Vec<DefinitionId>,
