@@ -55,4 +55,7 @@ pub enum RuntimeError {
 
     #[error("flow already exists: {0}")]
     FlowAlreadyExists(String),
+
+    #[error("step limit exceeded ({0} steps)")]
+    StepLimitExceeded(u64),
 }

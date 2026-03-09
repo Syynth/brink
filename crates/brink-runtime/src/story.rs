@@ -595,6 +595,10 @@ impl FlowInstance {
         self.run_loop::<R>(program, handler, Some(observer))
     }
 
+    /// Maximum VM steps per `continue_maximally` call before erroring.
+    /// Prevents infinite loops from malformed bytecode.
+    const STEP_LIMIT: u64 = 1_000_000;
+
     /// Core step loop shared by observed and unobserved execution.
     fn run_loop<R: StoryRng>(
         &mut self,
@@ -612,6 +616,7 @@ impl FlowInstance {
         }
 
         let mut all_lines: Vec<(String, Vec<String>)> = Vec::new();
+        let step_start = self.stats.steps;
 
         let Self {
             flow,
@@ -622,6 +627,10 @@ impl FlowInstance {
 
         loop {
             stats.steps += 1;
+
+            if stats.steps - step_start > Self::STEP_LIMIT {
+                return Err(RuntimeError::StepLimitExceeded(Self::STEP_LIMIT));
+            }
 
             // Build state (observed or plain) and run one VM step.
             let stepped = if let Some(ref mut obs) = observer {
