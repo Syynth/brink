@@ -1,5 +1,7 @@
 //! Structural comparison of episodes.
 
+use std::fmt;
+
 use crate::episode::{Episode, StateWrite, StepOutcome, StepRecord};
 
 /// Result of comparing two episodes.
@@ -39,6 +41,50 @@ pub enum StepDiff {
     MissingStep(StepRecord),
     /// Actual had an extra step not present in expected.
     ExtraStep(StepRecord),
+}
+
+impl fmt::Display for EpisodeDiff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.matches {
+            return write!(f, "episodes match");
+        }
+        writeln!(f, "episode mismatch:")?;
+        for (i, step_diff) in self.step_diffs.iter().enumerate() {
+            match step_diff {
+                StepDiff::Match => {}
+                StepDiff::TextMismatch { expected, actual } => {
+                    writeln!(f, "  step {i}: text differs")?;
+                    writeln!(f, "    expected: {expected:?}")?;
+                    writeln!(f, "    actual:   {actual:?}")?;
+                }
+                StepDiff::TagsMismatch { expected, actual } => {
+                    writeln!(f, "  step {i}: tags differ")?;
+                    writeln!(f, "    expected: {expected:?}")?;
+                    writeln!(f, "    actual:   {actual:?}")?;
+                }
+                StepDiff::OutcomeMismatch { expected, actual } => {
+                    writeln!(f, "  step {i}: outcome differs")?;
+                    writeln!(f, "    expected: {expected:?}")?;
+                    writeln!(f, "    actual:   {actual:?}")?;
+                }
+                StepDiff::WritesMismatch { expected, actual } => {
+                    writeln!(f, "  step {i}: writes differ")?;
+                    writeln!(f, "    expected: {expected:?}")?;
+                    writeln!(f, "    actual:   {actual:?}")?;
+                }
+                StepDiff::MissingStep(step) => {
+                    writeln!(f, "  step {i}: missing (expected text: {:?})", step.text)?;
+                }
+                StepDiff::ExtraStep(step) => {
+                    writeln!(f, "  step {i}: extra (actual text: {:?})", step.text)?;
+                }
+            }
+        }
+        if !self.outcome_matches {
+            writeln!(f, "  outcome differs")?;
+        }
+        Ok(())
+    }
 }
 
 /// Compare two episodes structurally.
@@ -138,13 +184,12 @@ fn step_outcome_eq(a: &StepOutcome, b: &StepOutcome) -> bool {
 
 fn outcome_eq(a: &crate::episode::Outcome, b: &crate::episode::Outcome) -> bool {
     use crate::episode::Outcome;
-    matches!(
-        (a, b),
+    match (a, b) {
         (Outcome::Ended, Outcome::Ended)
-            | (Outcome::Done, Outcome::Done)
-            | (
-                Outcome::InputsExhausted { .. },
-                Outcome::InputsExhausted { .. }
-            )
-    )
+        | (Outcome::Done, Outcome::Done)
+        | (Outcome::InputsExhausted { .. }, Outcome::InputsExhausted { .. }) => true,
+        (Outcome::StepLimit { limit: a }, Outcome::StepLimit { limit: b }) => a == b,
+        (Outcome::Error(a), Outcome::Error(b)) => a == b,
+        _ => false,
+    }
 }

@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
+use brink_test_harness::corpus::collect_test_cases;
 use brink_test_harness::{ExploreConfig, explore};
 
 fn main() {
@@ -27,8 +28,7 @@ fn main() {
         max_episodes: 100,
     };
 
-    let mut cases = collect_test_cases(&tests_dir);
-    cases.sort();
+    let cases = collect_test_cases(&tests_dir);
 
     let total = cases.len();
     let mut ok = 0;
@@ -111,34 +111,4 @@ fn generate_episodes(case_dir: &Path, config: &ExploreConfig) -> Result<usize, G
     }
 
     Ok(episodes.len())
-}
-
-/// Recursively find directories containing `story.ink.json`.
-fn collect_test_cases(root: &Path) -> Vec<PathBuf> {
-    let mut result = Vec::new();
-    collect_recursive(root, &mut result);
-    result
-}
-
-fn collect_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-
-    let has_json = dir.join("story.ink.json").exists();
-    if has_json {
-        out.push(dir.to_path_buf());
-    }
-
-    let mut subdirs: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
-        .filter(|e| e.file_name() != "episodes")
-        .map(|e| e.path())
-        .collect();
-    subdirs.sort();
-
-    for sub in subdirs {
-        collect_recursive(&sub, out);
-    }
 }

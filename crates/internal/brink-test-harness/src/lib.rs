@@ -4,6 +4,7 @@
 //! tags, state mutations, and external function calls. Supports branch
 //! exploration via DFS with `Story` cloning and structural diffing of episodes.
 
+pub mod corpus;
 pub mod diff;
 pub mod episode;
 pub mod explorer;

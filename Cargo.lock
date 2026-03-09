@@ -338,6 +338,7 @@ dependencies = [
 name = "brink-test-harness"
 version = "0.0.1"
 dependencies = [
+ "brink-compiler",
  "brink-converter",
  "brink-format",
  "brink-json",

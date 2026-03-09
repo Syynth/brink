@@ -727,11 +727,20 @@ fn ink_value_to_format_value(ink: &InkValue, index: &StoryIndex) -> Value {
 
 /// Convert an ink.json `InkList` to a brink-format `ListValue`.
 fn ink_list_to_list_value(ink_list: &brink_json::InkList, index: &StoryIndex) -> ListValue {
-    let items: Vec<_> = ink_list
+    // Collect items with ordinals so we can sort deterministically.
+    // HashMap iteration order is non-deterministic across processes.
+    let mut items_with_ord: Vec<_> = ink_list
         .items
         .keys()
-        .filter_map(|qualified| index.list_items.get(qualified.as_str()).map(|&(id, _)| id))
+        .filter_map(|qualified| {
+            index
+                .list_items
+                .get(qualified.as_str())
+                .map(|&(id, ord)| (id, ord))
+        })
         .collect();
+    items_with_ord.sort_by_key(|&(_, ord)| ord);
+    let items: Vec<_> = items_with_ord.iter().map(|&(id, _)| id).collect();
 
     // Use explicit origins if present; otherwise derive from item qualified names.
     let mut origins: Vec<_> = ink_list
@@ -740,7 +749,10 @@ fn ink_list_to_list_value(ink_list: &brink_json::InkList, index: &StoryIndex) ->
         .filter_map(|name| index.list_defs.get(name.as_str()).copied())
         .collect();
     if origins.is_empty() {
-        for qualified in ink_list.items.keys() {
+        // Sort keys for deterministic iteration over the HashMap.
+        let mut keys: Vec<_> = ink_list.items.keys().collect();
+        keys.sort();
+        for qualified in keys {
             if let Some(dot) = qualified.find('.') {
                 let list_name = &qualified[..dot];
                 if let Some(&def_id) = index.list_defs.get(list_name)

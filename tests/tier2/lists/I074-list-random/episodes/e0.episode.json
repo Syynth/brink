@@ -1,7 +1,7 @@
 {
   "steps": [
     {
-      "text": "D\nD\nD\nB\nC\nB\nD\nB\nD\nB\n",
+      "text": "B\nB\nB\nC\nD\nC\nB\nC\nB\nC\n",
       "tags": [
         [],
         [],
@@ -83,9 +83,9 @@
       {
         "List": {
           "items": [
-            "$04_e6c1b222a3ad1e",
             "$04_1bf9d4e9c179bc",
-            "$04_54eb90f84b2191"
+            "$04_54eb90f84b2191",
+            "$04_e6c1b222a3ad1e"
           ],
           "origins": [
             "$03_d2721627ec76a0"

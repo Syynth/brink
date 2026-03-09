@@ -4,7 +4,7 @@ use brink_format::{DefinitionId, Value};
 use serde::{Deserialize, Serialize};
 
 /// A complete recorded execution of a story from start to termination.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Episode {
     /// Per-step records in execution order.
     pub steps: Vec<StepRecord>,
@@ -17,7 +17,7 @@ pub struct Episode {
 }
 
 /// A single `continue_maximally` call's output and side effects.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepRecord {
     /// Text output from this step.
     pub text: String,
@@ -32,7 +32,7 @@ pub struct StepRecord {
 }
 
 /// The outcome of a single step.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StepOutcome {
     /// Story paused — more content may follow.
     Done,
@@ -46,7 +46,7 @@ pub enum StepOutcome {
 }
 
 /// A single choice as presented to the player.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChoiceRecord {
     pub text: String,
     pub index: usize,
@@ -54,7 +54,7 @@ pub struct ChoiceRecord {
 }
 
 /// A record of an external function call.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExternalCall {
     pub name: String,
     pub args: Vec<Value>,
@@ -62,14 +62,14 @@ pub struct ExternalCall {
 }
 
 /// How an external function call was resolved.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ExternalCallResult {
     Resolved(Value),
     Fallback,
 }
 
 /// A single state mutation observed during execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StateWrite {
     SetGlobal { idx: u32, value: Value },
     IncrementVisit { id: DefinitionId, new_count: u32 },
@@ -80,14 +80,14 @@ pub enum StateWrite {
 }
 
 /// Snapshot of story state at a point in time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateSnapshot {
     /// Global variable values.
     pub globals: Vec<Value>,
 }
 
 /// How an episode ended.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
     /// Story hit an `end` opcode — permanently finished.
     Ended,
