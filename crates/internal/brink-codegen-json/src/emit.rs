@@ -1090,6 +1090,17 @@ fn build_choice_target(
             contents.push(Element::Value(InkValue::String("\n".to_string())));
             contents.extend(body_contents);
         }
+    } else if choice.has_inline_divert {
+        // No inner content or start content, but has an inline divert
+        // (e.g. fallback choice `* -> target`). Divert goes before \n.
+        let split = body_contents
+            .iter()
+            .position(|el| !is_inline_divert_element(el))
+            .unwrap_or(body_contents.len());
+        let after_newline = body_contents.split_off(split);
+        contents.extend(body_contents);
+        contents.push(Element::Value(InkValue::String("\n".to_string())));
+        contents.extend(after_newline);
     } else {
         // Bracket-only (no preamble) — \n comes first, then body
         contents.push(Element::Value(InkValue::String("\n".to_string())));

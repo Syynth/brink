@@ -356,11 +356,18 @@ fn lower_choice_with_child(
         body.push(lir::Stmt::Divert(lower_hir_divert(divert, ctx)));
     }
 
-    // If the body doesn't end with a divert, add one to the gather.
-    let ends_with_divert = body
-        .last()
-        .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)));
-    if !ends_with_divert && let Some(gather_id) = gather_target {
+    // Always add the auto-gather divert when there's a gather target and the
+    // body doesn't end with Done/End. The explicit divert (if any) is semantic
+    // content that goes before \n in codegen; the auto-gather divert is
+    // structural and goes after \n. They must coexist even when they share
+    // the same target.
+    let ends_with_terminal = body.last().is_some_and(|s| {
+        matches!(
+            s,
+            lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Done | lir::DivertTarget::End)
+        )
+    });
+    if !ends_with_terminal && let Some(gather_id) = gather_target {
         body.push(lir::Stmt::Divert(lir::Divert {
             target: lir::DivertTarget::Container(gather_id),
             args: Vec::new(),
