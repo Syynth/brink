@@ -712,6 +712,7 @@ fn emit_choice_set(
     }
 
     // Build the c-N choice target containers and add to named_content.
+    let mut any_uses_gather = false;
     for (i, choice) in cs.choices.iter().enumerate() {
         let c_name = format!("c-{i}");
         let outer_index = choice_outer_indices[i];
@@ -727,7 +728,7 @@ fn emit_choice_set(
             } else {
                 format!("{}.{c_name}", cctx.path)
             };
-            let target_container = build_choice_target(
+            let (target_container, uses_gather) = build_choice_target(
                 child_container,
                 choice,
                 &child_path,
@@ -736,13 +737,15 @@ fn emit_choice_set(
                 lookups,
                 cctx,
             );
+            any_uses_gather |= uses_gather;
             named.insert(c_name, Element::Container(target_container));
         }
     }
 
     // Build gather container and add to named_content.
-    // The LIR always provides a gather (implicit or explicit) for every choice set.
-    if let Some(gather_id) = cs.gather_target
+    // Skip if no choice target references the gather (all end terminally).
+    if any_uses_gather
+        && let Some(gather_id) = cs.gather_target
         && let Some(gather) = siblings
             .iter()
             .find(|c| c.id == gather_id && c.kind == lir::ContainerKind::Gather)
@@ -952,7 +955,7 @@ fn build_choice_target(
     gather_target: Option<DefinitionId>,
     lookups: &Lookups,
     cctx: &ContainerCtx,
-) -> Container {
+) -> (Container, bool) {
     // Check if the choice target has nested choice/gather children.
     let has_nested_choices = child.children.iter().any(|c| {
         matches!(
@@ -1002,7 +1005,24 @@ fn build_choice_target(
     // format this divert comes AFTER the \n separator, so we pop it and re-add it
     // after the newline. Skip this for nested choices — their gather diverts
     // are inside the nested choice targets, not at this level.
-    let gather_divert_element = if has_nested_choices {
+    //
+    // When the LIR body has content (EmitContent/EndOfLine) followed by a
+    // terminal divert (Done/End), the body handles its own exit and the
+    // gather divert is unnecessary. Inklecate omits it in that case.
+    let body_has_content_then_terminal = {
+        let has_content = child
+            .body
+            .iter()
+            .any(|s| matches!(s, lir::Stmt::EmitContent(_) | lir::Stmt::EndOfLine));
+        let ends_terminal = child.body.last().is_some_and(|s| {
+            matches!(
+                s,
+                lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Done | lir::DivertTarget::End)
+            )
+        });
+        has_content && ends_terminal
+    };
+    let gather_divert_element = if has_nested_choices || body_has_content_then_terminal {
         None
     } else if let Some(gather_id) = gather_target {
         let gather_abs = lookups.container_path(gather_id);
@@ -1043,7 +1063,8 @@ fn build_choice_target(
         contents.extend(body_contents);
     }
 
-    // Always emit the gather divert after the \n separator.
+    // Emit the gather divert after the \n separator (if not suppressed).
+    let uses_gather = gather_divert_element.is_some();
     if let Some(gd) = gather_divert_element {
         contents.push(gd);
     }
@@ -1093,19 +1114,25 @@ fn build_choice_target(
         };
         contents.push(Element::Container(inner));
 
-        Container {
-            flags: Some(flags),
-            name: None,
-            named_content: HashMap::new(),
-            contents,
-        }
+        (
+            Container {
+                flags: Some(flags),
+                name: None,
+                named_content: HashMap::new(),
+                contents,
+            },
+            uses_gather,
+        )
     } else {
-        Container {
-            flags: Some(flags),
-            name: None,
-            named_content: body_named,
-            contents,
-        }
+        (
+            Container {
+                flags: Some(flags),
+                name: None,
+                named_content: body_named,
+                contents,
+            },
+            uses_gather,
+        )
     }
 }
 
