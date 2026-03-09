@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 brink-runtime = { path = "../../brink-runtime" }
-brink-format = { path = "../brink-format" }
+brink-format = { path = "../brink-format", features = ["inkt"] }
 brink-converter = { path = "../brink-converter" }
 brink-json = { path = "../brink-json" }
 brink-compiler = { path = "../../brink-compiler" }

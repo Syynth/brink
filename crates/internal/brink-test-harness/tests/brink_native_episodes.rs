@@ -3,11 +3,16 @@
 //!
 //! This reveals compiler correctness gaps — any mismatch between brink-compiled
 //! and ink.json-derived episodes indicates a compiler bug.
+//!
+//! Set `BRINK_CASE` to a substring to filter to a single test case, e.g.:
+//!   `BRINK_CASE=I002 cargo test -p brink-test-harness --test brink_native_episodes -- --nocapture`
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use brink_test_harness::corpus::{collect_test_cases, explore_from_ink, load_golden_episodes};
+use brink_test_harness::corpus::{
+    collect_test_cases, compile_and_explore_from_ink, convert_ink_json, load_golden_episodes,
+};
 use brink_test_harness::{Episode, ExploreConfig, diff};
 
 fn tests_dir() -> PathBuf {
@@ -30,11 +35,43 @@ fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
         .collect()
 }
 
+/// Build the diagnostic dump shown on first mismatch.
+///
+/// Includes the `.ink` source, the compiler's `.inkt` output, and the
+/// converter's `.inkt` output (the "expected" bytecode).
+fn build_dump(case_dir: &std::path::Path, compiler_data: &brink_format::StoryData) -> String {
+    let mut dump = String::new();
+
+    // .ink source
+    let ink_path = case_dir.join("story.ink");
+    if let Ok(source) = std::fs::read_to_string(&ink_path) {
+        dump.push_str("=== .ink source ===\n");
+        dump.push_str(&source);
+        dump.push('\n');
+    }
+
+    // Compiler .inkt
+    dump.push_str("=== compiler .inkt ===\n");
+    dump.push_str(&compiler_data.to_string());
+    dump.push('\n');
+
+    // Converter .inkt (the "expected" bytecode from ink.json)
+    let json_path = case_dir.join("story.ink.json");
+    if let Ok(converter_data) = convert_ink_json(&json_path) {
+        dump.push_str("=== converter .inkt ===\n");
+        dump.push_str(&converter_data.to_string());
+        dump.push('\n');
+    }
+
+    dump
+}
+
 #[test]
 #[expect(clippy::too_many_lines)]
 fn brink_native_episodes() {
     let root = tests_dir();
     let cases = collect_test_cases(&root);
+    let case_filter = std::env::var("BRINK_CASE").ok();
 
     let config = ExploreConfig {
         max_depth: 20,
@@ -52,6 +89,7 @@ fn brink_native_episodes() {
     let mut episodes_total = 0;
 
     let mut first_mismatch: Option<String> = None;
+    let mut failing_cases: Vec<String> = Vec::new();
 
     for case_dir in &cases {
         let rel = case_dir
@@ -59,6 +97,13 @@ fn brink_native_episodes() {
             .unwrap_or(case_dir)
             .display()
             .to_string();
+
+        // Filter by BRINK_CASE env var if set.
+        if let Some(ref filter) = case_filter
+            && !rel.contains(filter.as_str())
+        {
+            continue;
+        }
 
         let ink_path = case_dir.join("story.ink");
         if !ink_path.exists() {
@@ -82,14 +127,15 @@ fn brink_native_episodes() {
         episodes_total += golden.len();
 
         // Try compiling with brink.
-        let actual = match explore_from_ink(&ink_path, &config) {
-            Ok(eps) => eps,
+        let (story_data, actual) = match compile_and_explore_from_ink(&ink_path, &config) {
+            Ok(pair) => pair,
             Err(e) if e.starts_with("compile:") => {
                 compile_error += 1;
                 continue;
             }
             Err(e) if e.starts_with("link:") => {
                 link_error += 1;
+                failing_cases.push(format!("{rel} (link error)"));
                 if first_mismatch.is_none() {
                     first_mismatch = Some(format!("{rel}: {e}"));
                 }
@@ -113,9 +159,10 @@ fn brink_native_episodes() {
                 case_ok = false;
                 episodes_mismatch += 1;
                 if first_mismatch.is_none() {
+                    let dump = build_dump(case_dir, &story_data);
                     first_mismatch = Some(format!(
                         "{rel}: golden episode {i} choice_path {:?} not found in actual \
-                         (golden has {}, actual has {} episodes)",
+                         (golden has {}, actual has {} episodes)\n\n{dump}",
                         exp.choice_path,
                         golden.len(),
                         actual.len()
@@ -130,7 +177,8 @@ fn brink_native_episodes() {
                 episodes_mismatch += 1;
                 case_ok = false;
                 if first_mismatch.is_none() {
-                    first_mismatch = Some(format!("{rel}: episode {i}:\n{d}"));
+                    let dump = build_dump(case_dir, &story_data);
+                    first_mismatch = Some(format!("{rel}: episode {i}:\n{d}\n\n{dump}"));
                 }
             }
         }
@@ -145,6 +193,7 @@ fn brink_native_episodes() {
             cases_pass += 1;
         } else {
             cases_mismatch += 1;
+            failing_cases.push(rel);
         }
     }
 
@@ -160,13 +209,28 @@ fn brink_native_episodes() {
          (of {episodes_total} golden)"
     );
 
+    if !failing_cases.is_empty() {
+        println!("\nFailing cases ({}):", failing_cases.len());
+        for name in &failing_cases {
+            println!("  {name}");
+        }
+    }
+
     if let Some(ref msg) = first_mismatch {
         println!();
         println!("First mismatch:\n{msg}");
     }
 
-    assert!(
-        episodes_pass >= RATCHET_EPISODE_COUNT,
-        "ratchet regression: {episodes_pass} episodes < {RATCHET_EPISODE_COUNT}"
-    );
+    if case_filter.is_some() {
+        // When filtering to specific cases, all episodes must pass.
+        assert!(
+            episodes_mismatch == 0,
+            "{episodes_mismatch} episode(s) still mismatched"
+        );
+    } else {
+        assert!(
+            episodes_pass >= RATCHET_EPISODE_COUNT,
+            "ratchet regression: {episodes_pass} episodes < {RATCHET_EPISODE_COUNT}"
+        );
+    }
 }

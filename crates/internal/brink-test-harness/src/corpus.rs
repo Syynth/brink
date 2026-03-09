@@ -84,6 +84,14 @@ pub fn explore_from_ink_json(
     Ok(crate::explore(&program, config))
 }
 
+/// Convert a `.ink.json` file and return the [`StoryData`].
+pub fn convert_ink_json(json_path: &Path) -> Result<brink_format::StoryData, String> {
+    let json_str = std::fs::read_to_string(json_path).map_err(|e| format!("read: {e}"))?;
+    let ink: brink_json::InkJson =
+        serde_json::from_str(&json_str).map_err(|e| format!("json: {e}"))?;
+    brink_converter::convert(&ink).map_err(|e| format!("convert: {e}"))
+}
+
 /// Compile a `.ink` file with the brink compiler, link, and explore.
 ///
 /// Returns `Err` if compilation or linking fails.
@@ -91,4 +99,17 @@ pub fn explore_from_ink(ink_path: &Path, config: &ExploreConfig) -> Result<Vec<E
     let data = brink_compiler::compile_path(ink_path).map_err(|e| format!("compile: {e}"))?;
     let program = brink_runtime::link(&data).map_err(|e| format!("link: {e}"))?;
     Ok(crate::explore(&program, config))
+}
+
+/// Compile a `.ink` file, link, explore, and also return the [`StoryData`].
+///
+/// Useful when the caller needs to inspect or dump the compiled data on failure.
+pub fn compile_and_explore_from_ink(
+    ink_path: &Path,
+    config: &ExploreConfig,
+) -> Result<(brink_format::StoryData, Vec<Episode>), String> {
+    let data = brink_compiler::compile_path(ink_path).map_err(|e| format!("compile: {e}"))?;
+    let program = brink_runtime::link(&data).map_err(|e| format!("link: {e}"))?;
+    let episodes = crate::explore(&program, config);
+    Ok((data, episodes))
 }
