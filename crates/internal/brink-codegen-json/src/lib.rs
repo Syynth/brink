@@ -56,34 +56,57 @@ fn build_root(root: &lir::Container, program: &lir::Program, lookups: &Lookups) 
     let mut inner_named_content = inner_named;
     let mut root_named_content: HashMap<String, Element> = HashMap::new();
 
+    // Track whether any gather-chain children exist (for g-0 done fallback).
+    let has_chain_children = root
+        .children
+        .iter()
+        .any(|c| c.kind == lir::ContainerKind::Gather && c.inline);
+
     for child in &root.children {
         // ChoiceTarget and Gather children are built by emit_choice_set
         // inside emit_body, so skip them here to avoid double-emission.
+        // Exception: gather-chain containers (inline flag) are built here.
         if matches!(
             child.kind,
             lir::ContainerKind::ChoiceTarget | lir::ContainerKind::Gather
-        ) {
+        ) && !child.inline
+            && !(child.kind == lir::ContainerKind::Gather && has_chain_children)
+        {
             continue;
         }
 
         let child_name = child.name.as_deref().unwrap_or("_anon");
-        let child_container = build_container(child, child_name, lookups);
 
         match child.kind {
             lir::ContainerKind::Knot => {
+                // Knots go to root named_content with just the knot name as path
+                let child_container = build_container(child, child_name, lookups);
                 root_named_content
                     .insert(child_name.to_string(), Element::Container(child_container));
             }
+            _ if child.inline => {
+                // Inline chain head: emit in contents with #n naming
+                let child_path = format!("0.{child_name}");
+                let child_container = build_chain_container(child, &child_path, lookups);
+                inner_contents.push(Element::Container(child_container));
+            }
             _ => {
+                // Non-knot children (gathers, etc.) go in inner container
+                let child_path = format!("0.{child_name}");
+                let child_container = build_chain_container(child, &child_path, lookups);
                 inner_named_content
                     .insert(child_name.to_string(), Element::Container(child_container));
             }
         }
     }
 
-    // Always strip trailing "done" from the inner contents — it either
-    // moves into a g-0 gather container or was already handled by choices.
-    if matches!(
+    // Strip "done" from the inner contents — it either moves into a
+    // g-0 gather container or was already handled by choices.
+    // For chain children, the "done" may be at any position (typically
+    // first, before the inline container), so remove all Done commands.
+    if has_chain_children {
+        inner_contents.retain(|e| !matches!(e, Element::ControlCommand(ControlCommand::Done)));
+    } else if matches!(
         inner_contents.last(),
         Some(Element::ControlCommand(ControlCommand::Done))
     ) {
@@ -94,7 +117,8 @@ fn build_root(root: &lir::Container, program: &lir::Program, lookups: &Lookups) 
     // When choices are present, the gather (g-0) is already built by
     // emit_choice_set in named_content — don't add a duplicate.
     // When no choices exist, wrap done in an inline g-0.
-    if !inner_named_content.contains_key("g-0") {
+    // Also skip when chain children handle the gather structure.
+    if !inner_named_content.contains_key("g-0") && !has_chain_children {
         inner_contents.push(Element::Container(Container {
             flags: None,
             name: Some("g-0".to_string()),
@@ -221,6 +245,65 @@ fn build_container(container: &lir::Container, path: &str, lookups: &Lookups) ->
     }
 }
 
+/// Build a container for a gather-choice chain entry. Unlike `build_container`,
+/// this does NOT wrap the body in an inner anonymous container — choice targets
+/// go directly into the container's `named_content` alongside the body contents.
+/// The `inline` flag on the container determines whether this gets `#n` naming.
+fn build_chain_container(container: &lir::Container, path: &str, lookups: &Lookups) -> Container {
+    let has_choice_children = container.children.iter().any(|c| {
+        matches!(
+            c.kind,
+            lir::ContainerKind::ChoiceTarget | lir::ContainerKind::Gather
+        )
+    });
+
+    if !has_choice_children {
+        // Simple container (e.g. terminal "done") — no wrapping needed
+        let cctx = emit::ContainerCtx::build_from_tree(container, lookups, path);
+        let (contents, named_content) = emit::emit_body(container, lookups, &cctx);
+        let flags = convert_counting_flags(container.counting_flags);
+        return Container {
+            flags: if flags.is_empty() { None } else { Some(flags) },
+            name: None,
+            named_content,
+            contents,
+        };
+    }
+
+    // Chain containers with choice children: emit body directly (no wrapping).
+    // The body path IS the container path (no inner ".0" offset).
+    let cctx = emit::ContainerCtx::build_from_tree(container, lookups, path);
+    let (contents, mut named_content) = emit::emit_body(container, lookups, &cctx);
+
+    // Recursively build non-choice child containers if any
+    for child in &container.children {
+        if matches!(
+            child.kind,
+            lir::ContainerKind::ChoiceTarget | lir::ContainerKind::Gather
+        ) {
+            continue;
+        }
+        let child_name = child.name.as_deref().unwrap_or("_anon");
+        let child_path = format!("{path}.{child_name}");
+        let child_container = build_container(child, &child_path, lookups);
+        named_content.insert(child_name.to_string(), Element::Container(child_container));
+    }
+
+    let flags = convert_counting_flags(container.counting_flags);
+
+    Container {
+        flags: if flags.is_empty() { None } else { Some(flags) },
+        // inline containers get #n naming; others get no name
+        name: if container.inline {
+            container.name.clone()
+        } else {
+            None
+        },
+        named_content,
+        contents,
+    }
+}
+
 pub(crate) fn convert_counting_flags(flags: brink_format::CountingFlags) -> ContainerFlags {
     let mut out = ContainerFlags::empty();
     if flags.contains(brink_format::CountingFlags::VISITS) {
@@ -337,7 +420,16 @@ fn collect_container_paths(
 
     // Non-root containers with choice/gather children wrap their body
     // in an inner container at index 0, so named children live under ".0".
+    // Exception: chain gather containers don't wrap — their body and
+    // named_content coexist in a single flat container.
+    let is_chain_gather = container.inline
+        || (container.kind == lir::ContainerKind::Gather
+            && container
+                .children
+                .iter()
+                .any(|c| c.kind == lir::ContainerKind::ChoiceTarget));
     let will_wrap = !is_root
+        && !is_chain_gather
         && container.children.iter().any(|c| {
             matches!(
                 c.kind,

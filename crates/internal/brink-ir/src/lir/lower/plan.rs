@@ -130,6 +130,22 @@ fn plan_stmt_choices(
 ) {
     match stmt {
         hir::Stmt::ChoiceSet(choice_set) => {
+            // When an opening_gather is present (gather-choice same-line pattern),
+            // allocate an extra container for the opening wrapper.
+            if choice_set.opening_gather.is_some() {
+                let opening_path = format!("{scope_path}.g-{gather_counter}");
+                let opening_id = ids.alloc_container(&opening_path);
+                plan.gather_targets.insert(
+                    GatherKey {
+                        file,
+                        scope: scope_path.to_string(),
+                        index: *gather_counter,
+                    },
+                    opening_id,
+                );
+                *gather_counter += 1;
+            }
+
             // Always plan a gather container — even without an explicit
             // gather in the source, both backends need a convergence
             // point (inklecate always emits g-0).

@@ -132,7 +132,7 @@ pub enum Stmt {
     /// `~ return expr`
     Return(Return),
     /// A weave-folded group of choices with optional gather.
-    ChoiceSet(ChoiceSet),
+    ChoiceSet(Box<ChoiceSet>),
     /// Multiline `{ - cond: ... }`
     Conditional(Conditional),
     /// Multiline `{stopping: - ... - ...}`
@@ -152,6 +152,11 @@ pub struct ChoiceSet {
     /// The convergence point after all choices. If `None`, choices must
     /// all have explicit diverts (or are loose ends for codegen to wire up).
     pub gather: Option<Gather>,
+    /// A preceding standalone gather that names the anonymous container
+    /// wrapping this choice set. Present only in the gather-choice same-line
+    /// pattern (`- * hello`). When set, the choice set and subsequent siblings
+    /// form a flat chain of gather containers rather than nesting.
+    pub opening_gather: Option<Gather>,
 }
 
 /// A single choice in a choice set.

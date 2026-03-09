@@ -1100,10 +1100,11 @@ impl LowerCtx {
                     if let Some(c) = child.into_node().and_then(ast::Choice::cast)
                         && let Some(choice) = self.lower_choice(&c)
                     {
-                        stmts.push(Stmt::ChoiceSet(ChoiceSet {
+                        stmts.push(Stmt::ChoiceSet(Box::new(ChoiceSet {
                             choices: vec![choice],
                             gather: None,
-                        }));
+                            opening_gather: None,
+                        })));
                     }
                 }
                 _ => {}
@@ -1212,10 +1213,11 @@ impl LowerCtx {
                     {
                         // Choices inside branch bodies need to be captured
                         // but don't participate in weave folding at this level
-                        stmts.push(Stmt::ChoiceSet(ChoiceSet {
+                        stmts.push(Stmt::ChoiceSet(Box::new(ChoiceSet {
                             choices: vec![choice],
                             gather: None,
-                        }));
+                            opening_gather: None,
+                        })));
                     }
                 }
                 _ => {}
@@ -1722,6 +1724,7 @@ impl LowerCtx {
 
 // ─── Phase 7: Body assembly and weave folding ───────────────────────
 
+#[expect(clippy::large_enum_variant)]
 pub enum WeaveItem {
     Choice { choice: Choice, depth: usize },
     Gather { gather: Gather, depth: usize },
@@ -1988,6 +1991,7 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
     // Phase 2: Build choice sets from the now-single-depth stream
     let mut stmts = Vec::new();
     let mut choice_acc: Vec<Choice> = Vec::new();
+    let mut last_standalone_gather: Option<Gather> = None;
 
     for item in items {
         match item {
@@ -2008,14 +2012,25 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
             WeaveItem::Gather { gather, .. } => {
                 if choice_acc.is_empty() {
                     emit_standalone_gather(&mut stmts, &gather);
+                    last_standalone_gather = Some(gather);
                 } else {
-                    flush_choices(&mut stmts, &mut choice_acc, Some(gather));
+                    flush_choices(
+                        &mut stmts,
+                        &mut choice_acc,
+                        Some(gather),
+                        last_standalone_gather.take(),
+                    );
                 }
             }
         }
     }
 
-    flush_choices(&mut stmts, &mut choice_acc, None);
+    flush_choices(
+        &mut stmts,
+        &mut choice_acc,
+        None,
+        last_standalone_gather.take(),
+    );
     Block { stmts }
 }
 
@@ -2074,12 +2089,21 @@ fn item_depth(item: &WeaveItem) -> Option<usize> {
     }
 }
 
-fn flush_choices(stmts: &mut Vec<Stmt>, choice_acc: &mut Vec<Choice>, gather: Option<Gather>) {
+fn flush_choices(
+    stmts: &mut Vec<Stmt>,
+    choice_acc: &mut Vec<Choice>,
+    gather: Option<Gather>,
+    opening_gather: Option<Gather>,
+) {
     if choice_acc.is_empty() {
         return;
     }
     let choices = std::mem::take(choice_acc);
-    stmts.push(Stmt::ChoiceSet(ChoiceSet { choices, gather }));
+    stmts.push(Stmt::ChoiceSet(Box::new(ChoiceSet {
+        choices,
+        gather,
+        opening_gather,
+    })));
 }
 
 fn emit_standalone_gather(stmts: &mut Vec<Stmt>, gather: &Gather) {

@@ -116,6 +116,10 @@ pub struct Container {
     /// holds the label's `DefinitionId` so visit count lookups resolve to
     /// this container's path.
     pub label_id: Option<DefinitionId>,
+    /// When true, this container is emitted inline in the parent's body
+    /// contents rather than as a named entry in `named_content`. Used by
+    /// the first container in a gather-choice chain (`- * hello`).
+    pub inline: bool,
 }
 
 /// What source construct this container originated from.

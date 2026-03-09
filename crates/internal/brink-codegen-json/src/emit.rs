@@ -706,7 +706,13 @@ fn emit_choice_set(
     let mut choice_outer_indices: Vec<usize> = Vec::new();
 
     for (i, choice) in cs.choices.iter().enumerate() {
-        let c_name = format!("c-{i}");
+        // Use the LIR child container's name (globally indexed) when available,
+        // falling back to local index for backwards compatibility.
+        let c_name = siblings
+            .iter()
+            .find(|c| c.id == choice.target && c.kind == lir::ContainerKind::ChoiceTarget)
+            .and_then(|c| c.name.clone())
+            .unwrap_or_else(|| format!("c-{i}"));
         choice_outer_indices.push(out.len());
         emit_choice_outer(choice, lookups, cctx, out, &c_name);
     }
@@ -714,7 +720,6 @@ fn emit_choice_set(
     // Build the c-N choice target containers and add to named_content.
     let mut any_uses_gather = false;
     for (i, choice) in cs.choices.iter().enumerate() {
-        let c_name = format!("c-{i}");
         let outer_index = choice_outer_indices[i];
 
         // Find the matching ChoiceTarget child container by DefinitionId.
@@ -723,6 +728,10 @@ fn emit_choice_set(
             .find(|c| c.id == choice.target && c.kind == lir::ContainerKind::ChoiceTarget);
 
         if let Some(child_container) = child {
+            let c_name = child_container
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("c-{i}"));
             let child_path = if cctx.path.is_empty() {
                 c_name.clone()
             } else {
