@@ -524,6 +524,10 @@ pub fn process_container(
 ) -> Result<Vec<(ContainerDef, ContainerLineTable)>, ConvertError> {
     let mut all_pairs = Vec::new();
 
+    // Track where to insert this container so it precedes its inline children.
+    // The root container (path "") ends up at index 0 — the linker convention.
+    let self_insert_idx = all_pairs.len();
+
     let mut emitter = ContainerEmitter::new(index, current_path.to_string());
     let mut offsets_for_this_container: HashMap<usize, usize> = HashMap::new();
 
@@ -613,12 +617,16 @@ pub fn process_container(
         container_id,
         lines: emitter.line_table,
     };
-    all_pairs.push((def, lt));
 
     // Store element offsets for this container, keyed by DefinitionId.
     if !offsets_for_this_container.is_empty() {
         element_offsets.insert(container_id, offsets_for_this_container);
     }
+
+    // Insert this container before its inline children so that the parent
+    // always precedes its descendants. In particular, the root container
+    // (path "") ends up at index 0 — the convention the linker relies on.
+    all_pairs.insert(self_insert_idx, (def, lt));
 
     // Process named content
     for (name, element) in &container.named_content {

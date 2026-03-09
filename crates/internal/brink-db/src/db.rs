@@ -207,7 +207,9 @@ impl ProjectDb {
 
     /// Iterate over all registered file IDs.
     pub fn file_ids(&self) -> impl Iterator<Item = FileId> + '_ {
-        self.files.keys().copied()
+        let mut ids: Vec<_> = self.files.keys().copied().collect();
+        ids.sort_by_key(|id| id.0);
+        ids.into_iter()
     }
 
     /// Get the cached parse tree for a file.

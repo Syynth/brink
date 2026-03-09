@@ -84,18 +84,19 @@ impl IdAllocator {
         if let Some(&id) = self.used.get(path) {
             return id;
         }
-        let hash = hash_path(path, DefinitionTag::Container);
+        let hash = hash_path(path);
         let id = DefinitionId::new(DefinitionTag::Container, hash);
         self.used.insert(path.to_string(), id);
         id
     }
 }
 
-fn hash_path(path: &str, tag: DefinitionTag) -> u64 {
+/// Hash a path string using `DefaultHasher`, matching the converter/linker convention.
+///
+/// Collisions between container IDs and other definition types are already
+/// impossible because `DefinitionId` encodes the tag in its top 8 bits.
+fn hash_path(path: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
-    tag.hash(&mut hasher);
-    // Use a prefix to avoid collisions with symbol index hashes
-    "__lir_container__".hash(&mut hasher);
     path.hash(&mut hasher);
     hasher.finish()
 }

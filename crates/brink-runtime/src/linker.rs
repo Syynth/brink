@@ -1,9 +1,8 @@
 //! Links [`StoryData`] into an executable [`Program`].
 
 use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
 
-use brink_format::{DefinitionId, DefinitionTag, StoryData};
+use brink_format::{DefinitionId, StoryData};
 
 use crate::error::RuntimeError;
 use crate::program::{
@@ -13,8 +12,8 @@ use crate::program::{
 /// Link a [`StoryData`] into an executable [`Program`].
 ///
 /// Builds lookup tables mapping [`DefinitionId`]s to flat array indices.
-/// The root container is identified as the one with `hash("")` using the same
-/// hash function as the converter.
+/// The root container is `containers[0]` by convention — both the converter
+/// and the brink compiler emit the root first.
 #[expect(clippy::cast_possible_truncation, clippy::too_many_lines)]
 pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
     let mut containers = Vec::with_capacity(data.containers.len());
@@ -69,12 +68,11 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
         label_map.insert(label.id, (container_idx, label.byte_offset as usize));
     }
 
-    // Find root container: hash("") using DefaultHasher to match the converter.
-    let root_id = DefinitionId::new(DefinitionTag::Container, hash_path(""));
-    let root_idx = container_map
-        .get(&root_id)
-        .copied()
-        .ok_or(RuntimeError::NoRootContainer)?;
+    // Root container is always the first entry by convention.
+    if data.containers.is_empty() {
+        return Err(RuntimeError::NoRootContainer);
+    }
+    let root_idx = 0;
 
     let name_table = data.name_table.clone();
 
@@ -142,11 +140,4 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
         list_def_map,
         external_fns,
     })
-}
-
-/// Hash a path string using the same algorithm as the converter.
-fn hash_path(path: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    hasher.finish()
 }

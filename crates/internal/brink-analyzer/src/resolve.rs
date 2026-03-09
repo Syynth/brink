@@ -508,21 +508,27 @@ fn lookup_label_in_knot(index: &SymbolIndex, knot: &str, label: &str) -> Option<
         return Some(id);
     }
 
-    // Try knot.*.label (any stitch within this knot)
+    // Try knot.*.label (any stitch within this knot).
+    // Collect all matches and pick the smallest `DefinitionId` for determinism,
+    // since `HashMap` iteration order is not stable across processes.
     let suffix = format!(".{label}");
     let prefix = format!("{knot}.");
+    let mut best: Option<DefinitionId> = None;
     for (name, ids) in &index.by_name {
         if name.starts_with(&prefix) && name.ends_with(&suffix) && name.matches('.').count() == 2 {
             for id in ids {
                 if let Some(info) = index.symbols.get(id)
                     && info.kind == SymbolKind::Label
                 {
-                    return Some(*id);
+                    best = Some(match best {
+                        Some(prev) if prev.to_raw() <= id.to_raw() => prev,
+                        _ => *id,
+                    });
                 }
             }
         }
     }
-    None
+    best
 }
 
 fn ambiguous_diag(file: FileId, range: rowan::TextRange, path: &str) -> Diagnostic {
