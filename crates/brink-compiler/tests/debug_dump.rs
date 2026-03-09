@@ -50,6 +50,10 @@ fn dump_cases() {
     compare("sticky_choice", "tier1/choices/sticky-choice");
     compare("one_choice", "tier1/choices/one");
     compare("cond_choice", "tier1/choices/conditional-choice");
+    compare(
+        "I079",
+        "tier1/choices/I079-once-only-choices-can-link-back-to-self",
+    );
 }
 
 fn try_compile(name: &str, ink_rel: &str) {

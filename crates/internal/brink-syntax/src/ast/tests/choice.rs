@@ -176,3 +176,38 @@ fn choice_inner_content_inline_logic() {
     let ic = parse_first::<ChoiceInnerContent>("* Start[bracket]{x}\n");
     assert!(ic.inline_logics().next().is_some());
 }
+
+// ── Whitespace preservation between ] and -> ────────────────────────
+
+#[test]
+fn choice_inner_content_whitespace_before_divert() {
+    // Inklecate preserves whitespace between ] and -> as inner content text
+    let choice = parse_first::<Choice>("* [bracket]   -> target\n");
+    let ic = choice.inner_content().unwrap();
+    let text: String = ic.texts().map(|t| t.to_string()).collect();
+    assert_eq!(text, "   ");
+}
+
+#[test]
+fn choice_no_inner_content_when_no_space_before_divert() {
+    // No whitespace between ] and -> means no inner content
+    let choice = parse_first::<Choice>("* [bracket]-> target\n");
+    assert!(choice.inner_content().is_none());
+}
+
+#[test]
+fn choice_inner_content_with_text_and_divert() {
+    let choice = parse_first::<Choice>("* Start [bracket] inner -> target\n");
+    let ic = choice.inner_content().unwrap();
+    let text: String = ic.texts().map(|t| t.to_string()).collect();
+    assert_eq!(text, " inner ");
+}
+
+#[test]
+fn choice_start_content_whitespace_preserved() {
+    // Without brackets, whitespace before divert is in start content
+    let choice = parse_first::<Choice>("* Start   -> target\n");
+    let sc = choice.start_content().unwrap();
+    let text: String = sc.texts().map(|t| t.to_string()).collect();
+    assert_eq!(text, "Start   ");
+}

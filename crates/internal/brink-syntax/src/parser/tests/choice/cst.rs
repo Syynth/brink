@@ -520,6 +520,9 @@ fn divert_after_bracket() {
                 CHOICE_BRACKET_CONTENT {
                     TEXT
                 }
+                CHOICE_INNER_CONTENT {
+                    TEXT
+                }
                 DIVERT_NODE {
                     SIMPLE_DIVERT {
                         DIVERT_TARGET_WITH_ARGS {
@@ -1101,6 +1104,9 @@ fn label_condition_bracket_divert() {
                     }
                 }
                 CHOICE_BRACKET_CONTENT {
+                    TEXT
+                }
+                CHOICE_INNER_CONTENT {
                     TEXT
                 }
                 DIVERT_NODE {

@@ -111,6 +111,11 @@ pub struct Container {
     /// roots (knots/functions). Child containers share the parent's
     /// call frame and use slots from this same pool.
     pub temp_slot_count: u16,
+    /// Optional label `DefinitionId` that aliases this container.
+    /// For choice targets with labels (e.g. `* (firstOpt) [text]`), this
+    /// holds the label's `DefinitionId` so visit count lookups resolve to
+    /// this container's path.
+    pub label_id: Option<DefinitionId>,
 }
 
 /// What source construct this container originated from.

@@ -2,7 +2,7 @@ use crate::SyntaxKind::{
     BACKSLASH, BLOCK_COMMENT, CHOICE, CHOICE_BRACKET_CONTENT, CHOICE_BULLETS, CHOICE_CONDITION,
     CHOICE_INNER_CONTENT, CHOICE_START_CONTENT, DIVERT, EOF, ESCAPE, GLUE, GLUE_NODE, HASH, IDENT,
     IDENTIFIER, L_BRACE, L_BRACKET, L_PAREN, LABEL, LINE_COMMENT, MINUS, NEWLINE, PIPE, PLUS,
-    R_BRACE, R_BRACKET, R_PAREN, STAR, TEXT, THREAD, TUNNEL_ONWARDS,
+    R_BRACE, R_BRACKET, R_PAREN, STAR, TEXT, THREAD, TUNNEL_ONWARDS, WHITESPACE,
 };
 
 use super::Parser;
@@ -58,7 +58,9 @@ pub(crate) fn choice(p: &mut Parser<'_, '_>) {
     }
 
     // choice_inner_content: content elements after ]
-    if at_choice_content(p) {
+    // Also check raw token — inklecate preserves whitespace between ] and ->
+    // as inner content text, but current() skips it as trivia.
+    if at_choice_content(p) || p.nth_raw(0) == WHITESPACE {
         choice_inner_content(p);
     }
 
@@ -154,7 +156,7 @@ fn choice_inner_content(p: &mut Parser<'_, '_>) {
 
 /// Parse choice content elements until a stop character.
 fn choice_content_elements(p: &mut Parser<'_, '_>) {
-    while at_choice_content(p) && p.current() != L_BRACKET {
+    while (at_choice_content(p) || p.nth_raw(0) == WHITESPACE) && p.current() != L_BRACKET {
         let before = p.pos();
         choice_content_element(p);
         // Safety: if no progress was made, break to avoid infinite loop.
