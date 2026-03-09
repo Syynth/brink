@@ -339,10 +339,11 @@ impl ProjectDb {
         tree: &brink_syntax::ast::SourceFile,
     ) -> TopLevelEntry {
         let green_children = Self::collect_top_level_green(tree);
-        let (root_content, manifest, diagnostics) = lower_top_level(file_id, tree);
+        let (root_content, top_level_knots, manifest, diagnostics) = lower_top_level(file_id, tree);
         TopLevelEntry {
             green_children,
             root_content,
+            top_level_knots,
             manifest,
             diagnostics,
         }
@@ -376,8 +377,10 @@ impl ProjectDb {
         // on change, but it's simple and correct.
         let (mut full_hir, _full_manifest, _full_diag) = lower(file_id, tree);
 
-        // Replace knots with our cached (possibly reused) versions
+        // Replace knots with our cached (possibly reused) versions,
+        // plus any top-level stitches promoted to knots.
         full_hir.knots = knot_entries.iter().filter_map(|e| e.knot.clone()).collect();
+        full_hir.knots.extend(top_level.top_level_knots.clone());
         full_hir.root_content = top_level.root_content.clone();
 
         // Merge manifests: top-level + all knots

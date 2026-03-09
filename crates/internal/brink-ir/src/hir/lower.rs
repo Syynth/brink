@@ -5,11 +5,11 @@ use rowan::TextRange;
 
 use crate::{
     AssignOp, Assignment, Block, Choice, ChoiceSet, CondBranch, CondKind, Conditional, ConstDecl,
-    Content, ContentPart, DeclaredSymbol, Diagnostic, DiagnosticCode, Divert, DivertPath,
-    DivertTarget, Expr, ExternalDecl, FileId, FloatBits, Gather, HirFile, IncludeSite, InfixOp,
-    Knot, ListDecl, ListMember, Name, Param, Path, PostfixOp, PrefixOp, RefKind, Return, Scope,
-    Sequence, SequenceType, Stitch, Stmt, StringExpr, StringPart, SymbolManifest, Tag, TempDecl,
-    ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
+    ContainerPtr, Content, ContentPart, DeclaredSymbol, Diagnostic, DiagnosticCode, Divert,
+    DivertPath, DivertTarget, Expr, ExternalDecl, FileId, FloatBits, Gather, HirFile, IncludeSite,
+    InfixOp, Knot, ListDecl, ListMember, Name, Param, Path, PostfixOp, PrefixOp, RefKind, Return,
+    Scope, Sequence, SequenceType, Stitch, Stmt, StringExpr, StringPart, SymbolManifest, Tag,
+    TempDecl, ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
 };
 
 #[cfg(test)]
@@ -44,7 +44,7 @@ pub fn lower_knot(
 pub fn lower_top_level(
     file_id: FileId,
     file: &ast::SourceFile,
-) -> (Block, SymbolManifest, Vec<Diagnostic>) {
+) -> (Block, Vec<Knot>, SymbolManifest, Vec<Diagnostic>) {
     let mut ctx = LowerCtx::new(file_id);
 
     // Lower declarations (registers symbols in manifest).
@@ -71,14 +71,15 @@ pub fn lower_top_level(
         .externals()
         .filter_map(|e| ctx.lower_external_decl(&e))
         .collect();
-    // Top-level stitches (no parent knot) — declare with bare name.
-    for stitch in file.stitches() {
-        ctx.lower_top_level_stitch(&stitch);
-    }
+    // Top-level stitches (no parent knot) — promoted to knots.
+    let top_level_knots: Vec<_> = file
+        .stitches()
+        .filter_map(|stitch| ctx.lower_top_level_stitch(&stitch))
+        .collect();
 
     let root_content = ctx.lower_body_children(file.syntax());
 
-    (root_content, ctx.manifest, ctx.diagnostics)
+    (root_content, top_level_knots, ctx.manifest, ctx.diagnostics)
 }
 
 // ─── Lowering context ────────────────────────────────────────────────
@@ -236,10 +237,12 @@ impl LowerCtx {
             .includes()
             .filter_map(|i| self.lower_include(&i))
             .collect();
-        let knots: Vec<_> = file.knots().filter_map(|k| self.lower_knot(&k)).collect();
-        // Top-level stitches (no parent knot) — declare with bare name.
+        let mut knots: Vec<_> = file.knots().filter_map(|k| self.lower_knot(&k)).collect();
+        // Top-level stitches (no parent knot) — promoted to knots.
         for stitch in file.stitches() {
-            self.lower_top_level_stitch(&stitch);
+            if let Some(knot) = self.lower_top_level_stitch(&stitch) {
+                knots.push(knot);
+            }
         }
         let root_content = self.lower_body_children(file.syntax());
 
@@ -310,7 +313,7 @@ impl LowerCtx {
         self.current_stitch = None;
 
         Some(Knot {
-            ptr: AstPtr::new(knot),
+            ptr: ContainerPtr::Knot(AstPtr::new(knot)),
             name,
             is_function,
             params,
@@ -350,18 +353,13 @@ impl LowerCtx {
         (block, stitches)
     }
 
-    /// Declare a top-level stitch (no parent knot) — registers the symbol
-    /// with its bare name so `-> stitch_name` resolves at file level.
-    fn lower_top_level_stitch(&mut self, stitch: &ast::StitchDef) {
-        let Some(header) = stitch.header() else {
-            return;
-        };
-        let Some(ident) = header.identifier() else {
-            return;
-        };
-        let Some(name_text) = header.name() else {
-            return;
-        };
+    /// Lower a top-level stitch (no parent knot) — promoted to knot status
+    /// so it becomes a named container at root level.
+    fn lower_top_level_stitch(&mut self, stitch: &ast::StitchDef) -> Option<Knot> {
+        let header = stitch.header()?;
+        let ident = header.identifier()?;
+        let name_text = header.name()?;
+        let name = make_name(name_text.clone(), ident.syntax().text_range());
 
         let params = self.lower_knot_params(header.params());
         let param_infos: Vec<crate::ParamInfo> = params
@@ -379,6 +377,29 @@ impl LowerCtx {
             param_infos,
             None,
         );
+
+        self.current_knot = Some(name_text.clone());
+        for p in &params {
+            self.manifest.locals.push(LocalSymbol {
+                name: p.name.text.clone(),
+                range: p.name.range,
+                scope: self.current_scope(),
+                kind: crate::SymbolKind::Param,
+            });
+        }
+        let body = stitch
+            .body()
+            .map_or_else(Block::default, |b| self.lower_body_children(b.syntax()));
+        self.current_knot = None;
+
+        Some(Knot {
+            ptr: ContainerPtr::Stitch(AstPtr::new(stitch)),
+            name,
+            is_function: false,
+            params,
+            body,
+            stitches: Vec::new(),
+        })
     }
 
     fn lower_stitch(&mut self, stitch: &ast::StitchDef, knot_name: &str) -> Option<Stitch> {

@@ -53,10 +53,32 @@ pub struct HirFile {
 
 // ─── Containers ─────────────────────────────────────────────────────
 
-/// A knot definition.
+/// Pointer back to the AST node that defined a knot-level container.
+///
+/// A `Knot` can originate from either a `== knot` definition or a
+/// top-level `= stitch` (which is promoted to knot status during HIR
+/// lowering). This enum preserves the original syntax kind so we can
+/// resolve the pointer back to the correct AST node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContainerPtr {
+    Knot(AstPtr<ast::KnotDef>),
+    Stitch(AstPtr<ast::StitchDef>),
+}
+
+impl ContainerPtr {
+    /// The text range of the originating AST node.
+    pub fn text_range(&self) -> TextRange {
+        match self {
+            Self::Knot(p) => p.text_range(),
+            Self::Stitch(p) => p.text_range(),
+        }
+    }
+}
+
+/// A knot definition (or a top-level stitch promoted to knot status).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Knot {
-    pub ptr: AstPtr<ast::KnotDef>,
+    pub ptr: ContainerPtr,
     pub name: Name,
     pub is_function: bool,
     pub params: Vec<Param>,

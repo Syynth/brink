@@ -203,8 +203,8 @@ fn lookup_variable(index: &SymbolIndex, uref: &brink_ir::UnresolvedRef) -> VarRe
         return VarResult::Found(id);
     }
 
-    // 6. Knots (visit counts)
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Knot]) {
+    // 6. Knots and top-level stitches (visit counts)
+    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Knot, SymbolKind::Stitch]) {
         return VarResult::Found(id);
     }
 

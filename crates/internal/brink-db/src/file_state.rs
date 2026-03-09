@@ -1,4 +1,4 @@
-use brink_ir::{Block, Diagnostic, HirFile, SymbolManifest};
+use brink_ir::{Block, Diagnostic, HirFile, Knot, SymbolManifest};
 use brink_syntax::Parse;
 use rowan::GreenNode;
 
@@ -14,6 +14,8 @@ pub(crate) struct TopLevelEntry {
     pub green_children: Vec<GreenNode>,
     /// Lowered root content block.
     pub root_content: Block,
+    /// Top-level stitches promoted to knots.
+    pub top_level_knots: Vec<Knot>,
     /// Per-file manifest fragment from top-level declarations.
     pub manifest: SymbolManifest,
     /// Lowering diagnostics.

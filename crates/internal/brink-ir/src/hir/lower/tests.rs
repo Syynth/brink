@@ -551,7 +551,7 @@ Knot content.
     let parsed = parse(source);
     let tree = parsed.tree();
 
-    let (block, manifest, diags) = crate::lower_top_level(FileId(0), &tree);
+    let (block, _top_level_knots, manifest, diags) = crate::lower_top_level(FileId(0), &tree);
 
     assert!(diags.is_empty());
     // Should have root content
@@ -573,7 +573,7 @@ EXTERNAL doThing(a)
     let parsed = parse(source);
     let tree = parsed.tree();
 
-    let (_block, manifest, diags) = crate::lower_top_level(FileId(0), &tree);
+    let (_block, _top_level_knots, manifest, diags) = crate::lower_top_level(FileId(0), &tree);
 
     assert!(diags.is_empty());
     assert!(manifest.variables.iter().any(|s| s.name == "x"));
