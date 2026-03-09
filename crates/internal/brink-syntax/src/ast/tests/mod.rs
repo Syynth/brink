@@ -3,6 +3,7 @@ mod content;
 mod decl;
 mod divert;
 mod expr;
+mod gather;
 mod invariants;
 
 use super::*;

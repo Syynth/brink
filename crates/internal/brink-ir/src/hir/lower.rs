@@ -1801,6 +1801,17 @@ impl LowerCtx {
                             gather: self.lower_gather(&g),
                             depth,
                         });
+                        // Gather-choice same line: `- * hello` embeds a choice
+                        // inside the gather node. Emit it as a separate weave item.
+                        if let Some(c) = g.choice() {
+                            let choice_depth = c.bullets().map_or(1, |b| b.depth());
+                            if let Some(choice) = self.lower_choice(&c) {
+                                items.push(WeaveItem::Choice {
+                                    choice,
+                                    depth: choice_depth,
+                                });
+                            }
+                        }
                     }
                 }
                 SyntaxKind::INLINE_LOGIC => {

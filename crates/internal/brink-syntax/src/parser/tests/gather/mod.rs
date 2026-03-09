@@ -88,6 +88,28 @@ fn gather_with_escape() {
     check("- Hello \\# tag\n");
 }
 
+// ── Gather-choice same line ─────────────────────────────────────────
+
+#[test]
+fn gather_with_inline_choice() {
+    check("- * hello\n");
+}
+
+#[test]
+fn gather_with_inline_sticky_choice() {
+    check("- + sticky\n");
+}
+
+#[test]
+fn labeled_gather_with_inline_choice() {
+    check("- (lbl) * hello\n");
+}
+
+#[test]
+fn gather_with_inline_choice_bracket_divert() {
+    check("- * [bracket]inner -> target\n");
+}
+
 #[test]
 fn insta_gather_with_label() {
     let p = parse("- (end) The end.\n");

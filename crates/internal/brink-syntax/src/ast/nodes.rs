@@ -723,6 +723,11 @@ impl Gather {
         support::child(&self.syntax)
     }
 
+    /// Inline choice on the same line as the gather (e.g. `- * hello`).
+    pub fn choice(&self) -> Option<Choice> {
+        support::child(&self.syntax)
+    }
+
     pub fn divert(&self) -> Option<DivertNode> {
         support::child(&self.syntax)
     }

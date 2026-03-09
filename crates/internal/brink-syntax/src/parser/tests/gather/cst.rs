@@ -943,7 +943,98 @@ fn label_not_content() {
     assert!(has_label, "labeled gather must have LABEL child");
 }
 
-// ── 9. Error recovery / edge cases ────────────────────────────
+// ── 9. Gather-choice same line ────────────────────────────────
+
+/// `- * hello` — gather with inline choice.
+#[test]
+fn gather_with_inline_choice() {
+    assert_equivalent(
+        parse("- * hello\n"),
+        cst!(SOURCE_FILE {
+            GATHER {
+                GATHER_DASHES
+                CHOICE {
+                    CHOICE_BULLETS
+                    CHOICE_START_CONTENT {
+                        TEXT
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// `- + sticky` — gather with inline sticky choice.
+#[test]
+fn gather_with_inline_sticky_choice() {
+    assert_equivalent(
+        parse("- + sticky\n"),
+        cst!(SOURCE_FILE {
+            GATHER {
+                GATHER_DASHES
+                CHOICE {
+                    CHOICE_BULLETS
+                    CHOICE_START_CONTENT {
+                        TEXT
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// `- (lbl) * hello` — labeled gather with inline choice.
+#[test]
+fn labeled_gather_with_inline_choice() {
+    assert_equivalent(
+        parse("- (lbl) * hello\n"),
+        cst!(SOURCE_FILE {
+            GATHER {
+                GATHER_DASHES
+                LABEL {
+                    IDENTIFIER
+                }
+                CHOICE {
+                    CHOICE_BULLETS
+                    CHOICE_START_CONTENT {
+                        TEXT
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// `- * [bracket]inner -> target` — gather with inline choice with brackets and divert.
+#[test]
+fn gather_with_inline_choice_bracket_divert() {
+    assert_equivalent(
+        parse("- * [bracket]inner -> target\n"),
+        cst!(SOURCE_FILE {
+            GATHER {
+                GATHER_DASHES
+                CHOICE {
+                    CHOICE_BULLETS
+                    CHOICE_BRACKET_CONTENT {
+                        TEXT
+                    }
+                    CHOICE_INNER_CONTENT {
+                        TEXT
+                    }
+                    DIVERT_NODE {
+                        SIMPLE_DIVERT {
+                            DIVERT_TARGET_WITH_ARGS {
+                                PATH
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+// ── 10. Error recovery / edge cases ───────────────────────────
 
 /// `-` at EOF (no newline) — lossless round-trip, check error status.
 #[test]

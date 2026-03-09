@@ -54,6 +54,7 @@ fn dump_cases() {
         "I079",
         "tier1/choices/I079-once-only-choices-can-link-back-to-self",
     );
+    compare("I081", "tier1/choices/I081-gather-choice-same-line");
 }
 
 fn try_compile(name: &str, ink_rel: &str) {
