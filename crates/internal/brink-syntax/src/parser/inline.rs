@@ -420,9 +420,10 @@ fn looks_like_condition(p: &Parser<'_, '_>) -> bool {
 fn branchless_cond_body(p: &mut Parser<'_, '_>) {
     p.start_node(BRANCHLESS_COND_BODY);
 
-    // Consume the leading NEWLINE
+    // Consume the leading NEWLINE and strip indentation
     if p.current() == NEWLINE {
         p.bump();
+        p.skip_ws();
     }
 
     // Content until we hit a branch start, closing brace
@@ -437,6 +438,9 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
                     break;
                 }
                 p.bump();
+                // Strip leading indentation on the next line so it doesn't
+                // leak into text content (inklecate strips it too).
+                p.skip_ws();
             }
             STAR | PLUS => {
                 super::choice::choice(p);
