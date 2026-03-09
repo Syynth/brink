@@ -1,0 +1,51 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "'Hello Joe, your name is Joe.'",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "'Hello Joe,' I said, knowing full well that his name was Joe.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

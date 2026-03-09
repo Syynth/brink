@@ -1,0 +1,32 @@
+{
+  "steps": [
+    {
+      "text": "1\n0\n0\n1\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [],
+  "initial_state": {
+    "globals": [
+      {
+        "DivertTarget": "$01_f329535fe41481"
+      }
+    ]
+  }
+}

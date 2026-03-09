@@ -1,0 +1,56 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "A",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Finish",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "Finish\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    1
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

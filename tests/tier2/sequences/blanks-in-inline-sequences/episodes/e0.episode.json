@@ -1,0 +1,196 @@
+{
+  "steps": [
+    {
+      "text": "1. a\n2.\n3. b\n4. b\n---\n1.\n2. a\n3. a\n---\n1. a\n2.\n3.\n---\n1.\n2.\n3.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_b25138a51afcc6",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_b25138a51afcc6",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_b25138a51afcc6",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_b25138a51afcc6",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_b25138a51afcc6",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_b25138a51afcc6",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_b25138a51afcc6",
+            "new_count": 4
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_b25138a51afcc6",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_936404bf46f720",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_936404bf46f720",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_936404bf46f720",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_936404bf46f720",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_936404bf46f720",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_936404bf46f720",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_28ad5c220b1daf",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_28ad5c220b1daf",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_28ad5c220b1daf",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_28ad5c220b1daf",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_28ad5c220b1daf",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_28ad5c220b1daf",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_ad632ab50f5997",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_ad632ab50f5997",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_ad632ab50f5997",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_ad632ab50f5997",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_ad632ab50f5997",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_ad632ab50f5997",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [],
+  "initial_state": {
+    "globals": []
+  }
+}

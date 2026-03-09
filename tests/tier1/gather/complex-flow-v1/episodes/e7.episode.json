@@ -1,0 +1,59 @@
+{
+  "steps": [
+    {
+      "text": "I looked at Monsieur Fogg\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "... and I could contain myself no longer.",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "... but I said nothing",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "... but I said nothing and we passed the day in silence.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    1
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

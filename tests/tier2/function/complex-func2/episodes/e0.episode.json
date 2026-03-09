@@ -1,0 +1,51 @@
+{
+  "steps": [
+    {
+      "text": "The values are -1 and 0 and 1.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "Int": -1
+            }
+          }
+        },
+        {
+          "SetGlobal": {
+            "idx": 1,
+            "value": {
+              "Int": 0
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "globals": [
+      {
+        "Int": 0
+      },
+      {
+        "Int": 3
+      },
+      {
+        "Int": 1
+      }
+    ]
+  }
+}

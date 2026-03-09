@@ -1,0 +1,10 @@
+{
+  "steps": [],
+  "outcome": {
+    "Error": "unresolved global: $02_5b2f4734cda621"
+  },
+  "choice_path": [],
+  "initial_state": {
+    "globals": []
+  }
+}

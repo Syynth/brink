@@ -1,0 +1,69 @@
+{
+  "steps": [
+    {
+      "text": "Test conditional choices\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "one",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "two",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "three",
+              "index": 2,
+              "tags": []
+            },
+            {
+              "text": "four",
+              "index": 3,
+              "tags": []
+            }
+          ],
+          "selected": 3
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "four\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [
+    3
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

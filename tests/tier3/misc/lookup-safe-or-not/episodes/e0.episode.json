@@ -1,0 +1,10 @@
+{
+  "steps": [],
+  "outcome": {
+    "Error": "unresolved external function call: $05_2d6f4d5e157080"
+  },
+  "choice_path": [],
+  "initial_state": {
+    "globals": []
+  }
+}

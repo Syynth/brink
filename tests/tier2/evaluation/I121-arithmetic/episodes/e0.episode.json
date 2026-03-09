@@ -1,0 +1,31 @@
+{
+  "steps": [
+    {
+      "text": "36\n2\n3\n2\n2.5\n8\n8\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [],
+  "initial_state": {
+    "globals": []
+  }
+}

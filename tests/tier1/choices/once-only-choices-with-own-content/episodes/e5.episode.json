@@ -1,0 +1,200 @@
+{
+  "steps": [
+    {
+      "text": "This is the first time.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Eat ice-cream",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Drink coke",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Munch cookies",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "Int": 2
+            }
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_1fd7eaee121c46",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_1fd7eaee121c46",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "Munch cookies\nThis is the second time.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Eat ice-cream",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Drink coke",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "Int": 1
+            }
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_1fd7eaee121c46",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_1fd7eaee121c46",
+            "turn": 1
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    },
+    {
+      "text": "Drink coke\nThis is the third time.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Eat ice-cream",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "Int": 0
+            }
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_1fd7eaee121c46",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_1fd7eaee121c46",
+            "turn": 2
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 3
+          }
+        }
+      ]
+    },
+    {
+      "text": "Eat ice-cream\nI've finished eating now.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "Int": -1
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 4
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    2,
+    1,
+    0
+  ],
+  "initial_state": {
+    "globals": [
+      {
+        "Int": 3
+      }
+    ]
+  }
+}

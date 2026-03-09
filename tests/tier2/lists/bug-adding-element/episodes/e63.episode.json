@@ -1,0 +1,1113 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 3
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 4
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 5
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 6
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 7
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 8
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 9
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 10
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 11
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 12
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 13
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 14
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 15
+          }
+        }
+      ]
+    },
+    {
+      "text": "OK\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 16
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 17
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 18
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 19
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 20
+          }
+        }
+      ]
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "List": {
+                "items": [
+                  "$04_32dccafec788ac"
+                ],
+                "origins": [
+                  "$03_b7d08e020d63cd"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 21
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": {
+    "InputsExhausted": {
+      "remaining_choices": [
+        {
+          "text": "a",
+          "index": 0,
+          "tags": []
+        },
+        {
+          "text": "OK",
+          "index": 1,
+          "tags": []
+        },
+        {
+          "text": "FAIL",
+          "index": 2,
+          "tags": []
+        }
+      ]
+    }
+  },
+  "choice_path": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "initial_state": {
+    "globals": [
+      {
+        "List": {
+          "items": [],
+          "origins": [
+            "$03_b7d08e020d63cd"
+          ]
+        }
+      }
+    ]
+  }
+}

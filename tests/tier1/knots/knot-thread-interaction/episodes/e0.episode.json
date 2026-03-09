@@ -1,0 +1,60 @@
+{
+  "steps": [
+    {
+      "text": "blah blah\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "option",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "wigwag",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "option\nsomething\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "steps": [
+    {
+      "text": "Well, Poirot? Murder or suicide?\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"Murder!\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"Suicide!\"",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "\"Murder!\"\n\"And who did it?\"\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"Detective-Inspector Japp!\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"Captain Hastings!\"",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "\"Myself!\"",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    },
+    {
+      "text": "\"Captain Hastings!\"\n\"You must be joking!\"\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"Mon ami, I am deadly serious.\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"If only...\"",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 3
+          }
+        }
+      ]
+    },
+    {
+      "text": "\"If only...\"\nMrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 4
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [
+    0,
+    1,
+    1
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

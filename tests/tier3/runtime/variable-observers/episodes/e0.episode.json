@@ -1,0 +1,71 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Sets x = 10",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "Int": 5
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "Sets x = 10\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "Int": 10
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "globals": [
+      {
+        "Int": 0
+      }
+    ]
+  }
+}

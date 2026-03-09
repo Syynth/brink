@@ -1,0 +1,57 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Start of choice text Choice only text ",
+              "index": 0,
+              "tags": [
+                "tag both",
+                "choice only tag"
+              ]
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "Start of choice text This is after the choice is taken\n",
+      "tags": [
+        [
+          "tag both",
+          "post choice tag"
+        ],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

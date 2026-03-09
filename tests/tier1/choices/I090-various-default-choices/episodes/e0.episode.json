@@ -1,0 +1,61 @@
+{
+  "steps": [
+    {
+      "text": "1\n2\n3\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_2369b440c28ee8",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_2369b440c28ee8",
+            "turn": 1
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_bf681e291b2054",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_bf681e291b2054",
+            "turn": 2
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 3
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "globals": []
+  }
+}

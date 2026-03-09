@@ -1,0 +1,42 @@
+{
+  "steps": [
+    {
+      "text": "b, d\na, b, c, e\nb, c\nfalse\ntrue\ntrue\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [],
+  "initial_state": {
+    "globals": [
+      {
+        "List": {
+          "items": [
+            "$04_39edf96c90f2b8",
+            "$04_491f2805f4def6"
+          ],
+          "origins": [
+            "$03_83c03ab1852030"
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,859 @@
+{
+  "steps": [
+    {
+      "text": "The radio hissed into life. \"Three!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Two!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 1
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"One!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 2
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 3
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Three!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 4
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 3
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 4
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Two!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 5
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 4
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 5
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"One!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 6
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 5
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 6
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Three!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 7
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 6
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 7
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Two!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 8
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 7
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 8
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"One!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 9
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 8
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 9
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Three!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 10
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 9
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 10
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Two!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 11
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 10
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 11
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"One!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 12
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 11
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 12
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Three!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 13
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 12
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 13
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Two!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 14
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 13
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 14
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"One!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 15
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 14
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 15
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Three!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 16
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 15
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 16
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Two!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 17
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 16
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 17
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"One!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 18
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 17
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 18
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Three!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 19
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 18
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 19
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"Two!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 20
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 19
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 20
+          }
+        }
+      ]
+    },
+    {
+      "text": "The radio hissed into life. \"One!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_37ed8d33f8ca8f",
+            "new_count": 21
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_37ed8d33f8ca8f",
+            "turn": 20
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 21
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": {
+    "InputsExhausted": {
+      "remaining_choices": [
+        {
+          "text": "Again",
+          "index": 0,
+          "tags": []
+        }
+      ]
+    }
+  },
+  "choice_path": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

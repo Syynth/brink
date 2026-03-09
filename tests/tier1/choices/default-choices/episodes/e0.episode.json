@@ -1,0 +1,102 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Choice 1",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Choice 2",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "After choice\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Choice 2",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    },
+    {
+      "text": "After choice\nThis is default.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 3
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_735e1606d6e907",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_735e1606d6e907",
+            "turn": 3
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 4
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [
+    0,
+    0
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

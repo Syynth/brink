@@ -1,0 +1,34 @@
+{
+  "steps": [
+    {
+      "text": "a, b\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [],
+  "initial_state": {
+    "globals": [
+      {
+        "List": {
+          "items": [],
+          "origins": [
+            "$03_83c03ab1852030"
+          ]
+        }
+      }
+    ]
+  }
+}

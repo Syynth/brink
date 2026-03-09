@@ -1,0 +1,42 @@
+{
+  "steps": [
+    {
+      "text": "x\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_2369b440c28ee8",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_2369b440c28ee8",
+            "turn": 1
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [],
+  "initial_state": {
+    "globals": []
+  }
+}

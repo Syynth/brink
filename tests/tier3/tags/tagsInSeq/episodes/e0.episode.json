@@ -1,0 +1,54 @@
+{
+  "steps": [
+    {
+      "text": "A red sequence.\nA white sequence.\n",
+      "tags": [
+        [
+          "red"
+        ],
+        [
+          "white"
+        ],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_2c77a51760175f",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_2c77a51760175f",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_2c77a51760175f",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_2c77a51760175f",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [],
+  "initial_state": {
+    "globals": []
+  }
+}

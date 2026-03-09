@@ -1,0 +1,377 @@
+{
+  "steps": [
+    {
+      "text": "Once: one two\nStopping: one two two two\nDefault: one two two two\nCycle: one two one two\nShuffle: two one two one\nShuffle stopping: one two final final\nShuffle once: two one\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "SetRngSeed": {
+            "new_seed": 1
+          }
+        },
+        {
+          "SetPreviousRandom": {
+            "new_val": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_8d213afaf28106",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_8d213afaf28106",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_8d213afaf28106",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_8d213afaf28106",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_8d213afaf28106",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_8d213afaf28106",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_8d213afaf28106",
+            "new_count": 4
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_8d213afaf28106",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_e2bff946fd68bd",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_e2bff946fd68bd",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_e2bff946fd68bd",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_e2bff946fd68bd",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_e2bff946fd68bd",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_e2bff946fd68bd",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_e2bff946fd68bd",
+            "new_count": 4
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_e2bff946fd68bd",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_b428d844b96ccd",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_b428d844b96ccd",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_b428d844b96ccd",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_b428d844b96ccd",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_b428d844b96ccd",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_b428d844b96ccd",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_b428d844b96ccd",
+            "new_count": 4
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_b428d844b96ccd",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_0414f1e4972786",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_0414f1e4972786",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_0414f1e4972786",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_0414f1e4972786",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_0414f1e4972786",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_0414f1e4972786",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_0414f1e4972786",
+            "new_count": 4
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_0414f1e4972786",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_281ecdb8a0e47b",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_281ecdb8a0e47b",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_281ecdb8a0e47b",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_281ecdb8a0e47b",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_281ecdb8a0e47b",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_281ecdb8a0e47b",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_281ecdb8a0e47b",
+            "new_count": 4
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_281ecdb8a0e47b",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_671ac284f2fb9b",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_671ac284f2fb9b",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_671ac284f2fb9b",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_671ac284f2fb9b",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_671ac284f2fb9b",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_671ac284f2fb9b",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_671ac284f2fb9b",
+            "new_count": 4
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_671ac284f2fb9b",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_3da3390ed25bf4",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_3da3390ed25bf4",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_3da3390ed25bf4",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_3da3390ed25bf4",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_3da3390ed25bf4",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_3da3390ed25bf4",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_3da3390ed25bf4",
+            "new_count": 4
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_3da3390ed25bf4",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [],
+  "initial_state": {
+    "globals": []
+  }
+}

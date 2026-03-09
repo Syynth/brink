@@ -1,0 +1,37 @@
+{
+  "steps": [
+    {
+      "text": "different knot\nsame knot\nsame knot\ndifferent knot\nsame knot\nsame knot\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [],
+  "initial_state": {
+    "globals": [
+      {
+        "DivertTarget": "$01_591ddc399293fd"
+      },
+      {
+        "DivertTarget": "$01_a12e456af91ff3"
+      }
+    ]
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "steps": [
+    {
+      "text": "\"What's that?\" my master asked.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"I am somewhat tired.\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"Nothing, Monsieur!\"",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "\"I said, this journey is appalling.\"",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "\"Nothing, Monsieur!\" I replied.\n\"Very good, then.\"\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [
+    1
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

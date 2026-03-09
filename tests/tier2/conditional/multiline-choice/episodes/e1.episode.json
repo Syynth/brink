@@ -1,0 +1,127 @@
+{
+  "steps": [
+    {
+      "text": "At the table, I drew a card. Ace of Hearts.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Draw a card",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_14337b3deb7534",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_14337b3deb7534",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "I drew a card.\n2 of Diamonds.\n\"Should I hit you again,\" the croupier asks.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "No.",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Draw a card",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_14337b3deb7534",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_14337b3deb7534",
+            "turn": 1
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    },
+    {
+      "text": "I drew a card.\nKing of Spades.\n\"You lose,\" he crowed.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_14337b3deb7534",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_14337b3deb7534",
+            "turn": 2
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 3
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0,
+    1
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

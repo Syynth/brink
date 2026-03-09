@@ -1,0 +1,69 @@
+{
+  "steps": [
+    {
+      "text": "Count start: 0 0 0\n1\n2\n3\nCount end: 3 3 3\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$01_f73b67219b4f4d",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_f73b67219b4f4d",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_f73b67219b4f4d",
+            "new_count": 2
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_f73b67219b4f4d",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementVisit": {
+            "id": "$01_f73b67219b4f4d",
+            "new_count": 3
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$01_f73b67219b4f4d",
+            "turn": 0
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "globals": [
+      {
+        "DivertTarget": "$01_f73b67219b4f4d"
+      }
+    ]
+  }
+}

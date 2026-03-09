@@ -1,0 +1,31 @@
+{
+  "steps": [
+    {
+      "text": "The value is 3.",
+      "tags": [
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "globals": [
+      {
+        "Int": 0
+      },
+      {
+        "Int": 3
+      }
+    ]
+  }
+}

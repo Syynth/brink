@@ -1,0 +1,59 @@
+{
+  "steps": [
+    {
+      "text": "How shall we travel?\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "In first class",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "I'll go cheap",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "I put myself in third.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    1
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

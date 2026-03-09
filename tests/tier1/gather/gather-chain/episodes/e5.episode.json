@@ -1,0 +1,98 @@
+{
+  "steps": [
+    {
+      "text": "I ran through the forest, the dogs snapping at my heels.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "I checked the jewels",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "I did not pause for breath",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "I cheered with joy. ",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "I cheered with joy. The road could not be much further! Mackie would have the engine running, and then I'd be safe.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "I reached the road and looked about",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "I should interrupt to say Mackie is normally very reliable",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    },
+    {
+      "text": "I should interrupt to say Mackie is normally very reliable. He's never once let me down. Or rather, never once, previously to that night.\nThe road was empty. Mackie was nowhere to be seen.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 3
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    2,
+    1
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

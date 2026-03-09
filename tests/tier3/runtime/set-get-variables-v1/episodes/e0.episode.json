@@ -1,0 +1,75 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Set variable from code to 15",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "SetGlobal": {
+            "idx": 0,
+            "value": {
+              "Int": 10
+            }
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "KO\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementVisit": {
+            "id": "$06_3babbec06b4f59",
+            "new_count": 1
+          }
+        },
+        {
+          "SetTurnCount": {
+            "id": "$06_3babbec06b4f59",
+            "turn": 1
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "globals": [
+      {
+        "Int": 0
+      }
+    ]
+  }
+}

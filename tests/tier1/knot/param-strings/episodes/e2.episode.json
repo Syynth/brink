@@ -1,0 +1,64 @@
+{
+  "steps": [
+    {
+      "text": "Who do you accuse?\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Accuse Hasting",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Accuse Mrs Black",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Accuse myself",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "\"I accuse myself!\" Poirot declared.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    2
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "steps": [
+    {
+      "text": "D\nD\nD\nB\nC\nB\nD\nB\nD\nB\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "SetPreviousRandom": {
+            "new_val": 1559595546
+          }
+        },
+        {
+          "SetPreviousRandom": {
+            "new_val": 1832373849
+          }
+        },
+        {
+          "SetPreviousRandom": {
+            "new_val": 1078077729
+          }
+        },
+        {
+          "SetPreviousRandom": {
+            "new_val": 41607838
+          }
+        },
+        {
+          "SetPreviousRandom": {
+            "new_val": 1215741632
+          }
+        },
+        {
+          "SetPreviousRandom": {
+            "new_val": 1710798166
+          }
+        },
+        {
+          "SetPreviousRandom": {
+            "new_val": 242634810
+          }
+        },
+        {
+          "SetPreviousRandom": {
+            "new_val": 1232041087
+          }
+        },
+        {
+          "SetPreviousRandom": {
+            "new_val": 1494947355
+          }
+        },
+        {
+          "SetPreviousRandom": {
+            "new_val": 769511017
+          }
+        },
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [],
+  "initial_state": {
+    "globals": [
+      {
+        "List": {
+          "items": [
+            "$04_e6c1b222a3ad1e",
+            "$04_1bf9d4e9c179bc",
+            "$04_54eb90f84b2191"
+          ],
+          "origins": [
+            "$03_d2721627ec76a0"
+          ]
+        }
+      }
+    ]
+  }
+}

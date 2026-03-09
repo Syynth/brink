@@ -1,0 +1,66 @@
+{
+  "steps": [
+    {
+      "text": "What's that?\" my master asked.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"I am somewhat tired.\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"Nothing, Monsieur!\"",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "\"I said, this journey is appalling.\"",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "\"I said, this journey is appalling and I want no more of it.\"\n\"Ah,\" he replied, not unkindly. \"I see you are feeling frustrated. Tomorrow, things will improve.\"\nWith that Monsieur Fogg left the room.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    2
+  ],
+  "initial_state": {
+    "globals": []
+  }
+}

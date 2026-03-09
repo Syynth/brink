@@ -15,5 +15,9 @@ brink-json = { path = "../brink-json" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[[bin]]
+name = "gen-episodes"
+path = "src/bin/gen_episodes.rs"
+
 [lints]
 workspace = true

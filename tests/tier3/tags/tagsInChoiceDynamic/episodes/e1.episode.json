@@ -1,0 +1,68 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Choice ",
+              "index": 0,
+              "tags": [
+                "tag Name"
+              ]
+            },
+            {
+              "text": "Choice2 ",
+              "index": 1,
+              "tags": [
+                "tag 1 Name 2 3 4"
+              ]
+            },
+            {
+              "text": "Choice ",
+              "index": 2,
+              "tags": [
+                "Name tag 1 2 3 4"
+              ]
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 1
+          }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "tags": [],
+      "outcome": "Done",
+      "external_calls": [],
+      "writes": [
+        {
+          "IncrementTurnIndex": {
+            "new_value": 2
+          }
+        }
+      ]
+    }
+  ],
+  "outcome": "Done",
+  "choice_path": [
+    1
+  ],
+  "initial_state": {
+    "globals": [
+      {
+        "String": "Name"
+      }
+    ]
+  }
+}
