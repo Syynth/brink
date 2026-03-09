@@ -1243,7 +1243,8 @@ pub fn emit_expr(expr: &lir::Expr, lookups: &Lookups, cctx: &ContainerCtx, out: 
         }
 
         lir::Expr::VisitCount(id) => {
-            let path = lookups.container_path(*id);
+            let abs = lookups.container_path(*id);
+            let path = cctx.compact_path(1, &abs);
             out.push(Element::ReadCount(ReadCountReference { variable: path }));
         }
 

@@ -329,6 +329,10 @@ fn collect_container_paths(
     out: &mut HashMap<DefinitionId, String>,
 ) {
     out.insert(container.id, path.to_string());
+    // Register the label's DefinitionId as an alias for the same container path.
+    if let Some(label_id) = container.label_id {
+        out.insert(label_id, path.to_string());
+    }
     let is_root = container.kind == lir::ContainerKind::Root;
 
     // Non-root containers with choice/gather children wrap their body

@@ -109,6 +109,7 @@ fn lower_root(
         children,
         counting_flags: CountingFlags::empty(),
         temp_slot_count: 0,
+        label_id: None,
     }
 }
 
@@ -187,6 +188,7 @@ fn lower_knot(
         children,
         counting_flags: CountingFlags::empty(),
         temp_slot_count: temp_count,
+        label_id: None,
     }
 }
 
@@ -225,6 +227,7 @@ fn lower_stitch(
         children,
         counting_flags: CountingFlags::empty(),
         temp_slot_count: 0,
+        label_id: None,
     }
 }
 
@@ -364,6 +367,20 @@ fn lower_choice_with_child(
         }));
     }
 
+    // Look up the label's DefinitionId if the choice has a label.
+    let label_id = choice.label.as_ref().and_then(|label| {
+        let qualified = if ctx.scope_path.is_empty() {
+            label.text.clone()
+        } else {
+            format!("{}.{}", ctx.scope_path, label.text)
+        };
+        ctx.index
+            .by_name
+            .get(&qualified)
+            .and_then(|ids| ids.first())
+            .copied()
+    });
+
     let child_name = format!("c-{}", *choice_counter - 1);
     let child = lir::Container {
         id: target,
@@ -378,6 +395,7 @@ fn lower_choice_with_child(
             CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY
         },
         temp_slot_count: 0,
+        label_id,
     };
 
     let lir_choice = lir::Choice {
@@ -431,6 +449,20 @@ fn build_gather_container(
         lower_block_with_children(&trailing_block, ctx, plan, &mut cc, &mut gc);
     body.extend(trailing);
 
+    // Look up the gather label's DefinitionId if it has one.
+    let label_id = gather.label.as_ref().and_then(|label| {
+        let qualified = if ctx.scope_path.is_empty() {
+            label.text.clone()
+        } else {
+            format!("{}.{}", ctx.scope_path, label.text)
+        };
+        ctx.index
+            .by_name
+            .get(&qualified)
+            .and_then(|ids| ids.first())
+            .copied()
+    });
+
     lir::Container {
         id,
         name: Some(display_name),
@@ -440,6 +472,7 @@ fn build_gather_container(
         children,
         counting_flags: CountingFlags::empty(),
         temp_slot_count: 0,
+        label_id,
     }
 }
 
@@ -461,6 +494,7 @@ fn build_implicit_gather(
         children: Vec::new(),
         counting_flags: CountingFlags::empty(),
         temp_slot_count: 0,
+        label_id: None,
     }
 }
 
