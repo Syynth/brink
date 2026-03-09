@@ -335,6 +335,9 @@ impl LowerCtx {
             && let Some(first) = stitches.first()
             && first.params.is_empty()
         {
+            // Register the synthetic divert as an unresolved reference so
+            // the analyzer can resolve it.
+            self.add_unresolved(&first.name.text, first.name.range, RefKind::Divert);
             block.stmts.push(Stmt::Divert(Divert {
                 ptr: None,
                 target: DivertTarget {
