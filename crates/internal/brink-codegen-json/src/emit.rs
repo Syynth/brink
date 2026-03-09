@@ -1047,16 +1047,23 @@ fn build_choice_target(
         contents.push(Element::Value(InkValue::String("\n".to_string())));
         contents.extend(body_contents);
     } else if choice.start_content.is_some() {
-        // Has preamble — inline diverts (from `-> target` on the choice line)
-        // come before the \n separator, body content comes after.
-        let split = body_contents
-            .iter()
-            .position(|el| !is_inline_divert_element(el))
-            .unwrap_or(body_contents.len());
-        let after_newline = body_contents.split_off(split);
-        contents.extend(body_contents);
-        contents.push(Element::Value(InkValue::String("\n".to_string())));
-        contents.extend(after_newline);
+        // Has preamble — positioning depends on whether the divert is inline
+        // (on the choice line itself) or body-level (on an indented line).
+        if choice.has_inline_divert {
+            // Inline divert: divert elements go before \n, rest after.
+            let split = body_contents
+                .iter()
+                .position(|el| !is_inline_divert_element(el))
+                .unwrap_or(body_contents.len());
+            let after_newline = body_contents.split_off(split);
+            contents.extend(body_contents);
+            contents.push(Element::Value(InkValue::String("\n".to_string())));
+            contents.extend(after_newline);
+        } else {
+            // Body-level content/diverts: everything goes after \n.
+            contents.push(Element::Value(InkValue::String("\n".to_string())));
+            contents.extend(body_contents);
+        }
     } else {
         // Bracket-only (no preamble) — \n comes first, then body
         contents.push(Element::Value(InkValue::String("\n".to_string())));

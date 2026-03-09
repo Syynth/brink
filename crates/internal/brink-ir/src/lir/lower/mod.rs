@@ -385,6 +385,7 @@ fn lower_choice_with_child(
         inner_content,
         target,
         tags,
+        has_inline_divert: choice.divert.is_some(),
     };
 
     (lir_choice, Some(child))

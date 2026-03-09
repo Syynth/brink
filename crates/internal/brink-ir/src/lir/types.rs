@@ -290,6 +290,9 @@ pub struct Choice {
     /// The container holding the choice body (content after selection).
     pub target: DefinitionId,
     pub tags: Vec<String>,
+    /// Whether the choice has an inline divert (e.g. `* hello -> world`).
+    /// Body-level diverts (on indented lines) set this to false.
+    pub has_inline_divert: bool,
 }
 
 // ─── Conditionals and sequences ──────────────────────────────────────
