@@ -372,7 +372,11 @@ fn lower_choice_with_child(
         params: Vec::new(),
         body,
         children,
-        counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
+        counting_flags: if choice.is_sticky {
+            CountingFlags::empty()
+        } else {
+            CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY
+        },
         temp_slot_count: 0,
     };
 

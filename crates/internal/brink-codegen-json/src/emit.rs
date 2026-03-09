@@ -760,12 +760,19 @@ fn emit_choice_set(
         let (mut gather_contents, gather_named) = emit_body(gather, lookups, &gather_cctx);
 
         // Inklecate appends a "done" sub-container named g-{N+1} after
-        // explicit gather bodies that have text content (not just a bare divert).
+        // explicit gather bodies that have text content (not just a bare divert),
+        // unless the gather ends with a terminal exit (-> END / -> DONE).
         let has_content = gather
             .body
             .iter()
             .any(|s| matches!(s, lir::Stmt::EmitContent(_)));
-        if has_content {
+        let ends_terminal = gather.body.last().is_some_and(|s| {
+            matches!(
+                s,
+                lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Done | lir::DivertTarget::End)
+            )
+        });
+        if has_content && !ends_terminal {
             let next_gather_index = gather_name
                 .strip_prefix("g-")
                 .and_then(|s| s.parse::<usize>().ok())
@@ -909,14 +916,17 @@ fn emit_choice_outer(
         flags |= ChoicePointFlags::HAS_CHOICE_ONLY_CONTENT;
     }
 
-    // Choice point target: c-N is in named_content of the same container.
-    // Source depth=1 (choice point is a content element in the container).
+    // Choice point target: c-N is in named_content of the parent container.
+    // When the choice has start content, the choice point lives inside an
+    // anonymous wrapper container, so we need depth=2 to reach the parent's
+    // named_content. Otherwise the elements are inline and depth=1 suffices.
     let c_abs = if cctx.path.is_empty() {
         c_name.to_string()
     } else {
         format!("{}.{c_name}", cctx.path)
     };
-    let c_path = cctx.compact_path(1, &c_abs);
+    let depth = if has_start { 2 } else { 1 };
+    let c_path = cctx.compact_path(depth, &c_abs);
     outer_contents.push(Element::ChoicePoint(ChoicePoint {
         target: c_path,
         flags,
@@ -1026,13 +1036,17 @@ fn build_choice_target(
         None
     } else if let Some(gather_id) = gather_target {
         let gather_abs = lookups.container_path(gather_id);
-        let last_is_gather = body_contents.last().is_some_and(
-            |el| matches!(el, Element::Divert(Divert::Target { path, .. }) if *path == gather_abs),
-        );
+        let gather_path = compact_path(child_path, 1, &gather_abs);
+        // Check if the body's last element is a divert to the gather. The
+        // emitted body already contains compact paths, so compare against
+        // both the compact and absolute forms.
+        let last_is_gather = body_contents.last().is_some_and(|el| {
+            matches!(el, Element::Divert(Divert::Target { path, .. })
+                if *path == gather_abs || *path == gather_path)
+        });
         if last_is_gather {
             body_contents.pop();
         }
-        let gather_path = compact_path(child_path, 1, &gather_abs);
         Some(Element::Divert(Divert::Target {
             conditional: false,
             path: gather_path,
@@ -1044,8 +1058,20 @@ fn build_choice_target(
     // Emit the choice's inner_content (text after `]`) before the body.
     if let Some(ref inner) = choice.inner_content {
         emit_content(inner, lookups, cctx, &mut contents);
-        contents.push(Element::Value(InkValue::String("\n".to_string())));
-        contents.extend(body_contents);
+        if choice.has_inline_divert {
+            // Inline divert: divert elements go before \n, rest after.
+            let split = body_contents
+                .iter()
+                .position(|el| !is_inline_divert_element(el))
+                .unwrap_or(body_contents.len());
+            let after_newline = body_contents.split_off(split);
+            contents.extend(body_contents);
+            contents.push(Element::Value(InkValue::String("\n".to_string())));
+            contents.extend(after_newline);
+        } else {
+            contents.push(Element::Value(InkValue::String("\n".to_string())));
+            contents.extend(body_contents);
+        }
     } else if choice.start_content.is_some() {
         // Has preamble — positioning depends on whether the divert is inline
         // (on the choice line itself) or body-level (on an indented line).
@@ -1077,6 +1103,7 @@ fn build_choice_target(
     }
 
     let flags = crate::convert_counting_flags(child.counting_flags);
+    let flags_opt = if flags.is_empty() { None } else { Some(flags) };
 
     if has_nested_choices {
         // When the choice target has nested choices, the body text stays
@@ -1123,7 +1150,7 @@ fn build_choice_target(
 
         (
             Container {
-                flags: Some(flags),
+                flags: flags_opt,
                 name: None,
                 named_content: HashMap::new(),
                 contents,
@@ -1133,7 +1160,7 @@ fn build_choice_target(
     } else {
         (
             Container {
-                flags: Some(flags),
+                flags: flags_opt,
                 name: None,
                 named_content: body_named,
                 contents,
