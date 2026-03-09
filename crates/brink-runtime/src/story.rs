@@ -10,6 +10,7 @@ use crate::error::RuntimeError;
 use crate::output::{OutputBuffer, clean_output_whitespace};
 use crate::program::Program;
 use crate::rng::{FastRng, StoryRng};
+use crate::state::{ObservedState, RuntimeState, StoryState, WriteObserver};
 use crate::vm;
 
 /// The current execution status of a story.
@@ -25,10 +26,11 @@ pub enum StoryStatus {
     Ended,
 }
 
-/// Result of calling [`Story::step`].
+/// Result of calling [`Story::continue_maximally`].
 #[derive(Debug, Clone)]
 pub enum StepResult {
-    /// Yielded text; can resume with another [`step`](Story::step).
+    /// Yielded text; can resume with another
+    /// [`continue_maximally`](Story::continue_maximally).
     ///
     /// `tags` is per-line: `tags[i]` holds the tags for the `i`-th line
     /// of `text` (split on `\n`).
@@ -36,7 +38,8 @@ pub enum StepResult {
         text: String,
         tags: Vec<Vec<String>>,
     },
-    /// Yielded text and choices; call [`choose`](Story::choose) then [`step`](Story::step).
+    /// Yielded text and choices; call [`choose`](Story::choose) then
+    /// [`continue_maximally`](Story::continue_maximally).
     Choices {
         text: String,
         choices: Vec<Choice>,
@@ -285,6 +288,7 @@ pub(crate) struct PendingChoice {
 }
 
 /// Per-flow execution context. Owns threads, eval stack, output, choices.
+#[derive(Clone)]
 pub(crate) struct Flow {
     pub threads: Vec<Thread>,
     pub value_stack: Vec<Value>,
@@ -299,14 +303,14 @@ pub(crate) struct Flow {
 ///
 /// Holds globals, visit/turn tracking, and RNG state. This is the natural
 /// serialization boundary for save/load (deferred).
-pub(crate) struct Context<R: StoryRng = FastRng> {
+#[derive(Clone)]
+pub(crate) struct Context {
     pub globals: Vec<Value>,
     pub visit_counts: HashMap<DefinitionId, u32>,
     pub turn_counts: HashMap<DefinitionId, u32>,
     pub turn_index: u32,
     pub rng_seed: i32,
     pub previous_random: i32,
-    pub _rng: PhantomData<R>,
 }
 
 impl Flow {
@@ -483,14 +487,15 @@ impl ExternalFnHandler for FallbackHandler {
 /// A paired (Flow, Context, Status) representing one independent execution
 /// thread within a story. The default flow runs from the root container;
 /// named flows can be spawned at arbitrary entry points.
-pub(crate) struct FlowInstance<R: StoryRng = FastRng> {
+#[derive(Clone)]
+pub(crate) struct FlowInstance {
     pub(crate) flow: Flow,
-    pub(crate) context: Context<R>,
+    pub(crate) context: Context,
     pub(crate) status: StoryStatus,
     pub(crate) stats: Stats,
 }
 
-impl<R: StoryRng> FlowInstance<R> {
+impl FlowInstance {
     /// Create a new flow instance starting at the root container.
     fn new_at_root(program: &Program) -> Self {
         let globals = program.global_defaults();
@@ -524,7 +529,6 @@ impl<R: StoryRng> FlowInstance<R> {
                 turn_index: 0,
                 rng_seed: 0,
                 previous_random: 0,
-                _rng: PhantomData,
             },
             status: StoryStatus::Active,
             stats: Stats::default(),
@@ -564,7 +568,6 @@ impl<R: StoryRng> FlowInstance<R> {
                 turn_index: 0,
                 rng_seed: 0,
                 previous_random: 0,
-                _rng: PhantomData,
             },
             status: StoryStatus::Active,
             stats: Stats::default(),
@@ -573,10 +576,31 @@ impl<R: StoryRng> FlowInstance<R> {
 
     /// Execute until the next yield point, using the given external
     /// function handler to resolve `CallExternal` opcodes.
-    fn step_with(
+    fn step_with<R: StoryRng>(
         &mut self,
         program: &Program,
         handler: &dyn ExternalFnHandler,
+    ) -> Result<StepResult, RuntimeError> {
+        self.run_loop::<R>(program, handler, None)
+    }
+
+    /// Execute until the next yield point with a [`WriteObserver`] that
+    /// receives notifications for every state mutation.
+    fn step_with_observed<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        handler: &dyn ExternalFnHandler,
+        observer: &mut dyn WriteObserver,
+    ) -> Result<StepResult, RuntimeError> {
+        self.run_loop::<R>(program, handler, Some(observer))
+    }
+
+    /// Core step loop shared by observed and unobserved execution.
+    fn run_loop<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        handler: &dyn ExternalFnHandler,
+        mut observer: Option<&mut dyn WriteObserver>,
     ) -> Result<StepResult, RuntimeError> {
         if self.status == StoryStatus::Ended {
             return Err(RuntimeError::StoryEnded);
@@ -589,46 +613,73 @@ impl<R: StoryRng> FlowInstance<R> {
 
         let mut all_lines: Vec<(String, Vec<String>)> = Vec::new();
 
+        let Self {
+            flow,
+            context,
+            status,
+            stats,
+        } = self;
+
         loop {
-            self.stats.steps += 1;
-            let stepped = vm::step(&mut self.flow, &mut self.context, &mut self.stats, program)?;
-            self.stats.materializations += self.flow.drain_materializations();
+            stats.steps += 1;
+
+            // Build state (observed or plain) and run one VM step.
+            let stepped = if let Some(ref mut obs) = observer {
+                let mut state = ObservedState::<R>::new(program, context, *obs);
+                vm::step(flow, &mut state, stats)?
+            } else {
+                let mut state = RuntimeState::<R>::new(program, context);
+                vm::step(flow, &mut state, stats)?
+            };
+
+            stats.materializations += flow.drain_materializations();
             match stepped {
                 vm::Stepped::Continue | vm::Stepped::ThreadCompleted => {}
 
                 vm::Stepped::ExternalCall => {
-                    resolve_external_call(&mut self.flow, program, handler)?;
+                    resolve_external_call(flow, program, handler)?;
                 }
 
                 vm::Stepped::Done => {
-                    extend_lines(&mut all_lines, self.flow.output.flush_lines());
-                    self.context.turn_index += 1;
+                    extend_lines(&mut all_lines, flow.output.flush_lines());
 
-                    if self.flow.pending_choices.is_empty() {
-                        self.status = StoryStatus::Done;
+                    if let Some(ref mut obs) = observer {
+                        let mut state = ObservedState::<R>::new(program, context, *obs);
+                        state.increment_turn_index();
+                    } else {
+                        let mut state = RuntimeState::<R>::new(program, context);
+                        state.increment_turn_index();
+                    }
+
+                    if flow.pending_choices.is_empty() {
+                        *status = StoryStatus::Done;
                         let (text, tags) = finalize_lines(&all_lines);
                         return Ok(StepResult::Done { text, tags });
                     }
 
                     // If all pending choices are invisible defaults (fallback
                     // choices), auto-select the first one and keep running.
-                    let all_invisible = self
-                        .flow
+                    let all_invisible = flow
                         .pending_choices
                         .iter()
                         .all(|pc| pc.flags.is_invisible_default);
 
                     if all_invisible {
-                        self.select_choice(0)?;
+                        if let Some(ref mut obs) = observer {
+                            let mut state = ObservedState::<R>::new(program, context, *obs);
+                            select_choice(flow, &mut state, status, stats, 0)?;
+                        } else {
+                            let mut state = RuntimeState::<R>::new(program, context);
+                            select_choice(flow, &mut state, status, stats, 0)?;
+                        }
                         continue;
                     }
 
                     // Filter out invisible defaults — they shouldn't be
                     // presented to the player.
-                    self.status = StoryStatus::WaitingForChoice;
-                    self.stats.choices_presented += 1;
-                    let choices = self
-                        .flow
+                    *status = StoryStatus::WaitingForChoice;
+                    stats.choices_presented += 1;
+                    let choices = flow
                         .pending_choices
                         .iter()
                         .enumerate()
@@ -647,9 +698,17 @@ impl<R: StoryRng> FlowInstance<R> {
                     });
                 }
                 vm::Stepped::Ended => {
-                    extend_lines(&mut all_lines, self.flow.output.flush_lines());
-                    self.context.turn_index += 1;
-                    self.status = StoryStatus::Ended;
+                    extend_lines(&mut all_lines, flow.output.flush_lines());
+
+                    if let Some(ref mut obs) = observer {
+                        let mut state = ObservedState::<R>::new(program, context, *obs);
+                        state.increment_turn_index();
+                    } else {
+                        let mut state = RuntimeState::<R>::new(program, context);
+                        state.increment_turn_index();
+                    }
+
+                    *status = StoryStatus::Ended;
                     let (text, tags) = finalize_lines(&all_lines);
                     return Ok(StepResult::Ended { text, tags });
                 }
@@ -658,60 +717,68 @@ impl<R: StoryRng> FlowInstance<R> {
     }
 
     /// Select a choice by index. Call [`step_with`] afterward to continue.
-    fn choose(&mut self, index: usize) -> Result<(), RuntimeError> {
+    fn choose<R: StoryRng>(&mut self, program: &Program, index: usize) -> Result<(), RuntimeError> {
         if self.status != StoryStatus::WaitingForChoice {
             return Err(RuntimeError::NotWaitingForChoice);
         }
-        self.select_choice(index)
+        let mut state = RuntimeState::<R>::new(program, &mut self.context);
+        select_choice(
+            &mut self.flow,
+            &mut state,
+            &mut self.status,
+            &mut self.stats,
+            index,
+        )
+    }
+}
+
+/// Internal: set execution position to the given choice target, clear
+/// pending choices, and set status to Active. No status precondition.
+#[expect(clippy::similar_names)]
+fn select_choice(
+    flow: &mut Flow,
+    state: &mut impl StoryState,
+    status: &mut StoryStatus,
+    stats: &mut Stats,
+    index: usize,
+) -> Result<(), RuntimeError> {
+    let available = flow.pending_choices.len();
+    if index >= available {
+        return Err(RuntimeError::InvalidChoiceIndex { index, available });
     }
 
-    /// Internal: set execution position to the given choice target, clear
-    /// pending choices, and set status to Active. No status precondition.
-    fn select_choice(&mut self, index: usize) -> Result<(), RuntimeError> {
-        let available = self.flow.pending_choices.len();
-        if index >= available {
-            return Err(RuntimeError::InvalidChoiceIndex { index, available });
-        }
+    let choice = flow.pending_choices.swap_remove(index);
 
-        let choice = self.flow.pending_choices.swap_remove(index);
+    // Increment visit count for the choice target container so that
+    // once-only choices can be filtered on subsequent passes.
+    state.increment_visit(choice.target_id);
+    state.set_turn_count(choice.target_id, state.turn_index());
 
-        // Increment visit count for the choice target container so that
-        // once-only choices can be filtered on subsequent passes.
-        *self
-            .context
-            .visit_counts
-            .entry(choice.target_id)
-            .or_insert(0) += 1;
-        self.context
-            .turn_counts
-            .insert(choice.target_id, self.context.turn_index);
+    // Replace the current thread with the fork from choice creation
+    // time. By selection time, all spawned threads should have
+    // completed — only the main thread remains.
+    let current = flow.current_thread_mut();
+    *current = choice.thread_fork;
 
-        // Replace the current thread with the fork from choice creation
-        // time. By selection time, all spawned threads should have
-        // completed — only the main thread remains.
-        let current = self.flow.current_thread_mut();
-        *current = choice.thread_fork;
+    // Set execution position to the choice target. We reset the top
+    // frame's container_stack to just the target — the snapshot may
+    // have captured stale nesting from inside the choice eval block.
+    let frame = current
+        .call_stack
+        .last_mut()
+        .ok_or(RuntimeError::CallStackUnderflow)?;
 
-        // Set execution position to the choice target. We reset the top
-        // frame's container_stack to just the target — the snapshot may
-        // have captured stale nesting from inside the choice eval block.
-        let frame = current
-            .call_stack
-            .last_mut()
-            .ok_or(RuntimeError::CallStackUnderflow)?;
+    frame.container_stack.clear();
+    frame.container_stack.push(ContainerPosition {
+        container_idx: choice.target_idx,
+        offset: choice.target_offset,
+    });
 
-        frame.container_stack.clear();
-        frame.container_stack.push(ContainerPosition {
-            container_idx: choice.target_idx,
-            offset: choice.target_offset,
-        });
+    flow.pending_choices.clear();
+    *status = StoryStatus::Active;
+    stats.choices_selected += 1;
 
-        self.flow.pending_choices.clear();
-        self.status = StoryStatus::Active;
-        self.stats.choices_selected += 1;
-
-        Ok(())
-    }
+    Ok(())
 }
 
 /// Resolve an external function call using the handler and program metadata.
@@ -795,44 +862,60 @@ fn finalize_lines(lines: &[(String, Vec<String>)]) -> (String, Vec<Vec<String>>)
 ///
 /// Generic over `R: StoryRng` — defaults to [`FastRng`]. Use
 /// [`DotNetRng`](crate::DotNetRng) for .NET-compatible deterministic output.
-pub struct Story<R: StoryRng = FastRng> {
-    pub(crate) default: FlowInstance<R>,
-    instances: HashMap<String, FlowInstance<R>>,
+#[derive(Clone)]
+pub struct Story<'p, R: StoryRng = FastRng> {
+    program: &'p Program,
+    pub(crate) default: FlowInstance,
+    instances: HashMap<String, FlowInstance>,
+    _rng: PhantomData<R>,
 }
 
-impl<R: StoryRng> Story<R> {
+impl<'p, R: StoryRng> Story<'p, R> {
     /// Create a new story instance from a linked program.
-    pub fn new(program: &Program) -> Self {
+    pub fn new(program: &'p Program) -> Self {
         Self {
+            program,
             default: FlowInstance::new_at_root(program),
             instances: HashMap::new(),
+            _rng: PhantomData,
         }
     }
 
-    // ── Default flow API (unchanged public interface) ───────────────
+    // ── Default flow API ─────────────────────────────────────────────
 
     /// Execute until the next yield point (done, choices, or end).
     ///
     /// External functions use fallback ink bodies when available,
-    /// or error if no fallback exists. Use [`step_with`](Self::step_with)
+    /// or error if no fallback exists. Use
+    /// [`continue_maximally_with`](Self::continue_maximally_with)
     /// to provide a custom external function handler.
-    pub fn step(&mut self, program: &Program) -> Result<StepResult, RuntimeError> {
-        self.default.step_with(program, &FallbackHandler)
+    pub fn continue_maximally(&mut self) -> Result<StepResult, RuntimeError> {
+        self.default.step_with::<R>(self.program, &FallbackHandler)
     }
 
     /// Execute until the next yield point, using the given external
     /// function handler to resolve `CallExternal` opcodes.
-    pub fn step_with(
+    pub fn continue_maximally_with(
         &mut self,
-        program: &Program,
         handler: &dyn ExternalFnHandler,
     ) -> Result<StepResult, RuntimeError> {
-        self.default.step_with(program, handler)
+        self.default.step_with::<R>(self.program, handler)
     }
 
-    /// Select a choice by index. Call [`step`](Story::step) afterward to continue.
+    /// Execute until the next yield point with a [`WriteObserver`] that
+    /// receives notifications for every state mutation.
+    pub fn continue_maximally_observed(
+        &mut self,
+        observer: &mut dyn WriteObserver,
+    ) -> Result<StepResult, RuntimeError> {
+        self.default
+            .step_with_observed::<R>(self.program, &FallbackHandler, observer)
+    }
+
+    /// Select a choice by index. Call [`continue_maximally`](Story::continue_maximally)
+    /// afterward to continue.
     pub fn choose(&mut self, index: usize) -> Result<(), RuntimeError> {
-        self.default.choose(index)
+        self.default.choose::<R>(self.program, index)
     }
 
     /// Get the current execution status.
@@ -854,7 +937,8 @@ impl<R: StoryRng> Story<R> {
     /// Resolve a pending external call on the default flow by providing
     /// the return value. For fire-and-forget calls, pass `Value::Null`.
     ///
-    /// After resolving, call [`step`](Story::step) to continue execution.
+    /// After resolving, call [`continue_maximally`](Story::continue_maximally)
+    /// to continue execution.
     pub fn resolve_external(&mut self, value: Value) {
         self.default.flow.resolve_external(value);
     }
@@ -863,18 +947,20 @@ impl<R: StoryRng> Story<R> {
     /// the ink-defined fallback body. The fallback is a function call
     /// whose output becomes the return value.
     ///
-    /// After invoking, call [`step`](Story::step) to continue execution.
-    pub fn invoke_fallback(&mut self, program: &Program) -> Result<(), RuntimeError> {
+    /// After invoking, call [`continue_maximally`](Story::continue_maximally)
+    /// to continue execution.
+    pub fn invoke_fallback(&mut self) -> Result<(), RuntimeError> {
         let fn_id = self
             .default
             .flow
             .external_fn_id()
             .ok_or(RuntimeError::CallStackUnderflow)?;
-        let entry = program.external_fn(fn_id);
+        let entry = self.program.external_fn(fn_id);
         let fallback_id = entry
             .and_then(|e| e.fallback)
             .ok_or(RuntimeError::UnresolvedExternalCall(fn_id))?;
-        let container_idx = program
+        let container_idx = self
+            .program
             .resolve_container(fallback_id)
             .ok_or(RuntimeError::UnresolvedDefinition(fallback_id))?;
         self.default.flow.output.begin_capture();
@@ -893,38 +979,37 @@ impl<R: StoryRng> Story<R> {
         &mut self,
         name: &str,
         entry_point: DefinitionId,
-        program: &Program,
     ) -> Result<(), RuntimeError> {
         if self.instances.contains_key(name) {
             return Err(RuntimeError::FlowAlreadyExists(name.to_owned()));
         }
-        let container_idx = program
+        let container_idx = self
+            .program
             .resolve_container(entry_point)
             .ok_or(RuntimeError::UnresolvedDefinition(entry_point))?;
         self.instances.insert(
             name.to_owned(),
-            FlowInstance::new_at(program, container_idx),
+            FlowInstance::new_at(self.program, container_idx),
         );
         Ok(())
     }
 
-    /// Step a named flow instance.
-    pub fn step_flow(&mut self, name: &str, program: &Program) -> Result<StepResult, RuntimeError> {
-        self.step_flow_with(name, program, &FallbackHandler)
+    /// Run a named flow instance until the next yield point.
+    pub fn continue_flow_maximally(&mut self, name: &str) -> Result<StepResult, RuntimeError> {
+        self.continue_flow_maximally_with(name, &FallbackHandler)
     }
 
-    /// Step a named flow instance with an external function handler.
-    pub fn step_flow_with(
+    /// Run a named flow instance with an external function handler.
+    pub fn continue_flow_maximally_with(
         &mut self,
         name: &str,
-        program: &Program,
         handler: &dyn ExternalFnHandler,
     ) -> Result<StepResult, RuntimeError> {
         let instance = self
             .instances
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
-        instance.step_with(program, handler)
+        instance.step_with::<R>(self.program, handler)
     }
 
     /// Select a choice in a named flow.
@@ -933,7 +1018,7 @@ impl<R: StoryRng> Story<R> {
             .instances
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
-        instance.choose(index)
+        instance.choose::<R>(self.program, index)
     }
 
     /// Destroy a named flow instance.
@@ -961,22 +1046,20 @@ mod tests {
     use super::*;
     use crate::link;
 
-    fn load_i079() -> (crate::Program, Story) {
+    fn load_i079_program() -> crate::Program {
         let json_str = std::fs::read_to_string(
             "../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink.json",
         )
         .unwrap();
         let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
         let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let story = Story::new(&program);
-        (program, story)
+        link(&data).unwrap()
     }
 
     /// Step a story until it yields choices, panicking if it ends first.
-    fn step_until_choices(story: &mut Story, program: &Program) -> Vec<Choice> {
+    fn step_until_choices(story: &mut Story) -> Vec<Choice> {
         loop {
-            match story.step(program).unwrap() {
+            match story.continue_maximally().unwrap() {
                 StepResult::Choices { choices, .. } => return choices,
                 StepResult::Done { .. } => continue,
                 StepResult::Ended { .. } => panic!("story ended before presenting choices"),
@@ -989,8 +1072,9 @@ mod tests {
     /// `handle_begin_choice` can never fire.
     #[test]
     fn select_choice_increments_visit_count_for_target() {
-        let (program, mut story) = load_i079();
-        let choices = step_until_choices(&mut story, &program);
+        let program = load_i079_program();
+        let mut story = Story::new(&program);
+        let choices = step_until_choices(&mut story);
 
         assert!(!choices.is_empty(), "expected at least one choice");
 
@@ -1026,9 +1110,10 @@ mod tests {
     /// in `pending_choices`.
     #[test]
     fn once_only_choice_excluded_on_second_pass() {
-        let (program, mut story) = load_i079();
+        let program = load_i079_program();
+        let mut story = Story::new(&program);
 
-        let first_choices = step_until_choices(&mut story, &program);
+        let first_choices = step_until_choices(&mut story);
         assert!(
             first_choices
                 .iter()
@@ -1038,7 +1123,7 @@ mod tests {
 
         story.choose(0).unwrap();
 
-        let second_choices = step_until_choices(&mut story, &program);
+        let second_choices = step_until_choices(&mut story);
         assert!(
             !second_choices
                 .iter()
@@ -1050,16 +1135,14 @@ mod tests {
 
     // ── Choice thread forking ──────────────────────────────────────────
 
-    fn load_i083() -> (crate::Program, Story) {
+    fn load_i083_program() -> crate::Program {
         let json_str = std::fs::read_to_string(
             "../../tests/tier1/choices/I083-choice-thread-forking/story.ink.json",
         )
         .unwrap();
         let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
         let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let story = Story::new(&program);
-        (program, story)
+        link(&data).unwrap()
     }
 
     /// When a choice is created inside a tunnel, the call stack at that
@@ -1068,8 +1151,9 @@ mod tests {
     /// should still reflect the tunnel-era call stack depth (>= 2 frames).
     #[test]
     fn pending_choice_captures_tunnel_call_stack() {
-        let (program, mut story) = load_i083();
-        let _choices = step_until_choices(&mut story, &program);
+        let program = load_i083_program();
+        let mut story = Story::new(&program);
+        let _choices = step_until_choices(&mut story);
 
         // At this point the tunnel has returned, so the live call_stack
         // has only the root frame.
@@ -1096,8 +1180,9 @@ mod tests {
     /// temp variables from the tunnel scope are accessible.
     #[test]
     fn select_choice_restores_tunnel_frame_with_temps() {
-        let (program, mut story) = load_i083();
-        let _choices = step_until_choices(&mut story, &program);
+        let program = load_i083_program();
+        let mut story = Story::new(&program);
+        let _choices = step_until_choices(&mut story);
 
         // Before choosing: only root frame, no tunnel temps.
         assert_eq!(story.default.flow.current_thread().call_stack.len(), 1);
@@ -1129,30 +1214,27 @@ mod tests {
 
     // ── Tags ──────────────────────────────────────────────────────────
 
-    fn load_tags() -> (crate::Program, Story) {
+    fn load_tags_program() -> crate::Program {
         let json_str =
             std::fs::read_to_string("../../tests/tier3/tags/tags/story.ink.json").unwrap();
         let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
         let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let story = Story::new(&program);
-        (program, story)
+        link(&data).unwrap()
     }
 
-    fn load_tags_in_choice() -> (crate::Program, Story) {
+    fn load_tags_in_choice_program() -> crate::Program {
         let json_str =
             std::fs::read_to_string("../../tests/tier3/tags/tagsInChoice/story.ink.json").unwrap();
         let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
         let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let story = Story::new(&program);
-        (program, story)
+        link(&data).unwrap()
     }
 
     #[test]
     fn step_result_exposes_tags() {
-        let (program, mut story) = load_tags();
-        let result = story.step(&program).unwrap();
+        let program = load_tags_program();
+        let mut story = Story::<crate::FastRng>::new(&program);
+        let result = story.continue_maximally().unwrap();
         match result {
             StepResult::Done { tags, .. } | StepResult::Ended { tags, .. } => {
                 // Tags are per-line; the first line should have both tags.
@@ -1164,8 +1246,9 @@ mod tests {
 
     #[test]
     fn choice_exposes_tags() {
-        let (program, mut story) = load_tags_in_choice();
-        let choices = step_until_choices(&mut story, &program);
+        let program = load_tags_in_choice_program();
+        let mut story = Story::new(&program);
+        let choices = step_until_choices(&mut story);
         assert!(!choices.is_empty());
         // The choice in tagsInChoice has tags "one" and "two"
         assert!(
@@ -1176,15 +1259,13 @@ mod tests {
 
     // ── Thread support ──────────────────────────────────────────────────
 
-    fn load_i091() -> (crate::Program, Story) {
+    fn load_i091_program() -> crate::Program {
         let json_str =
             std::fs::read_to_string("../../tests/tier1/choices/I091-choice-count/story.ink.json")
                 .unwrap();
         let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
         let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let story = Story::new(&program);
-        (program, story)
+        link(&data).unwrap()
     }
 
     /// `<- choices` (thread) must create choices AND return to the main
@@ -1194,404 +1275,20 @@ mod tests {
     /// back to their caller, even when pending choices exist.
     #[test]
     fn thread_call_returns_to_main_flow() {
-        let (program, mut story) = load_i091();
+        let program = load_i091_program();
+        let mut story = Story::<crate::FastRng>::new(&program);
 
-        let result = story.step(&program).unwrap();
-
-        // The story should yield Choices (not Done/Ended) because the
-        // thread creates two choice points.
-        assert!(
-            matches!(result, StepResult::Choices { .. }),
-            "expected Choices after thread creates choices, got {result:?}"
-        );
-
-        // The text output should include "2" (CHOICE_COUNT()) which
-        // proves execution returned to the main flow after the thread.
-        if let StepResult::Choices { text, choices, .. } = result {
-            assert!(
-                text.contains('2'),
-                "text should contain '2' from CHOICE_COUNT(), got: {text:?}"
-            );
-            assert_eq!(choices.len(), 2, "should have 2 choices (one/two)");
-        }
-    }
-
-    // ── External functions ──────────────────────────────────────────
-
-    fn load_external_0_arg() -> (crate::Program, Story) {
-        let json_str = std::fs::read_to_string(
-            "../../tests/tier3/runtime/external-function-0-arg/story.ink.json",
-        )
-        .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let story = Story::new(&program);
-        (program, story)
-    }
-
-    fn load_external_binding() -> (crate::Program, Story) {
-        let json_str =
-            std::fs::read_to_string("../../tests/tier3/bindings/external-binding/story.ink.json")
-                .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let story = Story::new(&program);
-        (program, story)
-    }
-
-    /// When an external function has a fallback body and no binding is
-    /// registered, the VM should invoke the fallback without error.
-    #[test]
-    fn external_function_uses_fallback_when_no_binding() {
-        let (program, mut story) = load_external_0_arg();
-        // The fallback returns "" so the output should be "The value is ."
-        let result = story.step(&program);
-        assert!(
-            result.is_ok(),
-            "external function with fallback should not error, got: {result:?}"
-        );
-        match result.unwrap() {
-            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
-                assert!(
-                    text.contains("The value is"),
-                    "expected 'The value is' in output, got: {text:?}"
-                );
-            }
-            StepResult::Choices { .. } => panic!("expected Done or Ended, got Choices"),
-        }
-    }
-
-    /// When an external function handler is provided via `step_with`,
-    /// it should be called instead of the fallback.
-    #[test]
-    fn external_function_binding_is_called() {
-        use super::ExternalResult;
-
-        struct TestHandler;
-        impl super::ExternalFnHandler for TestHandler {
-            #[expect(clippy::cast_precision_loss, clippy::cast_sign_loss)]
-            fn call(&self, name: &str, args: &[Value]) -> ExternalResult {
-                match name {
-                    "multiply" => {
-                        let a = match args[0] {
-                            Value::Float(f) => f,
-                            Value::Int(i) => i as f32,
-                            _ => 0.0,
-                        };
-                        let b = match args[1] {
-                            Value::Float(f) => f,
-                            Value::Int(i) => i as f32,
-                            _ => 0.0,
-                        };
-                        #[expect(clippy::cast_possible_truncation)]
-                        ExternalResult::Resolved(Value::Int((a * b) as i32))
-                    }
-                    "message" => ExternalResult::Resolved(Value::Null),
-                    "times" => {
-                        let count = match args[0] {
-                            Value::Int(i) => i as usize,
-                            _ => 0,
-                        };
-                        let s = match &args[1] {
-                            Value::String(s) => &**s,
-                            _ => "",
-                        };
-                        ExternalResult::Resolved(Value::String(s.repeat(count).into()))
-                    }
-                    _ => ExternalResult::Fallback,
-                }
-            }
-        }
-
-        let (program, mut story) = load_external_binding();
-        let handler = TestHandler;
-
-        let result = story.step_with(&program, &handler);
-        assert!(
-            result.is_ok(),
-            "bound external functions should not error, got: {result:?}"
-        );
-        match result.unwrap() {
-            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
-                assert!(
-                    text.contains("15"),
-                    "expected '15' from multiply(5.0, 3), got: {text:?}"
-                );
-                assert!(
-                    text.contains("knock knock knock"),
-                    "expected 'knock knock knock' from times(3, 'knock '), got: {text:?}"
-                );
-            }
-            StepResult::Choices { .. } => panic!("expected Done or Ended, got Choices"),
-        }
-    }
-
-    // ── Multi-thread tunnel return ──────────────────────────────────
-
-    fn load_multi_thread() -> (crate::Program, Story) {
-        let json_str =
-            std::fs::read_to_string("../../tests/tier2/threads/multi-thread/story.ink.json")
-                .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let story = Story::new(&program);
-        (program, story)
-    }
-
-    /// When threads are spawned inside a tunnel (`<- place1` inside
-    /// `->t->`), selecting a choice created by a thread must return
-    /// to the tunnel caller after `->->`. The thread fork must
-    /// preserve the enclosing tunnel frame so that `TunnelReturn` can
-    /// resume at `start` where "The end" text lives.
-    #[test]
-    fn multi_thread_tunnel_return_outputs_the_end() {
-        let (program, mut story) = load_multi_thread();
-
-        // Step to choices — should present choices from place1 and place2.
-        let choices = step_until_choices(&mut story, &program);
-        assert_eq!(choices.len(), 2, "expected 2 choices from place1 + place2");
-
-        // Select the first choice (choice in place 1).
-        story.choose(0).unwrap();
-
-        // Step again — should output "The end" from the tunnel caller.
-        let mut found_the_end = false;
-        loop {
-            match story.step(&program).unwrap() {
-                StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
-                    if text.contains("The end") {
-                        found_the_end = true;
-                    }
-                    if matches!(story.status(), StoryStatus::Done | StoryStatus::Ended) {
-                        break;
-                    }
-                }
-                StepResult::Choices { .. } => {
-                    panic!("unexpected choices after selecting first choice");
-                }
-            }
-        }
-
-        assert!(
-            found_the_end,
-            "after selecting a choice created in a thread inside a tunnel, \
-             the story should output 'The end' from the tunnel caller"
-        );
-    }
-
-    // ── Named flow instances ────────────────────────────────────────
-
-    /// Spawn a named flow at a known knot, step it, verify output.
-    #[test]
-    fn spawn_and_step_named_flow() {
-        // Load a simple story — I001 is a minimal "Hello, world!" story.
-        let json_str =
-            std::fs::read_to_string("../../tests/tier1/basics/I001-minimal-story/story.ink.json")
-                .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let mut story: Story = Story::new(&program);
-
-        // Spawn a named flow at the root container (same entry point).
-        let root_id = program.containers[program.root_idx() as usize].id;
-        story.spawn_flow("side", root_id, &program).unwrap();
-
-        // Step the named flow — should produce the same output as the default.
-        let result = story.step_flow("side", &program).unwrap();
+        let result = story.continue_maximally().unwrap();
+        // I091 should output "2\n" (CHOICE_COUNT) then present 2 choices.
         match result {
-            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
+            StepResult::Choices { text, choices, .. } => {
                 assert!(
-                    text.contains("Hello"),
-                    "named flow should produce output, got: {text:?}"
+                    text.starts_with('2'),
+                    "output should start with '2' from CHOICE_COUNT(), got: {text:?}"
                 );
+                assert_eq!(choices.len(), 2, "expected 2 choices");
             }
-            StepResult::Choices { .. } => panic!("expected Done or Ended, got Choices"),
+            other => panic!("expected Choices, got {other:?}"),
         }
-    }
-
-    /// Verify the existing API still works identically after restructure.
-    #[test]
-    fn default_flow_unchanged() {
-        let json_str =
-            std::fs::read_to_string("../../tests/tier1/basics/I001-minimal-story/story.ink.json")
-                .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let mut story: Story = Story::new(&program);
-
-        let result = story.step(&program).unwrap();
-        match result {
-            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
-                assert!(
-                    text.contains("Hello"),
-                    "default flow should produce output, got: {text:?}"
-                );
-            }
-            StepResult::Choices { .. } => panic!("expected Done or Ended, got Choices"),
-        }
-    }
-
-    /// Spawn, destroy, verify gone.
-    #[test]
-    fn destroy_flow_removes_instance() {
-        let json_str =
-            std::fs::read_to_string("../../tests/tier1/basics/I001-minimal-story/story.ink.json")
-                .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let mut story: Story = Story::new(&program);
-
-        let root_id = program.containers[program.root_idx() as usize].id;
-        story.spawn_flow("temp", root_id, &program).unwrap();
-        assert!(story.flow_status("temp").is_some());
-        assert!(story.flow_names().contains(&"temp"));
-
-        story.destroy_flow("temp").unwrap();
-        assert!(story.flow_status("temp").is_none());
-        assert!(!story.flow_names().contains(&"temp"));
-
-        // Destroying again should error.
-        let err = story.destroy_flow("temp");
-        assert!(err.is_err());
-    }
-
-    /// Spawn two flows at the same entry point, step them independently.
-    #[test]
-    fn independent_state() {
-        let json_str =
-            std::fs::read_to_string("../../tests/tier1/basics/I001-minimal-story/story.ink.json")
-                .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let mut story: Story = Story::new(&program);
-
-        let root_id = program.containers[program.root_idx() as usize].id;
-        story.spawn_flow("a", root_id, &program).unwrap();
-        story.spawn_flow("b", root_id, &program).unwrap();
-
-        // Step "a" only — "b" should still be Active.
-        let _ = story.step_flow("a", &program).unwrap();
-        assert_eq!(story.flow_status("b"), Some(StoryStatus::Active));
-
-        // Step "b" — should also produce output independently.
-        let result_b = story.step_flow("b", &program).unwrap();
-        match result_b {
-            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
-                assert!(
-                    text.contains("Hello"),
-                    "flow 'b' should produce output independently, got: {text:?}"
-                );
-            }
-            StepResult::Choices { .. } => panic!("expected Done or Ended, got Choices"),
-        }
-
-        // Duplicate name should error.
-        let err = story.spawn_flow("a", root_id, &program);
-        assert!(err.is_err());
-    }
-
-    // ── CallStack shared-prefix optimization ───────────────────────
-
-    #[test]
-    fn fork_thread_shares_snapshot_rc() {
-        let json_str =
-            std::fs::read_to_string("../../tests/tier1/choices/I091-choice-count/story.ink.json")
-                .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let mut story: Story = Story::new(&program);
-
-        let parent_len = story.default.flow.current_thread().call_stack.len();
-        assert!(
-            parent_len >= 1,
-            "main thread should have at least one frame"
-        );
-
-        // Fork — children share the cached snapshot Rc.
-        let (child, _) = story.default.flow.fork_thread();
-        let (child2, _) = story.default.flow.fork_thread();
-
-        assert_eq!(child.call_stack.len(), parent_len);
-        assert_eq!(child2.call_stack.len(), parent_len);
-
-        // Both children reference the same inherited Rc.
-        let rc1 = child.call_stack.inherited.as_ref().unwrap();
-        let rc2 = child2.call_stack.inherited.as_ref().unwrap();
-        assert!(
-            Rc::ptr_eq(rc1, rc2),
-            "children should share the same snapshot Rc"
-        );
-    }
-
-    /// Running a minimal story should produce non-zero opcodes and steps.
-    #[test]
-    fn stats_basic_counters() {
-        let json_str =
-            std::fs::read_to_string("../../tests/tier1/basics/I001-minimal-story/story.ink.json")
-                .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
-        let program = link(&data).unwrap();
-        let mut story: Story = Story::new(&program);
-
-        // Minimal story completes in one step.
-        let result = story.step(&program).unwrap();
-        assert!(
-            matches!(result, StepResult::Done { .. } | StepResult::Ended { .. }),
-            "minimal story should not have choices"
-        );
-
-        let s = story.stats();
-        assert!(s.opcodes > 0, "should have dispatched at least one opcode");
-        assert!(s.steps > 0, "should have at least one step");
-    }
-
-    /// A story with multiple choices per set should get snapshot cache hits.
-    /// Between consecutive `fork_thread` calls in the same choice set, the
-    /// snapshot should be reused (cache hit) rather than re-allocated.
-    #[test]
-    fn snapshot_cache_hits_nonzero_for_multi_choice() {
-        // I091 has 2 choices created via threads — the second fork should
-        // hit the cache because the parent's call stack hasn't structurally
-        // changed between the two ThreadCall forks.
-        let (program, mut story) = load_i091();
-        let _choices = step_until_choices(&mut story, &program);
-
-        let stats = story.stats();
-        assert!(
-            stats.snapshot_cache_hits > 0,
-            "expected snapshot_cache_hits > 0 for a story with multiple choices, \
-             got hits={}, misses={}",
-            stats.snapshot_cache_hits,
-            stats.snapshot_cache_misses,
-        );
-    }
-
-    /// Running a story with choices should track choice stats.
-    #[test]
-    fn stats_choice_counters() {
-        let (program, mut story) = load_i079();
-
-        let _choices = step_until_choices(&mut story, &program);
-        assert!(
-            story.stats().choices_presented > 0,
-            "should have presented choices"
-        );
-        assert!(story.stats().threads_created > 0, "choices fork threads");
-
-        story.choose(0).unwrap();
-        assert_eq!(
-            story.stats().choices_selected,
-            1,
-            "should have selected one choice"
-        );
     }
 }

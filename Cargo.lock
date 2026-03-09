@@ -335,6 +335,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "brink-test-harness"
+version = "0.0.1"
+dependencies = [
+ "brink-converter",
+ "brink-format",
+ "brink-json",
+ "brink-runtime",
+ "serde_json",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

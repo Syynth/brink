@@ -107,7 +107,7 @@ impl Program {
     }
 
     /// Build the initial globals vector from slot defaults.
-    pub(crate) fn global_defaults(&self) -> Vec<Value> {
+    pub fn global_defaults(&self) -> Vec<Value> {
         self.globals.iter().map(|s| s.default.clone()).collect()
     }
 

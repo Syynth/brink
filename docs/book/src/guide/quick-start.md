@@ -17,7 +17,7 @@ let program = brink_runtime::link(&story_data)?;
 let mut story = brink_runtime::Story::new(&program);
 
 loop {
-    match story.step(&program)? {
+    match story.continue_maximally()? {
         StepResult::Done { text } => print!("{text}"),
         StepResult::Choices { text, choices } => {
             print!("{text}");

@@ -1,0 +1,18 @@
+[package]
+name = "brink-test-harness"
+description = "Episode-based behavioral testing for brink ink runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+brink-runtime = { path = "../../brink-runtime" }
+brink-format = { path = "../brink-format" }
+brink-converter = { path = "../brink-converter" }
+brink-json = { path = "../brink-json" }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

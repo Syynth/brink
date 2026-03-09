@@ -83,7 +83,7 @@ fn run_to_completion(program: &Program, inputs: &[usize]) -> Stats {
     let mut input_idx = 0;
 
     loop {
-        match story.step(program).unwrap() {
+        match story.continue_maximally().unwrap() {
             StepResult::Done { .. } | StepResult::Ended { .. } => break,
             StepResult::Choices { choices, .. } => {
                 if input_idx >= inputs.len() {

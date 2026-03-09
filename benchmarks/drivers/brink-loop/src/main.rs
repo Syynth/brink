@@ -20,7 +20,7 @@ fn run_once(
     let mut input_idx = 0;
 
     loop {
-        match story.step(program) {
+        match story.continue_maximally() {
             Ok(StepResult::Done { .. } | StepResult::Ended { .. }) => break,
             Ok(StepResult::Choices { choices, .. }) => {
                 if input_idx >= inputs.len() {

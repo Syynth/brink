@@ -181,15 +181,15 @@ fn run_play(
         // Batch mode: read choices from a file
         let file = std::fs::File::open(input_path)?;
         let reader = std::io::BufReader::new(file);
-        batch::play_loop(&mut story, &program, reader.lines(), false)?;
+        batch::play_loop(&mut story, reader.lines(), false)?;
     } else if std::io::stdin().is_terminal() {
         // Interactive TUI mode
         let char_delay_ms = if speed == 0 { 0 } else { 1000 / speed };
-        tui::run(&program, &mut story, tui::TuiConfig { char_delay_ms })?;
+        tui::run(&mut story, tui::TuiConfig { char_delay_ms })?;
     } else {
         // Batch mode: stdin is piped
         let stdin = std::io::stdin();
-        batch::play_loop(&mut story, &program, stdin.lock().lines(), false)?;
+        batch::play_loop(&mut story, stdin.lock().lines(), false)?;
     }
 
     Ok(())

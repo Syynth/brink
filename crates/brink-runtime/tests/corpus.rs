@@ -70,7 +70,7 @@ fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, Strin
         }
 
         match story
-            .step(&program)
+            .continue_maximally()
             .map_err(|e| format!("runtime error: {e}"))?
         {
             StepResult::Done { text, tags } | StepResult::Ended { text, tags } => {

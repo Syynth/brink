@@ -18,7 +18,7 @@ fn run_story(ink_json: &str, inputs: &[usize]) -> String {
     let mut input_idx = 0;
 
     loop {
-        match story.step(&program).unwrap() {
+        match story.continue_maximally().unwrap() {
             StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
                 output.push_str(&text);
                 break;
@@ -64,7 +64,7 @@ fn choices_yielded_on_bytecode_exhaustion() {
     let mut story = Story::<DotNetRng>::new(&program);
 
     // First step should produce text AND choices, not Done.
-    let result = story.step(&program).unwrap();
+    let result = story.continue_maximally().unwrap();
     assert!(
         matches!(result, StepResult::Choices { .. }),
         "expected Choices after first step, got {result:?}"
@@ -164,7 +164,7 @@ fn fallback_choice_auto_selected() {
     let mut story = Story::<DotNetRng>::new(&program);
 
     // The story should complete in a single step with no Choices yield.
-    let result = story.step(&program).unwrap();
+    let result = story.continue_maximally().unwrap();
     assert!(
         matches!(result, StepResult::Done { .. } | StepResult::Ended { .. }),
         "expected Done/Ended (auto-selected fallback), got Choices"
@@ -783,7 +783,7 @@ fn tower_of_hanoi_step_sequence() {
     let mut story = Story::<brink_runtime::DotNetRng>::new(&program);
 
     // Step 1: intro text + "Regard the temples" choice
-    let result = story.step(&program).unwrap();
+    let result = story.continue_maximally().unwrap();
     let StepResult::Choices { text, choices, .. } = &result else {
         panic!("step 1: expected Choices, got {result:?}");
     };
@@ -802,7 +802,7 @@ fn tower_of_hanoi_step_sequence() {
     story.choose(choices[0].index).unwrap();
 
     // Step 2: pillar descriptions + move choices
-    let result = story.step(&program).unwrap();
+    let result = story.continue_maximally().unwrap();
     let StepResult::Choices { text, choices, .. } = &result else {
         panic!("step 2: expected Choices, got {result:?}");
     };
@@ -820,7 +820,7 @@ fn tower_of_hanoi_step_sequence() {
     story.choose(choices[0].index).unwrap();
 
     // Step 3: move flavor text + "Regard the temples" again
-    let result = story.step(&program).unwrap();
+    let result = story.continue_maximally().unwrap();
     let StepResult::Choices { text, choices, .. } = &result else {
         panic!("step 3: expected Choices, got {result:?}");
     };
@@ -839,7 +839,7 @@ fn tower_of_hanoi_step_sequence() {
     story.choose(choices[0].index).unwrap();
 
     // Step 4: updated pillar descriptions + move choices
-    let result = story.step(&program).unwrap();
+    let result = story.continue_maximally().unwrap();
     let StepResult::Choices { text, choices, .. } = &result else {
         panic!("step 4: expected Choices, got {result:?}");
     };

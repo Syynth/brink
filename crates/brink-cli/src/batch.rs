@@ -2,14 +2,13 @@ use std::io::{BufRead, Lines, Write as _};
 
 pub fn play_loop<B: BufRead>(
     story: &mut brink_runtime::Story,
-    program: &brink_runtime::Program,
     mut lines: Lines<B>,
     interactive: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = std::io::stdout().lock();
 
     loop {
-        match story.step(program)? {
+        match story.continue_maximally()? {
             brink_runtime::StepResult::Done { text, .. }
             | brink_runtime::StepResult::Ended { text, .. } => {
                 write!(stdout, "{text}")?;

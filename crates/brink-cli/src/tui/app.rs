@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use brink_runtime::{Program, StepResult, Story};
+use brink_runtime::{StepResult, Story};
 
 use super::event::Input;
 use super::typewriter::TypewriterState;
@@ -74,15 +74,11 @@ impl App {
     }
 
     /// Step the story forward and enter the appropriate phase.
-    pub fn advance_story(
-        &mut self,
-        story: &mut Story,
-        program: &Program,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn advance_story(&mut self, story: &mut Story) -> Result<(), Box<dyn std::error::Error>> {
         self.scroll_offset = 0;
         self.focus = Focus::Story;
 
-        match story.step(program)? {
+        match story.continue_maximally()? {
             StepResult::Choices { text, choices, .. } => {
                 let entries: Vec<ChoiceEntry> = choices
                     .into_iter()
@@ -118,7 +114,6 @@ impl App {
         &mut self,
         input: Input,
         story: &mut Story,
-        program: &Program,
     ) -> Result<(), Box<dyn std::error::Error>> {
         match input {
             Input::Quit => {
@@ -169,7 +164,7 @@ impl App {
                 }
             },
             Input::Confirm => {
-                self.confirm_choice(story, program)?;
+                self.confirm_choice(story)?;
             }
             Input::None => {}
         }
@@ -177,11 +172,7 @@ impl App {
     }
 
     /// Confirm the currently selected choice and advance the story.
-    fn confirm_choice(
-        &mut self,
-        story: &mut Story,
-        program: &Program,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn confirm_choice(&mut self, story: &mut Story) -> Result<(), Box<dyn std::error::Error>> {
         if !matches!(self.phase, Phase::Choosing { .. }) {
             return Ok(());
         }
@@ -211,7 +202,7 @@ impl App {
             });
 
             story.choose(choice_index)?;
-            self.advance_story(story, program)?;
+            self.advance_story(story)?;
         }
         Ok(())
     }

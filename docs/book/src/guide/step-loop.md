@@ -6,10 +6,10 @@ The core execution model is a synchronous step function that runs until a yield 
 let mut story = Story::new(&program);
 
 loop {
-    match story.step(&program)? {
+    match story.continue_maximally()? {
         StepResult::Done { text } => {
             // Story paused — more content may follow.
-            // Call step() again to continue.
+            // Call continue_maximally() again to continue.
             print!("{text}");
         }
         StepResult::Choices { text, choices } => {
@@ -30,9 +30,9 @@ loop {
 ## `StepResult` variants
 
 <!-- TODO: explain each variant in detail:
-  - Done: yielded text, can resume with another step(). Story may produce more
+  - Done: yielded text, can resume with another continue_maximally(). Story may produce more
     Done results before reaching Choices or Ended.
-  - Choices: yielded text AND choices. Must call choose() before next step().
+  - Choices: yielded text AND choices. Must call choose() before next continue_maximally().
   - Ended: story hit an `-> END`. Cannot step further.
 -->
 

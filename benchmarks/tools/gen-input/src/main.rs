@@ -24,7 +24,7 @@ fn main() {
     let mut choice_count = 0;
 
     loop {
-        match story.step(&program) {
+        match story.continue_maximally() {
             Ok(StepResult::Done { .. } | StepResult::Ended { .. }) => break,
             Ok(StepResult::Choices { choices, .. }) => {
                 if choice_count >= MAX_CHOICES {

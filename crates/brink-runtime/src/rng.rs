@@ -20,6 +20,7 @@ pub trait StoryRng {
 // ── FastRng ─────────────────────────────────────────────────────────────────
 
 /// Xorshift32-based PRNG. Fast, decent distribution, not .NET-compatible.
+#[derive(Clone)]
 pub struct FastRng {
     state: u32,
 }
@@ -56,6 +57,7 @@ const SEED_ARRAY_LEN: usize = 56; // index 0 unused, 1..55 active
 ///
 /// Reproduces the exact sequence of the reference ink C# runtime so that
 /// corpus tests can match expected transcripts.
+#[derive(Clone)]
 pub struct DotNetRng {
     seed_array: [i32; SEED_ARRAY_LEN],
     inext: i32,
