@@ -8,35 +8,49 @@ use super::context::{NameTable, ResolutionLookup};
 use super::lir;
 
 /// Collect global variable/constant definitions from HIR files.
+///
+/// Evaluates constants first so that variable initializers like `VAR x = c`
+/// can resolve constant references to their values.
 pub fn collect_globals(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     names: &mut NameTable,
     resolutions: &ResolutionLookup,
 ) -> Vec<lir::GlobalDef> {
+    use std::collections::HashMap;
+
+    // Pass 1: evaluate all constants and build a value lookup.
+    let mut const_values: HashMap<DefinitionId, lir::ConstValue> = HashMap::new();
     let mut globals = Vec::new();
 
     for &(file_id, hir_file) in files {
-        for var in &hir_file.variables {
-            if let Some(id) = lookup_global(index, &var.name.text, SymbolKind::Variable) {
-                let name = names.intern(&var.name.text);
-                let default = eval_const_expr(&var.value, index, resolutions, file_id);
-                globals.push(lir::GlobalDef {
-                    id,
-                    name,
-                    mutable: true,
-                    default,
-                });
-            }
-        }
         for cst in &hir_file.constants {
             if let Some(id) = lookup_global(index, &cst.name.text, SymbolKind::Constant) {
                 let name = names.intern(&cst.name.text);
-                let default = eval_const_expr(&cst.value, index, resolutions, file_id);
+                let default =
+                    eval_const_expr(&cst.value, index, resolutions, file_id, &const_values);
+                const_values.insert(id, default.clone());
                 globals.push(lir::GlobalDef {
                     id,
                     name,
                     mutable: false,
+                    default,
+                });
+            }
+        }
+    }
+
+    // Pass 2: evaluate variables (may reference constants).
+    for &(file_id, hir_file) in files {
+        for var in &hir_file.variables {
+            if let Some(id) = lookup_global(index, &var.name.text, SymbolKind::Variable) {
+                let name = names.intern(&var.name.text);
+                let default =
+                    eval_const_expr(&var.value, index, resolutions, file_id, &const_values);
+                globals.push(lir::GlobalDef {
+                    id,
+                    name,
+                    mutable: true,
                     default,
                 });
             }
@@ -137,6 +151,7 @@ pub fn eval_const_expr(
     index: &SymbolIndex,
     resolutions: &ResolutionLookup,
     file: FileId,
+    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
 ) -> lir::ConstValue {
     match expr {
         hir::Expr::Int(n) => lir::ConstValue::Int(*n),
@@ -154,7 +169,7 @@ pub fn eval_const_expr(
             lir::ConstValue::String(text)
         }
         hir::Expr::Prefix(hir::PrefixOp::Negate, inner) => {
-            match eval_const_expr(inner, index, resolutions, file) {
+            match eval_const_expr(inner, index, resolutions, file, const_values) {
                 lir::ConstValue::Int(n) => lir::ConstValue::Int(-n),
                 lir::ConstValue::Float(f) => lir::ConstValue::Float(-f),
                 _ => lir::ConstValue::Null,
@@ -168,7 +183,11 @@ pub fn eval_const_expr(
                             items: vec![id],
                             origins: vec![],
                         },
-                        SymbolKind::Variable | SymbolKind::Constant => lir::ConstValue::Null,
+                        SymbolKind::Constant => const_values
+                            .get(&id)
+                            .cloned()
+                            .unwrap_or(lir::ConstValue::Null),
+                        SymbolKind::Variable => lir::ConstValue::Null,
                         _ => lir::ConstValue::DivertTarget(id),
                     }
                 } else {
