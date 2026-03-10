@@ -2,6 +2,7 @@ use crate::hir;
 use crate::symbols::SymbolKind;
 
 use super::context::LowerCtx;
+use super::decls::list_def_to_global_var;
 use super::lir;
 
 /// Lower a HIR expression to LIR.
@@ -83,8 +84,11 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     // Resolve via resolution map
     if let Some(info) = ctx.resolve_path(path.range) {
         match info.kind {
-            SymbolKind::Variable | SymbolKind::Constant | SymbolKind::List => {
-                lir::Expr::GetGlobal(info.id)
+            SymbolKind::Variable | SymbolKind::Constant => lir::Expr::GetGlobal(info.id),
+            SymbolKind::List => {
+                // List symbols resolve to ListDef IDs ($03_), but the global
+                // variable uses the GlobalVar tag ($02_) with the same hash.
+                lir::Expr::GetGlobal(list_def_to_global_var(info.id))
             }
             SymbolKind::ListItem => {
                 // A bare list item reference (e.g. `drown`) produces a list
@@ -179,7 +183,12 @@ fn lower_call_args(
                             let name_id = ctx.names.intern(&name);
                             return lir::CallArg::RefTemp(slot, name_id);
                         }
-                        if let Some(id) = ctx.resolve_id(path.range) {
+                        if let Some(info) = ctx.resolve_path(path.range) {
+                            let id = if info.kind == SymbolKind::List {
+                                list_def_to_global_var(info.id)
+                            } else {
+                                info.id
+                            };
                             return lir::CallArg::RefGlobal(id);
                         }
                         lir::CallArg::Value(lower_expr(arg, ctx))

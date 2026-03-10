@@ -1,4 +1,4 @@
-use brink_format::DefinitionId;
+use brink_format::{DefinitionId, DefinitionTag};
 
 use crate::FileId;
 use crate::hir;
@@ -60,14 +60,27 @@ pub fn collect_globals(
     globals
 }
 
-/// Collect list definitions and items from HIR files.
+/// Collect list definitions, items, and corresponding global variables from HIR files.
+///
+/// Each LIST declaration creates:
+/// 1. A `ListDef` (the enum type)
+/// 2. `ListItemDef`s (the enum members)
+/// 3. A mutable `GlobalDef` (the variable initialized to the active items)
+///
+/// The global variable uses the same hash as the `ListDef` but with a `GlobalVar` tag,
+/// so `$03_abc` (`ListDef`) becomes `$02_abc` (`GlobalVar`).
 pub fn collect_lists(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     names: &mut NameTable,
-) -> (Vec<lir::ListDef>, Vec<lir::ListItemDef>) {
+) -> (
+    Vec<lir::ListDef>,
+    Vec<lir::ListItemDef>,
+    Vec<lir::GlobalDef>,
+) {
     let mut lists = Vec::new();
     let mut items = Vec::new();
+    let mut list_globals = Vec::new();
 
     for &(_file_id, hir_file) in files {
         for list_decl in &hir_file.lists {
@@ -77,6 +90,7 @@ pub fn collect_lists(
             let list_name = names.intern(&list_decl.name.text);
 
             let mut list_items = Vec::new();
+            let mut active_item_ids = Vec::new();
             let mut next_ordinal = 1i32;
 
             for member in &list_decl.members {
@@ -94,6 +108,9 @@ pub fn collect_lists(
                         origin: list_id,
                         ordinal,
                     });
+                    if member.is_active {
+                        active_item_ids.push(item_id);
+                    }
                 }
             }
 
@@ -102,10 +119,30 @@ pub fn collect_lists(
                 name: list_name,
                 items: list_items,
             });
+
+            // Create a mutable global variable for the list, initialized to its active items.
+            let global_id = list_def_to_global_var(list_id);
+            list_globals.push(lir::GlobalDef {
+                id: global_id,
+                name: list_name,
+                mutable: true,
+                default: lir::ConstValue::List {
+                    items: active_item_ids,
+                    origins: vec![list_id],
+                },
+            });
         }
     }
 
-    (lists, items)
+    (lists, items, list_globals)
+}
+
+/// Convert a `ListDef` id (`$03_xxx`) to its corresponding `GlobalVar` id (`$02_xxx`).
+///
+/// Same hash, different tag. This is used both when creating list globals and
+/// when resolving references to list variables in expressions and assignments.
+pub fn list_def_to_global_var(list_id: DefinitionId) -> DefinitionId {
+    DefinitionId::new(DefinitionTag::GlobalVar, list_id.hash())
 }
 
 /// Collect external function declarations from HIR files.

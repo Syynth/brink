@@ -141,7 +141,12 @@ fn lower_assign_target(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> Option<lir::
                 let name_id = ctx.names.intern(&name);
                 return Some(lir::AssignTarget::Temp(slot, name_id));
             }
-            if let Some(id) = ctx.resolve_id(path.range) {
+            if let Some(info) = ctx.resolve_path(path.range) {
+                let id = if info.kind == SymbolKind::List {
+                    super::decls::list_def_to_global_var(info.id)
+                } else {
+                    info.id
+                };
                 return Some(lir::AssignTarget::Global(id));
             }
             None

@@ -32,8 +32,9 @@ pub fn lower_to_program(
     let plan = plan::plan_containers(files, index, &mut ids);
 
     // ── Step 2: Collect declarations ────────────────────────────────
-    let globals = decls::collect_globals(files, index, &mut names, &resolutions);
-    let (lists, list_items) = decls::collect_lists(files, index, &mut names);
+    let mut globals = decls::collect_globals(files, index, &mut names, &resolutions);
+    let (lists, list_items, list_globals) = decls::collect_lists(files, index, &mut names);
+    globals.extend(list_globals);
     let externals = decls::collect_externals(files, index, &mut names);
 
     // ── Step 3: Lower containers as a tree ──────────────────────────
