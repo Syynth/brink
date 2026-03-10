@@ -426,6 +426,11 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
         p.skip_ws();
     }
 
+    // Track whether we're at the logical start of a line.  MINUS is only
+    // a branch/else marker at line start; mid-content MINUS (e.g. `<>-<>`)
+    // is literal text.
+    let mut at_line_start = true;
+
     // Content until we hit a branch start, closing brace
     loop {
         match p.current() {
@@ -441,8 +446,9 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
                 // Strip leading indentation on the next line so it doesn't
                 // leak into text content (inklecate strips it too).
                 p.skip_ws();
+                at_line_start = true;
             }
-            MINUS => {
+            MINUS if at_line_start => {
                 // `- else:` branch (the NEWLINE before was consumed by
                 // logic_line or skip_ws, so we land here directly).
                 else_branch(p);
@@ -450,23 +456,30 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
             }
             STAR | PLUS => {
                 super::choice::choice(p);
+                at_line_start = false;
             }
             TILDE => {
                 p.skip_ws();
                 super::logic::logic_line(p);
+                // Logic lines may consume their trailing newline, leaving
+                // us at the start of the next line.
+                at_line_start = true;
             }
             L_BRACE => {
                 inline_logic(p);
+                at_line_start = false;
             }
             DIVERT | TUNNEL_ONWARDS | THREAD => {
                 p.skip_ws();
                 super::divert::divert(p);
+                at_line_start = false;
             }
             GLUE => {
                 p.skip_ws();
                 p.start_node(GLUE_NODE);
                 p.bump();
                 p.finish_node();
+                at_line_start = false;
             }
             BACKSLASH => {
                 if matches!(p.nth(1), NEWLINE | EOF) {
@@ -479,6 +492,7 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
                     p.bump(); // escaped char
                     p.finish_node();
                 }
+                at_line_start = false;
             }
             _ => {
                 let before = p.pos();
@@ -486,6 +500,7 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
                 if p.pos() == before {
                     break;
                 }
+                at_line_start = false;
             }
         }
     }
