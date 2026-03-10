@@ -828,7 +828,7 @@ fn collect_counting_refs(
             }
             lir::Stmt::Assign { value: e, .. }
             | lir::Stmt::DeclareTemp { value: Some(e), .. }
-            | lir::Stmt::Return(Some(e))
+            | lir::Stmt::Return { value: Some(e), .. }
             | lir::Stmt::ExprStmt(e) => {
                 collect_counting_refs_expr(e, visit_ids, turns_ids);
             }

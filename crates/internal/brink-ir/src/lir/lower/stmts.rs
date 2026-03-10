@@ -68,7 +68,10 @@ pub(super) fn lower_stmt(
 
         hir::Stmt::Return(ret) => {
             let value = ret.value.as_ref().map(|e| lower_expr(e, ctx));
-            Some(lir::Stmt::Return(value))
+            // `->->` (tunnel return) has ptr: None in the HIR;
+            // `~ return expr` has ptr: Some(...).
+            let is_tunnel = ret.ptr.is_none();
+            Some(lir::Stmt::Return { value, is_tunnel })
         }
 
         hir::Stmt::ExprStmt(expr) => Some(lir::Stmt::ExprStmt(lower_expr(expr, ctx))),

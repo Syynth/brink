@@ -193,8 +193,12 @@ pub enum Stmt {
         value: Expr,
     },
 
-    /// `~ return expr`
-    Return(Option<Expr>),
+    /// `~ return expr` (function) or `->->` (tunnel return).
+    Return {
+        value: Option<Expr>,
+        /// When true, emit `TunnelReturn` instead of `Return`.
+        is_tunnel: bool,
+    },
 
     /// A set of choices presented to the player.
     ChoiceSet(ChoiceSet),

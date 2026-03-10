@@ -1229,7 +1229,7 @@ fn return_from_function() {
     let has_return = knot
         .body
         .iter()
-        .any(|s| matches!(s, lir::Stmt::Return(Some(_))));
+        .any(|s| matches!(s, lir::Stmt::Return { value: Some(_), .. }));
     assert!(has_return, "function should have a Return statement");
 }
 

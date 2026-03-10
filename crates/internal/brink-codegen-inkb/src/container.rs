@@ -77,13 +77,17 @@ impl ContainerEmitter<'_> {
                 self.emit_assign(target, *op, value);
             }
 
-            lir::Stmt::Return(expr) => {
-                if let Some(e) = expr {
+            lir::Stmt::Return { value, is_tunnel } => {
+                if let Some(e) = value {
                     self.emit_expr(e);
                 } else {
                     self.emit(Opcode::PushNull);
                 }
-                self.emit(Opcode::Return);
+                if *is_tunnel {
+                    self.emit(Opcode::TunnelReturn);
+                } else {
+                    self.emit(Opcode::Return);
+                }
             }
 
             lir::Stmt::ChoiceSet(cs) => self.emit_choice_set(cs),

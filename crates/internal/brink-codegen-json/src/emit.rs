@@ -178,17 +178,24 @@ fn emit_stmt(
             emit_assign(target, *op, value, lookups, cctx, out);
         }
 
-        lir::Stmt::Return(expr) => {
+        lir::Stmt::Return { value, is_tunnel } => {
             out.push(ev());
-            if let Some(e) = expr {
+            if let Some(e) = value {
                 emit_expr(e, lookups, cctx, out);
                 out.push(end_ev());
-                out.push(Element::ControlCommand(ControlCommand::FunctionReturn));
+                if *is_tunnel {
+                    out.push(Element::ControlCommand(ControlCommand::TunnelReturn));
+                } else {
+                    out.push(Element::ControlCommand(ControlCommand::FunctionReturn));
+                }
             } else {
-                // Bare return (->->) is a tunnel return
                 out.push(Element::Void);
                 out.push(end_ev());
-                out.push(Element::ControlCommand(ControlCommand::TunnelReturn));
+                if *is_tunnel {
+                    out.push(Element::ControlCommand(ControlCommand::TunnelReturn));
+                } else {
+                    out.push(Element::ControlCommand(ControlCommand::FunctionReturn));
+                }
             }
         }
 
