@@ -12,6 +12,7 @@ use super::plan::ContainerPlan;
 /// `ChoiceSet` is handled by the caller (`lower_block_with_children`)
 /// since it produces child containers. This function handles all other
 /// statement types.
+#[expect(clippy::too_many_lines)]
 pub(super) fn lower_stmt(
     stmt: &hir::Stmt,
     ctx: &mut LowerCtx<'_>,
@@ -74,7 +75,23 @@ pub(super) fn lower_stmt(
             Some(lir::Stmt::Return { value, is_tunnel })
         }
 
-        hir::Stmt::ExprStmt(expr) => Some(lir::Stmt::ExprStmt(lower_expr(expr, ctx))),
+        hir::Stmt::ExprStmt(expr) => {
+            // Convert x++ / x-- into Assign { target: x, op: Add/Sub, value: 1 }
+            if let hir::Expr::Postfix(inner, op) = expr
+                && let Some(target) = lower_assign_target(inner, ctx)
+            {
+                let assign_op = match op {
+                    crate::PostfixOp::Increment => crate::AssignOp::Add,
+                    crate::PostfixOp::Decrement => crate::AssignOp::Sub,
+                };
+                return Some(lir::Stmt::Assign {
+                    target,
+                    op: assign_op,
+                    value: lir::Expr::Int(1),
+                });
+            }
+            Some(lir::Stmt::ExprStmt(lower_expr(expr, ctx)))
+        }
 
         hir::Stmt::ChoiceSet(_) => {
             // ChoiceSet is handled by lower_block_with_children in mod.rs

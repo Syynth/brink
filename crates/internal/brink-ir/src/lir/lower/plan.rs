@@ -156,7 +156,11 @@ fn plan_stmt_choices(
             let gather_path = if let Some(ref gather) = choice_set.gather
                 && let Some(ref label) = gather.label
             {
-                format!("{scope_path}.{}", label.text)
+                if scope_path.is_empty() {
+                    label.text.clone()
+                } else {
+                    format!("{scope_path}.{}", label.text)
+                }
             } else {
                 let path = format!("{scope_path}.g-{gather_counter}");
                 *gather_counter += 1;
@@ -179,7 +183,11 @@ fn plan_stmt_choices(
             // Plan each choice target
             for choice in &choice_set.choices {
                 let choice_id = if let Some(ref label) = choice.label {
-                    let label_path = format!("{scope_path}.{}", label.text);
+                    let label_path = if scope_path.is_empty() {
+                        label.text.clone()
+                    } else {
+                        format!("{scope_path}.{}", label.text)
+                    };
                     lookup_container_id(index, &label_path).unwrap_or_else(|| {
                         ids.alloc_container(&format!("{scope_path}.c{choice_counter}"))
                     })
