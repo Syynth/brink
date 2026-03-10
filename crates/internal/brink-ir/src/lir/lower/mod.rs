@@ -389,8 +389,7 @@ fn lower_block_with_children(
                 pos += 1;
             }
             _ => {
-                if let Some(s) = stmts::lower_stmt(stmt, ctx, plan, choice_counter, gather_counter)
-                {
+                if let Some(s) = stmts::lower_stmt(stmt, ctx) {
                     stmts.push(s);
                 }
                 pos += 1;

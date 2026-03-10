@@ -57,12 +57,9 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
 
 /// Lower a block in inline content context (no choice/gather children possible).
 fn lower_inline_block(block: &hir::Block, ctx: &mut LowerCtx<'_>) -> Vec<lir::Stmt> {
-    let empty_plan = super::plan::ContainerPlan::empty();
-    let mut cc = 0;
-    let mut gc = 0;
     let mut stmts = Vec::new();
     for stmt in &block.stmts {
-        if let Some(s) = super::stmts::lower_stmt(stmt, ctx, &empty_plan, &mut cc, &mut gc) {
+        if let Some(s) = super::stmts::lower_stmt(stmt, ctx) {
             stmts.push(s);
         }
     }

@@ -5,21 +5,13 @@ use super::content::lower_content;
 use super::context::LowerCtx;
 use super::expr::{lower_expr, path_to_string};
 use super::lir;
-use super::plan::ContainerPlan;
 
 /// Lower a single HIR statement to a LIR statement.
 ///
-/// `ChoiceSet` is handled by the caller (`lower_block_with_children`)
-/// since it produces child containers. This function handles all other
-/// statement types.
-#[expect(clippy::too_many_lines)]
-pub(super) fn lower_stmt(
-    stmt: &hir::Stmt,
-    ctx: &mut LowerCtx<'_>,
-    plan: &ContainerPlan,
-    _choice_counter: &mut usize,
-    _gather_counter: &mut usize,
-) -> Option<lir::Stmt> {
+/// `ChoiceSet`, `LabeledBlock`, `Conditional`, and `Sequence` are handled
+/// by the caller (`lower_block_with_children`) since they may produce child
+/// containers. This function handles all remaining statement types.
+pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir::Stmt> {
     match stmt {
         hir::Stmt::Content(content) => Some(lir::Stmt::EmitContent(lower_content(content, ctx))),
 
@@ -93,67 +85,22 @@ pub(super) fn lower_stmt(
             Some(lir::Stmt::ExprStmt(lower_expr(expr, ctx)))
         }
 
-        hir::Stmt::ChoiceSet(_) | hir::Stmt::LabeledBlock(_) => {
-            // ChoiceSet and LabeledBlock are handled by lower_block_with_children
+        // ChoiceSet, LabeledBlock, Conditional, and Sequence are dispatched
+        // by lower_block_with_children before reaching lower_stmt. If they
+        // reach here, it indicates a dispatch bug.
+        hir::Stmt::ChoiceSet(_)
+        | hir::Stmt::LabeledBlock(_)
+        | hir::Stmt::Conditional(_)
+        | hir::Stmt::Sequence(_) => {
+            debug_assert!(
+                false,
+                "ChoiceSet/LabeledBlock/Conditional/Sequence should not reach lower_stmt"
+            );
             None
-        }
-
-        hir::Stmt::Conditional(cond) => {
-            let branches = cond
-                .branches
-                .iter()
-                .map(|b| {
-                    let condition = b.condition.as_ref().map(|e| lower_expr(e, ctx));
-                    let mut bc = 0;
-                    let mut bg = 0;
-                    let body = lower_block_stmts_only(&b.body, ctx, plan, &mut bc, &mut bg);
-                    lir::CondBranch { condition, body }
-                })
-                .collect();
-            let kind = match &cond.kind {
-                hir::CondKind::InitialCondition => lir::CondKind::InitialCondition,
-                hir::CondKind::IfElse => lir::CondKind::IfElse,
-                hir::CondKind::Switch(expr) => lir::CondKind::Switch(lower_expr(expr, ctx)),
-            };
-            Some(lir::Stmt::Conditional(lir::Conditional { kind, branches }))
-        }
-
-        hir::Stmt::Sequence(seq) => {
-            let branches = seq
-                .branches
-                .iter()
-                .map(|b| {
-                    let mut bc = 0;
-                    let mut bg = 0;
-                    lower_block_stmts_only(b, ctx, plan, &mut bc, &mut bg)
-                })
-                .collect();
-            Some(lir::Stmt::Sequence(lir::Sequence {
-                kind: seq.kind,
-                branches,
-            }))
         }
 
         hir::Stmt::EndOfLine => Some(lir::Stmt::EndOfLine),
     }
-}
-
-/// Lower a block returning only statements (no child containers).
-/// Used for conditional/sequence branches where children aren't expected.
-fn lower_block_stmts_only(
-    block: &hir::Block,
-    ctx: &mut LowerCtx<'_>,
-    plan: &ContainerPlan,
-    choice_counter: &mut usize,
-    gather_counter: &mut usize,
-) -> Vec<lir::Stmt> {
-    let mut stmts = Vec::new();
-    for stmt in &block.stmts {
-        if let Some(s) = lower_stmt(stmt, ctx, plan, choice_counter, gather_counter) {
-            stmts.push(s);
-        }
-    }
-    stmts
 }
 
 fn lower_divert_target(target: &hir::DivertTarget, ctx: &mut LowerCtx<'_>) -> lir::Divert {
