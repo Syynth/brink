@@ -64,7 +64,10 @@ fn lower_root(
 ) -> lir::Container {
     let mut body = Vec::new();
     let mut children = Vec::new();
-    let temp_map = TempMap::new();
+
+    // Allocate temp slots for root content (top-level ~ temp declarations).
+    let root_blocks: Vec<&hir::Block> = files.iter().map(|(_, hir)| &hir.root_content).collect();
+    let temp_map = temps::alloc_temps(&[], &root_blocks);
 
     for &(file_id, hir_file) in files {
         let mut ctx = make_ctx(file_id, resolutions, index, &temp_map, names, String::new());
