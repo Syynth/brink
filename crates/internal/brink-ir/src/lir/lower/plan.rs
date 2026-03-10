@@ -121,7 +121,7 @@ fn plan_block_choices(
     }
 }
 
-#[expect(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn plan_stmt_choices(
     stmt: &hir::Stmt,
     file: FileId,
@@ -136,9 +136,18 @@ fn plan_stmt_choices(
         hir::Stmt::ChoiceSet(choice_set) => {
             // When an opening_gather is present (gather-choice same-line pattern),
             // allocate an extra container for the opening wrapper.
-            if choice_set.opening_gather.is_some() {
-                let opening_path = format!("{scope_path}.g-{gather_counter}");
-                let opening_id = ids.alloc_container(&opening_path);
+            if let Some(ref opening) = choice_set.opening_gather {
+                let opening_path = if let Some(ref label) = opening.label {
+                    if scope_path.is_empty() {
+                        label.text.clone()
+                    } else {
+                        format!("{scope_path}.{}", label.text)
+                    }
+                } else {
+                    format!("{scope_path}.g-{gather_counter}")
+                };
+                let opening_id = lookup_container_id(index, &opening_path)
+                    .unwrap_or_else(|| ids.alloc_container(&opening_path));
                 plan.gather_targets.insert(
                     GatherKey {
                         file,
