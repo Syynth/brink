@@ -19,7 +19,7 @@ use serde_json::Value;
 //
 // Bump this after each fix. The test fails if the pass count drops
 // below this threshold, preventing regressions.
-const RATCHET_PASS_COUNT: usize = 202;
+const RATCHET_PASS_COUNT: usize = 208;
 
 // ─── Discovery ──────────────────────────────────────────────────────
 

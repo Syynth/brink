@@ -1652,7 +1652,7 @@ impl LowerCtx {
                     {
                         out.push(s);
                     }
-                    if was_content && cl.divert().is_none() {
+                    if was_content {
                         out.push(Stmt::EndOfLine);
                     }
                 }
@@ -1764,7 +1764,7 @@ impl LowerCtx {
                         {
                             items.push(WeaveItem::Stmt(s));
                         }
-                        if was_content && cl.divert().is_none() {
+                        if was_content {
                             items.push(WeaveItem::Stmt(Stmt::EndOfLine));
                         }
                     }

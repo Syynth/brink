@@ -7,15 +7,25 @@ use crate::ContainerEmitter;
 
 impl ContainerEmitter<'_> {
     pub(super) fn emit_body(&mut self, stmts: &[lir::Stmt]) {
+        let mut skip_next_newline = false;
         for (i, stmt) in stmts.iter().enumerate() {
+            if skip_next_newline && matches!(stmt, lir::Stmt::EndOfLine) {
+                skip_next_newline = false;
+                continue;
+            }
+            skip_next_newline = false;
+
             // Suppress trailing newline on content when followed by a divert
             // (inline divert — the goto should come before any newline).
+            // The LIR sequence is: EmitContent, Divert, EndOfLine.
+            // We emit content without newline, emit the divert, then skip EndOfLine.
             if let lir::Stmt::EmitContent(content) = stmt
                 && stmts
                     .get(i + 1)
                     .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)))
             {
                 self.emit_content_inline(content);
+                skip_next_newline = true;
             } else {
                 self.emit_stmt(stmt);
             }

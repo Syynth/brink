@@ -442,6 +442,12 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
                 // leak into text content (inklecate strips it too).
                 p.skip_ws();
             }
+            MINUS => {
+                // `- else:` branch (the NEWLINE before was consumed by
+                // logic_line or skip_ws, so we land here directly).
+                else_branch(p);
+                break;
+            }
             STAR | PLUS => {
                 super::choice::choice(p);
             }
