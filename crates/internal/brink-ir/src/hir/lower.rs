@@ -974,6 +974,14 @@ impl LowerCtx {
         }
 
         if let Some(ml_branches) = cond.multiline_branches() {
+            // Check if this is a true switch (all non-else branches have
+            // their own conditions, e.g. `{ x: - 1: ... - 2: ... }`) or a
+            // branchless conditional with gather-style body markers
+            // (e.g. `{ x == 4: - body - else: other }`).
+            let all_have_conditions = ml_branches
+                .branches()
+                .all(|b| b.is_else() || b.condition().is_some());
+
             for b in ml_branches.branches() {
                 let cond_expr = if b.is_else() {
                     None
@@ -988,11 +996,22 @@ impl LowerCtx {
                     body,
                 });
             }
-            // ConditionalWithExpr + multiline branches = switch statement:
-            // the parser only produces ConditionalWithExpr for `{expr: ...}` syntax.
+
+            let kind = if all_have_conditions {
+                CondKind::Switch(condition.clone())
+            } else {
+                // Not a switch — treat the initial expression as the
+                // condition for the first branch (body content).
+                // Prepend it to the first branch that has no condition.
+                if let Some(first_no_cond) = branches.iter_mut().find(|b| b.condition.is_none()) {
+                    first_no_cond.condition = Some(condition.clone());
+                }
+                CondKind::InitialCondition
+            };
+
             return Conditional {
                 ptr,
-                kind: CondKind::Switch(condition.clone()),
+                kind,
                 branches,
             };
         }

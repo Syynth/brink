@@ -239,6 +239,14 @@ impl ContainerEmitter<'_> {
     }
 
     pub(super) fn emit_conditional(&mut self, cond: &lir::Conditional) {
+        let is_switch = matches!(&cond.kind, lir::CondKind::Switch(_));
+
+        // For switch: push the switch expression once; each branch will
+        // Duplicate + Equal against it.
+        if let lir::CondKind::Switch(ref expr) = cond.kind {
+            self.emit_expr(expr);
+        }
+
         // Collect jump-to-end patch sites for each branch.
         let mut end_jumps: Vec<usize> = Vec::new();
 
@@ -246,9 +254,22 @@ impl ContainerEmitter<'_> {
             let is_last = i == cond.branches.len() - 1;
 
             if let Some(ref condition) = branch.condition {
-                self.emit_expr(condition);
+                if is_switch {
+                    // Switch: duplicate switch value, push case value, compare.
+                    self.emit(Opcode::Duplicate);
+                    self.emit_expr(condition);
+                    self.emit(Opcode::Equal);
+                } else {
+                    self.emit_expr(condition);
+                }
                 // Placeholder JumpIfFalse — will be patched to skip this branch body.
                 let patch_site = self.emit_jump_placeholder(Opcode::JumpIfFalse(0));
+
+                if is_switch {
+                    // Pop the switch value inside the taken branch (it was
+                    // duplicated, so one copy remains on the stack).
+                    self.emit(Opcode::Pop);
+                }
 
                 self.emit_body(&branch.body);
 
@@ -261,9 +282,18 @@ impl ContainerEmitter<'_> {
                 // Patch the JumpIfFalse to land here (after body + optional Jump)
                 self.patch_jump(patch_site);
             } else {
-                // Else branch — no condition, just emit body
+                // Else branch — no condition, just emit body.
+                if is_switch {
+                    // Pop the switch value before the else body.
+                    self.emit(Opcode::Pop);
+                }
                 self.emit_body(&branch.body);
             }
+        }
+
+        // If no branch was taken (and there's no else), pop the switch value.
+        if is_switch && !cond.branches.iter().any(|b| b.condition.is_none()) {
+            self.emit(Opcode::Pop);
         }
 
         // Patch all end-of-branch jumps to land here
