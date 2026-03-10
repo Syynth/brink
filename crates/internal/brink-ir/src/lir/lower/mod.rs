@@ -316,10 +316,27 @@ fn lower_block_with_children(
                     break;
                 }
 
-                // No explicit gather — build an implicit one with just DONE.
+                // No explicit gather — build an implicit one.
+                // Remaining statements in this block go into the implicit
+                // gather's body (not the parent) so that choice targets that
+                // divert to the gather execute the trailing code.
                 let implicit_gather_id = gather_target.unwrap_or(plan.root_id);
-                children.push(build_implicit_gather(implicit_gather_id, gather_counter));
                 pos += 1;
+                let mut trailing = Vec::new();
+                while pos < block.stmts.len() {
+                    let s = &block.stmts[pos];
+                    if let Some(ls) =
+                        stmts::lower_stmt(s, ctx, plan, choice_counter, gather_counter)
+                    {
+                        trailing.push(ls);
+                    }
+                    pos += 1;
+                }
+                children.push(build_implicit_gather_with_body(
+                    implicit_gather_id,
+                    gather_counter,
+                    trailing,
+                ));
             }
             _ => {
                 if let Some(s) = stmts::lower_stmt(stmt, ctx, plan, choice_counter, gather_counter)
@@ -443,7 +460,11 @@ fn lower_gather_choice_chain(
         if cs.gather.is_none() {
             // Build terminal gather
             let terminal_id = convergence_target.unwrap_or(plan.root_id);
-            containers.push(build_implicit_gather(terminal_id, gather_counter));
+            containers.push(build_implicit_gather_with_body(
+                terminal_id,
+                gather_counter,
+                Vec::new(),
+            ));
             break;
         }
 
@@ -514,7 +535,7 @@ fn lower_choice_with_child(
     ctx.scope_path = format!("{}.c{}", old_scope, *choice_counter - 1);
     let mut cc = 0;
     let mut gc = 0;
-    let (body_stmts, children) =
+    let (body_stmts, mut children) =
         lower_block_with_children(&choice.body, ctx, plan, &mut cc, &mut gc);
     ctx.scope_path = old_scope;
 
@@ -557,10 +578,36 @@ fn lower_choice_with_child(
         )
     });
     if !ends_with_terminal && let Some(gather_id) = gather_target {
-        body.push(lir::Stmt::Divert(lir::Divert {
+        // If the body ends with a ChoiceSet and the last child is an
+        // implicit gather (body = [Done]), the outer gather divert should
+        // go into the implicit gather instead of the choice target body.
+        // Otherwise, choice targets divert to the implicit gather which
+        // just does Done, losing the outer gather's terminal (e.g., End
+        // from `-> END`).
+        let body_ends_with_choice_set = body
+            .last()
+            .is_some_and(|s| matches!(s, lir::Stmt::ChoiceSet(_)));
+        let is_implicit_done_gather = body_ends_with_choice_set
+            && children.last().is_some_and(|c| {
+                c.kind == lir::ContainerKind::Gather
+                    && c.body.len() == 1
+                    && matches!(
+                        &c.body[0],
+                        lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Done)
+                    )
+            });
+
+        let divert = lir::Divert {
             target: lir::DivertTarget::Container(gather_id),
             args: Vec::new(),
-        }));
+        };
+        if is_implicit_done_gather {
+            if let Some(gather) = children.last_mut() {
+                gather.body[0] = lir::Stmt::Divert(divert);
+            }
+        } else {
+            body.push(lir::Stmt::Divert(divert));
+        }
     }
 
     // Look up the label's DefinitionId if the choice has a label.
@@ -674,21 +721,31 @@ fn build_gather_container(
     }
 }
 
-/// Build an implicit gather container (no content, just DONE).
-fn build_implicit_gather(
+/// Build an implicit gather container with optional trailing body.
+///
+/// If `trailing` is empty, the gather contains just `Done`.
+/// If `trailing` has statements (e.g., from remaining content after the
+/// choice set), they are included so that choice targets can reach them.
+fn build_implicit_gather_with_body(
     id: brink_format::DefinitionId,
     gather_counter: &mut usize,
+    trailing: Vec<lir::Stmt>,
 ) -> lir::Container {
     let name = format!("g-{}", *gather_counter - 1);
+    let body = if trailing.is_empty() {
+        vec![lir::Stmt::Divert(lir::Divert {
+            target: lir::DivertTarget::Done,
+            args: Vec::new(),
+        })]
+    } else {
+        trailing
+    };
     lir::Container {
         id,
         name: Some(name),
         kind: lir::ContainerKind::Gather,
         params: Vec::new(),
-        body: vec![lir::Stmt::Divert(lir::Divert {
-            target: lir::DivertTarget::Done,
-            args: Vec::new(),
-        })],
+        body,
         children: Vec::new(),
         counting_flags: CountingFlags::empty(),
         temp_slot_count: 0,

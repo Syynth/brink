@@ -2014,3 +2014,73 @@ fn whitespace_between_inline_exprs_in_branch_body() {
         branch.body.stmts,
     );
 }
+
+/// A nested gather with `-> END` must have its divert set to `End`, not `Done`.
+/// Regression: inner gathers lost their explicit divert when the choice set
+/// was lowered.
+#[test]
+fn nested_gather_divert_to_end() {
+    let source = "\
+=== main ===
+Choose:
+*   [Option A]
+    Chose A.
+    -> END
+*   [Option B]
+    Chose B.
+    **  [Sub 1]
+        Sub 1 content.
+    **  [Sub 2]
+        Sub 2 content.
+    - -> END
+";
+    let (file, _, diags) = lower_ink(source);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    // Find the knot's body — it should contain a ChoiceSet
+    let knot = &file.knots[0];
+    let cs = knot
+        .body
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::ChoiceSet(cs) => Some(cs),
+            _ => None,
+        })
+        .expect("knot body should contain a ChoiceSet");
+
+    // Option B's body should contain a nested ChoiceSet
+    let option_b = &cs.choices[1];
+    let inner_cs = option_b
+        .body
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::ChoiceSet(inner) => Some(inner),
+            _ => None,
+        })
+        .expect("Option B body should contain a nested ChoiceSet");
+
+    // The inner choice set has no explicit gather (the `- -> END` is at the
+    // outer level). The HIR correctly leaves inner_cs.gather as None.
+    assert!(
+        inner_cs.gather.is_none(),
+        "inner ChoiceSet should NOT have a gather — `- -> END` is at the outer level"
+    );
+
+    // The outer choice set should have the gather with `-> END`.
+    let outer_gather = cs
+        .gather
+        .as_ref()
+        .expect("outer ChoiceSet should have an explicit gather from `- -> END`");
+    let outer_divert = outer_gather
+        .divert
+        .as_ref()
+        .expect("outer gather should have divert -> END");
+    assert_eq!(
+        outer_divert.target.path,
+        hir::DivertPath::End,
+        "outer gather's divert should be End, got: {:?}",
+        outer_divert.target.path
+    );
+}
