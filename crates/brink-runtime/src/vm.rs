@@ -124,7 +124,6 @@ pub(crate) fn step(
         Opcode::Nop
         | Opcode::SourceLocation(_, _)
         | Opcode::EndChoiceSet
-        | Opcode::ChoiceOutput(_)
         | Opcode::ThreadStart
         | Opcode::ThreadDone => {}
 
@@ -1099,19 +1098,16 @@ fn handle_begin_choice(
     flags: ChoiceFlags,
     target_id: DefinitionId,
 ) -> Result<(), RuntimeError> {
-    // Pop values in reverse order of how they were pushed onto the stack.
-    // The ink eval block pushes: [start_text], [choice_only_text], [condition]
-    // So the condition (if present) is on top, then choice text strings.
+    // Single-pop protocol: stack contains [display_string?], [condition?]
+    // with condition on top (evaluated last). Either content flag means
+    // there is one display string on the stack.
+    let has_display = flags.has_start_content || flags.has_choice_only_content;
 
     // 1. Pop condition first (it was evaluated last, so it's on top).
     if flags.has_condition {
         let condition = flow.pop_value()?;
         if !value_ops::is_truthy(&condition) {
-            // Skip this choice — pop remaining text values and mark skipping.
-            if flags.has_choice_only_content {
-                let _ = flow.value_stack.pop();
-            }
-            if flags.has_start_content {
+            if has_display {
                 let _ = flow.value_stack.pop();
             }
             flow.skipping_choice = true;
@@ -1123,10 +1119,7 @@ fn handle_begin_choice(
     if flags.once_only {
         let visit_count = state.visit_count(target_id);
         if visit_count > 0 {
-            if flags.has_choice_only_content {
-                let _ = flow.value_stack.pop();
-            }
-            if flags.has_start_content {
+            if has_display {
                 let _ = flow.value_stack.pop();
             }
             flow.skipping_choice = true;
@@ -1134,8 +1127,8 @@ fn handle_begin_choice(
         }
     }
 
-    // 2. Pop choice text strings (choice-only is on top, start below).
-    let choice_only_text = if flags.has_choice_only_content {
+    // 2. Pop the single display string.
+    let display_text = if has_display {
         match flow.value_stack.pop() {
             Some(Value::String(s)) => (*s).to_owned(),
             Some(other) => value_ops::stringify(&other, state.program()),
@@ -1144,18 +1137,6 @@ fn handle_begin_choice(
     } else {
         String::new()
     };
-
-    let start_text = if flags.has_start_content {
-        match flow.value_stack.pop() {
-            Some(Value::String(s)) => (*s).to_owned(),
-            Some(other) => value_ops::stringify(&other, state.program()),
-            None => String::new(),
-        }
-    } else {
-        String::new()
-    };
-
-    let display_text = format!("{start_text}{choice_only_text}");
 
     let (target_idx, target_offset) = state
         .program()
@@ -1178,7 +1159,6 @@ fn handle_begin_choice(
         target_offset,
         flags,
         original_index: idx,
-        output_line_idx: None,
         tags,
         thread_fork,
     });

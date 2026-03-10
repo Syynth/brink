@@ -953,9 +953,6 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
             Ok(Opcode::BeginChoice(flags, target))
         }
         "end_choice" => Ok(Opcode::EndChoice),
-        "choice_output" => Ok(Opcode::ChoiceOutput(parse_operand_u16(
-            &operands, 0, mnemonic,
-        )?)),
 
         // Sequences
         "sequence" => {

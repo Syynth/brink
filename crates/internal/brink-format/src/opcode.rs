@@ -92,8 +92,6 @@ const BEGIN_CHOICE_SET: u8 = 0x70;
 const END_CHOICE_SET: u8 = 0x71;
 const BEGIN_CHOICE: u8 = 0x72;
 const END_CHOICE: u8 = 0x73;
-const CHOICE_OUTPUT: u8 = 0x75;
-
 // Sequences
 const SEQUENCE: u8 = 0x78;
 const SEQUENCE_BRANCH: u8 = 0x79;
@@ -178,11 +176,20 @@ impl SequenceKind {
 }
 
 /// Flags packed into a `BeginChoice` instruction.
+///
+/// Under the single-pop protocol, `BeginChoice` pops at most **one** display
+/// string from the stack when `has_start_content || has_choice_only_content`.
+/// The two content flags are metadata indicating which parts of the original
+/// ink choice contributed to that string — the runtime does not pop them
+/// separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[expect(clippy::struct_excessive_bools)]
 pub struct ChoiceFlags {
     pub has_condition: bool,
+    /// Original choice had `start` content (text before `[`).
     pub has_start_content: bool,
+    /// Original choice had `choice_only` content (text inside `[]`).
+    /// Under the single-pop protocol this is metadata only — no extra stack pop.
     pub has_choice_only_content: bool,
     pub once_only: bool,
     pub is_invisible_default: bool,
@@ -392,7 +399,6 @@ pub enum Opcode {
     EndChoiceSet,
     BeginChoice(ChoiceFlags, DefinitionId),
     EndChoice,
-    ChoiceOutput(u16),
 
     // ── Sequences ───────────────────────────────────────────────────────
     Sequence(SequenceKind, u8),
@@ -615,10 +621,6 @@ impl Opcode {
                 write_def_id(buf, target);
             }
             Self::EndChoice => write_u8(buf, END_CHOICE),
-            Self::ChoiceOutput(idx) => {
-                write_u8(buf, CHOICE_OUTPUT);
-                write_u16(buf, idx);
-            }
 
             // Sequences
             Self::Sequence(kind, count) => {
@@ -784,7 +786,6 @@ impl Opcode {
                 Self::BeginChoice(flags, target)
             }
             END_CHOICE => Self::EndChoice,
-            CHOICE_OUTPUT => Self::ChoiceOutput(read_u16(buf, offset)?),
 
             // Sequences
             SEQUENCE => {
@@ -1029,7 +1030,6 @@ mod tests {
             test_id(),
         ));
         roundtrip(&Opcode::EndChoice);
-        roundtrip(&Opcode::ChoiceOutput(0));
     }
 
     #[test]

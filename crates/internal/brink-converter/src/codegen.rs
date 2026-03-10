@@ -513,6 +513,7 @@ fn convert_counting_flags(flags: Option<ContainerFlags>) -> CountingFlags {
 
 /// Process a container and all sub-containers, returning `(ContainerDef, ContainerLineTable)` pairs
 /// and a map of element byte offsets per container path.
+#[expect(clippy::too_many_lines)]
 pub fn process_container(
     index: &StoryIndex,
     container: &Container,
@@ -589,6 +590,22 @@ pub fn process_container(
             }
             // Not followed by a simple divert — emit ThreadStart as-is
             emitter.emit_element(element, name_table, temps, list_literals)?;
+        } else if matches!(
+            element,
+            Element::ControlCommand(ControlCommand::EndStringEval)
+        ) && i + 1 < contents.len()
+            && matches!(
+                &contents[i + 1],
+                Element::ControlCommand(ControlCommand::BeginStringEval)
+            )
+            && emitter.in_eval_mode
+            && has_upcoming_choice_point(contents, i + 2)
+        {
+            // Merge adjacent string evals in choice eval context.
+            // Only merge when a ChoicePoint follows within the same eval block,
+            // so we don't accidentally merge string operands (e.g. `str ? str`).
+            i += 2;
+            continue;
         } else {
             emitter.emit_element(element, name_table, temps, list_literals)?;
         }
@@ -650,6 +667,25 @@ pub fn process_container(
     }
 
     Ok(all_pairs)
+}
+
+/// Check if a `ChoicePoint` element appears in the remaining container elements.
+/// Used to guard adjacent string eval merging — we only merge when the strings
+/// are choice display content, not standalone string operands (e.g. `?` operator).
+///
+/// The `ChoicePoint` always appears *after* `/ev` (`EndLogicalEval`), so we scan
+/// past it. We stop at `NativeFunction` elements instead — if a native function
+/// (like `?` / `Has`) appears between the string evals and the `ChoicePoint`, the
+/// strings are operator arguments, not choice display text.
+fn has_upcoming_choice_point(contents: &[Element], start: usize) -> bool {
+    for element in &contents[start..] {
+        match element {
+            Element::ChoicePoint(_) => return true,
+            Element::NativeFunction(_) => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn child_path_for_index(current_path: &str, i: usize) -> String {

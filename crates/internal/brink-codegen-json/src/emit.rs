@@ -82,6 +82,7 @@ fn emit_stmts(
     (contents, named)
 }
 
+#[expect(clippy::too_many_lines)]
 fn emit_stmt(
     stmt: &lir::Stmt,
     lookups: &Lookups,
@@ -92,6 +93,21 @@ fn emit_stmt(
 ) {
     match stmt {
         lir::Stmt::EmitContent(content) => emit_content(content, lookups, cctx, out),
+
+        // Choice output content (start+inner) is not emitted in JSON format.
+        // Inklecate structures this as child container references in the
+        // choice target path, not as inline content. But the inline divert
+        // (if any) must still be emitted.
+        lir::Stmt::ChoiceOutput {
+            inline_divert: Some(divert),
+            ..
+        } => {
+            emit_divert(divert, lookups, cctx, out);
+        }
+        lir::Stmt::ChoiceOutput {
+            inline_divert: None,
+            ..
+        } => {}
 
         lir::Stmt::Divert(divert) => emit_divert(divert, lookups, cctx, out),
 
@@ -771,10 +787,12 @@ fn emit_choice_set(
         // Inklecate appends a "done" sub-container named g-{N+1} after
         // explicit gather bodies that have text content (not just a bare divert),
         // unless the gather ends with a terminal exit (-> END / -> DONE).
-        let has_content = gather
-            .body
-            .iter()
-            .any(|s| matches!(s, lir::Stmt::EmitContent(_)));
+        let has_content = gather.body.iter().any(|s| {
+            matches!(
+                s,
+                lir::Stmt::EmitContent(_) | lir::Stmt::ChoiceOutput { .. }
+            )
+        });
         let ends_terminal = gather.body.last().is_some_and(|s| {
             matches!(
                 s,
@@ -1029,10 +1047,12 @@ fn build_choice_target(
     // terminal divert (Done/End), the body handles its own exit and the
     // gather divert is unnecessary. Inklecate omits it in that case.
     let body_has_content_then_terminal = {
-        let has_content = child
-            .body
-            .iter()
-            .any(|s| matches!(s, lir::Stmt::EmitContent(_) | lir::Stmt::EndOfLine));
+        let has_content = child.body.iter().any(|s| {
+            matches!(
+                s,
+                lir::Stmt::EmitContent(_) | lir::Stmt::ChoiceOutput { .. } | lir::Stmt::EndOfLine
+            )
+        });
         let ends_terminal = child.body.last().is_some_and(|s| {
             matches!(
                 s,

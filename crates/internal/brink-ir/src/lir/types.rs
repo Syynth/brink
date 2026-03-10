@@ -157,6 +157,19 @@ pub enum Stmt {
     /// Emit a line of text content (with optional inline elements and tags).
     EmitContent(Content),
 
+    /// Emit choice output content (start + inner) at the top of a choice
+    /// target container. Emits content parts, then the inline divert (if
+    /// any), then a newline. The divert goes between content and newline
+    /// so that execution flows directly into the divert target without a
+    /// line break.
+    ///
+    /// Skipped entirely by the JSON codegen — inklecate structures this
+    /// content via child container references, not inline.
+    ChoiceOutput {
+        content: Content,
+        inline_divert: Option<Divert>,
+    },
+
     /// `-> target` — divert to another container, DONE, or END.
     Divert(Divert),
 

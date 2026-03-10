@@ -466,6 +466,7 @@ fn lower_gather_choice_chain(
     (containers, pos - start)
 }
 
+#[expect(clippy::too_many_lines)]
 fn lower_choice_with_child(
     choice: &hir::Choice,
     ctx: &mut LowerCtx<'_>,
@@ -503,20 +504,49 @@ fn lower_choice_with_child(
     let condition = choice.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
     let tags = choice.tags.iter().map(|t| t.text.clone()).collect();
 
-    // Lower choice body into a child container
+    // Lower choice body into a child container.
+    // Update scope_path to match the planner's convention so nested
+    // choice/gather keys resolve to the correct container IDs.
+    let old_scope = ctx.scope_path.clone();
+    ctx.scope_path = format!("{}.c{}", old_scope, *choice_counter - 1);
     let mut cc = 0;
     let mut gc = 0;
-    let (mut body, children) = lower_block_with_children(&choice.body, ctx, plan, &mut cc, &mut gc);
+    let (body_stmts, children) =
+        lower_block_with_children(&choice.body, ctx, plan, &mut cc, &mut gc);
+    ctx.scope_path = old_scope;
 
-    if let Some(ref divert) = choice.divert {
+    // Build the choice target container body. The output after selecting
+    // a choice is: start_content + inner_content + newline + body.
+    // ChoiceOutput bundles content + optional inline divert + newline
+    // into a single statement so codegen backends can handle it atomically.
+    let mut body: Vec<lir::Stmt> = Vec::new();
+
+    // 1. Choice output preamble: start+inner content, inline divert, newline
+    let mut output_parts = Vec::new();
+    if let Some(ref sc) = start_content {
+        output_parts.extend(sc.parts.clone());
+    }
+    if let Some(ref ic) = inner_content {
+        output_parts.extend(ic.parts.clone());
+    }
+    if !output_parts.is_empty() {
+        let inline_divert = choice.divert.as_ref().map(|d| lower_hir_divert(d, ctx));
+        body.push(lir::Stmt::ChoiceOutput {
+            content: lir::Content {
+                parts: output_parts,
+                tags: Vec::new(),
+            },
+            inline_divert,
+        });
+    } else if let Some(ref divert) = choice.divert {
+        // No output content but has inline divert — emit divert standalone
         body.push(lir::Stmt::Divert(lower_hir_divert(divert, ctx)));
     }
 
-    // Always add the auto-gather divert when there's a gather target and the
-    // body doesn't end with Done/End. The explicit divert (if any) is semantic
-    // content that goes before \n in codegen; the auto-gather divert is
-    // structural and goes after \n. They must coexist even when they share
-    // the same target.
+    // 2. Body statements from the choice's indented block
+    body.extend(body_stmts);
+
+    // 5. Auto-gather divert when the body doesn't end with Done/End.
     let ends_with_terminal = body.last().is_some_and(|s| {
         matches!(
             s,
@@ -793,7 +823,7 @@ fn collect_counting_refs(
 ) {
     for stmt in stmts {
         match stmt {
-            lir::Stmt::EmitContent(content) => {
+            lir::Stmt::EmitContent(content) | lir::Stmt::ChoiceOutput { content, .. } => {
                 collect_counting_refs_content(content, visit_ids, turns_ids);
             }
             lir::Stmt::Assign { value: e, .. }

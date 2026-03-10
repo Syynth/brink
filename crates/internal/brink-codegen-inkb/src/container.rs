@@ -15,6 +15,16 @@ impl ContainerEmitter<'_> {
     fn emit_stmt(&mut self, stmt: &lir::Stmt) {
         match stmt {
             lir::Stmt::EmitContent(content) => self.emit_content(content),
+            lir::Stmt::ChoiceOutput {
+                content,
+                inline_divert,
+            } => {
+                self.emit_choice_content(content);
+                if let Some(divert) = inline_divert {
+                    self.emit_divert(divert);
+                }
+                self.emit(Opcode::EmitNewline);
+            }
 
             lir::Stmt::Divert(divert) => self.emit_divert(divert),
 
@@ -159,8 +169,6 @@ impl ContainerEmitter<'_> {
     }
 
     fn emit_choice(&mut self, choice: &lir::Choice) {
-        // Reconstruct display (start + choice_only) and output (start + inner)
-        // from the three-part split for the bytecode protocol.
         let has_start = choice.start_content.is_some();
         let has_choice_only = choice.choice_only_content.is_some();
 
@@ -168,46 +176,34 @@ impl ContainerEmitter<'_> {
             choice.start_content.as_ref(),
             choice.choice_only_content.as_ref(),
         );
-        let output =
-            combine_choice_content(choice.start_content.as_ref(), choice.inner_content.as_ref());
 
         let flags = ChoiceFlags {
             has_condition: choice.condition.is_some(),
             has_start_content: has_start,
-            has_choice_only_content: has_start && has_choice_only,
+            has_choice_only_content: has_choice_only,
             once_only: !choice.is_sticky,
             is_invisible_default: choice.is_fallback,
         };
 
-        self.emit(Opcode::BeginChoice(flags, choice.target));
+        // All evaluation BEFORE BeginChoice:
 
-        // Condition
+        // 1. Condition
         if let Some(ref cond) = choice.condition {
             self.emit_expr(cond);
         }
 
-        // Display content (start content + choice-only content)
+        // 2. Display text (combined start + choice_only)
         if let Some(ref display) = display {
             self.emit(Opcode::BeginStringEval);
             self.emit_choice_content(display);
             self.emit(Opcode::EndStringEval);
         }
 
-        // Output content
-        if let Some(ref output) = output {
-            let mut line_text = String::new();
-            for part in &output.parts {
-                if let lir::ContentPart::Text(s) = part {
-                    line_text.push_str(s);
-                }
-            }
-            let idx = self.add_line(&line_text);
-            self.emit(Opcode::ChoiceOutput(idx));
-        }
-
+        // 3. BeginChoice pops condition + display from stack
+        self.emit(Opcode::BeginChoice(flags, choice.target));
         self.emit(Opcode::EndChoice);
 
-        // Tags
+        // Tags after EndChoice
         for tag in &choice.tags {
             self.emit(Opcode::BeginTag);
             let idx = self.add_line(tag);

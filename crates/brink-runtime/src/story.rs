@@ -274,11 +274,6 @@ pub(crate) struct PendingChoice {
         reason = "needs research — likely needed for structured output / voice acting"
     )]
     pub original_index: usize,
-    #[expect(
-        dead_code,
-        reason = "needs research — likely needed for structured output / voice acting"
-    )]
-    pub output_line_idx: Option<u16>,
     /// Tags collected during choice evaluation.
     pub tags: Vec<String>,
     /// Snapshot of the current thread at choice creation time, so that

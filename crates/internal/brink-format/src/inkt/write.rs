@@ -286,7 +286,6 @@ fn write_bytecode(w: &mut dyn fmt::Write, bytecode: &[u8]) -> fmt::Result {
     Ok(())
 }
 
-#[expect(clippy::too_many_lines)]
 fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
     match op {
         // Stack & literals
@@ -375,7 +374,6 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
             write!(w, "begin_choice {} {target}", format_choice_flags(*flags))
         }
         Opcode::EndChoice => write!(w, "end_choice"),
-        Opcode::ChoiceOutput(idx) => write!(w, "choice_output {idx}"),
 
         // Sequences
         Opcode::Sequence(kind, count) => {
