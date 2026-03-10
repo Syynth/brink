@@ -25,7 +25,7 @@ fn tests_dir() -> PathBuf {
 
 /// Ratchet: minimum number of episodes (not cases) that must pass.
 /// Bump this as compiler coverage improves.
-const RATCHET_EPISODE_COUNT: usize = 511;
+const RATCHET_EPISODE_COUNT: usize = 513;
 
 /// Index episodes by their `choice_path` for order-independent matching.
 fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {

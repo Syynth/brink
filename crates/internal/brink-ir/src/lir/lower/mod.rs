@@ -267,6 +267,13 @@ fn lower_block_with_children(
                     choice_counter,
                     gather_counter,
                 );
+                // Divert to first container in the chain so execution reaches it.
+                if let Some(first) = chain_children.first() {
+                    stmts.push(lir::Stmt::Divert(lir::Divert {
+                        target: lir::DivertTarget::Container(first.id),
+                        args: Vec::new(),
+                    }));
+                }
                 children.extend(chain_children);
                 pos += consumed;
             }
