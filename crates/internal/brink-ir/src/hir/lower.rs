@@ -1753,29 +1753,55 @@ impl LowerCtx {
         Block { label: None, stmts }
     }
 
+    /// Lower a content line, emitting Content + optional Divert + optional `EndOfLine`.
+    ///
+    /// If the content line wraps a multiline block-level construct (conditional or
+    /// sequence), promotes it and returns `true`. Otherwise returns `false`.
+    fn emit_content_line_stmts(
+        &mut self,
+        cl: &ast::ContentLine,
+        push: &mut impl FnMut(Stmt),
+    ) -> bool {
+        // Check if this content line is just a wrapper around a multiline
+        // block-level construct (conditional or sequence with multiline
+        // branches). The reference ink parser doesn't distinguish these at the
+        // brace level — they're all InlineLogic, with the multiline-vs-inline
+        // decision made inside. So we promote here.
+        if let Some(mc) = cl.mixed_content()
+            && let Some(il) = mc.inline_logics().next()
+            && let Some(stmt) = self.lower_multiline_block_from_inline(&il)
+        {
+            push(stmt);
+            return true;
+        }
+
+        let stmt = self.lower_content_line(cl);
+        let was_content = matches!(&stmt, Some(Stmt::Content(_)));
+        let ends_glue = matches!(
+            &stmt,
+            Some(Stmt::Content(c)) if content_ends_with_glue(&c.parts)
+        );
+        if let Some(s) = stmt {
+            push(s);
+        }
+        let has_divert = cl.divert().is_some();
+        if was_content
+            && let Some(dn) = cl.divert()
+            && let Some(s) = self.lower_divert_node(&dn)
+        {
+            push(s);
+        }
+        if was_content && !has_divert && !ends_glue {
+            push(Stmt::EndOfLine);
+        }
+        false
+    }
+
     fn lower_body_child(&mut self, child: brink_syntax::SyntaxNode, out: &mut Vec<Stmt>) {
         match child.kind() {
             SyntaxKind::CONTENT_LINE => {
                 if let Some(cl) = ast::ContentLine::cast(child) {
-                    let stmt = self.lower_content_line(&cl);
-                    let was_content = matches!(&stmt, Some(Stmt::Content(_)));
-                    let ends_glue = matches!(
-                        &stmt,
-                        Some(Stmt::Content(c)) if content_ends_with_glue(&c.parts)
-                    );
-                    if let Some(s) = stmt {
-                        out.push(s);
-                    }
-                    let has_divert = cl.divert().is_some();
-                    if was_content
-                        && let Some(dn) = cl.divert()
-                        && let Some(s) = self.lower_divert_node(&dn)
-                    {
-                        out.push(s);
-                    }
-                    if was_content && !has_divert && !ends_glue {
-                        out.push(Stmt::EndOfLine);
-                    }
+                    self.emit_content_line_stmts(&cl, &mut |s| out.push(s));
                 }
             }
             SyntaxKind::LOGIC_LINE => {
@@ -1874,7 +1900,6 @@ pub enum WeaveItem {
 }
 
 impl LowerCtx {
-    #[expect(clippy::too_many_lines)]
     fn lower_body_children(&mut self, parent: &brink_syntax::SyntaxNode) -> Block {
         let mut items = Vec::new();
 
@@ -1882,39 +1907,9 @@ impl LowerCtx {
             match child.kind() {
                 SyntaxKind::CONTENT_LINE => {
                     if let Some(cl) = ast::ContentLine::cast(child.clone()) {
-                        // Check if this content line is just a wrapper around
-                        // a multiline block-level construct (conditional or
-                        // sequence with multiline branches). The reference ink
-                        // parser doesn't distinguish these at the brace level —
-                        // they're all InlineLogic, with the multiline-vs-inline
-                        // decision made inside. So we promote here.
-                        if let Some(mc) = cl.mixed_content()
-                            && let Some(il) = mc.inline_logics().next()
-                            && let Some(stmt) = self.lower_multiline_block_from_inline(&il)
-                        {
-                            items.push(WeaveItem::Stmt(stmt));
-                            continue;
-                        }
-
-                        let stmt = self.lower_content_line(&cl);
-                        let was_content = matches!(&stmt, Some(Stmt::Content(_)));
-                        let ends_glue = matches!(
-                            &stmt,
-                            Some(Stmt::Content(c)) if content_ends_with_glue(&c.parts)
-                        );
-                        if let Some(s) = stmt {
+                        self.emit_content_line_stmts(&cl, &mut |s| {
                             items.push(WeaveItem::Stmt(s));
-                        }
-                        let has_divert = cl.divert().is_some();
-                        if was_content
-                            && let Some(dn) = cl.divert()
-                            && let Some(s) = self.lower_divert_node(&dn)
-                        {
-                            items.push(WeaveItem::Stmt(s));
-                        }
-                        if was_content && !has_divert && !ends_glue {
-                            items.push(WeaveItem::Stmt(Stmt::EndOfLine));
-                        }
+                        });
                     }
                 }
                 SyntaxKind::LOGIC_LINE => {
