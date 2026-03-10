@@ -868,6 +868,143 @@ Arrived.
     }
 }
 
+/// A fallback choice with only a divert (`* -> target`) has the divert in its body.
+#[test]
+fn weave_fallback_choice_divert_in_body() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* [visible] text
+* -> other_knot
+- Gathered.
+=== other_knot ===
+Arrived.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    match &body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            let fallback = &cs.choices[1];
+            assert!(fallback.is_fallback);
+            // Fallback body: [Divert(other_knot), EndOfLine]
+            assert_eq!(fallback.body.stmts.len(), 2);
+            assert!(matches!(fallback.body.stmts[0], Stmt::Divert(_)));
+            assert!(matches!(fallback.body.stmts[1], Stmt::EndOfLine));
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// A choice with start content + inline divert: body begins with [`Divert`, `EndOfLine`].
+#[test]
+fn weave_choice_with_content_and_inline_divert() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Hello world -> other_knot
+- Gathered.
+=== other_knot ===
+Arrived.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    match &body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            let choice = &cs.choices[0];
+            assert!(choice.start_content.is_some());
+            // Body starts with the inline divert + EndOfLine
+            assert!(matches!(choice.body.stmts[0], Stmt::Divert(_)));
+            assert!(matches!(choice.body.stmts[1], Stmt::EndOfLine));
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// A choice with inner content + inline divert: divert is in body, not on the Choice struct.
+#[test]
+fn weave_choice_with_inner_content_and_divert() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* start[bracket]inner -> other_knot
+- Gathered.
+=== other_knot ===
+Arrived.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    match &body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            let choice = &cs.choices[0];
+            assert!(choice.start_content.is_some());
+            assert!(choice.bracket_content.is_some());
+            assert!(choice.inner_content.is_some());
+            // Body starts with inline divert + EndOfLine
+            assert!(matches!(choice.body.stmts[0], Stmt::Divert(_)));
+            assert!(matches!(choice.body.stmts[1], Stmt::EndOfLine));
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// A choice with indented body content but NO inline divert: body starts with `EndOfLine`.
+#[test]
+fn weave_choice_no_divert_has_endofline_preamble() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Pick this
+  Some body text.
+- Gathered.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    match &body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            let choice = &cs.choices[0];
+            // Body: [EndOfLine, Content("Some body text."), EndOfLine]
+            assert_eq!(choice.body.stmts.len(), 3);
+            assert!(matches!(choice.body.stmts[0], Stmt::EndOfLine));
+            assert!(matches!(choice.body.stmts[1], Stmt::Content(_)));
+            assert!(matches!(choice.body.stmts[2], Stmt::EndOfLine));
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
+/// A choice with inline divert + indented body: divert before `EndOfLine`, then body content.
+#[test]
+fn weave_choice_inline_divert_with_body() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Go -> other_knot
+  Extra body.
+- Gathered.
+=== other_knot ===
+Arrived.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+    match &body.stmts[0] {
+        Stmt::ChoiceSet(cs) => {
+            let choice = &cs.choices[0];
+            // Body: [Divert, EndOfLine, Content("Extra body."), EndOfLine]
+            assert_eq!(choice.body.stmts.len(), 4);
+            assert!(matches!(choice.body.stmts[0], Stmt::Divert(_)));
+            assert!(matches!(choice.body.stmts[1], Stmt::EndOfLine));
+            assert!(matches!(choice.body.stmts[2], Stmt::Content(_)));
+            assert!(matches!(choice.body.stmts[3], Stmt::EndOfLine));
+        }
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    }
+}
+
 /// Sticky and once-only choices can be mixed in the same `ChoiceSet`.
 #[test]
 fn weave_mixed_sticky_and_once_only() {
