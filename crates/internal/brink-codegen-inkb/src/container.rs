@@ -7,8 +7,18 @@ use crate::ContainerEmitter;
 
 impl ContainerEmitter<'_> {
     pub(super) fn emit_body(&mut self, stmts: &[lir::Stmt]) {
-        for stmt in stmts {
-            self.emit_stmt(stmt);
+        for (i, stmt) in stmts.iter().enumerate() {
+            // Suppress trailing newline on content when followed by a divert
+            // (inline divert — the goto should come before any newline).
+            if let lir::Stmt::EmitContent(content) = stmt
+                && stmts
+                    .get(i + 1)
+                    .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)))
+            {
+                self.emit_content_inline(content);
+            } else {
+                self.emit_stmt(stmt);
+            }
         }
     }
 
