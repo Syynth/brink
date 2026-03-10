@@ -595,12 +595,12 @@ fn lower_choice_with_child(
     ctx.scope_path = old_scope;
 
     // Build the choice target container body. The output after selecting
-    // a choice is: start_content + inner_content + newline + body.
-    // ChoiceOutput bundles content + optional inline divert + newline
-    // into a single statement so codegen backends can handle it atomically.
+    // a choice is: ChoiceOutput(content) + body stmts.
+    // The HIR body already contains the inline divert and EndOfLine as
+    // its first statements, so they flow naturally into the LIR body.
     let mut body: Vec<lir::Stmt> = Vec::new();
 
-    // 1. Choice output preamble: start+inner content, inline divert, newline
+    // 1. Choice output preamble: start+inner content (no divert or newline)
     let mut output_parts = Vec::new();
     if let Some(ref sc) = start_content {
         output_parts.extend(sc.parts.clone());
@@ -609,20 +609,13 @@ fn lower_choice_with_child(
         output_parts.extend(ic.parts.clone());
     }
     if !output_parts.is_empty() {
-        let inline_divert = choice.divert.as_ref().map(|d| lower_hir_divert(d, ctx));
-        body.push(lir::Stmt::ChoiceOutput {
-            content: lir::Content {
-                parts: output_parts,
-                tags: Vec::new(),
-            },
-            inline_divert,
-        });
-    } else if let Some(ref divert) = choice.divert {
-        // No output content but has inline divert — emit divert standalone
-        body.push(lir::Stmt::Divert(lower_hir_divert(divert, ctx)));
+        body.push(lir::Stmt::ChoiceOutput(lir::Content {
+            parts: output_parts,
+            tags: Vec::new(),
+        }));
     }
 
-    // 2. Body statements from the choice's indented block
+    // 2. Body statements from the choice's block (includes inline divert + EndOfLine)
     body.extend(body_stmts);
 
     // 5. Auto-gather divert when the body doesn't end with Done/End.
@@ -721,7 +714,6 @@ fn lower_choice_with_child(
         inner_content,
         target,
         tags,
-        has_inline_divert: choice.divert.is_some(),
     };
 
     (lir_choice, Some(child))
@@ -955,7 +947,7 @@ fn collect_counting_refs(
 ) {
     for stmt in stmts {
         match stmt {
-            lir::Stmt::EmitContent(content) | lir::Stmt::ChoiceOutput { content, .. } => {
+            lir::Stmt::EmitContent(content) | lir::Stmt::ChoiceOutput(content) => {
                 collect_counting_refs_content(content, visit_ids, turns_ids);
             }
             lir::Stmt::Assign { value: e, .. }

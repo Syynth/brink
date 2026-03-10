@@ -159,17 +159,12 @@ pub enum Stmt {
     EmitContent(Content),
 
     /// Emit choice output content (start + inner) at the top of a choice
-    /// target container. Emits content parts, then the inline divert (if
-    /// any), then a newline. The divert goes between content and newline
-    /// so that execution flows directly into the divert target without a
-    /// line break.
+    /// target container. Emits content parts only — no newline or divert.
+    /// The divert and newline are handled by the body stmts that follow.
     ///
     /// Skipped entirely by the JSON codegen — inklecate structures this
     /// content via child container references, not inline.
-    ChoiceOutput {
-        content: Content,
-        inline_divert: Option<Divert>,
-    },
+    ChoiceOutput(Content),
 
     /// `-> target` — divert to another container, DONE, or END.
     Divert(Divert),
@@ -317,9 +312,6 @@ pub struct Choice {
     /// The container holding the choice body (content after selection).
     pub target: DefinitionId,
     pub tags: Vec<String>,
-    /// Whether the choice has an inline divert (e.g. `* hello -> world`).
-    /// Body-level diverts (on indented lines) set this to false.
-    pub has_inline_divert: bool,
 }
 
 // ─── Conditionals and sequences ──────────────────────────────────────

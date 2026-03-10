@@ -177,8 +177,6 @@ pub struct Choice {
     pub bracket_content: Option<Content>,
     /// Text after `]` — appears only after selection.
     pub inner_content: Option<Content>,
-    /// Explicit divert on the choice line.
-    pub divert: Option<Divert>,
     pub tags: Vec<Tag>,
     /// Nested content after this choice is selected.
     pub body: Block,

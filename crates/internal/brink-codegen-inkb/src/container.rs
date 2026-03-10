@@ -15,15 +15,8 @@ impl ContainerEmitter<'_> {
     fn emit_stmt(&mut self, stmt: &lir::Stmt) {
         match stmt {
             lir::Stmt::EmitContent(content) => self.emit_content(content),
-            lir::Stmt::ChoiceOutput {
-                content,
-                inline_divert,
-            } => {
+            lir::Stmt::ChoiceOutput(content) => {
                 self.emit_choice_content(content);
-                if let Some(divert) = inline_divert {
-                    self.emit_divert(divert);
-                }
-                self.emit(Opcode::EmitNewline);
             }
 
             lir::Stmt::Divert(divert) => self.emit_divert(divert),

@@ -82,7 +82,6 @@ fn emit_stmts(
     (contents, named)
 }
 
-#[expect(clippy::too_many_lines)]
 fn emit_stmt(
     stmt: &lir::Stmt,
     lookups: &Lookups,
@@ -96,18 +95,9 @@ fn emit_stmt(
 
         // Choice output content (start+inner) is not emitted in JSON format.
         // Inklecate structures this as child container references in the
-        // choice target path, not as inline content. But the inline divert
-        // (if any) must still be emitted.
-        lir::Stmt::ChoiceOutput {
-            inline_divert: Some(divert),
-            ..
-        } => {
-            emit_divert(divert, lookups, cctx, out);
-        }
-        lir::Stmt::ChoiceOutput {
-            inline_divert: None,
-            ..
-        } => {}
+        // choice target path, not as inline content. The divert and newline
+        // are now separate body stmts and will be emitted by those arms.
+        lir::Stmt::ChoiceOutput(_) => {}
 
         lir::Stmt::Divert(divert) => emit_divert(divert, lookups, cctx, out),
 
@@ -794,12 +784,10 @@ fn emit_choice_set(
         // Inklecate appends a "done" sub-container named g-{N+1} after
         // explicit gather bodies that have text content (not just a bare divert),
         // unless the gather ends with a terminal exit (-> END / -> DONE).
-        let has_content = gather.body.iter().any(|s| {
-            matches!(
-                s,
-                lir::Stmt::EmitContent(_) | lir::Stmt::ChoiceOutput { .. }
-            )
-        });
+        let has_content = gather
+            .body
+            .iter()
+            .any(|s| matches!(s, lir::Stmt::EmitContent(_) | lir::Stmt::ChoiceOutput(_)));
         let ends_terminal = gather.body.last().is_some_and(|s| {
             matches!(
                 s,
@@ -1057,7 +1045,7 @@ fn build_choice_target(
         let has_content = child.body.iter().any(|s| {
             matches!(
                 s,
-                lir::Stmt::EmitContent(_) | lir::Stmt::ChoiceOutput { .. } | lir::Stmt::EndOfLine
+                lir::Stmt::EmitContent(_) | lir::Stmt::ChoiceOutput(_) | lir::Stmt::EndOfLine
             )
         });
         let ends_terminal = child.body.last().is_some_and(|s| {
@@ -1092,56 +1080,12 @@ fn build_choice_target(
     };
 
     // Emit the choice's inner_content (text after `]`) before the body.
+    // The body_contents already contains the divert (if any) and \n in the
+    // correct order from the HIR body stmts, so we just extend directly.
     if let Some(ref inner) = choice.inner_content {
         emit_content(inner, lookups, cctx, &mut contents);
-        if choice.has_inline_divert {
-            // Inline divert: divert elements go before \n, rest after.
-            let split = body_contents
-                .iter()
-                .position(|el| !is_inline_divert_element(el))
-                .unwrap_or(body_contents.len());
-            let after_newline = body_contents.split_off(split);
-            contents.extend(body_contents);
-            contents.push(Element::Value(InkValue::String("\n".to_string())));
-            contents.extend(after_newline);
-        } else {
-            contents.push(Element::Value(InkValue::String("\n".to_string())));
-            contents.extend(body_contents);
-        }
-    } else if choice.start_content.is_some() {
-        // Has preamble — positioning depends on whether the divert is inline
-        // (on the choice line itself) or body-level (on an indented line).
-        if choice.has_inline_divert {
-            // Inline divert: divert elements go before \n, rest after.
-            let split = body_contents
-                .iter()
-                .position(|el| !is_inline_divert_element(el))
-                .unwrap_or(body_contents.len());
-            let after_newline = body_contents.split_off(split);
-            contents.extend(body_contents);
-            contents.push(Element::Value(InkValue::String("\n".to_string())));
-            contents.extend(after_newline);
-        } else {
-            // Body-level content/diverts: everything goes after \n.
-            contents.push(Element::Value(InkValue::String("\n".to_string())));
-            contents.extend(body_contents);
-        }
-    } else if choice.has_inline_divert {
-        // No inner content or start content, but has an inline divert
-        // (e.g. fallback choice `* -> target`). Divert goes before \n.
-        let split = body_contents
-            .iter()
-            .position(|el| !is_inline_divert_element(el))
-            .unwrap_or(body_contents.len());
-        let after_newline = body_contents.split_off(split);
-        contents.extend(body_contents);
-        contents.push(Element::Value(InkValue::String("\n".to_string())));
-        contents.extend(after_newline);
-    } else {
-        // Bracket-only (no preamble) — \n comes first, then body
-        contents.push(Element::Value(InkValue::String("\n".to_string())));
-        contents.extend(body_contents);
     }
+    contents.extend(body_contents);
 
     // Emit the gather divert after the \n separator (if not suppressed).
     let uses_gather = gather_divert_element.is_some();
@@ -1404,16 +1348,6 @@ fn emit_call_arg(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
-
-/// Returns true if the element is a divert-like instruction that should appear
-/// before the `\n` separator in a choice target (inline diverts from the choice
-/// line itself, e.g. `* choice -> DONE`).
-fn is_inline_divert_element(el: &Element) -> bool {
-    matches!(
-        el,
-        Element::Divert(_) | Element::ControlCommand(ControlCommand::Done | ControlCommand::End)
-    )
-}
 
 fn ev() -> Element {
     Element::ControlCommand(ControlCommand::BeginLogicalEval)

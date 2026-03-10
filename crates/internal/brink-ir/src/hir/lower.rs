@@ -1697,7 +1697,7 @@ impl LowerCtx {
             tags: Vec::new(),
         });
 
-        let divert = choice.divert().and_then(|d| {
+        let inline_divert = choice.divert().and_then(|d| {
             let target = d
                 .simple_divert()?
                 .targets()
@@ -1710,7 +1710,19 @@ impl LowerCtx {
         });
 
         let tags = lower_tags(choice.tags());
-        let body = self.lower_choice_body(choice);
+        let mut body = self.lower_choice_body(choice);
+
+        // Prepend the inline divert + EndOfLine to the body. The divert goes
+        // before EndOfLine so that in bytecode, execution flows into the divert
+        // target without an intervening line break. When there's no inline
+        // divert, just prepend EndOfLine.
+        let mut preamble = Vec::new();
+        if let Some(d) = inline_divert {
+            preamble.push(Stmt::Divert(d));
+        }
+        preamble.push(Stmt::EndOfLine);
+        preamble.append(&mut body.stmts);
+        body.stmts = preamble;
 
         Some(Choice {
             ptr: AstPtr::new(choice),
@@ -1721,15 +1733,15 @@ impl LowerCtx {
             start_content,
             bracket_content,
             inner_content,
-            divert,
             tags,
             body,
         })
     }
 
     fn lower_choice_body(&mut self, choice: &ast::Choice) -> Block {
-        // The choice-level divert (e.g. `* choice -> DONE`) is already captured
-        // in `Choice.divert`. Skip it here to avoid duplication in the body.
+        // The choice-level divert (e.g. `* choice -> DONE`) is skipped here
+        // because it is folded into the body as a Stmt::Divert preamble by
+        // the caller (lower_choice).
         let choice_divert_range = choice.divert().map(|d| d.syntax().text_range());
 
         let mut stmts = Vec::new();
@@ -1834,7 +1846,6 @@ impl LowerCtx {
 
 // ─── Phase 7: Body assembly and weave folding ───────────────────────
 
-#[expect(clippy::large_enum_variant)]
 pub enum WeaveItem {
     Choice { choice: Choice, depth: usize },
     Gather { gather: Gather, depth: usize },

@@ -91,7 +91,6 @@ fn i078_hir() {
     assert!(!choice.is_fallback);
     assert!(choice.label.is_none());
     assert!(choice.condition.is_none());
-    assert!(choice.divert.is_none());
     assert!(choice.tags.is_empty());
 
     // No start content (nothing before `[`)
@@ -109,12 +108,13 @@ fn i078_hir() {
     // No inner content (nothing after `]` on choice line)
     assert!(choice.inner_content.is_none());
 
-    // Body = Content("Text") + EndOfLine
-    assert_eq!(choice.body.stmts.len(), 2);
-    let hir::Stmt::Content(body_content) = &choice.body.stmts[0] else {
-        panic!("expected Content in body, got {:?}", choice.body.stmts[0]);
+    // Body = EndOfLine (choice line newline) + Content("Text") + EndOfLine
+    assert_eq!(choice.body.stmts.len(), 3);
+    assert!(matches!(&choice.body.stmts[0], hir::Stmt::EndOfLine));
+    let hir::Stmt::Content(body_content) = &choice.body.stmts[1] else {
+        panic!("expected Content in body, got {:?}", choice.body.stmts[1]);
     };
-    assert!(matches!(&choice.body.stmts[1], hir::Stmt::EndOfLine));
+    assert!(matches!(&choice.body.stmts[2], hir::Stmt::EndOfLine));
     assert_eq!(body_content.parts.len(), 1);
     assert!(matches!(&body_content.parts[0], hir::ContentPart::Text(t) if t == "Text"));
     assert!(body_content.tags.is_empty());
@@ -263,19 +263,21 @@ fn i078_lir() {
     assert_eq!(c0.kind, ContainerKind::ChoiceTarget);
     assert!(c0.children.is_empty());
 
-    // c-0 body: EmitContent("Text") + EndOfLine + Divert(Container(g-0))
-    assert_eq!(c0.body.len(), 3);
+    // c-0 body: EndOfLine (choice line) + EmitContent("Text") + EndOfLine + Divert(Container(g-0))
+    assert_eq!(c0.body.len(), 4);
 
-    let lir::Stmt::EmitContent(text_content) = &c0.body[0] else {
+    assert!(matches!(&c0.body[0], lir::Stmt::EndOfLine));
+
+    let lir::Stmt::EmitContent(text_content) = &c0.body[1] else {
         panic!("expected EmitContent in c-0 body");
     };
     assert_eq!(text_content.parts.len(), 1);
     assert!(matches!(&text_content.parts[0], lir::ContentPart::Text(t) if t == "Text"));
     assert!(text_content.tags.is_empty());
 
-    assert!(matches!(&c0.body[1], lir::Stmt::EndOfLine));
+    assert!(matches!(&c0.body[2], lir::Stmt::EndOfLine));
 
-    let lir::Stmt::Divert(gather_divert) = &c0.body[2] else {
+    let lir::Stmt::Divert(gather_divert) = &c0.body[3] else {
         panic!("expected Divert to gather in c-0 body");
     };
     let gather_id = cs.gather_target.unwrap();

@@ -841,7 +841,7 @@ fn weave_gather_separates_choice_sets() {
     }
 }
 
-/// A choice with a divert on its line — the divert is captured in choice.divert.
+/// A choice with a divert on its line — the divert is folded into the body.
 #[test]
 fn weave_choice_with_inline_divert() {
     let (hir, _, diags) = lower_ink(
@@ -858,8 +858,11 @@ Arrived.
     let body = &hir.knots[0].body;
     match &body.stmts[0] {
         Stmt::ChoiceSet(cs) => {
-            assert!(cs.choices[0].divert.is_some());
-            assert!(cs.choices[1].divert.is_none());
+            // Inline divert is now in the choice body: [Divert, EndOfLine, ...]
+            assert!(matches!(cs.choices[0].body.stmts[0], Stmt::Divert(_)));
+            assert!(matches!(cs.choices[0].body.stmts[1], Stmt::EndOfLine));
+            // No inline divert: body starts with [EndOfLine, ...]
+            assert!(matches!(cs.choices[1].body.stmts[0], Stmt::EndOfLine));
         }
         other => panic!("expected ChoiceSet, got {other:?}"),
     }
