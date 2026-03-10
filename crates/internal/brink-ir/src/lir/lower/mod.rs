@@ -242,6 +242,7 @@ fn lower_stitch(
 ///
 /// When a `ChoiceSet` with a gather is encountered, remaining statements
 /// go into the gather's body (not the current block).
+#[expect(clippy::too_many_lines)]
 fn lower_block_with_children(
     block: &hir::Block,
     ctx: &mut LowerCtx<'_>,
@@ -344,6 +345,53 @@ fn lower_block_with_children(
                     gather_counter,
                     trailing,
                 ));
+            }
+            hir::Stmt::Conditional(cond) => {
+                // Lower conditional branches with lower_block_with_children
+                // so ChoiceSets inside branches produce child containers.
+                let kind = match &cond.kind {
+                    hir::CondKind::InitialCondition => lir::CondKind::InitialCondition,
+                    hir::CondKind::IfElse => lir::CondKind::IfElse,
+                    hir::CondKind::Switch(expr) => {
+                        lir::CondKind::Switch(expr::lower_expr(expr, ctx))
+                    }
+                };
+                let branches = cond
+                    .branches
+                    .iter()
+                    .map(|b| {
+                        let condition = b.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
+                        let mut bc = 0;
+                        let mut gc = 0;
+                        let (body, branch_children) =
+                            lower_block_with_children(&b.body, ctx, plan, &mut bc, &mut gc);
+                        children.extend(branch_children);
+                        lir::CondBranch { condition, body }
+                    })
+                    .collect();
+                stmts.push(lir::Stmt::Conditional(lir::Conditional { kind, branches }));
+                pos += 1;
+            }
+            hir::Stmt::Sequence(seq) => {
+                // Lower sequence branches with lower_block_with_children
+                // so ChoiceSets inside branches produce child containers.
+                let branches = seq
+                    .branches
+                    .iter()
+                    .map(|b| {
+                        let mut bc = 0;
+                        let mut gc = 0;
+                        let (body, branch_children) =
+                            lower_block_with_children(b, ctx, plan, &mut bc, &mut gc);
+                        children.extend(branch_children);
+                        body
+                    })
+                    .collect();
+                stmts.push(lir::Stmt::Sequence(lir::Sequence {
+                    kind: seq.kind,
+                    branches,
+                }));
+                pos += 1;
             }
             _ => {
                 if let Some(s) = stmts::lower_stmt(stmt, ctx, plan, choice_counter, gather_counter)
