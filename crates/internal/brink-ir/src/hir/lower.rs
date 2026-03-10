@@ -1142,8 +1142,40 @@ impl LowerCtx {
     fn lower_branch_body(&mut self, body: &brink_syntax::SyntaxNode) -> Block {
         let mut stmts = Vec::new();
         let mut parts = Vec::new();
+        // Track whitespace between content-producing nodes (e.g. `{x} {y}`).
+        let mut pending_ws: Option<String> = None;
+        let mut seen_content = false;
 
-        for child in body.children() {
+        for child in body.children_with_tokens() {
+            // Capture whitespace tokens between content nodes.
+            if let rowan::NodeOrToken::Token(ref token) = child {
+                if seen_content && token.kind() == SyntaxKind::WHITESPACE {
+                    let text = token.text().to_string();
+                    if let Some(ref mut ws) = pending_ws {
+                        ws.push_str(&text);
+                    } else {
+                        pending_ws = Some(text);
+                    }
+                }
+                continue;
+            }
+            let rowan::NodeOrToken::Node(child) = child else {
+                continue;
+            };
+            // Flush pending whitespace before content-producing nodes.
+            // INLINE_LOGIC is handled separately below — it may be block-level
+            // (conditional/sequence) rather than content-level (value interpolation).
+            if matches!(
+                child.kind(),
+                SyntaxKind::TEXT | SyntaxKind::GLUE_NODE | SyntaxKind::ESCAPE
+            ) {
+                if let Some(ws) = pending_ws.take() {
+                    parts.push(ContentPart::Text(ws));
+                }
+                seen_content = true;
+            } else if child.kind() != SyntaxKind::INLINE_LOGIC {
+                pending_ws = None;
+            }
             match child.kind() {
                 SyntaxKind::CONTENT_LINE => {
                     if let Some(cl) = ast::ContentLine::cast(child) {
@@ -1198,9 +1230,16 @@ impl LowerCtx {
                 SyntaxKind::INLINE_LOGIC => {
                     if let Some(il) = ast::InlineLogic::cast(child) {
                         if let Some(stmt) = self.lower_multiline_block_from_inline(&il) {
+                            // Block-level inline logic — discard pending whitespace.
+                            pending_ws = None;
                             flush_content_parts(&mut parts, &mut stmts);
                             stmts.push(stmt);
                         } else {
+                            // Content-level inline logic — flush whitespace first.
+                            if let Some(ws) = pending_ws.take() {
+                                parts.push(ContentPart::Text(ws));
+                            }
+                            seen_content = true;
                             self.lower_inline_logic(&il, &mut parts);
                         }
                     }
@@ -1217,6 +1256,9 @@ impl LowerCtx {
                         flush_content_parts(&mut parts, &mut stmts);
                         stmts.push(Stmt::EndOfLine);
                     }
+                    // Reset: whitespace after newline is indentation, not content.
+                    seen_content = false;
+                    pending_ws = None;
                 }
                 SyntaxKind::GLUE_NODE => parts.push(ContentPart::Glue),
                 SyntaxKind::ESCAPE => {
