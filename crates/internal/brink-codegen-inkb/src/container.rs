@@ -189,18 +189,20 @@ impl ContainerEmitter<'_> {
             is_invisible_default: choice.is_fallback,
         };
 
-        // All evaluation BEFORE BeginChoice:
+        // All evaluation BEFORE BeginChoice.
+        // Push order: display first, condition second. The runtime pops
+        // condition first (from top), then display.
 
-        // 1. Condition
-        if let Some(ref cond) = choice.condition {
-            self.emit_expr(cond);
-        }
-
-        // 2. Display text (combined start + choice_only)
+        // 1. Display text (combined start + choice_only) — pushed first
         if let Some(ref display) = display {
             self.emit(Opcode::BeginStringEval);
             self.emit_choice_content(display);
             self.emit(Opcode::EndStringEval);
+        }
+
+        // 2. Condition — pushed second (on top for runtime to pop first)
+        if let Some(ref cond) = choice.condition {
+            self.emit_expr(cond);
         }
 
         // 3. BeginChoice pops condition + display from stack
