@@ -695,4 +695,59 @@ mod tests {
         .unwrap();
         assert_eq!(r, Value::Bool(true));
     }
+
+    /// List items stored with qualified names ("Rank.low") should display as just "low".
+    #[test]
+    fn stringify_list_strips_origin_prefix() {
+        let list_def_id = DefinitionId::new(DefinitionTag::ListDef, 200);
+        let a_id = DefinitionId::new(DefinitionTag::ListItem, 10);
+        let b_id = DefinitionId::new(DefinitionTag::ListItem, 11);
+
+        let mut p = dummy_program();
+        p.name_table = vec![
+            "Colors.red".to_string(),
+            "Colors.blue".to_string(),
+            "Colors".to_string(),
+        ];
+        p.list_item_map.insert(
+            a_id,
+            ListItemEntry {
+                name: NameId(0),
+                ordinal: 1,
+                origin: list_def_id,
+            },
+        );
+        p.list_item_map.insert(
+            b_id,
+            ListItemEntry {
+                name: NameId(1),
+                ordinal: 2,
+                origin: list_def_id,
+            },
+        );
+        p.list_defs.push(ListDefEntry {
+            name: NameId(2),
+            items: vec![a_id, b_id],
+        });
+        p.list_def_map.insert(list_def_id, 0);
+
+        let lv = ListValue {
+            items: vec![a_id, b_id],
+            origins: vec![list_def_id],
+        };
+        assert_eq!(stringify(&Value::List(Rc::new(lv)), &p), "red, blue");
+    }
+
+    /// List items stored without a prefix (legacy/unqualified) still display correctly.
+    #[test]
+    fn stringify_list_unqualified_names_unchanged() {
+        let (p, low_id, mid_id, _) = program_with_rank_list();
+        let list_def_id = DefinitionId::new(DefinitionTag::ListDef, 100);
+
+        let lv = ListValue {
+            items: vec![low_id, mid_id],
+            origins: vec![list_def_id],
+        };
+        assert_eq!(stringify(&Value::List(Rc::new(lv)), &p), "low, mid");
+    }
 }

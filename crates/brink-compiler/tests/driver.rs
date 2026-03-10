@@ -316,3 +316,64 @@ Choose:
         "expected inner choice after tunnel return, got: {result:?}"
     );
 }
+
+// ── List display names ───────────────────────────────────────────────
+
+/// List items should display without their origin prefix.
+/// e.g. `{myList}` should output "a, b" not "myList.a, myList.b".
+#[test]
+fn list_items_display_without_origin_prefix() {
+    let source = "\
+LIST colors = (red), green, (blue)
+{colors}
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "red, blue\n");
+}
+
+/// Multi-list display: items from different lists show unqualified names.
+#[test]
+fn multi_list_display_without_origin_prefix() {
+    let source = "\
+LIST a = (x), y
+LIST b = (p), q
+{a + b}
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "x, p\n");
+}
+
+// ── External function fallback ───────────────────────────────────────
+
+/// EXTERNAL declaration with ink fallback function should use the fallback
+/// when no external binding is provided.
+#[test]
+fn external_function_uses_ink_fallback() {
+    let source = "\
+EXTERNAL greet()
+
+The value is {greet()}.
+-> END
+
+=== function greet() ===
+~ return \"hello\"
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "The value is hello.\n");
+}
+
+/// EXTERNAL with arguments should pass args to the ink fallback.
+#[test]
+fn external_function_fallback_with_args() {
+    let source = "\
+EXTERNAL add(x, y)
+
+The value is {add(3, 4)}.
+-> END
+
+=== function add(x, y) ===
+~ return x + y
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "The value is 7.\n");
+}
