@@ -585,32 +585,47 @@ fn lower_choice_with_child(
         )
     });
     if !ends_with_terminal && let Some(gather_id) = gather_target {
-        // If the body ends with a ChoiceSet and the last child is an
-        // implicit gather (body = [Done]), the outer gather divert should
-        // go into the implicit gather instead of the choice target body.
-        // Otherwise, choice targets divert to the implicit gather which
-        // just does Done, losing the outer gather's terminal (e.g., End
-        // from `-> END`).
         let body_ends_with_choice_set = body
             .last()
             .is_some_and(|s| matches!(s, lir::Stmt::ChoiceSet(_)));
-        let is_implicit_done_gather = body_ends_with_choice_set
-            && children.last().is_some_and(|c| {
-                c.kind == lir::ContainerKind::Gather
-                    && c.body.len() == 1
-                    && matches!(
-                        &c.body[0],
-                        lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Done)
-                    )
-            });
 
         let divert = lir::Divert {
             target: lir::DivertTarget::Container(gather_id),
             args: Vec::new(),
         };
-        if is_implicit_done_gather {
-            if let Some(gather) = children.last_mut() {
-                gather.body[0] = lir::Stmt::Divert(divert);
+
+        if body_ends_with_choice_set {
+            // The body ends with a ChoiceSet → `done` stops execution,
+            // so a divert appended to the body would be dead code.
+            // Instead, append the outer gather divert to the last child
+            // gather container (implicit or explicit) so that after the
+            // inner gather's content, execution flows to the outer gather.
+            if let Some(gather) = children
+                .last_mut()
+                .filter(|c| c.kind == lir::ContainerKind::Gather)
+            {
+                let gather_body_ends_terminal = gather.body.last().is_some_and(|s| {
+                    matches!(
+                        s,
+                        lir::Stmt::Divert(d)
+                            if matches!(
+                                d.target,
+                                lir::DivertTarget::End
+                                    | lir::DivertTarget::Done
+                                    | lir::DivertTarget::Container(_)
+                            )
+                    )
+                });
+                if gather_body_ends_terminal {
+                    // Replace the terminal (e.g., Done) with the outer gather divert
+                    let last_idx = gather.body.len() - 1;
+                    gather.body[last_idx] = lir::Stmt::Divert(divert);
+                } else {
+                    // Append the divert after the gather's content
+                    gather.body.push(lir::Stmt::Divert(divert));
+                }
+            } else {
+                body.push(lir::Stmt::Divert(divert));
             }
         } else {
             body.push(lir::Stmt::Divert(divert));
