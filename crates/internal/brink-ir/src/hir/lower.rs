@@ -1127,7 +1127,15 @@ impl LowerCtx {
                         })));
                     }
                 }
-                _ => {}
+                // Tokens (whitespace, punctuation, keywords) are expected
+                // from children_with_tokens() iteration.
+                other if other.is_token() => {}
+                other => {
+                    debug_assert!(
+                        false,
+                        "unexpected node SyntaxKind in lower_branchless_body: {other:?}"
+                    );
+                }
             }
         }
         flush_content_parts(&mut parts, &mut stmts);
@@ -1285,7 +1293,15 @@ impl LowerCtx {
                         })));
                     }
                 }
-                _ => {}
+                // Tokens (whitespace, punctuation, keywords) are expected
+                // from children_with_tokens() iteration.
+                other if other.is_token() => {}
+                other => {
+                    debug_assert!(
+                        false,
+                        "unexpected node SyntaxKind in lower_branch_body: {other:?}"
+                    );
+                }
             }
         }
         if !parts.is_empty() {
@@ -1365,7 +1381,15 @@ impl LowerCtx {
                             self.lower_inline_logic(&inline, &mut parts);
                         }
                     }
-                    _ => {}
+                    // DIVERT_NODE and TAGS appear as siblings in
+                    // MIXED_CONTENT — handled by the caller.
+                    SyntaxKind::DIVERT_NODE | SyntaxKind::TAGS => {}
+                    other => {
+                        debug_assert!(
+                            false,
+                            "unexpected node SyntaxKind in lower_content_node_children: {other:?}"
+                        );
+                    }
                 }
             }
         }
@@ -1828,10 +1852,24 @@ impl LowerCtx {
                     out.push(stmt);
                 }
             }
-            // Covers whitespace, punctuation, and other syntax trivia from
-            // the rowan CST. Handled kinds: CONTENT_LINE, LOGIC_LINE,
-            // DIVERT_NODE, INLINE_LOGIC.
-            _ => {}
+            // Structural parts of the Choice node handled by the caller.
+            SyntaxKind::CHOICE_BULLETS
+            | SyntaxKind::LABEL
+            | SyntaxKind::CHOICE_CONDITION
+            | SyntaxKind::CHOICE_START_CONTENT
+            | SyntaxKind::CHOICE_BRACKET_CONTENT
+            | SyntaxKind::CHOICE_INNER_CONTENT
+            | SyntaxKind::TAGS
+            | SyntaxKind::MIXED_CONTENT
+            | SyntaxKind::GATHER_DASHES
+            | SyntaxKind::MULTILINE_BLOCK
+            | SyntaxKind::GATHER => {}
+            other => {
+                debug_assert!(
+                    other.is_trivia(),
+                    "unexpected SyntaxKind in lower_body_child: {other:?}"
+                );
+            }
         }
     }
 
@@ -1990,11 +2028,26 @@ impl LowerCtx {
                         items.push(WeaveItem::Stmt(stmt));
                     }
                 }
-                // Covers whitespace, punctuation, and other syntax trivia from
-                // the rowan CST. Handled kinds: CONTENT_LINE, LOGIC_LINE,
-                // TAG_LINE, CHOICE, GATHER, INLINE_LOGIC, MULTILINE_BLOCK,
-                // DIVERT_NODE.
-                _ => {}
+                // Structural parts of the parent node handled by the
+                // caller (knot/stitch defs, declarations, headers).
+                // These appear when the parent is SOURCE_FILE or KNOT_BODY.
+                SyntaxKind::KNOT_DEF
+                | SyntaxKind::KNOT_HEADER
+                | SyntaxKind::STITCH_DEF
+                | SyntaxKind::STITCH_HEADER
+                | SyntaxKind::VAR_DECL
+                | SyntaxKind::CONST_DECL
+                | SyntaxKind::LIST_DECL
+                | SyntaxKind::EXTERNAL_DECL
+                | SyntaxKind::INCLUDE_STMT
+                | SyntaxKind::EMPTY_LINE
+                | SyntaxKind::STRAY_CLOSING_BRACE => {}
+                other => {
+                    debug_assert!(
+                        other.is_trivia(),
+                        "unexpected SyntaxKind in lower_body_children: {other:?}"
+                    );
+                }
             }
         }
 

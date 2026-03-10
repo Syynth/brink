@@ -242,9 +242,16 @@ fn plan_stmt_choices(
                 }
             }
         }
-        // Content, Divert, TunnelCall, ThreadStart, TempDecl, Assignment,
-        // Return, ExprStmt, EndOfLine — none produce containers.
-        _ => {}
+        // These statement types never produce containers.
+        hir::Stmt::Content(_)
+        | hir::Stmt::Divert(_)
+        | hir::Stmt::TunnelCall(_)
+        | hir::Stmt::ThreadStart(_)
+        | hir::Stmt::TempDecl(_)
+        | hir::Stmt::Assignment(_)
+        | hir::Stmt::Return(_)
+        | hir::Stmt::ExprStmt(_)
+        | hir::Stmt::EndOfLine => {}
     }
 }
 
