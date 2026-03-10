@@ -83,10 +83,37 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     // Resolve via resolution map
     if let Some(info) = ctx.resolve_path(path.range) {
         match info.kind {
-            SymbolKind::Variable
-            | SymbolKind::Constant
-            | SymbolKind::ListItem
-            | SymbolKind::List => lir::Expr::GetGlobal(info.id),
+            SymbolKind::Variable | SymbolKind::Constant | SymbolKind::List => {
+                lir::Expr::GetGlobal(info.id)
+            }
+            SymbolKind::ListItem => {
+                // A bare list item reference (e.g. `drown`) produces a list
+                // value containing just that item, not the raw item value.
+                // Find the origin list from the qualified name "list.item".
+                let origin = info
+                    .name
+                    .split_once('.')
+                    .and_then(|(list_name, _)| {
+                        ctx.index
+                            .by_name
+                            .get(list_name)
+                            .and_then(|ids| {
+                                ids.iter().find(|&&id| {
+                                    ctx.index
+                                        .symbols
+                                        .get(&id)
+                                        .is_some_and(|s| s.kind == SymbolKind::List)
+                                })
+                            })
+                            .copied()
+                    })
+                    .into_iter()
+                    .collect();
+                lir::Expr::ListLiteral {
+                    items: vec![info.id],
+                    origins: origin,
+                }
+            }
             SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label => {
                 lir::Expr::VisitCount(info.id)
             }
