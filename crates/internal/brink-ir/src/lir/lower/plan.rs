@@ -70,7 +70,7 @@ pub fn plan_containers(
 
     for &(file_id, hir_file) in files {
         // Root content gets choice/gather containers
-        plan_block_choices(&hir_file.root_content, file_id, "", ids, &mut plan);
+        plan_block_choices(&hir_file.root_content, file_id, "", index, ids, &mut plan);
 
         for knot in &hir_file.knots {
             let knot_path = &knot.name.text;
@@ -79,7 +79,7 @@ pub fn plan_containers(
 
             plan.knot_ids.insert(knot_path.clone(), knot_id);
 
-            plan_block_choices(&knot.body, file_id, knot_path, ids, &mut plan);
+            plan_block_choices(&knot.body, file_id, knot_path, index, ids, &mut plan);
 
             for stitch in &knot.stitches {
                 let stitch_path = format!("{knot_path}.{}", stitch.name.text);
@@ -88,7 +88,7 @@ pub fn plan_containers(
 
                 plan.stitch_ids.insert(stitch_path.clone(), stitch_id);
 
-                plan_block_choices(&stitch.body, file_id, &stitch_path, ids, &mut plan);
+                plan_block_choices(&stitch.body, file_id, &stitch_path, index, ids, &mut plan);
             }
         }
     }
@@ -100,6 +100,7 @@ fn plan_block_choices(
     block: &hir::Block,
     file: FileId,
     scope_path: &str,
+    index: &SymbolIndex,
     ids: &mut IdAllocator,
     plan: &mut ContainerPlan,
 ) {
@@ -111,6 +112,7 @@ fn plan_block_choices(
             stmt,
             file,
             scope_path,
+            index,
             ids,
             plan,
             &mut choice_counter,
@@ -119,10 +121,12 @@ fn plan_block_choices(
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn plan_stmt_choices(
     stmt: &hir::Stmt,
     file: FileId,
     scope_path: &str,
+    index: &SymbolIndex,
     ids: &mut IdAllocator,
     plan: &mut ContainerPlan,
     choice_counter: &mut usize,
@@ -159,7 +163,8 @@ fn plan_stmt_choices(
                 path
             };
 
-            let gather_id = ids.alloc_container(&gather_path);
+            let gather_id = lookup_container_id(index, &gather_path)
+                .unwrap_or_else(|| ids.alloc_container(&gather_path));
 
             plan.gather_targets.insert(
                 GatherKey {
@@ -173,8 +178,14 @@ fn plan_stmt_choices(
 
             // Plan each choice target
             for choice in &choice_set.choices {
-                let choice_path = format!("{scope_path}.c{choice_counter}");
-                let choice_id = ids.alloc_container(&choice_path);
+                let choice_id = if let Some(ref label) = choice.label {
+                    let label_path = format!("{scope_path}.{}", label.text);
+                    lookup_container_id(index, &label_path).unwrap_or_else(|| {
+                        ids.alloc_container(&format!("{scope_path}.c{choice_counter}"))
+                    })
+                } else {
+                    ids.alloc_container(&format!("{scope_path}.c{choice_counter}"))
+                };
                 *choice_counter += 1;
 
                 plan.choice_targets.insert(
@@ -194,6 +205,7 @@ fn plan_stmt_choices(
                         body_stmt,
                         file,
                         &format!("{scope_path}.c{}", *choice_counter - 1),
+                        index,
                         ids,
                         plan,
                         &mut nested_choice_counter,
@@ -207,7 +219,7 @@ fn plan_stmt_choices(
                 let mut bc = 0;
                 let mut bg = 0;
                 for s in &branch.body.stmts {
-                    plan_stmt_choices(s, file, scope_path, ids, plan, &mut bc, &mut bg);
+                    plan_stmt_choices(s, file, scope_path, index, ids, plan, &mut bc, &mut bg);
                 }
             }
         }
@@ -216,7 +228,7 @@ fn plan_stmt_choices(
                 let mut bc = 0;
                 let mut bg = 0;
                 for s in &branch.stmts {
-                    plan_stmt_choices(s, file, scope_path, ids, plan, &mut bc, &mut bg);
+                    plan_stmt_choices(s, file, scope_path, index, ids, plan, &mut bc, &mut bg);
                 }
             }
         }
@@ -228,10 +240,12 @@ fn lookup_container_id(index: &SymbolIndex, name: &str) -> Option<DefinitionId> 
     index.by_name.get(name).and_then(|ids| {
         ids.iter()
             .find(|&&id| {
-                index
-                    .symbols
-                    .get(&id)
-                    .is_some_and(|info| matches!(info.kind, SymbolKind::Knot | SymbolKind::Stitch))
+                index.symbols.get(&id).is_some_and(|info| {
+                    matches!(
+                        info.kind,
+                        SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
+                    )
+                })
             })
             .copied()
     })
