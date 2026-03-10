@@ -175,6 +175,15 @@ pub fn eval_const_expr(
                 _ => lir::ConstValue::Null,
             }
         }
+        hir::Expr::Prefix(hir::PrefixOp::Not, inner) => {
+            match eval_const_expr(inner, index, resolutions, file, const_values) {
+                lir::ConstValue::Bool(b) => lir::ConstValue::Bool(!b),
+                lir::ConstValue::Int(n) => lir::ConstValue::Bool(n == 0),
+                lir::ConstValue::Float(f) => lir::ConstValue::Bool(f == 0.0),
+                lir::ConstValue::Null => lir::ConstValue::Bool(true),
+                _ => lir::ConstValue::Null,
+            }
+        }
         hir::Expr::Path(path) => {
             if let Some(id) = resolutions.resolve(file, path.range) {
                 if let Some(info) = index.symbols.get(&id) {
