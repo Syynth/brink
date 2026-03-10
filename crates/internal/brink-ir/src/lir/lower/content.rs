@@ -1,3 +1,5 @@
+use brink_format::CountingFlags;
+
 use crate::hir;
 
 use super::context::LowerCtx;
@@ -41,18 +43,45 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
                 branches,
             })
         }
-        hir::ContentPart::InlineSequence(seq) => {
-            let branches = seq
-                .branches
-                .iter()
-                .map(|b| lower_inline_block(b, ctx))
-                .collect();
-            lir::ContentPart::InlineSequence(lir::Sequence {
-                kind: seq.kind,
-                branches,
-            })
-        }
+        hir::ContentPart::InlineSequence(seq) => lower_inline_sequence(seq, ctx),
     }
+}
+
+/// Lower an inline sequence into a wrapper container and return `EnterSequence`.
+fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::ContentPart {
+    // Count existing pending children to derive a unique sequence index.
+    let seq_idx = ctx
+        .pending_children
+        .iter()
+        .filter(|c| c.kind == lir::ContainerKind::Sequence)
+        .count();
+    let wrapper_id = ctx.alloc_sequence_id(seq_idx);
+
+    let branches = seq
+        .branches
+        .iter()
+        .map(|b| lower_inline_block(b, ctx))
+        .collect();
+
+    let display_name = format!("s-{seq_idx}");
+    let wrapper = lir::Container {
+        id: wrapper_id,
+        name: Some(display_name),
+        kind: lir::ContainerKind::Sequence,
+        params: Vec::new(),
+        body: vec![lir::Stmt::Sequence(lir::Sequence {
+            kind: seq.kind,
+            branches,
+        })],
+        children: Vec::new(),
+        counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
+        temp_slot_count: 0,
+        label_id: None,
+        inline: false,
+    };
+    ctx.pending_children.push(wrapper);
+
+    lir::ContentPart::EnterSequence(wrapper_id)
 }
 
 /// Lower a block in inline content context (no choice/gather children possible).

@@ -43,6 +43,9 @@ impl ContainerEmitter<'_> {
                 lir::ContentPart::InlineSequence(seq) => {
                     self.emit_sequence(seq);
                 }
+                lir::ContentPart::EnterSequence(id) => {
+                    self.emit(Opcode::EnterContainer(*id));
+                }
             }
         }
     }

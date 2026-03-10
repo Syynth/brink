@@ -66,6 +66,10 @@ fn build_root(root: &lir::Container, program: &lir::Program, lookups: &Lookups) 
         // ChoiceTarget and Gather children are built by emit_choice_set
         // inside emit_body, so skip them here to avoid double-emission.
         // Exception: gather-chain containers (inline flag) are built here.
+        // Sequence containers are inlined by emit_stmt(EnterContainer), not emitted as named children.
+        if child.kind == lir::ContainerKind::Sequence {
+            continue;
+        }
         if matches!(
             child.kind,
             lir::ContainerKind::ChoiceTarget | lir::ContainerKind::Gather
@@ -198,12 +202,14 @@ fn build_container(container: &lir::Container, path: &str, lookups: &Lookups) ->
     }
 
     // Recursively build non-choice child containers.
-    // ChoiceTarget and Gather children are built by emit_choice_set
-    // inside emit_body and go into the inner container's named_content.
+    // ChoiceTarget, Gather, and Sequence children are handled by emit_body
+    // (inlined via emit_stmt) and go into the inner container's named_content.
     for child in &container.children {
         if matches!(
             child.kind,
-            lir::ContainerKind::ChoiceTarget | lir::ContainerKind::Gather
+            lir::ContainerKind::ChoiceTarget
+                | lir::ContainerKind::Gather
+                | lir::ContainerKind::Sequence
         ) {
             continue;
         }
@@ -279,7 +285,9 @@ fn build_chain_container(container: &lir::Container, path: &str, lookups: &Looku
     for child in &container.children {
         if matches!(
             child.kind,
-            lir::ContainerKind::ChoiceTarget | lir::ContainerKind::Gather
+            lir::ContainerKind::ChoiceTarget
+                | lir::ContainerKind::Gather
+                | lir::ContainerKind::Sequence
         ) {
             continue;
         }

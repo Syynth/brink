@@ -136,6 +136,9 @@ pub enum ContainerKind {
     Gather,
     /// The body of a selected choice.
     ChoiceTarget,
+    /// A wrapper container for a sequence (stopping, cycle, once, shuffle).
+    /// Uses visit counting to select the active branch.
+    Sequence,
 }
 
 /// A parameter on a container (knot, stitch, or function).
@@ -204,6 +207,9 @@ pub enum Stmt {
 
     /// Multiline `{stopping: - ... - ...}` — block-level sequence.
     Sequence(Sequence),
+
+    /// Enter a child container (used for sequence wrappers).
+    EnterContainer(brink_format::DefinitionId),
 
     /// `~ expr` — expression evaluated for side effects.
     ExprStmt(Expr),
@@ -377,6 +383,8 @@ pub enum ContentPart {
     InlineConditional(Conditional),
     /// `{&a|b|c}` — inline sequence.
     InlineSequence(Sequence),
+    /// Enter a child sequence container (inline sequence wrapper).
+    EnterSequence(brink_format::DefinitionId),
 }
 
 // ─── Expressions ─────────────────────────────────────────────────────

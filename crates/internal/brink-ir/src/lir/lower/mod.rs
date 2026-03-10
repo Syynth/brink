@@ -38,7 +38,7 @@ pub fn lower_to_program(
     let externals = decls::collect_externals(files, index, &mut names);
 
     // ── Step 3: Lower containers as a tree ──────────────────────────
-    let root = lower_root(files, &resolutions, index, &mut names, &plan);
+    let root = lower_root(files, &resolutions, index, &mut names, &plan, &mut ids);
 
     // ── Step 4: Counting flags ──────────────────────────────────────
     let mut root = root;
@@ -62,6 +62,7 @@ fn lower_root(
     index: &SymbolIndex,
     names: &mut NameTable,
     plan: &plan::ContainerPlan,
+    ids: &mut context::IdAllocator,
 ) -> lir::Container {
     let mut body = Vec::new();
     let mut children = Vec::new();
@@ -71,11 +72,26 @@ fn lower_root(
     let temp_map = temps::alloc_temps(&[], &root_blocks);
 
     for &(file_id, hir_file) in files {
-        let mut ctx = make_ctx(file_id, resolutions, index, &temp_map, names, String::new());
+        let mut ctx = make_ctx(
+            file_id,
+            resolutions,
+            index,
+            &temp_map,
+            names,
+            ids,
+            String::new(),
+        );
         let mut cc = 0;
         let mut gc = 0;
-        let (stmts, mut block_children) =
-            lower_block_with_children(&hir_file.root_content, &mut ctx, plan, &mut cc, &mut gc);
+        let mut sc = 0;
+        let (stmts, mut block_children) = lower_block_with_children(
+            &hir_file.root_content,
+            &mut ctx,
+            plan,
+            &mut cc,
+            &mut gc,
+            &mut sc,
+        );
         body.extend(stmts);
         children.append(&mut block_children);
 
@@ -88,6 +104,7 @@ fn lower_root(
                 resolutions,
                 index,
                 names,
+                ids,
                 plan,
             ));
         }
@@ -118,6 +135,7 @@ fn lower_root(
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn lower_knot(
     file_id: FileId,
     _hir_file: &hir::HirFile,
@@ -125,6 +143,7 @@ fn lower_knot(
     resolutions: &ResolutionLookup,
     index: &SymbolIndex,
     names: &mut NameTable,
+    ids: &mut context::IdAllocator,
     plan: &plan::ContainerPlan,
 ) -> lir::Container {
     let knot_name = &knot.name.text;
@@ -149,12 +168,14 @@ fn lower_knot(
         index,
         &temp_map,
         names,
+        ids,
         knot_name.clone(),
     );
     let mut cc = 0;
     let mut gc = 0;
+    let mut sc = 0;
     let (body, mut children) =
-        lower_block_with_children(&knot.body, &mut ctx, plan, &mut cc, &mut gc);
+        lower_block_with_children(&knot.body, &mut ctx, plan, &mut cc, &mut gc, &mut sc);
 
     // Add stitches as children
     for stitch in &knot.stitches {
@@ -166,6 +187,7 @@ fn lower_knot(
             resolutions,
             index,
             names,
+            ids,
             plan,
         ));
     }
@@ -207,6 +229,7 @@ fn lower_stitch(
     resolutions: &ResolutionLookup,
     index: &SymbolIndex,
     names: &mut NameTable,
+    ids: &mut context::IdAllocator,
     plan: &plan::ContainerPlan,
 ) -> lir::Container {
     let stitch_name = &stitch.name.text;
@@ -218,11 +241,20 @@ fn lower_stitch(
         .unwrap_or(plan.root_id);
     let params = lower_params(&stitch.params, names, temp_map);
 
-    let mut ctx = make_ctx(file_id, resolutions, index, temp_map, names, stitch_path);
+    let mut ctx = make_ctx(
+        file_id,
+        resolutions,
+        index,
+        temp_map,
+        names,
+        ids,
+        stitch_path,
+    );
     let mut cc = 0;
     let mut gc = 0;
+    let mut sc = 0;
     let (body, children) =
-        lower_block_with_children(&stitch.body, &mut ctx, plan, &mut cc, &mut gc);
+        lower_block_with_children(&stitch.body, &mut ctx, plan, &mut cc, &mut gc, &mut sc);
 
     lir::Container {
         id: stitch_id,
@@ -250,6 +282,7 @@ fn lower_block_with_children(
     plan: &plan::ContainerPlan,
     choice_counter: &mut usize,
     gather_counter: &mut usize,
+    seq_counter: &mut usize,
 ) -> (Vec<lir::Stmt>, Vec<lir::Container>) {
     let mut stmts = Vec::new();
     let mut children = Vec::new();
@@ -325,8 +358,15 @@ fn lower_block_with_children(
                     .and_then(|label| ctx.lookup_label_id(&label.text));
 
                 // Lower the labeled block's contents
-                let (inner_stmts, inner_children) =
-                    lower_block_with_children(labeled, ctx, plan, choice_counter, gather_counter);
+                let mut inner_sc = 0;
+                let (inner_stmts, inner_children) = lower_block_with_children(
+                    labeled,
+                    ctx,
+                    plan,
+                    choice_counter,
+                    gather_counter,
+                    &mut inner_sc,
+                );
 
                 children.push(lir::Container {
                     id: wrapper_id,
@@ -359,8 +399,10 @@ fn lower_block_with_children(
                         let condition = b.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
                         let mut bc = 0;
                         let mut gc = 0;
-                        let (body, branch_children) =
-                            lower_block_with_children(&b.body, ctx, plan, &mut bc, &mut gc);
+                        let mut sc2 = 0;
+                        let (body, branch_children) = lower_block_with_children(
+                            &b.body, ctx, plan, &mut bc, &mut gc, &mut sc2,
+                        );
                         children.extend(branch_children);
                         lir::CondBranch { condition, body }
                     })
@@ -369,30 +411,54 @@ fn lower_block_with_children(
                 pos += 1;
             }
             hir::Stmt::Sequence(seq) => {
+                // Allocate a wrapper container for this sequence.
+                let wrapper_id = ctx.alloc_sequence_id(*seq_counter);
+                *seq_counter += 1;
+
                 // Lower sequence branches with lower_block_with_children
                 // so ChoiceSets inside branches produce child containers.
+                let mut wrapper_children = Vec::new();
                 let branches = seq
                     .branches
                     .iter()
                     .map(|b| {
                         let mut bc = 0;
                         let mut gc = 0;
+                        let mut sc2 = 0;
                         let (body, branch_children) =
-                            lower_block_with_children(b, ctx, plan, &mut bc, &mut gc);
-                        children.extend(branch_children);
+                            lower_block_with_children(b, ctx, plan, &mut bc, &mut gc, &mut sc2);
+                        wrapper_children.extend(branch_children);
                         body
                     })
                     .collect();
-                stmts.push(lir::Stmt::Sequence(lir::Sequence {
-                    kind: seq.kind,
-                    branches,
-                }));
+
+                let display_name = format!("s-{}", *seq_counter - 1);
+                let wrapper = lir::Container {
+                    id: wrapper_id,
+                    name: Some(display_name),
+                    kind: lir::ContainerKind::Sequence,
+                    params: Vec::new(),
+                    body: vec![lir::Stmt::Sequence(lir::Sequence {
+                        kind: seq.kind,
+                        branches,
+                    })],
+                    children: wrapper_children,
+                    counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
+                    temp_slot_count: 0,
+                    label_id: None,
+                    inline: false,
+                };
+                children.push(wrapper);
+
+                stmts.push(lir::Stmt::EnterContainer(wrapper_id));
                 pos += 1;
             }
             _ => {
                 if let Some(s) = stmts::lower_stmt(stmt, ctx) {
                     stmts.push(s);
                 }
+                // Drain any inline sequence containers created during content lowering.
+                children.append(&mut ctx.pending_children);
                 pos += 1;
             }
         }
@@ -447,8 +513,15 @@ fn build_continuation_container(
     }
 
     // Lower continuation stmts — may contain nested ChoiceSets (gather-choice chains)
-    let (body, children) =
-        lower_block_with_children(continuation, ctx, plan, choice_counter, gather_counter);
+    let mut sc = 0;
+    let (body, children) = lower_block_with_children(
+        continuation,
+        ctx,
+        plan,
+        choice_counter,
+        gather_counter,
+        &mut sc,
+    );
 
     lir::Container {
         id,
@@ -509,8 +582,9 @@ fn lower_choice_with_child(
     ctx.scope_path = format!("{}.c{}", old_scope, *choice_counter - 1);
     let mut cc = 0;
     let mut gc = 0;
+    let mut sc = 0;
     let (body_stmts, mut children) =
-        lower_block_with_children(&choice.body, ctx, plan, &mut cc, &mut gc);
+        lower_block_with_children(&choice.body, ctx, plan, &mut cc, &mut gc, &mut sc);
     ctx.scope_path = old_scope;
 
     // Build the choice target container body. The output after selecting
@@ -642,6 +716,7 @@ fn make_ctx<'a>(
     index: &'a SymbolIndex,
     temps: &'a TempMap,
     names: &'a mut NameTable,
+    ids: &'a mut context::IdAllocator,
     scope_path: String,
 ) -> LowerCtx<'a> {
     LowerCtx {
@@ -650,7 +725,9 @@ fn make_ctx<'a>(
         index,
         temps,
         names,
+        ids,
         scope_path,
+        pending_children: Vec::new(),
     }
 }
 
@@ -773,6 +850,7 @@ fn collect_counting_refs(
                     collect_counting_refs(branch, visit_ids, turns_ids);
                 }
             }
+            // EnterContainer, DeclareTemp(None), Return(None), Divert, etc.
             _ => {}
         }
     }
@@ -801,6 +879,7 @@ fn collect_counting_refs_content(
                     collect_counting_refs(branch, visit_ids, turns_ids);
                 }
             }
+            // Text, Glue, EnterSequence
             _ => {}
         }
     }

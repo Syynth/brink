@@ -89,6 +89,10 @@ impl ContainerEmitter<'_> {
 
             lir::Stmt::Sequence(seq) => self.emit_sequence(seq),
 
+            lir::Stmt::EnterContainer(id) => {
+                self.emit(Opcode::EnterContainer(*id));
+            }
+
             lir::Stmt::ExprStmt(expr) => {
                 self.emit_expr(expr);
                 self.emit(Opcode::Pop);
@@ -280,37 +284,70 @@ impl ContainerEmitter<'_> {
         }
     }
 
+    #[expect(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     pub(super) fn emit_sequence(&mut self, seq: &lir::Sequence) {
-        let kind = sequence_kind(seq.kind);
-        #[expect(clippy::cast_possible_truncation)]
-        let count = seq.branches.len() as u8;
+        let count = seq.branches.len();
+        let is_shuffle = seq.kind.contains(brink_ir::SequenceType::SHUFFLE);
 
-        self.emit(Opcode::Sequence(kind, count));
+        if is_shuffle {
+            // Shuffle: use the runtime's Sequence(Shuffle, count) opcode
+            // which pushes a shuffled index onto the stack.
+            self.emit(Opcode::Sequence(SequenceKind::Shuffle, count as u8));
+        } else {
+            // Non-shuffle: use CurrentVisitCount + math to compute branch index.
+            self.emit(Opcode::CurrentVisitCount);
 
-        // Emit SequenceBranch placeholders — each will be patched with offset
-        // to the end of that branch's body.
-        let mut branch_placeholders: Vec<usize> = Vec::new();
-        for _ in 0..count {
-            let site = self.emit_jump_placeholder(Opcode::SequenceBranch(0));
-            branch_placeholders.push(site);
-        }
-
-        // Emit branch bodies
-        let mut end_jumps: Vec<usize> = Vec::new();
-        for (i, branch) in seq.branches.iter().enumerate() {
-            // Patch SequenceBranch to point to the start of this branch body
-            self.patch_jump(branch_placeholders[i]);
-
-            self.emit_body(branch);
-
-            // Jump to end (skip remaining branches)
-            if i < seq.branches.len() - 1 {
-                let end_site = self.emit_jump_placeholder(Opcode::Jump(0));
-                end_jumps.push(end_site);
+            if seq.kind.contains(brink_ir::SequenceType::CYCLE) {
+                // cycle: index = visit_count % count
+                self.emit(Opcode::PushInt(count as i32));
+                self.emit(Opcode::Modulo);
+            } else if seq.kind.contains(brink_ir::SequenceType::ONCE) {
+                // once: index = min(visit_count, count) — when index == count, no branch taken
+                self.emit(Opcode::PushInt(count as i32));
+                self.emit(Opcode::Min);
+            } else {
+                // stopping (default): index = min(visit_count, count - 1)
+                self.emit(Opcode::PushInt(count as i32 - 1));
+                self.emit(Opcode::Min);
             }
         }
 
-        // Patch all end jumps
+        // Switch pattern: for each branch, Duplicate/PushInt(i)/Equal/JumpIfFalse
+        let mut end_jumps: Vec<usize> = Vec::new();
+        let mut skip_sites: Vec<usize> = Vec::new();
+
+        for (i, branch) in seq.branches.iter().enumerate() {
+            // Patch previous skip to land here
+            if let Some(site) = skip_sites.pop() {
+                self.patch_jump(site);
+            }
+
+            self.emit(Opcode::Duplicate);
+            self.emit(Opcode::PushInt(i as i32));
+            self.emit(Opcode::Equal);
+            let skip_site = self.emit_jump_placeholder(Opcode::JumpIfFalse(0));
+
+            // Pop the duplicated index value
+            self.emit(Opcode::Pop);
+
+            self.emit_body(branch);
+
+            // Jump to the Nop at end (skip remaining branches)
+            let end_site = self.emit_jump_placeholder(Opcode::Jump(0));
+            end_jumps.push(end_site);
+
+            skip_sites.push(skip_site);
+        }
+
+        // Patch last skip — no match (once-only exhausted, or shuffle overflow)
+        if let Some(site) = skip_sites.pop() {
+            self.patch_jump(site);
+        }
+        // Pop unmatched index
+        self.emit(Opcode::Pop);
+
+        // Landing target for all taken branches
+        self.emit(Opcode::Nop);
         for site in end_jumps {
             self.patch_jump(site);
         }
@@ -332,18 +369,5 @@ fn combine_choice_content(
             tags.extend(b_content.tags.clone());
             Some(lir::Content { parts, tags })
         }
-    }
-}
-
-fn sequence_kind(kind: brink_ir::SequenceType) -> SequenceKind {
-    if kind.contains(brink_ir::SequenceType::SHUFFLE) {
-        SequenceKind::Shuffle
-    } else if kind.contains(brink_ir::SequenceType::CYCLE) {
-        SequenceKind::Cycle
-    } else if kind.contains(brink_ir::SequenceType::ONCE) {
-        SequenceKind::OnceOnly
-    } else {
-        // STOPPING or default
-        SequenceKind::Stopping
     }
 }

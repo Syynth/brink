@@ -82,6 +82,7 @@ fn emit_stmts(
     (contents, named)
 }
 
+#[expect(clippy::too_many_lines)]
 fn emit_stmt(
     stmt: &lir::Stmt,
     lookups: &Lookups,
@@ -202,6 +203,15 @@ fn emit_stmt(
 
         lir::Stmt::Sequence(seq) => emit_sequence(seq, lookups, cctx, out, named),
 
+        lir::Stmt::EnterContainer(id) => {
+            // For JSON codegen, inline the child container's body (used for sequence wrappers).
+            if let Some(child) = siblings.iter().find(|c| c.id == *id) {
+                for child_stmt in &child.body {
+                    emit_stmt(child_stmt, lookups, cctx, out, named, &child.children);
+                }
+            }
+        }
+
         lir::Stmt::EndOfLine => {
             out.push(Element::Value(InkValue::String("\n".to_string())));
         }
@@ -235,6 +245,11 @@ fn emit_content(
             }
             lir::ContentPart::InlineSequence(seq) => {
                 emit_sequence(seq, lookups, cctx, out, &mut HashMap::new());
+            }
+            lir::ContentPart::EnterSequence(_) => {
+                // EnterSequence for inline sequences — the JSON codegen should not
+                // encounter this in practice because inline sequences are emitted
+                // inline. If we reach here, it's a no-op.
             }
         }
     }
@@ -1189,6 +1204,7 @@ fn emit_content_parts_inline(
             lir::ContentPart::InlineSequence(seq) => {
                 emit_sequence(seq, lookups, cctx, out, &mut HashMap::new());
             }
+            lir::ContentPart::EnterSequence(_) => {}
         }
     }
 }

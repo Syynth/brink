@@ -110,8 +110,12 @@ pub struct LowerCtx<'a> {
     pub index: &'a SymbolIndex,
     pub temps: &'a TempMap,
     pub names: &'a mut NameTable,
+    pub ids: &'a mut IdAllocator,
     /// Current container path prefix (e.g. `"knot"`, `"knot.stitch"`).
     pub scope_path: String,
+    /// Child containers created during content lowering (inline sequences).
+    /// Drained by the caller after each statement.
+    pub pending_children: Vec<super::lir::Container>,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -138,6 +142,16 @@ impl<'a> LowerCtx<'a> {
         } else {
             format!("{}.{label}", self.scope_path)
         }
+    }
+
+    /// Allocate a `DefinitionId` for a sequence wrapper container.
+    pub fn alloc_sequence_id(&mut self, counter: usize) -> DefinitionId {
+        let path = if self.scope_path.is_empty() {
+            format!("s-{counter}")
+        } else {
+            format!("{}.s-{counter}", self.scope_path)
+        };
+        self.ids.alloc_container(&path)
     }
 
     /// Look up a label's `DefinitionId` by qualifying it with the current scope.
