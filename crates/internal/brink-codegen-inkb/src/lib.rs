@@ -135,6 +135,14 @@ impl<'a> ContainerEmitter<'a> {
 fn walk_container(container: &lir::Container, path: &str, state: &mut EmitState) {
     // Emit this container's bytecode.
     let mut emitter = ContainerEmitter::new(state);
+
+    // Emit DeclareTemp for each parameter (pops args from eval stack into
+    // temp slots). Reverse order: caller pushes first arg first, so last
+    // arg is on top of the stack and gets popped first.
+    for param in container.params.iter().rev() {
+        emitter.emit(Opcode::DeclareTemp(param.slot));
+    }
+
     emitter.emit_body(&container.body);
 
     let path_hash: i32 = path.chars().map(|c| c as i32).sum();
