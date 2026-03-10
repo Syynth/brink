@@ -36,7 +36,10 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
     }
 }
 
-/// Stringify a list value: sort items by (ordinal, origin name), join names with ", ".
+/// Stringify a list value: sort items by (ordinal, origin name), join display names with ", ".
+///
+/// List item names are stored fully qualified (`ListName.ItemName`).
+/// For display, we strip the origin prefix and show only the item name.
 fn stringify_list(lv: &ListValue, program: &Program) -> String {
     let mut entries: Vec<(i32, &str, &str)> = lv
         .items
@@ -46,7 +49,11 @@ fn stringify_list(lv: &ListValue, program: &Program) -> String {
                 let origin_name = program
                     .list_def(entry.origin)
                     .map_or("", |def| program.name(def.name));
-                (entry.ordinal, origin_name, program.name(entry.name))
+                let full_name = program.name(entry.name);
+                let display_name = full_name
+                    .split_once('.')
+                    .map_or(full_name, |(_, item)| item);
+                (entry.ordinal, origin_name, display_name)
             })
         })
         .collect();

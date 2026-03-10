@@ -827,8 +827,7 @@ pub fn build_list_defs(
             if qualified.starts_with(list_name.as_str())
                 && qualified.as_bytes().get(list_name.len()) == Some(&b'.')
             {
-                let item_name = &qualified[list_name.len() + 1..];
-                let item_name_id = name_table.intern(item_name)?;
+                let item_name_id = name_table.intern(qualified)?;
                 items.push((item_name_id, ordinal));
 
                 list_items.push(ListItemDef {
