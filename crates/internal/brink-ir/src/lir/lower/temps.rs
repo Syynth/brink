@@ -88,7 +88,7 @@ mod tests {
                 is_divert: false,
             },
         ];
-        let empty_block = Block { stmts: vec![] };
+        let empty_block = Block::default();
         let map = alloc_temps(&params, &[&empty_block]);
         assert_eq!(map.get("a"), Some(0));
         assert_eq!(map.get("b"), Some(1));

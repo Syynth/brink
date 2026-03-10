@@ -93,8 +93,8 @@ pub(super) fn lower_stmt(
             Some(lir::Stmt::ExprStmt(lower_expr(expr, ctx)))
         }
 
-        hir::Stmt::ChoiceSet(_) => {
-            // ChoiceSet is handled by lower_block_with_children in mod.rs
+        hir::Stmt::ChoiceSet(_) | hir::Stmt::LabeledBlock(_) => {
+            // ChoiceSet and LabeledBlock are handled by lower_block_with_children
             None
         }
 

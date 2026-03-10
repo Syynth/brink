@@ -134,46 +134,17 @@ fn plan_stmt_choices(
 ) {
     match stmt {
         hir::Stmt::ChoiceSet(choice_set) => {
-            // When an opening_gather is present (gather-choice same-line pattern),
-            // allocate an extra container for the opening wrapper.
-            if let Some(ref opening) = choice_set.opening_gather {
-                let opening_path = if let Some(ref label) = opening.label {
-                    if scope_path.is_empty() {
-                        label.text.clone()
-                    } else {
-                        format!("{scope_path}.{}", label.text)
-                    }
-                } else {
-                    format!("{scope_path}.g-{gather_counter}")
-                };
-                let opening_id = lookup_container_id(index, &opening_path)
-                    .unwrap_or_else(|| ids.alloc_container(&opening_path));
-                plan.gather_targets.insert(
-                    GatherKey {
-                        file,
-                        scope: scope_path.to_string(),
-                        index: *gather_counter,
-                    },
-                    opening_id,
-                );
-                *gather_counter += 1;
-            }
-
-            // Always plan a gather container — even without an explicit
-            // gather in the source, both backends need a convergence
-            // point (inklecate always emits g-0).
-            let gather_path = if let Some(ref gather) = choice_set.gather
-                && let Some(ref label) = gather.label
-            {
+            // Always plan a gather container for the continuation — even
+            // without an explicit gather in the source, both backends need
+            // a convergence point (inklecate always emits g-0).
+            let gather_path = if let Some(ref label) = choice_set.continuation.label {
                 if scope_path.is_empty() {
                     label.text.clone()
                 } else {
                     format!("{scope_path}.{}", label.text)
                 }
             } else {
-                let path = format!("{scope_path}.g-{gather_counter}");
-                *gather_counter += 1;
-                path
+                format!("{scope_path}.g-{gather_counter}")
             };
 
             let gather_id = lookup_container_id(index, &gather_path)
@@ -183,11 +154,11 @@ fn plan_stmt_choices(
                 GatherKey {
                     file,
                     scope: scope_path.to_string(),
-                    index: *gather_counter
-                        - usize::from(choice_set.gather.as_ref().is_none_or(|g| g.label.is_none())),
+                    index: *gather_counter,
                 },
                 gather_id,
             );
+            *gather_counter += 1;
 
             // Plan each choice target
             for choice in &choice_set.choices {
@@ -229,6 +200,54 @@ fn plan_stmt_choices(
                         &mut nested_gather_counter,
                     );
                 }
+            }
+
+            // Recursively plan nested choices within the continuation block
+            for cont_stmt in &choice_set.continuation.stmts {
+                plan_stmt_choices(
+                    cont_stmt,
+                    file,
+                    scope_path,
+                    index,
+                    ids,
+                    plan,
+                    choice_counter,
+                    gather_counter,
+                );
+            }
+        }
+        hir::Stmt::LabeledBlock(block) => {
+            // A labeled block wrapping a choice set (opening gather pattern).
+            // Allocate a container for the label, then recurse into its stmts.
+            if let Some(ref label) = block.label {
+                let label_path = if scope_path.is_empty() {
+                    label.text.clone()
+                } else {
+                    format!("{scope_path}.{}", label.text)
+                };
+                let label_id = lookup_container_id(index, &label_path)
+                    .unwrap_or_else(|| ids.alloc_container(&label_path));
+                plan.gather_targets.insert(
+                    GatherKey {
+                        file,
+                        scope: scope_path.to_string(),
+                        index: *gather_counter,
+                    },
+                    label_id,
+                );
+                *gather_counter += 1;
+            }
+            for s in &block.stmts {
+                plan_stmt_choices(
+                    s,
+                    file,
+                    scope_path,
+                    index,
+                    ids,
+                    plan,
+                    choice_counter,
+                    gather_counter,
+                );
             }
         }
         hir::Stmt::Conditional(cond) => {

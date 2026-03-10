@@ -109,8 +109,12 @@ pub struct Param {
 // ─── Block and statements ───────────────────────────────────────────
 
 /// A sequence of statements — the universal body type.
+///
+/// When `label` is set, the block represents a named container (e.g. a labeled
+/// gather point). LIR planning allocates a container ID for labeled blocks.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Block {
+    pub label: Option<Name>,
     pub stmts: Vec<Stmt>,
 }
 
@@ -131,8 +135,12 @@ pub enum Stmt {
     Assignment(Assignment),
     /// `~ return expr`
     Return(Return),
-    /// A weave-folded group of choices with optional gather.
+    /// A weave-folded group of choices with continuation.
     ChoiceSet(Box<ChoiceSet>),
+    /// A labeled block — a named scope that becomes a container in LIR.
+    /// Used for opening gathers (`- (label) * choice`) and standalone
+    /// labeled gathers that need to be embedded mid-flow.
+    LabeledBlock(Box<Block>),
     /// Multiline `{ - cond: ... }`
     Conditional(Conditional),
     /// Multiline `{stopping: - ... - ...}`
@@ -145,18 +153,15 @@ pub enum Stmt {
 
 // ─── Weave structure ────────────────────────────────────────────────
 
-/// A group of choices at the same weave depth, with an optional gather.
+/// A group of choices at the same weave depth, with a continuation block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChoiceSet {
     pub choices: Vec<Choice>,
-    /// The convergence point after all choices. If `None`, choices must
-    /// all have explicit diverts (or are loose ends for codegen to wire up).
-    pub gather: Option<Gather>,
-    /// A preceding standalone gather that names the anonymous container
-    /// wrapping this choice set. Present only in the gather-choice same-line
-    /// pattern (`- * hello`). When set, the choice set and subsequent siblings
-    /// form a flat chain of gather containers rather than nesting.
-    pub opening_gather: Option<Gather>,
+    /// The continuation block after all choices converge. Contains the
+    /// gather's content/divert/tags as statements, with the gather's label
+    /// on the block. An empty continuation with no label means choices have
+    /// no explicit gather (loose ends for codegen to wire up).
+    pub continuation: Block,
 }
 
 /// A single choice in a choice set.
@@ -180,22 +185,6 @@ pub struct Choice {
     pub tags: Vec<Tag>,
     /// Nested content after this choice is selected.
     pub body: Block,
-}
-
-/// A gather — the convergence point after a choice set.
-///
-/// Gathers do not own a body. Content after a gather is the next sibling
-/// statement in the parent `Block`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Gather {
-    pub ptr: AstPtr<ast::Gather>,
-    /// Optional label `(label_name)`.
-    pub label: Option<Name>,
-    /// Inline content on the gather line itself.
-    pub content: Option<Content>,
-    /// Explicit divert on the gather line.
-    pub divert: Option<Divert>,
-    pub tags: Vec<Tag>,
 }
 
 // ─── Content and inline elements ────────────────────────────────────

@@ -257,27 +257,6 @@ fn lower_block_with_children(
     while pos < block.stmts.len() {
         let stmt = &block.stmts[pos];
         match stmt {
-            hir::Stmt::ChoiceSet(cs) if cs.opening_gather.is_some() => {
-                // Gather-choice chain (- * hello\n- * world pattern).
-                // Process the entire chain producing flat sibling containers.
-                let (chain_children, consumed) = lower_gather_choice_chain(
-                    block,
-                    pos,
-                    ctx,
-                    plan,
-                    choice_counter,
-                    gather_counter,
-                );
-                // Divert to first container in the chain so execution reaches it.
-                if let Some(first) = chain_children.first() {
-                    stmts.push(lir::Stmt::Divert(lir::Divert {
-                        target: lir::DivertTarget::Container(first.id),
-                        args: Vec::new(),
-                    }));
-                }
-                children.extend(chain_children);
-                pos += consumed;
-            }
             hir::Stmt::ChoiceSet(cs) => {
                 // Every choice set gets a gather target — explicit or implicit.
                 let gather_target = find_gather_target(ctx, plan, gather_counter);
@@ -308,43 +287,67 @@ fn lower_block_with_children(
                 }));
                 children.append(&mut choice_children);
 
-                if let Some(ref gather) = cs.gather {
-                    // Explicit gather — build it with trailing statements
-                    let gather_container = build_gather_container(
-                        gather,
-                        block,
-                        pos,
-                        ctx,
-                        plan,
-                        gather_target,
-                        *gather_counter - 1,
-                    );
-                    children.push(gather_container);
-                    // Trailing statements went into the gather — stop here
-                    break;
-                }
-
-                // No explicit gather — build an implicit one.
-                // Remaining statements in this block go into the implicit
-                // gather's body (not the parent) so that choice targets that
-                // divert to the gather execute the trailing code.
-                let implicit_gather_id = gather_target.unwrap_or(plan.root_id);
-                pos += 1;
-                let mut trailing = Vec::new();
-                while pos < block.stmts.len() {
-                    let s = &block.stmts[pos];
-                    if let Some(ls) =
-                        stmts::lower_stmt(s, ctx, plan, choice_counter, gather_counter)
-                    {
-                        trailing.push(ls);
-                    }
-                    pos += 1;
-                }
-                children.push(build_implicit_gather_with_body(
-                    implicit_gather_id,
+                // Build gather container from the continuation block.
+                // The HIR nests all post-gather content into the continuation,
+                // so no trailing-stmt consumption is needed.
+                let gather_container = build_continuation_container(
+                    &cs.continuation,
+                    ctx,
+                    plan,
+                    gather_target,
+                    *gather_counter - 1,
+                    choice_counter,
                     gather_counter,
-                    trailing,
-                ));
+                );
+                children.push(gather_container);
+                pos += 1;
+            }
+            hir::Stmt::LabeledBlock(labeled) => {
+                // Labeled block wrapping a choice set (opening gather pattern).
+                // Allocate the wrapper container and divert into it.
+                let wrapper_target = find_gather_target(ctx, plan, gather_counter);
+                let wrapper_id = wrapper_target.unwrap_or(plan.root_id);
+
+                stmts.push(lir::Stmt::Divert(lir::Divert {
+                    target: lir::DivertTarget::Container(wrapper_id),
+                    args: Vec::new(),
+                }));
+
+                let display_name = labeled
+                    .label
+                    .as_ref()
+                    .map_or_else(|| format!("g-{}", *gather_counter - 1), |l| l.text.clone());
+
+                let label_id = labeled.label.as_ref().and_then(|label| {
+                    let qualified = if ctx.scope_path.is_empty() {
+                        label.text.clone()
+                    } else {
+                        format!("{}.{}", ctx.scope_path, label.text)
+                    };
+                    ctx.index
+                        .by_name
+                        .get(&qualified)
+                        .and_then(|ids| ids.first())
+                        .copied()
+                });
+
+                // Lower the labeled block's contents
+                let (inner_stmts, inner_children) =
+                    lower_block_with_children(labeled, ctx, plan, choice_counter, gather_counter);
+
+                children.push(lir::Container {
+                    id: wrapper_id,
+                    name: Some(display_name),
+                    kind: lir::ContainerKind::Gather,
+                    params: Vec::new(),
+                    body: inner_stmts,
+                    children: inner_children,
+                    counting_flags: CountingFlags::empty(),
+                    temp_slot_count: 0,
+                    label_id,
+                    inline: true,
+                });
+                pos += 1;
             }
             hir::Stmt::Conditional(cond) => {
                 // Lower conditional branches with lower_block_with_children
@@ -406,143 +409,75 @@ fn lower_block_with_children(
     (stmts, children)
 }
 
-/// Process a gather-choice chain (`- * hello\n- * world`) into flat sibling
-/// gather containers. Each container wraps one `ChoiceSet` and its choice
-/// targets. Returns `(children, stmts_consumed)`.
-fn lower_gather_choice_chain(
-    block: &hir::Block,
-    start: usize,
+/// Build a gather container from a `ChoiceSet`'s continuation block.
+///
+/// The continuation's label becomes the container name, its stmts become
+/// the body (lowered via `lower_block_with_children` to handle nested
+/// `ChoiceSet`s in gather-choice chains).
+fn build_continuation_container(
+    continuation: &hir::Block,
     ctx: &mut LowerCtx<'_>,
     plan: &plan::ContainerPlan,
+    gather_id: Option<brink_format::DefinitionId>,
+    gather_index: usize,
     choice_counter: &mut usize,
     gather_counter: &mut usize,
-) -> (Vec<lir::Container>, usize) {
-    let mut containers = Vec::new();
-    let mut pos = start;
-    let mut prev_convergence_target: Option<brink_format::DefinitionId> = None;
-    // Track the gather_counter value at the previous convergence allocation,
-    // so subsequent containers can compute the correct wrapper name.
-    let mut prev_convergence_counter: usize = 0;
+) -> lir::Container {
+    let id = gather_id.unwrap_or(plan.root_id);
+    let display_name = continuation
+        .label
+        .as_ref()
+        .map_or_else(|| format!("g-{gather_index}"), |l| l.text.clone());
 
-    while pos < block.stmts.len() {
-        let hir::Stmt::ChoiceSet(cs) = &block.stmts[pos] else {
-            break;
-        };
-
-        let is_first = pos == start;
-
-        // For the first CS, allocate the opening wrapper ID.
-        // For subsequent CSes, the previous convergence IS the wrapper ID.
-        let wrapper_target = if is_first {
-            find_gather_target(ctx, plan, gather_counter) // opening wrapper (g-0)
+    // Look up the gather label's DefinitionId if it has one.
+    let label_id = continuation.label.as_ref().and_then(|label| {
+        let qualified = if ctx.scope_path.is_empty() {
+            label.text.clone()
         } else {
-            prev_convergence_target
+            format!("{}.{}", ctx.scope_path, label.text)
         };
+        ctx.index
+            .by_name
+            .get(&qualified)
+            .and_then(|ids| ids.first())
+            .copied()
+    });
 
-        // Allocate the convergence target (what choices divert to = NEXT container).
-        let convergence_counter = *gather_counter;
-        let convergence_target = find_gather_target(ctx, plan, gather_counter);
-
-        // Build choice targets
-        let mut choice_children = Vec::new();
-        let choices: Vec<lir::Choice> = cs
-            .choices
-            .iter()
-            .map(|choice| {
-                let (lir_choice, child) =
-                    lower_choice_with_child(choice, ctx, plan, choice_counter, convergence_target);
-                if let Some(c) = child {
-                    choice_children.push(c);
-                }
-                lir_choice
-            })
-            .collect();
-
-        let cs_body = vec![lir::Stmt::ChoiceSet(lir::ChoiceSet {
-            choices,
-            gather_target: convergence_target,
-        })];
-
-        // Determine the container name
-        let wrapper_id = wrapper_target.unwrap_or(plan.root_id);
-        let wrapper_name = if is_first {
-            // First container: use opening_gather label or "g-N"
-            cs.opening_gather
-                .as_ref()
-                .and_then(|g| g.label.as_ref())
-                .map_or_else(|| format!("g-{}", *gather_counter - 2), |l| l.text.clone())
-        } else {
-            // Previous convergence allocation was at prev_convergence_counter
-            format!("g-{prev_convergence_counter}")
-        };
-
-        let label_id = if is_first {
-            cs.opening_gather.as_ref().and_then(|g| g.label.as_ref())
-        } else {
-            None
-        }
-        .and_then(|label| {
-            let qualified = if ctx.scope_path.is_empty() {
-                label.text.clone()
-            } else {
-                format!("{}.{}", ctx.scope_path, label.text)
-            };
-            ctx.index
-                .by_name
-                .get(&qualified)
-                .and_then(|ids| ids.first())
-                .copied()
-        });
-
-        containers.push(lir::Container {
-            id: wrapper_id,
-            name: Some(wrapper_name),
+    if continuation.stmts.is_empty() && continuation.label.is_none() {
+        // Empty continuation with no label — implicit gather with Done
+        return lir::Container {
+            id,
+            name: Some(display_name),
             kind: lir::ContainerKind::Gather,
             params: Vec::new(),
-            body: cs_body,
-            children: choice_children,
+            body: vec![lir::Stmt::Divert(lir::Divert {
+                target: lir::DivertTarget::Done,
+                args: Vec::new(),
+            })],
+            children: Vec::new(),
             counting_flags: CountingFlags::empty(),
             temp_slot_count: 0,
-            label_id,
-            inline: is_first,
-        });
-
-        prev_convergence_target = convergence_target;
-        prev_convergence_counter = convergence_counter;
-        pos += 1;
-
-        // If this CS has no gather, we're at the end of the chain
-        if cs.gather.is_none() {
-            // Build terminal gather
-            let terminal_id = convergence_target.unwrap_or(plan.root_id);
-            containers.push(build_implicit_gather_with_body(
-                terminal_id,
-                gather_counter,
-                Vec::new(),
-            ));
-            break;
-        }
-
-        // If next stmt is not a ChoiceSet, the chain ends and the gather
-        // wraps the remaining trailing stmts (normal gather behavior).
-        if pos >= block.stmts.len() || !matches!(&block.stmts[pos], hir::Stmt::ChoiceSet(_)) {
-            let gather = cs.gather.as_ref().unwrap_or_else(|| unreachable!());
-            let gather_container = build_gather_container(
-                gather,
-                block,
-                pos - 1,
-                ctx,
-                plan,
-                convergence_target,
-                *gather_counter - 1,
-            );
-            containers.push(gather_container);
-            pos = block.stmts.len(); // build_gather_container consumed trailing stmts
-            break;
-        }
+            label_id: None,
+            inline: false,
+        };
     }
 
-    (containers, pos - start)
+    // Lower continuation stmts — may contain nested ChoiceSets (gather-choice chains)
+    let (body, children) =
+        lower_block_with_children(continuation, ctx, plan, choice_counter, gather_counter);
+
+    lir::Container {
+        id,
+        name: Some(display_name),
+        kind: lir::ContainerKind::Gather,
+        params: Vec::new(),
+        body,
+        children,
+        counting_flags: CountingFlags::empty(),
+        temp_slot_count: 0,
+        label_id,
+        inline: false,
+    }
 }
 
 #[expect(clippy::too_many_lines)]
@@ -719,104 +654,9 @@ fn lower_choice_with_child(
     (lir_choice, Some(child))
 }
 
-fn build_gather_container(
-    gather: &hir::Gather,
-    parent_block: &hir::Block,
-    choice_set_pos: usize,
-    ctx: &mut LowerCtx<'_>,
-    plan: &plan::ContainerPlan,
-    gather_id: Option<brink_format::DefinitionId>,
-    gather_index: usize,
-) -> lir::Container {
-    let id = gather_id.unwrap_or(plan.root_id);
-    let display_name = gather
-        .label
-        .as_ref()
-        .map_or_else(|| format!("g-{gather_index}"), |l| l.text.clone());
-
-    let mut body = Vec::new();
-
-    // Emit gather's inline content
-    if let Some(ref c) = gather.content {
-        body.push(lir::Stmt::EmitContent(content::lower_content(c, ctx)));
-        if gather.divert.is_none() && !matches!(c.parts.last(), Some(hir::ContentPart::Glue)) {
-            body.push(lir::Stmt::EndOfLine);
-        }
-    }
-    if let Some(ref d) = gather.divert {
-        body.push(lir::Stmt::Divert(lower_hir_divert(d, ctx)));
-    }
-
-    // Lower trailing statements from the parent block after the ChoiceSet
-    let mut cc = 0;
-    let mut gc = 0;
-    let trailing_block = hir::Block {
-        stmts: parent_block.stmts[choice_set_pos + 1..].to_vec(),
-    };
-    let (trailing, children) =
-        lower_block_with_children(&trailing_block, ctx, plan, &mut cc, &mut gc);
-    body.extend(trailing);
-
-    // Look up the gather label's DefinitionId if it has one.
-    let label_id = gather.label.as_ref().and_then(|label| {
-        let qualified = if ctx.scope_path.is_empty() {
-            label.text.clone()
-        } else {
-            format!("{}.{}", ctx.scope_path, label.text)
-        };
-        ctx.index
-            .by_name
-            .get(&qualified)
-            .and_then(|ids| ids.first())
-            .copied()
-    });
-
-    lir::Container {
-        id,
-        name: Some(display_name),
-        kind: lir::ContainerKind::Gather,
-        params: Vec::new(),
-        body,
-        children,
-        counting_flags: CountingFlags::empty(),
-        temp_slot_count: 0,
-        label_id,
-        inline: false,
-    }
-}
-
-/// Build an implicit gather container with optional trailing body.
-///
-/// If `trailing` is empty, the gather contains just `Done`.
-/// If `trailing` has statements (e.g., from remaining content after the
-/// choice set), they are included so that choice targets can reach them.
-fn build_implicit_gather_with_body(
-    id: brink_format::DefinitionId,
-    gather_counter: &mut usize,
-    trailing: Vec<lir::Stmt>,
-) -> lir::Container {
-    let name = format!("g-{}", *gather_counter - 1);
-    let body = if trailing.is_empty() {
-        vec![lir::Stmt::Divert(lir::Divert {
-            target: lir::DivertTarget::Done,
-            args: Vec::new(),
-        })]
-    } else {
-        trailing
-    };
-    lir::Container {
-        id,
-        name: Some(name),
-        kind: lir::ContainerKind::Gather,
-        params: Vec::new(),
-        body,
-        children: Vec::new(),
-        counting_flags: CountingFlags::empty(),
-        temp_slot_count: 0,
-        label_id: None,
-        inline: false,
-    }
-}
+// `lower_gather_choice_chain` and `build_gather_container` removed in Phase 2.
+// Gather-choice chains are now handled via nested continuation blocks in the
+// HIR, lowered naturally by `lower_block_with_children` + `build_continuation_container`.
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -856,34 +696,6 @@ fn lower_params(
             }
         })
         .collect()
-}
-
-fn lower_hir_divert(divert: &hir::Divert, ctx: &mut LowerCtx<'_>) -> lir::Divert {
-    let args = divert
-        .target
-        .args
-        .iter()
-        .map(|a| lir::CallArg::Value(expr::lower_expr(a, ctx)))
-        .collect();
-
-    let target = match &divert.target.path {
-        hir::DivertPath::Done => lir::DivertTarget::Done,
-        hir::DivertPath::End => lir::DivertTarget::End,
-        hir::DivertPath::Path(path) => {
-            if let Some(info) = ctx.resolve_path(path.range) {
-                match info.kind {
-                    crate::symbols::SymbolKind::Variable | crate::symbols::SymbolKind::Constant => {
-                        lir::DivertTarget::Variable(info.id)
-                    }
-                    _ => lir::DivertTarget::Container(info.id),
-                }
-            } else {
-                lir::DivertTarget::Done
-            }
-        }
-    };
-
-    lir::Divert { target, args }
 }
 
 fn find_gather_target(

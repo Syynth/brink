@@ -6,10 +6,10 @@ use rowan::TextRange;
 use crate::{
     AssignOp, Assignment, Block, Choice, ChoiceSet, CondBranch, CondKind, Conditional, ConstDecl,
     ContainerPtr, Content, ContentPart, DeclaredSymbol, Diagnostic, DiagnosticCode, Divert,
-    DivertPath, DivertTarget, Expr, ExternalDecl, FileId, FloatBits, Gather, HirFile, IncludeSite,
-    InfixOp, Knot, ListDecl, ListMember, Name, Param, Path, PostfixOp, PrefixOp, RefKind, Return,
-    Scope, Sequence, SequenceType, Stitch, Stmt, StringExpr, StringPart, SymbolManifest, Tag,
-    TempDecl, ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
+    DivertPath, DivertTarget, Expr, ExternalDecl, FileId, FloatBits, HirFile, IncludeSite, InfixOp,
+    Knot, ListDecl, ListMember, Name, Param, Path, PostfixOp, PrefixOp, RefKind, Return, Scope,
+    Sequence, SequenceType, Stitch, Stmt, StringExpr, StringPart, SymbolManifest, Tag, TempDecl,
+    ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
 };
 
 #[cfg(test)]
@@ -1123,8 +1123,7 @@ impl LowerCtx {
                     {
                         stmts.push(Stmt::ChoiceSet(Box::new(ChoiceSet {
                             choices: vec![choice],
-                            gather: None,
-                            opening_gather: None,
+                            continuation: Block::default(),
                         })));
                     }
                 }
@@ -1132,7 +1131,7 @@ impl LowerCtx {
             }
         }
         flush_content_parts(&mut parts, &mut stmts);
-        Block { stmts }
+        Block { label: None, stmts }
     }
 
     /// Lower a `MultilineBranchBody` to a `Block`.
@@ -1282,8 +1281,7 @@ impl LowerCtx {
                         // but don't participate in weave folding at this level
                         stmts.push(Stmt::ChoiceSet(Box::new(ChoiceSet {
                             choices: vec![choice],
-                            gather: None,
-                            opening_gather: None,
+                            continuation: Block::default(),
                         })));
                     }
                 }
@@ -1297,7 +1295,7 @@ impl LowerCtx {
                 stmts.push(Stmt::EndOfLine);
             }
         }
-        Block { stmts }
+        Block { label: None, stmts }
     }
 
     /// Wrap content-level children as a single-statement Block (for inline branches).
@@ -1307,6 +1305,7 @@ impl LowerCtx {
             return Block::default();
         }
         Block {
+            label: None,
             stmts: vec![Stmt::Content(Content {
                 ptr: None,
                 parts,
@@ -1751,7 +1750,7 @@ impl LowerCtx {
             }
             self.lower_body_child(child, &mut stmts);
         }
-        Block { stmts }
+        Block { label: None, stmts }
     }
 
     fn lower_body_child(&mut self, child: brink_syntax::SyntaxNode, out: &mut Vec<Stmt>) {
@@ -1804,7 +1803,11 @@ impl LowerCtx {
         }
     }
 
-    fn lower_gather(&mut self, gather: &ast::Gather) -> Gather {
+    /// Lower an AST gather into a continuation `Block`.
+    ///
+    /// The gather's label becomes the block's label. Its content, divert, and
+    /// tags become statements in the block.
+    fn lower_gather_to_block(&mut self, gather: &ast::Gather) -> Block {
         let label = gather
             .label()
             .and_then(|l| name_from_ident(&l.identifier()?));
@@ -1834,21 +1837,36 @@ impl LowerCtx {
 
         let tags = lower_tags(gather.tags());
 
-        Gather {
-            ptr: AstPtr::new(gather),
-            label,
-            content,
-            divert,
-            tags,
+        let mut stmts = Vec::new();
+        let has_content = content
+            .as_ref()
+            .is_some_and(|c| !c.parts.is_empty() || !tags.is_empty());
+        if let Some(c) = content
+            && has_content
+        {
+            stmts.push(Stmt::Content(Content {
+                ptr: None,
+                parts: c.parts,
+                tags,
+            }));
         }
+        if let Some(d) = divert {
+            stmts.push(Stmt::Divert(d));
+        } else if has_content {
+            // Gather line with content but no divert needs an EndOfLine,
+            // just like a regular content line.
+            stmts.push(Stmt::EndOfLine);
+        }
+
+        Block { label, stmts }
     }
 }
 
 // ─── Phase 7: Body assembly and weave folding ───────────────────────
 
 pub enum WeaveItem {
-    Choice { choice: Choice, depth: usize },
-    Gather { gather: Gather, depth: usize },
+    Choice { choice: Box<Choice>, depth: usize },
+    Continuation { block: Block, depth: usize },
     Stmt(Stmt),
 }
 
@@ -1920,15 +1938,18 @@ impl LowerCtx {
                     if let Some(c) = ast::Choice::cast(child) {
                         let depth = c.bullets().map_or(1, |b| b.depth());
                         if let Some(choice) = self.lower_choice(&c) {
-                            items.push(WeaveItem::Choice { choice, depth });
+                            items.push(WeaveItem::Choice {
+                                choice: Box::new(choice),
+                                depth,
+                            });
                         }
                     }
                 }
                 SyntaxKind::GATHER => {
                     if let Some(g) = ast::Gather::cast(child) {
                         let depth = g.dashes().map_or(1, |d| d.depth());
-                        items.push(WeaveItem::Gather {
-                            gather: self.lower_gather(&g),
+                        items.push(WeaveItem::Continuation {
+                            block: self.lower_gather_to_block(&g),
                             depth,
                         });
                         // Gather-choice same line: `- * hello` embeds a choice
@@ -1937,7 +1958,7 @@ impl LowerCtx {
                             let choice_depth = c.bullets().map_or(1, |b| b.depth());
                             if let Some(choice) = self.lower_choice(&c) {
                                 items.push(WeaveItem::Choice {
-                                    choice,
+                                    choice: Box::new(choice),
                                     depth: choice_depth,
                                 });
                             }
@@ -2102,7 +2123,9 @@ pub fn fold_weave(items: Vec<WeaveItem>) -> Block {
 fn determine_base_depth(items: &[WeaveItem]) -> usize {
     for item in items {
         match item {
-            WeaveItem::Choice { depth, .. } | WeaveItem::Gather { depth, .. } => return *depth,
+            WeaveItem::Choice { depth, .. } | WeaveItem::Continuation { depth, .. } => {
+                return *depth;
+            }
             WeaveItem::Stmt(_) => {}
         }
     }
@@ -2115,12 +2138,18 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
     // Phase 1: Group nested items into sub-weaves (matching ConstructWeaveHierarchyFromIndentation)
     let items = nest_deeper_items(items, base_depth);
 
-    // Phase 2: Build choice sets from the now-single-depth stream
+    // Phase 2: Build choice sets from the now-single-depth stream.
+    //
+    // Key invariant: everything after a gather nests *inside* the gather's
+    // continuation block. When we encounter a Continuation after accumulated
+    // choices, we recursively fold all remaining items into the continuation
+    // and stop — producing a nested tree, not flat siblings.
     let mut stmts = Vec::new();
     let mut choice_acc: Vec<Choice> = Vec::new();
-    let mut last_standalone_gather: Option<Gather> = None;
+    let mut last_standalone_label: Option<Name> = None;
 
-    for item in items {
+    let mut iter = items.into_iter();
+    while let Some(item) = iter.next() {
         match item {
             WeaveItem::Stmt(stmt) => {
                 if choice_acc.is_empty() {
@@ -2134,19 +2163,30 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
                 }
             }
             WeaveItem::Choice { choice, .. } => {
-                choice_acc.push(choice);
+                choice_acc.push(*choice);
             }
-            WeaveItem::Gather { gather, .. } => {
+            WeaveItem::Continuation { block, .. } => {
                 if choice_acc.is_empty() {
-                    emit_standalone_gather(&mut stmts, &gather);
-                    last_standalone_gather = Some(gather);
+                    // Standalone gather — emit content as stmts, save label
+                    emit_standalone_gather(&mut stmts, &block);
+                    last_standalone_label = block.label;
                 } else {
+                    // Gather after choices — collect remaining items, fold them
+                    // recursively, and nest everything into the continuation.
+                    let mut continuation = block;
+                    let remaining: Vec<WeaveItem> = iter.collect();
+                    if !remaining.is_empty() {
+                        let nested = fold_weave_at_depth(remaining, base_depth);
+                        continuation.stmts.extend(nested.stmts);
+                    }
                     flush_choices(
                         &mut stmts,
                         &mut choice_acc,
-                        Some(gather),
-                        last_standalone_gather.take(),
+                        continuation,
+                        last_standalone_label.take(),
                     );
+                    // All remaining items consumed — we're done
+                    return Block { label: None, stmts };
                 }
             }
         }
@@ -2155,10 +2195,10 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
     flush_choices(
         &mut stmts,
         &mut choice_acc,
-        None,
-        last_standalone_gather.take(),
+        Block::default(),
+        last_standalone_label.take(),
     );
-    Block { stmts }
+    Block { label: None, stmts }
 }
 
 /// Extract runs of deeper-depth items and recursively fold them into nested blocks,
@@ -2211,7 +2251,7 @@ fn nest_deeper_items(items: Vec<WeaveItem>, base_depth: usize) -> Vec<WeaveItem>
 
 fn item_depth(item: &WeaveItem) -> Option<usize> {
     match item {
-        WeaveItem::Choice { depth, .. } | WeaveItem::Gather { depth, .. } => Some(*depth),
+        WeaveItem::Choice { depth, .. } | WeaveItem::Continuation { depth, .. } => Some(*depth),
         WeaveItem::Stmt(_) => None,
     }
 }
@@ -2219,28 +2259,34 @@ fn item_depth(item: &WeaveItem) -> Option<usize> {
 fn flush_choices(
     stmts: &mut Vec<Stmt>,
     choice_acc: &mut Vec<Choice>,
-    gather: Option<Gather>,
-    opening_gather: Option<Gather>,
+    continuation: Block,
+    opening_label: Option<Name>,
 ) {
     if choice_acc.is_empty() {
         return;
     }
     let choices = std::mem::take(choice_acc);
-    stmts.push(Stmt::ChoiceSet(Box::new(ChoiceSet {
+    let cs = Stmt::ChoiceSet(Box::new(ChoiceSet {
         choices,
-        gather,
-        opening_gather,
-    })));
+        continuation,
+    }));
+    if let Some(label) = opening_label {
+        // Wrap the choice set in a labeled block (opening gather pattern).
+        stmts.push(Stmt::LabeledBlock(Box::new(Block {
+            label: Some(label),
+            stmts: vec![cs],
+        })));
+    } else {
+        stmts.push(cs);
+    }
 }
 
-fn emit_standalone_gather(stmts: &mut Vec<Stmt>, gather: &Gather) {
-    if let Some(content) = &gather.content
-        && (!content.parts.is_empty() || !gather.tags.is_empty())
-    {
-        stmts.push(Stmt::Content(Content {
-            ptr: None,
-            parts: content.parts.clone(),
-            tags: gather.tags.clone(),
-        }));
+/// Emit a standalone gather's content as statements.
+///
+/// The label is preserved by the caller for potential use as an opening label
+/// on a subsequent choice set.
+fn emit_standalone_gather(stmts: &mut Vec<Stmt>, block: &Block) {
+    for stmt in &block.stmts {
+        stmts.push(stmt.clone());
     }
 }

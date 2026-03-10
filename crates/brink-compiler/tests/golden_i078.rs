@@ -80,9 +80,10 @@ fn i078_hir() {
         panic!("expected ChoiceSet, got {:?}", hir.root_content.stmts[0]);
     };
 
-    // One choice, no gather
+    // One choice, no explicit gather (empty continuation)
     assert_eq!(cs.choices.len(), 1);
-    assert!(cs.gather.is_none());
+    assert!(cs.continuation.label.is_none());
+    assert!(cs.continuation.stmts.is_empty());
 
     let choice = &cs.choices[0];
 

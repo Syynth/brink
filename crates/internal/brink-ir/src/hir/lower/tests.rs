@@ -331,7 +331,7 @@ fn simple_choice() {
             assert_eq!(cs.choices.len(), 2);
             assert!(!cs.choices[0].is_sticky);
             assert!(!cs.choices[1].is_sticky);
-            assert!(cs.gather.is_none());
+            assert!(cs.continuation.stmts.is_empty());
         }
         other => panic!("expected ChoiceSet, got {other:?}"),
     }
@@ -365,7 +365,7 @@ fn choice_with_gather() {
     match &hir.root_content.stmts[0] {
         Stmt::ChoiceSet(cs) => {
             assert_eq!(cs.choices.len(), 2);
-            assert!(cs.gather.is_some());
+            assert!(!cs.continuation.stmts.is_empty());
         }
         other => panic!("expected ChoiceSet, got {other:?}"),
     }
@@ -631,7 +631,7 @@ fn weave_choices_without_gather() {
     match choice_sets[0] {
         Stmt::ChoiceSet(cs) => {
             assert_eq!(cs.choices.len(), 2);
-            assert!(cs.gather.is_none());
+            assert!(cs.continuation.stmts.is_empty());
         }
         _ => unreachable!(),
     }
@@ -654,16 +654,21 @@ fn weave_choices_with_gather() {
     match &body.stmts[0] {
         Stmt::ChoiceSet(cs) => {
             assert_eq!(cs.choices.len(), 2);
-            let gather = cs.gather.as_ref().unwrap();
-            assert!(gather.content.is_some());
+            assert!(
+                cs.continuation
+                    .stmts
+                    .iter()
+                    .any(|s| matches!(s, Stmt::Content(_))),
+                "continuation should have content"
+            );
         }
         other => panic!("expected ChoiceSet, got {other:?}"),
     }
 }
 
-/// Statements after a gather are siblings in the parent block, NOT nested in the gather.
+/// Statements after a gather nest inside the gather's continuation block.
 #[test]
-fn weave_stmts_after_gather_are_siblings() {
+fn weave_stmts_after_gather_nest_in_continuation() {
     let (hir, _, diags) = lower_ink(
         "\
 === knot ===
@@ -676,32 +681,33 @@ More content after gather.
     );
     assert!(diags.is_empty());
     let body = &hir.knots[0].body;
-    // ChoiceSet with gather, then Content + EndOfLine, then Divert — all siblings
-    assert_eq!(body.stmts.len(), 4, "stmts: {:#?}", body.stmts);
+    // Single ChoiceSet — everything after the gather is in the continuation
+    assert_eq!(body.stmts.len(), 1, "stmts: {:#?}", body.stmts);
+    let Stmt::ChoiceSet(cs) = &body.stmts[0] else {
+        panic!("expected ChoiceSet, got {:?}", body.stmts[0]);
+    };
+    // Continuation contains: "Gathered." content + EOL + "More content" + EOL + Divert
+    let cont = &cs.continuation;
     assert!(
-        matches!(&body.stmts[0], Stmt::ChoiceSet(cs) if cs.gather.is_some()),
-        "first stmt should be ChoiceSet with gather"
+        cont.stmts.len() >= 3,
+        "continuation should have gather content + trailing stmts, got: {:#?}",
+        cont.stmts
     );
+    // First stmt is the gather's own content ("Gathered.")
     assert!(
-        matches!(&body.stmts[1], Stmt::Content(_)),
-        "second stmt should be Content, got {:?}",
-        body.stmts[1]
+        matches!(&cont.stmts[0], Stmt::Content(c) if c.parts.iter().any(|p| matches!(p, ContentPart::Text(t) if t.contains("Gathered")))),
+        "first continuation stmt should be gather content"
     );
+    // Should end with Divert(DONE)
     assert!(
-        matches!(&body.stmts[2], Stmt::EndOfLine),
-        "third stmt should be EndOfLine, got {:?}",
-        body.stmts[2]
-    );
-    assert!(
-        matches!(&body.stmts[3], Stmt::Divert(_)),
-        "fourth stmt should be Divert, got {:?}",
-        body.stmts[3]
+        cont.stmts.iter().any(|s| matches!(s, Stmt::Divert(_))),
+        "continuation should contain the trailing divert"
     );
 }
 
-/// Two sequential choice sets each with their own gather.
+/// Two sequential choice sets: the second nests inside the first's continuation.
 #[test]
-fn weave_two_sequential_choice_sets() {
+fn weave_two_sequential_choice_sets_nest() {
     let (hir, _, diags) = lower_ink(
         "\
 === knot ===
@@ -715,17 +721,47 @@ fn weave_two_sequential_choice_sets() {
     );
     assert!(diags.is_empty());
     let body = &hir.knots[0].body;
-    // Two ChoiceSets
-    assert_eq!(body.stmts.len(), 2, "stmts: {:#?}", body.stmts);
-    for (i, stmt) in body.stmts.iter().enumerate() {
-        match stmt {
-            Stmt::ChoiceSet(cs) => {
-                assert_eq!(cs.choices.len(), 2, "choice set {i} should have 2 choices");
-                assert!(cs.gather.is_some(), "choice set {i} should have a gather");
-            }
-            other => panic!("expected ChoiceSet at index {i}, got {other:?}"),
-        }
-    }
+    // One top-level ChoiceSet
+    assert_eq!(body.stmts.len(), 1, "stmts: {:#?}", body.stmts);
+    let Stmt::ChoiceSet(cs1) = &body.stmts[0] else {
+        panic!("expected ChoiceSet, got {:?}", body.stmts[0]);
+    };
+    assert_eq!(
+        cs1.choices.len(),
+        2,
+        "first choice set should have 2 choices"
+    );
+    // First gather content + second choice set nested in continuation
+    let cont = &cs1.continuation;
+    assert!(
+        !cont.stmts.is_empty(),
+        "first continuation should not be empty"
+    );
+    // The continuation should contain a nested ChoiceSet for the second pair
+    let has_nested_cs = cont.stmts.iter().any(|s| matches!(s, Stmt::ChoiceSet(_)));
+    assert!(
+        has_nested_cs,
+        "first continuation should contain a nested ChoiceSet, got: {:#?}",
+        cont.stmts
+    );
+    // Find the nested choice set and verify it
+    let nested_cs = cont
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::ChoiceSet(cs) => Some(cs),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        nested_cs.choices.len(),
+        2,
+        "second choice set should have 2 choices"
+    );
+    assert!(
+        !nested_cs.continuation.stmts.is_empty(),
+        "second continuation should not be empty"
+    );
 }
 
 /// Content before choices becomes a top-level stmt, not part of the `ChoiceSet`.
@@ -796,7 +832,7 @@ fn weave_consecutive_standalone_gathers() {
 }
 
 /// Choices with a gather, then more choices — the first gather closes the first
-/// `ChoiceSet`, and the second batch of choices starts a new `ChoiceSet`.
+/// A gather separates choice sets: second `ChoiceSet` nests inside the first's continuation.
 #[test]
 fn weave_gather_separates_choice_sets() {
     let (hir, _, diags) = lower_ink(
@@ -811,34 +847,31 @@ fn weave_gather_separates_choice_sets() {
     );
     assert!(diags.is_empty());
     let body = &hir.knots[0].body;
-    // First ChoiceSet (Alpha, Beta) with gather, then Content from standalone gather
-    // emission, then second ChoiceSet (Gamma, Delta) without gather.
-    let choice_sets: Vec<_> = body
-        .stmts
-        .iter()
-        .filter(|s| matches!(s, Stmt::ChoiceSet(_)))
-        .collect();
-    assert_eq!(
-        choice_sets.len(),
-        2,
-        "expected 2 choice sets, got {:#?}",
-        body.stmts
-    );
+    // One top-level ChoiceSet (Alpha, Beta), with the second (Gamma, Delta)
+    // nested inside the continuation.
+    assert_eq!(body.stmts.len(), 1, "stmts: {:#?}", body.stmts);
+    let Stmt::ChoiceSet(cs1) = &body.stmts[0] else {
+        panic!("expected ChoiceSet, got {:?}", body.stmts[0]);
+    };
+    assert_eq!(cs1.choices.len(), 2);
 
-    // First should have gather content embedded, second should not
-    match choice_sets[0] {
-        Stmt::ChoiceSet(cs) => {
-            assert_eq!(cs.choices.len(), 2);
-        }
-        _ => unreachable!(),
-    }
-    match choice_sets[1] {
-        Stmt::ChoiceSet(cs) => {
-            assert_eq!(cs.choices.len(), 2);
-            assert!(cs.gather.is_none());
-        }
-        _ => unreachable!(),
-    }
+    // Continuation has gather content + nested second choice set
+    let cont = &cs1.continuation;
+    let nested_cs = cont.stmts.iter().find_map(|s| match s {
+        Stmt::ChoiceSet(cs) => Some(cs),
+        _ => None,
+    });
+    assert!(
+        nested_cs.is_some(),
+        "continuation should contain nested ChoiceSet, got: {:#?}",
+        cont.stmts
+    );
+    let cs2 = nested_cs.unwrap();
+    assert_eq!(cs2.choices.len(), 2);
+    assert!(
+        cs2.continuation.stmts.is_empty(),
+        "second choice set should have empty continuation"
+    );
 }
 
 /// A choice with a divert on its line — the divert is folded into the body.
@@ -1063,8 +1096,7 @@ fn weave_labeled_gather() {
     assert!(diags.is_empty());
     match &hir.knots[0].body.stmts[0] {
         Stmt::ChoiceSet(cs) => {
-            let gather = cs.gather.as_ref().unwrap();
-            let label = gather.label.as_ref().unwrap();
+            let label = cs.continuation.label.as_ref().unwrap();
             assert_eq!(label.text, "my_label");
         }
         other => panic!("expected ChoiceSet, got {other:?}"),
@@ -1096,7 +1128,10 @@ fn weave_nested_bullet_choices() {
         other => panic!("expected ChoiceSet, got {other:?}"),
     };
     assert_eq!(outer_cs.choices.len(), 2, "expected 2 outer choices");
-    assert!(outer_cs.gather.is_some(), "expected outer gather");
+    assert!(
+        !outer_cs.continuation.stmts.is_empty(),
+        "expected outer continuation"
+    );
 
     // Outer A's body should contain a nested ChoiceSet with the inner choices
     let outer_a_body = &outer_cs.choices[0].body;
@@ -1114,7 +1149,10 @@ fn weave_nested_bullet_choices() {
             )
         });
     assert_eq!(inner_cs.choices.len(), 2, "expected 2 inner choices");
-    assert!(inner_cs.gather.is_some(), "expected inner gather");
+    assert!(
+        !inner_cs.continuation.stmts.is_empty(),
+        "expected inner continuation"
+    );
 
     // Outer B should have no nested choice sets
     assert!(
@@ -1167,7 +1205,7 @@ fn weave_fallback_choice() {
     }
 }
 
-/// Content interleaved around multiple choice sets — all siblings in a flat block.
+/// Content interleaved around multiple choice sets — nests through continuations.
 #[test]
 fn weave_interleaved_content_and_choices() {
     let (hir, _, diags) = lower_ink(
@@ -1186,24 +1224,44 @@ After everything.
     );
     assert!(diags.is_empty());
     let body = &hir.knots[0].body;
-    // Expected flat structure (EndOfLine follows each Content):
+    // Expected nested structure:
     // [0] Content("Before first.")
     // [1] EndOfLine
-    // [2] ChoiceSet(A1, A2, gather: "Gather one.")
-    // [3] Content("Between sets.")
-    // [4] EndOfLine
-    // [5] ChoiceSet(B1, B2, gather: "Gather two.")
-    // [6] Content("After everything.")
-    // [7] EndOfLine
-    assert_eq!(body.stmts.len(), 8, "stmts: {:#?}", body.stmts);
+    // [2] ChoiceSet(A1, A2, continuation: [
+    //       Content("Gather one."), ...,
+    //       Content("Between sets."), ...,
+    //       ChoiceSet(B1, B2, continuation: [
+    //         Content("Gather two."), ...,
+    //         Content("After everything."), ...,
+    //       ])
+    //     ])
+    assert_eq!(body.stmts.len(), 3, "stmts: {:#?}", body.stmts);
     assert!(matches!(&body.stmts[0], Stmt::Content(_)));
     assert!(matches!(&body.stmts[1], Stmt::EndOfLine));
-    assert!(matches!(&body.stmts[2], Stmt::ChoiceSet(_)));
-    assert!(matches!(&body.stmts[3], Stmt::Content(_)));
-    assert!(matches!(&body.stmts[4], Stmt::EndOfLine));
-    assert!(matches!(&body.stmts[5], Stmt::ChoiceSet(_)));
-    assert!(matches!(&body.stmts[6], Stmt::Content(_)));
-    assert!(matches!(&body.stmts[7], Stmt::EndOfLine));
+    let Stmt::ChoiceSet(cs1) = &body.stmts[2] else {
+        panic!("expected ChoiceSet at index 2, got {:?}", body.stmts[2]);
+    };
+    assert_eq!(cs1.choices.len(), 2);
+
+    // First continuation should contain gather content + between content + nested choice set
+    let cont1 = &cs1.continuation;
+    let nested_cs = cont1.stmts.iter().find_map(|s| match s {
+        Stmt::ChoiceSet(cs) => Some(cs),
+        _ => None,
+    });
+    assert!(
+        nested_cs.is_some(),
+        "first continuation should contain nested ChoiceSet"
+    );
+    let cs2 = nested_cs.unwrap();
+    assert_eq!(cs2.choices.len(), 2);
+
+    // Second continuation should contain gather content + after content
+    let cont2 = &cs2.continuation;
+    assert!(
+        !cont2.stmts.is_empty(),
+        "second continuation should not be empty"
+    );
 }
 
 // ─── Inline logic lowering ──────────────────────────────────────────
@@ -2202,25 +2260,279 @@ Choose:
         .expect("Option B body should contain a nested ChoiceSet");
 
     // The inner choice set has no explicit gather (the `- -> END` is at the
-    // outer level). The HIR correctly leaves inner_cs.gather as None.
+    // outer level). The HIR correctly leaves the inner continuation empty.
     assert!(
-        inner_cs.gather.is_none(),
-        "inner ChoiceSet should NOT have a gather — `- -> END` is at the outer level"
+        inner_cs.continuation.stmts.is_empty(),
+        "inner ChoiceSet should NOT have a continuation — `- -> END` is at the outer level"
     );
 
-    // The outer choice set should have the gather with `-> END`.
-    let outer_gather = cs
-        .gather
-        .as_ref()
-        .expect("outer ChoiceSet should have an explicit gather from `- -> END`");
-    let outer_divert = outer_gather
-        .divert
-        .as_ref()
-        .expect("outer gather should have divert -> END");
+    // The outer choice set's continuation should have the divert `-> END`.
+    let outer_divert = cs
+        .continuation
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            hir::Stmt::Divert(d) => Some(d),
+            _ => None,
+        })
+        .expect("outer continuation should have divert -> END");
     assert_eq!(
         outer_divert.target.path,
         hir::DivertPath::End,
-        "outer gather's divert should be End, got: {:?}",
+        "outer continuation's divert should be End, got: {:?}",
         outer_divert.target.path
+    );
+}
+
+// ─── Phase 2: Continuation nesting ──────────────────────────────────
+//
+// These tests verify that the weave folder nests remaining items into
+// continuations rather than leaving them as siblings. This matches ink
+// semantics: everything after a gather belongs inside the gather's scope.
+
+/// Gather-choice chain (`- * hello / - * world`) nests the second choice
+/// set inside the first's continuation, not as a sibling.
+#[test]
+fn weave_gather_choice_chain_nests_through_continuations() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+- * hello
+- * world
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+
+    // The first `-` is a standalone gather (opening label), wrapping the first ChoiceSet.
+    // The second `- * world` should nest inside the first ChoiceSet's continuation.
+    // Result: one top-level LabeledBlock (or ChoiceSet).
+    assert_eq!(
+        body.stmts.len(),
+        1,
+        "expected 1 top-level stmt, got: {:#?}",
+        body.stmts
+    );
+
+    // Unwrap: LabeledBlock wrapping a ChoiceSet
+    let inner_stmts = match &body.stmts[0] {
+        Stmt::LabeledBlock(block) => &block.stmts,
+        Stmt::ChoiceSet(_) => &body.stmts, // if no opening label, ChoiceSet is top-level
+        other => panic!("expected LabeledBlock or ChoiceSet, got {other:?}"),
+    };
+
+    let cs1 = match &inner_stmts[0] {
+        Stmt::ChoiceSet(cs) => cs,
+        other => panic!("expected ChoiceSet for 'hello', got {other:?}"),
+    };
+    assert_eq!(
+        cs1.choices.len(),
+        1,
+        "first choice set should have 1 choice"
+    );
+
+    // The second choice set should be nested inside the first's continuation
+    let cont1 = &cs1.continuation;
+    let cs2 = cont1
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::ChoiceSet(cs) => Some(cs),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected nested ChoiceSet for 'world' in continuation, got: {:#?}",
+                cont1.stmts
+            )
+        });
+    assert_eq!(
+        cs2.choices.len(),
+        1,
+        "second choice set should have 1 choice"
+    );
+}
+
+/// Trailing stmts after a gather belong inside the continuation, not as
+/// siblings. This matches ink semantics where content after a gather is
+/// part of the gather's container.
+#[test]
+fn weave_trailing_stmts_nest_inside_continuation() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* Choice A
+* Choice B
+- Gathered.
+More content after gather.
+-> DONE
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+
+    // Everything should be in one ChoiceSet — trailing stmts go into the continuation.
+    assert_eq!(
+        body.stmts.len(),
+        1,
+        "expected 1 top-level stmt, got: {:#?}",
+        body.stmts
+    );
+
+    let cs = match &body.stmts[0] {
+        Stmt::ChoiceSet(cs) => cs,
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    };
+    assert_eq!(cs.choices.len(), 2);
+
+    // The continuation should contain: gather content + trailing content + divert
+    let cont = &cs.continuation;
+    assert!(
+        cont.stmts.iter().any(|s| matches!(s, Stmt::Content(_))),
+        "continuation should have content stmts"
+    );
+    assert!(
+        cont.stmts.iter().any(|s| matches!(s, Stmt::Divert(_))),
+        "continuation should have the trailing divert"
+    );
+}
+
+/// Two sequential choice sets: the second is nested inside the first's
+/// continuation, not a sibling.
+#[test]
+fn weave_sequential_choice_sets_nest() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+* First A
+* First B
+- First gather.
+* Second A
+* Second B
+- Second gather.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+
+    // One top-level ChoiceSet — the second is nested in the first's continuation.
+    assert_eq!(
+        body.stmts.len(),
+        1,
+        "expected 1 top-level stmt, got: {:#?}",
+        body.stmts
+    );
+
+    let cs1 = match &body.stmts[0] {
+        Stmt::ChoiceSet(cs) => cs,
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    };
+    assert_eq!(
+        cs1.choices.len(),
+        2,
+        "first choice set should have 2 choices"
+    );
+
+    // First continuation should contain gather content + nested second ChoiceSet
+    let cont1 = &cs1.continuation;
+    assert!(
+        cont1.stmts.iter().any(|s| matches!(s, Stmt::Content(_))),
+        "first continuation should have gather content"
+    );
+
+    let cs2 = cont1
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::ChoiceSet(cs) => Some(cs),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected nested ChoiceSet in first continuation, got: {:#?}",
+                cont1.stmts
+            )
+        });
+    assert_eq!(
+        cs2.choices.len(),
+        2,
+        "second choice set should have 2 choices"
+    );
+    assert!(
+        !cs2.continuation.stmts.is_empty(),
+        "second choice set should have a continuation"
+    );
+}
+
+/// Labeled gather-choice chain nests through continuations with labels preserved.
+#[test]
+fn weave_labeled_gather_choice_chain() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+- (a) * choice 1
+- (b) * choice 2
+- (c) End.
+",
+    );
+    assert!(diags.is_empty());
+    let body = &hir.knots[0].body;
+
+    // Top level: one LabeledBlock with label "a"
+    assert_eq!(
+        body.stmts.len(),
+        1,
+        "expected 1 top-level stmt, got: {:#?}",
+        body.stmts
+    );
+    let labeled_a = match &body.stmts[0] {
+        Stmt::LabeledBlock(block) => block,
+        other => panic!("expected LabeledBlock for 'a', got {other:?}"),
+    };
+    assert_eq!(
+        labeled_a.label.as_ref().map(|l| l.text.as_str()),
+        Some("a"),
+        "top-level labeled block should have label 'a'"
+    );
+
+    // Inside "a": ChoiceSet with choice 1
+    let cs1 = labeled_a
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::ChoiceSet(cs) => Some(cs),
+            _ => None,
+        })
+        .expect("labeled block 'a' should contain a ChoiceSet");
+    assert_eq!(cs1.choices.len(), 1);
+
+    // Continuation of cs1 should have label "b" and contain choice 2
+    let cont_b = &cs1.continuation;
+    assert_eq!(
+        cont_b.label.as_ref().map(|l| l.text.as_str()),
+        Some("b"),
+        "first continuation should have label 'b'"
+    );
+
+    let cs2 = cont_b
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::ChoiceSet(cs) => Some(cs),
+            _ => None,
+        })
+        .expect("continuation 'b' should contain a ChoiceSet");
+    assert_eq!(cs2.choices.len(), 1);
+
+    // Continuation of cs2 should have label "c" and contain "End."
+    let cont_c = &cs2.continuation;
+    assert_eq!(
+        cont_c.label.as_ref().map(|l| l.text.as_str()),
+        Some("c"),
+        "second continuation should have label 'c'"
+    );
+    assert!(
+        cont_c.stmts.iter().any(|s| matches!(s, Stmt::Content(_))),
+        "continuation 'c' should have content 'End.'"
     );
 }

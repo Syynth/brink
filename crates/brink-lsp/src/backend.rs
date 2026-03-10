@@ -1075,12 +1075,10 @@ fn collect_stmt_folds(stmt: &brink_ir::Stmt, idx: &LineIndex, out: &mut Vec<Fold
                 push_fold(choice.ptr.text_range(), None, idx, out);
                 collect_block_folds(&choice.body, idx, out);
             }
-            if let Some(gather) = &cs.gather {
-                // Gather content may contain inline folds
-                if let Some(content) = &gather.content {
-                    collect_content_folds(content, idx, out);
-                }
-            }
+            collect_block_folds(&cs.continuation, idx, out);
+        }
+        brink_ir::Stmt::LabeledBlock(block) => {
+            collect_block_folds(block, idx, out);
         }
         brink_ir::Stmt::Conditional(cond) => {
             push_fold(cond.ptr.text_range(), Some("{...}".to_owned()), idx, out);
