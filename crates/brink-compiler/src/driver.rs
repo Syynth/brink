@@ -36,8 +36,15 @@ where
     }
 
     // ── Pass 6a: Build LIR ────────────────────────────────────────
+    let entry_id = db.file_id(entry).ok_or_else(|| {
+        CompileError::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("entry file not found after discovery: {entry}"),
+        ))
+    })?;
     let files: Vec<_> = db
-        .file_ids()
+        .file_ids_topo(entry_id)
+        .into_iter()
         .filter_map(|id| db.hir(id).map(|hir| (id, hir)))
         .collect();
     let program = brink_ir::lir::lower_to_program(&files, &result.index, &result.resolutions);

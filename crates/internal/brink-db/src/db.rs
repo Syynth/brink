@@ -212,6 +212,13 @@ impl ProjectDb {
         ids.into_iter()
     }
 
+    /// Return file IDs in topological include order (included files before
+    /// the files that include them), matching ink's `INCLUDE` paste semantics.
+    pub fn file_ids_topo(&self, entry: FileId) -> Vec<FileId> {
+        let all: Vec<_> = self.files.keys().copied().collect();
+        self.include_graph.topological_order(entry, &all)
+    }
+
     /// Get the cached parse tree for a file.
     pub fn parse(&self, id: FileId) -> Option<&Parse> {
         self.files.get(&id).map(|s| &s.parse)

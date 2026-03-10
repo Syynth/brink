@@ -95,6 +95,47 @@ impl IncludeGraph {
         None
     }
 
+    /// Return all file IDs reachable from `entry` in topological order
+    /// (included files before the files that include them).
+    ///
+    /// Uses a post-order DFS: children (includes) are visited before their
+    /// parent, giving the correct "paste-before" order for ink `INCLUDE`.
+    pub fn topological_order(&self, entry: FileId, all_ids: &[FileId]) -> Vec<FileId> {
+        use std::collections::HashSet;
+
+        fn dfs(
+            node: FileId,
+            graph: &IncludeGraph,
+            visited: &mut HashSet<FileId>,
+            order: &mut Vec<FileId>,
+        ) {
+            if !visited.insert(node) {
+                return;
+            }
+            for &child in graph.includes(node) {
+                dfs(child, graph, visited, order);
+            }
+            order.push(node);
+        }
+
+        let mut visited = HashSet::new();
+        let mut order = Vec::new();
+
+        dfs(entry, self, &mut visited, &mut order);
+
+        // Include any remaining files not reachable from entry
+        // (shouldn't happen in practice, but be safe).
+        let mut all_sorted: Vec<_> = all_ids.to_vec();
+        all_sorted.sort_by_key(|id| id.0);
+        for &id in &all_sorted {
+            if visited.insert(id) {
+                order.push(id);
+            }
+        }
+
+        order
+    }
+
     /// Remove a file from the graph entirely.
     pub fn remove(&mut self, file: FileId) {
         // Remove forward edges and their reverse entries

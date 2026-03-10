@@ -377,3 +377,28 @@ The value is {add(3, 4)}.
     let result = compile_and_run(source, &[]);
     assert_eq!(result, "The value is 7.\n");
 }
+
+// ── Include file ordering ────────────────────────────────────────────
+
+/// Content from included files should appear before the including file's
+/// content, matching ink's INCLUDE-as-paste semantics.
+#[test]
+fn include_content_appears_before_main() {
+    let files: HashMap<&str, &str> = HashMap::from([
+        ("main.ink", "INCLUDE a.ink\nINCLUDE b.ink\nThis is main.\n"),
+        ("a.ink", "This is A.\n"),
+        ("b.ink", "This is B.\n"),
+    ]);
+    let data = compile_mem("main.ink", &files).unwrap();
+    let program = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(&program);
+    let result = match story.continue_maximally().unwrap() {
+        StepResult::Done { text, .. }
+        | StepResult::Ended { text, .. }
+        | StepResult::Choices { text, .. } => text,
+    };
+    assert_eq!(
+        result, "This is A.\nThis is B.\nThis is main.\n",
+        "included file content must appear before main file content"
+    );
+}
