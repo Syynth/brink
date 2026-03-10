@@ -157,11 +157,13 @@ pub fn collect_externals(
         for ext in &hir_file.externals {
             if let Some(id) = lookup_global(index, &ext.name.text, SymbolKind::External) {
                 let name = names.intern(&ext.name.text);
+                // Look for an ink-defined function with the same name to use as fallback.
+                let fallback = lookup_global(index, &ext.name.text, SymbolKind::Knot);
                 externals.push(lir::ExternalDef {
                     id,
                     name,
                     arg_count: ext.param_count,
-                    fallback: None,
+                    fallback,
                 });
             }
         }
