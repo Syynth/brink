@@ -190,6 +190,11 @@ impl ContainerEmitter<'_> {
         }
 
         self.emit(Opcode::EndChoiceSet);
+        // Yield to present pending choices. Without this, execution falls
+        // through to whatever follows the choice set in the same container
+        // (e.g., a gather's `goto end`), terminating the story before the
+        // VM can present choices.
+        self.emit(Opcode::Done);
     }
 
     fn emit_choice(&mut self, choice: &lir::Choice) {

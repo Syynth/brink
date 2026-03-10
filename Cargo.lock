@@ -229,6 +229,7 @@ dependencies = [
  "brink-format",
  "brink-ir",
  "brink-json",
+ "brink-runtime",
  "brink-syntax",
  "rowan",
  "serde_json",

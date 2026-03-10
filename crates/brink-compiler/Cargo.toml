@@ -23,6 +23,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+brink-runtime = { path = "../brink-runtime" }
 serde_json.workspace = true
 
 [lints]

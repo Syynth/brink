@@ -154,6 +154,16 @@ fn brink_native_episodes() {
         let actual_index = index_by_choice_path(&actual);
         let mut case_ok = true;
 
+        // Debug: print actual choice paths when BRINK_CASE is set.
+        if case_filter.is_some() {
+            for (i, ep) in actual.iter().enumerate() {
+                println!(
+                    "  actual[{i}]: path={:?} outcome={:?}",
+                    ep.choice_path, ep.outcome
+                );
+            }
+        }
+
         for (i, exp) in golden.iter().enumerate() {
             let Some(act) = actual_index.get(exp.choice_path.as_slice()) else {
                 case_ok = false;
