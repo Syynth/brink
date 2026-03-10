@@ -1841,6 +1841,9 @@ impl LowerCtx {
         let has_content = content
             .as_ref()
             .is_some_and(|c| !c.parts.is_empty() || !tags.is_empty());
+        let ends_glue = content
+            .as_ref()
+            .is_some_and(|c| content_ends_with_glue(&c.parts));
         if let Some(c) = content
             && has_content
         {
@@ -1852,9 +1855,9 @@ impl LowerCtx {
         }
         if let Some(d) = divert {
             stmts.push(Stmt::Divert(d));
-        } else if has_content {
+        } else if has_content && !ends_glue {
             // Gather line with content but no divert needs an EndOfLine,
-            // just like a regular content line.
+            // just like a regular content line. Glue suppresses the newline.
             stmts.push(Stmt::EndOfLine);
         }
 

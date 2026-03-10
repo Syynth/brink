@@ -2536,3 +2536,76 @@ fn weave_labeled_gather_choice_chain() {
         "continuation 'c' should have content 'End.'"
     );
 }
+
+// ─── Gather glue suppresses EndOfLine ───────────────────────────────
+
+/// A gather line ending with `<>` (glue) should NOT produce an `EndOfLine`
+/// after the content. The glue suppresses the line break, just like on
+/// regular content lines.
+#[test]
+fn weave_gather_ending_with_glue_no_eol() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== k ===
+* choice
+- text <>
+More.
+",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    let cs = match &hir.knots[0].body.stmts[0] {
+        Stmt::ChoiceSet(cs) => cs,
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    };
+
+    let cont = &cs.continuation;
+    // First stmt should be Content with parts ending in Glue
+    let first_content = match &cont.stmts[0] {
+        Stmt::Content(c) => c,
+        other => panic!("expected Content as first continuation stmt, got {other:?}"),
+    };
+    assert!(
+        super::content_ends_with_glue(&first_content.parts),
+        "gather content should end with Glue, got parts: {:#?}",
+        first_content.parts,
+    );
+    // The stmt immediately after the glue-ending Content should NOT be EndOfLine
+    assert!(
+        !matches!(cont.stmts.get(1), Some(Stmt::EndOfLine)),
+        "EndOfLine should be suppressed after gather content ending with glue, got: {:#?}",
+        cont.stmts,
+    );
+}
+
+/// A gather line WITHOUT glue should still produce `EndOfLine` after content.
+/// Regression guard for the glue fix.
+#[test]
+fn weave_gather_without_glue_has_eol() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== k ===
+* choice
+- text
+More.
+",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    let cs = match &hir.knots[0].body.stmts[0] {
+        Stmt::ChoiceSet(cs) => cs,
+        other => panic!("expected ChoiceSet, got {other:?}"),
+    };
+
+    let cont = &cs.continuation;
+    // First stmt should be Content("text"), second should be EndOfLine
+    assert!(
+        matches!(&cont.stmts[0], Stmt::Content(_)),
+        "first continuation stmt should be Content"
+    );
+    assert!(
+        matches!(&cont.stmts[1], Stmt::EndOfLine),
+        "gather without glue should have EndOfLine after content, got: {:#?}",
+        cont.stmts,
+    );
+}
