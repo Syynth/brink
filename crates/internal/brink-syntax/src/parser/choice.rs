@@ -47,6 +47,26 @@ pub(crate) fn choice(p: &mut Parser<'_, '_>) {
         p.skip_ws();
     }
 
+    // Handle continuation lines: when the choice line has only conditions
+    // and no text, continuation lines can provide additional conditions
+    // and/or the choice text (start content). In ink:
+    //   * { true } { true }
+    //     { true and true }  one
+    // The conditions from all lines are ANDed together and "one" is the
+    // choice display text.
+    while p.current() == NEWLINE && !matches!(p.nth(1), NEWLINE | EOF | STAR | PLUS | MINUS) {
+        p.bump(); // consume NEWLINE
+        p.skip_ws();
+        while p.current() == L_BRACE {
+            choice_condition(p);
+            p.skip_ws();
+        }
+        // Text or bracket content follows — exit loop, existing code handles it
+        if at_choice_content(p) || p.current() == L_BRACKET {
+            break;
+        }
+    }
+
     // choice_start_content: content elements before [
     if at_choice_content(p) && p.current() != L_BRACKET {
         choice_start_content(p);

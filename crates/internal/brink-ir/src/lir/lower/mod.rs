@@ -747,7 +747,9 @@ fn build_gather_container(
     // Emit gather's inline content
     if let Some(ref c) = gather.content {
         body.push(lir::Stmt::EmitContent(content::lower_content(c, ctx)));
-        body.push(lir::Stmt::EndOfLine);
+        if gather.divert.is_none() && !matches!(c.parts.last(), Some(hir::ContentPart::Glue)) {
+            body.push(lir::Stmt::EndOfLine);
+        }
     }
     if let Some(ref d) = gather.divert {
         body.push(lir::Stmt::Divert(lower_hir_divert(d, ctx)));

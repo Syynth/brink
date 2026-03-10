@@ -1,17 +1,20 @@
-//! Brink-native episode test: compile `.ink` with the brink compiler,
-//! explore, and diff against golden episodes (generated from ink.json).
+#![allow(clippy::unwrap_used)]
+
+//! JSON roundtrip episode test: compile `.ink` → JSON → serialize → deserialize
+//! → convert → link → explore, then diff against golden episodes.
 //!
-//! This reveals compiler correctness gaps — any mismatch between brink-compiled
-//! and ink.json-derived episodes indicates a compiler bug.
+//! This validates that the brink compiler's JSON backend produces output that,
+//! when fed through the converter pipeline, yields correct runtime behavior.
 //!
 //! Set `BRINK_CASE` to a substring to filter to a single test case, e.g.:
-//!   `BRINK_CASE=I002 cargo test -p brink-test-harness --test brink_native_episodes -- --nocapture`
+//!   `BRINK_CASE=I002 cargo test -p brink-compiler --test json_episodes -- --nocapture`
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use brink_test_harness::corpus::{
-    collect_test_cases, compile_and_explore_from_ink, convert_ink_json, load_golden_episodes,
+    JsonRoundtripResult, collect_test_cases, compile_json_roundtrip_and_explore, convert_ink_json,
+    load_golden_episodes,
 };
 use brink_test_harness::{Episode, ExploreConfig, diff};
 
@@ -19,13 +22,12 @@ fn tests_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
-        .join("..")
         .join("tests")
 }
 
 /// Ratchet: minimum number of episodes (not cases) that must pass.
-/// Bump this as compiler coverage improves.
-const RATCHET_EPISODE_COUNT: usize = 532;
+/// Bump this as JSON backend coverage improves.
+const RATCHET_EPISODE_COUNT: usize = 552;
 
 /// Index episodes by their `choice_path` for order-independent matching.
 fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
@@ -37,9 +39,9 @@ fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
 
 /// Build the diagnostic dump shown on first mismatch.
 ///
-/// Includes the `.ink` source, the compiler's `.inkt` output, and the
-/// converter's `.inkt` output (the "expected" bytecode).
-fn build_dump(case_dir: &std::path::Path, compiler_data: &brink_format::StoryData) -> String {
+/// Includes the `.ink` source, our JSON output, the converter `.inkt` from
+/// our JSON, and the reference converter `.inkt` from inklecate's JSON.
+fn build_dump(case_dir: &std::path::Path, result: &JsonRoundtripResult) -> String {
     let mut dump = String::new();
 
     // .ink source
@@ -50,16 +52,21 @@ fn build_dump(case_dir: &std::path::Path, compiler_data: &brink_format::StoryDat
         dump.push('\n');
     }
 
-    // Compiler .inkt
-    dump.push_str("=== compiler .inkt ===\n");
-    dump.push_str(&compiler_data.to_string());
+    // Our .ink.json output
+    dump.push_str("=== brink .ink.json output ===\n");
+    dump.push_str(&result.json_output);
     dump.push('\n');
 
-    // Converter .inkt (the "expected" bytecode from ink.json)
+    // .inkt from our JSON (what the converter made of our output)
+    dump.push_str("=== converter .inkt (from brink json) ===\n");
+    dump.push_str(&result.story_data.to_string());
+    dump.push('\n');
+
+    // Reference .inkt (from inklecate's json)
     let json_path = case_dir.join("story.ink.json");
-    if let Ok(converter_data) = convert_ink_json(&json_path) {
-        dump.push_str("=== converter .inkt ===\n");
-        dump.push_str(&converter_data.to_string());
+    if let Ok(ref_data) = convert_ink_json(&json_path) {
+        dump.push_str("=== converter .inkt (from inklecate json) ===\n");
+        dump.push_str(&ref_data.to_string());
         dump.push('\n');
     }
 
@@ -68,7 +75,7 @@ fn build_dump(case_dir: &std::path::Path, compiler_data: &brink_format::StoryDat
 
 #[test]
 #[expect(clippy::too_many_lines)]
-fn brink_native_episodes() {
+fn json_episodes() {
     let root = tests_dir();
     let cases = collect_test_cases(&root);
     let case_filter = std::env::var("BRINK_CASE").ok();
@@ -81,6 +88,8 @@ fn brink_native_episodes() {
     let mut cases_pass = 0;
     let mut cases_mismatch = 0;
     let mut compile_error = 0;
+    let mut serialize_error = 0;
+    let mut convert_error = 0;
     let mut link_error = 0;
     let mut skip = 0;
 
@@ -126,11 +135,27 @@ fn brink_native_episodes() {
 
         episodes_total += golden.len();
 
-        // Try compiling with brink.
-        let (story_data, actual) = match compile_and_explore_from_ink(&ink_path, &config) {
-            Ok(pair) => pair,
+        // Try compiling with brink JSON backend, roundtripping, and exploring.
+        let result = match compile_json_roundtrip_and_explore(&ink_path, &config) {
+            Ok(r) => r,
             Err(e) if e.starts_with("compile:") => {
                 compile_error += 1;
+                continue;
+            }
+            Err(e) if e.starts_with("serialize:") || e.starts_with("deserialize:") => {
+                serialize_error += 1;
+                failing_cases.push(format!("{rel} (serialize error)"));
+                if first_mismatch.is_none() {
+                    first_mismatch = Some(format!("{rel}: {e}"));
+                }
+                continue;
+            }
+            Err(e) if e.starts_with("convert:") => {
+                convert_error += 1;
+                failing_cases.push(format!("{rel} (convert error)"));
+                if first_mismatch.is_none() {
+                    first_mismatch = Some(format!("{rel}: {e}"));
+                }
                 continue;
             }
             Err(e) if e.starts_with("link:") => {
@@ -151,12 +176,12 @@ fn brink_native_episodes() {
         };
 
         // Match episodes by choice_path (order-independent).
-        let actual_index = index_by_choice_path(&actual);
+        let actual_index = index_by_choice_path(&result.episodes);
         let mut case_ok = true;
 
         // Debug: print actual choice paths when BRINK_CASE is set.
         if case_filter.is_some() {
-            for (i, ep) in actual.iter().enumerate() {
+            for (i, ep) in result.episodes.iter().enumerate() {
                 println!(
                     "  actual[{i}]: path={:?} outcome={:?}",
                     ep.choice_path, ep.outcome
@@ -169,13 +194,13 @@ fn brink_native_episodes() {
                 case_ok = false;
                 episodes_mismatch += 1;
                 if first_mismatch.is_none() {
-                    let dump = build_dump(case_dir, &story_data);
+                    let dump = build_dump(case_dir, &result);
                     first_mismatch = Some(format!(
                         "{rel}: golden episode {i} choice_path {:?} not found in actual \
                          (golden has {}, actual has {} episodes)\n\n{dump}",
                         exp.choice_path,
                         golden.len(),
-                        actual.len()
+                        result.episodes.len()
                     ));
                 }
                 continue;
@@ -187,15 +212,15 @@ fn brink_native_episodes() {
                 episodes_mismatch += 1;
                 case_ok = false;
                 if first_mismatch.is_none() {
-                    let dump = build_dump(case_dir, &story_data);
+                    let dump = build_dump(case_dir, &result);
                     first_mismatch = Some(format!("{rel}: episode {i}:\n{d}\n\n{dump}"));
                 }
             }
         }
 
         // Count any extra actual episodes not in golden as mismatches.
-        if actual.len() > golden.len() {
-            episodes_mismatch += actual.len() - golden.len();
+        if result.episodes.len() > golden.len() {
+            episodes_mismatch += result.episodes.len() - golden.len();
             case_ok = false;
         }
 
@@ -210,12 +235,13 @@ fn brink_native_episodes() {
     let total_cases = cases.len();
     println!();
     println!(
-        "BRINK-NATIVE CASES: {cases_pass} pass / {cases_mismatch} mismatch / \
-         {compile_error} compile_error / {link_error} link_error / \
+        "BRINK-JSON CASES: {cases_pass} pass / {cases_mismatch} mismatch / \
+         {compile_error} compile_error / {serialize_error} serialize_error / \
+         {convert_error} convert_error / {link_error} link_error / \
          {skip} skip (of {total_cases})"
     );
     println!(
-        "BRINK-NATIVE EPISODES: {episodes_pass} pass / {episodes_mismatch} mismatch \
+        "BRINK-JSON EPISODES: {episodes_pass} pass / {episodes_mismatch} mismatch \
          (of {episodes_total} golden)"
     );
 

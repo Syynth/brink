@@ -113,3 +113,49 @@ pub fn compile_and_explore_from_ink(
     let episodes = crate::explore(&program, config);
     Ok((data, episodes))
 }
+
+/// Result of compiling `.ink` → JSON → roundtrip → convert → explore.
+pub struct JsonRoundtripResult {
+    /// Our compiler's JSON output (serialized string, for dumping on failure).
+    pub json_output: String,
+    /// The `StoryData` produced by the converter from our JSON.
+    pub story_data: brink_format::StoryData,
+    /// Episodes explored from that `StoryData`.
+    pub episodes: Vec<Episode>,
+}
+
+/// Compile a `.ink` file to JSON, serialize → deserialize (validating roundtrip),
+/// then convert → link → explore.
+///
+/// The serialize → deserialize step validates that the JSON serialization is correct,
+/// not just the in-memory `InkJson` struct.
+pub fn compile_json_roundtrip_and_explore(
+    ink_path: &Path,
+    config: &ExploreConfig,
+) -> Result<JsonRoundtripResult, String> {
+    // Compile .ink → InkJson
+    let ink_json = brink_compiler::compile_to_json(ink_path.to_string_lossy().as_ref(), |p| {
+        std::fs::read_to_string(p).map_err(|e| std::io::Error::new(e.kind(), format!("{p}: {e}")))
+    })
+    .map_err(|e| format!("compile: {e}"))?;
+
+    // Serialize to JSON string (kept for diagnostic dump)
+    let json_output =
+        serde_json::to_string_pretty(&ink_json).map_err(|e| format!("serialize: {e}"))?;
+
+    // Deserialize back (validates serialization roundtrip)
+    let roundtripped: brink_json::InkJson =
+        serde_json::from_str(&json_output).map_err(|e| format!("deserialize: {e}"))?;
+
+    // Convert → link → explore
+    let story_data =
+        brink_converter::convert(&roundtripped).map_err(|e| format!("convert: {e}"))?;
+    let program = brink_runtime::link(&story_data).map_err(|e| format!("link: {e}"))?;
+    let episodes = crate::explore(&program, config);
+
+    Ok(JsonRoundtripResult {
+        json_output,
+        story_data,
+        episodes,
+    })
+}
