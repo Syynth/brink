@@ -1589,9 +1589,8 @@ impl LowerCtx {
 
         let condition = choice
             .conditions()
-            .next()
-            .and_then(|c| c.expr())
-            .and_then(|e| self.lower_expr(&e));
+            .filter_map(|c| c.expr().and_then(|e| self.lower_expr(&e)))
+            .reduce(|a, b| Expr::Infix(Box::new(a), InfixOp::And, Box::new(b)));
 
         let start_content = choice.start_content().map(|sc| Content {
             ptr: None,
