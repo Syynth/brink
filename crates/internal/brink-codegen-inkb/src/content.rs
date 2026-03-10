@@ -7,17 +7,13 @@ use crate::ContainerEmitter;
 
 impl ContainerEmitter<'_> {
     pub(super) fn emit_content(&mut self, content: &lir::Content) {
-        let has_newline = self.emit_content_parts(&content.parts);
+        self.emit_content_parts(&content.parts);
 
         for tag in &content.tags {
             self.emit(Opcode::BeginTag);
             let idx = self.add_line(tag);
             self.emit(Opcode::EmitLine(idx));
             self.emit(Opcode::EndTag);
-        }
-
-        if has_newline {
-            self.emit(Opcode::EmitNewline);
         }
     }
 
@@ -26,27 +22,9 @@ impl ContainerEmitter<'_> {
         self.emit_content_parts(&content.parts);
     }
 
-    /// Emit content for an inline divert line: parts + tags, but no trailing
-    /// newline. The caller emits the divert (goto) immediately after, so the
-    /// newline would be unreachable dead code — suppress it entirely.
-    pub(super) fn emit_content_inline(&mut self, content: &lir::Content) {
-        self.emit_content_parts(&content.parts);
-
-        for tag in &content.tags {
-            self.emit(Opcode::BeginTag);
-            let idx = self.add_line(tag);
-            self.emit(Opcode::EmitLine(idx));
-            self.emit(Opcode::EndTag);
-        }
-    }
-
-    /// Emit content parts. Returns `true` if a newline should follow
-    /// (i.e., the content doesn't end with glue).
-    fn emit_content_parts(&mut self, parts: &[lir::ContentPart]) -> bool {
-        let mut ends_with_glue = false;
-
+    /// Emit content parts — text, glue, interpolations, inline conditionals/sequences.
+    fn emit_content_parts(&mut self, parts: &[lir::ContentPart]) {
         for part in parts {
-            ends_with_glue = false;
             match part {
                 lir::ContentPart::Text(s) => {
                     let idx = self.add_line(s);
@@ -54,7 +32,6 @@ impl ContainerEmitter<'_> {
                 }
                 lir::ContentPart::Glue => {
                     self.emit(Opcode::Glue);
-                    ends_with_glue = true;
                 }
                 lir::ContentPart::Interpolation(expr) => {
                     self.emit_expr(expr);
@@ -68,7 +45,5 @@ impl ContainerEmitter<'_> {
                 }
             }
         }
-
-        !ends_with_glue
     }
 }

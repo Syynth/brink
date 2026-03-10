@@ -24,6 +24,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 brink-runtime = { path = "../brink-runtime" }
+brink-format = { path = "../internal/brink-format", features = ["inkt"] }
+brink-test-harness = { path = "../internal/brink-test-harness" }
 serde_json.workspace = true
 
 [lints]

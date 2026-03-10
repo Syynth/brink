@@ -1063,9 +1063,8 @@ impl LowerCtx {
                         {
                             stmts.push(s);
                         }
-                        if has_content {
-                            stmts.push(Stmt::EndOfLine);
-                        }
+                        // No EndOfLine inside branchless conditional bodies —
+                        // the enclosing content line provides the trailing newline.
                     }
                 }
                 SyntaxKind::LOGIC_LINE => {
@@ -1103,8 +1102,11 @@ impl LowerCtx {
                 }
                 SyntaxKind::NEWLINE => {
                     if !parts.is_empty() {
+                        let ends_glue = content_ends_with_glue(&parts);
                         flush_content_parts(&mut parts, &mut stmts);
-                        stmts.push(Stmt::EndOfLine);
+                        if !ends_glue {
+                            stmts.push(Stmt::EndOfLine);
+                        }
                     }
                 }
                 SyntaxKind::GLUE_NODE => parts.push(ContentPart::Glue),
@@ -1194,6 +1196,7 @@ impl LowerCtx {
                         parts.extend(line_parts);
                         let tags = lower_tags(cl.tags());
                         let has_divert = cl.divert().is_some();
+                        let ends_glue = content_ends_with_glue(&parts);
                         if !parts.is_empty() || !tags.is_empty() {
                             stmts.push(Stmt::Content(Content {
                                 ptr: None,
@@ -1206,7 +1209,7 @@ impl LowerCtx {
                         {
                             stmts.push(s);
                         }
-                        if !has_divert {
+                        if !has_divert && !ends_glue {
                             stmts.push(Stmt::EndOfLine);
                         }
                     }
@@ -1253,8 +1256,11 @@ impl LowerCtx {
                 SyntaxKind::NEWLINE => {
                     // Newline after text content → flush and emit EndOfLine
                     if !parts.is_empty() {
+                        let ends_glue = content_ends_with_glue(&parts);
                         flush_content_parts(&mut parts, &mut stmts);
-                        stmts.push(Stmt::EndOfLine);
+                        if !ends_glue {
+                            stmts.push(Stmt::EndOfLine);
+                        }
                     }
                     // Reset: whitespace after newline is indentation, not content.
                     seen_content = false;
@@ -1285,8 +1291,11 @@ impl LowerCtx {
             }
         }
         if !parts.is_empty() {
+            let ends_glue = content_ends_with_glue(&parts);
             flush_content_parts(&mut parts, &mut stmts);
-            stmts.push(Stmt::EndOfLine);
+            if !ends_glue {
+                stmts.push(Stmt::EndOfLine);
+            }
         }
         Block { stmts }
     }
@@ -1363,6 +1372,10 @@ impl LowerCtx {
         }
         parts
     }
+}
+
+fn content_ends_with_glue(parts: &[ContentPart]) -> bool {
+    matches!(parts.last(), Some(ContentPart::Glue))
 }
 
 fn flush_content_parts(parts: &mut Vec<ContentPart>, stmts: &mut Vec<Stmt>) {
@@ -1735,16 +1748,21 @@ impl LowerCtx {
                 if let Some(cl) = ast::ContentLine::cast(child) {
                     let stmt = self.lower_content_line(&cl);
                     let was_content = matches!(&stmt, Some(Stmt::Content(_)));
+                    let ends_glue = matches!(
+                        &stmt,
+                        Some(Stmt::Content(c)) if content_ends_with_glue(&c.parts)
+                    );
                     if let Some(s) = stmt {
                         out.push(s);
                     }
+                    let has_divert = cl.divert().is_some();
                     if was_content
                         && let Some(dn) = cl.divert()
                         && let Some(s) = self.lower_divert_node(&dn)
                     {
                         out.push(s);
                     }
-                    if was_content {
+                    if was_content && !has_divert && !ends_glue {
                         out.push(Stmt::EndOfLine);
                     }
                 }
@@ -1824,6 +1842,7 @@ pub enum WeaveItem {
 }
 
 impl LowerCtx {
+    #[expect(clippy::too_many_lines)]
     fn lower_body_children(&mut self, parent: &brink_syntax::SyntaxNode) -> Block {
         let mut items = Vec::new();
 
@@ -1847,16 +1866,21 @@ impl LowerCtx {
 
                         let stmt = self.lower_content_line(&cl);
                         let was_content = matches!(&stmt, Some(Stmt::Content(_)));
+                        let ends_glue = matches!(
+                            &stmt,
+                            Some(Stmt::Content(c)) if content_ends_with_glue(&c.parts)
+                        );
                         if let Some(s) = stmt {
                             items.push(WeaveItem::Stmt(s));
                         }
+                        let has_divert = cl.divert().is_some();
                         if was_content
                             && let Some(dn) = cl.divert()
                             && let Some(s) = self.lower_divert_node(&dn)
                         {
                             items.push(WeaveItem::Stmt(s));
                         }
-                        if was_content {
+                        if was_content && !has_divert && !ends_glue {
                             items.push(WeaveItem::Stmt(Stmt::EndOfLine));
                         }
                     }
