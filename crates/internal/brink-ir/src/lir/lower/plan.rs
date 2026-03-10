@@ -242,6 +242,8 @@ fn plan_stmt_choices(
                 }
             }
         }
+        // Content, Divert, TunnelCall, ThreadStart, TempDecl, Assignment,
+        // Return, ExprStmt, EndOfLine — none produce containers.
         _ => {}
     }
 }

@@ -1673,6 +1673,9 @@ impl LowerCtx {
             && choice.bracket_content().is_none()
             && choice.inner_content().is_none();
 
+        // Multiple choice conditions are ANDed together. If a condition's
+        // expression fails to lower, `lower_expr` already emits a diagnostic
+        // (E015/E016), so we skip it here rather than duplicating the error.
         let condition = choice
             .conditions()
             .filter_map(|c| c.expr().and_then(|e| self.lower_expr(&e)))
@@ -1825,6 +1828,9 @@ impl LowerCtx {
                     out.push(stmt);
                 }
             }
+            // Covers whitespace, punctuation, and other syntax trivia from
+            // the rowan CST. Handled kinds: CONTENT_LINE, LOGIC_LINE,
+            // DIVERT_NODE, INLINE_LOGIC.
             _ => {}
         }
     }
@@ -1984,6 +1990,10 @@ impl LowerCtx {
                         items.push(WeaveItem::Stmt(stmt));
                     }
                 }
+                // Covers whitespace, punctuation, and other syntax trivia from
+                // the rowan CST. Handled kinds: CONTENT_LINE, LOGIC_LINE,
+                // TAG_LINE, CHOICE, GATHER, INLINE_LOGIC, MULTILINE_BLOCK,
+                // DIVERT_NODE.
                 _ => {}
             }
         }
