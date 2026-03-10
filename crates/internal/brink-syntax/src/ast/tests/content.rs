@@ -248,6 +248,15 @@ fn branchless_cond_body_else_branch() {
     assert!(body.else_branch().is_some());
 }
 
+#[test]
+fn branchless_cond_body_else_after_logic_line() {
+    // When a logic line consumes the trailing NEWLINE, the parser lands
+    // directly on MINUS — must still parse as an else branch.
+    let tree = parse_tree("{\n  x > 0:\n  ~ y = 1\n- else:\n  ~ y = 2\n}\n");
+    let body: BranchlessCondBody = first(tree.syntax());
+    assert!(body.else_branch().is_some());
+}
+
 // ── Sequences ────────────────────────────────────────────────────────
 
 #[test]
