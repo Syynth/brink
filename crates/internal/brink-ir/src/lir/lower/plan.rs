@@ -138,11 +138,7 @@ fn plan_stmt_choices(
             // without an explicit gather in the source, both backends need
             // a convergence point (inklecate always emits g-0).
             let gather_path = if let Some(ref label) = choice_set.continuation.label {
-                if scope_path.is_empty() {
-                    label.text.clone()
-                } else {
-                    format!("{scope_path}.{}", label.text)
-                }
+                qualify_name(scope_path, &label.text)
             } else {
                 format!("{scope_path}.g-{gather_counter}")
             };
@@ -163,11 +159,7 @@ fn plan_stmt_choices(
             // Plan each choice target
             for choice in &choice_set.choices {
                 let choice_id = if let Some(ref label) = choice.label {
-                    let label_path = if scope_path.is_empty() {
-                        label.text.clone()
-                    } else {
-                        format!("{scope_path}.{}", label.text)
-                    };
+                    let label_path = qualify_name(scope_path, &label.text);
                     lookup_container_id(index, &label_path).unwrap_or_else(|| {
                         ids.alloc_container(&format!("{scope_path}.c{choice_counter}"))
                     })
@@ -220,11 +212,7 @@ fn plan_stmt_choices(
             // A labeled block wrapping a choice set (opening gather pattern).
             // Allocate a container for the label, then recurse into its stmts.
             if let Some(ref label) = block.label {
-                let label_path = if scope_path.is_empty() {
-                    label.text.clone()
-                } else {
-                    format!("{scope_path}.{}", label.text)
-                };
+                let label_path = qualify_name(scope_path, &label.text);
                 let label_id = lookup_container_id(index, &label_path)
                     .unwrap_or_else(|| ids.alloc_container(&label_path));
                 plan.gather_targets.insert(
@@ -269,6 +257,15 @@ fn plan_stmt_choices(
             }
         }
         _ => {}
+    }
+}
+
+/// Qualify a name with a scope path prefix.
+fn qualify_name(scope_path: &str, name: &str) -> String {
+    if scope_path.is_empty() {
+        name.to_string()
+    } else {
+        format!("{scope_path}.{name}")
     }
 }
 

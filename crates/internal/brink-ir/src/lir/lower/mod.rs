@@ -318,18 +318,10 @@ fn lower_block_with_children(
                     .as_ref()
                     .map_or_else(|| format!("g-{}", *gather_counter - 1), |l| l.text.clone());
 
-                let label_id = labeled.label.as_ref().and_then(|label| {
-                    let qualified = if ctx.scope_path.is_empty() {
-                        label.text.clone()
-                    } else {
-                        format!("{}.{}", ctx.scope_path, label.text)
-                    };
-                    ctx.index
-                        .by_name
-                        .get(&qualified)
-                        .and_then(|ids| ids.first())
-                        .copied()
-                });
+                let label_id = labeled
+                    .label
+                    .as_ref()
+                    .and_then(|label| ctx.lookup_label_id(&label.text));
 
                 // Lower the labeled block's contents
                 let (inner_stmts, inner_children) =
@@ -430,18 +422,10 @@ fn build_continuation_container(
         .map_or_else(|| format!("g-{gather_index}"), |l| l.text.clone());
 
     // Look up the gather label's DefinitionId if it has one.
-    let label_id = continuation.label.as_ref().and_then(|label| {
-        let qualified = if ctx.scope_path.is_empty() {
-            label.text.clone()
-        } else {
-            format!("{}.{}", ctx.scope_path, label.text)
-        };
-        ctx.index
-            .by_name
-            .get(&qualified)
-            .and_then(|ids| ids.first())
-            .copied()
-    });
+    let label_id = continuation
+        .label
+        .as_ref()
+        .and_then(|label| ctx.lookup_label_id(&label.text));
 
     if continuation.stmts.is_empty() && continuation.label.is_none() {
         // Empty continuation with no label — implicit gather with Done
@@ -609,18 +593,10 @@ fn lower_choice_with_child(
     }
 
     // Look up the label's DefinitionId if the choice has a label.
-    let label_id = choice.label.as_ref().and_then(|label| {
-        let qualified = if ctx.scope_path.is_empty() {
-            label.text.clone()
-        } else {
-            format!("{}.{}", ctx.scope_path, label.text)
-        };
-        ctx.index
-            .by_name
-            .get(&qualified)
-            .and_then(|ids| ids.first())
-            .copied()
-    });
+    let label_id = choice
+        .label
+        .as_ref()
+        .and_then(|label| ctx.lookup_label_id(&label.text));
 
     let child_name = format!("c-{}", *choice_counter - 1);
     let child = lir::Container {

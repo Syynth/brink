@@ -130,6 +130,25 @@ impl<'a> LowerCtx<'a> {
     pub fn temp_slot(&self, name: &str) -> Option<u16> {
         self.temps.get(name)
     }
+
+    /// Qualify a label name with the current scope path.
+    pub fn qualify_label(&self, label: &str) -> String {
+        if self.scope_path.is_empty() {
+            label.to_string()
+        } else {
+            format!("{}.{label}", self.scope_path)
+        }
+    }
+
+    /// Look up a label's `DefinitionId` by qualifying it with the current scope.
+    pub fn lookup_label_id(&self, label: &str) -> Option<DefinitionId> {
+        let qualified = self.qualify_label(label);
+        self.index
+            .by_name
+            .get(&qualified)
+            .and_then(|ids| ids.first())
+            .copied()
+    }
 }
 
 // ─── Temp map ───────────────────────────────────────────────────────
