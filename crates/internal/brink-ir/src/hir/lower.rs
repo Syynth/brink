@@ -1454,22 +1454,54 @@ impl LowerCtx {
         }
 
         if let Some(tunnel_onwards) = node.tunnel_onwards() {
-            let mut targets: Vec<DivertTarget> = tunnel_onwards
+            let onwards_targets: Vec<DivertTarget> = tunnel_onwards
                 .targets()
                 .filter_map(|t| self.lower_divert_target_with_args(&t))
                 .collect();
+
             if let Some(tc) = tunnel_onwards.tunnel_call() {
+                // `->-> A -> B` — chained tunnel call through onwards target
+                let mut targets = onwards_targets;
                 targets.extend(
                     tc.targets()
                         .filter_map(|t| self.lower_divert_target_with_args(&t)),
                 );
+                if !targets.is_empty() {
+                    return Some(Stmt::TunnelCall(TunnelCall {
+                        ptr: AstPtr::new(node),
+                        targets,
+                    }));
+                }
+            } else if let Some(target) = onwards_targets.into_iter().next() {
+                // `->-> B` — tunnel return with divert override.
+                // Push the target as a DivertTarget expression so the runtime
+                // redirects to B instead of the original tunnel return address.
+                match &target.path {
+                    DivertPath::Path(path) => {
+                        let value = Some(Expr::DivertTarget(path.clone()));
+                        return Some(Stmt::Return(Return { ptr: None, value }));
+                    }
+                    DivertPath::Done => {
+                        return Some(Stmt::Divert(Divert {
+                            ptr: Some(SyntaxNodePtr::from_node(node.syntax())),
+                            target: DivertTarget {
+                                path: DivertPath::Done,
+                                args: Vec::new(),
+                            },
+                        }));
+                    }
+                    DivertPath::End => {
+                        return Some(Stmt::Divert(Divert {
+                            ptr: Some(SyntaxNodePtr::from_node(node.syntax())),
+                            target: DivertTarget {
+                                path: DivertPath::End,
+                                args: Vec::new(),
+                            },
+                        }));
+                    }
+                }
             }
-            if !targets.is_empty() {
-                return Some(Stmt::TunnelCall(TunnelCall {
-                    ptr: AstPtr::new(node),
-                    targets,
-                }));
-            }
+
             // Bare `->->` with no targets — tunnel return
             return Some(Stmt::Return(Return {
                 ptr: None,

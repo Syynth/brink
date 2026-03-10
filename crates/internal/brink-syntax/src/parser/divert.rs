@@ -62,7 +62,11 @@ fn tunnel_onwards(p: &mut Parser<'_, '_>) {
     p.bump(); // TUNNEL_ONWARDS token `->->`
     p.skip_ws();
     if p.current() == DIVERT {
+        // `->-> -> target` — chained divert after tunnel onwards
         divert_chain(p);
+    } else if at_divert_target(p) {
+        // `->-> target` — tunnel onwards with direct target override
+        divert_target_with_args(p);
     }
     p.finish_node();
 }

@@ -129,6 +129,37 @@ fn thread_with_divert_arg() {
     check("<- listAvailableStorylets(2, -> opts)\n");
 }
 
+/// `->-> B` = tunnel onwards with direct target override.
+#[test]
+fn tunnel_onwards_with_target() {
+    check("->-> B\n");
+    let p = parse("->-> B\n");
+    let root = p.syntax();
+    let tunnel = root
+        .descendants()
+        .find(|n| n.kind() == crate::SyntaxKind::TUNNEL_ONWARDS_NODE)
+        .expect("expected TUNNEL_ONWARDS_NODE");
+    let has_target = tunnel
+        .descendants()
+        .any(|n| n.kind() == crate::SyntaxKind::DIVERT_TARGET_WITH_ARGS);
+    assert!(
+        has_target,
+        "tunnel onwards `->-> B` should have a DIVERT_TARGET_WITH_ARGS child"
+    );
+}
+
+/// `->-> DONE` = tunnel onwards to DONE keyword.
+#[test]
+fn tunnel_onwards_to_done() {
+    check("->-> DONE\n");
+}
+
+/// `->-> target(arg)` = tunnel onwards with target and arguments.
+#[test]
+fn tunnel_onwards_with_target_args() {
+    check("->-> target(x)\n");
+}
+
 #[test]
 fn insta_tunnel_call() {
     let p = parse("-> tunnel_test ->\n");

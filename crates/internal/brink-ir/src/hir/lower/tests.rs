@@ -1930,3 +1930,87 @@ fn logical_or_conditional_not_sequence() {
         cond.branches.len(),
     );
 }
+
+// ── Tunnel onwards with direct target ──────────────────────────────
+
+#[test]
+fn tunnel_onwards_with_target_becomes_return() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== A ===
+->-> B
+=== B ===
+Done.
+",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = &hir.knots[0].body;
+    let has_return_with_value = body.stmts.iter().any(|s| {
+        matches!(
+            s,
+            Stmt::Return(Return {
+                ptr: None,
+                value: Some(Expr::DivertTarget(_)),
+            })
+        )
+    });
+    assert!(
+        has_return_with_value,
+        "`->-> B` should lower to Return with DivertTarget value, got: {:?}",
+        body.stmts,
+    );
+}
+
+// ── Multiple choice conditions ANDed ───────────────────────────────
+
+#[test]
+fn choice_multiple_conditions_anded() {
+    let (hir, _, diags) = lower_ink("* {true} {false} hidden\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let cs = match &hir.root_content.stmts[0] {
+        Stmt::ChoiceSet(cs) => cs,
+        other => panic!("expected ChoiceSet, got: {other:?}"),
+    };
+    let cond = cs.choices[0]
+        .condition
+        .as_ref()
+        .expect("choice should have a condition");
+    assert!(
+        matches!(cond, Expr::Infix(_, InfixOp::And, _)),
+        "multiple choice conditions should be ANDed, got: {cond:?}",
+    );
+}
+
+// ── Whitespace between inline expressions in branch bodies ─────────
+
+#[test]
+fn whitespace_between_inline_exprs_in_branch_body() {
+    let (hir, _, diags) = lower_ink(
+        "\
+{
+- else:
+  {1} {2}
+}
+",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    // The else branch should contain content with a space between
+    // the two interpolations: Interpolation(1), Text(" "), Interpolation(2).
+    let cond = match &hir.root_content.stmts[0] {
+        Stmt::Conditional(c) => c,
+        other => panic!("expected Conditional, got: {other:?}"),
+    };
+    let branch = &cond.branches[0];
+    let has_space = branch.body.stmts.iter().any(|s| match s {
+        Stmt::Content(c) => c
+            .parts
+            .iter()
+            .any(|p| matches!(p, ContentPart::Text(t) if t.contains(' '))),
+        _ => false,
+    });
+    assert!(
+        has_space,
+        "space between {{1}} and {{2}} should be preserved as Text(\" \"), got: {:?}",
+        branch.body.stmts,
+    );
+}
