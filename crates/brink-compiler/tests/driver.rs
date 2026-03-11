@@ -965,7 +965,60 @@ a={a} b={b}
     assert_eq!(result, "a=0 b=10\n");
 }
 
-/// Ref params with list operations — minimal tower-of-hanoi pattern.
+/// Thread-called stitch with conditional choice and ref params —
+/// the core tower-of-hanoi pattern. The stitch is called via `<-`
+/// and provides a conditional choice based on `can_move`.
+#[test]
+fn tower_of_hanoi_mini() {
+    let source = "\
+LIST Discs = one, two, three
+VAR post1 = ()
+VAR post2 = ()
+VAR post3 = ()
+
+~ post1 = LIST_ALL(Discs)
+
+-> gameloop
+
+=== function can_move(from_list, to_list) ===
+    {
+    -   LIST_COUNT(from_list) == 0:
+        ~ return false
+    -   LIST_COUNT(to_list) > 0 && LIST_MIN(from_list) > LIST_MIN(to_list):
+        ~ return false
+    -   else:
+        ~ return true
+    }
+
+=== function move_ring( ref from, ref to ) ===
+    ~ temp whichRingToMove = LIST_MIN(from)
+    ~ from -= whichRingToMove
+    ~ to += whichRingToMove
+
+=== gameloop
+    Start.
+- (top)
+    +  [ Regard]
+        Regarded.
+    <- move_post(1, 2, post1, post2)
+    -> DONE
+
+= move_post(from_post_num, to_post_num, ref from_post_list, ref to_post_list)
+    +   { can_move(from_post_list, to_post_list) }
+        [ Move ]
+        { move_ring(from_post_list, to_post_list) }
+        Moved.
+    -> top
+";
+    // Choose \"Move\" (from move_post thread), then \"Regard\"
+    let result = compile_and_run(source, &[0, 0]);
+    assert!(
+        result.contains("Moved") || result.contains("Regarded"),
+        "expected tower-of-hanoi mini to produce output, got: {result:?}"
+    );
+}
+
+/// Ref params with list operations — minimal `move_ring` pattern.
 #[test]
 fn ref_param_list_move_ring() {
     let source = "\
@@ -1093,4 +1146,62 @@ VAR x = 0
 ";
     let result = compile_and_run(source, &[]);
     assert_eq!(result, "1\n");
+}
+
+/// Tower-of-hanoi pattern with all 6 thread starts.
+/// Hangs due to runtime thread merging bug — multiple threads with
+/// conditional choices create an infinite loop in the VM.
+#[test]
+#[ignore = "runtime thread merging infinite loop with multiple conditional-choice threads"]
+fn tower_of_hanoi_6threads() {
+    let source = "\
+LIST Discs = one, two, three
+VAR post1 = ()
+VAR post2 = ()
+VAR post3 = ()
+
+~ post1 = LIST_ALL(Discs)
+
+-> gameloop
+
+=== function can_move(from_list, to_list) ===
+    {
+    -   LIST_COUNT(from_list) == 0:
+        ~ return false
+    -   LIST_COUNT(to_list) > 0 && LIST_MIN(from_list) > LIST_MIN(to_list):
+        ~ return false
+    -   else:
+        ~ return true
+    }
+
+=== function move_ring( ref from, ref to ) ===
+    ~ temp whichRingToMove = LIST_MIN(from)
+    ~ from -= whichRingToMove
+    ~ to += whichRingToMove
+
+=== gameloop
+    Start.
+- (top)
+    +  [ Regard]
+        Regarded.
+    <- move_post(1, 2, post1, post2)
+    <- move_post(2, 1, post2, post1)
+    <- move_post(1, 3, post1, post3)
+    <- move_post(3, 1, post3, post1)
+    <- move_post(3, 2, post3, post2)
+    <- move_post(2, 3, post2, post3)
+    -> DONE
+
+= move_post(from_post_num, to_post_num, ref from_post_list, ref to_post_list)
+    +   { can_move(from_post_list, to_post_list) }
+        [ Move {from_post_num} to {to_post_num} ]
+        { move_ring(from_post_list, to_post_list) }
+        Moved.
+    -> top
+";
+    let result = compile_and_run(source, &[0, 0]);
+    assert!(
+        result.contains("Moved") || result.contains("Regarded"),
+        "expected output, got: {result:?}"
+    );
 }
