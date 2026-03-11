@@ -343,15 +343,14 @@ fn lower_block_with_children(
                 pos += 1;
             }
             hir::Stmt::LabeledBlock(labeled) => {
-                // Labeled block wrapping a choice set (opening gather pattern).
-                // Allocate the wrapper container and divert into it.
+                // Labeled block wrapping content (standalone gather or opening
+                // gather pattern). Enter the wrapper container so execution
+                // returns to the parent when the child finishes — this allows
+                // sibling LabeledBlocks to chain (e.g. `- (opts) ... - (test)`).
                 let wrapper_target = find_gather_target(ctx, plan, gather_counter);
                 let wrapper_id = wrapper_target.unwrap_or(plan.root_id);
 
-                stmts.push(lir::Stmt::Divert(lir::Divert {
-                    target: lir::DivertTarget::Container(wrapper_id),
-                    args: Vec::new(),
-                }));
+                stmts.push(lir::Stmt::EnterContainer(wrapper_id));
 
                 let display_name = labeled
                     .label

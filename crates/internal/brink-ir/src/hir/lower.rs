@@ -2289,8 +2289,31 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
             WeaveItem::Choice { choice, .. } => {
                 choice_acc.push(*choice);
             }
-            WeaveItem::Continuation { block, .. } => {
+            WeaveItem::Continuation { block, depth } => {
                 if choice_acc.is_empty() {
+                    // When a new labeled gather arrives while a previous
+                    // labeled gather is pending, nest the new gather (and
+                    // everything after it) inside the previous one.  This
+                    // mirrors inklecate's tail-nesting: `-> opts` loops
+                    // back to opts, and because test is nested inside opts,
+                    // test is naturally re-entered.
+                    if let Some(start) = gather_stmts_start.take()
+                        && let Some(prev_label) = last_standalone_label.take()
+                        && block.label.is_some()
+                    {
+                        let mut gather_stmts = stmts.split_off(start);
+                        // Recurse: fold the new gather + remaining items.
+                        let mut remaining = vec![WeaveItem::Continuation { block, depth }];
+                        remaining.extend(iter);
+                        let nested = fold_weave_at_depth(remaining, base_depth);
+                        gather_stmts.extend(nested.stmts);
+
+                        stmts.push(Stmt::LabeledBlock(Box::new(Block {
+                            label: Some(prev_label),
+                            stmts: gather_stmts,
+                        })));
+                        return Block { label: None, stmts };
+                    }
                     // Standalone gather — emit content as stmts, save label
                     gather_stmts_start = block.label.as_ref().map(|_| stmts.len());
                     emit_standalone_gather(&mut stmts, &block);

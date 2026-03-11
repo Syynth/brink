@@ -2640,3 +2640,41 @@ fn standalone_labeled_gather_produces_labeled_block() {
         body.stmts,
     );
 }
+
+/// Consecutive labeled gathers without intervening choices must nest:
+/// `- (opts) ... - (test) ...` should produce a LabeledBlock(opts) that
+/// contains a nested LabeledBlock(test).  This ensures `-> opts` loops
+/// back through both gathers (matching inklecate's tail-nesting).
+#[test]
+fn consecutive_labeled_gathers_nest() {
+    let (hir, _, diags) = lower_ink(
+        "- (opts)\n\
+         {test:seen test}\n\
+         - (test)\n\
+         { -> opts |}\n",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+
+    // Root should have a single LabeledBlock(opts)
+    let opts_block = hir
+        .root_content
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::LabeledBlock(b) if b.label.as_ref().is_some_and(|l| l.text == "opts") => {
+                Some(b.as_ref())
+            }
+            _ => None,
+        })
+        .expect("expected LabeledBlock(opts) in root");
+
+    // Inside opts, there should be a nested LabeledBlock(test)
+    let has_nested_test = opts_block.stmts.iter().any(|s| {
+        matches!(s, Stmt::LabeledBlock(b) if b.label.as_ref().is_some_and(|l| l.text == "test"))
+    });
+    assert!(
+        has_nested_test,
+        "opts should contain nested LabeledBlock(test), got: {:#?}",
+        opts_block.stmts,
+    );
+}
