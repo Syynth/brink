@@ -166,7 +166,7 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
     }
 }
 
-fn lower_call_args(
+pub(super) fn lower_call_args(
     args: &[hir::Expr],
     params: &[crate::symbols::ParamInfo],
     ctx: &mut LowerCtx<'_>,

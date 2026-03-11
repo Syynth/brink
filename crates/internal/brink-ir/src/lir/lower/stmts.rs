@@ -113,12 +113,6 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
 }
 
 fn lower_divert_target(target: &hir::DivertTarget, ctx: &mut LowerCtx<'_>) -> lir::Divert {
-    let args = target
-        .args
-        .iter()
-        .map(|a| lir::CallArg::Value(lower_expr(a, ctx)))
-        .collect();
-
     let lir_target = match &target.path {
         hir::DivertPath::Done => lir::DivertTarget::Done,
         hir::DivertPath::End => lir::DivertTarget::End,
@@ -141,6 +135,18 @@ fn lower_divert_target(target: &hir::DivertTarget, ctx: &mut LowerCtx<'_>) -> li
             }
         }
     };
+
+    // Look up target's param info to handle ref params correctly.
+    // For ref params, we emit pointer-pushing opcodes instead of values.
+    let target_params = match &target.path {
+        hir::DivertPath::Path(path) => ctx
+            .resolve_path(path.range)
+            .map(|info| info.params.clone())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    let args = super::expr::lower_call_args(&target.args, &target_params, ctx);
 
     lir::Divert {
         target: lir_target,

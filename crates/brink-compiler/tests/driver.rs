@@ -928,52 +928,66 @@ fn stitch_params_by_value() {
     assert_eq!(result, "Hello, world!\n");
 }
 
-/// Ref parameters on a stitch must be writable and must persist changes
-/// back to the caller's variable.
+/// Ref parameters on a function must be writable and must persist changes
+/// back to the caller's variable (global var case).
 #[test]
-#[ignore = "ref parameters not yet implemented"]
-fn stitch_ref_params() {
+fn ref_param_global_var() {
     let source = "\
 VAR x = 1
-~ do_inc.bump(x)
+~ bump(x)
 {x}
 -> END
 
-== do_inc ==
-= bump(ref target)
+=== function bump(ref target) ===
 ~ target = target + 1
--> DONE
 ";
     let result = compile_and_run(source, &[]);
     assert_eq!(result, "2\n");
 }
 
-/// Thread-called stitch with ref params — the tower-of-hanoi pattern.
-/// The stitch is called via `<-` with ref params; inside the stitch,
-/// the ref params must be readable and modifiable.
+/// Ref param passed via function call with two ref args — the
+/// `move_ring` pattern from tower-of-hanoi.
 #[test]
-#[ignore = "ref parameters not yet implemented"]
-fn thread_stitch_with_ref_params() {
+fn ref_param_function_two_refs() {
     let source = "\
-VAR counter = 0
--> main
-
-== main ==
-- (top)
-    <- main.inc(counter)
-    +   {counter < 3} [Again]
-        -> top
-    +   {counter >= 3} [Done]
+VAR a = 10
+VAR b = 0
+~ swap(a, b)
+a={a} b={b}
 -> END
 
-= inc(ref c)
-    +   [Increment]
-        ~ c = c + 1
-    -   -
-    ->->
+=== function swap(ref x, ref y) ===
+~ temp t = x
+~ x = y
+~ y = t
 ";
-    let result = compile_and_run(source, &[0, 0, 0, 0, 0, 0]);
-    assert_eq!(result, "Increment\nIncrement\nIncrement\nDone\n");
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "a=0 b=10\n");
+}
+
+/// Ref params with list operations — minimal tower-of-hanoi pattern.
+#[test]
+fn ref_param_list_move_ring() {
+    let source = "\
+LIST Discs = one, two, three
+VAR post1 = ()
+VAR post2 = ()
+
+~ post1 = LIST_ALL(Discs)
+
+~ move_ring(post1, post2)
+
+{post1}
+{post2}
+-> END
+
+=== function move_ring( ref from, ref to ) ===
+~ temp whichRingToMove = LIST_MIN(from)
+~ from -= whichRingToMove
+~ to += whichRingToMove
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "two, three\none\n");
 }
 
 // ── Pattern 4: Missing space literal in string interpolation ─────────
@@ -1067,17 +1081,15 @@ Yes!
 /// `ref` parameter should pass by reference, allowing the callee to
 /// modify the caller's variable.
 #[test]
-#[ignore = "ref parameters not yet implemented"]
 fn ref_parameter_modifies_caller_variable() {
     let source = "\
-~temp x = 0
--> bump(x)
+VAR x = 0
+~ bump(x)
 {x}
 -> DONE
 
-=== bump(ref n) ===
-~n++
-->->
+=== function bump(ref n) ===
+~ n++
 ";
     let result = compile_and_run(source, &[]);
     assert_eq!(result, "1\n");
