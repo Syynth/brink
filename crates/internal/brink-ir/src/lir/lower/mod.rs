@@ -397,11 +397,17 @@ fn lower_block_with_children(
                     .iter()
                     .map(|b| {
                         let condition = b.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
-                        let mut bc = 0;
-                        let mut gc = 0;
+                        // Pass through parent choice/gather counters — a ChoiceSet
+                        // inside a conditional shares the enclosing scope and must
+                        // not collide with sibling gathers/choices.
                         let mut sc2 = 0;
                         let (body, branch_children) = lower_block_with_children(
-                            &b.body, ctx, plan, &mut bc, &mut gc, &mut sc2,
+                            &b.body,
+                            ctx,
+                            plan,
+                            choice_counter,
+                            gather_counter,
+                            &mut sc2,
                         );
                         children.extend(branch_children);
                         lir::CondBranch { condition, body }

@@ -225,11 +225,21 @@ fn plan_stmt_choices(
             }
         }
         hir::Stmt::Conditional(cond) => {
+            // Pass through parent counters — a ChoiceSet inside a conditional
+            // shares the enclosing scope and must not collide with sibling
+            // gathers/choices that already consumed earlier indices.
             for branch in &cond.branches {
-                let mut bc = 0;
-                let mut bg = 0;
                 for s in &branch.body.stmts {
-                    plan_stmt_choices(s, file, scope_path, index, ids, plan, &mut bc, &mut bg);
+                    plan_stmt_choices(
+                        s,
+                        file,
+                        scope_path,
+                        index,
+                        ids,
+                        plan,
+                        choice_counter,
+                        gather_counter,
+                    );
                 }
             }
         }
