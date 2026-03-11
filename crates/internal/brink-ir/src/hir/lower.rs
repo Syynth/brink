@@ -1742,7 +1742,11 @@ impl LowerCtx {
         });
 
         let tags = lower_tags(choice.tags());
-        let mut body = self.lower_choice_body(choice);
+        // Only skip the divert in the body when it was captured as an inline
+        // divert. Non-simple diverts (tunnel onwards, tunnel calls) must flow
+        // through lower_body_child so they get proper HIR representation.
+        let skip_divert = inline_divert.is_some();
+        let mut body = self.lower_choice_body(choice, skip_divert);
 
         // Prepend the inline divert + EndOfLine to the body. The divert goes
         // before EndOfLine so that in bytecode, execution flows into the divert
@@ -1770,11 +1774,16 @@ impl LowerCtx {
         })
     }
 
-    fn lower_choice_body(&mut self, choice: &ast::Choice) -> Block {
+    fn lower_choice_body(&mut self, choice: &ast::Choice, skip_divert: bool) -> Block {
         // The choice-level divert (e.g. `* choice -> DONE`) is skipped here
-        // because it is folded into the body as a Stmt::Divert preamble by
-        // the caller (lower_choice).
-        let choice_divert_range = choice.divert().map(|d| d.syntax().text_range());
+        // when it was captured as an inline simple divert by the caller
+        // (lower_choice). Non-simple diverts (tunnel onwards, etc.) are NOT
+        // skipped — they flow through lower_body_child for proper lowering.
+        let choice_divert_range = if skip_divert {
+            choice.divert().map(|d| d.syntax().text_range())
+        } else {
+            None
+        };
 
         let mut stmts = Vec::new();
         for child in choice.syntax().children() {
