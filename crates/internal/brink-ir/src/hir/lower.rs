@@ -1908,17 +1908,7 @@ impl LowerCtx {
             tags: Vec::new(),
         });
 
-        let divert = gather.divert().and_then(|d| {
-            let target = d
-                .simple_divert()?
-                .targets()
-                .next()
-                .and_then(|t| self.lower_divert_target_with_args(&t))?;
-            Some(Divert {
-                ptr: Some(SyntaxNodePtr::from_node(d.syntax())),
-                target,
-            })
-        });
+        let divert_stmt = gather.divert().and_then(|d| self.lower_divert_node(&d));
 
         let tags = lower_tags(gather.tags());
 
@@ -1938,8 +1928,8 @@ impl LowerCtx {
                 tags,
             }));
         }
-        if let Some(d) = divert {
-            stmts.push(Stmt::Divert(d));
+        if let Some(d) = divert_stmt {
+            stmts.push(d);
         } else if has_content && !ends_glue {
             // Gather line with content but no divert needs an EndOfLine,
             // just like a regular content line. Glue suppresses the newline.

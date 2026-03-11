@@ -518,6 +518,121 @@ fn tunnel_return_at_gather_with_thread() {
     );
 }
 
+/// Bare `->->` on a gather line must emit a tunnel return.
+/// `lower_gather_to_block` only handles `simple_divert()`, so `->->`
+/// (a `TUNNEL_ONWARDS_NODE`) is silently dropped, producing `done`
+/// instead of `tunnel_return`.
+#[test]
+fn gather_bare_tunnel_return() {
+    let source = "\
+-> start
+== start ==
+-> tun ->
+After tunnel.
+-> END
+== tun ==
+- Gathered.
+* Pick me
+- ->->
+";
+    let result = compile_and_run(source, &[0]);
+    assert_eq!(result, "Gathered.\nPick me\nAfter tunnel.\n");
+}
+
+/// `->-> target` on a gather line — tunnel return with divert override.
+#[test]
+fn gather_tunnel_return_with_override() {
+    let source = "\
+-> start
+== start ==
+-> tun ->
+Should not print.
+-> END
+== tun ==
+- In tunnel.
+* Pick me
+- ->-> destination
+== destination ==
+Overridden.
+-> END
+";
+    let result = compile_and_run(source, &[0]);
+    assert_eq!(result, "In tunnel.\nPick me\nOverridden.\n");
+}
+
+/// `-> target ->` on a gather line — tunnel call from a gather.
+#[test]
+fn gather_tunnel_call() {
+    let source = "\
+-> start
+== start ==
+* Pick me
+- -> inner_tunnel ->
+After inner tunnel.
+-> END
+== inner_tunnel ==
+Inside inner tunnel.
+->->
+";
+    let result = compile_and_run(source, &[0]);
+    assert_eq!(
+        result,
+        "Pick me\nInside inner tunnel.\nAfter inner tunnel.\n"
+    );
+}
+
+/// `<- thread` on a gather line — thread start from a gather.
+/// The thread's choice must merge with the local sticky choice.
+#[test]
+fn gather_thread_start() {
+    let source = "\
+-> start
+== start ==
+* Pick me
+- <- bg_thread
++ Next
+-
+Done.
+-> END
+== bg_thread ==
+* Background option
+- -> DONE
+";
+    // Pick "Pick me" first, then "Background option" (from the thread)
+    // If the thread start is silently dropped, only "Next" is available
+    // and "Background option" never appears.
+    let result = compile_and_run(source, &[0, 0]);
+    assert!(
+        result.contains("Background option"),
+        "expected thread's choice from gather `<- bg_thread` to be available, got: {result:?}"
+    );
+}
+
+/// Structural test: compile a tunnel with `->->` on a gather line and
+/// verify the .inkt contains `tunnel_return`, not just `done`.
+#[test]
+fn gather_tunnel_return_emits_tunnel_return_opcode() {
+    let source = "\
+-> start
+== start ==
+-> tun ->
+After.
+-> END
+== tun ==
+- Top.
+* Option
+- ->->
+";
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    let data = compile_mem("main.ink", &files).unwrap();
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(
+        buf.contains("tunnel_return"),
+        "expected tunnel_return in bytecode for gather `->->`, got:\n{buf}"
+    );
+}
+
 // ── Pattern 3: Thread choices not merged with current context ────────
 
 /// Choices from a thread (`<- thread_with_options`) must merge with
