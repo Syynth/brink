@@ -1139,6 +1139,13 @@ impl LowerCtx {
             }
         }
         flush_content_parts(&mut parts, &mut stmts);
+
+        // In a branchless body like `{true: + A choice \n body \n -> END}`,
+        // "body" and "-> END" are siblings of CHOICE in the CST, not children.
+        // They end up as trailing stmts after the ChoiceSet — unreachable past
+        // `done`. Move them into the last choice's body so they execute.
+        move_trailing_stmts_into_choice_body(&mut stmts);
+
         Block { label: None, stmts }
     }
 
@@ -1323,6 +1330,13 @@ impl LowerCtx {
                 stmts.push(Stmt::EndOfLine);
             }
         }
+
+        // In a branch body like `{true: + A choice \n body \n -> END}`,
+        // "body" and "-> END" are siblings of CHOICE in the CST, not children.
+        // They end up as trailing stmts after the ChoiceSet — unreachable past
+        // `done`. Move them into the last choice's body so they execute.
+        move_trailing_stmts_into_choice_body(&mut stmts);
+
         Block { label: None, stmts }
     }
 
@@ -1423,6 +1437,23 @@ impl LowerCtx {
 
 fn content_ends_with_glue(parts: &[ContentPart]) -> bool {
     matches!(parts.last(), Some(ContentPart::Glue))
+}
+
+/// When a choice appears inside a conditional branch body, trailing stmts
+/// (content, diverts) are siblings of the CHOICE in the CST, not children.
+/// They end up after the `ChoiceSet` and are unreachable past `done`. Move them
+/// into the last choice's body so they execute when the choice is taken.
+fn move_trailing_stmts_into_choice_body(stmts: &mut Vec<Stmt>) {
+    if let Some(choice_set_pos) = stmts.iter().rposition(|s| matches!(s, Stmt::ChoiceSet(_)))
+        && choice_set_pos < stmts.len() - 1
+    {
+        let trailing: Vec<Stmt> = stmts.drain(choice_set_pos + 1..).collect();
+        if let Stmt::ChoiceSet(cs) = &mut stmts[choice_set_pos]
+            && let Some(choice) = cs.choices.last_mut()
+        {
+            choice.body.stmts.extend(trailing);
+        }
+    }
 }
 
 fn flush_content_parts(parts: &mut Vec<ContentPart>, stmts: &mut Vec<Stmt>) {

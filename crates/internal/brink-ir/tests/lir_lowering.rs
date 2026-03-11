@@ -1776,3 +1776,37 @@ EXTERNAL do_something()
         "should have an ExprStmt for the function call"
     );
 }
+
+#[test]
+fn choice_body_content_in_conditional_branch() {
+    let program = lower_ink(
+        "\
+== scene(x) ==
+{true:
+    + A choice
+        Body content.
+        -> END
+}
+->->
+",
+    );
+    let scene = find_by_path(&program, "scene");
+    let choice_target = scene
+        .children
+        .iter()
+        .flat_map(|c| std::iter::once(c).chain(c.children.iter()))
+        .find(|c| c.kind == lir::ContainerKind::ChoiceTarget)
+        .expect("should have a choice target");
+    // Choice target should have body content (not just the choice output)
+    let has_end_divert = choice_target.body.iter().any(|s| {
+        if let lir::Stmt::Divert(d) = s {
+            matches!(d.target, lir::DivertTarget::End)
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_end_divert,
+        "choice target should contain -> END from the choice body"
+    );
+}

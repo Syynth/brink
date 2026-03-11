@@ -68,6 +68,7 @@ struct ContainerEmitter<'a> {
     list_literals: &'a mut Vec<ListValue>,
     state_name_table: &'a mut Vec<String>,
     state_name_index: &'a mut HashMap<String, NameId>,
+    in_conditional_branch: bool,
 }
 
 impl<'a> ContainerEmitter<'a> {
@@ -78,6 +79,7 @@ impl<'a> ContainerEmitter<'a> {
             list_literals: &mut state.list_literals,
             state_name_table: &mut state.name_table,
             state_name_index: &mut state.name_index,
+            in_conditional_branch: false,
         }
     }
 

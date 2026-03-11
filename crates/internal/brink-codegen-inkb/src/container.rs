@@ -193,7 +193,12 @@ impl ContainerEmitter<'_> {
         // through to whatever follows the choice set in the same container
         // (e.g., a gather's `goto end`), terminating the story before the
         // VM can present choices.
-        self.emit(Opcode::Done);
+        //
+        // Inside a conditional branch, the `done` is deferred to the outer
+        // gather/container — emitting it here would block flow to the gather.
+        if !self.in_conditional_branch {
+            self.emit(Opcode::Done);
+        }
     }
 
     fn emit_choice(&mut self, choice: &lir::Choice) {
@@ -275,7 +280,10 @@ impl ContainerEmitter<'_> {
                     self.emit(Opcode::Pop);
                 }
 
+                let prev = self.in_conditional_branch;
+                self.in_conditional_branch = true;
                 self.emit_body(&branch.body);
+                self.in_conditional_branch = prev;
 
                 if !is_last || is_switch {
                     // Jump to end of entire conditional.
@@ -293,7 +301,10 @@ impl ContainerEmitter<'_> {
                     // Pop the switch value before the else body.
                     self.emit(Opcode::Pop);
                 }
+                let prev = self.in_conditional_branch;
+                self.in_conditional_branch = true;
                 self.emit_body(&branch.body);
+                self.in_conditional_branch = prev;
             }
         }
 
