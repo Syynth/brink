@@ -2609,3 +2609,33 @@ More.
         cont.stmts,
     );
 }
+
+// ─── Standalone labeled gather produces LabeledBlock ────────────────
+
+/// A standalone labeled gather (no subsequent choices) must produce a
+/// `LabeledBlock` in the HIR so the planning phase allocates a container
+/// for it. Without a container, diverts like `-> knot.gather` resolve to
+/// an unresolved definition at runtime.
+#[test]
+fn standalone_labeled_gather_produces_labeled_block() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+-> knot.gather
+- (gather) g
+-> DONE
+",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    let body = &hir.knots[0].body;
+    // Should have: Divert(knot.gather), LabeledBlock{label: gather, ...}
+    let has_labeled_block = body.stmts.iter().any(|s| {
+        matches!(s, Stmt::LabeledBlock(block) if block.label.as_ref().is_some_and(|l| l.text == "gather"))
+    });
+    assert!(
+        has_labeled_block,
+        "standalone labeled gather must produce a LabeledBlock, got: {:#?}",
+        body.stmts,
+    );
+}

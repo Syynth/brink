@@ -402,3 +402,20 @@ fn include_content_appears_before_main() {
         "included file content must appear before main file content"
     );
 }
+
+// ── Divert to standalone labeled gather ──────────────────────────────
+
+/// Diverting to a labeled gather within a knot (e.g. `-> knot.gather`)
+/// must work. The gather needs its own container to be a divert target.
+#[test]
+fn divert_to_standalone_labeled_gather() {
+    let source = "\
+-> knot
+=== knot ===
+-> knot.gather
+- (gather) g
+-> DONE
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "g\n");
+}

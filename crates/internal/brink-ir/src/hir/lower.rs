@@ -2208,6 +2208,9 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
     let mut stmts = Vec::new();
     let mut choice_acc: Vec<Choice> = Vec::new();
     let mut last_standalone_label: Option<Name> = None;
+    // Tracks where in `stmts` a standalone labeled gather's content begins,
+    // so we can retroactively wrap it in a LabeledBlock if no choices follow.
+    let mut gather_stmts_start: Option<usize> = None;
 
     let mut iter = items.into_iter();
     while let Some(item) = iter.next() {
@@ -2229,11 +2232,14 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
             WeaveItem::Continuation { block, .. } => {
                 if choice_acc.is_empty() {
                     // Standalone gather — emit content as stmts, save label
+                    gather_stmts_start = block.label.as_ref().map(|_| stmts.len());
                     emit_standalone_gather(&mut stmts, &block);
                     last_standalone_label = block.label;
                 } else {
-                    // Gather after choices — collect remaining items, fold them
-                    // recursively, and nest everything into the continuation.
+                    // Gather after choices — label was consumed as opening label.
+                    // (gather_stmts_start is irrelevant here; we return below.)
+                    // Collect remaining items, fold them recursively, and nest
+                    // everything into the continuation.
                     let mut continuation = block;
                     let remaining: Vec<WeaveItem> = iter.collect();
                     if !remaining.is_empty() {
@@ -2251,6 +2257,20 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
                 }
             }
         }
+    }
+
+    // If a standalone labeled gather was never consumed by a choice set,
+    // retroactively wrap its content in a LabeledBlock so the planning phase
+    // allocates a container for it (making it a valid divert target).
+    if choice_acc.is_empty()
+        && let Some(start) = gather_stmts_start
+        && let Some(label) = last_standalone_label.take()
+    {
+        let gather_stmts = stmts.split_off(start);
+        stmts.push(Stmt::LabeledBlock(Box::new(Block {
+            label: Some(label),
+            stmts: gather_stmts,
+        })));
     }
 
     flush_choices(
