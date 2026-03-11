@@ -1317,17 +1317,29 @@ impl LowerCtx {
     /// Wrap content-level children as a single-statement Block (for inline branches).
     fn wrap_content_as_block(&mut self, node: &brink_syntax::SyntaxNode) -> Block {
         let parts = self.lower_content_node_children(node);
-        if parts.is_empty() {
-            return Block::default();
-        }
-        Block {
-            label: None,
-            stmts: vec![Stmt::Content(Content {
+
+        // Check for a DIVERT_NODE child (e.g. `{cond:->target}`) —
+        // `lower_content_node_children` skips these, so we handle them here.
+        let divert_stmt = node
+            .children()
+            .find_map(ast::DivertNode::cast)
+            .and_then(|dn| self.lower_divert_node(&dn));
+
+        let mut stmts = Vec::new();
+        if !parts.is_empty() {
+            stmts.push(Stmt::Content(Content {
                 ptr: None,
                 parts,
                 tags: Vec::new(),
-            })],
+            }));
         }
+        if let Some(d) = divert_stmt {
+            stmts.push(d);
+        }
+        if stmts.is_empty() {
+            return Block::default();
+        }
+        Block { label: None, stmts }
     }
 
     fn lower_inline_sequence(&mut self, seq: &ast::SequenceWithAnnotation) -> Option<Sequence> {
