@@ -415,6 +415,17 @@ fn lower_block_with_children(
                 let wrapper_id = ctx.alloc_sequence_id(*seq_counter);
                 *seq_counter += 1;
 
+                // Push the wrapper's name onto the scope path so that nested
+                // sequences inside branches get unique IDs (e.g. `scope.s-0.s-0`
+                // instead of colliding with the parent's `scope.s-0`).
+                let display_name = format!("s-{}", *seq_counter - 1);
+                let old_scope = ctx.scope_path.clone();
+                ctx.scope_path = if old_scope.is_empty() {
+                    display_name.clone()
+                } else {
+                    format!("{old_scope}.{display_name}")
+                };
+
                 // Lower sequence branches with lower_block_with_children
                 // so ChoiceSets inside branches produce child containers.
                 let mut wrapper_children = Vec::new();
@@ -432,7 +443,7 @@ fn lower_block_with_children(
                     })
                     .collect();
 
-                let display_name = format!("s-{}", *seq_counter - 1);
+                ctx.scope_path = old_scope;
                 let wrapper = lir::Container {
                     id: wrapper_id,
                     name: Some(display_name),

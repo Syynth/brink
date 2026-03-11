@@ -1158,7 +1158,19 @@ impl LowerCtx {
         for child in body.children_with_tokens() {
             // Capture whitespace tokens between content nodes.
             if let rowan::NodeOrToken::Token(ref token) = child {
-                if seen_content && token.kind() == SyntaxKind::WHITESPACE {
+                if token.kind() == SyntaxKind::NEWLINE {
+                    // Newline token → flush content and emit EndOfLine.
+                    if !parts.is_empty() {
+                        let ends_glue = content_ends_with_glue(&parts);
+                        flush_content_parts(&mut parts, &mut stmts);
+                        if !ends_glue {
+                            stmts.push(Stmt::EndOfLine);
+                        }
+                    }
+                    // Reset: whitespace after newline is indentation, not content.
+                    seen_content = false;
+                    pending_ws = None;
+                } else if seen_content && token.kind() == SyntaxKind::WHITESPACE {
                     let text = token.text().to_string();
                     if let Some(ref mut ws) = pending_ws {
                         ws.push_str(&text);

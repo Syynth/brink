@@ -151,7 +151,12 @@ fn choice_start_content(p: &mut Parser<'_, '_>) {
 fn choice_bracket_content(p: &mut Parser<'_, '_>) {
     p.start_node(CHOICE_BRACKET_CONTENT);
     p.bump(); // L_BRACKET
-    while p.current() != R_BRACKET && !matches!(p.current(), NEWLINE | EOF) {
+    // Use nth_raw(0) for termination so that whitespace before `]` is
+    // consumed as content text (via `choice_text`) rather than skipped as
+    // trivia.  `p.current()` skips WHITESPACE, which would cause the loop
+    // to exit early and leave the raw position at the whitespace token
+    // instead of at R_BRACKET.
+    while p.nth_raw(0) != R_BRACKET && !matches!(p.nth_raw(0), NEWLINE | EOF) {
         let before = p.pos();
         choice_content_element(p);
         if p.pos() == before {
@@ -159,7 +164,7 @@ fn choice_bracket_content(p: &mut Parser<'_, '_>) {
             p.bump();
         }
     }
-    if p.current() == R_BRACKET {
+    if p.nth_raw(0) == R_BRACKET {
         p.bump();
     } else {
         p.error("expected `]`".into());
