@@ -2254,7 +2254,6 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
                     last_standalone_label = block.label;
                 } else {
                     // Gather after choices — label was consumed as opening label.
-                    // (gather_stmts_start is irrelevant here; we return below.)
                     // Collect remaining items, fold them recursively, and nest
                     // everything into the continuation.
                     let mut continuation = block;
@@ -2268,6 +2267,7 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
                         &mut choice_acc,
                         continuation,
                         last_standalone_label.take(),
+                        gather_stmts_start.take(),
                     );
                     // All remaining items consumed — we're done
                     return Block { label: None, stmts };
@@ -2295,6 +2295,7 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
         &mut choice_acc,
         Block::default(),
         last_standalone_label.take(),
+        gather_stmts_start,
     );
     Block { label: None, stmts }
 }
@@ -2359,6 +2360,7 @@ fn flush_choices(
     choice_acc: &mut Vec<Choice>,
     continuation: Block,
     opening_label: Option<Name>,
+    gather_stmts_start: Option<usize>,
 ) {
     if choice_acc.is_empty() {
         return;
@@ -2369,10 +2371,17 @@ fn flush_choices(
         continuation,
     }));
     if let Some(label) = opening_label {
-        // Wrap the choice set in a labeled block (opening gather pattern).
+        // Move statements emitted after the standalone gather into the
+        // labeled block so they live inside the gather container.  This
+        // ensures thread calls and other code between the gather label
+        // and the first choice are re-executed when looping back.
+        let mut labeled_stmts = gather_stmts_start
+            .map(|start| stmts.split_off(start))
+            .unwrap_or_default();
+        labeled_stmts.push(cs);
         stmts.push(Stmt::LabeledBlock(Box::new(Block {
             label: Some(label),
-            stmts: vec![cs],
+            stmts: labeled_stmts,
         })));
     } else {
         stmts.push(cs);
