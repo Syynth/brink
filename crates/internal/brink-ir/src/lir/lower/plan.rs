@@ -92,6 +92,7 @@ fn plan_block_choices(
 ) {
     let mut choice_counter = 0usize;
     let mut gather_counter = 0usize;
+    let mut seq_counter = 0usize;
 
     for stmt in &block.stmts {
         plan_stmt_choices(
@@ -103,6 +104,7 @@ fn plan_block_choices(
             plan,
             &mut choice_counter,
             &mut gather_counter,
+            &mut seq_counter,
         );
     }
 }
@@ -117,6 +119,7 @@ fn plan_stmt_choices(
     plan: &mut ContainerPlan,
     choice_counter: &mut usize,
     gather_counter: &mut usize,
+    seq_counter: &mut usize,
 ) {
     match stmt {
         hir::Stmt::ChoiceSet(choice_set) => {
@@ -166,6 +169,7 @@ fn plan_stmt_choices(
                 // Recursively plan nested choices within choice bodies
                 let mut nested_choice_counter = 0usize;
                 let mut nested_gather_counter = 0usize;
+                let mut nested_seq_counter = 0usize;
                 for body_stmt in &choice.body.stmts {
                     plan_stmt_choices(
                         body_stmt,
@@ -176,6 +180,7 @@ fn plan_stmt_choices(
                         plan,
                         &mut nested_choice_counter,
                         &mut nested_gather_counter,
+                        &mut nested_seq_counter,
                     );
                 }
             }
@@ -191,6 +196,7 @@ fn plan_stmt_choices(
                     plan,
                     choice_counter,
                     gather_counter,
+                    seq_counter,
                 );
             }
         }
@@ -221,6 +227,7 @@ fn plan_stmt_choices(
                     plan,
                     choice_counter,
                     gather_counter,
+                    seq_counter,
                 );
             }
         }
@@ -239,16 +246,37 @@ fn plan_stmt_choices(
                         plan,
                         choice_counter,
                         gather_counter,
+                        seq_counter,
                     );
                 }
             }
         }
         hir::Stmt::Sequence(seq) => {
+            // Push scope path to match the lowering phase, which uses
+            // `s-N` sub-scopes for sequence branches.
+            let display_name = format!("s-{seq_counter}");
+            *seq_counter += 1;
+            let child_scope = if scope_path.is_empty() {
+                display_name
+            } else {
+                format!("{scope_path}.{display_name}")
+            };
             for branch in &seq.branches {
                 let mut bc = 0;
                 let mut bg = 0;
+                let mut sc = 0;
                 for s in &branch.stmts {
-                    plan_stmt_choices(s, file, scope_path, index, ids, plan, &mut bc, &mut bg);
+                    plan_stmt_choices(
+                        s,
+                        file,
+                        &child_scope,
+                        index,
+                        ids,
+                        plan,
+                        &mut bc,
+                        &mut bg,
+                        &mut sc,
+                    );
                 }
             }
         }
