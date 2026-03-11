@@ -4,12 +4,12 @@ use brink_syntax::ast::{self, AstNode, AstPtr, SyntaxNodePtr};
 use rowan::TextRange;
 
 use crate::{
-    AssignOp, Assignment, Block, Choice, ChoiceSet, CondBranch, CondKind, Conditional, ConstDecl,
-    ContainerPtr, Content, ContentPart, DeclaredSymbol, Diagnostic, DiagnosticCode, Divert,
-    DivertPath, DivertTarget, Expr, ExternalDecl, FileId, FloatBits, HirFile, IncludeSite, InfixOp,
-    Knot, ListDecl, ListMember, Name, Param, Path, PostfixOp, PrefixOp, RefKind, Return, Scope,
-    Sequence, SequenceType, Stitch, Stmt, StringExpr, StringPart, SymbolManifest, Tag, TempDecl,
-    ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
+    AssignOp, Assignment, Block, Choice, ChoiceSet, ChoiceSetContext, CondBranch, CondKind,
+    Conditional, ConstDecl, ContainerPtr, Content, ContentPart, DeclaredSymbol, Diagnostic,
+    DiagnosticCode, Divert, DivertPath, DivertTarget, Expr, ExternalDecl, FileId, FloatBits,
+    HirFile, IncludeSite, InfixOp, Knot, ListDecl, ListMember, Name, Param, Path, PostfixOp,
+    PrefixOp, RefKind, Return, Scope, Sequence, SequenceType, Stitch, Stmt, StringExpr, StringPart,
+    SymbolManifest, Tag, TempDecl, ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
 };
 
 #[cfg(test)]
@@ -1033,6 +1033,7 @@ impl LowerCtx {
     /// Children are a mix of block-level (`LOGIC_LINE`, `INLINE_LOGIC`, `DIVERT_NODE`)
     /// and content-level (`TEXT`, `GLUE_NODE`, `ESCAPE`). We accumulate content parts
     /// and flush them as `Stmt::Content` when a block-level node is hit or at end.
+    #[expect(clippy::too_many_lines)]
     fn lower_branchless_body(&mut self, body: &ast::BranchlessCondBody) -> Block {
         let mut stmts = Vec::new();
         let mut parts = Vec::new();
@@ -1124,6 +1125,7 @@ impl LowerCtx {
                         stmts.push(Stmt::ChoiceSet(Box::new(ChoiceSet {
                             choices: vec![choice],
                             continuation: Block::default(),
+                            context: ChoiceSetContext::Inline,
                         })));
                     }
                 }
@@ -1309,6 +1311,7 @@ impl LowerCtx {
                         stmts.push(Stmt::ChoiceSet(Box::new(ChoiceSet {
                             choices: vec![choice],
                             continuation: Block::default(),
+                            context: ChoiceSetContext::Inline,
                         })));
                     }
                 }
@@ -2441,6 +2444,7 @@ fn flush_choices(
     let cs = Stmt::ChoiceSet(Box::new(ChoiceSet {
         choices,
         continuation,
+        context: ChoiceSetContext::Weave,
     }));
     if let Some(label) = opening_label {
         // Move statements emitted after the standalone gather into the

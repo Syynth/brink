@@ -153,6 +153,20 @@ pub enum Stmt {
 
 // ─── Weave structure ────────────────────────────────────────────────
 
+/// The structural context in which a choice set was created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChoiceSetContext {
+    /// Normal weave context — choices are at the top level of a knot/stitch
+    /// body or nested within other weave structures. Codegen handles loose
+    /// ends (choices without explicit diverts fall through to the gather or
+    /// the next weave level).
+    Weave,
+    /// Inside a conditional or sequence branch body. Choices here are
+    /// inline — they don't participate in weave folding and may lack a
+    /// natural continuation path.
+    Inline,
+}
+
 /// A group of choices at the same weave depth, with a continuation block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChoiceSet {
@@ -162,6 +176,8 @@ pub struct ChoiceSet {
     /// on the block. An empty continuation with no label means choices have
     /// no explicit gather (loose ends for codegen to wire up).
     pub continuation: Block,
+    /// Where this choice set was created — weave folding or inline content.
+    pub context: ChoiceSetContext,
 }
 
 /// A single choice in a choice set.

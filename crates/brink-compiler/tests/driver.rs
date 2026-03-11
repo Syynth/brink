@@ -1223,7 +1223,6 @@ fn diagnostic_codes(err: &brink_compiler::CompileError) -> Vec<&'static str> {
 /// A choice inside `{ true: * choice }` without an explicit divert is
 /// invalid — inklecate errors with "need to explicitly divert".
 #[test]
-#[ignore = "red-phase: brink does not yet emit E029"]
 fn compile_error_nested_choice_in_conditional() {
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", "{ true:\n    * choice\n}\n")]);
     let result = compile_mem("main.ink", &files);
@@ -1235,6 +1234,32 @@ fn compile_error_nested_choice_in_conditional() {
     assert!(
         codes.contains(&"E029"),
         "expected E029 (choice in conditional must explicitly divert), got: {codes:?}"
+    );
+}
+
+/// A choice inside a conditional WITH a divert is valid — E029 must not fire.
+#[test]
+fn choice_in_conditional_with_divert_is_valid() {
+    let source = "=== play_game ===\n{ true:\n  + [Burn] -> play_game\n}\n-> END\n";
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    let result = compile_mem("main.ink", &files);
+    assert!(
+        result.is_ok(),
+        "choice with divert in conditional should compile: {result:?}"
+    );
+}
+
+/// A choice inside a conditional WITHOUT a divert but with a gather continuation
+/// after the conditional is valid ink — inklecate accepts this.
+#[test]
+fn choice_in_conditional_with_gather_continuation_is_valid() {
+    let source =
+        "=== play_game ===\n{ true:\n  + (burny) [Burn]\n    Hello\n}\n- -> burny\n-> END\n";
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    let result = compile_mem("main.ink", &files);
+    assert!(
+        result.is_ok(),
+        "choice in conditional with gather continuation should compile: {result:?}"
     );
 }
 

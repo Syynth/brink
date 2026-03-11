@@ -7,6 +7,7 @@
 
 mod manifest;
 mod resolve;
+mod validate;
 
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
@@ -35,9 +36,12 @@ pub fn analyze(files: &[(FileId, &HirFile, &SymbolManifest)]) -> AnalysisResult 
         .map(|&(id, _hir, manifest)| (id, manifest))
         .collect();
 
+    let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
+
     let (index, mut diagnostics) = manifest::merge_manifests(&manifest_inputs);
     let (resolutions, resolve_diags) = resolve::resolve_refs(&index, &manifest_inputs);
     diagnostics.extend(resolve_diags);
+    diagnostics.extend(validate::validate(&hir_inputs));
 
     AnalysisResult {
         index,
