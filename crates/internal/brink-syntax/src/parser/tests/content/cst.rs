@@ -1015,6 +1015,31 @@ fn multiple_inlines() {
     );
 }
 
+/// Whitespace-only text between two inline logic blocks must be preserved.
+#[test]
+fn space_between_inlines_preserved() {
+    assert_equivalent(
+        parse("{a} {b}\n"),
+        cst!(SOURCE_FILE {
+            CONTENT_LINE {
+                MIXED_CONTENT {
+                    INLINE_LOGIC {
+                        INNER_EXPRESSION {
+                            PATH
+                        }
+                    }
+                    TEXT
+                    INLINE_LOGIC {
+                        INNER_EXPRESSION {
+                            PATH
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
 /// Inline with glue.
 #[test]
 fn inline_with_glue() {

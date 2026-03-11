@@ -79,7 +79,15 @@ pub(crate) fn mixed_content(p: &mut Parser<'_, '_>) {
 
             // Inline logic `{ ... }` -- dispatch to inline parser
             L_BRACE => {
-                super::inline::inline_logic(p);
+                // If there's trivia (whitespace) between the previous element
+                // and this `{`, flush it as a TEXT node first. `p.current()`
+                // skips trivia, so whitespace-only runs between `}` and `{`
+                // would otherwise be silently dropped.
+                if p.nth_raw(0) == L_BRACE {
+                    super::inline::inline_logic(p);
+                } else {
+                    text_content(p);
+                }
             }
 
             // Everything else is text content
