@@ -331,9 +331,7 @@ This split is the concrete realization of the three-part text model from the ink
 ### Choice Set Emission
 
 ```
-BeginChoiceSet
-  [for each choice: emit_choice()]
-EndChoiceSet
+[for each choice: emit_choice()]
 Done                    ← yields to runtime, presenting choices
 ```
 
@@ -462,8 +460,6 @@ The flags serve double duty: they tell the VM what to pop from the stack (`has_c
 
 This is the precise sequence the VM walks through when evaluating a choice set:
 
-**`BeginChoiceSet`:** clears `flow.pending_choices`, starting a fresh evaluation.
-
 **`BeginStringEval`:** calls `flow.output.begin_capture()` — pushes a checkpoint marker into the output buffer. All subsequent `EmitLine` calls write into the capture region instead of the main output.
 
 **`EndStringEval`:** calls `flow.output.end_capture()` — drains everything after the checkpoint, resolves glue, pushes the resulting string onto `flow.value_stack` as `Value::String`. The main output is unaffected.
@@ -478,8 +474,6 @@ This is the precise sequence the VM walks through when evaluating a choice set:
 6. Push onto `flow.pending_choices`.
 
 **`EndChoice`:** always sets `flow.skipping_choice = false`, regardless of whether the choice was skipped.
-
-**`EndChoiceSet`:** no-op (bookkeeping only).
 
 **`Done`:** yields execution. The story layer inspects `pending_choices` and either auto-selects (all invisible defaults) or presents to the caller.
 
@@ -617,20 +611,18 @@ Container(root) {
 
 ```
 # root container
-BeginChoiceSet
-  # choice 0
-  BeginStringEval
-    EmitLine 0          # "I am tired.\""  (start + choice_only combined)
-  EndStringEval
-  BeginChoice(cond=false, start=true, choice_only=true, once=true, fallback=false, target=c-0)
-  EndChoice
-  # choice 1
-  BeginStringEval
-    EmitLine 1          # "Stay silent"  (choice_only only)
-  EndStringEval
-  BeginChoice(cond=false, start=false, choice_only=true, once=true, fallback=false, target=c-1)
-  EndChoice
-EndChoiceSet
+# choice 0
+BeginStringEval
+  EmitLine 0          # "I am tired.\""  (start + choice_only combined)
+EndStringEval
+BeginChoice(cond=false, start=true, choice_only=true, once=true, fallback=false, target=c-0)
+EndChoice
+# choice 1
+BeginStringEval
+  EmitLine 1          # "Stay silent"  (choice_only only)
+EndStringEval
+BeginChoice(cond=false, start=false, choice_only=true, once=true, fallback=false, target=c-1)
+EndChoice
 Done
 
 # c-0 container
@@ -652,13 +644,12 @@ Done
 
 ### Runtime Execution (player picks choice 0)
 
-1. **BeginChoiceSet** → clear pending choices
-2. **BeginStringEval** → begin capture
-3. **EmitLine 0** → "I am tired.\"" captured
-4. **EndStringEval** → push `"I am tired.\""` to value stack
-5. **BeginChoice** → no condition, not visited → pop display text, fork thread, create PendingChoice { text: "I am tired.\"", target: c-0 }
-6. **EndChoice** → clear skipping
-7. (repeat for choice 1)
+1. **BeginStringEval** → begin capture
+2. **EmitLine 0** → "I am tired.\"" captured
+3. **EndStringEval** → push `"I am tired.\""` to value stack
+4. **BeginChoice** → no condition, not visited → pop display text, fork thread, create PendingChoice { text: "I am tired.\"", target: c-0 }
+5. **EndChoice** → clear skipping
+6. (repeat for choice 1)
 8. **Done** → yield. Story layer sees 2 visible choices, presents them.
 9. Player picks index 0. **`choose(0)`:**
    - Increment visit count for c-0

@@ -945,8 +945,6 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "eval_line" => Ok(Opcode::EvalLine(parse_operand_u16(&operands, 0, mnemonic)?)),
 
         // Choices
-        "begin_choice_set" => Ok(Opcode::BeginChoiceSet),
-        "end_choice_set" => Ok(Opcode::EndChoiceSet),
         "begin_choice" => {
             let flags = parse_choice_flags_operand(&operands, 0, mnemonic)?;
             let target = parse_operand_def_id(&operands, 1, mnemonic)?;

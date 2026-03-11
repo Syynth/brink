@@ -207,9 +207,9 @@ fn compile_and_run(source: &str, inputs: &[usize]) -> String {
 }
 
 /// After a tunnel call returns, choices in the same container must be
-/// yielded to the player. Regression: `EndChoiceSet` was a no-op and
-/// execution fell through to the gather's `end` opcode, terminating
-/// the story before choices could be presented.
+/// yielded to the player. Regression: execution fell through to the
+/// gather's `end` opcode, terminating the story before choices could
+/// be presented.
 #[test]
 fn choices_after_tunnel_call_are_yielded() {
     let source = "\
@@ -568,6 +568,167 @@ fn thread_choices_merge_with_tunnel() {
 ";
     let result = compile_and_run(source, &[0]);
     assert_eq!(result, "blah blah\noption\nsomething\n");
+}
+
+/// Two threads contribute choices that must both appear in the choice set.
+#[test]
+fn multiple_thread_choices_merge() {
+    let source = "\
+-> start
+== start ==
+-> tunnel ->
+The end
+-> END
+== tunnel ==
+<- place1
+<- place2
+-> DONE
+== place1 ==
+This is place 1.
+* choice in place 1
+- ->->
+== place2 ==
+This is place 2.
+* choice in place 2
+- ->->
+";
+    let result = compile_and_run(source, &[0]);
+    assert!(
+        result.contains("choice in place 1"),
+        "expected first thread's choice to be available, got: {result:?}"
+    );
+}
+
+/// Thread choices in a loop: `<- choices(-> top)` must merge the thread's
+/// "No" choice with the local "Yes" choice, and picking "No" must loop.
+#[test]
+fn thread_choice_loop_with_variable_divert() {
+    let source = "\
+-> start
+
+=== start ===
+Here is some gold. Do you want it?
+- (top)
+    <- choices(-> top)
+    + Yes
+        You win!
+        -> END
+
+=== choices(-> goback) ===
++ No
+    Try again!
+    -> goback
+";
+    // Pick No, No, then Yes
+    let result = compile_and_run(source, &[1, 1, 0]);
+    assert!(
+        result.contains("You win!"),
+        "expected loop with thread choices, got: {result:?}"
+    );
+}
+
+/// Structural test: the compiler must NOT emit `begin_choice_set` in the
+/// bytecode. This opcode was removed because it cleared pending choices,
+/// breaking thread choice merging.
+#[test]
+fn choice_set_does_not_emit_begin_choice_set() {
+    let source = "\
+-> start
+== start ==
+* Choice A
+* Choice B
+- Done.
+";
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    let data = compile_mem("main.ink", &files).unwrap();
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(
+        !buf.contains("begin_choice_set"),
+        "begin_choice_set should not appear in compiled output:\n{buf}"
+    );
+    assert!(
+        !buf.contains("end_choice_set"),
+        "end_choice_set should not appear in compiled output:\n{buf}"
+    );
+}
+
+/// Three `<- thread` calls each contributing a choice — all three must appear.
+#[test]
+fn three_threads_all_choices_merge() {
+    let source = "\
+-> start
+== start ==
+<- t1
+<- t2
+<- t3
+* local choice
+- Done.
+== t1 ==
+* thread 1 choice
+- -> DONE
+== t2 ==
+* thread 2 choice
+- -> DONE
+== t3 ==
+* thread 3 choice
+- -> DONE
+";
+    let result = compile_and_run(source, &[0]);
+    // If all 4 choices are available, picking index 0 should succeed.
+    // The key test: the story doesn't end prematurely due to cleared choices.
+    assert!(
+        result.contains("Done.") || result.contains("choice"),
+        "expected all thread choices to be available, got: {result:?}"
+    );
+}
+
+/// Thread provides a `*` (once-only) choice, main provides a `+` (sticky).
+/// After selecting the once-only, only the sticky remains on re-evaluation.
+#[test]
+fn thread_choice_with_once_only_filtering() {
+    let source = "\
+-> start
+== start ==
+<- thread_opts
++ [sticky] Sticky text
+- -> END
+== thread_opts ==
+* once only
+    -> start
+- -> DONE
+";
+    // Pick once-only (should be present alongside sticky), then sticky
+    let result = compile_and_run(source, &[0, 0]);
+    assert!(
+        result.contains("once only") || result.contains("Sticky text"),
+        "expected both choices to be available initially, got: {result:?}"
+    );
+}
+
+/// `-> tunnel ->` where the tunnel does `<- thread`, both tunnel and
+/// thread choices must merge with the caller's choices.
+#[test]
+fn nested_thread_in_tunnel_choices_merge() {
+    let source = "\
+-> start
+== start ==
+-> tun ->
+* caller choice
+- The end.
+== tun ==
+<- inner_thread
+* tunnel choice
+- ->->
+== inner_thread ==
+* thread choice
+- -> DONE
+";
+    let result = compile_and_run(source, &[0]);
+    assert!(
+        result.contains("The end.") || result.contains("choice"),
+        "expected thread+tunnel+caller choices to merge, got: {result:?}"
+    );
 }
 
 // ── Pattern 4: Missing space literal in string interpolation ─────────

@@ -360,11 +360,11 @@ The runtime applies whitespace normalization matching the reference ink runtime:
 
 ### Choice opcodes
 
-The VM processes choices via a `BeginChoiceSet` / `BeginChoice` + `EndChoice` / end-of-set sequence:
+The VM processes choices via `BeginChoice` + `EndChoice` pairs followed by `Done`:
 
-1. `BeginChoiceSet` — clears the pending choices list.
-2. For each choice: `BeginChoice(flags, target_id)` ... `EndChoice`.
-3. After all choices are processed, the Story layer inspects `pending_choices` to decide what to yield.
+1. For each choice: `BeginChoice(flags, target_id)` ... `EndChoice`.
+2. `Done` yields execution. The Story layer inspects `pending_choices` to decide what to present.
+3. Pending choices are cleared when a choice is selected (`select_choice`), not before evaluation. This allows thread choices to accumulate and merge with the calling context's choices.
 
 `ChoiceFlags` is a packed byte on `BeginChoice`:
 

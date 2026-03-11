@@ -368,8 +368,6 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::EvalLine(idx) => write!(w, "eval_line {idx}"),
 
         // Choices
-        Opcode::BeginChoiceSet => write!(w, "begin_choice_set"),
-        Opcode::EndChoiceSet => write!(w, "end_choice_set"),
         Opcode::BeginChoice(flags, target) => {
             write!(w, "begin_choice {} {target}", format_choice_flags(*flags))
         }

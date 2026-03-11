@@ -121,11 +121,7 @@ pub(crate) fn step(
         Opcode::EndChoice => {
             flow.skipping_choice = false;
         }
-        Opcode::Nop
-        | Opcode::SourceLocation(_, _)
-        | Opcode::EndChoiceSet
-        | Opcode::ThreadStart
-        | Opcode::ThreadDone => {}
+        Opcode::Nop | Opcode::SourceLocation(_, _) | Opcode::ThreadStart | Opcode::ThreadDone => {}
 
         // ── Lifecycle ────────────────────────────────────────────────
         Opcode::Done => {
@@ -688,9 +684,6 @@ pub(crate) fn step(
                 .end_capture()
                 .ok_or(RuntimeError::CaptureUnderflow)?;
             flow.value_stack.push(Value::String(text.into()));
-        }
-        Opcode::BeginChoiceSet => {
-            flow.pending_choices.clear();
         }
         Opcode::BeginChoice(flags, target_id) => {
             handle_begin_choice(flow, state, stats, flags, target_id)?;

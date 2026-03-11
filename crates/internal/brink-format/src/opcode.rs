@@ -88,8 +88,6 @@ const END_TAG: u8 = 0x65;
 const EVAL_LINE: u8 = 0x66;
 
 // Choices
-const BEGIN_CHOICE_SET: u8 = 0x70;
-const END_CHOICE_SET: u8 = 0x71;
 const BEGIN_CHOICE: u8 = 0x72;
 const END_CHOICE: u8 = 0x73;
 // Sequences
@@ -395,8 +393,6 @@ pub enum Opcode {
     EvalLine(u16),
 
     // ── Choices ─────────────────────────────────────────────────────────
-    BeginChoiceSet,
-    EndChoiceSet,
     BeginChoice(ChoiceFlags, DefinitionId),
     EndChoice,
 
@@ -613,8 +609,6 @@ impl Opcode {
             }
 
             // Choices
-            Self::BeginChoiceSet => write_u8(buf, BEGIN_CHOICE_SET),
-            Self::EndChoiceSet => write_u8(buf, END_CHOICE_SET),
             Self::BeginChoice(flags, target) => {
                 write_u8(buf, BEGIN_CHOICE);
                 write_u8(buf, flags.to_byte());
@@ -778,8 +772,6 @@ impl Opcode {
             EVAL_LINE => Self::EvalLine(read_u16(buf, offset)?),
 
             // Choices
-            BEGIN_CHOICE_SET => Self::BeginChoiceSet,
-            END_CHOICE_SET => Self::EndChoiceSet,
             BEGIN_CHOICE => {
                 let flags = ChoiceFlags::from_byte(read_u8(buf, offset)?);
                 let target = read_def_id(buf, offset)?;
@@ -1007,8 +999,6 @@ mod tests {
 
     #[test]
     fn roundtrip_choices() {
-        roundtrip(&Opcode::BeginChoiceSet);
-        roundtrip(&Opcode::EndChoiceSet);
         roundtrip(&Opcode::BeginChoice(
             ChoiceFlags {
                 has_condition: true,
