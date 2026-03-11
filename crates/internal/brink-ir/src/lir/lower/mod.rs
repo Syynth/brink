@@ -42,7 +42,7 @@ pub fn lower_to_program(
 
     // ── Step 4: Counting flags ──────────────────────────────────────
     let mut root = root;
-    apply_counting_flags(&mut root);
+    apply_counting_flags(&mut root, &globals);
 
     lir::Program {
         root,
@@ -752,12 +752,21 @@ fn find_gather_target(
 
 // ─── Counting flags ─────────────────────────────────────────────────
 
-fn apply_counting_flags(root: &mut lir::Container) {
+fn apply_counting_flags(root: &mut lir::Container, globals: &[lir::GlobalDef]) {
     let mut visit_ids = Vec::new();
     let mut turns_ids = Vec::new();
 
     // Collect phase: walk entire tree for explicit visit/turn refs
     collect_counting_refs_tree(root, &mut visit_ids, &mut turns_ids);
+
+    // Also scan global variable defaults for DivertTarget values
+    // (e.g. `VAR x = -> knot` — the target could be reached via variable divert)
+    for g in globals {
+        if let lir::ConstValue::DivertTarget(id) = &g.default {
+            visit_ids.push(*id);
+            turns_ids.push(*id);
+        }
+    }
 
     // Apply phase: walk entire tree
     apply_counting_flags_tree(root, &visit_ids, &turns_ids);
@@ -835,7 +844,30 @@ fn collect_counting_refs(
                     collect_counting_refs(branch, visit_ids, turns_ids);
                 }
             }
-            // EnterContainer, DeclareTemp(None), Return(None), Divert, etc.
+            lir::Stmt::Divert(d) => {
+                for arg in &d.args {
+                    if let lir::CallArg::Value(e) = arg {
+                        collect_counting_refs_expr(e, visit_ids, turns_ids);
+                    }
+                }
+            }
+            lir::Stmt::TunnelCall(tc) => {
+                for t in &tc.targets {
+                    for arg in &t.args {
+                        if let lir::CallArg::Value(e) = arg {
+                            collect_counting_refs_expr(e, visit_ids, turns_ids);
+                        }
+                    }
+                }
+            }
+            lir::Stmt::ThreadStart(ts) => {
+                for arg in &ts.args {
+                    if let lir::CallArg::Value(e) = arg {
+                        collect_counting_refs_expr(e, visit_ids, turns_ids);
+                    }
+                }
+            }
+            // EnterContainer, DeclareTemp(None), Return(None), etc.
             _ => {}
         }
     }
@@ -877,6 +909,12 @@ fn collect_counting_refs_expr(
 ) {
     match expr {
         lir::Expr::VisitCount(id) => visit_ids.push(*id),
+        lir::Expr::DivertTarget(id) => {
+            // Any container whose address is taken could be reached via
+            // variable divert/tunnel — conservatively mark for visit tracking.
+            visit_ids.push(*id);
+            turns_ids.push(*id);
+        }
         lir::Expr::CallBuiltin {
             builtin: lir::BuiltinFn::TurnsSince,
             args,

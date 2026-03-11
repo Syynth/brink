@@ -1349,6 +1349,71 @@ fn visit_count_reference_sets_flag() {
     );
 }
 
+#[test]
+fn variable_divert_target_gets_visit_flags() {
+    let program = lower_ink(
+        "\
+VAR x = -> here
+-> there
+== there ==
+-> x
+== here ==
+Here.
+-> DONE
+",
+    );
+    let here = find_by_path(&program, "here");
+    assert!(
+        here.counting_flags
+            .contains(brink_format::CountingFlags::VISITS),
+        "container targeted by variable divert must have VISITS flag"
+    );
+    assert!(
+        here.counting_flags
+            .contains(brink_format::CountingFlags::TURNS),
+        "container targeted by variable divert must have TURNS flag"
+    );
+}
+
+#[test]
+fn variable_tunnel_target_gets_visit_flags() {
+    let program = lower_ink(
+        "\
+VAR x = -> tunnel
+-> x ->
+== tunnel ==
+->->
+",
+    );
+    let tunnel = find_by_path(&program, "tunnel");
+    assert!(
+        tunnel
+            .counting_flags
+            .contains(brink_format::CountingFlags::VISITS),
+        "container targeted by variable tunnel must have VISITS flag"
+    );
+}
+
+#[test]
+fn divert_target_expr_gets_visit_flags() {
+    let program = lower_ink(
+        "\
+~ temp x = -> target
+-> x
+== target ==
+Done.
+-> DONE
+",
+    );
+    let target = find_by_path(&program, "target");
+    assert!(
+        target
+            .counting_flags
+            .contains(brink_format::CountingFlags::VISITS),
+        "container whose address is taken in an expr must have VISITS flag"
+    );
+}
+
 // ─── Container counts and structure ─────────────────────────────────
 
 #[test]
