@@ -847,6 +847,69 @@ fn nested_thread_in_tunnel_choices_merge() {
     );
 }
 
+// ── Pattern 3c: Nested gather chaining in deep weaves ────────────────
+
+/// Three levels of choices with gathers at each level. After resolving
+/// the deepest choices, execution must flow through each gather level
+/// back to the outermost gather.
+#[test]
+fn nested_gather_three_levels() {
+    let source = "\
+* A
+    * * B
+        * * * C
+        - - - Inner gather.
+    - - Middle gather.
+- Outer gather.
+-> END
+";
+    let result = compile_and_run(source, &[0, 0, 0]);
+    assert_eq!(
+        result,
+        "A\nB\nC\nInner gather.\nMiddle gather.\nOuter gather.\n"
+    );
+}
+
+/// Two levels with a gather-then-second-choice-set pattern: the `- -`
+/// gather has content then a second round of choices. After that second
+/// round resolves, execution must still reach the `-` outer gather.
+#[test]
+fn nested_gather_with_second_choice_round() {
+    let source = "\
+* First
+    * * Second
+    * * Third
+    - - Between.
+    * * Fourth
+    - - After fourth.
+- Final.
+-> END
+";
+    let result = compile_and_run(source, &[0, 0, 0]);
+    assert_eq!(
+        result,
+        "First\nSecond\nBetween.\nFourth\nAfter fourth.\nFinal.\n"
+    );
+}
+
+/// Simplified version of complex-flow-v1: the key pattern is that
+/// the `- -` gather has glue (`<>`) that connects to the `-` gather.
+#[test]
+fn nested_gather_with_glue_continuation() {
+    let source = "\
+* Outer choice
+    * * Deep choice
+    - - After deep, <>
+- outer end.
+-> END
+";
+    let result = compile_and_run(source, &[0, 0]);
+    assert_eq!(
+        result,
+        "Outer choice\nDeep choice\nAfter deep, outer end.\n"
+    );
+}
+
 // ── Pattern 4: Missing space literal in string interpolation ─────────
 
 /// `{gatherCount} {loop}` must produce "1 1", not "11" — the space

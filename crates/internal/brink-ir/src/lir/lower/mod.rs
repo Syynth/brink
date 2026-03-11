@@ -537,7 +537,6 @@ fn build_continuation_container(
     }
 }
 
-#[expect(clippy::too_many_lines)]
 fn lower_choice_with_child(
     choice: &hir::Choice,
     ctx: &mut LowerCtx<'_>,
@@ -631,36 +630,11 @@ fn lower_choice_with_child(
         if body_ends_with_choice_set {
             // The body ends with a ChoiceSet → `done` stops execution,
             // so a divert appended to the body would be dead code.
-            // Instead, append the outer gather divert to the last child
-            // gather container (implicit or explicit) so that after the
-            // inner gather's content, execution flows to the outer gather.
-            if let Some(gather) = children
-                .last_mut()
-                .filter(|c| c.kind == lir::ContainerKind::Gather)
-            {
-                let gather_body_ends_terminal = gather.body.last().is_some_and(|s| {
-                    matches!(
-                        s,
-                        lir::Stmt::Divert(d)
-                            if matches!(
-                                d.target,
-                                lir::DivertTarget::End
-                                    | lir::DivertTarget::Done
-                                    | lir::DivertTarget::Container(_)
-                            )
-                    )
-                });
-                if gather_body_ends_terminal {
-                    // Replace the terminal (e.g., Done) with the outer gather divert
-                    let last_idx = gather.body.len() - 1;
-                    gather.body[last_idx] = lir::Stmt::Divert(divert);
-                } else {
-                    // Append the divert after the gather's content
-                    gather.body.push(lir::Stmt::Divert(divert));
-                }
-            } else {
-                body.push(lir::Stmt::Divert(divert));
-            }
+            // Instead, patch the innermost gather container so that
+            // after the inner gather's content, execution flows to the
+            // outer gather. This recurses through nested choice-set-
+            // in-gather chains (multi-level weaves).
+            patch_innermost_gather(&mut children, divert);
         } else {
             body.push(lir::Stmt::Divert(divert));
         }
@@ -930,5 +904,54 @@ fn collect_counting_refs_expr(
             }
         }
         _ => {}
+    }
+}
+
+/// Recursively find the innermost gather container in a chain of
+/// gather-contains-`ChoiceSet` nesting and patch it with the given divert.
+///
+/// When a choice body ends with a `ChoiceSet`, its gather container may
+/// itself end with another `ChoiceSet` (multi-level weaves). The divert
+/// to the outer gather must be placed in the innermost gather that
+/// doesn't end with yet another `ChoiceSet`, otherwise it becomes dead
+/// code after the `done` emitted by codegen for the `ChoiceSet`.
+fn patch_innermost_gather(children: &mut [lir::Container], divert: lir::Divert) {
+    let Some(gather) = children
+        .last_mut()
+        .filter(|c| c.kind == lir::ContainerKind::Gather)
+    else {
+        return;
+    };
+
+    let gather_body_ends_with_choice_set = gather
+        .body
+        .last()
+        .is_some_and(|s| matches!(s, lir::Stmt::ChoiceSet(_)));
+
+    if gather_body_ends_with_choice_set {
+        // Recurse into the gather's children to find the deeper gather
+        patch_innermost_gather(&mut gather.children, divert);
+        return;
+    }
+
+    let gather_body_ends_terminal = gather.body.last().is_some_and(|s| {
+        matches!(
+            s,
+            lir::Stmt::Divert(d)
+                if matches!(
+                    d.target,
+                    lir::DivertTarget::End
+                        | lir::DivertTarget::Done
+                        | lir::DivertTarget::Container(_)
+                )
+        )
+    });
+
+    if gather_body_ends_terminal {
+        // Replace the terminal (e.g., Done) with the outer gather divert
+        let last_idx = gather.body.len() - 1;
+        gather.body[last_idx] = lir::Stmt::Divert(divert);
+    } else {
+        gather.body.push(lir::Stmt::Divert(divert));
     }
 }
