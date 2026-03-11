@@ -325,9 +325,12 @@ impl ContainerEmitter<'_> {
         let is_shuffle = seq.kind.contains(brink_ir::SequenceType::SHUFFLE);
 
         if is_shuffle {
-            // Shuffle: use the runtime's Sequence(Shuffle, count) opcode
-            // which pushes a shuffled index onto the stack.
-            self.emit(Opcode::Sequence(SequenceKind::Shuffle, count as u8));
+            // Shuffle: the runtime's handle_shuffle_sequence pops two values:
+            //   num_elements (top) and seq_count (below).
+            // Push them in order: seq_count first, then num_elements.
+            self.emit(Opcode::CurrentVisitCount);
+            self.emit(Opcode::PushInt(count as i32));
+            self.emit(Opcode::Sequence(SequenceKind::Shuffle, 0));
         } else {
             // Non-shuffle: use CurrentVisitCount + math to compute branch index.
             self.emit(Opcode::CurrentVisitCount);
