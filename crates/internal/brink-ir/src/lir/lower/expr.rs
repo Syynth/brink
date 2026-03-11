@@ -121,9 +121,24 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
             SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label => {
                 lir::Expr::VisitCount(info.id)
             }
-            // Params/temps should already be caught by temp_slot above;
+            // Temps not caught by temp_slot above are forward-referenced
+            // (used before their declaration). Inklecate emits a get_global
+            // for these, which fails at link time because no such global
+            // exists. We reproduce the same behavior so the linker errors.
+            // Hash the variable name the same way the converter does
+            // (DefaultHasher on the name string → GlobalVar tag).
+            SymbolKind::Temp => {
+                use brink_format::{DefinitionId, DefinitionTag};
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                name.hash(&mut hasher);
+                let global_id = DefinitionId::new(DefinitionTag::GlobalVar, hasher.finish());
+                lir::Expr::GetGlobal(global_id)
+            }
+            // Params should already be caught by temp_slot above;
             // externals used as values are meaningless — fall back to null.
-            SymbolKind::External | SymbolKind::Param | SymbolKind::Temp => lir::Expr::Null,
+            SymbolKind::External | SymbolKind::Param => lir::Expr::Null,
         }
     } else {
         lir::Expr::Null

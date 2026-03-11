@@ -80,6 +80,7 @@ fn lower_root(
             names,
             ids,
             String::new(),
+            &[],
         );
         let mut cc = 0;
         let mut gc = 0;
@@ -162,6 +163,7 @@ fn lower_knot(
     let temp_count = temp_map.total_slots();
     let params = lower_params(&knot.params, names, &temp_map);
 
+    let knot_param_names: Vec<&str> = knot.params.iter().map(|p| p.name.text.as_str()).collect();
     let mut ctx = make_ctx(
         file_id,
         resolutions,
@@ -170,6 +172,7 @@ fn lower_knot(
         names,
         ids,
         knot_name.clone(),
+        &knot_param_names,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -241,6 +244,8 @@ fn lower_stitch(
         .unwrap_or(plan.root_id);
     let params = lower_params(&stitch.params, names, temp_map);
 
+    let stitch_param_names: Vec<&str> =
+        stitch.params.iter().map(|p| p.name.text.as_str()).collect();
     let mut ctx = make_ctx(
         file_id,
         resolutions,
@@ -249,6 +254,7 @@ fn lower_stitch(
         names,
         ids,
         stitch_path,
+        &stitch_param_names,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -701,6 +707,7 @@ fn lower_choice_with_child(
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
+#[expect(clippy::too_many_arguments)]
 fn make_ctx<'a>(
     file: FileId,
     resolutions: &'a ResolutionLookup,
@@ -709,6 +716,7 @@ fn make_ctx<'a>(
     names: &'a mut NameTable,
     ids: &'a mut context::IdAllocator,
     scope_path: String,
+    param_names: &[&str],
 ) -> LowerCtx<'a> {
     LowerCtx {
         file,
@@ -719,6 +727,7 @@ fn make_ctx<'a>(
         ids,
         scope_path,
         pending_children: Vec::new(),
+        visible_temps: param_names.iter().map(|s| (*s).to_string()).collect(),
     }
 }
 

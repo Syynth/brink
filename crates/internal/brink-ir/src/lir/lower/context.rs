@@ -116,6 +116,10 @@ pub struct LowerCtx<'a> {
     /// Child containers created during content lowering (inline sequences).
     /// Drained by the caller after each statement.
     pub pending_children: Vec<super::lir::Container>,
+    /// Temps that have been declared so far in source order.
+    /// Forward-referenced temps (used before declaration) should resolve as
+    /// globals, matching inklecate's behavior.
+    pub visible_temps: std::collections::HashSet<String>,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -131,7 +135,19 @@ impl<'a> LowerCtx<'a> {
     }
 
     /// Look up a name in the temp map for the current scope.
+    /// Only returns a slot if the temp has been declared (is visible).
     pub fn temp_slot(&self, name: &str) -> Option<u16> {
+        if self.visible_temps.contains(name) {
+            self.temps.get(name)
+        } else {
+            None
+        }
+    }
+
+    /// Look up a temp slot by name, bypassing visibility checks.
+    /// Used for `DeclareTemp` lowering where the slot must exist even
+    /// though the temp hasn't been marked visible yet.
+    pub fn temp_slot_raw(&self, name: &str) -> Option<u16> {
         self.temps.get(name)
     }
 

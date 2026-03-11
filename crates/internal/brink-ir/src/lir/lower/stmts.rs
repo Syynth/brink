@@ -43,9 +43,10 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
         }
 
         hir::Stmt::TempDecl(decl) => {
-            let slot = ctx.temp_slot(&decl.name.text)?;
+            let slot = ctx.temp_slot_raw(&decl.name.text)?;
             let name = ctx.names.intern(&decl.name.text);
             let value = decl.value.as_ref().map(|e| lower_expr(e, ctx));
+            ctx.visible_temps.insert(decl.name.text.clone());
             Some(lir::Stmt::DeclareTemp { slot, name, value })
         }
 

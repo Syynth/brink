@@ -181,7 +181,7 @@ fn choice_inner_content(p: &mut Parser<'_, '_>) {
 
 /// Parse choice content elements until a stop character.
 fn choice_content_elements(p: &mut Parser<'_, '_>) {
-    while (at_choice_content(p) || p.nth_raw(0) == WHITESPACE) && p.current() != L_BRACKET {
+    while (at_choice_content(p) || p.nth_raw(0) == WHITESPACE) && p.nth_raw(0) != L_BRACKET {
         let before = p.pos();
         choice_content_element(p);
         // Safety: if no progress was made, break to avoid infinite loop.
@@ -195,6 +195,12 @@ fn choice_content_elements(p: &mut Parser<'_, '_>) {
 
 /// Parse a single choice content element.
 fn choice_content_element(p: &mut Parser<'_, '_>) {
+    // Consume leading whitespace as text so it isn't silently dropped
+    // as trivia by a subsequent inline_logic / skip_ws call.
+    if p.nth_raw(0) == WHITESPACE {
+        choice_text(p);
+        return;
+    }
     match p.current() {
         L_BRACE => {
             super::inline::inline_logic(p);
