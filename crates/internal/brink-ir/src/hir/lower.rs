@@ -1797,10 +1797,16 @@ impl LowerCtx {
         });
 
         let tags = lower_tags(choice.tags());
-        // Only skip the divert in the body when it was captured as an inline
-        // divert. Non-simple diverts (tunnel onwards, tunnel calls) must flow
-        // through lower_body_child so they get proper HIR representation.
-        let skip_divert = inline_divert.is_some();
+        // Skip the choice-level divert in the body when it was captured as an
+        // inline divert OR when it's an empty simple divert (bare `->` on a
+        // choice, meaning "fall through to gather"). Non-simple diverts
+        // (tunnel onwards, tunnel calls) must flow through lower_body_child
+        // so they get proper HIR representation.
+        let has_empty_simple_divert = choice.divert().is_some_and(|d| {
+            d.simple_divert()
+                .is_some_and(|sd| sd.targets().next().is_none())
+        });
+        let skip_divert = inline_divert.is_some() || has_empty_simple_divert;
         let mut body = self.lower_choice_body(choice, skip_divert);
 
         // Prepend the inline divert + EndOfLine to the body. The divert goes

@@ -596,6 +596,10 @@ pub enum DiagnosticCode {
     E027,
     /// Circular INCLUDE dependency.
     E028,
+
+    // ── Compile errors ────────────────────────────────────────────
+    /// Choice nested in conditional without explicit divert.
+    E029,
 }
 
 impl DiagnosticCode {
@@ -631,6 +635,7 @@ impl DiagnosticCode {
             Self::E026 => "E026",
             Self::E027 => "E027",
             Self::E028 => "E028",
+            Self::E029 => "E029",
         }
     }
 
@@ -666,6 +671,7 @@ impl DiagnosticCode {
             Self::E026 => "duplicate list item",
             Self::E027 => "ambiguous bare list item reference",
             Self::E028 => "circular INCLUDE dependency",
+            Self::E029 => "choice in conditional must explicitly divert",
         }
     }
 

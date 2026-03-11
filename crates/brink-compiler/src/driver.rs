@@ -22,6 +22,18 @@ where
     let file_count = db.file_ids().count();
     info!(file_count, "all files parsed and lowered");
 
+    // ── Pass 2b: Collect per-file diagnostics (parse + HIR lowering) ──
+    let mut all_diagnostics: Vec<brink_ir::Diagnostic> = db
+        .file_ids()
+        .flat_map(|id| {
+            db.file_diagnostics(id)
+                .unwrap_or_default()
+                .iter()
+                .filter(|d| d.code.severity() == brink_ir::Severity::Error)
+                .cloned()
+        })
+        .collect();
+
     // ── Pass 3-5: Analyze ───────────────────────────────────────────
     let result = db.analyze().clone();
 
@@ -31,8 +43,10 @@ where
         "analysis complete"
     );
 
-    if !result.diagnostics.is_empty() {
-        return Err(CompileError::Diagnostics(result.diagnostics));
+    all_diagnostics.extend(result.diagnostics.clone());
+
+    if !all_diagnostics.is_empty() {
+        return Err(CompileError::Diagnostics(all_diagnostics));
     }
 
     // ── Pass 6a: Build LIR ────────────────────────────────────────

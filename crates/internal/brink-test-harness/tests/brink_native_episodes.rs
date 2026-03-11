@@ -44,7 +44,7 @@ fn has_empty_source(case_dir: &std::path::Path) -> bool {
 
 /// Ratchet: minimum number of episodes (not cases) that must pass.
 /// Bump this as compiler coverage improves.
-const RATCHET_EPISODE_COUNT: usize = 911;
+const RATCHET_EPISODE_COUNT: usize = 912;
 
 /// Index episodes by their `choice_path` for order-independent matching.
 fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
@@ -172,6 +172,10 @@ fn brink_native_episodes() {
             }
             Err(e) if e.starts_with("compile:") => {
                 compile_error += 1;
+                failing_cases.push(format!("{rel} ({e})"));
+                if first_mismatch.is_none() {
+                    first_mismatch = Some(format!("{rel}: {e}"));
+                }
                 continue;
             }
             Err(e) if e.starts_with("link:") => {

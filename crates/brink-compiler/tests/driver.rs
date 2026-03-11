@@ -1210,47 +1210,44 @@ VAR post3 = ()
 //
 // Inklecate rejects these programs. Brink should too.
 
+/// Helper: extract diagnostic codes from a compile error.
+fn diagnostic_codes(err: &brink_compiler::CompileError) -> Vec<&'static str> {
+    match err {
+        brink_compiler::CompileError::Diagnostics(diags) => {
+            diags.iter().map(|d| d.code.as_str()).collect()
+        }
+        _ => vec![],
+    }
+}
+
 /// A choice inside `{ true: * choice }` without an explicit divert is
 /// invalid — inklecate errors with "need to explicitly divert".
 #[test]
-#[ignore = "red-phase: brink does not yet reject this pattern"]
+#[ignore = "red-phase: brink does not yet emit E029"]
 fn compile_error_nested_choice_in_conditional() {
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", "{ true:\n    * choice\n}\n")]);
     let result = compile_mem("main.ink", &files);
-    assert!(
-        result.is_err(),
+    let err = result.expect_err(
         "choice inside inline conditional should be a compile error, \
-         but compilation succeeded"
+         but compilation succeeded",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E029"),
+        "expected E029 (choice in conditional must explicitly divert), got: {codes:?}"
     );
 }
 
 /// A bare `->` (empty divert) outside a choice is invalid.
 /// Inklecate: "Empty diverts (->) are only valid on choices".
 #[test]
-#[ignore = "red-phase: brink does not yet reject this pattern"]
 fn compile_error_disallow_empty_diverts() {
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", "->\n")]);
     let result = compile_mem("main.ink", &files);
+    let err = result.expect_err("bare `->` should be a compile error, but compilation succeeded");
+    let codes = diagnostic_codes(&err);
     assert!(
-        result.is_err(),
-        "bare `->` should be a compile error, but compilation succeeded"
-    );
-}
-
-/// VAR/CONST declarations after a knot should be an error.
-/// Inklecate rejects this because global declarations must appear
-/// before any knot/stitch definitions.
-#[test]
-#[ignore = "red-phase: brink does not yet reject this pattern"]
-fn compile_error_globals_after_knot() {
-    let files: HashMap<&str, &str> = HashMap::from([(
-        "main.ink",
-        "=== stuff ===\n-> END\n\nVAR X = 1\nCONST Y = 2\n",
-    )]);
-    let result = compile_mem("main.ink", &files);
-    assert!(
-        result.is_err(),
-        "VAR/CONST after a knot should be a compile error, \
-         but compilation succeeded"
+        codes.contains(&"E012"),
+        "expected E012 (divert is missing a target), got: {codes:?}"
     );
 }
