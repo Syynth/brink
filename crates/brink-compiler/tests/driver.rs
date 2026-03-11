@@ -1205,3 +1205,52 @@ VAR post3 = ()
         "expected output, got: {result:?}"
     );
 }
+
+// ── Expected compile errors ─────────────────────────────────────────
+//
+// Inklecate rejects these programs. Brink should too.
+
+/// A choice inside `{ true: * choice }` without an explicit divert is
+/// invalid — inklecate errors with "need to explicitly divert".
+#[test]
+#[ignore = "red-phase: brink does not yet reject this pattern"]
+fn compile_error_nested_choice_in_conditional() {
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", "{ true:\n    * choice\n}\n")]);
+    let result = compile_mem("main.ink", &files);
+    assert!(
+        result.is_err(),
+        "choice inside inline conditional should be a compile error, \
+         but compilation succeeded"
+    );
+}
+
+/// A bare `->` (empty divert) outside a choice is invalid.
+/// Inklecate: "Empty diverts (->) are only valid on choices".
+#[test]
+#[ignore = "red-phase: brink does not yet reject this pattern"]
+fn compile_error_disallow_empty_diverts() {
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", "->\n")]);
+    let result = compile_mem("main.ink", &files);
+    assert!(
+        result.is_err(),
+        "bare `->` should be a compile error, but compilation succeeded"
+    );
+}
+
+/// VAR/CONST declarations after a knot should be an error.
+/// Inklecate rejects this because global declarations must appear
+/// before any knot/stitch definitions.
+#[test]
+#[ignore = "red-phase: brink does not yet reject this pattern"]
+fn compile_error_globals_after_knot() {
+    let files: HashMap<&str, &str> = HashMap::from([(
+        "main.ink",
+        "=== stuff ===\n-> END\n\nVAR X = 1\nCONST Y = 2\n",
+    )]);
+    let result = compile_mem("main.ink", &files);
+    assert!(
+        result.is_err(),
+        "VAR/CONST after a knot should be a compile error, \
+         but compilation succeeded"
+    );
+}

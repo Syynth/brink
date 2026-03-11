@@ -1,5 +1,4 @@
 description = "Tests.cs: TestArgumentShouldntConflictWithGatherElsewhere"
-mode = "compile_error"
 
 [source]
 origin = "inkle-tests-cs"
