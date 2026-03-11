@@ -23,9 +23,18 @@ fn tests_dir() -> PathBuf {
         .join("tests")
 }
 
+/// Returns true if the case's metadata.toml has `mode = "compile_error"`.
+fn is_compile_error_case(case_dir: &std::path::Path) -> bool {
+    let meta_path = case_dir.join("metadata.toml");
+    std::fs::read_to_string(meta_path).ok().is_some_and(|s| {
+        s.lines()
+            .any(|line| line.trim() == r#"mode = "compile_error""#)
+    })
+}
+
 /// Ratchet: minimum number of episodes (not cases) that must pass.
 /// Bump this as compiler coverage improves.
-const RATCHET_EPISODE_COUNT: usize = 935;
+const RATCHET_EPISODE_COUNT: usize = 925;
 
 /// Index episodes by their `choice_path` for order-independent matching.
 fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
@@ -83,6 +92,8 @@ fn brink_native_episodes() {
     let mut compile_error = 0;
     let mut link_error = 0;
     let mut skip = 0;
+    let mut expected_compile_error_pass = 0;
+    let mut expected_compile_error_fail = 0;
 
     let mut episodes_pass = 0;
     let mut episodes_mismatch = 0;
@@ -111,6 +122,8 @@ fn brink_native_episodes() {
             continue;
         }
 
+        let expect_compile_error = is_compile_error_case(case_dir);
+
         // Load golden episodes.
         let golden = match load_golden_episodes(case_dir) {
             Ok(eps) if eps.is_empty() => {
@@ -128,7 +141,25 @@ fn brink_native_episodes() {
 
         // Try compiling with brink.
         let (story_data, actual) = match compile_and_explore_from_ink(&ink_path, &config) {
-            Ok(pair) => pair,
+            Ok(pair) => {
+                if expect_compile_error {
+                    // Compilation succeeded but should have failed.
+                    expected_compile_error_fail += 1;
+                    failing_cases.push(format!("{rel} (expected compile error, got success)"));
+                    if first_mismatch.is_none() {
+                        first_mismatch = Some(format!(
+                            "{rel}: expected compile error but compilation succeeded"
+                        ));
+                    }
+                    continue;
+                }
+                pair
+            }
+            Err(_) if expect_compile_error => {
+                // Compilation failed as expected.
+                expected_compile_error_pass += 1;
+                continue;
+            }
             Err(e) if e.starts_with("compile:") => {
                 compile_error += 1;
                 continue;
@@ -214,6 +245,12 @@ fn brink_native_episodes() {
          {compile_error} compile_error / {link_error} link_error / \
          {skip} skip (of {total_cases})"
     );
+    if expected_compile_error_pass > 0 || expected_compile_error_fail > 0 {
+        println!(
+            "COMPILE-ERROR CASES: {expected_compile_error_pass} correctly rejected / \
+             {expected_compile_error_fail} should-have-failed"
+        );
+    }
     println!(
         "BRINK-NATIVE EPISODES: {episodes_pass} pass / {episodes_mismatch} mismatch \
          (of {episodes_total} golden)"
