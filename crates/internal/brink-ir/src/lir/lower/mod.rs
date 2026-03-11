@@ -745,7 +745,7 @@ fn apply_counting_flags(root: &mut lir::Container) {
     let mut visit_ids = Vec::new();
     let mut turns_ids = Vec::new();
 
-    // Collect phase: walk entire tree
+    // Collect phase: walk entire tree for explicit visit/turn refs
     collect_counting_refs_tree(root, &mut visit_ids, &mut turns_ids);
 
     // Apply phase: walk entire tree
