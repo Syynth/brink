@@ -277,8 +277,10 @@ impl ContainerEmitter<'_> {
 
                 self.emit_body(&branch.body);
 
-                if !is_last {
-                    // Jump to end of entire conditional
+                if !is_last || is_switch {
+                    // Jump to end of entire conditional.
+                    // For switch: the last conditional branch must also jump
+                    // past the cleanup Pop emitted for "no branch taken".
                     let end_site = self.emit_jump_placeholder(Opcode::Jump(0));
                     end_jumps.push(end_site);
                 }
