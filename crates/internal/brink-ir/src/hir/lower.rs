@@ -1037,6 +1037,10 @@ impl LowerCtx {
     fn lower_branchless_body(&mut self, body: &ast::BranchlessCondBody) -> Block {
         let mut stmts = Vec::new();
         let mut parts = Vec::new();
+        // Track whether this body spans multiple lines. Inline single-line
+        // bodies (e.g. `{x: text}`) have no NEWLINE children, and their
+        // trailing newline is provided by the enclosing content line.
+        let mut is_multiline = false;
 
         for child in body.syntax().children_with_tokens() {
             match child.kind() {
@@ -1064,8 +1068,6 @@ impl LowerCtx {
                         {
                             stmts.push(s);
                         }
-                        // No EndOfLine inside branchless conditional bodies —
-                        // the enclosing content line provides the trailing newline.
                     }
                 }
                 SyntaxKind::LOGIC_LINE => {
@@ -1102,12 +1104,17 @@ impl LowerCtx {
                     }
                 }
                 SyntaxKind::NEWLINE => {
+                    is_multiline = true;
                     if !parts.is_empty() {
                         let ends_glue = content_ends_with_glue(&parts);
                         flush_content_parts(&mut parts, &mut stmts);
                         if !ends_glue {
                             stmts.push(Stmt::EndOfLine);
                         }
+                    } else if stmts.last().is_some_and(|s| matches!(s, Stmt::Content(_))) {
+                        // A CONTENT_LINE already flushed content and cleared
+                        // parts. Emit the EndOfLine that the newline represents.
+                        stmts.push(Stmt::EndOfLine);
                     }
                 }
                 SyntaxKind::GLUE_NODE => parts.push(ContentPart::Glue),
@@ -1141,6 +1148,13 @@ impl LowerCtx {
             }
         }
         flush_content_parts(&mut parts, &mut stmts);
+
+        // In multiline branchless bodies, if the loop ended at ELSE_BRANCH
+        // the NEWLINE was absorbed into the ELSE_BRANCH node and never
+        // triggered EndOfLine. Emit it now for the trailing content.
+        if is_multiline && stmts.last().is_some_and(|s| matches!(s, Stmt::Content(_))) {
+            stmts.push(Stmt::EndOfLine);
+        }
 
         // In a branchless body like `{true: + A choice \n body \n -> END}`,
         // "body" and "-> END" are siblings of CHOICE in the CST, not children.
