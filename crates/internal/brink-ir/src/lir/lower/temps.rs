@@ -4,21 +4,35 @@ use super::context::TempMap;
 
 /// Allocate temp slots for a scope (knot/function).
 ///
-/// Params occupy slots `0..n-1`, then temp declarations are assigned
-/// sequentially from `n`.
+/// Params occupy slots `0..n-1` (knot params first, then each stitch's
+/// params in order), then temp declarations are assigned sequentially.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "ink functions won't have >u16::MAX params/temps"
 )]
-pub fn alloc_temps(params: &[hir::Param], blocks: &[&hir::Block]) -> TempMap {
+pub fn alloc_temps(
+    params: &[hir::Param],
+    stitches: &[hir::Stitch],
+    blocks: &[&hir::Block],
+) -> TempMap {
     let mut map = TempMap::new();
 
-    // Params first
+    // Knot params first
     for (i, param) in params.iter().enumerate() {
         map.insert(param.name.text.clone(), i as u16);
     }
 
     let mut next_slot = params.len() as u16;
+
+    // Stitch params get sequential slots after knot params
+    for stitch in stitches {
+        for param in &stitch.params {
+            if map.get(&param.name.text).is_none() {
+                map.insert(param.name.text.clone(), next_slot);
+                next_slot += 1;
+            }
+        }
+    }
 
     // Walk all blocks in the scope to find TempDecl
     for block in blocks {
@@ -89,7 +103,7 @@ mod tests {
             },
         ];
         let empty_block = Block::default();
-        let map = alloc_temps(&params, &[&empty_block]);
+        let map = alloc_temps(&params, &[], &[&empty_block]);
         assert_eq!(map.get("a"), Some(0));
         assert_eq!(map.get("b"), Some(1));
         assert_eq!(map.total_slots(), 2);

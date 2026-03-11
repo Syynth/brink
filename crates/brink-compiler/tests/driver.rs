@@ -910,6 +910,72 @@ fn nested_gather_with_glue_continuation() {
     );
 }
 
+// ── Pattern 3d: Stitch parameters (including ref) ────────────────────
+
+/// Stitch parameters must receive unique temp slots and be accessible
+/// within the stitch body. This is the simplest case: by-value params.
+#[test]
+fn stitch_params_by_value() {
+    let source = "\
+-> greet.say(\"Hello\", \"world\")
+
+== greet ==
+= say(greeting, who)
+{greeting}, {who}!
+-> END
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "Hello, world!\n");
+}
+
+/// Ref parameters on a stitch must be writable and must persist changes
+/// back to the caller's variable.
+#[test]
+#[ignore = "ref parameters not yet implemented"]
+fn stitch_ref_params() {
+    let source = "\
+VAR x = 1
+~ do_inc.bump(x)
+{x}
+-> END
+
+== do_inc ==
+= bump(ref target)
+~ target = target + 1
+-> DONE
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "2\n");
+}
+
+/// Thread-called stitch with ref params — the tower-of-hanoi pattern.
+/// The stitch is called via `<-` with ref params; inside the stitch,
+/// the ref params must be readable and modifiable.
+#[test]
+#[ignore = "ref parameters not yet implemented"]
+fn thread_stitch_with_ref_params() {
+    let source = "\
+VAR counter = 0
+-> main
+
+== main ==
+- (top)
+    <- main.inc(counter)
+    +   {counter < 3} [Again]
+        -> top
+    +   {counter >= 3} [Done]
+-> END
+
+= inc(ref c)
+    +   [Increment]
+        ~ c = c + 1
+    -   -
+    ->->
+";
+    let result = compile_and_run(source, &[0, 0, 0, 0, 0, 0]);
+    assert_eq!(result, "Increment\nIncrement\nIncrement\nDone\n");
+}
+
 // ── Pattern 4: Missing space literal in string interpolation ─────────
 
 /// `{gatherCount} {loop}` must produce "1 1", not "11" — the space
