@@ -790,6 +790,12 @@ fn apply_counting_flags_tree(
 ) {
     if visit_ids.contains(&container.id) {
         container.counting_flags |= CountingFlags::VISITS;
+        // Labeled containers (gathers with labels like `- (loop)`) need
+        // COUNT_START_ONLY so that self-goto loops correctly increment
+        // the visit count in the runtime's goto_target handler.
+        if container.label_id.is_some() {
+            container.counting_flags |= CountingFlags::COUNT_START_ONLY;
+        }
     }
     if turns_ids.contains(&container.id) {
         container.counting_flags |= CountingFlags::TURNS;

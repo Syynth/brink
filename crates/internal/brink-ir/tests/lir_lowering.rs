@@ -1414,6 +1414,38 @@ Done.
     );
 }
 
+#[test]
+fn labeled_gather_with_visits_gets_count_start_only() {
+    let program = lower_ink(
+        "\
+== scene ==
+- (loop)
+{loop} times.
+{loop < 3: -> loop}
+-> DONE
+",
+    );
+    let scene = find_by_path(&program, "scene");
+    // Find the gather container with the label
+    let gather = scene
+        .children
+        .iter()
+        .find(|c| c.label_id.is_some())
+        .expect("should have a labeled gather child");
+    assert!(
+        gather
+            .counting_flags
+            .contains(brink_format::CountingFlags::VISITS),
+        "labeled gather referenced by visit count should have VISITS"
+    );
+    assert!(
+        gather
+            .counting_flags
+            .contains(brink_format::CountingFlags::COUNT_START_ONLY),
+        "labeled gather with VISITS should have COUNT_START_ONLY for self-goto loops"
+    );
+}
+
 // ─── Container counts and structure ─────────────────────────────────
 
 #[test]
