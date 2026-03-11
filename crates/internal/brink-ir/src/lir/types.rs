@@ -197,6 +197,9 @@ pub enum Stmt {
         value: Option<Expr>,
         /// When true, emit `TunnelReturn` instead of `Return`.
         is_tunnel: bool,
+        /// Arguments for `->-> target(args)` tunnel onwards — pushed before
+        /// the divert target value on the value stack.
+        args: Vec<CallArg>,
     },
 
     /// A set of choices presented to the player.
@@ -262,8 +265,10 @@ pub struct ThreadStart {
 pub enum DivertTarget {
     /// A named container.
     Container(DefinitionId),
-    /// A variable holding a divert target value — `-> x` where `x` is a variable.
+    /// A global variable holding a divert target value — `-> x` where `x` is a global variable.
     Variable(DefinitionId),
+    /// A temp/parameter variable holding a divert target value — `-> x` where `x` is a parameter.
+    VariableTemp(u16, NameId),
     /// `-> DONE` — pause execution, can resume.
     Done,
     /// `-> END` — permanently end the story.

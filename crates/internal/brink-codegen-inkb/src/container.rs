@@ -34,6 +34,10 @@ impl ContainerEmitter<'_> {
                             self.emit(Opcode::GetGlobal(*id));
                             self.emit(Opcode::TunnelCallVariable);
                         }
+                        lir::DivertTarget::VariableTemp(slot, _) => {
+                            self.emit(Opcode::GetTemp(*slot));
+                            self.emit(Opcode::TunnelCallVariable);
+                        }
                         lir::DivertTarget::Done => self.emit(Opcode::Done),
                         lir::DivertTarget::End => self.emit(Opcode::End),
                     }
@@ -50,6 +54,10 @@ impl ContainerEmitter<'_> {
                     }
                     lir::DivertTarget::Variable(id) => {
                         self.emit(Opcode::GetGlobal(*id));
+                        self.emit(Opcode::GotoVariable);
+                    }
+                    lir::DivertTarget::VariableTemp(slot, _) => {
+                        self.emit(Opcode::GetTemp(*slot));
                         self.emit(Opcode::GotoVariable);
                     }
                     lir::DivertTarget::Done => self.emit(Opcode::Done),
@@ -70,7 +78,14 @@ impl ContainerEmitter<'_> {
                 self.emit_assign(target, *op, value);
             }
 
-            lir::Stmt::Return { value, is_tunnel } => {
+            lir::Stmt::Return {
+                value,
+                is_tunnel,
+                args,
+            } => {
+                for arg in args {
+                    self.emit_call_arg(arg);
+                }
                 if let Some(e) = value {
                     self.emit_expr(e);
                 } else {
@@ -117,7 +132,17 @@ impl ContainerEmitter<'_> {
                 }
             }
             lir::DivertTarget::Variable(id) => {
+                for arg in &divert.args {
+                    self.emit_call_arg(arg);
+                }
                 self.emit(Opcode::GetGlobal(*id));
+                self.emit(Opcode::GotoVariable);
+            }
+            lir::DivertTarget::VariableTemp(slot, _) => {
+                for arg in &divert.args {
+                    self.emit_call_arg(arg);
+                }
+                self.emit(Opcode::GetTemp(*slot));
                 self.emit(Opcode::GotoVariable);
             }
             lir::DivertTarget::Done => self.emit(Opcode::Done),

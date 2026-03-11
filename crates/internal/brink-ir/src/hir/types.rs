@@ -325,6 +325,9 @@ pub enum DivertPath {
 pub struct Return {
     pub ptr: Option<AstPtr<ast::ReturnStmt>>,
     pub value: Option<Expr>,
+    /// Arguments for `->-> target(args)` tunnel onwards — pushed before the
+    /// divert target on the value stack so the redirect target can pop them.
+    pub onwards_args: Vec<Expr>,
 }
 
 // ─── Expressions ────────────────────────────────────────────────────

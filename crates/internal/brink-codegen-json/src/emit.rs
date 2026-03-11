@@ -114,10 +114,12 @@ fn emit_stmt(
                 let abs = divert_target_path(&target.target, lookups);
                 let path = cctx.compact_path(1, &abs);
                 let divert = match &target.target {
-                    lir::DivertTarget::Variable(_) => Divert::TunnelVariable {
-                        conditional: false,
-                        path,
-                    },
+                    lir::DivertTarget::Variable(_) | lir::DivertTarget::VariableTemp(..) => {
+                        Divert::TunnelVariable {
+                            conditional: false,
+                            path,
+                        }
+                    }
                     _ => Divert::Tunnel {
                         conditional: false,
                         path,
@@ -169,8 +171,15 @@ fn emit_stmt(
             emit_assign(target, *op, value, lookups, cctx, out);
         }
 
-        lir::Stmt::Return { value, is_tunnel } => {
+        lir::Stmt::Return {
+            value,
+            is_tunnel,
+            args,
+        } => {
             out.push(ev());
+            for arg in args {
+                emit_call_arg(arg, lookups, cctx, out);
+            }
             if let Some(e) = value {
                 emit_expr(e, lookups, cctx, out);
                 out.push(end_ev());
@@ -301,6 +310,13 @@ fn emit_divert(
         }
         lir::DivertTarget::Variable(id) => {
             let name = lookups.global_name(*id);
+            out.push(Element::Divert(Divert::Variable {
+                conditional: false,
+                path: name,
+            }));
+        }
+        lir::DivertTarget::VariableTemp(_, name_id) => {
+            let name = lookups.name(*name_id).to_owned();
             out.push(Element::Divert(Divert::Variable {
                 conditional: false,
                 path: name,
@@ -1377,6 +1393,7 @@ fn divert_target_path(target: &lir::DivertTarget, lookups: &Lookups) -> String {
     match target {
         lir::DivertTarget::Container(id) => lookups.container_path(*id),
         lir::DivertTarget::Variable(id) => lookups.global_name(*id),
+        lir::DivertTarget::VariableTemp(_, name_id) => lookups.name(*name_id).to_owned(),
         lir::DivertTarget::Done => "done".to_string(),
         lir::DivertTarget::End => "end".to_string(),
     }

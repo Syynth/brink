@@ -419,3 +419,191 @@ fn divert_to_standalone_labeled_gather() {
     let result = compile_and_run(source, &[]);
     assert_eq!(result, "g\n");
 }
+
+// ── Pattern 1: Divert/tunnel parameters not pushed onto stack ────────
+
+/// Variable divert with parameter: `->x (5)` where x holds a divert target.
+/// The argument must be pushed onto the value stack before the call.
+#[test]
+fn divert_target_with_parameter() {
+    let source = "\
+VAR x = ->place
+->x (5)
+== place (a) ==
+{a}
+-> DONE
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "5\n");
+}
+
+/// Tunnel onwards with argument: `->-> b (5 + 3)` must evaluate the
+/// expression and pass the result to the target knot.
+#[test]
+fn tunnel_onwards_with_arg() {
+    let source = "\
+-> a ->
+=== a ===
+->-> b (5 + 3)
+=== b (x) ===
+{x}
+-> END
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "8\n");
+}
+
+/// Tunnel onwards with parameter inside a default choice:
+/// `* ->-> elsewhere (8)` — the default choice auto-fires and passes the arg.
+#[test]
+fn tunnel_onwards_with_param_default_choice() {
+    let source = "\
+-> tunnel ->
+== tunnel ==
+* ->-> elsewhere (8)
+== elsewhere (x) ==
+{x}
+-> END
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "8\n");
+}
+
+/// Variable tunnel: `-> x ->` where x is a divert parameter.
+/// Must use `tunnel_call_variable`, not a literal `tunnel_call`.
+#[test]
+fn variable_tunnel_call() {
+    let source = "\
+-> one_then_tother(-> tunnel)
+
+=== one_then_tother(-> x) ===
+    -> x -> end
+
+=== tunnel ===
+    STUFF
+    ->->
+
+=== end ===
+    -> END
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "STUFF\n");
+}
+
+// ── Pattern 2: Tunnel gather emits done instead of tunnel_return ─────
+
+/// After choosing inside a tunnel, execution should return to the caller
+/// via `tunnel_return`, not terminate with `done`.
+#[test]
+fn tunnel_return_at_gather_with_thread() {
+    let source = "\
+-> knot
+=== knot
+    <- threadA
+    When should this get printed?
+    -> DONE
+=== threadA
+    -> tunnel ->
+    Finishing thread.
+    -> DONE
+=== tunnel
+    -   I'm in a tunnel
+    *   I'm an option
+    -   ->->
+";
+    let result = compile_and_run(source, &[0]);
+    assert_eq!(
+        result,
+        "I'm in a tunnel\nWhen should this get printed?\nI'm an option\nFinishing thread.\n"
+    );
+}
+
+// ── Pattern 3: Thread choices not merged with current context ────────
+
+/// Choices from a thread (`<- thread_with_options`) must merge with
+/// choices from the current context (tunnel or inline).
+#[test]
+fn tunnel_and_thread_choices_merge() {
+    let source = "\
+-> knot_with_options ->
+Finished tunnel.
+Starting thread.
+<- thread_with_options
+* E
+-
+Done.
+== knot_with_options ==
+* A
+* B
+-
+->->
+== thread_with_options ==
+* C
+* D
+- -> DONE
+";
+    // Episode e0: choose A (idx 0), then C (idx 0 of remaining thread choices)
+    let result = compile_and_run(source, &[0, 0]);
+    assert_eq!(result, "A\nFinished tunnel.\nStarting thread.\nC\nDone.\n");
+}
+
+/// Thread choices must merge with tunnel choices in an interleaved scenario.
+#[test]
+fn thread_choices_merge_with_tunnel() {
+    let source = "\
+-> knot
+=== knot
+    <- threadB
+    -> tunnel ->
+    THE END
+    -> END
+=== tunnel
+    - blah blah
+    * wigwag
+    - ->->
+=== threadB
+    *   option
+    -   something
+        -> DONE
+";
+    let result = compile_and_run(source, &[0]);
+    assert_eq!(result, "blah blah\noption\nsomething\n");
+}
+
+// ── Pattern 4: Missing space literal in string interpolation ─────────
+
+/// `{gatherCount} {loop}` must produce "1 1", not "11" — the space
+/// between interpolations must be emitted as a literal.
+#[test]
+fn space_between_interpolations_preserved() {
+    let source = "\
+VAR gatherCount = 0
+- (loop)
+~ gatherCount++
+{gatherCount} {loop}
+{gatherCount<3:->loop}
+-> DONE
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "1 1\n2 2\n3 3\n");
+}
+
+// ── Pattern 5: ref parameters compiled as pointer ────────────────────
+
+/// `ref` parameter should pass by reference, allowing the callee to
+/// modify the caller's variable.
+#[test]
+fn ref_parameter_modifies_caller_variable() {
+    let source = "\
+~temp x = 0
+-> bump(x)
+{x}
+-> DONE
+
+=== bump(ref n) ===
+~n++
+->->
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "1\n");
+}

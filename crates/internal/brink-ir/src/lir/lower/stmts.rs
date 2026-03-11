@@ -64,7 +64,16 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             // `->->` (tunnel return) has ptr: None in the HIR;
             // `~ return expr` has ptr: Some(...).
             let is_tunnel = ret.ptr.is_none();
-            Some(lir::Stmt::Return { value, is_tunnel })
+            let args = ret
+                .onwards_args
+                .iter()
+                .map(|a| lir::CallArg::Value(lower_expr(a, ctx)))
+                .collect();
+            Some(lir::Stmt::Return {
+                value,
+                is_tunnel,
+                args,
+            })
         }
 
         hir::Stmt::ExprStmt(expr) => {
@@ -114,7 +123,13 @@ fn lower_divert_target(target: &hir::DivertTarget, ctx: &mut LowerCtx<'_>) -> li
         hir::DivertPath::Done => lir::DivertTarget::Done,
         hir::DivertPath::End => lir::DivertTarget::End,
         hir::DivertPath::Path(path) => {
-            if let Some(info) = ctx.resolve_path(path.range) {
+            // Check temp slot first — divert parameters (`-> x`) are temps,
+            // not in the analyzer's global symbol table.
+            let name = path_to_string(path);
+            if let Some(slot) = ctx.temp_slot(&name) {
+                let name_id = ctx.names.intern(&name);
+                lir::DivertTarget::VariableTemp(slot, name_id)
+            } else if let Some(info) = ctx.resolve_path(path.range) {
                 match info.kind {
                     SymbolKind::Variable | SymbolKind::Constant => {
                         lir::DivertTarget::Variable(info.id)

@@ -2149,6 +2149,7 @@ Done.
             Stmt::Return(Return {
                 ptr: None,
                 value: Some(Expr::DivertTarget(_)),
+                ..
             })
         )
     });

@@ -1515,7 +1515,11 @@ impl LowerCtx {
                 match &target.path {
                     DivertPath::Path(path) => {
                         let value = Some(Expr::DivertTarget(path.clone()));
-                        return Some(Stmt::Return(Return { ptr: None, value }));
+                        return Some(Stmt::Return(Return {
+                            ptr: None,
+                            value,
+                            onwards_args: target.args,
+                        }));
                     }
                     DivertPath::Done => {
                         return Some(Stmt::Divert(Divert {
@@ -1542,6 +1546,7 @@ impl LowerCtx {
             return Some(Stmt::Return(Return {
                 ptr: None,
                 value: None,
+                onwards_args: Vec::new(),
             }));
         }
 
@@ -1621,6 +1626,7 @@ impl LowerCtx {
             return Some(Stmt::Return(Return {
                 ptr: Some(AstPtr::new(&ret)),
                 value: ret.value().and_then(|e| self.lower_expr(&e)),
+                onwards_args: Vec::new(),
             }));
         }
 
