@@ -1405,6 +1405,45 @@ fn branchless_body_with_else() {
     );
 }
 
+/// Branchless conditional body with a choice before `- else:`.
+/// Regression: `choice(p)` consumes its trailing NEWLINE, so after it
+/// returns we are at the start of the next line. `at_line_start` must
+/// be set to `true` so that the MINUS in `- else:` is recognized as a
+/// branch separator rather than literal text.
+#[test]
+fn branchless_body_with_choice_then_else() {
+    assert_equivalent(
+        parse("{\n  x:\n  * Choice A\n- else:\n  * Choice B\n}\n"),
+        cst!(SOURCE_FILE {
+            MULTILINE_BLOCK {
+                CONDITIONAL_WITH_EXPR {
+                    PATH
+                    BRANCHLESS_COND_BODY {
+                        CHOICE {
+                            CHOICE_BULLETS
+                            CHOICE_START_CONTENT {
+                                TEXT
+                            }
+                        }
+                        ELSE_BRANCH {
+                            MULTILINE_BRANCH_COND {
+                                MULTILINE_BRANCH_BODY {
+                                    CHOICE {
+                                        CHOICE_BULLETS
+                                        CHOICE_START_CONTENT {
+                                            TEXT
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
 // ── Section J: Nested inline logic ──────────────────────────────────
 
 /// Conditional inside true branch of another conditional.

@@ -456,7 +456,9 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
             }
             STAR | PLUS => {
                 super::choice::choice(p);
-                at_line_start = false;
+                // choice() always consumes its trailing newline, leaving
+                // us at the start of the next line.
+                at_line_start = true;
             }
             TILDE => {
                 p.skip_ws();
