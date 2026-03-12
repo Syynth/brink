@@ -90,6 +90,7 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
         temp_slot_count: 0,
         labeled: false,
         inline: false,
+        is_function: false,
     };
     ctx.pending_children.push(wrapper);
 

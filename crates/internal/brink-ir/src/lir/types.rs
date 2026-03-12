@@ -121,6 +121,11 @@ pub struct Container {
     /// contents rather than as a named entry in `named_content`. Used by
     /// the first container in a gather-choice chain (`- * hello`).
     pub inline: bool,
+    /// Whether this knot is a function (`== function foo ==`).
+    /// Only meaningful when `kind == ContainerKind::Knot`.
+    /// Used by codegen to decide whether inklecate's implicit stitch
+    /// prefix (`.0`) should be inserted in container paths.
+    pub is_function: bool,
 }
 
 /// What source construct this container originated from.

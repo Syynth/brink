@@ -186,10 +186,42 @@ fn walk_container(container: &lir::Container, path: &str, state: &mut EmitState)
     // Recurse into children.
     for child in &container.children {
         let child_name = child.name.as_deref().unwrap_or("_anon");
-        let child_path = if path.is_empty() {
-            child_name.to_string()
+
+        // Compute the path segment for this child, applying inklecate-compatible
+        // naming rules so that path_hash values match for shuffle RNG seeding.
+        // Inklecate-compatible path naming rules so path_hash values match
+        // for shuffle RNG seeding. Only non-function knots get the implicit
+        // stitch ".0" prefix (functions store children directly).
+        let needs_stitch_prefix = container.kind == lir::ContainerKind::Knot
+            && !container.is_function
+            && child.kind != lir::ContainerKind::Stitch;
+
+        let segment = if needs_stitch_prefix && child.kind == lir::ContainerKind::Sequence {
+            // Rule 1+2: stitch prefix + rename "s-N" → "N"
+            let n = child_name.strip_prefix("s-").unwrap_or(child_name);
+            format!("0.{n}")
+        } else if needs_stitch_prefix {
+            // Rule 1: just add stitch prefix
+            format!("0.{child_name}")
+        } else if child.kind == lir::ContainerKind::Sequence {
+            // Rule 2: Sequence wrappers elsewhere: rename "s-N" → "N"
+            child_name
+                .strip_prefix("s-")
+                .unwrap_or(child_name)
+                .to_string()
+        } else if container.kind == lir::ContainerKind::Sequence
+            && child.kind == lir::ContainerKind::SequenceBranch
+        {
+            // Rule 3: Sequence branches: rename "N" → "sN"
+            format!("s{child_name}")
         } else {
-            format!("{path}.{child_name}")
+            child_name.to_string()
+        };
+
+        let child_path = if path.is_empty() {
+            segment
+        } else {
+            format!("{path}.{segment}")
         };
         walk_container(child, &child_path, state);
     }

@@ -133,6 +133,7 @@ fn lower_root(
         temp_slot_count: 0,
         labeled: false,
         inline: false,
+        is_function: false,
     }
 }
 
@@ -220,6 +221,7 @@ fn lower_knot(
         temp_slot_count: temp_count,
         labeled: false,
         inline: false,
+        is_function: knot.is_function,
     }
 }
 
@@ -273,6 +275,7 @@ fn lower_stitch(
         temp_slot_count: 0,
         labeled: false,
         inline: false,
+        is_function: false,
     }
 }
 
@@ -384,6 +387,7 @@ fn lower_block_with_children(
                     temp_slot_count: 0,
                     labeled: labeled_flag,
                     inline: true,
+                    is_function: false,
                 });
                 pos += 1;
             }
@@ -462,6 +466,7 @@ fn lower_block_with_children(
                             temp_slot_count: 0,
                             labeled: false,
                             inline: false,
+                            is_function: false,
                         };
                         children.push(branch_container);
 
@@ -530,6 +535,7 @@ fn lower_block_with_children(
                             temp_slot_count: 0,
                             labeled: false,
                             inline: false,
+                            is_function: false,
                         };
                         wrapper_children.push(branch_container);
 
@@ -553,6 +559,7 @@ fn lower_block_with_children(
                     temp_slot_count: 0,
                     labeled: false,
                     inline: false,
+                    is_function: false,
                 };
                 children.push(wrapper);
 
@@ -615,6 +622,7 @@ fn build_continuation_container(
             temp_slot_count: 0,
             labeled: false,
             inline: false,
+            is_function: false,
         };
     }
 
@@ -640,6 +648,7 @@ fn build_continuation_container(
         temp_slot_count: 0,
         labeled,
         inline: false,
+        is_function: false,
     }
 }
 
@@ -778,6 +787,7 @@ fn lower_choice_with_child(
         temp_slot_count: 0,
         labeled,
         inline: false,
+        is_function: false,
     };
 
     let lir_choice = lir::Choice {
