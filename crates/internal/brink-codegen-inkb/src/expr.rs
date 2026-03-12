@@ -132,6 +132,12 @@ impl ContainerEmitter<'_> {
                 }
                 self.emit(Opcode::TurnsSince);
             }
+            lir::BuiltinFn::ReadCount => {
+                for arg in args {
+                    self.emit_expr(arg);
+                }
+                self.emit(Opcode::VisitCount);
+            }
             _ => {
                 for arg in args {
                     self.emit_expr(arg);
@@ -166,6 +172,7 @@ fn infix_op_to_opcode(op: brink_ir::InfixOp) -> Opcode {
 fn builtin_to_opcode(b: lir::BuiltinFn) -> Opcode {
     match b {
         lir::BuiltinFn::TurnsSince => Opcode::TurnsSince,
+        lir::BuiltinFn::ReadCount => Opcode::VisitCount,
         lir::BuiltinFn::ChoiceCount => Opcode::ChoiceCount,
         lir::BuiltinFn::Random => Opcode::Random,
         lir::BuiltinFn::SeedRandom => Opcode::SeedRandom,

@@ -1522,5 +1522,6 @@ fn builtin_to_native(b: lir::BuiltinFn) -> NativeFunction {
         lir::BuiltinFn::ListRandom => NativeFunction::ListRandom,
         lir::BuiltinFn::ListValue => NativeFunction::ListValue,
         lir::BuiltinFn::ListFromInt => NativeFunction::ListInt,
+        lir::BuiltinFn::ReadCount => NativeFunction::ReadCount,
     }
 }

@@ -478,6 +478,8 @@ pub enum BuiltinFn {
     // ── Intrinsics ──────────────────────────────────────────────
     /// `TURNS_SINCE(-> container)` → turns since container was visited.
     TurnsSince,
+    /// `READ_COUNT(-> container)` → visit count of container.
+    ReadCount,
     /// `CHOICE_COUNT()` → number of currently available choices.
     ChoiceCount,
     /// `RANDOM(min, max)` → random integer in range.

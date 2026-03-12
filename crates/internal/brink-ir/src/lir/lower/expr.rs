@@ -275,6 +275,7 @@ pub fn path_to_string(path: &hir::Path) -> String {
 fn recognize_builtin(name: &str) -> Option<lir::BuiltinFn> {
     match name {
         "TURNS_SINCE" => Some(lir::BuiltinFn::TurnsSince),
+        "READ_COUNT" => Some(lir::BuiltinFn::ReadCount),
         "CHOICE_COUNT" => Some(lir::BuiltinFn::ChoiceCount),
         "RANDOM" => Some(lir::BuiltinFn::Random),
         "SEED_RANDOM" => Some(lir::BuiltinFn::SeedRandom),
