@@ -1368,12 +1368,15 @@ impl LowerCtx {
             .find_map(ast::DivertNode::cast)
             .and_then(|dn| self.lower_divert_node(&dn));
 
+        // Extract tags from TAGS child node (e.g. `{red #red|...}`).
+        let tags = lower_tags(node.children().find_map(ast::Tags::cast));
+
         let mut stmts = Vec::new();
-        if !parts.is_empty() {
+        if !parts.is_empty() || !tags.is_empty() {
             stmts.push(Stmt::Content(Content {
                 ptr: None,
                 parts,
-                tags: Vec::new(),
+                tags,
             }));
         }
         if let Some(d) = divert_stmt {

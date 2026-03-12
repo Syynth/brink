@@ -1,12 +1,12 @@
 use crate::SyntaxKind::{
     AMP, BACKSLASH, BANG, BLOCK_COMMENT, BRANCH_CONTENT, BRANCHLESS_COND_BODY, COLON,
-    CONDITIONAL_WITH_EXPR, DIVERT, DOLLAR, ELSE_BRANCH, EOF, ESCAPE, GLUE, GLUE_NODE,
+    CONDITIONAL_WITH_EXPR, DIVERT, DOLLAR, ELSE_BRANCH, EOF, ESCAPE, GLUE, GLUE_NODE, HASH,
     IMPLICIT_SEQUENCE, INLINE_BRANCHES_COND, INLINE_BRANCHES_SEQ, INLINE_LOGIC, INNER_EXPRESSION,
     KW_CYCLE, KW_ELSE, KW_ONCE, KW_SHUFFLE, KW_STOPPING, L_BRACE, L_PAREN, LINE_COMMENT, MINUS,
     MULTILINE_BLOCK, MULTILINE_BRANCH_BODY, MULTILINE_BRANCH_COND, MULTILINE_BRANCH_SEQ,
     MULTILINE_BRANCHES_COND, MULTILINE_BRANCHES_SEQ, MULTILINE_CONDITIONAL, NEWLINE, PIPE, PLUS,
     R_BRACE, R_PAREN, SEQUENCE_SYMBOL_ANNOTATION, SEQUENCE_WITH_ANNOTATION,
-    SEQUENCE_WORD_ANNOTATION, STAR, TEXT, THREAD, TILDE, TUNNEL_ONWARDS, WHITESPACE,
+    SEQUENCE_WORD_ANNOTATION, STAR, TAG, TAGS, TEXT, THREAD, TILDE, TUNNEL_ONWARDS, WHITESPACE,
 };
 
 use super::Parser;
@@ -639,6 +639,10 @@ fn branch_content(p: &mut Parser<'_, '_>) {
     loop {
         match p.current() {
             PIPE | R_BRACE | NEWLINE | EOF => break,
+            HASH => {
+                branch_tags(p);
+                break;
+            }
             L_BRACE => {
                 inline_logic(p);
             }
@@ -676,6 +680,34 @@ fn branch_content(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
+/// Parse tags inside a sequence/conditional branch.
+/// Stops at `|`, `}`, newline, or EOF (unlike regular tags which only stop
+/// at `#` and newline).
+fn branch_tags(p: &mut Parser<'_, '_>) {
+    p.start_node(TAGS);
+    while p.current() == HASH {
+        branch_tag(p);
+    }
+    p.finish_node();
+}
+
+/// Parse a single tag inside a branch: stops at `#`, `|`, `}`, newline, EOF.
+fn branch_tag(p: &mut Parser<'_, '_>) {
+    p.start_node(TAG);
+    p.skip_ws();
+    p.bump_assert(HASH);
+    loop {
+        if p.at_eof() {
+            break;
+        }
+        match p.nth_raw(0) {
+            HASH | NEWLINE | EOF | PIPE | R_BRACE => break,
+            _ => p.bump(),
+        }
+    }
+    p.finish_node();
+}
+
 /// Parse a run of branch text characters.
 fn branch_text(p: &mut Parser<'_, '_>) {
     p.start_node(TEXT);
@@ -685,7 +717,7 @@ fn branch_text(p: &mut Parser<'_, '_>) {
         }
         match p.nth_raw(0) {
             PIPE | L_BRACE | R_BRACE | GLUE | DIVERT | TUNNEL_ONWARDS | LINE_COMMENT
-            | BLOCK_COMMENT | NEWLINE | BACKSLASH | EOF | THREAD => break,
+            | BLOCK_COMMENT | NEWLINE | BACKSLASH | EOF | THREAD | HASH => break,
             _ => p.bump(),
         }
     }
