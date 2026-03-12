@@ -1829,10 +1829,7 @@ impl LowerCtx {
         let skip_divert = inline_divert.is_some() || has_empty_simple_divert;
         let mut body = self.lower_choice_body(choice, skip_divert);
 
-        // Prepend the inline divert + EndOfLine to the body. The divert goes
-        // before EndOfLine so that in bytecode, execution flows into the divert
-        // target without an intervening line break. When there's no inline
-        // divert, just prepend EndOfLine.
+        // Prepend inline divert + EndOfLine to the body.
         let mut preamble = Vec::new();
         if let Some(d) = inline_divert {
             preamble.push(Stmt::Divert(d));

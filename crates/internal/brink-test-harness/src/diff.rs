@@ -189,7 +189,38 @@ fn outcome_eq(a: &crate::episode::Outcome, b: &crate::episode::Outcome) -> bool 
         | (Outcome::Done, Outcome::Done)
         | (Outcome::InputsExhausted { .. }, Outcome::InputsExhausted { .. }) => true,
         (Outcome::StepLimit { limit: a }, Outcome::StepLimit { limit: b }) => a == b,
-        (Outcome::Error(a), Outcome::Error(b)) => a == b,
+        (Outcome::Error(a), Outcome::Error(b)) => {
+            // Normalize definition IDs ($XX_hex) so that compiler vs converter
+            // hash differences don't cause spurious mismatches.
+            normalize_def_ids(a) == normalize_def_ids(b)
+        }
         _ => false,
     }
+}
+
+/// Replace definition IDs (`$XX_hexdigits`) with a placeholder so that
+/// error messages compare equal regardless of hash differences.
+fn normalize_def_ids(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$'
+            && i + 4 < bytes.len()
+            && bytes[i + 3] == b'_'
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            // Found `$XX_` prefix — skip the hex hash that follows.
+            result.push_str("$XX_<id>");
+            i += 4;
+            while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+                i += 1;
+            }
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    result
 }
