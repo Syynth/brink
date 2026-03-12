@@ -1,7 +1,7 @@
 use crate::SyntaxKind::{
-    COMMA, DIVERT, EQ, EQ_EQ, GT, IDENT, IDENTIFIER, KNOT_BODY, KNOT_DEF, KNOT_HEADER,
-    KNOT_PARAM_DECL, KNOT_PARAMS, KW_FUNCTION, KW_REF, L_PAREN, NEWLINE, R_PAREN, STITCH_BODY,
-    STITCH_DEF, STITCH_HEADER,
+    COMMA, DIVERT, EQ, EQ_EQ, GT, IDENTIFIER, KNOT_BODY, KNOT_DEF, KNOT_HEADER, KNOT_PARAM_DECL,
+    KNOT_PARAMS, KW_FUNCTION, KW_REF, L_PAREN, NEWLINE, R_PAREN, STITCH_BODY, STITCH_DEF,
+    STITCH_HEADER,
 };
 
 use super::Parser;
@@ -56,7 +56,7 @@ fn knot_header(p: &mut Parser<'_, '_>) {
 
     // Knot name
     p.start_node(IDENTIFIER);
-    p.expect(IDENT);
+    p.expect_ident_or_keyword();
     p.finish_node();
     p.skip_ws();
 
@@ -116,7 +116,7 @@ fn knot_param_decl(p: &mut Parser<'_, '_>) {
         p.skip_ws();
     }
     p.start_node(IDENTIFIER);
-    p.expect(IDENT);
+    p.expect_ident_or_keyword();
     p.finish_node();
     p.finish_node();
 }
@@ -176,7 +176,7 @@ fn stitch_header(p: &mut Parser<'_, '_>) {
     p.bump(); // EQ (we already checked it's not `==` or `=>`)
     p.skip_ws();
     p.start_node(IDENTIFIER);
-    p.expect(IDENT);
+    p.expect_ident_or_keyword();
     p.finish_node();
     p.skip_ws();
 

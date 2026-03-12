@@ -1,5 +1,5 @@
 description = "Tests.cs: TestUsingFunctionAndIncrementTogether"
-mode = "compile_error"
+mode = "normal"
 
 [source]
 origin = "inkle-tests-cs"

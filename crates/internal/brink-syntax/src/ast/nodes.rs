@@ -1240,17 +1240,29 @@ impl Identifier {
         support::token(&self.syntax, IDENT)
     }
 
+    /// Returns the name text, accepting either `IDENT` or keyword tokens
+    /// (ink keywords are contextual and may appear as identifiers).
     pub fn name(&self) -> Option<String> {
-        self.ident_token().map(|t| t.text().to_string())
+        self.ident_token()
+            .or_else(|| {
+                self.syntax
+                    .children_with_tokens()
+                    .filter_map(rowan::NodeOrToken::into_token)
+                    .find(|t| t.kind().is_keyword())
+            })
+            .map(|t| t.text().to_string())
     }
 }
 
 // ── Path ─────────────────────────────────────────────────────────────
 
 impl Path {
-    /// Iterator over the IDENT tokens (the segments between dots).
+    /// Iterator over the segment tokens (`IDENT` or keyword tokens between dots).
     pub fn segments(&self) -> impl Iterator<Item = SyntaxToken> {
-        support::tokens(&self.syntax, IDENT)
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .filter(|t| t.kind() == IDENT || t.kind().is_keyword())
     }
 
     /// Full dotted name (e.g. `"knot.stitch"`).

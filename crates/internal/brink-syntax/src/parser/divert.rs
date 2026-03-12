@@ -125,7 +125,7 @@ fn divert_chain(p: &mut Parser<'_, '_>) {
 
 /// Returns `true` if we're at a divert target (DONE, END, or identifier).
 fn at_divert_target(p: &Parser<'_, '_>) -> bool {
-    matches!(p.current(), KW_DONE | KW_END | IDENT)
+    p.current() == KW_DONE || p.current() == KW_END || p.at_ident_or_keyword()
 }
 
 /// Parse a divert target with optional arguments.
@@ -142,7 +142,7 @@ fn divert_target_with_args(p: &mut Parser<'_, '_>) {
         KW_DONE | KW_END => {
             p.bump();
         }
-        IDENT => {
+        _ if p.at_ident_or_keyword() => {
             path(p);
         }
         _ => {
@@ -168,10 +168,10 @@ fn divert_target_with_args(p: &mut Parser<'_, '_>) {
 /// Parse a path: `ident.ident.ident`.
 pub(crate) fn path(p: &mut Parser<'_, '_>) {
     p.start_node(PATH);
-    p.expect(IDENT);
-    while p.current() == DOT && p.nth(1) == IDENT {
+    p.expect_ident_or_keyword();
+    while p.current() == DOT && (p.nth(1) == IDENT || p.nth(1).is_keyword()) {
         p.bump(); // DOT
-        p.bump(); // IDENT
+        p.bump(); // IDENT or keyword
     }
     p.finish_node();
 }

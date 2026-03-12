@@ -1426,3 +1426,193 @@ fn content_after_multiline_conditional_with_nested_conditional() {
         "glue + conditional after conditional must be preserved"
     );
 }
+
+// ── Shuffle sequence exhaustion ────────────────────────────────────
+
+/// `shuffle once` must stop producing content after all branches are visited.
+/// This is an end-to-end behavioral test: call a shuffle-once function 4 times
+/// with 2 branches — only the first 2 calls should produce text.
+#[test]
+fn shuffle_once_exhausts_after_all_branches_visited() {
+    let source = "\
+~ SEED_RANDOM(1)
+one: {f()}
+two: {f()}
+three: {f()}
+four: {f()}
+== function f ==
+{shuffle once:
+    - A
+    - B
+}
+";
+    let result = compile_and_run(source, &[]);
+    // Each of the 4 lines "N: X\n" gets the function result appended.
+    // First 2 calls produce "A" or "B" (in shuffled order); last 2 produce nothing.
+    let lines: Vec<&str> = result.lines().collect();
+    assert_eq!(lines.len(), 4, "expected 4 output lines, got: {result:?}");
+
+    // First two lines must each contain either "A" or "B".
+    let first_two_content: Vec<&str> = lines[0..2]
+        .iter()
+        .map(|l| l.split(": ").nth(1).unwrap_or("").trim())
+        .collect();
+    let mut sorted = first_two_content.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        vec!["A", "B"],
+        "first two calls should produce A and B (in any order), got: {first_two_content:?}"
+    );
+
+    // Last two lines must have no content after the colon.
+    for (i, line) in lines[2..].iter().enumerate() {
+        let after_colon = line.split(": ").nth(1).unwrap_or("").trim();
+        assert!(
+            after_colon.is_empty(),
+            "call {} (line {:?}) should produce no text after exhaustion, got: {after_colon:?}",
+            i + 3,
+            line,
+        );
+    }
+}
+
+/// `shuffle stopping` must pin to the last branch after all are visited.
+/// Call a 3-branch shuffle-stopping function 5 times — after the first 3 calls
+/// exhaust all branches, calls 4 and 5 must always return the last branch.
+#[test]
+fn shuffle_stopping_pins_to_last_branch() {
+    let source = "\
+~ SEED_RANDOM(1)
+one: {f()}
+two: {f()}
+three: {f()}
+four: {f()}
+five: {f()}
+== function f ==
+{stopping shuffle:
+    - A
+    - B
+    - final
+}
+";
+    let result = compile_and_run(source, &[]);
+    let lines: Vec<&str> = result.lines().collect();
+    assert_eq!(lines.len(), 5, "expected 5 output lines, got: {result:?}");
+
+    // First three calls produce A, B, final in some shuffled order.
+    let first_three_content: Vec<String> = lines[0..3]
+        .iter()
+        .map(|l| l.split(": ").nth(1).unwrap_or("").trim().to_string())
+        .collect();
+    let mut sorted: Vec<&str> = first_three_content.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        vec!["A", "B", "final"],
+        "first three calls should produce A, B, final (in any order), got: {first_three_content:?}"
+    );
+
+    // Calls 4 and 5 must produce "final" (the last/stopping branch).
+    for (i, line) in lines[3..].iter().enumerate() {
+        let after_colon = line.split(": ").nth(1).unwrap_or("").trim();
+        assert_eq!(
+            after_colon,
+            "final",
+            "call {} should pin to 'final' after exhaustion, got: {after_colon:?}",
+            i + 4,
+        );
+    }
+}
+
+/// Opcode-level test: `shuffle once` codegen must emit a `Min` opcode
+/// to clamp the visit count, enabling exhaustion detection.
+#[test]
+fn shuffle_once_codegen_emits_min_opcode() {
+    use brink_format::Opcode;
+
+    let source = "\
+{shuffle once:
+    - A
+    - B
+}
+";
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    let data = compile_mem("main.ink", &files).unwrap();
+
+    // Find the sequence container (has VISITS + COUNT_START_ONLY flags).
+    let seq_container = data
+        .containers
+        .iter()
+        .find(|c| {
+            let mut offset = 0;
+            let mut has_sequence = false;
+            while offset < c.bytecode.len() {
+                if let Ok(op) = Opcode::decode(&c.bytecode, &mut offset) {
+                    if matches!(op, Opcode::Sequence(..)) {
+                        has_sequence = true;
+                    }
+                } else {
+                    break;
+                }
+            }
+            has_sequence
+        })
+        .expect("should find a container with a Sequence opcode");
+
+    // Decode all opcodes and check for Min.
+    let mut offset = 0;
+    let mut has_min = false;
+    while offset < seq_container.bytecode.len() {
+        if let Ok(op) = Opcode::decode(&seq_container.bytecode, &mut offset) {
+            if matches!(op, Opcode::Min) {
+                has_min = true;
+            }
+        } else {
+            break;
+        }
+    }
+    assert!(
+        has_min,
+        "shuffle once container must emit Min opcode for exhaustion clamping"
+    );
+}
+
+/// Contextual keywords like `once`, `stopping`, `shuffle`, `cycle` must be
+/// usable as knot names and divert targets. Ink only treats these as keywords
+/// inside sequence annotations — everywhere else they're valid identifiers.
+#[test]
+fn keyword_once_as_knot_name_and_divert_target() {
+    let source = "\
+-> once
+== once ==
+Hello from once.
+-> END
+";
+    let result = compile_and_run(source, &[]);
+    assert!(
+        result.contains("Hello from once"),
+        "knot named 'once' should work, got: {result:?}"
+    );
+}
+
+/// Full thread-in-logic test (inklecate's TestThreadInLogic): tunnel calls
+/// to a knot named `once` containing `{<- content|}`.
+#[test]
+fn thread_in_logic_compiles_and_runs() {
+    let source = "\
+-> once ->
+-> once ->
+== once ==
+{<- content|}
+->->
+== content ==
+Content
+-> DONE
+";
+    let result = compile_and_run(source, &[]);
+    assert!(
+        result.contains("Content"),
+        "thread-in-logic should produce 'Content', got: {result:?}"
+    );
+}

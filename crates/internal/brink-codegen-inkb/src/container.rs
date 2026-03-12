@@ -323,14 +323,49 @@ impl ContainerEmitter<'_> {
     pub(super) fn emit_sequence(&mut self, seq: &lir::Sequence) {
         let count = seq.branches.len();
         let is_shuffle = seq.kind.contains(brink_ir::SequenceType::SHUFFLE);
+        let mut exhaustion_skip: Option<usize> = None;
 
         if is_shuffle {
-            // Shuffle: the runtime's handle_shuffle_sequence pops two values:
-            //   num_elements (top) and seq_count (below).
-            // Push them in order: seq_count first, then num_elements.
-            self.emit(Opcode::CurrentVisitCount);
-            self.emit(Opcode::PushInt(count as i32));
-            self.emit(Opcode::Sequence(SequenceKind::Shuffle, 0));
+            let is_once = seq.kind.contains(brink_ir::SequenceType::ONCE);
+            let is_stopping = seq.kind.contains(brink_ir::SequenceType::STOPPING);
+
+            if is_once {
+                // shuffle once: clamp visit count to N, skip all branches when exhausted
+                self.emit(Opcode::CurrentVisitCount);
+                self.emit(Opcode::PushInt(count as i32));
+                self.emit(Opcode::Min);
+                self.emit(Opcode::Duplicate);
+                self.emit(Opcode::PushInt(count as i32));
+                self.emit(Opcode::Equal);
+                self.emit(Opcode::Not);
+                let site = self.emit_jump_placeholder(Opcode::JumpIfFalse(0));
+                // Not exhausted: do shuffle
+                self.emit(Opcode::PushInt(count as i32));
+                self.emit(Opcode::Sequence(SequenceKind::Shuffle, 0));
+                exhaustion_skip = Some(site);
+            } else if is_stopping {
+                // shuffle stopping: clamp to N-1, skip shuffle when exhausted (pin to last)
+                // When exhausted: clamped value (N-1) stays on stack → matches last branch
+                // When not exhausted: shuffle among first N-1 branches only
+                self.emit(Opcode::CurrentVisitCount);
+                self.emit(Opcode::PushInt(count as i32 - 1));
+                self.emit(Opcode::Min);
+                self.emit(Opcode::Duplicate);
+                self.emit(Opcode::PushInt(count as i32 - 1));
+                self.emit(Opcode::Equal);
+                self.emit(Opcode::Not);
+                let site = self.emit_jump_placeholder(Opcode::JumpIfFalse(0));
+                // Not exhausted: shuffle among first N-1 branches using clamped value as seq_count
+                self.emit(Opcode::PushInt(count as i32 - 1));
+                self.emit(Opcode::Sequence(SequenceKind::Shuffle, 0));
+                // Patch exhaustion jump to land here (right before branch switch)
+                self.patch_jump(site);
+            } else {
+                // Plain shuffle or cycle shuffle
+                self.emit(Opcode::CurrentVisitCount);
+                self.emit(Opcode::PushInt(count as i32));
+                self.emit(Opcode::Sequence(SequenceKind::Shuffle, 0));
+            }
         } else {
             // Non-shuffle: use CurrentVisitCount + math to compute branch index.
             self.emit(Opcode::CurrentVisitCount);
@@ -379,6 +414,10 @@ impl ContainerEmitter<'_> {
 
         // Patch last skip — no match (once-only exhausted, or shuffle overflow)
         if let Some(site) = skip_sites.pop() {
+            self.patch_jump(site);
+        }
+        // Patch shuffle-once exhaustion skip to land here (at Pop, skipping all branches)
+        if let Some(site) = exhaustion_skip {
             self.patch_jump(site);
         }
         // Pop unmatched index
