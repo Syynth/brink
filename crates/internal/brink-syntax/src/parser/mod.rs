@@ -92,6 +92,9 @@ pub(crate) struct Parser<'t, 'c> {
     /// For `L_BRACE` positions, stores `PIPE`, `COLON`, or `EOF` indicating
     /// which delimiter appears first at depth-0 inside that brace pair.
     brace_scan: Vec<SyntaxKind>,
+    /// Pre-computed non-trivia token indices. `non_trivia[k]` is the raw
+    /// token index of the k-th non-trivia token. Enables O(1) `nth(n)`.
+    non_trivia: Vec<usize>,
     builder: rowan::GreenNodeBuilder<'c>,
     errors: Vec<ParseError>,
 }
@@ -99,11 +102,13 @@ pub(crate) struct Parser<'t, 'c> {
 impl<'t> Parser<'t, 'static> {
     fn new(tokens: &'t [(SyntaxKind, &'t str)]) -> Self {
         let brace_scan = Self::build_brace_scan(tokens);
+        let non_trivia = Self::build_non_trivia(tokens);
         Self {
             tokens,
             pos: 0,
             depth: 0,
             brace_scan,
+            non_trivia,
             builder: rowan::GreenNodeBuilder::new(),
             errors: Vec::new(),
         }
@@ -113,14 +118,27 @@ impl<'t> Parser<'t, 'static> {
 impl<'t, 'c> Parser<'t, 'c> {
     fn with_cache(tokens: &'t [(SyntaxKind, &'t str)], cache: &'c mut rowan::NodeCache) -> Self {
         let brace_scan = Self::build_brace_scan(tokens);
+        let non_trivia = Self::build_non_trivia(tokens);
         Self {
             tokens,
             pos: 0,
             depth: 0,
             brace_scan,
+            non_trivia,
             builder: rowan::GreenNodeBuilder::with_cache(cache),
             errors: Vec::new(),
         }
+    }
+
+    /// O(n) pre-pass: collect the raw indices of all non-trivia tokens.
+    /// Enables O(1) `nth(n)` lookup during parsing.
+    fn build_non_trivia(tokens: &[(SyntaxKind, &str)]) -> Vec<usize> {
+        tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, (k, _))| !k.is_trivia())
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// O(n) pre-pass: for each `L_BRACE`, classify the brace pair as `COLON`
@@ -261,20 +279,18 @@ impl<'t, 'c> Parser<'t, 'c> {
 
     /// Lookahead by `n` tokens, skipping trivia (WHITESPACE, comments).
     /// `nth(0)` returns the current non-trivia token.
+    ///
+    /// Uses the pre-computed `non_trivia` index for O(log n + 1) lookup
+    /// (binary search to find our position, then constant-time indexing).
     fn nth(&self, n: usize) -> SyntaxKind {
-        let mut i = self.pos;
-        let mut remaining = n;
-        while i < self.tokens.len() {
-            let kind = self.tokens[i].0;
-            if !kind.is_trivia() {
-                if remaining == 0 {
-                    return kind;
-                }
-                remaining -= 1;
-            }
-            i += 1;
+        // Find the first non-trivia index >= self.pos via binary search.
+        let start = self.non_trivia.partition_point(|&idx| idx < self.pos);
+        let target = start + n;
+        if target < self.non_trivia.len() {
+            self.tokens[self.non_trivia[target]].0
+        } else {
+            EOF
         }
-        EOF
     }
 
     /// Lookahead by `n` tokens WITHOUT skipping trivia.
