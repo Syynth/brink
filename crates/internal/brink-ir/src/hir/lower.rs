@@ -1940,6 +1940,87 @@ impl LowerCtx {
             && let Some(stmt) = self.lower_multiline_block_from_inline(&il)
         {
             push(stmt);
+
+            // Collect trailing content parts (glue, text, inline logic) that
+            // appear after the promoted InlineLogic in the MixedContent node.
+            let il_syntax = il.syntax().clone();
+            let mut past_promoted = false;
+            let mut trailing_parts = Vec::new();
+            for child in mc.syntax().children_with_tokens() {
+                if let rowan::NodeOrToken::Node(ref child_node) = child
+                    && *child_node == il_syntax
+                {
+                    past_promoted = true;
+                    continue;
+                }
+                if !past_promoted {
+                    continue;
+                }
+                if let rowan::NodeOrToken::Node(child_node) = child {
+                    match child_node.kind() {
+                        SyntaxKind::TEXT => {
+                            let text = child_node.text().to_string();
+                            if !text.is_empty() {
+                                trailing_parts.push(ContentPart::Text(text));
+                            }
+                        }
+                        SyntaxKind::GLUE_NODE => trailing_parts.push(ContentPart::Glue),
+                        SyntaxKind::ESCAPE => {
+                            let text = child_node.text().to_string();
+                            if text.len() > 1 {
+                                trailing_parts.push(ContentPart::Text(text[1..].to_string()));
+                            }
+                        }
+                        SyntaxKind::INLINE_LOGIC => {
+                            if let Some(inline) = ast::InlineLogic::cast(child_node) {
+                                // A trailing inline logic might itself be a multiline
+                                // block that needs promotion.
+                                if let Some(promoted) =
+                                    self.lower_multiline_block_from_inline(&inline)
+                                {
+                                    // Flush any accumulated trailing parts first.
+                                    if !trailing_parts.is_empty() {
+                                        push(Stmt::Content(Content {
+                                            ptr: None,
+                                            parts: std::mem::take(&mut trailing_parts),
+                                            tags: vec![],
+                                        }));
+                                    }
+                                    push(promoted);
+                                } else {
+                                    self.lower_inline_logic(&inline, &mut trailing_parts);
+                                }
+                            }
+                        }
+                        // DIVERT_NODE, TAGS, and other node types are
+                        // handled by the caller or are irrelevant here.
+                        _ => {}
+                    }
+                }
+            }
+
+            if !trailing_parts.is_empty() {
+                let ends_glue = content_ends_with_glue(&trailing_parts);
+                push(Stmt::Content(Content {
+                    ptr: None,
+                    parts: trailing_parts,
+                    tags: vec![],
+                }));
+                if !ends_glue {
+                    if let Some(dn) = cl.divert()
+                        && let Some(s) = self.lower_divert_node(&dn)
+                    {
+                        push(s);
+                    } else if cl.divert().is_none() {
+                        push(Stmt::EndOfLine);
+                    }
+                }
+            } else if let Some(dn) = cl.divert()
+                && let Some(s) = self.lower_divert_node(&dn)
+            {
+                push(s);
+            }
+
             return true;
         }
 

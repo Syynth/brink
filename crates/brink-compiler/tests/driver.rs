@@ -1393,3 +1393,36 @@ fn choices_inside_sequence_branch_accumulate_with_parent() {
         "expected 2 choices (No. + Draw a card) on second visit, got: {second_choice_count:?}"
     );
 }
+
+/// Content after a block-level conditional's closing `}` must not be
+/// dropped. The glue and text `<> b` should join with the branch output.
+#[test]
+fn content_after_multiline_conditional_preserved() {
+    let source = "\
+{true:
+    a
+} <> b
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(
+        result, "a b\n",
+        "glue + text after conditional must be preserved"
+    );
+}
+
+/// Same as above but with a second conditional after the glue.
+#[test]
+fn content_after_multiline_conditional_with_nested_conditional() {
+    let source = "\
+{true:
+    a
+} <> { true:
+    b
+}
+";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(
+        result, "a b\n",
+        "glue + conditional after conditional must be preserved"
+    );
+}
