@@ -175,6 +175,17 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
         };
     }
 
+    // Check temp slot first — calling through a temp/param variable holding a divert target.
+    if let Some(slot) = ctx.temp_slot(&name) {
+        let call_args = lower_call_args(args, &[], ctx);
+        let name_id = ctx.names.intern(&name);
+        return lir::Expr::CallVariableTemp {
+            slot,
+            name: name_id,
+            args: call_args,
+        };
+    }
+
     // Resolve via resolution map
     if let Some(info) = ctx.resolve_path(path.range) {
         match info.kind {
@@ -212,6 +223,13 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
                         reason = "ink externals have <=255 params"
                     )]
                     arg_count: info.params.len() as u8,
+                }
+            }
+            SymbolKind::Variable | SymbolKind::Constant => {
+                let call_args = lower_call_args(args, &info.params, ctx);
+                lir::Expr::CallVariable {
+                    target: info.id,
+                    args: call_args,
                 }
             }
             _ => {

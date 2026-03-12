@@ -443,6 +443,17 @@ pub enum Expr {
         args: Vec<CallArg>,
         arg_count: u8,
     },
+    /// Call a function through a global variable holding a divert target.
+    CallVariable {
+        target: DefinitionId,
+        args: Vec<CallArg>,
+    },
+    /// Call a function through a temp/param variable holding a divert target.
+    CallVariableTemp {
+        slot: u16,
+        name: NameId,
+        args: Vec<CallArg>,
+    },
     /// Call a built-in function (`TURNS_SINCE`, `LIST_COUNT`, etc.).
     CallBuiltin {
         builtin: BuiltinFn,

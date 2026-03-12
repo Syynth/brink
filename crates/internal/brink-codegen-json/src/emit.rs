@@ -1354,6 +1354,28 @@ pub fn emit_expr(expr: &lir::Expr, lookups: &Lookups, cctx: &ContainerCtx, out: 
             }));
         }
 
+        lir::Expr::CallVariable { target, args } => {
+            for arg in args {
+                emit_call_arg(arg, lookups, cctx, out);
+            }
+            let name = lookups.global_name(*target);
+            out.push(Element::Divert(Divert::FunctionVariable {
+                conditional: false,
+                path: name,
+            }));
+        }
+
+        lir::Expr::CallVariableTemp { name, args, .. } => {
+            for arg in args {
+                emit_call_arg(arg, lookups, cctx, out);
+            }
+            let var_name = lookups.name(*name).to_string();
+            out.push(Element::Divert(Divert::FunctionVariable {
+                conditional: false,
+                path: var_name,
+            }));
+        }
+
         lir::Expr::CallBuiltin { builtin, args } => {
             emit_builtin(*builtin, args, lookups, cctx, out);
         }

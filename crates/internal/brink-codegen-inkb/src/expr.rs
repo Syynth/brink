@@ -82,6 +82,22 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::CallExternal(*target, *arg_count));
             }
 
+            lir::Expr::CallVariable { target, args } => {
+                for arg in args {
+                    self.emit_call_arg(arg);
+                }
+                self.emit(Opcode::GetGlobal(*target));
+                self.emit(Opcode::CallVariable);
+            }
+
+            lir::Expr::CallVariableTemp { slot, args, .. } => {
+                for arg in args {
+                    self.emit_call_arg(arg);
+                }
+                self.emit(Opcode::GetTemp(*slot));
+                self.emit(Opcode::CallVariable);
+            }
+
             lir::Expr::CallBuiltin { builtin, args } => {
                 self.emit_builtin(*builtin, args);
             }
