@@ -139,6 +139,10 @@ pub enum ContainerKind {
     /// A wrapper container for a sequence (stopping, cycle, once, shuffle).
     /// Uses visit counting to select the active branch.
     Sequence,
+    /// A single branch body within a sequence wrapper container.
+    SequenceBranch,
+    /// A single branch body within a block-level conditional.
+    ConditionalBranch,
 }
 
 /// A parameter on a container (knot, stitch, or function).

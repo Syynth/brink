@@ -390,6 +390,12 @@ fn lower_block_with_children(
             hir::Stmt::Conditional(cond) => {
                 // Lower conditional branches with lower_block_with_children
                 // so ChoiceSets inside branches produce child containers.
+                //
+                // Conditional branches stay FLAT (not container-wrapped) because
+                // ink conditionals can gate choice visibility: choices across all
+                // branches form a single logical ChoiceSet, and a single `Done`
+                // after the conditional presents them all. Wrapping branches in
+                // containers would isolate each branch's `Done`, breaking this.
                 let kind = match &cond.kind {
                     hir::CondKind::InitialCondition => lir::CondKind::InitialCondition,
                     hir::CondKind::IfElse => lir::CondKind::IfElse,
@@ -437,20 +443,46 @@ fn lower_block_with_children(
                     format!("{old_scope}.{display_name}")
                 };
 
-                // Lower sequence branches with lower_block_with_children
-                // so ChoiceSets inside branches produce child containers.
+                // Lower each sequence branch into its own child container.
+                // The wrapper's Sequence.branches hold [EnterContainer(branch_id)]
+                // for each branch, and the actual branch content lives in child
+                // containers.
                 let mut wrapper_children = Vec::new();
-                let branches = seq
+                let branches: Vec<Vec<lir::Stmt>> = seq
                     .branches
                     .iter()
-                    .map(|b| {
+                    .enumerate()
+                    .map(|(branch_idx, b)| {
                         let mut bc = 0;
                         let mut gc = 0;
                         let mut sc2 = 0;
                         let (body, branch_children) =
                             lower_block_with_children(b, ctx, plan, &mut bc, &mut gc, &mut sc2);
-                        wrapper_children.extend(branch_children);
-                        body
+
+                        // Allocate a child container for this branch
+                        let branch_path = if ctx.scope_path.is_empty() {
+                            format!("{branch_idx}")
+                        } else {
+                            format!("{}.{branch_idx}", ctx.scope_path)
+                        };
+                        let branch_id = ctx.ids.alloc_container(&branch_path);
+
+                        let branch_container = lir::Container {
+                            id: branch_id,
+                            name: Some(format!("{branch_idx}")),
+                            kind: lir::ContainerKind::SequenceBranch,
+                            params: Vec::new(),
+                            body,
+                            children: branch_children,
+                            counting_flags: CountingFlags::empty(),
+                            temp_slot_count: 0,
+                            label_id: None,
+                            inline: false,
+                        };
+                        wrapper_children.push(branch_container);
+
+                        // The branch body in the Sequence struct is just EnterContainer
+                        vec![lir::Stmt::EnterContainer(branch_id)]
                     })
                     .collect();
 
