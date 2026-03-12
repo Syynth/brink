@@ -1,49 +1,56 @@
 # brink compiler specification
 
-`brink-compiler` turns `.ink` source text into `.inkb` bytecode through a 6-pass pipeline. It depends on `brink-syntax` (parsing), `brink-hir` (lowering), `brink-analyzer` (semantic analysis), and `brink-format` (output types). See [format-spec](format-spec.md) for the types and file formats the compiler produces.
+`brink-compiler` turns `.ink` source text into `.inkb` bytecode through a multi-pass pipeline. It depends on `brink-syntax` (parsing), `brink-db` (file discovery and caching), `brink-ir` (HIR and LIR lowering), `brink-analyzer` (semantic analysis), `brink-codegen-inkb` (bytecode emission), and `brink-format` (output types). See [format-spec](format-spec.md) for the types and file formats the compiler produces.
 
 ## Compilation pipeline
 
 The pipeline is organized as a sequence of passes:
 
 ```
-Pass 1: Parse          (brink-syntax)     per-file       → AST
-Pass 2: Lower          (brink-hir)        per-file       → HIR + SymbolManifest + diagnostics
-Pass 3: Merge/Resolve  (brink-analyzer)   cross-file     → unified SymbolIndex + diagnostics
-Pass 4: Type-check     (brink-analyzer)   cross-file     → type annotations + diagnostics
-Pass 5: Validate       (brink-analyzer)   cross-file     → dead code, unused vars, etc.
-Pass 6: Codegen        (brink-compiler)   per-container  → bytecode + tables
+Pass 1:  Parse + Lower    (brink-syntax, brink-ir::hir)  per-file     → HIR + SymbolManifest + diagnostics
+Pass 2:  Discover          (brink-db)                     cross-file   → resolved INCLUDE graph
+Pass 3:  Analyze           (brink-analyzer)               cross-file   → SymbolIndex + ResolutionMap + diagnostics
+Pass 4:  LIR Lower         (brink-ir::lir)                whole-program → Program (container tree + definitions)
+Pass 5:  Codegen           (brink-codegen-inkb)           per-container → StoryData (bytecode + tables)
 ```
 
-The LSP runs passes 1–5. The compiler runs all 6.
+The LSP uses the same `ProjectDb` and runs passes 1–3 incrementally. The compiler runs all 5.
 
-### Pass 1: Parse (brink-syntax)
+Two backends consume the LIR:
+- **Bytecode backend** (`brink-codegen-inkb`): linearizes to opcodes + line tables → `.inkb`
+- **JSON backend** (`brink-codegen-json`): serializes to `.ink.json` (inklecate-compatible)
+
+### Pass 1: Parse + Lower (brink-syntax, brink-ir::hir)
 
 - **Input:** `.ink` source text
-- **Output:** `Parse` — lossless CST (rowan green/red tree) + `Vec<ParseError>`
-- **Properties:**
-  - Every byte of source appears in exactly one token (lossless roundtrip)
-  - Error recovery via `ERROR` nodes — parser never panics, always produces output
-  - ~230 `SyntaxKind` variants (tokens + nodes)
-  - Typed AST layer with 140+ zero-cost newtype wrappers over CST nodes
-  - Pratt expression parser with 10 precedence levels
-  - String interpolation with nesting depth tracking
+- **Output:** `(HirFile, SymbolManifest, Vec<Diagnostic>)` per file
+
+This pass runs two stages per file:
+
+**Stage 1a: Parse (brink-syntax)**
+
+- Produces a `Parse` — lossless CST (rowan green/red tree) + `Vec<ParseError>`
+- Every byte of source appears in exactly one token (lossless roundtrip)
+- Error recovery via `ERROR` nodes — parser never panics, always produces output
+- ~230 `SyntaxKind` variants (tokens + nodes)
+- Typed AST layer with 140+ zero-cost newtype wrappers over CST nodes
+- Pratt expression parser with 10 precedence levels
+- String interpolation with nesting depth tracking
 
 Covers all ink constructs: knots, stitches, choices, gathers, diverts, tunnels, threads, variables, lists, externals, inline logic, sequences, tags, content extensions markup.
 
-### Pass 2: Lower (brink-hir)
+**Stage 1b: Lower (brink-ir::hir)**
 
-- **Input:** `ast::SourceFile` from brink-syntax
-- **Output:** `(HirFile, SymbolManifest, Vec<Diagnostic>)`
-- **Scope:** Per-file. Does not require cross-file context. Granularity is per-knot — individual knots can be re-lowered independently.
+- Converts `ast::SourceFile` → `(HirFile, SymbolManifest, Vec<Diagnostic>)`
+- Per-file, no cross-file context required. Granularity is per-knot — individual knots can be re-lowered independently.
 
-brink-hir is a **rich semantic tree** — it preserves the full structure of the source with nesting resolved and syntactic sugar stripped, but all semantic information retained. Expressions stay as trees (not stack ops), choices/sequences/conditionals keep their branch structure, diverts/tunnels/threads are semantic nodes (not jump instructions). Both brink-analyzer and brink-compiler (codegen) consume the HIR. Codegen does the last-mile lowering from semantic nodes to bytecode.
+brink-ir::hir produces a **rich semantic tree** — it preserves the full structure of the source with nesting resolved and syntactic sugar stripped, but all semantic information retained. Expressions stay as trees (not stack ops), choices/sequences/conditionals keep their branch structure, diverts/tunnels/threads are semantic nodes (not jump instructions).
 
-#### Responsibilities
+#### HIR responsibilities
 
 - **Weave folding:** flat choices/gathers (identified by bullet/dash count) → recursively nested `ChoiceSet`/`Gather` tree. Nested bullet levels (`* *`) produce nested `ChoiceSet`s inside the parent choice's body. Conditional blocks are structurally opaque — the HIR preserves them as `Stmt::Conditional` within the choice body; weave transparency for choices inside conditionals is a runtime/codegen concern (see [Ink semantics](#ink-semantics-compiler-perspective)).
 - **Implicit structure:** top-level content before first knot → root content block.
-- **INCLUDE recording:** records INCLUDE sites. The actual cross-file merge happens in brink-analyzer; brink-hir exports `fold_weave` which the analyzer calls on the merged content.
+- **INCLUDE recording:** records INCLUDE sites. The actual cross-file merge happens in brink-analyzer; brink-ir::hir exports `fold_weave` which the analyzer calls on the merged content.
 - **First-stitch auto-enter:** the first stitch in a knot is entered via implicit divert; other stitches require explicit diverts. Stitches with parameters are never auto-entered.
 - **Strip trivia and syntactic sugar:** comments, whitespace, and surface syntax are removed; semantic content is preserved.
 - **Symbol manifest:** collect declarations (knots, stitches, variables, lists, externals) and unresolved references (divert targets, variable references that may be cross-file).
@@ -59,11 +66,11 @@ The HIR is always structurally valid but potentially incomplete. Fields that mig
 
 #### API surface
 
-brink-hir exports composable per-knot lowering functions alongside a convenience whole-file entry point (`lower`). Per-knot functions (`lower_knot`, `lower_top_level`) enable the analyzer to re-lower only changed knots. `fold_weave` is public so the analyzer can call it on merged INCLUDE content after cross-file resolution.
+brink-ir::hir exports composable per-knot lowering functions alongside a convenience whole-file entry point (`lower`). Per-knot functions (`lower_knot`, `lower_top_level`) enable the project database to re-lower only changed knots. `fold_weave` is public so the analyzer can call it on merged INCLUDE content after cross-file resolution.
 
 #### Incremental strategy
 
-The analyzer caches HIR per knot and uses rowan green node identity to detect unchanged knots after incremental reparse. Only changed knots are re-lowered — unchanged knots reuse cached HIR. The `SymbolManifest` is reassembled from per-knot pieces.
+The project database (`brink-db`) caches HIR per knot and uses rowan green node identity to detect unchanged knots after incremental reparse. Only changed knots are re-lowered — unchanged knots reuse cached HIR. The `SymbolManifest` is reassembled from per-knot pieces.
 
 #### HIR type model
 
@@ -83,7 +90,7 @@ The HIR is organized around a small set of structural concepts:
 
 **`Conditional` and `BlockSequence`** — block-level control flow. Conditionals have branches (each with an optional condition and a `Block` body). Block sequences have a `SequenceType` and branches (each a `Block`).
 
-**`Expr`** — expression trees preserved as-is. Literals (int, float, bool, string with interpolation parts, null), unresolved path references, divert targets as values, list literals, prefix/infix/postfix operations, and function calls. No lowering to stack operations — codegen handles that.
+**`Expr`** — expression trees preserved as-is. Literals (int, float, bool, string with interpolation parts, null), unresolved path references, divert targets as values, list literals, prefix/infix/postfix operations, and function calls. No lowering to stack operations — LIR lowering handles that.
 
 **Control flow nodes** — diverts, tunnel calls, and thread starts are separate statement types (not a single divert variant) reflecting their distinct ink semantics. Each carries a target path and optional arguments.
 
@@ -104,7 +111,7 @@ The weave folder (`fold_weave`) converts a flat stream of `WeaveItem`s (choices,
 3. **Gathers don't own continuations:** content after a gather is the next sibling statement in the parent `Block`, NOT nested inside the gather or the `ChoiceSet`. A `Block` is always a flat list of statements — no statement swallows the tail of its parent block.
 4. **Standalone gathers:** a gather that appears without preceding choices (e.g., a labeled gather used as a divert target) is emitted as its own statement, not wrapped in a `ChoiceSet`.
 5. **Conditionals are opaque:** conditional blocks are preserved as `Stmt::Conditional` within choice/gather bodies. The weave folder does NOT recurse into conditionals to extract choices. Weave transparency for choices inside conditionals is handled at runtime/codegen via loose end propagation (see reference `Weave.cs` `PassLooseEndsToAncestors`).
-6. **Loose end tracking:** choices and gathers without explicit diverts are "loose ends" that codegen must connect to the next gather. The HIR records the structure; codegen handles divert insertion.
+6. **Loose end tracking:** choices and gathers without explicit diverts are "loose ends" that codegen must connect to the next gather. The HIR records the structure; LIR lowering handles divert insertion.
 7. **Auto-enter gathers:** a gather that follows only non-choice content (no choices in the current section) is auto-entered in the main flow. A gather that follows choices is only reachable via divert from those choices.
 
 **Invariant:** after folding, no `WeaveItem` depth markers remain in the tree. Nesting is encoded entirely by the recursive `Block` → `ChoiceSet` → `Choice.body: Block` → `ChoiceSet` → ... structure. Downstream passes never inspect depth values.
@@ -112,43 +119,89 @@ The weave folder (`fold_weave`) converts a flat stream of `WeaveItem`s (choices,
 #### What HIR does NOT do
 
 - **No cross-file context** — that is brink-analyzer's job
-- **No bytecode emission** — that is brink-compiler's job (codegen)
+- **No bytecode emission** — that is brink-codegen-inkb's job
 - **No name resolution** — paths stay as unresolved `Path` nodes; the analyzer resolves them to `DefinitionId`s
 - **No type checking** — the analyzer handles this after name resolution
-- **No container boundary decisions** — the HIR has knots, stitches, choices, gathers as semantic nodes; codegen decides which become bytecode containers
+- **No container boundary decisions** — the HIR has knots, stitches, choices, gathers as semantic nodes; LIR lowering decides which become bytecode containers
+- **No temp slot allocation** — handled by LIR lowering
 
-### Pass 3–5: Analyze (brink-analyzer)
+### Pass 2: Discover (brink-db)
 
-- **Input:** `Vec<(FileId, HirFile, SymbolManifest)>` from all files
-- **Output:** `(SymbolIndex, Vec<Diagnostic>)`
-- **Responsibilities:**
-  - Merge per-file symbol manifests into a unified symbol table
-  - Resolve INCLUDE file graph
-  - Name resolution: paths → concrete symbols (DefinitionIds)
-  - Scope analysis: temp is function-scoped, VAR/CONST are global
-  - Type checking: expression types, assignment compatibility
-  - Validation: undefined targets, duplicate declarations, dead code, unused variables
-  - Circular include detection
+- **Input:** entry file path + file reader
+- **Output:** fully populated `ProjectDb` with all reachable files parsed and lowered
 
-The analyzer also owns the **project database** — the stateful, long-lived cache of parsed trees and analysis results. Both the compiler and LSP interact with this:
+`ProjectDb` is the stateful, incremental project model used by both the compiler (one-shot) and LSP (long-lived). It performs BFS INCLUDE resolution starting from the entry file — each discovered file is immediately parsed and lowered (pass 1), and its INCLUDE declarations are followed transitively.
 
-- **Compiler:** creates a project database, loads all files, runs passes 1–5, feeds results to codegen
-- **LSP:** holds a long-lived project database, updates incrementally on file edits, serves queries against cached results
+The database caches:
+- Parsed CST (rowan green tree) per file
+- Lowered HIR + SymbolManifest per knot within each file
+- Per-file diagnostics (parse errors + HIR lowering diagnostics)
 
-### Pass 6: Codegen (brink-compiler)
+For the compiler, `discover()` is a single call that loads the entire project. For the LSP, `set_file()` updates a single file incrementally — only changed knots are re-lowered (detected via rowan green node identity), and the INCLUDE graph is updated.
 
-- **Input:** HIR trees + resolved `SymbolIndex`
-- **Output:** bag of `ContainerBytecode` blobs (each with its line sub-table) + metadata (written to `.inkb`)
-- **Responsibilities:**
-  - Per-container bytecode emission
-  - Expression lowering → stack ops + jumps
-  - Choice lowering → choice point opcodes (see [Choice text decomposition](#choice-text-decomposition))
-  - Sequence lowering → sequence opcodes
-  - Divert/tunnel/thread lowering → control flow opcodes
-  - Implicit diverts: end-of-root-story gets implicit gather + `-> DONE`
-  - Text decomposition: static text blocks → line templates with slot placeholders (see [Text decomposition](#text-decomposition))
-  - Per-container line table building (each line entry has content + source text content hash)
-  - All cross-definition references use `DefinitionId` — no resolved indices in the output
+### Pass 3: Analyze (brink-analyzer)
+
+- **Input:** `Vec<(FileId, &HirFile, &SymbolManifest)>` from all files
+- **Output:** `AnalysisResult { index: SymbolIndex, resolutions: ResolutionMap, diagnostics: Vec<Diagnostic> }`
+
+Analysis runs as a single `analyze()` call that performs three responsibilities in sequence:
+
+1. **Merge manifests** (`manifest::merge_manifests`) — merge per-file symbol manifests into a unified `SymbolIndex`. Detects duplicate declarations across files.
+2. **Resolve references** (`resolve::resolve_refs`) — name resolution: unresolved `Path` nodes → concrete `DefinitionId`s. Also handles scope analysis (temp is function-scoped, VAR/CONST are global) and type checking during resolution. Produces a `ResolutionMap` mapping source ranges to their resolved definitions.
+3. **Validate** (`validate::validate`) — structural validation: undefined targets, dead code, unused variables, circular includes.
+
+These are logically distinct responsibilities but execute in one pass, not three separate pipeline stages.
+
+### Pass 4: LIR Lower (brink-ir::lir)
+
+- **Input:** HIR files + `SymbolIndex` + `ResolutionMap` from analysis
+- **Output:** `Program` — a resolved, container-centric representation of the entire program
+
+LIR is the critical bridge between the high-level semantic HIR and backend codegen. It transforms the per-file, name-relative HIR into a single merged program where all references are resolved, container boundaries are decided, and temp slots are allocated.
+
+`lower_to_program()` consumes files in topological (INCLUDE) order and produces a `Program` containing:
+
+- **Root container** — the top of a container tree. Every knot, stitch, gather, choice target, sequence wrapper, and conditional branch is a `Container` with a `DefinitionId`, a body of structured `Stmt`s, and child containers.
+- **Global definitions** — `GlobalDef`, `ListDef`, `ListItemDef`, `ExternalDef` — all with assigned `DefinitionId`s and `NameId`s.
+- **Name table** — interned strings indexed by `NameId`.
+
+#### LIR design properties
+
+- **Flat container list via tree.** Containers form a tree: root → knots → stitches → gathers/choice targets. Each container has a `children` vec holding its nested containers. The `ContainerKind` enum distinguishes the source construct (`Root`, `Knot`, `Stitch`, `Gather`, `ChoiceTarget`, `Sequence`, `SequenceBranch`, `ConditionalBranch`).
+
+- **Structured statements.** Conditionals, sequences, and choice sets keep their branch structure within each container. Each backend serializes this structure into its output format (jump offsets for bytecode, nested arrays for JSON). This avoids committing to a bytecode-specific linearization that the JSON backend can't use.
+
+- **Fully resolved.** No unresolved `Path` nodes. Every reference is a `DefinitionId` (globals, containers, list items, externals) or a temp slot index (`u16`). The LIR never needs the `SymbolIndex` or `ResolutionMap` — all lookups are done during lowering.
+
+#### LIR lowering responsibilities
+
+- **Container planning:** decides which source constructs become containers (knots, stitches, gathers, choice targets, sequence wrappers) and assigns `DefinitionId`s.
+- **Name resolution application:** replaces all HIR `Path` references with resolved `DefinitionId`s or temp slot indices using the `ResolutionMap`.
+- **Temp slot allocation:** assigns `u16` slot indices to temp variables and parameters across the entire knot/function scope (including child containers that share the parent's call frame).
+- **Counting flags:** assigns `CountingFlags` to containers based on their kind and whether they're referenced by visit-count expressions. Labeled containers with visit references get `COUNT_START_ONLY`.
+- **Loose end resolution:** choices and gathers without explicit diverts get implicit diverts to the next gather target (`gather_target` on `ChoiceSet`).
+- **Built-in function recognition:** intercepts function calls whose names match ink built-in functions (`TURNS_SINCE`, `LIST_COUNT`, `INT`, `FLOOR`, etc.) and converts them to `Expr::CallBuiltin` nodes instead of container calls.
+- **Divert target resolution:** classifies divert targets as `Address`, `Variable` (global holding a divert target), `VariableTemp` (temp/param holding a divert target), `Done`, or `End`.
+- **Call argument resolution:** resolves `ref` arguments to `RefGlobal(DefinitionId)` or `RefTemp(slot, name)`.
+
+### Pass 5: Codegen (brink-codegen-inkb)
+
+- **Input:** LIR `Program`
+- **Output:** `StoryData` (written to `.inkb` via `brink-format`)
+- **Entry point:** `brink_codegen_inkb::emit(&program) -> StoryData`
+
+Codegen walks the LIR container tree and emits bytecode for each container:
+
+- **Expression lowering** → stack ops + jumps (including short-circuit `and`/`or` via `JumpIfFalse`)
+- **Choice lowering** → `BeginChoice`/`EndChoice` opcodes (see [Choice text decomposition](#choice-text-decomposition))
+- **Sequence lowering** → `Sequence`/`SequenceBranch` opcodes
+- **Conditional lowering** → condition evaluation + `JumpIfFalse` + branch bodies
+- **Divert/tunnel/thread lowering** → `Goto`/`TunnelCall`/`ThreadCall` and variable variants
+- **Implicit diverts:** end-of-root-story gets implicit gather + `-> DONE`
+- **Text decomposition:** content lines → line table entries (plain text or templates with slot placeholders)
+- **Per-container line table building** (each line entry has content + source text content hash)
+- **Address table building** for intra-container labels
+- **All cross-definition references use `DefinitionId`** — no resolved indices in the output
 
 ## Text decomposition
 
@@ -254,7 +307,9 @@ XLIFF was chosen because every major translation management platform natively im
 
 ## LSP (brink-lsp)
 
-Thin protocol adapter over `brink-analyzer`. Depends on analyzer, NOT on compiler.
+Thin protocol adapter over `brink-analyzer`. Depends on analyzer and `brink-db`, NOT on the compiler or codegen.
+
+The LSP holds a long-lived `ProjectDb`, updates incrementally on file edits (per-knot re-lowering via green node identity), and serves queries against cached analysis results. The compiler creates a one-shot `ProjectDb`, discovers all files, and runs the full pipeline.
 
 Planned features:
 
@@ -275,5 +330,5 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 - **INCLUDE with top-level content:** top-level content from included files is merged inline at the INCLUDE location. Knots/stitches are separated and appended to the end of the story.
 - **Stitch fall-through:** stitches do NOT fall through. The first stitch in a knot is auto-entered via an implicit divert emitted by the compiler. Other stitches require explicit `-> stitch_name`. Stitches with parameters are never auto-entered.
 - **Root entry point:** all top-level content becomes an implicit root container. The compiler appends an implicit gather + `-> DONE` so the story terminates gracefully.
-- **Gathers:** convergence points in the HIR (with optional labels, content, and tags). Gathers do not own a body — content after a gather is the next sibling statement in the parent block. At the bytecode level, gathers become named containers that choice branches divert to — codegen handles the lowering.
-- **Choices inside conditional blocks:** choices (`*`) can appear inside `{ - condition: ... }` multiline conditional blocks. Gathers (`-`) are explicitly forbidden inside conditional blocks — the reference compiler errors with "You can't use a gather (the dashes) within the { curly braces } context." In the HIR, conditional blocks are structurally opaque — the weave folder does NOT extract choices from inside conditionals to merge them into the outer weave. Instead, choices inside conditionals stay nested within the `Stmt::Conditional` node. Weave transparency is deferred to codegen/runtime via loose end propagation. brink-syntax's `multiline_branch_body` handles this: `STAR`/`PLUS` dispatches to `choice()`, while `MINUS` breaks out of the body loop (gathers end the branch, matching the reference's gather-forbidden semantics).
+- **Gathers:** convergence points in the HIR (with optional labels, content, and tags). Gathers do not own a body — content after a gather is the next sibling statement in the parent block. At the bytecode level, gathers become named containers that choice branches divert to — LIR lowering handles the container creation.
+- **Choices inside conditional blocks:** choices (`*`) can appear inside `{ - condition: ... }` multiline conditional blocks. Gathers (`-`) are explicitly forbidden inside conditional blocks — the reference compiler errors with "You can't use a gather (the dashes) within the { curly braces } context." In the HIR, conditional blocks are structurally opaque — the weave folder does NOT extract choices from inside conditionals to merge them into the outer weave. Instead, choices inside conditionals stay nested within the `Stmt::Conditional` node. Weave transparency is deferred to LIR lowering/codegen via loose end propagation. brink-syntax's `multiline_branch_body` handles this: `STAR`/`PLUS` dispatches to `choice()`, while `MINUS` breaks out of the body loop (gathers end the branch, matching the reference's gather-forbidden semantics).
