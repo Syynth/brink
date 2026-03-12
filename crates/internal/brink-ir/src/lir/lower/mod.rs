@@ -390,12 +390,14 @@ fn lower_block_with_children(
             hir::Stmt::Conditional(cond) => {
                 // Lower conditional branches with lower_block_with_children
                 // so ChoiceSets inside branches produce child containers.
+                // Each branch body is wrapped in its own child container.
                 //
-                // Conditional branches stay FLAT (not container-wrapped) because
-                // ink conditionals can gate choice visibility: choices across all
-                // branches form a single logical ChoiceSet, and a single `Done`
-                // after the conditional presents them all. Wrapping branches in
-                // containers would isolate each branch's `Done`, breaking this.
+                // The `in_conditional_branch` flag in codegen suppresses `Done`
+                // inside branch containers. This is correct because ink
+                // conditionals can gate choice visibility — choices across all
+                // branches form a single logical ChoiceSet, and the runtime
+                // auto-presents pending choices on frame/container exhaustion
+                // (vm.rs handle_frame_exhaustion), so no explicit `Done` is needed.
                 let kind = match &cond.kind {
                     hir::CondKind::InitialCondition => lir::CondKind::InitialCondition,
                     hir::CondKind::IfElse => lir::CondKind::IfElse,
@@ -403,11 +405,31 @@ fn lower_block_with_children(
                         lir::CondKind::Switch(expr::lower_expr(expr, ctx))
                     }
                 };
+
+                let cond_idx = *seq_counter;
+                *seq_counter += 1;
+
+                // Push a scope prefix for this conditional so nested
+                // conditionals inside branches get unique container paths.
+                let cond_scope = format!("b-{cond_idx}");
+                let old_scope = ctx.scope_path.clone();
+
                 let branches = cond
                     .branches
                     .iter()
-                    .map(|b| {
+                    .enumerate()
+                    .map(|(branch_idx, b)| {
                         let condition = b.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
+
+                        // Set scope_path for this branch so nested containers
+                        // (choices, gathers, nested conditionals) get unique IDs.
+                        let branch_scope = if old_scope.is_empty() {
+                            format!("{cond_scope}.{branch_idx}")
+                        } else {
+                            format!("{old_scope}.{cond_scope}.{branch_idx}")
+                        };
+                        ctx.scope_path = branch_scope;
+
                         // Pass through parent choice/gather counters — a ChoiceSet
                         // inside a conditional shares the enclosing scope and must
                         // not collide with sibling gathers/choices.
@@ -420,10 +442,40 @@ fn lower_block_with_children(
                             gather_counter,
                             &mut sc2,
                         );
-                        children.extend(branch_children);
-                        lir::CondBranch { condition, body }
+
+                        // Create a child container for this branch
+                        let branch_path = if old_scope.is_empty() {
+                            format!("{cond_scope}.{branch_idx}")
+                        } else {
+                            format!("{old_scope}.{cond_scope}.{branch_idx}")
+                        };
+                        let branch_id = ctx.ids.alloc_container(&branch_path);
+
+                        let branch_container = lir::Container {
+                            id: branch_id,
+                            name: Some(format!("{branch_idx}")),
+                            kind: lir::ContainerKind::ConditionalBranch,
+                            params: Vec::new(),
+                            body,
+                            children: branch_children,
+                            counting_flags: CountingFlags::empty(),
+                            temp_slot_count: 0,
+                            label_id: None,
+                            inline: false,
+                        };
+                        children.push(branch_container);
+
+                        // The branch body in the Conditional struct is just EnterContainer
+                        lir::CondBranch {
+                            condition,
+                            body: vec![lir::Stmt::EnterContainer(branch_id)],
+                        }
                     })
                     .collect();
+
+                // Restore scope_path after processing branches.
+                ctx.scope_path = old_scope;
+
                 stmts.push(lir::Stmt::Conditional(lir::Conditional { kind, branches }));
                 pos += 1;
             }

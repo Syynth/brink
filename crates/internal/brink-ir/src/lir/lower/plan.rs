@@ -232,21 +232,34 @@ fn plan_stmt_choices(
             }
         }
         hir::Stmt::Conditional(cond) => {
-            // Pass through parent counters — a ChoiceSet inside a conditional
-            // shares the enclosing scope and must not collide with sibling
-            // gathers/choices that already consumed earlier indices.
-            for branch in &cond.branches {
+            // Push scope path per-branch to match the lowering phase, which
+            // uses `b-N.{branch_idx}` sub-scopes for conditional branches.
+            let cond_idx = *seq_counter;
+            *seq_counter += 1;
+            let cond_scope = format!("b-{cond_idx}");
+
+            for (branch_idx, branch) in cond.branches.iter().enumerate() {
+                let branch_scope = if scope_path.is_empty() {
+                    format!("{cond_scope}.{branch_idx}")
+                } else {
+                    format!("{scope_path}.{cond_scope}.{branch_idx}")
+                };
+
+                // Pass through parent choice/gather counters — a ChoiceSet
+                // inside a conditional shares the enclosing scope and must
+                // not collide with sibling gathers/choices.
+                let mut sc = 0;
                 for s in &branch.body.stmts {
                     plan_stmt_choices(
                         s,
                         file,
-                        scope_path,
+                        &branch_scope,
                         index,
                         ids,
                         plan,
                         choice_counter,
                         gather_counter,
-                        seq_counter,
+                        &mut sc,
                     );
                 }
             }

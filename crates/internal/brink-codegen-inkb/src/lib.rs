@@ -138,6 +138,14 @@ fn walk_container(container: &lir::Container, path: &str, state: &mut EmitState)
     // Emit this container's bytecode.
     let mut emitter = ContainerEmitter::new(state);
 
+    // Conditional branch containers suppress `Done` after ChoiceSets because
+    // ink conditionals gate choice visibility — choices across all branches
+    // form a single logical ChoiceSet, and the runtime auto-presents pending
+    // choices on frame/container exhaustion (no explicit Done needed).
+    if container.kind == lir::ContainerKind::ConditionalBranch {
+        emitter.in_conditional_branch = true;
+    }
+
     // Emit DeclareTemp for each parameter (pops args from eval stack into
     // temp slots). Reverse order: caller pushes first arg first, so last
     // arg is on top of the stack and gets popped first.
