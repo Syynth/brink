@@ -177,22 +177,50 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
 
     // Resolve via resolution map
     if let Some(info) = ctx.resolve_path(path.range) {
-        let call_args = lower_call_args(args, &info.params, ctx);
-
         match info.kind {
-            SymbolKind::External => lir::Expr::CallExternal {
-                target: info.id,
-                args: call_args,
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "ink externals have <=255 params"
-                )]
-                arg_count: info.params.len() as u8,
-            },
-            _ => lir::Expr::Call {
-                target: info.id,
-                args: call_args,
-            },
+            SymbolKind::List => {
+                // list(n) → ListFromInt; list() → empty list with origin.
+                if args.is_empty() {
+                    lir::Expr::ListLiteral {
+                        items: Vec::new(),
+                        origins: vec![info.id],
+                    }
+                } else {
+                    let list_name = info
+                        .name
+                        .split('.')
+                        .next()
+                        .unwrap_or(&info.name)
+                        .to_string();
+                    let name_expr = lir::Expr::String(lir::StringExpr {
+                        parts: vec![lir::StringPart::Literal(list_name)],
+                    });
+                    let ordinal_expr = lower_expr(&args[0], ctx);
+                    lir::Expr::CallBuiltin {
+                        builtin: lir::BuiltinFn::ListFromInt,
+                        args: vec![name_expr, ordinal_expr],
+                    }
+                }
+            }
+            SymbolKind::External => {
+                let call_args = lower_call_args(args, &info.params, ctx);
+                lir::Expr::CallExternal {
+                    target: info.id,
+                    args: call_args,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "ink externals have <=255 params"
+                    )]
+                    arg_count: info.params.len() as u8,
+                }
+            }
+            _ => {
+                let call_args = lower_call_args(args, &info.params, ctx);
+                lir::Expr::Call {
+                    target: info.id,
+                    args: call_args,
+                }
+            }
         }
     } else {
         lir::Expr::Null
