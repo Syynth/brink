@@ -76,9 +76,9 @@ impl<'a> ContainerEmitter<'a> {
         ink_path: &str,
     ) -> Result<brink_format::DefinitionId, ConvertError> {
         let resolved = path::resolve_path(&self.current_path, ink_path);
-        // Check labels first (for index-based targets), then containers.
-        if let Some(label_id) = self.index.labels.get(&resolved) {
-            return Ok(*label_id);
+        // Check intra-container addresses first (for index-based targets), then containers.
+        if let Some(addr_id) = self.index.intra_addresses.get(&resolved) {
+            return Ok(*addr_id);
         }
         self.index
             .resolve_container(&resolved)
@@ -763,7 +763,7 @@ fn ink_value_to_format_value(ink: &InkValue, index: &StoryIndex) -> Value {
         }
         InkValue::Bool(b) => Value::Bool(*b),
         InkValue::String(s) => Value::String(s.clone().into()),
-        InkValue::DivertTarget(p) => Value::DivertTarget(path::container_id(p)),
+        InkValue::DivertTarget(p) => Value::DivertTarget(path::address_id(p)),
         InkValue::List(ink_list) => Value::List(ink_list_to_list_value(ink_list, index).into()),
         InkValue::VariablePointer(_) => Value::Null,
     }

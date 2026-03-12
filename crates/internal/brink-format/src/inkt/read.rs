@@ -5,7 +5,7 @@ use pest_derive::Parser;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LabelDef, LineEntry, ListDef,
+    AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
     ListItemDef,
 };
 use crate::id::{DefinitionId, NameId};
@@ -74,7 +74,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut list_defs = Vec::new();
     let mut list_items = Vec::new();
     let mut externals = Vec::new();
-    let mut labels = Vec::new();
+    let mut addresses = Vec::new();
     let mut containers = Vec::new();
     let mut line_tables = Vec::new();
     let mut list_literals = Vec::new();
@@ -86,7 +86,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::lists => list_defs = parse_lists(inner)?,
             Rule::list_items => list_items = parse_list_items(inner)?,
             Rule::externals => externals = parse_externals(inner)?,
-            Rule::labels => labels = parse_labels(inner)?,
+            Rule::addresses => addresses = parse_addresses(inner)?,
             Rule::list_literals => list_literals = parse_list_literals(inner)?,
             Rule::container => {
                 let (container, lt) = parse_container(inner)?;
@@ -104,7 +104,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         list_defs,
         list_items,
         externals,
-        labels,
+        addresses,
         name_table,
         list_literals,
     })
@@ -443,32 +443,32 @@ fn parse_extern_entry(pair: P<'_>) -> Result<ExternalFnDef, InktParseError> {
     })
 }
 
-// ── Labels ──────────────────────────────────────────────────────────────────
+// ── Addresses ───────────────────────────────────────────────────────────────
 
-fn parse_labels(pair: P<'_>) -> Result<Vec<LabelDef>, InktParseError> {
-    let mut labels = Vec::new();
+fn parse_addresses(pair: P<'_>) -> Result<Vec<AddressDef>, InktParseError> {
+    let mut addresses = Vec::new();
     for entry in pair.into_inner() {
-        if entry.as_rule() == Rule::label_entry {
-            labels.push(parse_label_entry(entry)?);
+        if entry.as_rule() == Rule::address_entry {
+            addresses.push(parse_address_entry(entry)?);
         }
     }
-    Ok(labels)
+    Ok(addresses)
 }
 
-fn parse_label_entry(pair: P<'_>) -> Result<LabelDef, InktParseError> {
+fn parse_address_entry(pair: P<'_>) -> Result<AddressDef, InktParseError> {
     let mut inner = pair.into_inner();
     let id = parse_def_id(inner.next().ok_or_else(|| InktParseError {
-        message: "expected def_id in label".into(),
+        message: "expected def_id in address".into(),
         line: 0,
         col: 0,
     })?)?;
     let container_id = parse_def_id(inner.next().ok_or_else(|| InktParseError {
-        message: "expected container_id in label".into(),
+        message: "expected container_id in address".into(),
         line: 0,
         col: 0,
     })?)?;
     let offset_pair = inner.next().ok_or_else(|| InktParseError {
-        message: "expected byte_offset in label".into(),
+        message: "expected byte_offset in address".into(),
         line: 0,
         col: 0,
     })?;
@@ -476,7 +476,7 @@ fn parse_label_entry(pair: P<'_>) -> Result<LabelDef, InktParseError> {
         .as_str()
         .parse()
         .map_err(|_| err(&offset_pair, "invalid byte_offset"))?;
-    Ok(LabelDef {
+    Ok(AddressDef {
         id,
         container_id,
         byte_offset,

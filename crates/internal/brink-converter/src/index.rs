@@ -18,8 +18,8 @@ pub struct StoryIndex {
     pub list_defs: HashMap<String, DefinitionId>,
     /// `"ListName.ItemName"` → `(DefinitionId, ordinal)`
     pub list_items: HashMap<String, (DefinitionId, i32)>,
-    /// Resolved path → label `DefinitionId` (for index-based divert targets)
-    pub labels: HashMap<String, DefinitionId>,
+    /// Resolved path → intra-container address `DefinitionId` (for index-based divert targets)
+    pub intra_addresses: HashMap<String, DefinitionId>,
 }
 
 impl StoryIndex {
@@ -73,12 +73,12 @@ impl StoryIndex {
         match self.resolve_container_with_index(path) {
             Some((container_id, None)) => Some(container_id),
             Some((_container_id, Some(_index))) => {
-                // This is an index target — return or register a label.
-                if let Some(&label_id) = self.labels.get(path) {
-                    Some(label_id)
+                // This is an index target — return or register an intra-container address.
+                if let Some(&addr_id) = self.intra_addresses.get(path) {
+                    Some(addr_id)
                 } else {
-                    let id = crate::path::label_id(path);
-                    self.labels.insert(path.to_string(), id);
+                    let id = crate::path::intra_address_id(path);
+                    self.intra_addresses.insert(path.to_string(), id);
                     Some(id)
                 }
             }
@@ -102,7 +102,7 @@ pub fn build_index(
         externals: HashMap::new(),
         list_defs: HashMap::new(),
         list_items: HashMap::new(),
-        labels: HashMap::new(),
+        intra_addresses: HashMap::new(),
     };
 
     // 1. Walk containers recursively (using canonical root)
@@ -130,8 +130,8 @@ pub fn build_index(
     // 4. Scan all containers for external function diverts
     scan_externals(&mut index, canonical_root);
 
-    // 5. Scan all divert targets and register labels for index-based targets
-    register_labels(&mut index, canonical_root, "");
+    // 5. Scan all divert targets and register addresses for index-based targets
+    register_addresses(&mut index, canonical_root, "");
 
     Ok(index)
 }
@@ -142,7 +142,7 @@ fn register_container(
     container: &Container,
     current_path: &str,
 ) -> Result<(), ConvertError> {
-    let id = path::container_id(current_path);
+    let id = path::address_id(current_path);
     index.containers.insert(current_path.to_string(), id);
 
     // Walk contents — sub-containers at index i get path "parent.i".
@@ -165,7 +165,7 @@ fn register_container(
                 } else {
                     format!("{current_path}.{name}")
                 };
-                let child_id = path::container_id(&child_path);
+                let child_id = path::address_id(&child_path);
                 index.containers.insert(named_path, child_id);
             }
         }
@@ -216,7 +216,7 @@ fn scan_global_decls(index: &mut StoryIndex, container: &Container) -> Result<()
 
 /// Recursively scan all divert targets and register labels for paths that
 /// point to a specific element index within a container.
-fn register_labels(index: &mut StoryIndex, container: &Container, current_path: &str) {
+fn register_addresses(index: &mut StoryIndex, container: &Container, current_path: &str) {
     for (i, element) in container.contents.iter().enumerate() {
         match element {
             Element::Divert(divert) => {
@@ -248,7 +248,7 @@ fn register_labels(index: &mut StoryIndex, container: &Container, current_path: 
                 } else {
                     format!("{current_path}.{i}")
                 };
-                register_labels(index, child, &child_path);
+                register_addresses(index, child, &child_path);
             }
             _ => {}
         }
@@ -262,7 +262,7 @@ fn register_labels(index: &mut StoryIndex, container: &Container, current_path: 
             } else {
                 format!("{current_path}.{name}")
             };
-            register_labels(index, child, &child_path);
+            register_addresses(index, child, &child_path);
         }
     }
 }

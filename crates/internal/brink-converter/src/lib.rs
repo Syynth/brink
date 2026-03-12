@@ -13,7 +13,7 @@ mod path;
 
 pub use error::ConvertError;
 
-use brink_format::{LabelDef, StoryData};
+use brink_format::{AddressDef, StoryData};
 use brink_json::InkJson;
 
 /// Convert a parsed ink.json story into a `StoryData`.
@@ -45,8 +45,9 @@ pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
     let (list_defs, list_items) = codegen::build_list_defs(&story_index, &mut name_table)?;
     let externals = codegen::build_externals(&story_index, &mut name_table)?;
 
-    // Pass 3: build label table from registered labels and element offsets
-    let labels = build_labels(&story_index, &element_offsets);
+    // Pass 3: build address table — primary addresses for every container,
+    // plus intra-container addresses from registered targets.
+    let addresses = build_addresses(&story_index, &containers, &element_offsets);
 
     Ok(StoryData {
         containers,
@@ -55,20 +56,32 @@ pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
         list_defs,
         list_items,
         externals,
-        labels,
+        addresses,
         name_table: name_table.into_vec(),
         list_literals,
     })
 }
 
-/// Build `LabelDef`s from the index's label map and the element offset tables.
-fn build_labels(
+/// Build `AddressDef`s: primary addresses for every container (`byte_offset` 0)
+/// plus intra-container addresses from the index's registered targets.
+fn build_addresses(
     index: &index::StoryIndex,
+    containers: &[brink_format::ContainerDef],
     element_offsets: &codegen::ElementOffsets,
-) -> Vec<LabelDef> {
-    let mut labels = Vec::new();
+) -> Vec<AddressDef> {
+    let mut addresses = Vec::new();
 
-    for (path, &label_id) in &index.labels {
+    // Primary address for every container: id == container_id, byte_offset 0.
+    for cdef in containers {
+        addresses.push(AddressDef {
+            id: cdef.id,
+            container_id: cdef.id,
+            byte_offset: 0,
+        });
+    }
+
+    // Intra-container addresses (formerly labels).
+    for (path, &addr_id) in &index.intra_addresses {
         // Decompose the path: last component is the element index,
         // everything before is the container path.
         let Some(dot) = path.rfind('.') else {
@@ -93,14 +106,14 @@ fn build_labels(
             .unwrap_or(0);
 
         #[expect(clippy::cast_possible_truncation)]
-        labels.push(LabelDef {
-            id: label_id,
+        addresses.push(AddressDef {
+            id: addr_id,
             container_id,
             byte_offset: byte_offset as u32,
         });
     }
 
-    labels
+    addresses
 }
 
 #[cfg(test)]

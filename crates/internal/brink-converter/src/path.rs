@@ -9,9 +9,9 @@ fn hash_path(path: &str) -> u64 {
     hasher.finish()
 }
 
-/// Create a `DefinitionId` for a container path.
-pub fn container_id(path: &str) -> DefinitionId {
-    DefinitionId::new(DefinitionTag::Container, hash_path(path))
+/// Create a `DefinitionId` for an address (container or intra-container target).
+pub fn address_id(path: &str) -> DefinitionId {
+    DefinitionId::new(DefinitionTag::Address, hash_path(path))
 }
 
 /// Create a `DefinitionId` for a global variable.
@@ -34,9 +34,13 @@ pub fn external_fn_id(name: &str) -> DefinitionId {
     DefinitionId::new(DefinitionTag::ExternalFn, hash_path(name))
 }
 
-/// Create a `DefinitionId` for a label (index target within a container).
-pub fn label_id(path: &str) -> DefinitionId {
-    DefinitionId::new(DefinitionTag::Label, hash_path(path))
+/// Create a `DefinitionId` for an intra-container address (index target).
+///
+/// Uses the same `Address` tag as `address_id` — the only difference is the
+/// path string hashed. Both containers and intra-container targets live in
+/// the same namespace now.
+pub fn intra_address_id(path: &str) -> DefinitionId {
+    DefinitionId::new(DefinitionTag::Address, hash_path(path))
 }
 
 /// Resolve an ink.json path reference against a current container path.
@@ -131,15 +135,15 @@ mod tests {
     }
 
     #[test]
-    fn container_id_deterministic() {
-        let a = container_id("foo.bar");
-        let b = container_id("foo.bar");
+    fn address_id_deterministic() {
+        let a = address_id("foo.bar");
+        let b = address_id("foo.bar");
         assert_eq!(a, b);
     }
 
     #[test]
     fn different_tags() {
-        let c = container_id("x");
+        let c = address_id("x");
         let g = global_var_id("x");
         assert_ne!(c, g);
     }

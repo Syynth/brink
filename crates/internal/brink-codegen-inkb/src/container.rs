@@ -28,7 +28,7 @@ impl ContainerEmitter<'_> {
                         self.emit_call_arg(arg);
                     }
                     match &target.target {
-                        lir::DivertTarget::Container(id) => {
+                        lir::DivertTarget::Address(id) => {
                             self.emit(Opcode::TunnelCall(*id));
                         }
                         lir::DivertTarget::Variable(id) => {
@@ -50,7 +50,7 @@ impl ContainerEmitter<'_> {
                     self.emit_call_arg(arg);
                 }
                 match &thread.target {
-                    lir::DivertTarget::Container(id) => {
+                    lir::DivertTarget::Address(id) => {
                         self.emit(Opcode::ThreadCall(*id));
                     }
                     lir::DivertTarget::Variable(id) => {
@@ -122,7 +122,7 @@ impl ContainerEmitter<'_> {
 
     fn emit_divert(&mut self, divert: &lir::Divert) {
         match &divert.target {
-            lir::DivertTarget::Container(id) => {
+            lir::DivertTarget::Address(id) => {
                 if divert.args.is_empty() {
                     self.emit(Opcode::Goto(*id));
                 } else {

@@ -285,7 +285,7 @@ fn emit_divert(
         lir::DivertTarget::End => {
             out.push(Element::ControlCommand(ControlCommand::End));
         }
-        lir::DivertTarget::Container(id) => {
+        lir::DivertTarget::Address(id) => {
             if divert.args.is_empty() {
                 let abs = lookups.container_path(*id);
                 let path = cctx.compact_path(1, &abs);
@@ -1391,7 +1391,7 @@ fn end_ev() -> Element {
 
 fn divert_target_path(target: &lir::DivertTarget, lookups: &Lookups) -> String {
     match target {
-        lir::DivertTarget::Container(id) => lookups.container_path(*id),
+        lir::DivertTarget::Address(id) => lookups.container_path(*id),
         lir::DivertTarget::Variable(id) => lookups.global_name(*id),
         lir::DivertTarget::VariableTemp(_, name_id) => lookups.name(*name_id).to_owned(),
         lir::DivertTarget::Done => "done".to_string(),

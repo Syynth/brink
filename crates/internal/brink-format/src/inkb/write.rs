@@ -4,7 +4,7 @@ use crate::codec::{
     crc32, write_def_id, write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
 };
 use crate::definition::{
-    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LabelDef, LineEntry, ListDef,
+    AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
     ListItemDef,
 };
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -72,9 +72,9 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     section_offsets[6] = (buf.len() - base) as u32;
     write_section_line_tables(&story.line_tables, buf);
 
-    // 8. Labels
+    // 8. Addresses (Labels section)
     section_offsets[7] = (buf.len() - base) as u32;
-    write_section_labels(&story.labels, buf);
+    write_section_addresses(&story.addresses, buf);
 
     // 9. ListLiterals
     section_offsets[8] = (buf.len() - base) as u32;
@@ -203,14 +203,14 @@ pub fn write_section_containers(containers: &[ContainerDef], buf: &mut Vec<u8>) 
     }
 }
 
-/// Write the labels section (no header framing).
+/// Write the addresses section (no header framing).
 #[expect(clippy::cast_possible_truncation)]
-pub fn write_section_labels(labels: &[LabelDef], buf: &mut Vec<u8>) {
-    write_u32(buf, labels.len() as u32);
-    for label in labels {
-        write_def_id(buf, label.id);
-        write_def_id(buf, label.container_id);
-        write_u32(buf, label.byte_offset);
+pub fn write_section_addresses(addresses: &[AddressDef], buf: &mut Vec<u8>) {
+    write_u32(buf, addresses.len() as u32);
+    for addr in addresses {
+        write_def_id(buf, addr.id);
+        write_def_id(buf, addr.container_id);
+        write_u32(buf, addr.byte_offset);
     }
 }
 

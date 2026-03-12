@@ -146,20 +146,18 @@ fn named_path_label_has_nonzero_byte_offset() {
     let story: InkJson = serde_json::from_str(json_text).unwrap();
     let data = convert(&story).unwrap();
 
-    // The story has exactly one label (for the divert "0.g-0.3").
-    // Its byte_offset must be > 0 — offset 0 means "start of container"
-    // which would cause an infinite loop.
+    // The story has intra-container addresses (for the divert "0.g-0.3").
+    // Filter to non-primary addresses (byte_offset > 0) — primary addresses
+    // always have byte_offset == 0 and are expected.
+    let intra: Vec<_> = data
+        .addresses
+        .iter()
+        .filter(|a| a.byte_offset > 0)
+        .collect();
     assert!(
-        !data.labels.is_empty(),
-        "should have at least one label for index-based divert target"
+        !intra.is_empty(),
+        "should have at least one intra-container address for index-based divert target"
     );
-    for label in &data.labels {
-        assert!(
-            label.byte_offset > 0,
-            "label byte_offset should be > 0 (non-zero offset into container), \
-             got label: {label:?}"
-        );
-    }
 }
 
 fn collect_ink_json_files(dir: &Path) -> Vec<std::path::PathBuf> {

@@ -12,7 +12,7 @@ use proptest::prelude::*;
 
 fn arb_tag() -> impl Strategy<Value = DefinitionTag> {
     prop_oneof![
-        Just(DefinitionTag::Container),
+        Just(DefinitionTag::Address),
         Just(DefinitionTag::GlobalVar),
         Just(DefinitionTag::ListDef),
         Just(DefinitionTag::ListItem),
@@ -262,7 +262,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     list_defs,
                     list_items,
                     externals,
-                    labels: vec![],
+                    addresses: vec![],
                     name_table,
                     list_literals: vec![],
                 }

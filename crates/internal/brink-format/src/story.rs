@@ -1,5 +1,5 @@
 use crate::definition::{
-    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LabelDef, ListDef, ListItemDef,
+    AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef,
 };
 use crate::value::ListValue;
 
@@ -13,8 +13,8 @@ pub struct StoryData {
     pub list_defs: Vec<ListDef>,
     pub list_items: Vec<ListItemDef>,
     pub externals: Vec<ExternalFnDef>,
-    /// Labels pointing to byte offsets within containers.
-    pub labels: Vec<LabelDef>,
+    /// Address definitions mapping IDs to byte offsets within containers.
+    pub addresses: Vec<AddressDef>,
     /// Interned name strings, indexed by [`NameId`](crate::id::NameId).
     pub name_table: Vec<String>,
     /// List literal values referenced by `PushList(idx)` opcodes.

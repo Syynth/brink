@@ -129,7 +129,7 @@ fn lower_divert_target(target: &hir::DivertTarget, ctx: &mut LowerCtx<'_>) -> li
                     SymbolKind::Variable | SymbolKind::Constant => {
                         lir::DivertTarget::Variable(info.id)
                     }
-                    _ => lir::DivertTarget::Container(info.id),
+                    _ => lir::DivertTarget::Address(info.id),
                 }
             } else {
                 lir::DivertTarget::Done

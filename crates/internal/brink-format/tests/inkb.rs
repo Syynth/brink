@@ -3,13 +3,13 @@
 use std::path::Path;
 
 use brink_format::{
-    DecodeError, SectionKind, assemble_inkb, read_inkb, read_inkb_index, read_section_containers,
-    read_section_externals, read_section_labels, read_section_line_tables, read_section_list_defs,
-    read_section_list_items, read_section_list_literals, read_section_name_table,
-    read_section_variables, write_inkb, write_section_containers, write_section_externals,
-    write_section_labels, write_section_line_tables, write_section_list_defs,
-    write_section_list_items, write_section_list_literals, write_section_name_table,
-    write_section_variables,
+    DecodeError, SectionKind, assemble_inkb, read_inkb, read_inkb_index, read_section_addresses,
+    read_section_containers, read_section_externals, read_section_line_tables,
+    read_section_list_defs, read_section_list_items, read_section_list_literals,
+    read_section_name_table, read_section_variables, write_inkb, write_section_addresses,
+    write_section_containers, write_section_externals, write_section_line_tables,
+    write_section_list_defs, write_section_list_items, write_section_list_literals,
+    write_section_name_table, write_section_variables,
 };
 use brink_json::InkJson;
 
@@ -246,8 +246,8 @@ fn section_level_roundtrip() {
     let line_tables = read_section_line_tables(&buf, &index).unwrap();
     assert_eq!(line_tables, data.line_tables);
 
-    let labels = read_section_labels(&buf, &index).unwrap();
-    assert_eq!(labels, data.labels);
+    let addresses = read_section_addresses(&buf, &index).unwrap();
+    assert_eq!(addresses, data.addresses);
 
     let list_literals = read_section_list_literals(&buf, &index).unwrap();
     assert_eq!(list_literals, data.list_literals);
@@ -301,7 +301,7 @@ fn assemble_inkb_equivalence() {
     write_section_line_tables(&data.line_tables, &mut line_table_buf);
 
     let mut label_buf = Vec::new();
-    write_section_labels(&data.labels, &mut label_buf);
+    write_section_addresses(&data.addresses, &mut label_buf);
 
     let mut list_lit_buf = Vec::new();
     write_section_list_literals(&data.list_literals, &mut list_lit_buf);

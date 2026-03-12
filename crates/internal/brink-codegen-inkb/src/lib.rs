@@ -7,8 +7,8 @@ mod expr;
 use std::collections::HashMap;
 
 use brink_format::{
-    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineContent, LineEntry, ListDef,
-    ListItemDef, ListValue, NameId, Opcode, StoryData, Value,
+    AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineContent,
+    LineEntry, ListDef, ListItemDef, ListValue, NameId, Opcode, StoryData, Value,
 };
 use brink_ir::lir;
 
@@ -16,6 +16,7 @@ use brink_ir::lir;
 pub fn emit(program: &lir::Program) -> StoryData {
     let mut state = EmitState {
         containers: Vec::new(),
+        addresses: Vec::new(),
         line_tables: Vec::new(),
         list_literals: Vec::new(),
         name_table: program.name_table.clone(),
@@ -44,7 +45,7 @@ pub fn emit(program: &lir::Program) -> StoryData {
         list_defs,
         list_items,
         externals,
-        labels: Vec::new(),
+        addresses: state.addresses,
         name_table: state.name_table,
         list_literals: state.list_literals,
     }
@@ -54,6 +55,7 @@ pub fn emit(program: &lir::Program) -> StoryData {
 
 struct EmitState {
     containers: Vec<ContainerDef>,
+    addresses: Vec<AddressDef>,
     line_tables: Vec<ContainerLineTable>,
     list_literals: Vec<ListValue>,
     name_table: Vec<String>,
@@ -173,6 +175,13 @@ fn walk_container(container: &lir::Container, path: &str, state: &mut EmitState)
 
     state.containers.push(def);
     state.line_tables.push(lt);
+
+    // Primary address: every container is addressable by its own id.
+    state.addresses.push(AddressDef {
+        id: container.id,
+        container_id: container.id,
+        byte_offset: 0,
+    });
 
     // Recurse into children.
     for child in &container.children {

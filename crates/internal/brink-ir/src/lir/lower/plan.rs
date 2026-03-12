@@ -49,7 +49,7 @@ pub fn plan_containers(
     let mut plan = ContainerPlan {
         choice_targets: HashMap::new(),
         gather_targets: HashMap::new(),
-        root_id: ids.alloc_container(""),
+        root_id: ids.alloc_address(""),
         knot_ids: HashMap::new(),
         stitch_ids: HashMap::new(),
     };
@@ -61,7 +61,7 @@ pub fn plan_containers(
         for knot in &hir_file.knots {
             let knot_path = &knot.name.text;
             let knot_id = lookup_container_id(index, knot_path)
-                .unwrap_or_else(|| ids.alloc_container(knot_path));
+                .unwrap_or_else(|| ids.alloc_address(knot_path));
 
             plan.knot_ids.insert(knot_path.clone(), knot_id);
 
@@ -70,7 +70,7 @@ pub fn plan_containers(
             for stitch in &knot.stitches {
                 let stitch_path = format!("{knot_path}.{}", stitch.name.text);
                 let stitch_id = lookup_container_id(index, &stitch_path)
-                    .unwrap_or_else(|| ids.alloc_container(&stitch_path));
+                    .unwrap_or_else(|| ids.alloc_address(&stitch_path));
 
                 plan.stitch_ids.insert(stitch_path.clone(), stitch_id);
 
@@ -133,7 +133,7 @@ fn plan_stmt_choices(
             };
 
             let gather_id = lookup_container_id(index, &gather_path)
-                .unwrap_or_else(|| ids.alloc_container(&gather_path));
+                .unwrap_or_else(|| ids.alloc_address(&gather_path));
 
             plan.gather_targets.insert(
                 GatherKey {
@@ -150,10 +150,10 @@ fn plan_stmt_choices(
                 let choice_id = if let Some(ref label) = choice.label {
                     let label_path = qualify_name(scope_path, &label.text);
                     lookup_container_id(index, &label_path).unwrap_or_else(|| {
-                        ids.alloc_container(&format!("{scope_path}.c{choice_counter}"))
+                        ids.alloc_address(&format!("{scope_path}.c{choice_counter}"))
                     })
                 } else {
-                    ids.alloc_container(&format!("{scope_path}.c{choice_counter}"))
+                    ids.alloc_address(&format!("{scope_path}.c{choice_counter}"))
                 };
                 *choice_counter += 1;
 
@@ -206,7 +206,7 @@ fn plan_stmt_choices(
             if let Some(ref label) = block.label {
                 let label_path = qualify_name(scope_path, &label.text);
                 let label_id = lookup_container_id(index, &label_path)
-                    .unwrap_or_else(|| ids.alloc_container(&label_path));
+                    .unwrap_or_else(|| ids.alloc_address(&label_path));
                 plan.gather_targets.insert(
                     GatherKey {
                         file,

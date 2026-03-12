@@ -283,7 +283,7 @@ fn i078_lir() {
     };
     let gather_id = cs.gather_target.unwrap();
     assert!(
-        matches!(gather_divert.target, lir::DivertTarget::Container(id) if id == gather_id),
+        matches!(gather_divert.target, lir::DivertTarget::Address(id) if id == gather_id),
         "c-0 should divert to g-0"
     );
 

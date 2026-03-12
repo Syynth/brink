@@ -28,13 +28,14 @@ mod read;
 mod write;
 
 pub use read::{
-    read_inkb, read_inkb_index, read_section_containers, read_section_externals,
-    read_section_labels, read_section_line_tables, read_section_list_defs, read_section_list_items,
-    read_section_list_literals, read_section_name_table, read_section_variables,
+    read_inkb, read_inkb_index, read_section_addresses, read_section_containers,
+    read_section_externals, read_section_line_tables, read_section_list_defs,
+    read_section_list_items, read_section_list_literals, read_section_name_table,
+    read_section_variables,
 };
 pub use write::{
-    assemble_inkb, write_inkb, write_section_containers, write_section_externals,
-    write_section_labels, write_section_line_tables, write_section_list_defs,
+    assemble_inkb, write_inkb, write_section_addresses, write_section_containers,
+    write_section_externals, write_section_line_tables, write_section_list_defs,
     write_section_list_items, write_section_list_literals, write_section_name_table,
     write_section_variables,
 };

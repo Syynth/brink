@@ -88,7 +88,7 @@ mod tests {
         };
         assert_eq!(Value::List(list.into()).value_type(), ValueType::List);
 
-        let target = DefinitionId::new(DefinitionTag::Container, 1);
+        let target = DefinitionId::new(DefinitionTag::Address, 1);
         assert_eq!(
             Value::DivertTarget(target).value_type(),
             ValueType::DivertTarget

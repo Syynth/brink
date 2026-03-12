@@ -864,7 +864,7 @@ mod tests {
     }
 
     fn test_id() -> DefinitionId {
-        DefinitionId::new(DefinitionTag::Container, 0xBEEF)
+        DefinitionId::new(DefinitionTag::Address, 0xBEEF)
     }
 
     fn global_id() -> DefinitionId {

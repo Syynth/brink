@@ -58,12 +58,15 @@ pub struct ListItemDef {
     pub name: NameId,
 }
 
-/// A label pointing to a specific byte offset within a container.
+/// An address pointing to a specific byte offset within a container.
 ///
-/// Labels are used for divert targets that reference a specific element
-/// index within a container rather than the container itself.
+/// Addresses are used for divert targets, visit tracking, and any definition
+/// that maps to a position within a container. A "primary" address has
+/// `byte_offset == 0` and the same `id` as its `container_id`, functioning
+/// like the old `Container` tag. Intra-container addresses have non-zero
+/// offsets and distinct IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LabelDef {
+pub struct AddressDef {
     pub id: DefinitionId,
     pub container_id: DefinitionId,
     pub byte_offset: u32,

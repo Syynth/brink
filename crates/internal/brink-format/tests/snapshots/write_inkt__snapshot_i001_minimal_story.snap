@@ -4,6 +4,12 @@ expression: buf
 ---
 (story
 
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+    (address $01_6647014fb554e5 -> $01_6647014fb554e5 +0)
+    (address $01_ab1ed7229c18b5 -> $01_ab1ed7229c18b5 +0)
+  )
+
   (container $01_406ea523c53def
     (hash 0x0000000000000000)
     (code

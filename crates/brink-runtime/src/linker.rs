@@ -58,14 +58,19 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
         });
     }
 
-    // Build label map.
-    let mut label_map = HashMap::with_capacity(data.labels.len());
-    for label in &data.labels {
+    // Build unified address map from containers and address defs.
+    // Containers get offset 0 (primary addresses).
+    let mut address_map = HashMap::with_capacity(data.containers.len() + data.addresses.len());
+    for (i, cdef) in data.containers.iter().enumerate() {
+        address_map.insert(cdef.id, (i as u32, 0usize));
+    }
+    // Address defs add intra-container targets (and primary addresses from converter).
+    for addr in &data.addresses {
         let container_idx = container_map
-            .get(&label.container_id)
+            .get(&addr.container_id)
             .copied()
-            .ok_or(RuntimeError::UnresolvedDefinition(label.container_id))?;
-        label_map.insert(label.id, (container_idx, label.byte_offset as usize));
+            .ok_or(RuntimeError::UnresolvedDefinition(addr.container_id))?;
+        address_map.insert(addr.id, (container_idx, addr.byte_offset as usize));
     }
 
     // Root container is always the first entry by convention.
@@ -127,8 +132,7 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
 
     Ok(Program {
         containers,
-        container_map,
-        label_map,
+        address_map,
         line_tables,
         globals,
         global_map,

@@ -438,17 +438,16 @@ mod tests {
     fn dummy_program() -> Program {
         Program {
             containers: vec![LinkedContainer {
-                id: DefinitionId::new(DefinitionTag::Container, 0),
+                id: DefinitionId::new(DefinitionTag::Address, 0),
                 bytecode: vec![],
                 counting_flags: brink_format::CountingFlags::empty(),
                 path_hash: 0,
             }],
-            container_map: {
+            address_map: {
                 let mut m = HashMap::new();
-                m.insert(DefinitionId::new(DefinitionTag::Container, 0), 0);
+                m.insert(DefinitionId::new(DefinitionTag::Address, 0), (0u32, 0usize));
                 m
             },
-            label_map: HashMap::new(),
             line_tables: vec![vec![]],
             globals: vec![],
             global_map: HashMap::new(),

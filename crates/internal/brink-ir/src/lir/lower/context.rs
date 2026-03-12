@@ -79,13 +79,13 @@ impl IdAllocator {
         }
     }
 
-    /// Allocate a container id from a path string (e.g. `""`, `"knot.c0"`).
-    pub fn alloc_container(&mut self, path: &str) -> DefinitionId {
+    /// Allocate an address id from a path string (e.g. `""`, `"knot.c0"`).
+    pub fn alloc_address(&mut self, path: &str) -> DefinitionId {
         if let Some(&id) = self.used.get(path) {
             return id;
         }
         let hash = hash_path(path);
-        let id = DefinitionId::new(DefinitionTag::Container, hash);
+        let id = DefinitionId::new(DefinitionTag::Address, hash);
         self.used.insert(path.to_string(), id);
         id
     }
@@ -167,11 +167,11 @@ impl<'a> LowerCtx<'a> {
         } else {
             format!("{}.s-{counter}", self.scope_path)
         };
-        self.ids.alloc_container(&path)
+        self.ids.alloc_address(&path)
     }
 
-    /// Look up a label's `DefinitionId` by qualifying it with the current scope.
-    pub fn lookup_label_id(&self, label: &str) -> Option<DefinitionId> {
+    /// Look up an address `DefinitionId` by qualifying a label name with the current scope.
+    pub fn lookup_address_id(&self, label: &str) -> Option<DefinitionId> {
         let qualified = self.qualify_label(label);
         self.index
             .by_name
@@ -234,12 +234,12 @@ mod tests {
         let refs = vec![ResolvedRef {
             file: FileId(0),
             range: TextRange::new(10.into(), 15.into()),
-            target: DefinitionId::new(DefinitionTag::Container, 42),
+            target: DefinitionId::new(DefinitionTag::Address, 42),
         }];
         let lookup = ResolutionLookup::build(&refs);
         assert_eq!(
             lookup.resolve(FileId(0), TextRange::new(10.into(), 15.into())),
-            Some(DefinitionId::new(DefinitionTag::Container, 42))
+            Some(DefinitionId::new(DefinitionTag::Address, 42))
         );
         assert_eq!(
             lookup.resolve(FileId(1), TextRange::new(10.into(), 15.into())),
@@ -250,10 +250,10 @@ mod tests {
     #[test]
     fn id_allocator_stable() {
         let mut alloc = IdAllocator::new();
-        let a = alloc.alloc_container("knot.c0");
-        let b = alloc.alloc_container("knot.c0");
+        let a = alloc.alloc_address("knot.c0");
+        let b = alloc.alloc_address("knot.c0");
         assert_eq!(a, b);
-        let c = alloc.alloc_container("knot.c1");
+        let c = alloc.alloc_address("knot.c1");
         assert_ne!(a, c);
     }
 

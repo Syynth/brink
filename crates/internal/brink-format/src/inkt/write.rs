@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    ContainerDef, ExternalFnDef, GlobalVarDef, LabelDef, LineEntry, ListDef, ListItemDef,
+    AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
@@ -29,7 +29,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_lists(w, &story.list_defs)?;
     write_list_items(w, &story.list_items)?;
     write_externals(w, &story.externals)?;
-    write_labels(w, &story.labels)?;
+    write_addresses(w, &story.addresses)?;
     write_list_literals(w, &story.list_literals)?;
 
     // Build a lookup from container_id → line table for writing
@@ -161,17 +161,17 @@ fn write_externals(w: &mut dyn fmt::Write, externals: &[ExternalFnDef]) -> fmt::
     writeln!(w, "  )")
 }
 
-fn write_labels(w: &mut dyn fmt::Write, labels: &[LabelDef]) -> fmt::Result {
-    if labels.is_empty() {
+fn write_addresses(w: &mut dyn fmt::Write, addresses: &[AddressDef]) -> fmt::Result {
+    if addresses.is_empty() {
         return Ok(());
     }
     writeln!(w)?;
-    writeln!(w, "  (labels")?;
-    for label in labels {
+    writeln!(w, "  (addresses")?;
+    for addr in addresses {
         writeln!(
             w,
-            "    (label {} -> {} +{})",
-            label.id, label.container_id, label.byte_offset
+            "    (address {} -> {} +{})",
+            addr.id, addr.container_id, addr.byte_offset
         )?;
     }
     writeln!(w, "  )")
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn definition_id_display() {
-        let id = DefinitionId::new(DefinitionTag::Container, 0xDEAD_BEEF);
+        let id = DefinitionId::new(DefinitionTag::Address, 0xDEAD_BEEF);
         assert_eq!(format!("{id}"), "$01_000000deadbeef");
     }
 
@@ -557,7 +557,7 @@ mod tests {
             list_defs: vec![],
             list_items: vec![],
             externals: vec![],
-            labels: vec![],
+            addresses: vec![],
             name_table: vec![],
             list_literals: vec![],
         };

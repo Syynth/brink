@@ -6,12 +6,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum DefinitionTag {
-    Container = 0x01,
+    Address = 0x01,
     GlobalVar = 0x02,
     ListDef = 0x03,
     ListItem = 0x04,
     ExternalFn = 0x05,
-    Label = 0x06,
     /// Params and temps — scoped to a container, not serialized in bytecode.
     LocalVar = 0x07,
 }
@@ -20,12 +19,11 @@ impl DefinitionTag {
     /// Try to convert a raw `u8` into a known tag.
     pub fn from_u8(byte: u8) -> Option<Self> {
         match byte {
-            0x01 => Some(Self::Container),
+            0x01 => Some(Self::Address),
             0x02 => Some(Self::GlobalVar),
             0x03 => Some(Self::ListDef),
             0x04 => Some(Self::ListItem),
             0x05 => Some(Self::ExternalFn),
-            0x06 => Some(Self::Label),
             0x07 => Some(Self::LocalVar),
             _ => None,
         }
@@ -56,7 +54,7 @@ impl DefinitionId {
         // below is always valid. We use `unwrap_or` to satisfy the lint.
         let byte = (self.0 >> 56) as u8;
         // This should never fail for a validly-constructed id.
-        DefinitionTag::from_u8(byte).unwrap_or(DefinitionTag::Container)
+        DefinitionTag::from_u8(byte).unwrap_or(DefinitionTag::Address)
     }
 
     /// Extract the 56-bit hash.
@@ -132,7 +130,7 @@ mod tests {
 
     #[test]
     fn roundtrip_raw() {
-        let id = DefinitionId::new(DefinitionTag::Container, 0xDEAD_BEEF);
+        let id = DefinitionId::new(DefinitionTag::Address, 0xDEAD_BEEF);
         let raw = id.to_raw();
         let recovered = DefinitionId::from_raw(raw).unwrap();
         assert_eq!(id, recovered);
@@ -141,7 +139,7 @@ mod tests {
     #[test]
     fn tag_extraction() {
         for tag in [
-            DefinitionTag::Container,
+            DefinitionTag::Address,
             DefinitionTag::GlobalVar,
             DefinitionTag::ListDef,
             DefinitionTag::ListItem,
@@ -181,7 +179,7 @@ mod tests {
 
     #[test]
     fn line_id_equality() {
-        let c = DefinitionId::new(DefinitionTag::Container, 1);
+        let c = DefinitionId::new(DefinitionTag::Address, 1);
         let a = LineId {
             container: c,
             index: 0,

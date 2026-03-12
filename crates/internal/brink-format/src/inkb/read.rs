@@ -3,7 +3,7 @@
 use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64};
 use crate::counting::CountingFlags;
 use crate::definition::{
-    ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LabelDef, LineEntry, ListDef,
+    AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
     ListItemDef,
 };
 use crate::id::NameId;
@@ -43,7 +43,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let externals = read_section_externals(buf, &index)?;
     let containers = read_section_containers(buf, &index)?;
     let line_tables = read_section_line_tables(buf, &index)?;
-    let labels = read_section_labels(buf, &index)?;
+    let addresses = read_section_addresses(buf, &index)?;
     let list_literals = read_section_list_literals(buf, &index)?;
 
     Ok(StoryData {
@@ -53,7 +53,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         list_defs,
         list_items,
         externals,
-        labels,
+        addresses,
         name_table,
         list_literals,
     })
@@ -246,27 +246,30 @@ pub fn read_section_containers(
     Ok(containers)
 }
 
-/// Read the labels from a complete `.inkb` file using its index.
-pub fn read_section_labels(buf: &[u8], index: &InkbIndex) -> Result<Vec<LabelDef>, DecodeError> {
+/// Read the addresses from a complete `.inkb` file using its index.
+pub fn read_section_addresses(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<AddressDef>, DecodeError> {
     let Some(range) = index.section_range(SectionKind::Labels) else {
-        // Labels section is optional for backwards compatibility.
+        // Addresses section is optional for backwards compatibility.
         return Ok(Vec::new());
     };
     let mut off = range.start;
     let count = read_u32(buf, &mut off)? as usize;
-    // Each label entry: def_id(8) + container_id(8) + byte_offset(4) = 20 bytes
-    let mut labels = Vec::with_capacity(safe_capacity(count, buf.len(), off, 20));
+    // Each address entry: def_id(8) + container_id(8) + byte_offset(4) = 20 bytes
+    let mut addresses = Vec::with_capacity(safe_capacity(count, buf.len(), off, 20));
     for _ in 0..count {
         let id = read_def_id(buf, &mut off)?;
         let container_id = read_def_id(buf, &mut off)?;
         let byte_offset = read_u32(buf, &mut off)?;
-        labels.push(LabelDef {
+        addresses.push(AddressDef {
             id,
             container_id,
             byte_offset,
         });
     }
-    Ok(labels)
+    Ok(addresses)
 }
 
 // ── Decode helpers (private) ────────────────────────────────────────────────

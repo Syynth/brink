@@ -70,7 +70,7 @@ impl SymbolKind {
     /// Map a `SymbolKind` to the corresponding `DefinitionTag` for id generation.
     pub fn definition_tag(self) -> DefinitionTag {
         match self {
-            Self::Knot | Self::Stitch | Self::Label => DefinitionTag::Container,
+            Self::Knot | Self::Stitch | Self::Label => DefinitionTag::Address,
             Self::Variable | Self::Constant => DefinitionTag::GlobalVar,
             Self::List => DefinitionTag::ListDef,
             Self::ListItem => DefinitionTag::ListItem,
