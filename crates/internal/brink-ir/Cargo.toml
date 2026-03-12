@@ -15,6 +15,7 @@ brink-syntax = { path = "../brink-syntax" }
 brink-format = { path = "../brink-format" }
 rowan.workspace = true
 bitflags.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 brink-analyzer = { path = "../brink-analyzer" }

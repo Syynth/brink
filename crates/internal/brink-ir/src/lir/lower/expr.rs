@@ -241,6 +241,10 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
             }
         }
     } else {
+        tracing::error!(
+            "ICE: unresolved call to `{name}` — analyzer marked as builtin but \
+             recognize_builtin() returned None and resolution map has no entry"
+        );
         lir::Expr::Null
     }
 }
@@ -294,6 +298,7 @@ fn recognize_builtin(name: &str) -> Option<lir::BuiltinFn> {
     match name {
         "TURNS_SINCE" => Some(lir::BuiltinFn::TurnsSince),
         "READ_COUNT" => Some(lir::BuiltinFn::ReadCount),
+        "TURNS" => Some(lir::BuiltinFn::Turns),
         "CHOICE_COUNT" => Some(lir::BuiltinFn::ChoiceCount),
         "RANDOM" => Some(lir::BuiltinFn::Random),
         "SEED_RANDOM" => Some(lir::BuiltinFn::SeedRandom),
@@ -334,5 +339,15 @@ mod tests {
         );
         assert_eq!(recognize_builtin("random"), None);
         assert_eq!(recognize_builtin("unknown"), None);
+    }
+
+    #[test]
+    fn builtin_recognition_turns() {
+        // TURNS() is a zero-argument builtin that returns the current turn index.
+        // It should be recognized and map to a dedicated BuiltinFn variant.
+        assert!(
+            recognize_builtin("TURNS").is_some(),
+            "TURNS() should be recognized as a built-in function"
+        );
     }
 }

@@ -142,6 +142,7 @@ impl ContainerEmitter<'_> {
     fn emit_builtin(&mut self, builtin: lir::BuiltinFn, args: &[lir::Expr]) {
         match builtin {
             lir::BuiltinFn::ChoiceCount => self.emit(Opcode::ChoiceCount),
+            lir::BuiltinFn::Turns => self.emit(Opcode::TurnIndex),
             lir::BuiltinFn::TurnsSince => {
                 for arg in args {
                     self.emit_expr(arg);
@@ -190,6 +191,7 @@ fn builtin_to_opcode(b: lir::BuiltinFn) -> Opcode {
         lir::BuiltinFn::TurnsSince => Opcode::TurnsSince,
         lir::BuiltinFn::ReadCount => Opcode::VisitCount,
         lir::BuiltinFn::ChoiceCount => Opcode::ChoiceCount,
+        lir::BuiltinFn::Turns => Opcode::TurnIndex,
         lir::BuiltinFn::Random => Opcode::Random,
         lir::BuiltinFn::SeedRandom => Opcode::SeedRandom,
         lir::BuiltinFn::CastToInt => Opcode::CastToInt,

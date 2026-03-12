@@ -496,6 +496,8 @@ pub enum BuiltinFn {
     TurnsSince,
     /// `READ_COUNT(-> container)` → visit count of container.
     ReadCount,
+    /// `TURNS()` → current turn index (0-based).
+    Turns,
     /// `CHOICE_COUNT()` → number of currently available choices.
     ChoiceCount,
     /// `RANDOM(min, max)` → random integer in range.

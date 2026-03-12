@@ -1544,6 +1544,10 @@ fn emit_builtin(
         lir::BuiltinFn::ChoiceCount => {
             out.push(Element::ControlCommand(ControlCommand::ChoiceCount));
         }
+        // TURNS() → "turn" control command (no args)
+        lir::BuiltinFn::Turns => {
+            out.push(Element::ControlCommand(ControlCommand::Turn));
+        }
         _ => {
             for arg in args {
                 emit_expr(arg, lookups, cctx, out);
@@ -1556,9 +1560,10 @@ fn emit_builtin(
 fn builtin_to_native(b: lir::BuiltinFn) -> NativeFunction {
     match b {
         // These are handled specially by emit_builtin, but provide a fallback
-        lir::BuiltinFn::TurnsSince | lir::BuiltinFn::ChoiceCount | lir::BuiltinFn::Random => {
-            NativeFunction::Random
-        }
+        lir::BuiltinFn::TurnsSince
+        | lir::BuiltinFn::ChoiceCount
+        | lir::BuiltinFn::Turns
+        | lir::BuiltinFn::Random => NativeFunction::Random,
         lir::BuiltinFn::SeedRandom => NativeFunction::SeedRandom,
         lir::BuiltinFn::CastToInt => NativeFunction::IntCast,
         lir::BuiltinFn::CastToFloat => NativeFunction::FloatCast,

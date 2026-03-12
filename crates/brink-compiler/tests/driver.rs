@@ -1277,6 +1277,64 @@ fn compile_error_disallow_empty_diverts() {
     );
 }
 
+// ── Unresolved function calls should error, not silently produce Null ─
+
+#[test]
+fn unresolved_function_call_is_compile_error() {
+    // A call to a function that doesn't exist should be a compile-time
+    // diagnostic, not a silent Null. This guards against the LIR lowering
+    // fallback that converts unresolvable calls to Expr::Null.
+    let files: HashMap<&str, &str> = HashMap::from([(
+        "main.ink",
+        "\
+~ temp x = DOES_NOT_EXIST()
+{x}
+-> END
+",
+    )]);
+    let result = compile_mem("main.ink", &files);
+    assert!(
+        result.is_err(),
+        "calling a nonexistent function should produce a compile error, not succeed silently"
+    );
+}
+
+// ── TURNS() built-in ────────────────────────────────────────────────
+
+#[test]
+fn turns_builtin_compiles_and_runs() {
+    // TURNS() is a zero-argument ink built-in that returns the current turn
+    // index. The compiler must recognize it, lower it through LIR, and emit
+    // the TurnIndex opcode. This test verifies end-to-end correctness.
+    let output = compile_and_run(
+        "\
+~ temp t = TURNS()
+turn is {t}
+-> END
+",
+        &[],
+    );
+    assert_eq!(output.trim(), "turn is 0");
+}
+
+#[test]
+fn turns_builtin_increments_across_choices() {
+    // TURNS() should increment each time the player makes a choice and
+    // the story continues. Turn 0 is the initial passage, turn 1 after
+    // the first choice, etc.
+    let output = compile_and_run(
+        "\
+turn {TURNS()}
++ [continue]
+-
+turn {TURNS()}
+-> END
+",
+        &[0],
+    );
+    assert_eq!(output.trim(), "turn 0\nturn 1");
+}
+
 // ── Block-level sequence branch behaviors ──────────────────────────
 
 /// Compile from in-memory source, link, and run. Returns a list of

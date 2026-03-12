@@ -286,6 +286,7 @@ dependencies = [
  "brink-syntax",
  "insta",
  "rowan",
+ "tracing",
 ]
 
 [[package]]
