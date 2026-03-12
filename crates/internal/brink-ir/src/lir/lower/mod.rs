@@ -131,7 +131,7 @@ fn lower_root(
         children,
         counting_flags: CountingFlags::empty(),
         temp_slot_count: 0,
-        label_id: None,
+        labeled: false,
         inline: false,
     }
 }
@@ -204,7 +204,7 @@ fn lower_knot(
             .find(|c| c.kind == lir::ContainerKind::Stitch)
     {
         final_body.push(lir::Stmt::Divert(lir::Divert {
-            target: lir::DivertTarget::Container(first_stitch.id),
+            target: lir::DivertTarget::Address(first_stitch.id),
             args: Vec::new(),
         }));
     }
@@ -218,7 +218,7 @@ fn lower_knot(
         children,
         counting_flags: CountingFlags::empty(),
         temp_slot_count: temp_count,
-        label_id: None,
+        labeled: false,
         inline: false,
     }
 }
@@ -271,7 +271,7 @@ fn lower_stitch(
         children,
         counting_flags: CountingFlags::empty(),
         temp_slot_count: 0,
-        label_id: None,
+        labeled: false,
         inline: false,
     }
 }
@@ -357,10 +357,10 @@ fn lower_block_with_children(
                     .as_ref()
                     .map_or_else(|| format!("g-{}", *gather_counter - 1), |l| l.text.clone());
 
-                let label_id = labeled
+                let labeled_flag = labeled
                     .label
                     .as_ref()
-                    .and_then(|label| ctx.lookup_label_id(&label.text));
+                    .is_some_and(|label| ctx.lookup_address_id(&label.text).is_some());
 
                 // Lower the labeled block's contents
                 let mut inner_sc = 0;
@@ -382,7 +382,7 @@ fn lower_block_with_children(
                     children: inner_children,
                     counting_flags: CountingFlags::empty(),
                     temp_slot_count: 0,
-                    label_id,
+                    labeled: labeled_flag,
                     inline: true,
                 });
                 pos += 1;
@@ -449,7 +449,7 @@ fn lower_block_with_children(
                         } else {
                             format!("{old_scope}.{cond_scope}.{branch_idx}")
                         };
-                        let branch_id = ctx.ids.alloc_container(&branch_path);
+                        let branch_id = ctx.ids.alloc_address(&branch_path);
 
                         let branch_container = lir::Container {
                             id: branch_id,
@@ -460,7 +460,7 @@ fn lower_block_with_children(
                             children: branch_children,
                             counting_flags: CountingFlags::empty(),
                             temp_slot_count: 0,
-                            label_id: None,
+                            labeled: false,
                             inline: false,
                         };
                         children.push(branch_container);
@@ -517,7 +517,7 @@ fn lower_block_with_children(
                         } else {
                             format!("{}.{branch_idx}", ctx.scope_path)
                         };
-                        let branch_id = ctx.ids.alloc_container(&branch_path);
+                        let branch_id = ctx.ids.alloc_address(&branch_path);
 
                         let branch_container = lir::Container {
                             id: branch_id,
@@ -528,7 +528,7 @@ fn lower_block_with_children(
                             children: branch_children,
                             counting_flags: CountingFlags::empty(),
                             temp_slot_count: 0,
-                            label_id: None,
+                            labeled: false,
                             inline: false,
                         };
                         wrapper_children.push(branch_container);
@@ -551,7 +551,7 @@ fn lower_block_with_children(
                     children: wrapper_children,
                     counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
                     temp_slot_count: 0,
-                    label_id: None,
+                    labeled: false,
                     inline: false,
                 };
                 children.push(wrapper);
@@ -593,11 +593,11 @@ fn build_continuation_container(
         .as_ref()
         .map_or_else(|| format!("g-{gather_index}"), |l| l.text.clone());
 
-    // Look up the gather label's DefinitionId if it has one.
-    let label_id = continuation
+    // Check if the gather has a source-level label that resolves.
+    let labeled = continuation
         .label
         .as_ref()
-        .and_then(|label| ctx.lookup_label_id(&label.text));
+        .is_some_and(|label| ctx.lookup_address_id(&label.text).is_some());
 
     if continuation.stmts.is_empty() && continuation.label.is_none() {
         // Empty continuation with no label — implicit gather with Done
@@ -613,7 +613,7 @@ fn build_continuation_container(
             children: Vec::new(),
             counting_flags: CountingFlags::empty(),
             temp_slot_count: 0,
-            label_id: None,
+            labeled: false,
             inline: false,
         };
     }
@@ -638,7 +638,7 @@ fn build_continuation_container(
         children,
         counting_flags: CountingFlags::empty(),
         temp_slot_count: 0,
-        label_id,
+        labeled,
         inline: false,
     }
 }
@@ -735,7 +735,7 @@ fn lower_choice_with_child(
             .is_some_and(|s| matches!(s, lir::Stmt::ChoiceSet(_)));
 
         let divert = lir::Divert {
-            target: lir::DivertTarget::Container(gather_id),
+            target: lir::DivertTarget::Address(gather_id),
             args: Vec::new(),
         };
 
@@ -752,11 +752,11 @@ fn lower_choice_with_child(
         }
     }
 
-    // Look up the label's DefinitionId if the choice has a label.
-    let label_id = choice
+    // Check if the choice has a source-level label that resolves.
+    let labeled = choice
         .label
         .as_ref()
-        .and_then(|label| ctx.lookup_label_id(&label.text));
+        .is_some_and(|label| ctx.lookup_address_id(&label.text).is_some());
 
     let child_name = format!("c-{}", *choice_counter - 1);
     let child = lir::Container {
@@ -772,7 +772,7 @@ fn lower_choice_with_child(
             CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY
         },
         temp_slot_count: 0,
-        label_id,
+        labeled,
         inline: false,
     };
 
@@ -897,7 +897,7 @@ fn apply_counting_flags_tree(
         // Labeled containers (gathers with labels like `- (loop)`) need
         // COUNT_START_ONLY so that self-goto loops correctly increment
         // the visit count in the runtime's goto_target handler.
-        if container.label_id.is_some() {
+        if container.labeled {
             container.counting_flags |= CountingFlags::COUNT_START_ONLY;
         }
     }
@@ -1101,7 +1101,7 @@ fn patch_innermost_gather(children: &mut [lir::Container], divert: lir::Divert) 
                     d.target,
                     lir::DivertTarget::End
                         | lir::DivertTarget::Done
-                        | lir::DivertTarget::Container(_)
+                        | lir::DivertTarget::Address(_)
                 )
         )
     });

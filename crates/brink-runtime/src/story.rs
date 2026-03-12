@@ -807,7 +807,8 @@ fn resolve_external_call(
             let fallback_id = entry.and_then(|e| e.fallback);
             if let Some(fb_id) = fallback_id {
                 let container_idx = program
-                    .resolve_container(fb_id)
+                    .resolve_target(fb_id)
+                    .map(|(idx, _)| idx)
                     .ok_or(RuntimeError::UnresolvedDefinition(fb_id))?;
 
                 // Begin output capture — fallback is a function call whose
@@ -965,7 +966,8 @@ impl<'p, R: StoryRng> Story<'p, R> {
             .ok_or(RuntimeError::UnresolvedExternalCall(fn_id))?;
         let container_idx = self
             .program
-            .resolve_container(fallback_id)
+            .resolve_target(fallback_id)
+            .map(|(idx, _)| idx)
             .ok_or(RuntimeError::UnresolvedDefinition(fallback_id))?;
         self.default.flow.output.begin_capture();
         self.default.flow.invoke_fallback(container_idx);
@@ -989,7 +991,8 @@ impl<'p, R: StoryRng> Story<'p, R> {
         }
         let container_idx = self
             .program
-            .resolve_container(entry_point)
+            .resolve_target(entry_point)
+            .map(|(idx, _)| idx)
             .ok_or(RuntimeError::UnresolvedDefinition(entry_point))?;
         self.instances.insert(
             name.to_owned(),

@@ -112,11 +112,11 @@ pub struct Container {
     /// roots (knots/functions). Child containers share the parent's
     /// call frame and use slots from this same pool.
     pub temp_slot_count: u16,
-    /// Optional label `DefinitionId` that aliases this container.
-    /// For choice targets with labels (e.g. `* (firstOpt) [text]`), this
-    /// holds the label's `DefinitionId` so visit count lookups resolve to
-    /// this container's path.
-    pub label_id: Option<DefinitionId>,
+    /// Whether this container originated from a source-level label
+    /// (e.g. `- (loop)` gather or `* (firstOpt) [text]` choice).
+    /// Used by counting flags: labeled containers with visit references
+    /// get `COUNT_START_ONLY` so self-goto loops increment correctly.
+    pub labeled: bool,
     /// When true, this container is emitted inline in the parent's body
     /// contents rather than as a named entry in `named_content`. Used by
     /// the first container in a gather-choice chain (`- * hello`).
@@ -267,8 +267,8 @@ pub struct ThreadStart {
 /// A resolved divert destination.
 #[derive(Clone)]
 pub enum DivertTarget {
-    /// A named container.
-    Container(DefinitionId),
+    /// A named address.
+    Address(DefinitionId),
     /// A global variable holding a divert target value — `-> x` where `x` is a global variable.
     Variable(DefinitionId),
     /// A temp/parameter variable holding a divert target value — `-> x` where `x` is a parameter.

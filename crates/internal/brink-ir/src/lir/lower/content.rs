@@ -76,7 +76,7 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
         children: Vec::new(),
         counting_flags: CountingFlags::VISITS | CountingFlags::COUNT_START_ONLY,
         temp_slot_count: 0,
-        label_id: None,
+        labeled: false,
         inline: false,
     };
     ctx.pending_children.push(wrapper);

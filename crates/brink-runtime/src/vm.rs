@@ -139,7 +139,8 @@ pub(crate) fn step(
         Opcode::EnterContainer(id) => {
             let idx = state
                 .program()
-                .resolve_container(id)
+                .resolve_target(id)
+                .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
             // Increment visit count if flags set.
@@ -479,7 +480,8 @@ pub(crate) fn step(
         Opcode::Call(id) => {
             let idx = state
                 .program()
-                .resolve_container(id)
+                .resolve_target(id)
+                .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
             let counting_flags = state.program().container(idx).counting_flags;
@@ -514,7 +516,8 @@ pub(crate) fn step(
         Opcode::TunnelCall(id) => {
             let idx = state
                 .program()
-                .resolve_container(id)
+                .resolve_target(id)
+                .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
             let counting_flags = state.program().container(idx).counting_flags;
@@ -540,7 +543,8 @@ pub(crate) fn step(
         Opcode::ThreadCall(id) => {
             let idx = state
                 .program()
-                .resolve_container(id)
+                .resolve_target(id)
+                .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
             // Fork the current thread — the fork inherits the full call
@@ -578,7 +582,8 @@ pub(crate) fn step(
             };
             let idx = state
                 .program()
-                .resolve_container(id)
+                .resolve_target(id)
+                .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
             let counting_flags = state.program().container(idx).counting_flags;
@@ -610,7 +615,8 @@ pub(crate) fn step(
             };
             let idx = state
                 .program()
-                .resolve_container(id)
+                .resolve_target(id)
+                .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
             let counting_flags = state.program().container(idx).counting_flags;

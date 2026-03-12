@@ -10,9 +10,9 @@ use brink_format::{CountingFlags, DefinitionId, LineEntry, ListValue, NameId, Va
 /// Immutable after creation — mutable per-instance state lives in [`Story`](crate::Story).
 pub struct Program {
     pub(crate) containers: Vec<LinkedContainer>,
-    pub(crate) container_map: HashMap<DefinitionId, u32>,
-    /// Label targets: `id → (container_idx, byte_offset)`.
-    pub(crate) label_map: HashMap<DefinitionId, (u32, usize)>,
+    /// Unified address map: `id → (container_idx, byte_offset)`.
+    /// Contains both container IDs (offset 0) and intra-container addresses.
+    pub(crate) address_map: HashMap<DefinitionId, (u32, usize)>,
     pub(crate) line_tables: Vec<Vec<LineEntry>>,
     pub(crate) globals: Vec<GlobalSlot>,
     pub(crate) global_map: HashMap<DefinitionId, u32>,
@@ -66,19 +66,9 @@ pub(crate) struct ExternalFnEntry {
 }
 
 impl Program {
-    /// Look up a container index by its definition id.
-    pub(crate) fn resolve_container(&self, id: DefinitionId) -> Option<u32> {
-        self.container_map.get(&id).copied()
-    }
-
-    /// Resolve any target (container or label) to `(container_idx, byte_offset)`.
-    ///
-    /// Containers resolve to offset 0. Labels resolve to their recorded byte offset.
+    /// Resolve any target (container or address) to `(container_idx, byte_offset)`.
     pub(crate) fn resolve_target(&self, id: DefinitionId) -> Option<(u32, usize)> {
-        if let Some(&idx) = self.container_map.get(&id) {
-            return Some((idx, 0));
-        }
-        self.label_map.get(&id).copied()
+        self.address_map.get(&id).copied()
     }
 
     /// Get a container by its index.

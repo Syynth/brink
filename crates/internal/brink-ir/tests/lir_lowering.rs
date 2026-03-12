@@ -227,7 +227,7 @@ fn root_divert_to_knot_resolves() {
 
     let has_divert_to_knot = r.body.iter().any(|stmt| {
         if let lir::Stmt::Divert(d) = stmt {
-            matches!(d.target, lir::DivertTarget::Container(id) if id == knot.id)
+            matches!(d.target, lir::DivertTarget::Address(id) if id == knot.id)
         } else {
             false
         }
@@ -762,7 +762,7 @@ Arrived.
         std::mem::discriminant(&c0.body[0])
     );
     assert!(
-        matches!(&c0.body[1], lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Container(_))),
+        matches!(&c0.body[1], lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Address(_))),
         "second stmt should be Divert to 'other'"
     );
     assert!(
@@ -825,7 +825,7 @@ Arrived.
     // Fallback has no start/inner content → no ChoiceOutput.
     // Body: Divert(other), EndOfLine, Divert(gather)
     assert!(
-        matches!(&c1.body[0], lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Container(_))),
+        matches!(&c1.body[0], lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Address(_))),
         "first stmt should be Divert to 'other', got {:?}",
         std::mem::discriminant(&c1.body[0])
     );
@@ -971,7 +971,7 @@ The end.
     let middle = find_child(&p.root, "middle");
 
     let start_diverts_to_middle = start.body.iter().any(|s| {
-        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Container(id) if id == middle.id))
+        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Address(id) if id == middle.id))
     });
     assert!(start_diverts_to_middle);
 }
@@ -992,7 +992,7 @@ One ale, please.
     let stitch = find_child(knot, "order");
 
     let diverts_to_stitch = knot.body.iter().any(|s| {
-        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Container(id) if id == stitch.id))
+        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Address(id) if id == stitch.id))
     });
     assert!(diverts_to_stitch, "knot should divert to its stitch");
 }
@@ -1430,7 +1430,7 @@ fn labeled_gather_with_visits_gets_count_start_only() {
     let gather = scene
         .children
         .iter()
-        .find(|c| c.label_id.is_some())
+        .find(|c| c.labeled)
         .expect("should have a labeled gather child");
     assert!(
         gather
@@ -1665,7 +1665,7 @@ Stalls line the street.
     let r = root(&p);
     let town = find_child(&p.root, "town_square");
     let root_diverts = r.body.iter().any(|s| {
-        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Container(id) if id == town.id))
+        matches!(s, lir::Stmt::Divert(d) if matches!(d.target, lir::DivertTarget::Address(id) if id == town.id))
     });
     assert!(root_diverts, "root should divert to town_square");
 
@@ -1748,7 +1748,7 @@ fn divert_with_arguments() {
     let r = root(&p);
     let divert = r.body.iter().find_map(|s| {
         if let lir::Stmt::Divert(d) = s
-            && matches!(d.target, lir::DivertTarget::Container(_))
+            && matches!(d.target, lir::DivertTarget::Address(_))
         {
             return Some(d);
         }
