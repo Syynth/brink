@@ -1457,7 +1457,7 @@ fn infix_to_native(op: brink_ir::InfixOp) -> NativeFunction {
         brink_ir::InfixOp::Mul => NativeFunction::Multiply,
         brink_ir::InfixOp::Div => NativeFunction::Divide,
         brink_ir::InfixOp::Mod => NativeFunction::Modulo,
-        brink_ir::InfixOp::Pow => NativeFunction::Pow,
+        brink_ir::InfixOp::Intersect => NativeFunction::Intersect,
         brink_ir::InfixOp::Eq => NativeFunction::Equal,
         brink_ir::InfixOp::NotEq => NativeFunction::NotEqual,
         brink_ir::InfixOp::Lt => NativeFunction::LessThan,

@@ -428,7 +428,7 @@ pub enum InfixOp {
     Mul,
     Div,
     Mod,
-    Pow,
+    Intersect,
     Eq,
     NotEq,
     Lt,

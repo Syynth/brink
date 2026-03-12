@@ -821,7 +821,7 @@ fn lower_infix_op(ie: &ast::InfixExpr) -> Option<InfixOp> {
         SyntaxKind::STAR => Some(InfixOp::Mul),
         SyntaxKind::SLASH => Some(InfixOp::Div),
         SyntaxKind::PERCENT | SyntaxKind::KW_MOD => Some(InfixOp::Mod),
-        SyntaxKind::CARET => Some(InfixOp::Pow),
+        SyntaxKind::CARET => Some(InfixOp::Intersect),
         SyntaxKind::EQ_EQ => Some(InfixOp::Eq),
         SyntaxKind::BANG_EQ => Some(InfixOp::NotEq),
         SyntaxKind::LT => Some(InfixOp::Lt),

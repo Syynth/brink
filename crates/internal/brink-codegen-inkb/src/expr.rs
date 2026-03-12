@@ -149,7 +149,7 @@ fn infix_op_to_opcode(op: brink_ir::InfixOp) -> Opcode {
         brink_ir::InfixOp::Mul => Opcode::Multiply,
         brink_ir::InfixOp::Div => Opcode::Divide,
         brink_ir::InfixOp::Mod => Opcode::Modulo,
-        brink_ir::InfixOp::Pow => Opcode::Pow,
+        brink_ir::InfixOp::Intersect => Opcode::ListIntersect,
         brink_ir::InfixOp::Eq => Opcode::Equal,
         brink_ir::InfixOp::NotEq => Opcode::NotEqual,
         brink_ir::InfixOp::Lt => Opcode::Less,
