@@ -443,8 +443,8 @@ fn tags_on_content() {
     match &hir.root_content.stmts[0] {
         Stmt::Content(c) => {
             assert_eq!(c.tags.len(), 2);
-            assert_eq!(c.tags[0].text, "tag1");
-            assert_eq!(c.tags[1].text, "tag2");
+            assert_eq!(c.tags[0].parts, vec![ContentPart::Text("tag1".to_string())]);
+            assert_eq!(c.tags[1].parts, vec![ContentPart::Text("tag2".to_string())]);
         }
         other => panic!("expected Content, got {other:?}"),
     }

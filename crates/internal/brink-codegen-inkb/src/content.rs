@@ -11,8 +11,7 @@ impl ContainerEmitter<'_> {
 
         for tag in &content.tags {
             self.emit(Opcode::BeginTag);
-            let idx = self.add_line(tag);
-            self.emit(Opcode::EmitLine(idx));
+            self.emit_content_parts(tag);
             self.emit(Opcode::EndTag);
         }
     }
@@ -23,7 +22,7 @@ impl ContainerEmitter<'_> {
     }
 
     /// Emit content parts — text, glue, interpolations, inline conditionals/sequences.
-    fn emit_content_parts(&mut self, parts: &[lir::ContentPart]) {
+    pub(super) fn emit_content_parts(&mut self, parts: &[lir::ContentPart]) {
         for part in parts {
             match part {
                 lir::ContentPart::Text(s) => {

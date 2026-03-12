@@ -265,8 +265,40 @@ fn emit_content(
 
     for tag in &content.tags {
         out.push(Element::ControlCommand(ControlCommand::Tag));
-        out.push(Element::Value(InkValue::String(tag.clone())));
+        emit_content_tag_parts(tag, lookups, cctx, out);
         out.push(Element::ControlCommand(ControlCommand::EndTag));
+    }
+}
+
+/// Emit tag content parts — same as `emit_content_parts_inline` but for tag `Vec<ContentPart>`.
+fn emit_content_tag_parts(
+    parts: &[lir::ContentPart],
+    lookups: &Lookups,
+    cctx: &ContainerCtx,
+    out: &mut Vec<Element>,
+) {
+    for part in parts {
+        match part {
+            lir::ContentPart::Text(s) => {
+                out.push(Element::Value(InkValue::String(s.clone())));
+            }
+            lir::ContentPart::Glue => {
+                out.push(Element::ControlCommand(ControlCommand::Glue));
+            }
+            lir::ContentPart::Interpolation(expr) => {
+                out.push(ev());
+                emit_expr(expr, lookups, cctx, out);
+                out.push(Element::ControlCommand(ControlCommand::Output));
+                out.push(end_ev());
+            }
+            lir::ContentPart::InlineConditional(cond) => {
+                emit_conditional(cond, lookups, cctx, out, &mut HashMap::new(), true);
+            }
+            lir::ContentPart::InlineSequence(seq) => {
+                emit_sequence(seq, lookups, cctx, out, &mut HashMap::new());
+            }
+            lir::ContentPart::EnterSequence(_) => {}
+        }
     }
 }
 
@@ -988,7 +1020,7 @@ fn emit_choice_outer(
     // Tags
     for tag in &choice.tags {
         outer_contents.push(Element::ControlCommand(ControlCommand::Tag));
-        outer_contents.push(Element::Value(InkValue::String(tag.clone())));
+        emit_content_tag_parts(tag, lookups, cctx, &mut outer_contents);
         outer_contents.push(Element::ControlCommand(ControlCommand::EndTag));
     }
 

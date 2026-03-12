@@ -44,7 +44,7 @@ fn has_empty_source(case_dir: &std::path::Path) -> bool {
 
 /// Ratchet: minimum number of episodes (not cases) that must pass.
 /// Bump this as compiler coverage improves.
-const RATCHET_EPISODE_COUNT: usize = 941;
+const RATCHET_EPISODE_COUNT: usize = 942;
 
 /// Index episodes by their `choice_path` for order-independent matching.
 fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {

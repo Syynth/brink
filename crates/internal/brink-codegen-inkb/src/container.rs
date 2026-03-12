@@ -242,8 +242,7 @@ impl ContainerEmitter<'_> {
         // Tags after EndChoice
         for tag in &choice.tags {
             self.emit(Opcode::BeginTag);
-            let idx = self.add_line(tag);
-            self.emit(Opcode::EmitLine(idx));
+            self.emit_content_parts(tag);
             self.emit(Opcode::EndTag);
         }
     }

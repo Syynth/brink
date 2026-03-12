@@ -10,8 +10,20 @@ use super::lir;
 pub fn lower_content(content: &hir::Content, ctx: &mut LowerCtx<'_>) -> lir::Content {
     lir::Content {
         parts: lower_content_parts(&content.parts, ctx),
-        tags: content.tags.iter().map(|t| t.text.clone()).collect(),
+        tags: content
+            .tags
+            .iter()
+            .map(|t| lower_content_parts(&t.parts, ctx))
+            .collect(),
     }
+}
+
+/// Lower HIR content parts to LIR content parts (public for use by choice tag lowering).
+pub fn lower_content_parts_pub(
+    parts: &[hir::ContentPart],
+    ctx: &mut LowerCtx<'_>,
+) -> Vec<lir::ContentPart> {
+    lower_content_parts(parts, ctx)
 }
 
 fn lower_content_parts(

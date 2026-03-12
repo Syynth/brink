@@ -852,7 +852,7 @@ impl LowerCtx {
         let parts = line
             .mixed_content()
             .map_or_else(Vec::new, |mc| self.lower_mixed_content(&mc));
-        let tags = lower_tags(line.tags());
+        let tags = lower_tags(line.tags(), self);
 
         // If this line has only a divert (no content), emit a divert statement
         if parts.is_empty() && tags.is_empty() {
@@ -1054,7 +1054,7 @@ impl LowerCtx {
                             .mixed_content()
                             .map_or_else(Vec::new, |mc| self.lower_mixed_content(&mc));
                         parts.extend(line_parts);
-                        let tags = lower_tags(cl.tags());
+                        let tags = lower_tags(cl.tags(), self);
                         let has_content = !parts.is_empty() || !tags.is_empty();
                         if has_content {
                             stmts.push(Stmt::Content(Content {
@@ -1236,7 +1236,7 @@ impl LowerCtx {
                             .mixed_content()
                             .map_or_else(Vec::new, |mc| self.lower_mixed_content(&mc));
                         parts.extend(line_parts);
-                        let tags = lower_tags(cl.tags());
+                        let tags = lower_tags(cl.tags(), self);
                         let has_divert = cl.divert().is_some();
                         let ends_glue = content_ends_with_glue(&parts);
                         if !parts.is_empty() || !tags.is_empty() {
@@ -1369,7 +1369,7 @@ impl LowerCtx {
             .and_then(|dn| self.lower_divert_node(&dn));
 
         // Extract tags from TAGS child node (e.g. `{red #red|...}`).
-        let tags = lower_tags(node.children().find_map(ast::Tags::cast));
+        let tags = lower_tags(node.children().find_map(ast::Tags::cast), self);
 
         let mut stmts = Vec::new();
         if !parts.is_empty() || !tags.is_empty() {
@@ -1526,15 +1526,60 @@ fn lower_sequence_type(seq: &ast::SequenceWithAnnotation) -> SequenceType {
     }
 }
 
-fn lower_tags(tags: Option<ast::Tags>) -> Vec<Tag> {
+fn lower_tags(tags: Option<ast::Tags>, ctx: &mut LowerCtx) -> Vec<Tag> {
     tags.map_or_else(Vec::new, |t| {
-        t.tags()
-            .map(|tag| Tag {
-                text: tag.text(),
-                ptr: AstPtr::new(&tag),
-            })
-            .collect()
+        t.tags().map(|tag| lower_tag(&tag, ctx)).collect()
     })
+}
+
+fn lower_tag(tag: &ast::Tag, ctx: &mut LowerCtx) -> Tag {
+    use brink_syntax::SyntaxKind::HASH;
+
+    let mut parts = Vec::new();
+    let mut text_buf = String::new();
+    let mut first = true;
+
+    for child in tag.syntax().children_with_tokens() {
+        match child {
+            rowan::NodeOrToken::Token(tok) => {
+                if first && tok.kind() == HASH {
+                    first = false;
+                    continue; // skip leading #
+                }
+                first = false;
+                text_buf.push_str(tok.text());
+            }
+            rowan::NodeOrToken::Node(node) => {
+                first = false;
+                if node.kind() == SyntaxKind::INLINE_LOGIC {
+                    // Flush accumulated text
+                    if !text_buf.is_empty() {
+                        parts.push(ContentPart::Text(std::mem::take(&mut text_buf)));
+                    }
+                    if let Some(inline) = ast::InlineLogic::cast(node) {
+                        ctx.lower_inline_logic(&inline, &mut parts);
+                    }
+                }
+            }
+        }
+    }
+    // Flush remaining text, trim trailing whitespace
+    let remaining = text_buf.trim_end().to_string();
+    if !remaining.is_empty() {
+        parts.push(ContentPart::Text(remaining));
+    }
+    // Trim leading whitespace on first text part
+    if let Some(ContentPart::Text(t)) = parts.first_mut() {
+        *t = t.trim_start().to_string();
+        if t.is_empty() {
+            parts.remove(0);
+        }
+    }
+
+    Tag {
+        parts,
+        ptr: AstPtr::new(tag),
+    }
 }
 
 // ─── Phase 5: Control flow ──────────────────────────────────────────
@@ -1802,7 +1847,7 @@ impl LowerCtx {
                 .syntax()
                 .children()
                 .filter_map(ast::Tags::cast)
-                .flat_map(|t| lower_tags(Some(t)))
+                .flat_map(|t| lower_tags(Some(t), self))
                 .collect();
             Content {
                 ptr: None,
@@ -1830,7 +1875,7 @@ impl LowerCtx {
                     SyntaxKind::CHOICE_INNER_CONTENT => last_region = "inner",
                     SyntaxKind::TAGS => {
                         let tags_node = ast::Tags::cast(child);
-                        let lowered = lower_tags(tags_node);
+                        let lowered = lower_tags(tags_node, self);
                         match last_region {
                             "start" => {
                                 if let Some(ref mut sc) = start_content {
@@ -2117,7 +2162,7 @@ impl LowerCtx {
 
         let divert_stmt = gather.divert().and_then(|d| self.lower_divert_node(&d));
 
-        let tags = lower_tags(gather.tags());
+        let tags = lower_tags(gather.tags(), self);
 
         let mut stmts = Vec::new();
         let has_content = content
@@ -2177,7 +2222,7 @@ impl LowerCtx {
                 }
                 SyntaxKind::TAG_LINE => {
                     if let Some(tl) = ast::TagLine::cast(child) {
-                        let tags = lower_tags(tl.tags());
+                        let tags = lower_tags(tl.tags(), self);
                         if !tags.is_empty() {
                             items.push(WeaveItem::Stmt(Stmt::Content(Content {
                                 ptr: None,

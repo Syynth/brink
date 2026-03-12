@@ -326,7 +326,7 @@ pub struct Choice {
     pub inner_content: Option<Content>,
     /// The container holding the choice body (content after selection).
     pub target: DefinitionId,
-    pub tags: Vec<String>,
+    pub tags: Vec<Vec<ContentPart>>,
 }
 
 // ─── Conditionals and sequences ──────────────────────────────────────
@@ -376,7 +376,7 @@ pub struct Sequence {
 #[derive(Clone)]
 pub struct Content {
     pub parts: Vec<ContentPart>,
-    pub tags: Vec<String>,
+    pub tags: Vec<Vec<ContentPart>>,
 }
 
 /// A fragment within a content line.

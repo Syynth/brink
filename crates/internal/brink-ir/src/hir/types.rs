@@ -23,10 +23,10 @@ pub struct Path {
     pub range: TextRange,
 }
 
-/// A tag attached to content.
+/// A tag attached to content — may contain dynamic inline expressions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {
-    pub text: String,
+    pub parts: Vec<ContentPart>,
     pub ptr: AstPtr<ast::Tag>,
 }
 

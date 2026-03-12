@@ -679,7 +679,11 @@ fn lower_choice_with_child(
         .map(|c| content::lower_content(c, ctx));
 
     let condition = choice.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
-    let tags = choice.tags.iter().map(|t| t.text.clone()).collect();
+    let tags: Vec<Vec<lir::ContentPart>> = choice
+        .tags
+        .iter()
+        .map(|t| content::lower_content_parts_pub(&t.parts, ctx))
+        .collect();
 
     // Lower choice body into a child container.
     // Update scope_path to match the planner's convention so nested

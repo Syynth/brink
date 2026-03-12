@@ -1596,25 +1596,39 @@ fn return_from_function() {
 fn content_tags() {
     let p = lower_ink("Hello. # greeting # friendly\n");
     let r = root(&p);
-    let tags: Vec<&[String]> = r
+    let tag_sets: Vec<&Vec<Vec<lir::ContentPart>>> = r
         .body
         .iter()
         .filter_map(|s| {
             if let lir::Stmt::EmitContent(c) = s
                 && !c.tags.is_empty()
             {
-                return Some(c.tags.as_slice());
+                return Some(&c.tags);
             }
             None
         })
         .collect();
-    assert!(!tags.is_empty(), "content should have tags");
-    let all_tags: Vec<&str> = tags
+    assert!(!tag_sets.is_empty(), "content should have tags");
+    // Extract text from each tag's parts
+    let tag_texts: Vec<String> = tag_sets
         .iter()
-        .flat_map(|t| t.iter().map(String::as_str))
+        .flat_map(|tags| {
+            tags.iter().map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|p| {
+                        if let lir::ContentPart::Text(t) = p {
+                            Some(t.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<String>()
+            })
+        })
         .collect();
-    assert!(all_tags.iter().any(|t| t.contains("greeting")));
-    assert!(all_tags.iter().any(|t| t.contains("friendly")));
+    assert!(tag_texts.iter().any(|t| t.contains("greeting")));
+    assert!(tag_texts.iter().any(|t| t.contains("friendly")));
 }
 
 // ─── Complex integration scenarios ──────────────────────────────────
