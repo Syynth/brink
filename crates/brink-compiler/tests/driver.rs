@@ -1276,3 +1276,120 @@ fn compile_error_disallow_empty_diverts() {
         "expected E012 (divert is missing a target), got: {codes:?}"
     );
 }
+
+// ── Block-level sequence branch behaviors ──────────────────────────
+
+/// Compile from in-memory source, link, and run. Returns a list of
+/// (text, `choice_count`) pairs for each step.
+fn compile_and_run_steps(source: &str, inputs: &[usize]) -> Vec<(String, Option<usize>)> {
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    let data = compile_mem("main.ink", &files).unwrap();
+    let program = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(&program);
+    let mut steps = Vec::new();
+    let mut input_idx = 0;
+    let mut guard = 0;
+
+    loop {
+        guard += 1;
+        assert!(guard < 100, "infinite loop detected");
+        match story.continue_maximally().unwrap() {
+            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
+                steps.push((text, None));
+                break;
+            }
+            StepResult::Choices { text, choices, .. } => {
+                let count = choices.len();
+                steps.push((text.clone(), Some(count)));
+                let idx = if input_idx < inputs.len() {
+                    let c = inputs[input_idx];
+                    input_idx += 1;
+                    c
+                } else {
+                    0
+                };
+                assert!(
+                    idx < count,
+                    "choice index {idx} out of range (only {count} choices), text so far: {text:?}"
+                );
+                story.choose(idx).unwrap();
+            }
+        }
+    }
+
+    steps
+}
+
+/// Block-level sequence branches must start with a newline relative to
+/// preceding content. Inklecate inserts "\n" at the start of each
+/// branch's content stream. Without this, output like
+/// "I drew a card. 2 of Diamonds." appears on one line instead of two.
+#[test]
+fn sequence_branch_starts_with_newline() {
+    let source = "\
+-> test
+
+=== test ===
+{ stopping:
+    - Branch one.
+    - Branch two.
+}
+* [Again] Prefix. -> test
+- -> END
+";
+    // First visit: "Branch one.\n" + choices: [Again]
+    // Choose "Again" (once-only *), second visit: "Prefix.\nBranch two.\n" + no choices → END
+    let steps = compile_and_run_steps(source, &[0]);
+    // Step 1 (after choosing "Again") text must have a newline between
+    // "Prefix." and "Branch two."
+    assert!(
+        steps.len() >= 2,
+        "expected at least 2 steps, got {}",
+        steps.len()
+    );
+    let text = &steps[1].0;
+    assert!(
+        text.contains("Prefix.") && text.contains("Branch two."),
+        "expected both 'Prefix.' and 'Branch two.' in output, got: {text:?}"
+    );
+    // The newline must separate them (not on the same line)
+    assert!(
+        !text.contains("Prefix. Branch two.") && !text.contains("Prefix.Branch two."),
+        "expected newline between 'Prefix.' and 'Branch two.', got: {text:?}"
+    );
+}
+
+/// Choices inside a sequence branch must accumulate with choices from the
+/// parent container. When a sequence branch contains a `ChoiceSet` and there
+/// are also choices after the sequence in the same container, all choices
+/// must be visible together (the branch's Done must not block the parent).
+#[test]
+fn choices_inside_sequence_branch_accumulate_with_parent() {
+    // Pattern from the multiline-choice test case: a stopping sequence
+    // where branch 1 has a once-only choice, plus a sticky choice after
+    // the sequence. On visit 2, both must be visible.
+    let source = "\
+-> test
+=== test ===
+{ stopping:
+    - At the table, I drew a card. Ace of Hearts.
+    - 2 of Diamonds.
+        \"Should I hit you again,\" the croupier asks.
+        * [No.] I left the table. -> END
+    - King of Spades.
+        \"You lose,\" he crowed.
+        -> END
+}
++ [Draw a card] I drew a card. -> test
+";
+    // Visit 1: branch 0 text + choices: [Draw a card]
+    // Choose "Draw a card" → visit 2: branch 1, choices: [No., Draw a card]
+    let steps = compile_and_run_steps(source, &[0, 0]);
+    // Second step must show 2 choices: [No., Draw a card]
+    let second_choice_count = steps[1].1;
+    assert_eq!(
+        second_choice_count,
+        Some(2),
+        "expected 2 choices (No. + Draw a card) on second visit, got: {second_choice_count:?}"
+    );
+}

@@ -2286,8 +2286,14 @@ impl LowerCtx {
         let branches = seq.multiline_branches().map_or_else(Vec::new, |ml| {
             ml.branches()
                 .map(|b| {
-                    b.body()
-                        .map_or_else(Block::default, |body| self.lower_branch_body(body.syntax()))
+                    let mut block = b
+                        .body()
+                        .map_or_else(Block::default, |body| self.lower_branch_body(body.syntax()));
+                    // Block-level sequence branches start on a new line relative
+                    // to any preceding content. Inklecate places a "\n" at the
+                    // start of each branch's content stream.
+                    block.stmts.insert(0, Stmt::EndOfLine);
+                    block
                 })
                 .collect()
         });

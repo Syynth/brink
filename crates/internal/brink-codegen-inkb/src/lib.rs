@@ -138,11 +138,13 @@ fn walk_container(container: &lir::Container, path: &str, state: &mut EmitState)
     // Emit this container's bytecode.
     let mut emitter = ContainerEmitter::new(state);
 
-    // Conditional branch containers suppress `Done` after ChoiceSets because
-    // ink conditionals gate choice visibility — choices across all branches
-    // form a single logical ChoiceSet, and the runtime auto-presents pending
-    // choices on frame/container exhaustion (no explicit Done needed).
-    if container.kind == lir::ContainerKind::ConditionalBranch {
+    // Branch containers (conditional or sequence) suppress `Done` after
+    // ChoiceSets. Choices inside branches form part of a larger logical
+    // ChoiceSet in the parent — the runtime auto-presents pending choices
+    // on frame/container exhaustion (no explicit Done needed).
+    if container.kind == lir::ContainerKind::ConditionalBranch
+        || container.kind == lir::ContainerKind::SequenceBranch
+    {
         emitter.in_conditional_branch = true;
     }
 
