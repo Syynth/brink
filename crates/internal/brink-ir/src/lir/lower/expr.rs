@@ -50,6 +50,24 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                 {
                     if info.kind == SymbolKind::ListItem {
                         items.push(id);
+                        // Derive the origin list from the item's qualified name
+                        // (e.g. "list2.a2" → "list2") and add it to origins.
+                        if let Some(dot) = info.name.rfind('.') {
+                            let list_name = &info.name[..dot];
+                            if let Some(list_ids) = ctx.index.by_name.get(list_name) {
+                                for &list_id in list_ids {
+                                    if ctx
+                                        .index
+                                        .symbols
+                                        .get(&list_id)
+                                        .is_some_and(|s| s.kind == SymbolKind::List)
+                                        && !origins.contains(&list_id)
+                                    {
+                                        origins.push(list_id);
+                                    }
+                                }
+                            }
+                        }
                     } else if info.kind == SymbolKind::List {
                         origins.push(id);
                     }

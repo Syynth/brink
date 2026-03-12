@@ -261,6 +261,22 @@ pub fn eval_const_expr(
                 {
                     if info.kind == SymbolKind::ListItem {
                         items.push(id);
+                        // Derive the origin list from the item's qualified name.
+                        if let Some(dot) = info.name.rfind('.') {
+                            let list_name = &info.name[..dot];
+                            if let Some(list_ids) = index.by_name.get(list_name) {
+                                for &list_id in list_ids {
+                                    if index
+                                        .symbols
+                                        .get(&list_id)
+                                        .is_some_and(|s| s.kind == SymbolKind::List)
+                                        && !origins.contains(&list_id)
+                                    {
+                                        origins.push(list_id);
+                                    }
+                                }
+                            }
+                        }
                     } else if info.kind == SymbolKind::List {
                         origins.push(id);
                     }
