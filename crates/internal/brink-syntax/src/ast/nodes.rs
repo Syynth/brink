@@ -649,6 +649,12 @@ impl Choice {
     pub fn tags(&self) -> Option<Tags> {
         support::child(&self.syntax)
     }
+
+    /// Returns an iterator over all TAGS children (tags can appear on
+    /// each content region within a choice line).
+    pub fn all_tags(&self) -> impl Iterator<Item = Tags> {
+        support::children(&self.syntax)
+    }
 }
 
 // ── ChoiceBullets ────────────────────────────────────────────────────

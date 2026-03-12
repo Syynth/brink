@@ -16,7 +16,8 @@ impl ContainerEmitter<'_> {
         match stmt {
             lir::Stmt::EmitContent(content) => self.emit_content(content),
             lir::Stmt::ChoiceOutput(content) => {
-                self.emit_choice_content(content);
+                // Emit content parts + tags (tags appear in output after choosing).
+                self.emit_content(content);
             }
 
             lir::Stmt::Divert(divert) => self.emit_divert(divert),

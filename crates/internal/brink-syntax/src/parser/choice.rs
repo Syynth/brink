@@ -2,7 +2,7 @@ use crate::SyntaxKind::{
     BACKSLASH, BLOCK_COMMENT, CHOICE, CHOICE_BRACKET_CONTENT, CHOICE_BULLETS, CHOICE_CONDITION,
     CHOICE_INNER_CONTENT, CHOICE_START_CONTENT, DIVERT, EOF, ESCAPE, GLUE, GLUE_NODE, HASH, IDENT,
     IDENTIFIER, L_BRACE, L_BRACKET, L_PAREN, LABEL, LINE_COMMENT, MINUS, NEWLINE, PIPE, PLUS,
-    R_BRACE, R_BRACKET, R_PAREN, STAR, TEXT, THREAD, TUNNEL_ONWARDS, WHITESPACE,
+    R_BRACE, R_BRACKET, R_PAREN, STAR, TAG, TAGS, TEXT, THREAD, TUNNEL_ONWARDS, WHITESPACE,
 };
 
 use super::Parser;
@@ -72,6 +72,11 @@ pub(crate) fn choice(p: &mut Parser<'_, '_>) {
         choice_start_content(p);
     }
 
+    // Tags after start content (before bracket region)
+    if p.current() == HASH {
+        choice_tags(p);
+    }
+
     // choice_bracket_content: [ content ]
     if p.current() == L_BRACKET {
         choice_bracket_content(p);
@@ -84,15 +89,20 @@ pub(crate) fn choice(p: &mut Parser<'_, '_>) {
         choice_inner_content(p);
     }
 
+    // Tags after inner content (before divert)
+    if p.current() == HASH {
+        choice_tags(p);
+    }
+
     // Optional trailing divert
     p.skip_ws();
     if super::divert::at_divert(p) {
         super::divert::divert(p);
     }
 
-    // Optional tags
+    // Optional trailing tags (after divert)
     if p.current() == HASH {
-        super::tag::tags(p);
+        choice_tags(p);
     }
 
     // Trailing newline
@@ -157,6 +167,11 @@ fn choice_bracket_content(p: &mut Parser<'_, '_>) {
     // to exit early and leave the raw position at the whitespace token
     // instead of at R_BRACKET.
     while p.nth_raw(0) != R_BRACKET && !matches!(p.nth_raw(0), NEWLINE | EOF) {
+        // Parse tags within bracket content
+        if p.current() == HASH {
+            choice_tags(p);
+            continue;
+        }
         let before = p.pos();
         choice_content_element(p);
         if p.pos() == before {
@@ -247,4 +262,37 @@ fn at_choice_content(p: &Parser<'_, '_>) -> bool {
         p.current(),
         NEWLINE | EOF | HASH | DIVERT | TUNNEL_ONWARDS | THREAD | PIPE | MINUS | R_BRACE
     )
+}
+
+/// Parse one or more tags within a choice line.
+///
+/// Unlike `super::tag::tags`, these tags stop at choice-significant tokens
+/// (`[`, `]`, `->`) so they don't consume bracket regions or diverts.
+fn choice_tags(p: &mut Parser<'_, '_>) {
+    p.start_node(TAGS);
+    while p.current() == HASH {
+        choice_tag(p);
+    }
+    p.finish_node();
+}
+
+/// Parse a single tag within a choice line.
+fn choice_tag(p: &mut Parser<'_, '_>) {
+    p.start_node(TAG);
+    p.skip_ws();
+    p.bump_assert(HASH);
+    loop {
+        if p.at_eof() {
+            break;
+        }
+        match p.nth_raw(0) {
+            HASH | NEWLINE | EOF | L_BRACKET | R_BRACKET | DIVERT | TUNNEL_ONWARDS => break,
+            L_BRACE => {
+                // Dynamic tag content: evaluate inline expressions
+                super::inline::inline_logic(p);
+            }
+            _ => p.bump(),
+        }
+    }
+    p.finish_node();
 }

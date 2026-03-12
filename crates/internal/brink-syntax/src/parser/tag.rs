@@ -1,4 +1,4 @@
-use crate::SyntaxKind::{EOF, HASH, NEWLINE, TAG, TAG_LINE, TAGS};
+use crate::SyntaxKind::{EOF, HASH, L_BRACE, NEWLINE, TAG, TAG_LINE, TAGS};
 
 use super::Parser;
 
@@ -41,13 +41,17 @@ fn tag(p: &mut Parser<'_, '_>) {
     p.skip_ws();
     p.bump_assert(HASH); // the `#`
 
-    // Consume everything until the next `#` or NEWLINE
+    // Consume everything until the next `#` or NEWLINE.
+    // `{...}` blocks are parsed as inline logic for dynamic tag content.
     loop {
         if p.at_eof() {
             break;
         }
         match p.nth_raw(0) {
             HASH | NEWLINE | EOF => break,
+            L_BRACE => {
+                super::inline::inline_logic(p);
+            }
             _ => p.bump(),
         }
     }

@@ -559,6 +559,7 @@ fn build_continuation_container(
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "choice lowering has many parts")]
 fn lower_choice_with_child(
     choice: &hir::Choice,
     ctx: &mut LowerCtx<'_>,
@@ -614,18 +615,23 @@ fn lower_choice_with_child(
     // its first statements, so they flow naturally into the LIR body.
     let mut body: Vec<lir::Stmt> = Vec::new();
 
-    // 1. Choice output preamble: start+inner content (no divert or newline)
+    // 1. Choice output preamble: start+inner content with their tags.
+    // Tags on start/inner content appear in the output after choosing;
+    // bracket-only tags are suppressed (they only affect choice display).
     let mut output_parts = Vec::new();
+    let mut output_tags = Vec::new();
     if let Some(ref sc) = start_content {
         output_parts.extend(sc.parts.clone());
+        output_tags.extend(sc.tags.clone());
     }
     if let Some(ref ic) = inner_content {
         output_parts.extend(ic.parts.clone());
+        output_tags.extend(ic.tags.clone());
     }
-    if !output_parts.is_empty() {
+    if !output_parts.is_empty() || !output_tags.is_empty() {
         body.push(lir::Stmt::ChoiceOutput(lir::Content {
             parts: output_parts,
-            tags: Vec::new(),
+            tags: output_tags,
         }));
     }
 

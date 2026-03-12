@@ -1758,6 +1758,10 @@ impl LowerCtx {
 // ─── Phase 6: Choice and gather lowering ────────────────────────────
 
 impl LowerCtx {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "choice lowering has many CST regions"
+    )]
     fn lower_choice(&mut self, choice: &ast::Choice) -> Option<Choice> {
         let bullets = choice.bullets().or_else(|| {
             self.emit(choice.syntax().text_range(), DiagnosticCode::E019);
@@ -1786,23 +1790,66 @@ impl LowerCtx {
             .filter_map(|c| c.expr().and_then(|e| self.lower_expr(&e)))
             .reduce(|a, b| Expr::Infix(Box::new(a), InfixOp::And, Box::new(b)));
 
-        let start_content = choice.start_content().map(|sc| Content {
+        let mut start_content = choice.start_content().map(|sc| Content {
             ptr: None,
             parts: self.lower_content_node_children(sc.syntax()),
             tags: Vec::new(),
         });
 
-        let bracket_content = choice.bracket_content().map(|bc| Content {
-            ptr: None,
-            parts: self.lower_content_node_children(bc.syntax()),
-            tags: Vec::new(),
+        let bracket_content = choice.bracket_content().map(|bc| {
+            // Collect tags inside bracket content.
+            let bracket_tags: Vec<Tag> = bc
+                .syntax()
+                .children()
+                .filter_map(ast::Tags::cast)
+                .flat_map(|t| lower_tags(Some(t)))
+                .collect();
+            Content {
+                ptr: None,
+                parts: self.lower_content_node_children(bc.syntax()),
+                tags: bracket_tags,
+            }
         });
 
-        let inner_content = choice.inner_content().map(|ic| Content {
+        let mut inner_content = choice.inner_content().map(|ic| Content {
             ptr: None,
             parts: self.lower_content_node_children(ic.syntax()),
             tags: Vec::new(),
         });
+
+        // Assign TAGS at the CHOICE level to the preceding content region.
+        // Walk CST children in order: TAGS after CHOICE_START_CONTENT → start,
+        // TAGS after CHOICE_INNER_CONTENT → inner, trailing TAGS → inner.
+        {
+            use brink_syntax::SyntaxKind;
+            let mut last_region = "start"; // default if no content regions yet
+            for child in choice.syntax().children() {
+                match child.kind() {
+                    SyntaxKind::CHOICE_START_CONTENT => last_region = "start",
+                    SyntaxKind::CHOICE_BRACKET_CONTENT => last_region = "bracket",
+                    SyntaxKind::CHOICE_INNER_CONTENT => last_region = "inner",
+                    SyntaxKind::TAGS => {
+                        let tags_node = ast::Tags::cast(child);
+                        let lowered = lower_tags(tags_node);
+                        match last_region {
+                            "start" => {
+                                if let Some(ref mut sc) = start_content {
+                                    sc.tags.extend(lowered);
+                                }
+                            }
+                            _ => {
+                                if let Some(ref mut ic) = inner_content {
+                                    ic.tags.extend(lowered);
+                                } else if let Some(ref mut sc) = start_content {
+                                    sc.tags.extend(lowered);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         let inline_divert = choice.divert().and_then(|d| {
             let target = d
@@ -1816,7 +1863,8 @@ impl LowerCtx {
             })
         });
 
-        let tags = lower_tags(choice.tags());
+        // Choice-level tags are now distributed to content regions above.
+        let tags = Vec::new();
         // Skip the choice-level divert in the body when it was captured as an
         // inline divert OR when it's an empty simple divert (bare `->` on a
         // choice, meaning "fall through to gather"). Non-simple diverts
