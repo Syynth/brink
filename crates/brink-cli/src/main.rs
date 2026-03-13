@@ -33,6 +33,14 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Export line tables from a compiled story to lines.json
+    ExportLines {
+        /// Input story file (.inkb, .inkt, or .ink.json)
+        input: PathBuf,
+        /// Output lines.json file (defaults to stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Play an ink story interactively
     Play {
         /// Story file (.ink.json, .inkb, or .inkt)
@@ -63,6 +71,12 @@ fn main() -> ExitCode {
             }
             Commands::Convert { input, output } => {
                 if let Err(e) = run_convert(&input, output.as_deref()) {
+                    tracing::error!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            Commands::ExportLines { input, output } => {
+                if let Err(e) = run_export_lines(&input, output.as_deref()) {
                     tracing::error!("{e}");
                     return ExitCode::FAILURE;
                 }
@@ -163,6 +177,35 @@ fn run_convert(
             handle.write_all(buf.as_bytes())?;
             handle.write_all(b"\n")?;
         }
+    }
+
+    Ok(())
+}
+
+fn run_export_lines(
+    input: &std::path::Path,
+    output: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // For .inkb files, extract the checksum from the header.
+    let (data, checksum) = if input.extension().and_then(|e| e.to_str()) == Some("inkb") {
+        let bytes = std::fs::read(input)?;
+        let index = brink_format::read_inkb_index(&bytes)?;
+        let story = brink_format::read_inkb(&bytes)?;
+        (story, index.checksum)
+    } else {
+        (load_story_data(input)?, 0)
+    };
+
+    let lines_json = brink_intl::export_lines(&data, checksum);
+    let json = serde_json::to_string_pretty(&lines_json)?;
+
+    if let Some(path) = output {
+        std::fs::write(path, &json)?;
+    } else {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        handle.write_all(json.as_bytes())?;
+        handle.write_all(b"\n")?;
     }
 
     Ok(())

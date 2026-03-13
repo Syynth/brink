@@ -412,6 +412,12 @@ fn decode_external(buf: &[u8], off: &mut usize) -> Result<ExternalFnDef, DecodeE
 fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeError> {
     let id = read_def_id(buf, off)?;
     let scope_id = read_def_id(buf, off)?;
+    let has_name = read_u8(buf, off)? != 0;
+    let name = if has_name {
+        Some(NameId(read_u16(buf, off)?))
+    } else {
+        None
+    };
     let content_hash = read_u64(buf, off)?;
     let counting_bits = read_u8(buf, off)?;
     let counting_flags = CountingFlags::from_bits(counting_bits).unwrap_or(CountingFlags::empty());
@@ -427,6 +433,7 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
     Ok(ContainerDef {
         id,
         scope_id,
+        name,
         bytecode,
         content_hash,
         counting_flags,

@@ -1,0 +1,21 @@
+[package]
+name = "brink-intl"
+description = "Internationalization tooling for brink stories"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+brink-format = { path = "../brink-format" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+brink-converter = { path = "../brink-converter" }
+brink-json = { path = "../brink-json" }
+insta = { workspace = true, features = ["json"] }
+
+[lints]
+workspace = true

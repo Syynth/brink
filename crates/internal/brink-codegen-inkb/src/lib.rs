@@ -189,9 +189,17 @@ fn walk_container(
 
     let path_hash: i32 = path.chars().map(|c| c as i32).sum();
 
+    // Scope-owning containers get a human-readable name for the intl pipeline.
+    let name = if is_scope_kind(container.kind) {
+        Some(emitter.intern_string(path))
+    } else {
+        None
+    };
+
     let def = ContainerDef {
         id: container.id,
         scope_id,
+        name,
         bytecode: emitter.bytecode,
         content_hash: 0,
         counting_flags: container.counting_flags,

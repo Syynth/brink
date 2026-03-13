@@ -655,9 +655,17 @@ pub fn process_container(
     // Flush any remaining local line entries to the scope's line table.
     emitter.flush_lines(scope_line_tables.entry(scope_id).or_default());
 
+    // Scope-owning containers get a human-readable name for the intl pipeline.
+    let name = if scope_id == container_id {
+        Some(name_table.intern(current_path)?)
+    } else {
+        None
+    };
+
     let def = ContainerDef {
         id: container_id,
         scope_id,
+        name,
         bytecode: emitter.bytecode,
         content_hash: 0,
         counting_flags,

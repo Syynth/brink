@@ -194,6 +194,11 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
         writeln!(w, "    (scope {})", c.scope_id)?;
     }
 
+    // Container name (for scope-owning containers)
+    if let Some(name_id) = c.name {
+        writeln!(w, "    (name {})", name_id.0)?;
+    }
+
     // Counting flags
     if !c.counting_flags.is_empty() {
         write!(w, "    (flags")?;

@@ -337,6 +337,15 @@ fn encode_external(ext: &ExternalFnDef, buf: &mut Vec<u8>) {
 fn encode_container(c: &ContainerDef, buf: &mut Vec<u8>) {
     write_def_id(buf, c.id);
     write_def_id(buf, c.scope_id);
+    match c.name {
+        Some(name_id) => {
+            write_u8(buf, 1);
+            write_u16(buf, name_id.0);
+        }
+        None => {
+            write_u8(buf, 0);
+        }
+    }
     write_u64(buf, c.content_hash);
     write_u8(buf, c.counting_flags.bits());
     write_i32(buf, c.path_hash);

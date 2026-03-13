@@ -180,6 +180,7 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineT
             let def = ContainerDef {
                 id,
                 scope_id: id,
+                name: None,
                 bytecode,
                 content_hash,
                 counting_flags,

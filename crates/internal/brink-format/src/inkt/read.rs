@@ -546,6 +546,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
     let mut path_hash = 0i32;
     let mut lines = Vec::new();
     let mut bytecode = Vec::new();
+    let mut name: Option<NameId> = None;
 
     let mut scope_id = id;
 
@@ -566,6 +567,14 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
                     col: 0,
                 })?;
                 scope_id = parse_def_id(scope_pair)?;
+            }
+            Rule::container_name_field => {
+                let val = child.into_inner().next().ok_or_else(|| InktParseError {
+                    message: "expected integer in container name".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                name = Some(NameId(parse_u16(&val)?));
             }
             Rule::flags_field => {
                 for flag in child.into_inner() {
@@ -604,6 +613,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
     let container = ContainerDef {
         id,
         scope_id,
+        name,
         bytecode,
         content_hash,
         counting_flags,

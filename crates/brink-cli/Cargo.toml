@@ -14,6 +14,7 @@ brink-compiler = { path = "../brink-compiler" }
 brink-format = { path = "../internal/brink-format", features = ["inkt"] }
 brink-json = { path = "../internal/brink-json" }
 brink-converter = { path = "../internal/brink-converter" }
+brink-intl = { path = "../internal/brink-intl" }
 brink-runtime = { path = "../brink-runtime" }
 clap.workspace = true
 serde_json.workspace = true

@@ -1,0 +1,21 @@
+---
+source: crates/internal/brink-intl/tests/export_lines.rs
+expression: lines_json
+---
+{
+  "version": 1,
+  "source_checksum": "0x00000000",
+  "scopes": [
+    {
+      "name": "",
+      "id": "0x01406ea523c53def",
+      "lines": [
+        {
+          "index": 0,
+          "content": "Hello, world!",
+          "hash": "626e7681b4e2e7bc"
+        }
+      ]
+    }
+  ]
+}

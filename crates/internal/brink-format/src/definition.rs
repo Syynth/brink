@@ -12,6 +12,9 @@ pub struct ContainerDef {
     /// For child containers (gather, choice target, sequence, etc.): `scope_id` is
     /// the enclosing scope's `DefinitionId`.
     pub scope_id: DefinitionId,
+    /// Human-readable name for scope-owning containers (root, knot, stitch).
+    /// `None` for child containers.
+    pub name: Option<NameId>,
     pub bytecode: Vec<u8>,
     pub content_hash: u64,
     pub counting_flags: CountingFlags,
