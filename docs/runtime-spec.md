@@ -33,7 +33,7 @@ The linker reads all definitions from the unlinked layer and:
 4. Resolves all `DefinitionId` references in bytecode to runtime indices
 5. Indexes external function definitions (assigns runtime indices, builds name lookup tables). Resolution to host bindings or ink fallbacks is a runtime concern, not a link-time concern.
 6. Initializes global variables from their default values
-7. Splits per-container line tables out of the `.inkb` into the base `LinkedLocale`. Builds name table and other content structures for the `LinkedBinary`.
+7. Splits per-scope line tables out of the `.inkb` into the base `LinkedLocale`. Maps each container to its scope's line table via `ContainerDef.scope_id`. Builds name table and other content structures for the `LinkedBinary`.
 8. Produces an immutable, shareable `Program`
 
 One codepath processes all definition types uniformly. The tag determines which table, but the resolution mechanism is the same.
@@ -68,7 +68,7 @@ Context is the natural serialization boundary — saving a story means serializi
 
 ### Program (immutable, shared)
 
-The `Program` is a `(Arc<LinkedBinary>, Arc<LinkedLocale>)` pair. The binary half (containers, bytecode, globals, lists, externals, labels, name table) is linked once and `Arc`-shared across all story instances and locale variants. The locale half (per-container line tables with content and audio refs) is `Arc`-shared across all instances using the same locale. `LinkedBinary` has no line tables — it is purely structural. The `Program` is never mutated after construction. Switching locales constructs a new `Program` with a different locale half — the binary half is reused. `Program` construction is cheap (two `Arc` clones); building the halves is the expensive step.
+The `Program` is a `(Arc<LinkedBinary>, Arc<LinkedLocale>)` pair. The binary half (containers, bytecode, globals, lists, externals, labels, name table) is linked once and `Arc`-shared across all story instances and locale variants. The locale half (per-scope line tables with content and audio refs) is `Arc`-shared across all instances using the same locale. `LinkedLocale` stores line tables keyed by scope `DefinitionId` (knot/stitch), not by container. `LinkedBinary` has no line tables — it is purely structural. The `Program` is never mutated after construction. Switching locales constructs a new `Program` with a different locale half — the binary half is reused. `Program` construction is cheap (two `Arc` clones); building the halves is the expensive step.
 
 ## Execution model
 
@@ -179,6 +179,9 @@ CallFrame {
     return_address: Option<ContainerPosition>,   // None for Root frames
     temps: Vec<Value>,                           // frame-local temp variable slots
     container_stack: Vec<ContainerPosition>,      // flow positions within this call
+    // The call frame carries (or can derive) the scope's line table reference,
+    // set at frame push time based on ContainerDef.scope_id. EmitLine/EvalLine
+    // use this to look up lines in the scope's table rather than per-container.
 }
 ```
 
@@ -277,7 +280,7 @@ enum OutputPart {
 }
 ```
 
-`SpanStart(LineId)` is pushed by the VM when executing `EmitLine(idx)`. The VM constructs the `LineId` from the current container's `DefinitionId` and the local line index, then pushes `SpanStart(LineId)` followed by the resolved text content. The VM does NOT resolve audio refs — that happens at flush time.
+`SpanStart(LineId)` is pushed by the VM when executing `EmitLine(idx, slot_count)`. The VM constructs the `LineId` from the current frame's scope `DefinitionId` (derived from `ContainerDef.scope_id` at frame push time) and the local line index. It pops `slot_count` values from the stack, then pushes `SpanStart(LineId)` followed by the resolved text content (with template slots filled from the popped values). The VM does NOT resolve audio refs — that happens at flush time.
 
 Text pushed without a preceding `SpanStart` (from `EmitValue`, string evaluation, or inline expressions) has no `LineId` and forms identity-less spans.
 
@@ -667,6 +670,8 @@ fn continue_maximally() -> Result<InkOutcome>:
 
 ### Line entry
 
+Line tables in the `LinkedLocale` are keyed by scope `DefinitionId` (knot/stitch), NOT parallel to the containers list. Each scope has one line table shared by all containers within that scope.
+
 Each line entry in the `LinkedLocale`:
 
 ```
@@ -684,13 +689,15 @@ struct LineEntry {
 resolve_line(locale: &LinkedLocale, line_id: LineId) -> &LineEntry
 ```
 
-Always goes through the locale. No fallback logic, no "check locale then check base" branching. The `LinkedLocale` is always complete.
+Always goes through the locale. No fallback logic, no "check locale then check base" branching. The `LinkedLocale` is always complete. The `LineId`'s `DefinitionId` is the scope, so lookup is `locale.line_tables[scope_id][line_idx]`.
+
+For `Template` lines, the VM executes `EmitLine(idx, slot_count)` which pops `slot_count` values from the stack. The template resolver walks the `LinePart` tree, consuming slot values by index: `Slot(n)` reads the nth popped value, `Select { slot, variants, default }` reads the slot value and picks the matching variant (using the `PluralResolver` trait for plural categories). A mismatch between `slot_count` and the template's actual slot count is a codegen bug and produces a runtime error.
 
 ## Locale loading
 
 ### Base locale from .inkb
 
-Loading a `.inkb` and linking produces `(LinkedBinary, LinkedLocale)`. The `.inkb`'s per-container line sub-tables are split out of the binary half and become the base `LinkedLocale`. On disk, the `.inkb` is self-contained (line tables are present). In memory, the runtime separates them.
+Loading a `.inkb` and linking produces `(LinkedBinary, LinkedLocale)`. The `.inkb`'s per-scope line tables are split out of the binary half and become the base `LinkedLocale`. On disk, the `.inkb` is self-contained (line tables are present). In memory, the runtime separates them.
 
 ### .inkl overlay loading
 
@@ -703,8 +710,8 @@ enum LocaleMode {
 }
 ```
 
-- **`Strict`**: the `.inkl` must provide line tables for every container in the `.inkb`. Missing containers produce a load error. Use for full translations (e.g., en-US to ja-JP).
-- **`Overlay`**: the `.inkl` can be partial. Missing containers are filled from the base `.inkb` line tables. Use for dialect patches (e.g., en-US to en-UK where only some lines differ).
+- **`Strict`**: the `.inkl` must provide line tables for every scope in the `.inkb`. Missing scopes produce a load error. Use for full translations (e.g., en-US to ja-JP).
+- **`Overlay`**: the `.inkl` can be partial. Missing scopes are filled from the base `.inkb` line tables. Use for dialect patches (e.g., en-US to en-UK where only some lines differ).
 
 Either mode produces a complete `LinkedLocale`. No runtime fallback needed.
 

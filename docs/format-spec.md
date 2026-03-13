@@ -55,6 +55,7 @@ Each container has a primary address (tag `0x01`) plus a `ContainerDef` with:
   - Bit 1: `TURNS` — record which turn it was visited on
   - Bit 2: `COUNT_START_ONLY` — only count when entering at the start, not when re-entering mid-container
 - **Path hash** — `i32`, sum of char values from the container's ink path string. Used to seed the RNG for shuffle sequences.
+- **Scope id** — `DefinitionId` of the lexical scope this container belongs to. For knots and stitches, `scope_id == id` (they ARE the scope). For gathers, choice targets, inline sequence wrappers, and other compiler-internal containers, `scope_id` is the enclosing knot or stitch. Used by the linker to associate containers with their scope's line table.
 
 ### Container hierarchy
 
@@ -156,7 +157,7 @@ External function resolution is a **runtime** concern, not a link-time concern. 
 
 - **Temporary variables** — stack-frame-local, created/destroyed per execution. No `DefinitionId`.
 - **Names** — internal interned strings (variable names, list names, debug labels). Indexed by `NameId(u16)`. Not localizable.
-- **Lines** — text output content, scoped to containers. Identified by `LineId = (DefinitionId, u16)` — the container's DefinitionId + a local index within that container. Each line carries its content (plain text or template) and a content hash of the source text for locale change tracking.
+- **Lines** — text output content, scoped to lexical scopes (knots/stitches). Identified by `LineId = (DefinitionId, u16)` — the scope's DefinitionId + a local index within that scope. The `DefinitionId` in a `LineId` refers to the lexical scope, not the emitting container. Each line carries its content (plain text or template), a content hash of the source text, optional slot metadata, optional audio ref, and optional source location.
 
 ## Bytecode VM
 
@@ -291,13 +292,13 @@ The instruction set is organized into categories. Opcode byte values are defined
 
 | Opcode | Operand | Description |
 |--------|---------|-------------|
-| `EmitLine` | `u16` line index | Emit line from container's line table to output buffer |
+| `EmitLine` | `u16` line index + `u8` slot count | Emit line from scope's line table. Pops `slot_count` values from stack for template slot resolution. |
 | `EmitValue` | — | Stringify + emit top of stack |
 | `EmitNewline` | — | Emit newline to output buffer |
 | `Glue` | — | Join adjacent output (suppress whitespace/newline) |
 | `BeginTag` | — | Begin a tag annotation on the current output |
 | `EndTag` | — | End the current tag annotation |
-| `EvalLine` | `u16` line index | Like `EmitLine` but pushes result to value stack instead of output buffer |
+| `EvalLine` | `u16` line index + `u8` slot count | Like `EmitLine` but pushes resolved string to value stack instead of output buffer. Pops `slot_count` values from stack for template slot resolution. |
 
 #### Choices (`0x72`–`0x73`)
 
@@ -402,7 +403,7 @@ Note: opcodes `0xB3` and `0xB4` are unassigned. List union and except are handle
 - `DefinitionId(u64)` — tagged definition identity type (8-bit type tag + 56-bit name hash)
 - `DefinitionTag` — enum of tag discriminants (`Address`, `GlobalVar`, `ListDef`, `ListItem`, `ExternalFn`, `LocalVar`)
 - `NameId(u16)` — index into the name table (internal strings, not localizable)
-- `LineId = (DefinitionId, u16)` — container-scoped line identity (all user-visible text output)
+- `LineId = (DefinitionId, u16)` — scope-scoped line identity (lexical scope = knot or stitch; all user-visible text output). The `DefinitionId` refers to the lexical scope, not the emitting container.
 - `Opcode` — enum of all bytecode instructions with encode/decode
 - `DecodeError` — error type for all format decoding failures
 - Definition payloads: `AddressDef`, `ContainerDef`, `GlobalVarDef`, `ListDef`, `ListItemDef`, `ExternalFnDef`
@@ -411,14 +412,14 @@ Note: opcodes `0xB3` and `0xB4` are unassigned. List union and except are handle
 - `ListValue` — set of active items + origin definitions
 - `ChoiceFlags` — 5-bit bitmask for choice properties
 - `SequenceKind` — cycle/stopping/once-only/shuffle discriminant
-- Line content types: `LineContent`, `LineTemplate`, `LinePart`, `SelectKey`, `PluralCategory`
+- Line content types: `LineEntry`, `LineContent`, `LineTemplate`, `LinePart`, `SelectKey`, `PluralCategory`, `SlotInfo`, `SourceLocation`
 - `PluralResolver` trait (implemented by host or `brink-intl`)
 - Serialization/deserialization for `.inkb`, `.inkl`, and `.inkt`
 
 ## File formats
 
-- **`.inkb`** — binary format. Definition tables (containers, addresses, variables, lists, externals), line tables, list literals, name table, and metadata. All cross-definition references are symbolic (`DefinitionId`). No resolved indices.
-- **`.inkl`** — locale overlay. Per-container replacement line tables for a specific locale. Each entry contains localized content and an optional audio ref. Keyed by container `DefinitionId` + local line index for stability across recompilation.
+- **`.inkb`** — binary format. Definition tables (containers, addresses, variables, lists, externals), per-scope line tables, list literals, name table, and metadata. All cross-definition references are symbolic (`DefinitionId`). No resolved indices. Line tables are keyed by lexical scope `DefinitionId`, not by container.
+- **`.inkl`** — locale overlay. Per-scope replacement line tables for a specific locale. Each entry contains localized content and an optional audio ref. Keyed by scope `DefinitionId` + local line index for stability across recompilation.
 - **`.inkt`** — textual format. Human-readable representation of the bytecode, like WAT is to WASM. Container paths as labels, opcodes as mnemonics. For debugging, inspection, and diffing.
 
 ### `.inkb` layout
@@ -454,8 +455,8 @@ Each offset table entry (8 bytes):
 | `0x03` | List definitions | Per entry: `DefinitionId` + `NameId` + items |
 | `0x04` | List items | Per entry: `DefinitionId` + origin + ordinal + name |
 | `0x05` | Externals | Per entry: `DefinitionId` + `NameId` + arg count + optional fallback |
-| `0x06` | Containers | Per container: `DefinitionId` + bytecode blob + content hash + counting flags + path hash |
-| `0x07` | Line tables | Per container: `DefinitionId` + line entries (content + source hash each) |
+| `0x06` | Containers | Per container: `DefinitionId` + bytecode blob + content hash + counting flags + path hash + scope id |
+| `0x07` | Line tables | Per scope: `DefinitionId` + line entries (content + source hash + slot info + audio ref + source location each). The `DefinitionId` here is the lexical scope (knot/stitch), not a container. |
 | `0x08` | Labels | Per entry: address `DefinitionId` + container `DefinitionId` + byte offset |
 | `0x09` | List literals | Per entry: `ListValue` (items + origins) |
 
@@ -477,9 +478,35 @@ Each offset table entry (8 bytes):
 ### `.inkl` sections
 
 - Header: magic `b"INKL"`, format version, BCP 47 locale tag, base `.inkb` checksum (must match)
-- Per-container line tables (keyed by container `DefinitionId`, each entry: local line index, localized content, optional audio ref)
+- Per-scope line tables (keyed by scope `DefinitionId`, each entry: local line index, localized content, optional audio ref)
 
-There is no separate audio table. Audio refs are stored per-line alongside content in the per-container line tables.
+There is no separate audio table. Audio refs are stored per-line alongside content in the per-scope line tables.
+
+### Line entry structure
+
+Each line entry in a scope's line table:
+
+```
+LineEntry {
+    content: LineContent,                  // Plain(String) or Template(LineTemplate)
+    source_hash: u64,                      // hash of original ink source text
+    audio_ref: Option<String>,             // audio asset identifier, if any
+    slot_info: Vec<SlotInfo>,              // metadata per slot index (empty for Plain)
+    source_location: Option<SourceLocation>,  // where in the .ink source this line came from
+}
+
+SlotInfo {
+    index: u8,                             // matches Slot(u8) index in the template
+    name: String,                          // source expression text, e.g. "player_name"
+}
+
+SourceLocation {
+    file: String,                          // source file path (relative to project root)
+    range: (u32, u32),                     // byte offset start, end in the source file
+}
+```
+
+`slot_info` and `source_location` are metadata for tooling. They are serialized into the `.inkb` line tables section but are not loaded by the runtime's fast path. The `.inkl` overlay format carries `content` and `audio_ref` but NOT slot info or source location — those are source-language concerns, not translation concerns.
 
 ### Line template types
 
