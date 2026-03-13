@@ -10,6 +10,8 @@ use crate::path;
 pub struct StoryIndex {
     /// ink.json container path → `DefinitionId`
     pub containers: HashMap<String, DefinitionId>,
+    /// container `DefinitionId` → scope `DefinitionId` (lexical scope this container belongs to)
+    pub scope_ids: HashMap<DefinitionId, DefinitionId>,
     /// Global variable name → `DefinitionId`
     pub globals: HashMap<String, DefinitionId>,
     /// External function name → `(DefinitionId, arg_count)`
@@ -98,6 +100,7 @@ pub fn build_index(
 ) -> Result<StoryIndex, ConvertError> {
     let mut index = StoryIndex {
         containers: HashMap::new(),
+        scope_ids: HashMap::new(),
         globals: HashMap::new(),
         externals: HashMap::new(),
         list_defs: HashMap::new(),
@@ -105,8 +108,10 @@ pub fn build_index(
         intra_addresses: HashMap::new(),
     };
 
-    // 1. Walk containers recursively (using canonical root)
-    register_container(&mut index, canonical_root, "")?;
+    // 1. Walk containers recursively (using canonical root).
+    // Root is always a scope — its scope_id is its own id.
+    let root_id = path::address_id("");
+    register_container(&mut index, canonical_root, "", root_id)?;
 
     // 2. Process list definitions
     for (list_name, items) in &story.list_defs {
@@ -141,12 +146,15 @@ fn register_container(
     index: &mut StoryIndex,
     container: &Container,
     current_path: &str,
+    scope_id: DefinitionId,
 ) -> Result<(), ConvertError> {
     let id = path::address_id(current_path);
     index.containers.insert(current_path.to_string(), id);
+    index.scope_ids.insert(id, scope_id);
 
     // Walk contents — sub-containers at index i get path "parent.i".
     // If a container also has a `#n` name, register it under "parent.name" too.
+    // Indexed children are never scopes — they inherit the parent's scope.
     for (i, element) in container.contents.iter().enumerate() {
         if let Element::Container(child) = element {
             let child_path = if current_path.is_empty() {
@@ -154,7 +162,7 @@ fn register_container(
             } else {
                 format!("{current_path}.{i}")
             };
-            register_container(index, child, &child_path)?;
+            register_container(index, child, &child_path, scope_id)?;
 
             // Also register under the container's own name if it has one.
             // Reuse the indexed container's ID so that both paths resolve to
@@ -171,7 +179,10 @@ fn register_container(
         }
     }
 
-    // Walk named content — named entries get path "parent.name"
+    // Walk named content — named entries get path "parent.name".
+    // Named content at depth 1 = knots (new scope), depth 2+ = stitches (new scope).
+    // In the converter's ink.json model, named content entries are always
+    // knots or stitches — they are scope boundaries.
     for (name, element) in &container.named_content {
         if let Element::Container(child) = element {
             let child_path = if current_path.is_empty() {
@@ -179,7 +190,9 @@ fn register_container(
             } else {
                 format!("{current_path}.{name}")
             };
-            register_container(index, child, &child_path)?;
+            let child_id = path::address_id(&child_path);
+            // Named content entries (knots, stitches) start new scopes.
+            register_container(index, child, &child_path, child_id)?;
         }
     }
 

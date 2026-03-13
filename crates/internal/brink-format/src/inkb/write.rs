@@ -4,8 +4,8 @@ use crate::codec::{
     crc32, write_def_id, write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
 };
 use crate::definition::{
-    AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef,
+    AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ScopeLineTable,
 };
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::story::StoryData;
@@ -336,6 +336,7 @@ fn encode_external(ext: &ExternalFnDef, buf: &mut Vec<u8>) {
 #[expect(clippy::cast_possible_truncation)]
 fn encode_container(c: &ContainerDef, buf: &mut Vec<u8>) {
     write_def_id(buf, c.id);
+    write_def_id(buf, c.scope_id);
     write_u64(buf, c.content_hash);
     write_u8(buf, c.counting_flags.bits());
     write_i32(buf, c.path_hash);
@@ -345,16 +346,16 @@ fn encode_container(c: &ContainerDef, buf: &mut Vec<u8>) {
 
 /// Write the line tables section (no header framing).
 #[expect(clippy::cast_possible_truncation)]
-pub fn write_section_line_tables(line_tables: &[ContainerLineTable], buf: &mut Vec<u8>) {
+pub fn write_section_line_tables(line_tables: &[ScopeLineTable], buf: &mut Vec<u8>) {
     write_u32(buf, line_tables.len() as u32);
     for lt in line_tables {
-        encode_container_line_table(lt, buf);
+        encode_scope_line_table(lt, buf);
     }
 }
 
 #[expect(clippy::cast_possible_truncation)]
-fn encode_container_line_table(lt: &ContainerLineTable, buf: &mut Vec<u8>) {
-    write_def_id(buf, lt.container_id);
+fn encode_scope_line_table(lt: &ScopeLineTable, buf: &mut Vec<u8>) {
+    write_def_id(buf, lt.scope_id);
     write_u32(buf, lt.lines.len() as u32);
     for entry in &lt.lines {
         encode_line_entry(entry, buf);

@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
 use brink_format::{
-    ContainerDef, ContainerLineTable, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef,
-    GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, NameId, PluralCategory,
+    ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef, GlobalVarDef,
+    LineContent, LineEntry, LinePart, ListDef, ListItemDef, NameId, PluralCategory, ScopeLineTable,
     SectionKind, SelectKey, StoryData, Value, ValueType, read_inkb, read_inkb_index, write_inkb,
 };
 use proptest::prelude::*;
@@ -104,7 +104,7 @@ fn arb_value() -> impl Strategy<Value = Value> {
     ]
 }
 
-fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ContainerLineTable)> {
+fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineTable)> {
     (
         arb_def_id(),
         prop::collection::vec(any::<u8>(), 0..32),
@@ -115,13 +115,14 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ContainerL
         .prop_map(|(id, bytecode, content_hash, counting_flags, lines)| {
             let def = ContainerDef {
                 id,
+                scope_id: id,
                 bytecode,
                 content_hash,
                 counting_flags,
                 path_hash: 0,
             };
-            let lt = ContainerLineTable {
-                container_id: id,
+            let lt = ScopeLineTable {
+                scope_id: id,
                 lines,
             };
             (def, lt)

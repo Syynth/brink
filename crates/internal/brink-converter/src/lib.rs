@@ -13,7 +13,9 @@ mod path;
 
 pub use error::ConvertError;
 
-use brink_format::{AddressDef, StoryData};
+use std::collections::HashMap;
+
+use brink_format::{AddressDef, DefinitionId, LineEntry, ScopeLineTable, StoryData};
 use brink_json::InkJson;
 
 /// Convert a parsed ink.json story into a `StoryData`.
@@ -30,7 +32,8 @@ pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
 
     let mut temps = codegen::TempScope::new();
     let mut list_literals = Vec::new();
-    let pairs = codegen::process_container(
+    let mut scope_line_tables: HashMap<DefinitionId, Vec<LineEntry>> = HashMap::new();
+    let containers = codegen::process_container(
         &story_index,
         &canonical_root,
         "",
@@ -38,8 +41,15 @@ pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
         &mut temps,
         &mut element_offsets,
         &mut list_literals,
+        &mut scope_line_tables,
     )?;
-    let (containers, line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+
+    // Convert scope line tables to sorted Vec<ScopeLineTable>.
+    let mut line_tables: Vec<ScopeLineTable> = scope_line_tables
+        .into_iter()
+        .map(|(scope_id, lines)| ScopeLineTable { scope_id, lines })
+        .collect();
+    line_tables.sort_by_key(|lt| lt.scope_id.to_raw());
 
     let variables = codegen::extract_globals(&story_index, &canonical_root, &mut name_table)?;
     let (list_defs, list_items) = codegen::build_list_defs(&story_index, &mut name_table)?;

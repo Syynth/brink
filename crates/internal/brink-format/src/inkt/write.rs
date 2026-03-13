@@ -32,15 +32,20 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_addresses(w, &story.addresses)?;
     write_list_literals(w, &story.list_literals)?;
 
-    // Build a lookup from container_id → line table for writing
+    // Build a lookup from scope_id → line table for writing
     let line_map: HashMap<DefinitionId, &[LineEntry]> = story
         .line_tables
         .iter()
-        .map(|lt| (lt.container_id, lt.lines.as_slice()))
+        .map(|lt| (lt.scope_id, lt.lines.as_slice()))
         .collect();
 
     for container in &story.containers {
-        let lines = line_map.get(&container.id).copied().unwrap_or(&[]);
+        // Only write lines on the scope-owning container (scope_id == id).
+        let lines = if container.scope_id == container.id {
+            line_map.get(&container.scope_id).copied().unwrap_or(&[])
+        } else {
+            &[]
+        };
         write_container(w, container, lines)?;
     }
 
@@ -183,6 +188,11 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
 
     // Content hash
     writeln!(w, "    (hash 0x{:016x})", c.content_hash)?;
+
+    // Scope (only when different from container id)
+    if c.scope_id != c.id {
+        writeln!(w, "    (scope {})", c.scope_id)?;
+    }
 
     // Counting flags
     if !c.counting_flags.is_empty() {

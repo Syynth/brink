@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
 use brink_format::{
-    ChoiceFlags, ContainerDef, ContainerLineTable, CountingFlags, DefinitionId, ExternalFnDef,
-    GlobalVarDef, LineContent, LineEntry, ListDef, ListItemDef, ListValue, NameId, Opcode,
-    SequenceKind, Value,
+    ChoiceFlags, ContainerDef, CountingFlags, DefinitionId, ExternalFnDef, GlobalVarDef,
+    LineContent, LineEntry, ListDef, ListItemDef, ListValue, NameId, Opcode, SequenceKind, Value,
 };
 use brink_json::{
     ChoicePoint, ChoicePointFlags, Container, ContainerFlags, ControlCommand, Divert, Element,
@@ -55,17 +54,21 @@ struct ContainerEmitter<'a> {
     current_path: String,
     bytecode: Vec<u8>,
     line_table: Vec<LineEntry>,
+    /// Offset into the scope's line table when this container started emitting.
+    /// Updated when local lines are flushed to the scope table.
+    scope_line_offset: u16,
     in_eval_mode: bool,
     in_string_eval: bool,
 }
 
 impl<'a> ContainerEmitter<'a> {
-    fn new(index: &'a StoryIndex, current_path: String) -> Self {
+    fn new(index: &'a StoryIndex, current_path: String, scope_line_offset: u16) -> Self {
         Self {
             index,
             current_path,
             bytecode: Vec::new(),
             line_table: Vec::new(),
+            scope_line_offset,
             in_eval_mode: false,
             in_string_eval: false,
         }
@@ -105,13 +108,24 @@ impl<'a> ContainerEmitter<'a> {
     }
 
     fn add_line(&mut self, text: &str) -> Result<u16, ConvertError> {
-        let idx =
+        let local_idx =
             u16::try_from(self.line_table.len()).map_err(|_| ConvertError::LineTableOverflow)?;
         self.line_table.push(LineEntry {
             content: LineContent::Plain(text.to_string()),
             source_hash: brink_format::content_hash(text),
         });
-        Ok(idx)
+        // Return scope-relative index.
+        Ok(self.scope_line_offset + local_idx)
+    }
+
+    /// Flush accumulated local line entries to the scope's line table.
+    /// Must be called before recursing into child containers that share the same scope.
+    fn flush_lines(&mut self, scope_line_table: &mut Vec<LineEntry>) {
+        scope_line_table.append(&mut self.line_table);
+        #[expect(clippy::cast_possible_truncation)]
+        {
+            self.scope_line_offset = scope_line_table.len() as u16;
+        }
     }
 
     fn emit_element(
@@ -511,9 +525,9 @@ fn convert_counting_flags(flags: Option<ContainerFlags>) -> CountingFlags {
     })
 }
 
-/// Process a container and all sub-containers, returning `(ContainerDef, ContainerLineTable)` pairs
-/// and a map of element byte offsets per container path.
-#[expect(clippy::too_many_lines)]
+/// Process a container and all sub-containers, returning `ContainerDef`s
+/// and populating the scope line tables map.
+#[expect(clippy::too_many_lines, clippy::too_many_arguments)]
 pub fn process_container(
     index: &StoryIndex,
     container: &Container,
@@ -522,14 +536,30 @@ pub fn process_container(
     temps: &mut TempScope,
     element_offsets: &mut ElementOffsets,
     list_literals: &mut Vec<ListValue>,
-) -> Result<Vec<(ContainerDef, ContainerLineTable)>, ConvertError> {
-    let mut all_pairs = Vec::new();
+    scope_line_tables: &mut HashMap<DefinitionId, Vec<LineEntry>>,
+) -> Result<Vec<ContainerDef>, ConvertError> {
+    let mut all_defs = Vec::new();
 
     // Track where to insert this container so it precedes its inline children.
     // The root container (path "") ends up at index 0 — the linker convention.
-    let self_insert_idx = all_pairs.len();
+    let self_insert_idx = all_defs.len();
 
-    let mut emitter = ContainerEmitter::new(index, current_path.to_string());
+    let container_id = index
+        .containers
+        .get(current_path)
+        .copied()
+        .ok_or_else(|| ConvertError::UnresolvedPath(current_path.to_string()))?;
+    let scope_id = index
+        .scope_ids
+        .get(&container_id)
+        .copied()
+        .unwrap_or(container_id);
+
+    // Current offset into this scope's line table.
+    #[expect(clippy::cast_possible_truncation)]
+    let scope_line_offset = scope_line_tables.get(&scope_id).map_or(0, Vec::len) as u16;
+
+    let mut emitter = ContainerEmitter::new(index, current_path.to_string(), scope_line_offset);
     let mut offsets_for_this_container: HashMap<usize, usize> = HashMap::new();
 
     // Process contents with index-based iteration for pattern detection.
@@ -547,7 +577,11 @@ pub fn process_container(
                 emitter.emit(&Opcode::EnterContainer(child_id));
             }
 
-            let child_pairs = process_container(
+            // Flush any accumulated local lines to the scope table before
+            // recursing, so child containers see the correct scope offset.
+            emitter.flush_lines(scope_line_tables.entry(scope_id).or_default());
+
+            let child_defs = process_container(
                 index,
                 child,
                 &child_path,
@@ -555,8 +589,9 @@ pub fn process_container(
                 temps,
                 element_offsets,
                 list_literals,
+                scope_line_tables,
             )?;
-            all_pairs.extend(child_pairs);
+            all_defs.extend(child_defs);
         } else if let Element::Divert(Divert::Target {
             path,
             conditional: false,
@@ -615,24 +650,18 @@ pub fn process_container(
 
     let counting_flags = convert_counting_flags(container.flags);
 
-    let container_id = index
-        .containers
-        .get(current_path)
-        .copied()
-        .ok_or_else(|| ConvertError::UnresolvedPath(current_path.to_string()))?;
-
     let path_hash: i32 = current_path.chars().map(|c| c as i32).sum();
+
+    // Flush any remaining local line entries to the scope's line table.
+    emitter.flush_lines(scope_line_tables.entry(scope_id).or_default());
 
     let def = ContainerDef {
         id: container_id,
+        scope_id,
         bytecode: emitter.bytecode,
         content_hash: 0,
         counting_flags,
         path_hash,
-    };
-    let lt = ContainerLineTable {
-        container_id,
-        lines: emitter.line_table,
     };
 
     // Store element offsets for this container, keyed by DefinitionId.
@@ -643,7 +672,7 @@ pub fn process_container(
     // Insert this container before its inline children so that the parent
     // always precedes its descendants. In particular, the root container
     // (path "") ends up at index 0 — the convention the linker relies on.
-    all_pairs.insert(self_insert_idx, (def, lt));
+    all_defs.insert(self_insert_idx, def);
 
     // Process named content
     for (name, element) in &container.named_content {
@@ -653,7 +682,7 @@ pub fn process_container(
             } else {
                 format!("{current_path}.{name}")
             };
-            let child_pairs = process_container(
+            let child_defs = process_container(
                 index,
                 child,
                 &child_path,
@@ -661,12 +690,13 @@ pub fn process_container(
                 temps,
                 element_offsets,
                 list_literals,
+                scope_line_tables,
             )?;
-            all_pairs.extend(child_pairs);
+            all_defs.extend(child_defs);
         }
     }
 
-    Ok(all_pairs)
+    Ok(all_defs)
 }
 
 /// Check if a `ChoicePoint` element appears in the remaining container elements.

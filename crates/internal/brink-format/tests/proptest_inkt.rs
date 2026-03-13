@@ -2,9 +2,9 @@
 #![allow(clippy::unwrap_used)]
 
 use brink_format::{
-    ContainerDef, ContainerLineTable, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef,
-    GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue, NameId,
-    Opcode, PluralCategory, SelectKey, StoryData, Value,
+    ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef, GlobalVarDef,
+    LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue, NameId, Opcode,
+    PluralCategory, ScopeLineTable, SelectKey, StoryData, Value,
 };
 use proptest::prelude::*;
 
@@ -168,7 +168,7 @@ fn arb_bytecode() -> impl Strategy<Value = Vec<u8>> {
     })
 }
 
-fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ContainerLineTable)> {
+fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineTable)> {
     (
         arb_def_id(),
         arb_bytecode(),
@@ -179,13 +179,14 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ContainerL
         .prop_map(|(id, bytecode, content_hash, counting_flags, lines)| {
             let def = ContainerDef {
                 id,
+                scope_id: id,
                 bytecode,
                 content_hash,
                 counting_flags,
                 path_hash: 0,
             };
-            let lt = ContainerLineTable {
-                container_id: id,
+            let lt = ScopeLineTable {
+                scope_id: id,
                 lines,
             };
             (def, lt)
@@ -254,7 +255,9 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
     )
         .prop_map(
             |(pairs, variables, list_defs, list_items, externals, name_table)| {
-                let (containers, line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+                let (containers, mut line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+                // Sort line tables by scope_id to match reader's output ordering.
+                line_tables.sort_by_key(|lt| lt.scope_id.to_raw());
                 StoryData {
                     containers,
                     line_tables,

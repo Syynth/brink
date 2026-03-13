@@ -7,6 +7,11 @@ use crate::value::{Value, ValueType};
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContainerDef {
     pub id: DefinitionId,
+    /// The lexical scope this container belongs to.
+    /// For scope containers (root, knot, stitch): `scope_id == id`.
+    /// For child containers (gather, choice target, sequence, etc.): `scope_id` is
+    /// the enclosing scope's `DefinitionId`.
+    pub scope_id: DefinitionId,
     pub bytecode: Vec<u8>,
     pub content_hash: u64,
     pub counting_flags: CountingFlags,
@@ -22,11 +27,14 @@ pub struct LineEntry {
     pub source_hash: u64,
 }
 
-/// Per-container line table, stored separately from [`ContainerDef`] for
+/// Per-scope line table, stored separately from [`ContainerDef`] for
 /// locale overlay swapping (`.inkl`).
+///
+/// All containers within a lexical scope (knot, stitch, or root) share one
+/// `ScopeLineTable`. `EmitLine(idx)` indices are scope-relative.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ContainerLineTable {
-    pub container_id: DefinitionId,
+pub struct ScopeLineTable {
+    pub scope_id: DefinitionId,
     pub lines: Vec<LineEntry>,
 }
 

@@ -3,8 +3,8 @@
 use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64};
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef,
+    AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ScopeLineTable,
 };
 use crate::id::NameId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -411,6 +411,7 @@ fn decode_external(buf: &[u8], off: &mut usize) -> Result<ExternalFnDef, DecodeE
 
 fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeError> {
     let id = read_def_id(buf, off)?;
+    let scope_id = read_def_id(buf, off)?;
     let content_hash = read_u64(buf, off)?;
     let counting_bits = read_u8(buf, off)?;
     let counting_flags = CountingFlags::from_bits(counting_bits).unwrap_or(CountingFlags::empty());
@@ -425,6 +426,7 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
 
     Ok(ContainerDef {
         id,
+        scope_id,
         bytecode,
         content_hash,
         counting_flags,
@@ -436,7 +438,7 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
 pub fn read_section_line_tables(
     buf: &[u8],
     index: &InkbIndex,
-) -> Result<Vec<ContainerLineTable>, DecodeError> {
+) -> Result<Vec<ScopeLineTable>, DecodeError> {
     let range =
         index
             .section_range(SectionKind::LineTables)
@@ -447,25 +449,19 @@ pub fn read_section_line_tables(
     let count = read_u32(buf, &mut off)? as usize;
     let mut tables = Vec::with_capacity(safe_capacity(count, buf.len(), off, 12));
     for _ in 0..count {
-        tables.push(decode_container_line_table(buf, &mut off)?);
+        tables.push(decode_scope_line_table(buf, &mut off)?);
     }
     Ok(tables)
 }
 
-fn decode_container_line_table(
-    buf: &[u8],
-    off: &mut usize,
-) -> Result<ContainerLineTable, DecodeError> {
-    let container_id = read_def_id(buf, off)?;
+fn decode_scope_line_table(buf: &[u8], off: &mut usize) -> Result<ScopeLineTable, DecodeError> {
+    let scope_id = read_def_id(buf, off)?;
     let line_count = read_u32(buf, off)? as usize;
     let mut lines = Vec::with_capacity(safe_capacity(line_count, buf.len(), *off, 9));
     for _ in 0..line_count {
         lines.push(decode_line_entry(buf, off)?);
     }
-    Ok(ContainerLineTable {
-        container_id,
-        lines,
-    })
+    Ok(ScopeLineTable { scope_id, lines })
 }
 
 fn decode_line_entry(buf: &[u8], off: &mut usize) -> Result<LineEntry, DecodeError> {

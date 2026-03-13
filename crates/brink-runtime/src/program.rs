@@ -35,6 +35,8 @@ pub(crate) struct LinkedContainer {
     pub bytecode: Vec<u8>,
     pub counting_flags: CountingFlags,
     pub path_hash: i32,
+    /// Index into `Program.line_tables` for this container's scope line table.
+    pub scope_table_idx: u32,
 }
 
 pub(crate) struct GlobalSlot {
@@ -76,9 +78,10 @@ impl Program {
         &self.containers[idx as usize]
     }
 
-    /// Get the line table for a container by index.
-    pub(crate) fn line_table(&self, idx: u32) -> &[LineEntry] {
-        &self.line_tables[idx as usize]
+    /// Get the scope line table for a container by its container index.
+    pub(crate) fn line_table(&self, container_idx: u32) -> &[LineEntry] {
+        let scope_idx = self.containers[container_idx as usize].scope_table_idx;
+        &self.line_tables[scope_idx as usize]
     }
 
     /// Look up a name by id.

@@ -1,5 +1,5 @@
 use crate::definition::{
-    AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef,
+    AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef, ScopeLineTable,
 };
 use crate::value::ListValue;
 
@@ -7,8 +7,9 @@ use crate::value::ListValue;
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoryData {
     pub containers: Vec<ContainerDef>,
-    /// Per-container line tables, parallel to `containers`.
-    pub line_tables: Vec<ContainerLineTable>,
+    /// Per-scope line tables. Each scope (root, knot, stitch) gets one table
+    /// shared by all containers within that scope.
+    pub line_tables: Vec<ScopeLineTable>,
     pub variables: Vec<GlobalVarDef>,
     pub list_defs: Vec<ListDef>,
     pub list_items: Vec<ListItemDef>,

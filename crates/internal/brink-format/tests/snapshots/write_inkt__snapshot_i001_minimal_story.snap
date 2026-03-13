@@ -1,5 +1,6 @@
 ---
 source: crates/internal/brink-format/tests/write_inkt.rs
+assertion_line: 18
 expression: buf
 ---
 (story
@@ -12,6 +13,9 @@ expression: buf
 
   (container $01_406ea523c53def
     (hash 0x0000000000000000)
+    (lines
+      0 "Hello, world!" @626e7681b4e2e7bc
+    )
     (code
       enter_container $01_6647014fb554e5
       done
@@ -20,10 +24,8 @@ expression: buf
 
   (container $01_6647014fb554e5
     (hash 0x0000000000000000)
+    (scope $01_406ea523c53def)
     (path_hash 48)
-    (lines
-      0 "Hello, world!" @0000000000000000
-    )
     (code
       emit_line 0
       emit_newline
@@ -33,6 +35,7 @@ expression: buf
 
   (container $01_ab1ed7229c18b5
     (hash 0x0000000000000000)
+    (scope $01_406ea523c53def)
     (path_hash 144)
     (code
       done

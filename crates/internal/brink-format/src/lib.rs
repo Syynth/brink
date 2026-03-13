@@ -21,8 +21,8 @@ mod inkt;
 
 pub use counting::CountingFlags;
 pub use definition::{
-    AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, content_hash,
+    AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ScopeLineTable, content_hash,
 };
 pub use id::{DefinitionId, DefinitionTag, LineId, NameId};
 pub use inkb::{

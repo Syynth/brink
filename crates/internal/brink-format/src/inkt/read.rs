@@ -5,8 +5,8 @@ use pest_derive::Parser;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef,
+    AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ScopeLineTable,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -90,12 +90,21 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::list_literals => list_literals = parse_list_literals(inner)?,
             Rule::container => {
                 let (container, lt) = parse_container(inner)?;
+                let is_scope_owner = container.scope_id == container.id;
                 containers.push(container);
-                line_tables.push(lt);
+                // Only add line tables for scope-owning containers.
+                // Child containers (scope_id != id) have no lines in the text.
+                if is_scope_owner {
+                    line_tables.push(lt);
+                }
             }
             _ => {}
         }
     }
+
+    // Sort line tables by scope_id for deterministic ordering,
+    // matching the converter's output.
+    line_tables.sort_by_key(|lt| lt.scope_id.to_raw());
 
     Ok(StoryData {
         containers,
@@ -524,7 +533,7 @@ fn parse_list_literal_entry(pair: P<'_>) -> Result<ListValue, InktParseError> {
 
 // ── Containers ──────────────────────────────────────────────────────────────
 
-fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ContainerLineTable), InktParseError> {
+fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktParseError> {
     let mut inner = pair.into_inner();
     let id = parse_def_id(inner.next().ok_or_else(|| InktParseError {
         message: "expected def_id in container".into(),
@@ -538,6 +547,8 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ContainerLineTable), In
     let mut lines = Vec::new();
     let mut bytecode = Vec::new();
 
+    let mut scope_id = id;
+
     for child in inner {
         match child.as_rule() {
             Rule::hash_field => {
@@ -547,6 +558,14 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ContainerLineTable), In
                     col: 0,
                 })?;
                 content_hash = parse_hex_u64(hex.as_str())?;
+            }
+            Rule::scope_field => {
+                let scope_pair = child.into_inner().next().ok_or_else(|| InktParseError {
+                    message: "expected def_id in scope".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                scope_id = parse_def_id(scope_pair)?;
             }
             Rule::flags_field => {
                 for flag in child.into_inner() {
@@ -584,15 +603,13 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ContainerLineTable), In
 
     let container = ContainerDef {
         id,
+        scope_id,
         bytecode,
         content_hash,
         counting_flags,
         path_hash,
     };
-    let line_table = ContainerLineTable {
-        container_id: id,
-        lines,
-    };
+    let line_table = ScopeLineTable { scope_id, lines };
     Ok((container, line_table))
 }
 

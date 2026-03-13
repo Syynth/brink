@@ -7,8 +7,8 @@ mod expr;
 use std::collections::HashMap;
 
 use brink_format::{
-    AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineContent,
-    LineEntry, ListDef, ListItemDef, ListValue, NameId, Opcode, StoryData, Value,
+    AddressDef, ContainerDef, DefinitionId, ExternalFnDef, GlobalVarDef, LineContent, LineEntry,
+    ListDef, ListItemDef, ListValue, NameId, Opcode, ScopeLineTable, StoryData, Value,
 };
 use brink_ir::lir;
 
@@ -17,7 +17,7 @@ pub fn emit(program: &lir::Program) -> StoryData {
     let mut state = EmitState {
         containers: Vec::new(),
         addresses: Vec::new(),
-        line_tables: Vec::new(),
+        scope_line_tables: HashMap::new(),
         list_literals: Vec::new(),
         name_table: program.name_table.clone(),
         name_index: HashMap::new(),
@@ -30,7 +30,8 @@ pub fn emit(program: &lir::Program) -> StoryData {
     }
 
     // Walk the container tree depth-first.
-    walk_container(&program.root, "", &mut state);
+    // Root is always a scope — its scope_id is its own id.
+    walk_container(&program.root, "", program.root.id, &mut state);
 
     // Build globals, lists, externals.
     let variables = build_globals(&program.globals);
@@ -38,9 +39,17 @@ pub fn emit(program: &lir::Program) -> StoryData {
     let list_items = build_list_items(&program.list_items);
     let externals = build_externals(&program.externals);
 
+    // Convert scope line tables to a sorted Vec<ScopeLineTable>.
+    let mut line_tables: Vec<ScopeLineTable> = state
+        .scope_line_tables
+        .into_iter()
+        .map(|(scope_id, lines)| ScopeLineTable { scope_id, lines })
+        .collect();
+    line_tables.sort_by_key(|lt| lt.scope_id.to_raw());
+
     StoryData {
         containers: state.containers,
-        line_tables: state.line_tables,
+        line_tables,
         variables,
         list_defs,
         list_items,
@@ -56,7 +65,8 @@ pub fn emit(program: &lir::Program) -> StoryData {
 struct EmitState {
     containers: Vec<ContainerDef>,
     addresses: Vec<AddressDef>,
-    line_tables: Vec<ContainerLineTable>,
+    /// Scope-shared line tables: `scope_id` → accumulated line entries.
+    scope_line_tables: HashMap<DefinitionId, Vec<LineEntry>>,
     list_literals: Vec<ListValue>,
     name_table: Vec<String>,
     name_index: HashMap<String, NameId>,
@@ -66,7 +76,7 @@ struct EmitState {
 
 struct ContainerEmitter<'a> {
     bytecode: Vec<u8>,
-    line_table: Vec<LineEntry>,
+    scope_line_table: &'a mut Vec<LineEntry>,
     list_literals: &'a mut Vec<ListValue>,
     state_name_table: &'a mut Vec<String>,
     state_name_index: &'a mut HashMap<String, NameId>,
@@ -74,10 +84,11 @@ struct ContainerEmitter<'a> {
 }
 
 impl<'a> ContainerEmitter<'a> {
-    fn new(state: &'a mut EmitState) -> Self {
+    fn new(state: &'a mut EmitState, scope_id: DefinitionId) -> Self {
+        let scope_line_table = state.scope_line_tables.entry(scope_id).or_default();
         Self {
             bytecode: Vec::new(),
-            line_table: Vec::new(),
+            scope_line_table,
             list_literals: &mut state.list_literals,
             state_name_table: &mut state.name_table,
             state_name_index: &mut state.name_index,
@@ -96,8 +107,8 @@ impl<'a> ContainerEmitter<'a> {
 
     #[expect(clippy::cast_possible_truncation)]
     fn add_line_with_hash(&mut self, text: &str, source_hash: u64) -> u16 {
-        let idx = self.line_table.len() as u16;
-        self.line_table.push(LineEntry {
+        let idx = self.scope_line_table.len() as u16;
+        self.scope_line_table.push(LineEntry {
             content: LineContent::Plain(text.to_string()),
             source_hash,
         });
@@ -140,9 +151,22 @@ impl<'a> ContainerEmitter<'a> {
 
 // ─── Container tree walk ────────────────────────────────────────────
 
-fn walk_container(container: &lir::Container, path: &str, state: &mut EmitState) {
+/// Returns `true` if the container kind is a lexical scope (root, knot, stitch).
+fn is_scope_kind(kind: lir::ContainerKind) -> bool {
+    matches!(
+        kind,
+        lir::ContainerKind::Root | lir::ContainerKind::Knot | lir::ContainerKind::Stitch
+    )
+}
+
+fn walk_container(
+    container: &lir::Container,
+    path: &str,
+    scope_id: DefinitionId,
+    state: &mut EmitState,
+) {
     // Emit this container's bytecode.
-    let mut emitter = ContainerEmitter::new(state);
+    let mut emitter = ContainerEmitter::new(state, scope_id);
 
     // Branch containers (conditional or sequence) suppress `Done` after
     // ChoiceSets. Choices inside branches form part of a larger logical
@@ -167,18 +191,14 @@ fn walk_container(container: &lir::Container, path: &str, state: &mut EmitState)
 
     let def = ContainerDef {
         id: container.id,
+        scope_id,
         bytecode: emitter.bytecode,
         content_hash: 0,
         counting_flags: container.counting_flags,
         path_hash,
     };
-    let lt = ContainerLineTable {
-        container_id: container.id,
-        lines: emitter.line_table,
-    };
 
     state.containers.push(def);
-    state.line_tables.push(lt);
 
     // Primary address: every container is addressable by its own id.
     state.addresses.push(AddressDef {
@@ -227,7 +247,14 @@ fn walk_container(container: &lir::Container, path: &str, state: &mut EmitState)
         } else {
             format!("{path}.{segment}")
         };
-        walk_container(child, &child_path, state);
+        // If this child is a scope (knot, stitch, root), it starts a new scope.
+        // Otherwise it inherits the parent's scope.
+        let child_scope_id = if is_scope_kind(child.kind) {
+            child.id
+        } else {
+            scope_id
+        };
+        walk_container(child, &child_path, child_scope_id, state);
     }
 }
 

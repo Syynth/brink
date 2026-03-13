@@ -16,33 +16,35 @@ use crate::program::{
 /// and the brink compiler emit the root first.
 #[expect(clippy::cast_possible_truncation, clippy::too_many_lines)]
 pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
-    let mut containers = Vec::with_capacity(data.containers.len());
     let mut container_map = HashMap::with_capacity(data.containers.len());
-    let mut line_tables = Vec::with_capacity(data.containers.len());
 
     for (i, cdef) in data.containers.iter().enumerate() {
         let idx = i as u32;
         container_map.insert(cdef.id, idx);
+    }
+
+    // Build scope line tables and a map from scope_id → table index.
+    let mut scope_table_map: HashMap<DefinitionId, u32> =
+        HashMap::with_capacity(data.line_tables.len());
+    let mut line_tables: Vec<Vec<brink_format::LineEntry>> =
+        Vec::with_capacity(data.line_tables.len());
+    for lt in &data.line_tables {
+        let idx = line_tables.len() as u32;
+        scope_table_map.insert(lt.scope_id, idx);
+        line_tables.push(lt.lines.clone());
+    }
+
+    // Build containers with scope_table_idx.
+    let mut containers = Vec::with_capacity(data.containers.len());
+    for cdef in &data.containers {
+        let scope_table_idx = scope_table_map.get(&cdef.scope_id).copied().unwrap_or(0);
         containers.push(LinkedContainer {
             id: cdef.id,
             bytecode: cdef.bytecode.clone(),
             counting_flags: cdef.counting_flags,
             path_hash: cdef.path_hash,
+            scope_table_idx,
         });
-    }
-
-    // Build line tables parallel to containers.
-    let lt_map: HashMap<DefinitionId, &[brink_format::LineEntry]> = data
-        .line_tables
-        .iter()
-        .map(|lt| (lt.container_id, lt.lines.as_slice()))
-        .collect();
-
-    for cdef in &data.containers {
-        let lines = lt_map
-            .get(&cdef.id)
-            .map_or_else(Vec::new, |entries| entries.to_vec());
-        line_tables.push(lines);
     }
 
     // Build globals.
