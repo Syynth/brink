@@ -22,7 +22,7 @@ mod inkt;
 pub use counting::CountingFlags;
 pub use definition::{
     AddressDef, ContainerDef, ContainerLineTable, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef,
+    ListItemDef, content_hash,
 };
 pub use id::{DefinitionId, DefinitionTag, LineId, NameId};
 pub use inkb::{

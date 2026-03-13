@@ -109,7 +109,7 @@ impl<'a> ContainerEmitter<'a> {
             u16::try_from(self.line_table.len()).map_err(|_| ConvertError::LineTableOverflow)?;
         self.line_table.push(LineEntry {
             content: LineContent::Plain(text.to_string()),
-            source_hash: 0,
+            source_hash: brink_format::content_hash(text),
         });
         Ok(idx)
     }

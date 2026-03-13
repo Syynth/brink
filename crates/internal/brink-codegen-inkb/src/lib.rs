@@ -95,7 +95,7 @@ impl<'a> ContainerEmitter<'a> {
         let idx = self.line_table.len() as u16;
         self.line_table.push(LineEntry {
             content: LineContent::Plain(text.to_string()),
-            source_hash: 0,
+            source_hash: brink_format::content_hash(text),
         });
         idx
     }

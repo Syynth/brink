@@ -72,6 +72,19 @@ pub struct AddressDef {
     pub byte_offset: u32,
 }
 
+/// Compute a deterministic hash of line content text.
+///
+/// Used by both the compiler codegen and the converter to populate
+/// [`LineEntry::source_hash`]. The hash detects when source text has
+/// changed across builds, enabling the regeneration workflow in the
+/// internationalization pipeline.
+pub fn content_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// An externally-bound function definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExternalFnDef {
@@ -79,4 +92,27 @@ pub struct ExternalFnDef {
     pub name: NameId,
     pub arg_count: u8,
     pub fallback: Option<DefinitionId>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_hash_deterministic() {
+        let a = content_hash("Hello, world!");
+        let b = content_hash("Hello, world!");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn content_hash_non_zero_for_non_empty() {
+        assert_ne!(content_hash("some text"), 0);
+        assert_ne!(content_hash("x"), 0);
+    }
+
+    #[test]
+    fn content_hash_differs_for_different_input() {
+        assert_ne!(content_hash("hello"), content_hash("world"));
+    }
 }
