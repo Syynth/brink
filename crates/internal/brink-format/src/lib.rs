@@ -11,6 +11,7 @@ mod counting;
 mod definition;
 mod id;
 mod inkb;
+mod inkl;
 mod line;
 mod opcode;
 mod story;
@@ -22,7 +23,7 @@ mod inkt;
 pub use counting::CountingFlags;
 pub use definition::{
     AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
-    ScopeLineTable, content_hash,
+    LocaleData, LocaleLineEntry, LocaleScopeTable, ScopeLineTable, content_hash,
 };
 pub use id::{DefinitionId, DefinitionTag, LineId, NameId};
 pub use inkb::{
@@ -34,6 +35,7 @@ pub use inkb::{
     write_section_line_tables, write_section_list_defs, write_section_list_items,
     write_section_list_literals, write_section_name_table, write_section_variables,
 };
+pub use inkl::{read_inkl, write_inkl};
 pub use line::{LineContent, LinePart, LineTemplate, PluralCategory, PluralResolver, SelectKey};
 pub use opcode::{ChoiceFlags, DecodeError, Opcode, SequenceKind};
 pub use story::StoryData;

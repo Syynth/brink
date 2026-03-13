@@ -450,6 +450,8 @@ mod tests {
                 m
             },
             line_tables: vec![vec![]],
+            scope_ids: vec![DefinitionId::new(DefinitionTag::Address, 0)],
+            source_checksum: 0,
             globals: vec![],
             global_map: HashMap::new(),
             name_table: vec![],

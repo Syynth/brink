@@ -474,13 +474,20 @@ fn decode_scope_line_table(buf: &[u8], off: &mut usize) -> Result<ScopeLineTable
 fn decode_line_entry(buf: &[u8], off: &mut usize) -> Result<LineEntry, DecodeError> {
     let content = decode_line_content(buf, off)?;
     let source_hash = read_u64(buf, off)?;
+    let has_audio = read_u8(buf, off)? != 0;
+    let audio_ref = if has_audio {
+        Some(read_str(buf, off)?)
+    } else {
+        None
+    };
     Ok(LineEntry {
         content,
         source_hash,
+        audio_ref,
     })
 }
 
-fn decode_line_content(buf: &[u8], off: &mut usize) -> Result<LineContent, DecodeError> {
+pub(crate) fn decode_line_content(buf: &[u8], off: &mut usize) -> Result<LineContent, DecodeError> {
     let tag = read_u8(buf, off)?;
     match tag {
         LINE_PLAIN => Ok(LineContent::Plain(read_str(buf, off)?)),

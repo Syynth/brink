@@ -651,9 +651,25 @@ fn parse_line_entry(pair: P<'_>) -> Result<LineEntry, InktParseError> {
     let hash_str = hash_pair.as_str();
     let source_hash = parse_hex_u64(&format!("0x{}", &hash_str[1..]))?;
 
+    let audio_ref = if let Some(audio_pair) = inner.next() {
+        // audio_field → "(" "audio" string ")"
+        let s = audio_pair
+            .into_inner()
+            .next()
+            .ok_or_else(|| InktParseError {
+                message: "expected audio string".into(),
+                line: 0,
+                col: 0,
+            })?;
+        Some(unescape_string(s.as_str()))
+    } else {
+        None
+    };
+
     Ok(LineEntry {
         content,
         source_hash,
+        audio_ref,
     })
 }
 

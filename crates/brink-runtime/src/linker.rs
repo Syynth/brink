@@ -28,9 +28,11 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
         HashMap::with_capacity(data.line_tables.len());
     let mut line_tables: Vec<Vec<brink_format::LineEntry>> =
         Vec::with_capacity(data.line_tables.len());
+    let mut scope_ids: Vec<DefinitionId> = Vec::with_capacity(data.line_tables.len());
     for lt in &data.line_tables {
         let idx = line_tables.len() as u32;
         scope_table_map.insert(lt.scope_id, idx);
+        scope_ids.push(lt.scope_id);
         line_tables.push(lt.lines.clone());
     }
 
@@ -136,6 +138,8 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
         containers,
         address_map,
         line_tables,
+        scope_ids,
+        source_checksum: 0,
         globals,
         global_map,
         name_table,

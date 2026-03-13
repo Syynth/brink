@@ -39,6 +39,7 @@ pub fn export_lines(story: &StoryData, source_checksum: u32) -> LinesJson {
                         index,
                         content: convert_content(&entry.content),
                         hash: format!("{:016x}", entry.source_hash),
+                        audio: entry.audio_ref.clone(),
                     }
                 })
                 .collect();

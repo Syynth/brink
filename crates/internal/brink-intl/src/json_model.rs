@@ -1,9 +1,9 @@
 //! Serde-derived JSON types for `lines.json` export.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Top-level `lines.json` structure.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LinesJson {
     pub version: u32,
     pub source_checksum: String,
@@ -11,7 +11,7 @@ pub struct LinesJson {
 }
 
 /// A single scope (root, knot, or stitch) in the line table export.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ScopeJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -20,32 +20,34 @@ pub struct ScopeJson {
 }
 
 /// A single line entry within a scope.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LineJson {
     pub index: u16,
     pub content: ContentJson,
     pub hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<String>,
 }
 
 /// Line content — either a plain string or a template with parts.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ContentJson {
-    Plain(String),
     Template { template: Vec<PartJson> },
+    Plain(String),
 }
 
 /// A single part of a template line.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PartJson {
-    Literal(String),
     Slot { slot: u8 },
     Select { select: SelectJson },
+    Literal(String),
 }
 
 /// A plural/keyword select over a slot value.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SelectJson {
     pub slot: u8,
     pub variants: Vec<serde_json::Map<String, serde_json::Value>>,

@@ -73,10 +73,16 @@ fn arb_line_content() -> impl Strategy<Value = LineContent> {
 }
 
 fn arb_line_entry() -> impl Strategy<Value = LineEntry> {
-    (arb_line_content(), any::<u64>()).prop_map(|(content, source_hash)| LineEntry {
-        content,
-        source_hash,
-    })
+    (
+        arb_line_content(),
+        any::<u64>(),
+        prop::option::of("[a-z0-9/_-]{1,20}".prop_map(String::from)),
+    )
+        .prop_map(|(content, source_hash, audio_ref)| LineEntry {
+            content,
+            source_hash,
+            audio_ref,
+        })
 }
 
 fn arb_counting_flags() -> impl Strategy<Value = CountingFlags> {

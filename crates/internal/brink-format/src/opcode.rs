@@ -262,6 +262,10 @@ pub enum DecodeError {
     ChecksumMismatch { expected: u32, actual: u32 },
     /// Section offset table is structurally invalid (out of bounds or not monotonic).
     InvalidSectionOffset { kind: u8, offset: u32 },
+    /// `.inkl` magic bytes are not `INKL`.
+    BadInklMagic([u8; 4]),
+    /// `.inkl` version is not supported.
+    UnsupportedInklVersion(u8),
 }
 
 impl fmt::Display for DecodeError {
@@ -301,6 +305,8 @@ impl fmt::Display for DecodeError {
                     "invalid section offset: kind {kind:#04x} at offset {offset}"
                 )
             }
+            Self::BadInklMagic(m) => write!(f, "bad .inkl magic: {m:02x?}"),
+            Self::UnsupportedInklVersion(v) => write!(f, "unsupported .inkl version: {v}"),
         }
     }
 }

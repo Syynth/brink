@@ -111,6 +111,7 @@ impl<'a> ContainerEmitter<'a> {
         self.scope_line_table.push(LineEntry {
             content: LineContent::Plain(text.to_string()),
             source_hash,
+            audio_ref: None,
         });
         idx
     }

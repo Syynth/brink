@@ -24,8 +24,8 @@
 //! 4       4      Offset: u32 LE (byte offset from start of file)
 //! ```
 
-mod read;
-mod write;
+pub(crate) mod read;
+pub(crate) mod write;
 
 pub use read::{
     read_inkb, read_inkb_index, read_section_addresses, read_section_containers,

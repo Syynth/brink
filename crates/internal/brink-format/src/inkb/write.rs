@@ -374,10 +374,19 @@ fn encode_scope_line_table(lt: &ScopeLineTable, buf: &mut Vec<u8>) {
 fn encode_line_entry(entry: &LineEntry, buf: &mut Vec<u8>) {
     encode_line_content(&entry.content, buf);
     write_u64(buf, entry.source_hash);
+    match &entry.audio_ref {
+        Some(audio) => {
+            write_u8(buf, 1);
+            write_str(buf, audio);
+        }
+        None => {
+            write_u8(buf, 0);
+        }
+    }
 }
 
 #[expect(clippy::cast_possible_truncation)]
-fn encode_line_content(content: &LineContent, buf: &mut Vec<u8>) {
+pub(crate) fn encode_line_content(content: &LineContent, buf: &mut Vec<u8>) {
     match content {
         LineContent::Plain(s) => {
             write_u8(buf, LINE_PLAIN);

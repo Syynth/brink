@@ -25,6 +25,7 @@
 mod error;
 mod linker;
 mod list_ops;
+mod locale;
 mod output;
 mod program;
 pub mod rng;
@@ -35,6 +36,7 @@ mod vm;
 
 pub use error::RuntimeError;
 pub use linker::link;
+pub use locale::LocaleMode;
 pub use program::Program;
 pub use rng::{DotNetRng, FastRng, StoryRng};
 pub use state::{StoryState, WriteObserver};

@@ -41,6 +41,21 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Compile translated lines.json into a .inkl locale overlay
+    CompileLocale {
+        /// Base .inkb file
+        #[arg(long)]
+        base: PathBuf,
+        /// Translated lines.json file
+        #[arg(long)]
+        lines: PathBuf,
+        /// BCP 47 locale tag (e.g. "es", "ja")
+        #[arg(long)]
+        locale: String,
+        /// Output .inkl file
+        #[arg(short, long)]
+        output: PathBuf,
+    },
     /// Play an ink story interactively
     Play {
         /// Story file (.ink.json, .inkb, or .inkt)
@@ -77,6 +92,17 @@ fn main() -> ExitCode {
             }
             Commands::ExportLines { input, output } => {
                 if let Err(e) = run_export_lines(&input, output.as_deref()) {
+                    tracing::error!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            Commands::CompileLocale {
+                base,
+                lines,
+                locale,
+                output,
+            } => {
+                if let Err(e) = run_compile_locale(&base, &lines, &locale, &output) {
                     tracing::error!("{e}");
                     return ExitCode::FAILURE;
                 }
@@ -208,6 +234,20 @@ fn run_export_lines(
         handle.write_all(b"\n")?;
     }
 
+    Ok(())
+}
+
+fn run_compile_locale(
+    base: &std::path::Path,
+    lines: &std::path::Path,
+    locale: &str,
+    output: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let base_bytes = std::fs::read(base)?;
+    let lines_text = std::fs::read_to_string(lines)?;
+    let lines_json: brink_intl::LinesJson = serde_json::from_str(&lines_text)?;
+    let inkl_bytes = brink_intl::compile_locale(&base_bytes, &lines_json, locale)?;
+    std::fs::write(output, &inkl_bytes)?;
     Ok(())
 }
 

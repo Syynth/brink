@@ -28,6 +28,29 @@ pub struct ContainerDef {
 pub struct LineEntry {
     pub content: LineContent,
     pub source_hash: u64,
+    pub audio_ref: Option<String>,
+}
+
+/// A locale line entry — content + optional audio, no source metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocaleLineEntry {
+    pub content: LineContent,
+    pub audio_ref: Option<String>,
+}
+
+/// A per-scope locale line table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocaleScopeTable {
+    pub scope_id: DefinitionId,
+    pub lines: Vec<LocaleLineEntry>,
+}
+
+/// Complete locale overlay data from a `.inkl` file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocaleData {
+    pub locale_tag: String,
+    pub base_checksum: u32,
+    pub line_tables: Vec<LocaleScopeTable>,
 }
 
 /// Per-scope line table, stored separately from [`ContainerDef`] for

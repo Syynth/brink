@@ -225,7 +225,11 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
         for (i, entry) in lines.iter().enumerate() {
             write!(w, "      {i} ")?;
             write_line_content(w, &entry.content)?;
-            writeln!(w, " @{:016x}", entry.source_hash)?;
+            write!(w, " @{:016x}", entry.source_hash)?;
+            if let Some(audio) = &entry.audio_ref {
+                write!(w, " (audio \"{}\")", escape_string(audio))?;
+            }
+            writeln!(w)?;
         }
         writeln!(w, "    )")?;
     }

@@ -14,6 +14,10 @@ pub struct Program {
     /// Contains both container IDs (offset 0) and intra-container addresses.
     pub(crate) address_map: HashMap<DefinitionId, (u32, usize)>,
     pub(crate) line_tables: Vec<Vec<LineEntry>>,
+    /// Scope `DefinitionId` for each entry in `line_tables` (parallel vec).
+    pub(crate) scope_ids: Vec<DefinitionId>,
+    /// CRC-32 checksum from the source `.inkb`, used for locale validation.
+    pub(crate) source_checksum: u32,
     pub(crate) globals: Vec<GlobalSlot>,
     pub(crate) global_map: HashMap<DefinitionId, u32>,
     pub(crate) name_table: Vec<String>,

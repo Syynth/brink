@@ -58,4 +58,13 @@ pub enum RuntimeError {
 
     #[error("step limit exceeded ({0} steps)")]
     StepLimitExceeded(u64),
+
+    #[error("locale checksum mismatch: expected {expected:#010x}, got {actual:#010x}")]
+    LocaleChecksumMismatch { expected: u32, actual: u32 },
+
+    #[error("locale scope not in base program: {0}")]
+    LocaleScopeNotInBase(DefinitionId),
+
+    #[error("locale missing scope required by strict mode: {0}")]
+    LocaleScopeMissing(DefinitionId),
 }

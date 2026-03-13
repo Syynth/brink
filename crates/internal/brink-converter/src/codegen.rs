@@ -113,6 +113,7 @@ impl<'a> ContainerEmitter<'a> {
         self.line_table.push(LineEntry {
             content: LineContent::Plain(text.to_string()),
             source_hash: brink_format::content_hash(text),
+            audio_ref: None,
         });
         // Return scope-relative index.
         Ok(self.scope_line_offset + local_idx)
