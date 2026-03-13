@@ -13,7 +13,13 @@ use super::lir;
 /// containers. This function handles all remaining statement types.
 pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir::Stmt> {
     match stmt {
-        hir::Stmt::Content(content) => Some(lir::Stmt::EmitContent(lower_content(content, ctx))),
+        hir::Stmt::Content(content) => {
+            if let Some(emission) = super::recognize::try_recognize(content, ctx) {
+                Some(lir::Stmt::EmitLine(emission))
+            } else {
+                Some(lir::Stmt::EmitContent(lower_content(content, ctx)))
+            }
+        }
 
         hir::Stmt::Divert(divert) => {
             Some(lir::Stmt::Divert(lower_divert_target(&divert.target, ctx)))

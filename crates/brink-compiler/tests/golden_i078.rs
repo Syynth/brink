@@ -269,12 +269,11 @@ fn i078_lir() {
 
     assert!(matches!(&c0.body[0], lir::Stmt::EndOfLine));
 
-    let lir::Stmt::EmitContent(text_content) = &c0.body[1] else {
-        panic!("expected EmitContent in c-0 body");
+    let lir::Stmt::EmitLine(emission) = &c0.body[1] else {
+        panic!("expected EmitLine in c-0 body");
     };
-    assert_eq!(text_content.parts.len(), 1);
-    assert!(matches!(&text_content.parts[0], lir::ContentPart::Text(t) if t == "Text"));
-    assert!(text_content.tags.is_empty());
+    assert!(matches!(&emission.line, lir::RecognizedLine::Plain(t) if t == "Text"));
+    assert!(emission.tags.is_empty());
 
     assert!(matches!(&c0.body[2], lir::Stmt::EndOfLine));
 

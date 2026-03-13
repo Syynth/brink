@@ -6,6 +6,21 @@ use brink_ir::lir;
 use crate::ContainerEmitter;
 
 impl ContainerEmitter<'_> {
+    pub(super) fn emit_recognized_line(&mut self, emission: &lir::ContentEmission) {
+        match &emission.line {
+            lir::RecognizedLine::Plain(text) => {
+                let idx = self.add_line_with_hash(text, emission.metadata.source_hash);
+                self.emit(Opcode::EmitLine(idx));
+            }
+        }
+
+        for tag in &emission.tags {
+            self.emit(Opcode::BeginTag);
+            self.emit_content_parts(tag);
+            self.emit(Opcode::EndTag);
+        }
+    }
+
     pub(super) fn emit_content(&mut self, content: &lir::Content) {
         self.emit_content_parts(&content.parts);
 

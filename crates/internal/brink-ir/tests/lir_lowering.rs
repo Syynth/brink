@@ -80,16 +80,26 @@ fn count_all(container: &lir::Container) -> usize {
 fn collect_text(stmts: &[lir::Stmt]) -> Vec<String> {
     let mut texts = Vec::new();
     for stmt in stmts {
-        if let lir::Stmt::EmitContent(content) = stmt {
-            let mut line = String::new();
-            for part in &content.parts {
-                if let lir::ContentPart::Text(t) = part {
-                    line.push_str(t);
+        match stmt {
+            lir::Stmt::EmitContent(content) => {
+                let mut line = String::new();
+                for part in &content.parts {
+                    if let lir::ContentPart::Text(t) = part {
+                        line.push_str(t);
+                    }
+                }
+                if !line.is_empty() {
+                    texts.push(line);
                 }
             }
-            if !line.is_empty() {
-                texts.push(line);
-            }
+            lir::Stmt::EmitLine(emission) => match &emission.line {
+                lir::RecognizedLine::Plain(s) => {
+                    if !s.is_empty() {
+                        texts.push(s.clone());
+                    }
+                }
+            },
+            _ => {}
         }
     }
     texts
@@ -797,8 +807,11 @@ fn choice_no_divert_endofline_in_target_body() {
         "second stmt should be EndOfLine"
     );
     assert!(
-        matches!(&c0.body[2], lir::Stmt::EmitContent(_)),
-        "third stmt should be EmitContent"
+        matches!(
+            &c0.body[2],
+            lir::Stmt::EmitContent(_) | lir::Stmt::EmitLine(_)
+        ),
+        "third stmt should be EmitContent or EmitLine"
     );
 }
 
@@ -1599,13 +1612,10 @@ fn content_tags() {
     let tag_sets: Vec<&Vec<Vec<lir::ContentPart>>> = r
         .body
         .iter()
-        .filter_map(|s| {
-            if let lir::Stmt::EmitContent(c) = s
-                && !c.tags.is_empty()
-            {
-                return Some(&c.tags);
-            }
-            None
+        .filter_map(|s| match s {
+            lir::Stmt::EmitContent(c) if !c.tags.is_empty() => Some(&c.tags),
+            lir::Stmt::EmitLine(e) if !e.tags.is_empty() => Some(&e.tags),
+            _ => None,
         })
         .collect();
     assert!(!tag_sets.is_empty(), "content should have tags");
@@ -1941,4 +1951,94 @@ fn call_through_temp_variable() {
         has_call_var_temp,
         "call through temp variable should produce CallVariableTemp"
     );
+}
+
+// ─── Pattern recognizer tests ───────────────────────────────────────
+
+#[test]
+fn plain_text_recognized() {
+    let program = lower_ink("Hello, world!\n");
+    let body = &root(&program).body;
+    assert!(
+        matches!(&body[0], lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Hello, world!")),
+        "plain text should be recognized as EmitLine(Plain(...))"
+    );
+}
+
+#[test]
+fn plain_text_source_hash() {
+    let program = lower_ink("Hello\n");
+    let body = &root(&program).body;
+    if let lir::Stmt::EmitLine(emission) = &body[0] {
+        assert_eq!(
+            emission.metadata.source_hash,
+            brink_format::content_hash("Hello"),
+            "source_hash should match content_hash of the text"
+        );
+    } else {
+        panic!(
+            "expected EmitLine, got {:?}",
+            std::mem::discriminant(&body[0])
+        );
+    }
+}
+
+#[test]
+fn plain_text_with_tag_recognized() {
+    let program = lower_ink("Hello #tag\n");
+    let body = &root(&program).body;
+    if let lir::Stmt::EmitLine(emission) = &body[0] {
+        assert!(
+            matches!(&emission.line, lir::RecognizedLine::Plain(s) if s == "Hello "),
+            "text before tag should be plain"
+        );
+        assert_eq!(emission.tags.len(), 1, "should have one tag");
+    } else {
+        panic!("expected EmitLine for plain text with tag");
+    }
+}
+
+#[test]
+fn interpolation_not_recognized() {
+    let program = lower_ink("VAR name = \"world\"\nHello, {name}!\n");
+    // Find the content stmt (skip DeclareTemp/Assign for the VAR)
+    let body = &root(&program).body;
+    let has_emit_content = body.iter().any(|s| matches!(s, lir::Stmt::EmitContent(_)));
+    assert!(
+        has_emit_content,
+        "interpolation should fall back to EmitContent"
+    );
+}
+
+#[test]
+fn glue_not_recognized() {
+    let program = lower_ink("Hello<>\n");
+    let body = &root(&program).body;
+    let has_emit_content = body.iter().any(|s| matches!(s, lir::Stmt::EmitContent(_)));
+    assert!(
+        has_emit_content,
+        "content with glue should fall back to EmitContent"
+    );
+}
+
+#[test]
+fn multiple_plain_lines() {
+    let program = lower_ink("Line one\nLine two\n");
+    let body = &root(&program).body;
+    let emit_lines: Vec<_> = body
+        .iter()
+        .filter(|s| matches!(s, lir::Stmt::EmitLine(_)))
+        .collect();
+    assert_eq!(
+        emit_lines.len(),
+        2,
+        "two plain text lines should both be recognized"
+    );
+}
+
+#[test]
+fn collect_text_includes_recognized() {
+    let program = lower_ink("Hello, world!\n");
+    let texts = collect_text(&root(&program).body);
+    assert_eq!(texts, vec!["Hello, world!"]);
 }

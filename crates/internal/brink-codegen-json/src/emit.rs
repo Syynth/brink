@@ -94,6 +94,19 @@ fn emit_stmt(
     match stmt {
         lir::Stmt::EmitContent(content) => emit_content(content, lookups, cctx, out),
 
+        lir::Stmt::EmitLine(emission) => {
+            match &emission.line {
+                lir::RecognizedLine::Plain(text) => {
+                    out.push(Element::Value(InkValue::String(text.clone())));
+                }
+            }
+            for tag in &emission.tags {
+                out.push(Element::ControlCommand(ControlCommand::Tag));
+                emit_content_tag_parts(tag, lookups, cctx, out);
+                out.push(Element::ControlCommand(ControlCommand::EndTag));
+            }
+        }
+
         // Choice output content (start+inner) is not emitted in JSON format.
         // Inklecate structures this as child container references in the
         // choice target path, not as inline content. The divert and newline
@@ -847,10 +860,12 @@ fn emit_choice_set(
         // Inklecate appends a "done" sub-container named g-{N+1} after
         // explicit gather bodies that have text content (not just a bare divert),
         // unless the gather ends with a terminal exit (-> END / -> DONE).
-        let has_content = gather
-            .body
-            .iter()
-            .any(|s| matches!(s, lir::Stmt::EmitContent(_) | lir::Stmt::ChoiceOutput(_)));
+        let has_content = gather.body.iter().any(|s| {
+            matches!(
+                s,
+                lir::Stmt::EmitContent(_) | lir::Stmt::EmitLine(_) | lir::Stmt::ChoiceOutput(_)
+            )
+        });
         let ends_terminal = gather.body.last().is_some_and(|s| {
             matches!(
                 s,
@@ -1108,7 +1123,10 @@ fn build_choice_target(
         let has_content = child.body.iter().any(|s| {
             matches!(
                 s,
-                lir::Stmt::EmitContent(_) | lir::Stmt::ChoiceOutput(_) | lir::Stmt::EndOfLine
+                lir::Stmt::EmitContent(_)
+                    | lir::Stmt::EmitLine(_)
+                    | lir::Stmt::ChoiceOutput(_)
+                    | lir::Stmt::EndOfLine
             )
         });
         let ends_terminal = child.body.last().is_some_and(|s| {

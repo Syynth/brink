@@ -15,6 +15,7 @@ impl ContainerEmitter<'_> {
     fn emit_stmt(&mut self, stmt: &lir::Stmt) {
         match stmt {
             lir::Stmt::EmitContent(content) => self.emit_content(content),
+            lir::Stmt::EmitLine(emission) => self.emit_recognized_line(emission),
             lir::Stmt::ChoiceOutput(content) => {
                 // Emit content parts + tags (tags appear in output after choosing).
                 self.emit_content(content);

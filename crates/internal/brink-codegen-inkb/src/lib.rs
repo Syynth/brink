@@ -90,12 +90,16 @@ impl<'a> ContainerEmitter<'a> {
         op.encode(&mut self.bytecode);
     }
 
-    #[expect(clippy::cast_possible_truncation)]
     fn add_line(&mut self, text: &str) -> u16 {
+        self.add_line_with_hash(text, brink_format::content_hash(text))
+    }
+
+    #[expect(clippy::cast_possible_truncation)]
+    fn add_line_with_hash(&mut self, text: &str, source_hash: u64) -> u16 {
         let idx = self.line_table.len() as u16;
         self.line_table.push(LineEntry {
             content: LineContent::Plain(text.to_string()),
-            source_hash: brink_format::content_hash(text),
+            source_hash,
         });
         idx
     }

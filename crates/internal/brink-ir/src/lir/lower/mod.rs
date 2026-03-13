@@ -3,6 +3,7 @@ mod context;
 mod decls;
 mod expr;
 mod plan;
+mod recognize;
 mod stmts;
 mod temps;
 
@@ -932,6 +933,16 @@ fn collect_counting_refs(
         match stmt {
             lir::Stmt::EmitContent(content) | lir::Stmt::ChoiceOutput(content) => {
                 collect_counting_refs_content(content, visit_ids, turns_ids);
+            }
+            lir::Stmt::EmitLine(emission) => {
+                // Tags may contain dynamic expressions — traverse them.
+                for tag in &emission.tags {
+                    for part in tag {
+                        if let lir::ContentPart::Interpolation(e) = part {
+                            collect_counting_refs_expr(e, visit_ids, turns_ids);
+                        }
+                    }
+                }
             }
             lir::Stmt::Assign { value: e, .. }
             | lir::Stmt::DeclareTemp { value: Some(e), .. }

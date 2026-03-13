@@ -170,6 +170,9 @@ pub enum Stmt {
     /// Emit a line of text content (with optional inline elements and tags).
     EmitContent(Content),
 
+    /// Emit a recognized line (pattern recognizer matched).
+    EmitLine(ContentEmission),
+
     /// Emit choice output content (start + inner) at the top of a choice
     /// target container. Emits content parts only — no newline or divert.
     /// The divert and newline are handled by the body stmts that follow.
@@ -369,6 +372,30 @@ pub struct CondBranch {
 pub struct Sequence {
     pub kind: SequenceType,
     pub branches: Vec<Vec<Stmt>>,
+}
+
+// ─── Recognized content (pattern recognizer output) ──────────────────
+
+/// Metadata computed during recognition while HIR provenance is available.
+#[derive(Clone)]
+pub struct LineMetadata {
+    pub source_hash: u64,
+    // Phase 3+: slot_info, source_location
+}
+
+/// A recognized line. Phase 1: plain text only.
+#[derive(Clone)]
+pub enum RecognizedLine {
+    Plain(String),
+    // Phase 2+: Template { template: LineTemplate, slot_exprs: Vec<Expr> }
+}
+
+/// Result of pattern recognition on a content line.
+#[derive(Clone)]
+pub struct ContentEmission {
+    pub line: RecognizedLine,
+    pub metadata: LineMetadata,
+    pub tags: Vec<Vec<ContentPart>>,
 }
 
 // ─── Content and inline elements ─────────────────────────────────────
