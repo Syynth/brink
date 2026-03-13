@@ -11,8 +11,24 @@ cargo build --workspace                                # full build
 
 ```sh
 cargo test --workspace                                 # run all tests
-cargo test -p brink-runtime corpus_tier1 -- --nocapture  # runtime corpus tests
 ```
+
+### Episode corpus
+
+The episode corpus is the primary correctness tool. It compares the native compiler's output against the converter reference.
+
+```sh
+# Corpus report -- per-category pass/fail breakdown
+cargo test -p brink-test-harness --test corpus_report -- --nocapture
+
+# Run all episodes
+cargo test -p brink-test-harness --test brink_native_episodes -- --nocapture
+
+# Single test case (filter by name substring)
+BRINK_CASE=I002 cargo test -p brink-test-harness --test brink_native_episodes -- --nocapture
+```
+
+The harness prints three things for each failure: the `.ink` source, the compiler's `.inkt` dump, and the converter's `.inkt` dump. This enables side-by-side comparison to root-cause divergences.
 
 ## Linting
 
@@ -24,17 +40,10 @@ cargo fmt --all                                        # format fix
 
 ## Lint policy
 
-- `unsafe_code`, `unwrap_used`, `expect_used`, `panic`, `todo`, `print_stdout`, `print_stderr` are **denied**
-- Clippy pedantic is on (with a few allows for noise)
+- `unsafe_code`, `unwrap_used`, `expect_used`, `panic`, `todo`, `print_stdout`, `print_stderr` are **denied** in library crates
+- Clippy pedantic is enabled (with targeted allows for noise)
 - Tests are exempt from unwrap/expect/dbg/print restrictions (via `clippy.toml`)
 
-## Implementation policy
+## Determinism
 
-Spike implementations are v0 — they exist to validate crate interfaces, not to be final code. When working on a crate, prefer rewriting over patching if the existing implementation doesn't match the target design. Tests and public API signatures are the stable artifacts; everything behind them is disposable.
-
-<!-- TODO: expand on contribution guidelines once the project matures:
-  - PR process
-  - Commit message conventions
-  - How to add a new opcode
-  - How to add a new test case
--->
+Never iterate `HashMap` keys/values where order affects output. Sort or use `BTreeMap`. This applies to all output-producing code paths -- bytecode emission, line table construction, name table serialization, and test output.

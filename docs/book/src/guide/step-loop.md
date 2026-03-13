@@ -7,19 +7,15 @@ let mut story = Story::new(&program);
 
 loop {
     match story.continue_maximally()? {
-        StepResult::Done { text } => {
-            // Story paused — more content may follow.
-            // Call continue_maximally() again to continue.
+        StepResult::Done { text, tags, .. } => {
             print!("{text}");
         }
-        StepResult::Choices { text, choices } => {
-            // Story is waiting for player input.
+        StepResult::Choices { text, choices, tags, .. } => {
             print!("{text}");
-            // ... present choices, get player's selection ...
+            // Present choices, get player's selection...
             story.choose(chosen_index)?;
         }
-        StepResult::Ended { text } => {
-            // Story is permanently finished.
+        StepResult::Ended { text, tags, .. } => {
             print!("{text}");
             break;
         }
@@ -27,25 +23,27 @@ loop {
 }
 ```
 
-## `StepResult` variants
+## StepResult variants
 
-<!-- TODO: explain each variant in detail:
-  - Done: yielded text, can resume with another continue_maximally(). Story may produce more
-    Done results before reaching Choices or Ended.
-  - Choices: yielded text AND choices. Must call choose() before next continue_maximally().
-  - Ended: story hit an `-> END`. Cannot step further.
--->
+| Variant | Meaning | Next action |
+|---------|---------|-------------|
+| `Done { text, tags }` | Story yielded text at a `done` point. More content may follow. | Call `continue_maximally()` again. |
+| `Choices { text, choices, tags }` | Story yielded text and is waiting for a choice. | Call `story.choose(index)`, then `continue_maximally()`. |
+| `Ended { text, tags }` | Story reached `-> END`. Permanently finished. | Stop stepping. |
 
-## `StoryStatus`
+Each variant carries the text produced since the last yield point. The `tags` field contains any ink tags (`# tag`) attached to the current output.
 
-<!-- TODO: explain the status enum and when each state is active:
-  - Active — ready to step
-  - WaitingForChoice — must call choose() next
-  - Done — paused, can resume
-  - Ended — permanently finished
--->
+## StoryStatus
+
+You can also query `story.status()` at any time:
+
+| Status | Meaning |
+|--------|---------|
+| `Active` | Ready to step. |
+| `WaitingForChoice` | Must call `choose()` before stepping. |
+| `Done` | Hit a `done` opcode. Can resume with `continue_maximally()`. |
+| `Ended` | Hit `-> END`. Cannot step further. |
 
 ## Text accumulation
 
-<!-- TODO: explain that text may come in pieces across multiple Done results
-     before a Choices or Ended. The step loop often needs to accumulate. -->
+A story may produce multiple `Done` results in sequence before reaching `Choices` or `Ended`. Each `StepResult` carries only the text produced since the previous yield. If your application needs the full passage text, accumulate across `Done` results until a `Choices` or `Ended` arrives.

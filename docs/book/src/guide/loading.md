@@ -1,17 +1,23 @@
 # Loading & Linking
 
-Before running a story, you need to load the compiled data and link it into a `Program`.
+Before running a story, you need to produce `StoryData` and link it into a `Program`.
 
-## Loading story data
+## Producing StoryData
 
-<!-- TODO: explain the three input formats and how to load each:
-  - .inkb (binary) — brink_format::read_inkb()
-  - .inkt (textual) — brink_format::read_inkt()
-  - .ink.json (inklecate output) — parse with brink_json, convert with brink_converter
--->
+There are two paths:
 
-<!-- TODO: note that brink-format is internal — users should use the brink umbrella crate
-     or brink-cli for loading. Show the pattern used in brink-cli's load_story_data(). -->
+**From `.ink` source** (native compiler):
+
+```rust,ignore
+let story_data = brink_compiler::compile_path("story.ink")?;
+```
+
+**From `.inkb` bytes** (pre-compiled binary):
+
+```rust,ignore
+let bytes = std::fs::read("story.inkb")?;
+let story_data = brink_format::inkb::decode(&bytes)?;
+```
 
 ## Linking
 
@@ -19,11 +25,18 @@ Before running a story, you need to load the compiled data and link it into a `P
 let program = brink_runtime::link(&story_data)?;
 ```
 
-<!-- TODO: explain what the linker does:
-  - Resolves all DefinitionId references to fast runtime indices
-  - Resolves external functions (host bindings, fallbacks)
-  - Initializes global variable defaults
-  - Produces an immutable Program
--->
+The linker resolves all `DefinitionId` references to compact runtime indices, validates the container graph, and initializes global variable defaults. The result is an immutable `Program`.
 
-<!-- TODO: error cases — UnresolvedDefinition, NoRootContainer -->
+## Creating stories
+
+```rust,ignore
+let mut story = Story::new(&program);
+```
+
+`Story` borrows from `Program`. You can create multiple stories from the same program for parallel execution or replaying with different choices.
+
+## Error cases
+
+- **`Decode`** -- corrupt or incompatible `.inkb` file (wrong magic, bad checksum, truncated data)
+- **`UnresolvedDefinition`** -- a container references a `DefinitionId` that doesn't exist in the story data
+- **`NoRootContainer`** -- the story has no entry point container

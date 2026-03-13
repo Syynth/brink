@@ -6,32 +6,26 @@ Play an ink story interactively in the terminal.
 brink play [OPTIONS] <FILE>
 ```
 
+Accepts `.inkb`, `.ink.json`, or `.inkt` files.
+
 ## Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--speed <N>` | `30` | Typewriter speed in characters per second (0 = instant) |
-| `--input <FILE>` | — | Read choice inputs from a file (batch mode) |
+| `--speed <N>` / `-s` | `30` | Typewriter speed in characters per second (0 = instant) |
+| `--input <FILE>` / `-i` | -- | Read choice inputs from a file (batch mode) |
 
 ## Interactive mode
 
-When run in a terminal, `brink play` launches a full-screen TUI with:
-
-<!-- TODO: describe the TUI features
-  - Typewriter text reveal for both passage text and choices
-  - Arrow-key choice selection with wrap-around
-  - Tab to switch focus between story scrollback and choice panel
-  - History fades in above the current passage
-  - Stable layout (no jumping)
--->
+When run in a terminal, `brink play` launches a TUI with typewriter text reveal and arrow-key choice selection.
 
 ### Key bindings
 
 | Key | Story panel | Choice panel |
 |-----|------------|--------------|
 | `Space` | Skip typewriter | Skip typewriter |
-| `↑/↓` | Scroll history | Select choice |
-| `Enter` | — | Confirm choice |
+| `Up/Down` | Scroll history | Select choice |
+| `Enter` | -- | Confirm choice |
 | `Tab` | Focus choices | Focus story |
 | `q` | Quit | Quit |
 
@@ -41,10 +35,10 @@ When stdin is piped or `--input` is provided, the TUI is bypassed and choices ar
 
 ```sh
 # Pipe choices
-printf "1\n3\n" | brink play story.ink.json
+printf "1\n3\n" | brink play story.inkb
 
 # Read choices from a file
-brink play story.ink.json --input choices.txt
+brink play story.inkb -i choices.txt
 ```
 
-<!-- TODO: explain batch output format -->
+In batch mode, story text and choices are printed to stdout as plain text.

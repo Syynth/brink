@@ -8,6 +8,7 @@
   - [Installation](./guide/installation.md)
   - [Quick Start](./guide/quick-start.md)
 - [The CLI](./cli/index.md)
+  - [brink compile](./cli/compile.md)
   - [brink convert](./cli/convert.md)
   - [brink play](./cli/play.md)
 - [Runtime API](./guide/runtime.md)

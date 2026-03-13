@@ -2,7 +2,7 @@
 
 Lines in brink can be plain strings or templates with interpolation slots and plural/gender selects.
 
-## `LineContent`
+## LineContent
 
 ```rust,ignore
 enum LineContent {
@@ -10,7 +10,9 @@ enum LineContent {
     Template(LineTemplate),
 }
 
-type LineTemplate = Vec<LinePart>;
+struct LineTemplate {
+    parts: Vec<LinePart>,
+}
 ```
 
 ## Template parts
@@ -18,7 +20,7 @@ type LineTemplate = Vec<LinePart>;
 ```rust,ignore
 enum LinePart {
     Literal(String),
-    Slot(u8),              // value interpolation (index into evaluation stack snapshot)
+    Slot(u8),
     Select {
         slot: u8,
         variants: Vec<(SelectKey, String)>,
@@ -27,11 +29,9 @@ enum LinePart {
 }
 ```
 
-<!-- TODO: explain each LinePart variant with examples:
-  - Literal — static text fragments between dynamic parts
-  - Slot — runtime value injection, e.g. "You have {0} gold"
-  - Select — plural/keyword branching, e.g. "{0} {0:cardinal:one=apple|other=apples}"
--->
+- **Literal** -- static text fragments between dynamic parts.
+- **Slot** -- runtime value interpolation. The `u8` is an index into the evaluation stack snapshot captured when the line is emitted. For example, `"You have {0} gold"` becomes `[Literal("You have "), Slot(0), Literal(" gold")]`.
+- **Select** -- plural/keyword branching. Selects a variant string based on the runtime value at the given slot, using a `SelectKey` to match. Falls back to `default` if no variant matches.
 
 ## Select keys
 
@@ -44,22 +44,20 @@ enum SelectKey {
 }
 ```
 
-<!-- TODO: explain each SelectKey variant:
-  - Cardinal — CLDR cardinal plural categories (zero, one, two, few, many, other)
-  - Ordinal — CLDR ordinal plural categories (1st, 2nd, 3rd, etc.)
-  - Exact — matches a specific integer value
-  - Keyword — matches a named keyword (for gender, custom categories)
--->
+- **Cardinal** -- CLDR cardinal plural categories (zero, one, two, few, many, other). Used for "1 apple" vs "2 apples".
+- **Ordinal** -- CLDR ordinal categories. Used for "1st", "2nd", "3rd".
+- **Exact** -- matches a specific integer value. Useful for special-casing "0 items" or "exactly 1".
+- **Keyword** -- matches a named string key. Used for gender or custom grammatical categories.
+
+## Line tables
+
+Line tables are stored per-container in the `.inkb` format. Each container has a sequence of `LineEntry` values referenced by index from `EmitLine` opcodes. The `EvalLine` opcode handles templates with interpolation, evaluating slots from the current stack state.
 
 ## Choice text decomposition
 
 Ink choices have up to three text parts: start content (before `[`), choice-only content (inside `[]`), and output-only content (after `]`). The compiler decomposes each choice into two independent lines:
 
-- **Display line** = start + choice-only
-- **Output line** = start + output-only
+- **Display line** = start + choice-only (what the player sees in the choice list)
+- **Output line** = start + output-only (what appears in the narrative after selection)
 
-<!-- TODO: explain why this matters for localization:
-  - Translators localize each line independently
-  - Target language can use completely different grammatical constructions
-  - No structural coupling between prompt and narrative output
--->
+This decomposition allows translators to localize each line independently -- the target language can use completely different grammatical constructions for the prompt and the narrative output.

@@ -2,34 +2,63 @@
 
 ## Playing a story from the command line
 
-<!-- TODO: example .ink file, compile it, play it with `brink play` -->
-
 ```sh
-brink play story.ink.json
+# Compile an ink story to binary
+brink compile story.ink -o story.inkb
+
+# Play it interactively
+brink play story.inkb
 ```
 
 ## Embedding the runtime in Rust
 
-<!-- TODO: minimal example showing the full loop — this is the runtime's existing doc example -->
-
 ```rust,ignore
-let program = brink_runtime::link(&story_data)?;
-let mut story = brink_runtime::Story::new(&program);
+use brink_compiler::compile_path;
+use brink_runtime::{link, Story, StepResult};
 
-loop {
-    match story.continue_maximally()? {
-        StepResult::Done { text } => print!("{text}"),
-        StepResult::Choices { text, choices } => {
-            print!("{text}");
-            // present choices to the player, get their selection...
-            story.choose(chosen_index)?;
-        }
-        StepResult::Ended { text } => {
-            print!("{text}");
-            break;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Compile .ink source to StoryData
+    let story_data = compile_path("story.ink")?;
+
+    // Link into an executable program
+    let program = link(&story_data)?;
+
+    // Create a story instance and run it
+    let mut story = Story::new(&program);
+
+    loop {
+        match story.continue_maximally()? {
+            StepResult::Done { text, .. } => {
+                print!("{text}");
+            }
+            StepResult::Choices { text, choices, .. } => {
+                print!("{text}");
+                for choice in &choices {
+                    println!("  {}. {}", choice.index + 1, choice.text);
+                }
+                // Select the first choice (replace with user input)
+                story.choose(choices[0].index)?;
+            }
+            StepResult::Ended { text, .. } => {
+                print!("{text}");
+                break;
+            }
         }
     }
+
+    Ok(())
 }
 ```
 
-<!-- TODO: explain where story_data comes from (loading .inkb / .inkt / .ink.json) -->
+If you already have a compiled `.inkb` file, load it directly instead of compiling:
+
+```rust,ignore
+use brink_format::inkb;
+use brink_runtime::{link, Story, StepResult};
+
+let bytes = std::fs::read("story.inkb")?;
+let story_data = inkb::decode(&bytes)?;
+let program = link(&story_data)?;
+let mut story = Story::new(&program);
+// ... step loop as above
+```
