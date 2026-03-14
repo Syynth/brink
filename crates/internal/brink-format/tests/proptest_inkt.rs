@@ -261,9 +261,10 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
         prop::collection::vec(arb_list_item(), 0..5),
         prop::collection::vec(arb_external(), 0..5),
         prop::collection::vec("[^\"\\\\\x00]*", 0..8),
+        any::<u32>(),
     )
         .prop_map(
-            |(pairs, variables, list_defs, list_items, externals, name_table)| {
+            |(pairs, variables, list_defs, list_items, externals, name_table, source_checksum)| {
                 let (containers, mut line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
                 // Sort line tables by scope_id to match reader's output ordering.
                 line_tables.sort_by_key(|lt| lt.scope_id.to_raw());
@@ -277,6 +278,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     addresses: vec![],
                     name_table,
                     list_literals: vec![],
+                    source_checksum,
                 }
             },
         )

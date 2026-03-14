@@ -214,6 +214,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     addresses: vec![],
                     name_table,
                     list_literals: vec![],
+                    source_checksum: 0,
                 }
             },
         )
@@ -286,7 +287,9 @@ proptest! {
         write_inkb(&story, &mut buf);
 
         // Full read validates the checksum; it must succeed.
-        let recovered = read_inkb(&buf).unwrap();
+        let mut recovered = read_inkb(&buf).unwrap();
+        // source_checksum is set from the binary header, not semantic data.
+        recovered.source_checksum = story.source_checksum;
         prop_assert_eq!(story, recovered);
     }
 
@@ -296,7 +299,8 @@ proptest! {
         let mut buf = Vec::new();
         write_inkb(&story, &mut buf);
 
-        let recovered = read_inkb(&buf).unwrap();
+        let mut recovered = read_inkb(&buf).unwrap();
+        recovered.source_checksum = story.source_checksum;
         prop_assert_eq!(story, recovered);
     }
 }

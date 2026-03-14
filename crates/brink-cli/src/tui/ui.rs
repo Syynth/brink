@@ -1,8 +1,8 @@
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
 
 use super::app::{App, Focus, Passage, Phase};
 
@@ -99,13 +99,24 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(choices_widget, chunks[1]);
 
     // ── Status bar ──
+    let locale_hint = if app.locale_modal.is_some() {
+        String::new()
+    } else {
+        format!("  [l] locale: {}", app.locale_labels()[app.active_locale])
+    };
     let status_text = match (&app.phase, app.focus) {
-        (Phase::Typing { .. }, _) => "[Space] skip  [↑/↓] scroll  [q] quit",
-        (Phase::Choosing { .. }, Focus::Choices) => {
-            "[↑/↓] select  [Enter] confirm  [Tab] scroll  [q] quit"
+        (Phase::Typing { .. }, _) => {
+            format!("[Space] skip  [↑/↓] scroll  [q] quit{locale_hint}")
         }
-        (Phase::Choosing { .. }, Focus::Story) => "[↑/↓] scroll  [Tab] choices  [q] quit",
-        (Phase::Ended { .. }, _) => "[↑/↓] scroll  [q] quit",
+        (Phase::Choosing { .. }, Focus::Choices) => {
+            format!("[↑/↓] select  [Enter] confirm  [Tab] scroll  [q] quit{locale_hint}")
+        }
+        (Phase::Choosing { .. }, Focus::Story) => {
+            format!("[↑/↓] scroll  [Tab] choices  [q] quit{locale_hint}")
+        }
+        (Phase::Ended { .. }, _) => {
+            format!("[↑/↓] scroll  [q] quit{locale_hint}")
+        }
     };
     let status = Paragraph::new(Line::from(Span::styled(
         status_text,
@@ -114,6 +125,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     .alignment(Alignment::Center);
 
     frame.render_widget(status, chunks[2]);
+
+    // ── Locale modal overlay ──
+    if let Some(modal) = &app.locale_modal {
+        draw_locale_modal(frame, area, modal);
+    }
 }
 
 /// Build all story lines: dimmed history + typewriter-revealed current passage.
@@ -195,6 +211,51 @@ fn visual_row_count(lines: &[Line<'_>], width: u16) -> u16 {
         })
         .sum();
     u16::try_from(total).unwrap_or(u16::MAX)
+}
+
+/// Draw the locale-switching modal as a centered overlay.
+fn draw_locale_modal(frame: &mut Frame, area: Rect, modal: &super::app::LocaleModal) {
+    let width = modal.labels.iter().map(String::len).max().unwrap_or(10) + 8; // padding + marker
+    let height = modal.labels.len() + 2; // border top/bottom
+
+    let w = u16::try_from(width).unwrap_or(30).min(area.width);
+    let h = u16::try_from(height).unwrap_or(6).min(area.height);
+
+    let [modal_area] = Layout::horizontal([Constraint::Length(w)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [modal_area] = Layout::vertical([Constraint::Length(h)])
+        .flex(Flex::Center)
+        .areas(modal_area);
+
+    // Clear background behind the modal.
+    frame.render_widget(Clear, modal_area);
+
+    let lines: Vec<Line> = modal
+        .labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let marker = if i == modal.selected { ">> " } else { "   " };
+            let style = if i == modal.selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(Span::styled(format!("{marker}{label}"), style))
+        })
+        .collect();
+
+    let block = Block::default()
+        .title(" Locale ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .padding(Padding::horizontal(1));
+
+    let widget = Paragraph::new(lines).block(block);
+    frame.render_widget(widget, modal_area);
 }
 
 /// Build choice lines with typewriter reveal applied per-choice.

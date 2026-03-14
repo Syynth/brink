@@ -87,6 +87,9 @@ enum Commands {
         /// Typewriter speed in characters per second (0 = instant)
         #[arg(short, long, default_value_t = 30)]
         speed: u64,
+        /// Locale overlay files (.inkl) — switchable at runtime via [l] key
+        #[arg(long)]
+        locale: Vec<PathBuf>,
     },
 }
 
@@ -147,8 +150,15 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
-            Commands::Play { file, input, speed } => {
-                if let Err(e) = run_play(&file, input.as_deref(), speed) {
+            Commands::Play {
+                file,
+                input,
+                speed,
+                locale,
+            } => {
+                let locale_refs: Vec<&std::path::Path> =
+                    locale.iter().map(PathBuf::as_path).collect();
+                if let Err(e) = run_play(&file, input.as_deref(), speed, &locale_refs) {
                     tracing::error!("{e}");
                     return ExitCode::FAILURE;
                 }
@@ -325,25 +335,61 @@ fn run_play(
     file: &std::path::Path,
     input: Option<&std::path::Path>,
     speed: u64,
+    locale_paths: &[&std::path::Path],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data = load_story_data(file)?;
-    let program = brink_runtime::link(&data)?;
-    let mut story = brink_runtime::Story::new(&program);
+    let mut program = brink_runtime::link(&data)?;
 
     if let Some(input_path) = input {
         // Batch mode: read choices from a file
+        let mut story = brink_runtime::Story::new(&program);
         let file = std::fs::File::open(input_path)?;
         let reader = std::io::BufReader::new(file);
         batch::play_loop(&mut story, reader.lines(), false)?;
     } else if std::io::stdin().is_terminal() {
         // Interactive TUI mode
         let char_delay_ms = if speed == 0 { 0 } else { 1000 / speed };
-        tui::run(&mut story, tui::TuiConfig { char_delay_ms })?;
+
+        // Auto-discover .inkl files next to the story if none were specified.
+        let discovered: Vec<PathBuf>;
+        let effective_locale_paths: Vec<&std::path::Path> = if locale_paths.is_empty() {
+            discovered = discover_inkl_files(file);
+            discovered.iter().map(PathBuf::as_path).collect()
+        } else {
+            locale_paths.to_vec()
+        };
+
+        let locales = tui::load_locales(&effective_locale_paths)?;
+        let base_tables = program.save_line_tables();
+        tui::run(
+            &mut program,
+            &base_tables,
+            &locales,
+            &tui::TuiConfig { char_delay_ms },
+        )?;
     } else {
         // Batch mode: stdin is piped
+        let mut story = brink_runtime::Story::new(&program);
         let stdin = std::io::stdin();
         batch::play_loop(&mut story, stdin.lock().lines(), false)?;
     }
 
     Ok(())
+}
+
+/// Find all `.inkl` files in the same directory as the story file.
+fn discover_inkl_files(story_path: &std::path::Path) -> Vec<PathBuf> {
+    let Some(dir) = story_path.parent() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("inkl"))
+        .collect();
+    paths.sort();
+    paths
 }

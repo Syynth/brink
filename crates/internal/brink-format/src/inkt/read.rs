@@ -78,9 +78,15 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut containers = Vec::new();
     let mut line_tables = Vec::new();
     let mut list_literals = Vec::new();
+    let mut source_checksum = 0u32;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
+            Rule::story_checksum => {
+                if let Some(hex_pair) = inner.into_inner().next() {
+                    source_checksum = parse_hex_u32(hex_pair.as_str());
+                }
+            }
             Rule::name_table => name_table = parse_name_table(inner)?,
             Rule::globals => variables = parse_globals(inner)?,
             Rule::lists => list_defs = parse_lists(inner)?,
@@ -116,6 +122,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         addresses,
         name_table,
         list_literals,
+        source_checksum,
     })
 }
 
@@ -1250,6 +1257,11 @@ fn parse_def_id(pair: P<'_>) -> Result<DefinitionId, InktParseError> {
         .ok_or_else(|| err(&pair, format!("unknown tag byte: {tag_byte:#04x}")))?;
 
     Ok(DefinitionId::new(tag, hash))
+}
+
+fn parse_hex_u32(s: &str) -> u32 {
+    let hex = s.strip_prefix("0x").unwrap_or(s);
+    u32::from_str_radix(hex, 16).unwrap_or(0)
 }
 
 fn parse_hex_u64(s: &str) -> Result<u64, InktParseError> {

@@ -24,7 +24,6 @@ impl Program {
         locale: &LocaleData,
         mode: LocaleMode,
     ) -> Result<(), RuntimeError> {
-        // Validate checksum.
         if locale.base_checksum != self.source_checksum {
             return Err(RuntimeError::LocaleChecksumMismatch {
                 expected: self.source_checksum,

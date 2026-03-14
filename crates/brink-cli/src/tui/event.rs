@@ -12,6 +12,8 @@ pub enum Input {
     Down,
     Confirm,
     Tab,
+    LocaleSwitch,
+    Escape,
     None,
 }
 
@@ -30,6 +32,8 @@ pub fn poll_input(timeout: Duration) -> io::Result<Input> {
             KeyCode::Down => Input::Down,
             KeyCode::Enter => Input::Confirm,
             KeyCode::Tab | KeyCode::BackTab => Input::Tab,
+            KeyCode::Char('l') => Input::LocaleSwitch,
+            KeyCode::Esc => Input::Escape,
             _ => Input::None,
         });
     }

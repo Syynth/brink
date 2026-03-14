@@ -875,6 +875,17 @@ pub struct Story<'p, R: StoryRng = FastRng> {
     _rng: PhantomData<R>,
 }
 
+/// Owned story state that can be detached from a `Program` and reattached later.
+///
+/// Created by [`Story::into_snapshot`], consumed by [`Story::from_snapshot`].
+/// This enables locale hot-swapping: detach state, mutate the program's line
+/// tables, then reattach.
+pub struct StorySnapshot<R: StoryRng = FastRng> {
+    default: FlowInstance,
+    instances: HashMap<String, FlowInstance>,
+    _rng: PhantomData<R>,
+}
+
 impl<'p, R: StoryRng> Story<'p, R> {
     /// Create a new story instance from a linked program.
     pub fn new(program: &'p Program) -> Self {
@@ -882,6 +893,29 @@ impl<'p, R: StoryRng> Story<'p, R> {
             program,
             default: FlowInstance::new_at_root(program),
             instances: HashMap::new(),
+            _rng: PhantomData,
+        }
+    }
+
+    /// Detach story state from the program, consuming the story.
+    ///
+    /// The returned snapshot owns all mutable state and holds no references
+    /// to `Program`, so the program can be freely mutated (e.g. for locale
+    /// swapping) before reattaching via [`from_snapshot`](Self::from_snapshot).
+    pub fn into_snapshot(self) -> StorySnapshot<R> {
+        StorySnapshot {
+            default: self.default,
+            instances: self.instances,
+            _rng: PhantomData,
+        }
+    }
+
+    /// Reattach a snapshot to a (possibly mutated) program.
+    pub fn from_snapshot(program: &'p Program, snapshot: StorySnapshot<R>) -> Self {
+        Self {
+            program,
+            default: snapshot.default,
+            instances: snapshot.instances,
             _rng: PhantomData,
         }
     }

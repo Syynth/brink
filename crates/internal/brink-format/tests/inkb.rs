@@ -23,7 +23,8 @@ fn roundtrip_i001_minimal_story() {
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
 
-    let recovered = read_inkb(&buf).unwrap();
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
     assert_eq!(data, recovered);
 }
 
@@ -129,7 +130,9 @@ fn inkb_roundtrip_corpus_smoke() {
         write_inkb(&data, &mut buf);
 
         match read_inkb(&buf) {
-            Ok(recovered) => {
+            Ok(mut recovered) => {
+                // source_checksum is set from the binary header, not semantic data.
+                recovered.source_checksum = data.source_checksum;
                 if data != recovered {
                     failures.push(format!("MISMATCH {}", path.display()));
                 }
@@ -328,7 +331,8 @@ fn assemble_inkb_equivalence() {
     );
 
     // Also verify the assembled version can be read back.
-    let recovered = read_inkb(&assembled).unwrap();
+    let mut recovered = read_inkb(&assembled).unwrap();
+    recovered.source_checksum = data.source_checksum;
     assert_eq!(data, recovered);
 }
 
@@ -395,11 +399,14 @@ fn roundtrip_line_entry_with_audio_ref() {
         addresses: vec![],
         name_table: vec!["root".to_string()],
         list_literals: vec![],
+        source_checksum: 0,
     };
 
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
-    let recovered = read_inkb(&buf).unwrap();
+    let mut recovered = read_inkb(&buf).unwrap();
+    // source_checksum is set from the binary header, not semantic data.
+    recovered.source_checksum = data.source_checksum;
 
     assert_eq!(data, recovered);
     assert_eq!(

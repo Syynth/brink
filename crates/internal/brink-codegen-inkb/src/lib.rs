@@ -57,6 +57,7 @@ pub fn emit(program: &lir::Program) -> StoryData {
         addresses: state.addresses,
         name_table: state.name_table,
         list_literals: state.list_literals,
+        source_checksum: 0,
     }
 }
 

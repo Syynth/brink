@@ -69,6 +69,7 @@ pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
         addresses,
         name_table: name_table.into_vec(),
         list_literals,
+        source_checksum: 0,
     })
 }
 

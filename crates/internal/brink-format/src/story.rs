@@ -20,4 +20,7 @@ pub struct StoryData {
     pub name_table: Vec<String>,
     /// List literal values referenced by `PushList(idx)` opcodes.
     pub list_literals: Vec<ListValue>,
+    /// CRC-32 checksum from the `.inkb` header, used for locale validation.
+    /// Zero for stories not loaded from `.inkb`.
+    pub source_checksum: u32,
 }

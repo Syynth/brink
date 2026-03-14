@@ -139,7 +139,7 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
         address_map,
         line_tables,
         scope_ids,
-        source_checksum: 0,
+        source_checksum: data.source_checksum,
         globals,
         global_map,
         name_table,

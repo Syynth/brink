@@ -108,6 +108,16 @@ impl Program {
         self.globals.iter().map(|s| s.default.clone()).collect()
     }
 
+    /// Clone the current line tables for later restoration.
+    pub fn save_line_tables(&self) -> Vec<Vec<LineEntry>> {
+        self.line_tables.clone()
+    }
+
+    /// Replace line tables (e.g. to revert to base after a locale swap).
+    pub fn restore_line_tables(&mut self, tables: Vec<Vec<LineEntry>>) {
+        self.line_tables = tables;
+    }
+
     /// Get a list literal by index.
     pub(crate) fn list_literal(&self, idx: u16) -> &ListValue {
         &self.list_literals[idx as usize]

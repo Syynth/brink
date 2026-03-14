@@ -49,6 +49,12 @@ pub enum Phase {
     Ended { text: String },
 }
 
+/// State for the locale-switching modal overlay.
+pub struct LocaleModal {
+    pub labels: Vec<String>,
+    pub selected: usize,
+}
+
 /// Top-level TUI application state.
 pub struct App {
     pub phase: Phase,
@@ -56,11 +62,14 @@ pub struct App {
     pub history: Vec<Passage>,
     pub scroll_offset: u16,
     pub should_quit: bool,
+    pub locale_modal: Option<LocaleModal>,
+    pub active_locale: usize,
+    locale_labels: Vec<String>,
     char_delay: Duration,
 }
 
 impl App {
-    pub fn new(char_delay: Duration) -> Self {
+    pub fn new(char_delay: Duration, locale_labels: Vec<String>) -> Self {
         Self {
             phase: Phase::Ended {
                 text: String::new(),
@@ -69,6 +78,9 @@ impl App {
             history: Vec::new(),
             scroll_offset: 0,
             should_quit: false,
+            locale_modal: None,
+            active_locale: 0,
+            locale_labels,
             char_delay,
         }
     }
@@ -109,15 +121,53 @@ impl App {
         Ok(())
     }
 
-    /// Handle a user input event.
+    /// Handle a user input event. Returns `Some(locale_index)` if a locale
+    /// switch was confirmed (caller must perform the actual swap).
     pub fn handle_input(
         &mut self,
         input: Input,
         story: &mut Story,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+        // Modal takes priority over all other input.
+        if let Some(modal) = &mut self.locale_modal {
+            match input {
+                Input::Up => {
+                    if modal.selected == 0 {
+                        modal.selected = modal.labels.len() - 1;
+                    } else {
+                        modal.selected -= 1;
+                    }
+                }
+                Input::Down => {
+                    modal.selected = (modal.selected + 1) % modal.labels.len();
+                }
+                Input::Confirm => {
+                    let chosen = modal.selected;
+                    self.locale_modal = None;
+                    if chosen != self.active_locale {
+                        self.active_locale = chosen;
+                        return Ok(Some(chosen));
+                    }
+                }
+                Input::Escape | Input::LocaleSwitch | Input::Quit => {
+                    self.locale_modal = None;
+                }
+                _ => {}
+            }
+            return Ok(None);
+        }
+
         match input {
             Input::Quit => {
                 self.should_quit = true;
+            }
+            Input::LocaleSwitch => {
+                if self.locale_labels.len() > 1 {
+                    self.locale_modal = Some(LocaleModal {
+                        labels: self.locale_labels.clone(),
+                        selected: self.active_locale,
+                    });
+                }
             }
             Input::Skip => match &mut self.phase {
                 Phase::Typing { typewriter, .. } | Phase::Choosing { typewriter, .. } => {
@@ -166,9 +216,9 @@ impl App {
             Input::Confirm => {
                 self.confirm_choice(story)?;
             }
-            Input::None => {}
+            Input::Escape | Input::None => {}
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Confirm the currently selected choice and advance the story.
@@ -287,6 +337,11 @@ impl App {
             }
             | Phase::Ended { .. } => 0,
         }
+    }
+
+    /// Access the locale labels for status bar display.
+    pub fn locale_labels(&self) -> &[String] {
+        &self.locale_labels
     }
 
     /// Returns `(full_text, revealed_byte_count)` for the current passage.

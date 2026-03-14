@@ -400,3 +400,28 @@
 - **SCOPE:** moderate
 - **WHAT:** The CLI's localization commands use XLIFF 2.0 as the sole external format. `LinesJson` is an internal implementation detail, not a user-facing format.
 - **WHY:** The JSON lines format was a placeholder internal representation. XLIFF is the industry-standard TMS interchange format — there's no reason to expose two formats to users.
+
+## XLIFF uses scope names as IDs, not definition IDs
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** brink-intl
+- **SCOPE:** moderate
+- **WHAT:** XLIFF `<file id>` and `<unit id>` use human-readable scope names (knot.stitch paths) instead of hex definition IDs. Definition IDs are preserved in `brink:scope-id` extension attributes for reconciliation. Unit IDs become `scope_name:line_index` instead of `hex_id:line_index`.
+- **WHY:** TMS tools (Poedit etc.) display the `id` attribute prominently. Hex definition IDs are meaningless to translators; scope names provide immediate context.
+
+## Source filename missing from StoryData — spec gap
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** brink-format / brink-intl
+- **SCOPE:** moderate
+- **STATUS:** tentative
+- **WHAT:** StoryData does not carry source `.ink` filenames. XLIFF `<file original>` should ideally reference the source file, but this data isn't available. Needs to be addressed in brink-format.
+- **WHY:** Translators need source file context. Multi-file ink projects would benefit from knowing which `.ink` file a scope came from.
+
+## Extricate line_tables from Program
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** brink-runtime
+- **SCOPE:** architectural
+- **WHAT:** `Program.line_tables` should not be owned by `Program`. Line tables are mutable per-locale content, not immutable linked program data. They should be extracted into a separate structure that can be swapped without touching `Program` or fighting the borrow checker.
+- **WHY:** `Program` is designed as immutable post-link, but `apply_locale()` requires `&mut self` solely to swap line tables. This forces `Story` (which borrows `&Program`) to be dropped and recreated for locale changes. The line tables were placed in `Program` by agents who didn't anticipate runtime locale switching. Separating them enables hot-swap without state gymnastics.

@@ -56,6 +56,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         addresses,
         name_table,
         list_literals,
+        source_checksum: index.checksum,
     })
 }
 

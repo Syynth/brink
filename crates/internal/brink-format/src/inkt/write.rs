@@ -22,7 +22,11 @@ use crate::value::{ListValue, Value, ValueType};
 
 /// Write the textual (.inkt) representation of a compiled story.
 pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
-    writeln!(w, "(story")?;
+    if story.source_checksum != 0 {
+        writeln!(w, "(story checksum=0x{:08x}", story.source_checksum)?;
+    } else {
+        writeln!(w, "(story")?;
+    }
 
     write_name_table(w, &story.name_table)?;
     write_globals(w, &story.variables)?;
@@ -595,6 +599,7 @@ mod tests {
             addresses: vec![],
             name_table: vec![],
             list_literals: vec![],
+            source_checksum: 0,
         };
         let mut buf = String::new();
         write_inkt(&story, &mut buf).unwrap();

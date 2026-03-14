@@ -40,4 +40,6 @@ pub use locale::LocaleMode;
 pub use program::Program;
 pub use rng::{DotNetRng, FastRng, StoryRng};
 pub use state::{StoryState, WriteObserver};
-pub use story::{Choice, ExternalFnHandler, ExternalResult, Stats, StepResult, Story, StoryStatus};
+pub use story::{
+    Choice, ExternalFnHandler, ExternalResult, Stats, StepResult, Story, StorySnapshot, StoryStatus,
+};
