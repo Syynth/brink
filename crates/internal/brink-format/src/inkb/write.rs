@@ -383,6 +383,27 @@ fn encode_line_entry(entry: &LineEntry, buf: &mut Vec<u8>) {
             write_u8(buf, 0);
         }
     }
+
+    // Slot info
+    #[expect(clippy::cast_possible_truncation)]
+    write_u8(buf, entry.slot_info.len() as u8);
+    for slot in &entry.slot_info {
+        write_u8(buf, slot.index);
+        write_str(buf, &slot.name);
+    }
+
+    // Source location
+    match &entry.source_location {
+        Some(loc) => {
+            write_u8(buf, 1);
+            write_str(buf, &loc.file);
+            write_u32(buf, loc.range_start);
+            write_u32(buf, loc.range_end);
+        }
+        None => {
+            write_u8(buf, 0);
+        }
+    }
 }
 
 #[expect(clippy::cast_possible_truncation)]

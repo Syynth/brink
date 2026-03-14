@@ -670,6 +670,8 @@ fn parse_line_entry(pair: P<'_>) -> Result<LineEntry, InktParseError> {
         content,
         source_hash,
         audio_ref,
+        slot_info: Vec::new(),
+        source_location: None,
     })
 }
 

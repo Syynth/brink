@@ -56,6 +56,8 @@ impl Program {
                     content: le.content.clone(),
                     source_hash: 0,
                     audio_ref: le.audio_ref.clone(),
+                    slot_info: Vec::new(),
+                    source_location: None,
                 })
                 .collect();
 

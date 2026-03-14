@@ -384,6 +384,8 @@ fn roundtrip_line_entry_with_audio_ref() {
                 content: LineContent::Plain("Hello world\n".to_string()),
                 source_hash: 0xABCD,
                 audio_ref: Some("audio/hello.wav".to_string()),
+                slot_info: Vec::new(),
+                source_location: None,
             }],
         }],
         variables: vec![],

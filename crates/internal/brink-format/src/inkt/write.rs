@@ -229,6 +229,22 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
             if let Some(audio) = &entry.audio_ref {
                 write!(w, " (audio \"{}\")", escape_string(audio))?;
             }
+            if !entry.slot_info.is_empty() {
+                write!(w, " (slots")?;
+                for slot in &entry.slot_info {
+                    write!(w, " {}:\"{}\"", slot.index, escape_string(&slot.name))?;
+                }
+                write!(w, ")")?;
+            }
+            if let Some(loc) = &entry.source_location {
+                write!(
+                    w,
+                    " (source \"{}\" {}..{})",
+                    escape_string(&loc.file),
+                    loc.range_start,
+                    loc.range_end,
+                )?;
+            }
             writeln!(w)?;
         }
         writeln!(w, "    )")?;

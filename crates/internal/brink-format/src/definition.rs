@@ -23,12 +23,29 @@ pub struct ContainerDef {
     pub path_hash: i32,
 }
 
+/// Metadata for a single interpolation slot in a template line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotInfo {
+    pub index: u8,
+    pub name: String,
+}
+
+/// Source location of a line in the original `.ink` file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceLocation {
+    pub file: String,
+    pub range_start: u32,
+    pub range_end: u32,
+}
+
 /// One entry in a container's line table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineEntry {
     pub content: LineContent,
     pub source_hash: u64,
     pub audio_ref: Option<String>,
+    pub slot_info: Vec<SlotInfo>,
+    pub source_location: Option<SourceLocation>,
 }
 
 /// A locale line entry — content + optional audio, no source metadata.

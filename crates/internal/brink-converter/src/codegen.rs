@@ -114,6 +114,8 @@ impl<'a> ContainerEmitter<'a> {
             content: LineContent::Plain(text.to_string()),
             source_hash: brink_format::content_hash(text),
             audio_ref: None,
+            slot_info: Vec::new(),
+            source_location: None,
         });
         // Return scope-relative index.
         Ok(self.scope_line_offset + local_idx)

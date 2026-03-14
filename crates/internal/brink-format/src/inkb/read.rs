@@ -4,7 +4,7 @@ use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, re
 use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
-    ScopeLineTable,
+    ScopeLineTable, SlotInfo, SourceLocation,
 };
 use crate::id::NameId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -480,10 +480,36 @@ fn decode_line_entry(buf: &[u8], off: &mut usize) -> Result<LineEntry, DecodeErr
     } else {
         None
     };
+    // Slot info
+    let slot_count = read_u8(buf, off)? as usize;
+    let mut slot_info = Vec::with_capacity(slot_count);
+    for _ in 0..slot_count {
+        let index = read_u8(buf, off)?;
+        let name = read_str(buf, off)?;
+        slot_info.push(SlotInfo { index, name });
+    }
+
+    // Source location
+    let has_source_loc = read_u8(buf, off)? != 0;
+    let source_location = if has_source_loc {
+        let file = read_str(buf, off)?;
+        let range_start = read_u32(buf, off)?;
+        let range_end = read_u32(buf, off)?;
+        Some(SourceLocation {
+            file,
+            range_start,
+            range_end,
+        })
+    } else {
+        None
+    };
+
     Ok(LineEntry {
         content,
         source_hash,
         audio_ref,
+        slot_info,
+        source_location,
     })
 }
 

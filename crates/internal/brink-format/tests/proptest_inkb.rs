@@ -81,6 +81,8 @@ fn arb_line_entry() -> impl Strategy<Value = LineEntry> {
             content,
             source_hash,
             audio_ref,
+            slot_info: Vec::new(),
+            source_location: None,
         })
 }
 

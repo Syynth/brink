@@ -112,6 +112,8 @@ impl<'a> ContainerEmitter<'a> {
             content: LineContent::Plain(text.to_string()),
             source_hash,
             audio_ref: None,
+            slot_info: Vec::new(),
+            source_location: None,
         });
         idx
     }
