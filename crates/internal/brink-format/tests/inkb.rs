@@ -359,3 +359,49 @@ fn bad_magic_detected() {
         "expected BadMagic, got {err:?}"
     );
 }
+
+#[test]
+fn roundtrip_line_entry_with_audio_ref() {
+    use brink_format::{
+        ContainerDef, CountingFlags, DefinitionId, DefinitionTag, LineContent, LineEntry, NameId,
+        ScopeLineTable, StoryData,
+    };
+
+    let scope_id = DefinitionId::new(DefinitionTag::Address, 1);
+    let data = StoryData {
+        containers: vec![ContainerDef {
+            id: scope_id,
+            scope_id,
+            name: Some(NameId(0)),
+            bytecode: vec![],
+            content_hash: 0,
+            counting_flags: CountingFlags::empty(),
+            path_hash: 0,
+        }],
+        line_tables: vec![ScopeLineTable {
+            scope_id,
+            lines: vec![LineEntry {
+                content: LineContent::Plain("Hello world\n".to_string()),
+                source_hash: 0xABCD,
+                audio_ref: Some("audio/hello.wav".to_string()),
+            }],
+        }],
+        variables: vec![],
+        list_defs: vec![],
+        list_items: vec![],
+        externals: vec![],
+        addresses: vec![],
+        name_table: vec!["root".to_string()],
+        list_literals: vec![],
+    };
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let recovered = read_inkb(&buf).unwrap();
+
+    assert_eq!(data, recovered);
+    assert_eq!(
+        recovered.line_tables[0].lines[0].audio_ref,
+        Some("audio/hello.wav".to_string())
+    );
+}

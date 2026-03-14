@@ -15,7 +15,9 @@ serde_json = { workspace = true }
 [dev-dependencies]
 brink-converter = { path = "../brink-converter" }
 brink-json = { path = "../brink-json" }
+brink-runtime = { path = "../../brink-runtime" }
 insta = { workspace = true, features = ["json"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true
