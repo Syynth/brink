@@ -296,6 +296,23 @@
 - **WHAT:** The episode corpus work loop should be: (1) find the first failure, (2) root-cause it, (3) write failing tests that would pass if the RCA was addressed, (4) enter plan mode and present the RCA, failing tests, and proposed fix for approval — before implementing anything.
 - **WHY:** The user wants to review the RCA and fix approach before implementation. Writing failing tests first proves the diagnosis is correct and provides a regression gate. This replaces the previous loop where the agent would explain the RCA in prose and then implement immediately after approval.
 
+## Program ownership: borrowed references, Arc deferred
+- **WHEN:** 2026-03-13
+- **PROJECT:** brink
+- **SYSTEM:** brink-runtime
+- **SCOPE:** architectural
+- **STATUS:** tentative
+- **WHAT:** The `Program` type (and the `LinkedBinary`/`LinkedLocale` split) uses borrowed references (`&'p`) for now, not `Arc`. `Story<'p>` continues to borrow the program. `Arc` upgrade is deferred until Bevy `Handle<T>` integration requires it.
+- **WHY:** Borrowed references are simpler, provide compile-time lifetime guarantees, and have zero overhead. The current use case (single-threaded game loop, caller owns everything) doesn't need shared ownership. `Arc` only helps when `Story` needs to be handed off without the caller also holding the `Program`, or for cross-thread sharing. Bevy integration will likely need `Arc` for its asset pipeline, but that's a future concern.
+
+## compile-locale requires .inkb as base input
+- **WHEN:** 2026-03-13
+- **PROJECT:** brink
+- **SYSTEM:** brink-intl
+- **SCOPE:** moderate
+- **WHAT:** The `compile-locale` command requires `.inkb` as the `--base` input, not `.ink.json` or `.inkt`. This ensures the base checksum is always valid for `.inkl` header validation.
+- **WHY:** When loading from `.ink.json` (converter path), the checksum is 0, which would make stale-translation detection impossible. Requiring `.inkb` keeps the validation chain intact. Users must compile to `.inkb` first, which is the intended production workflow anyway.
+
 ## General-purpose XLIFF 2.0 crate + brink-intl separation
 - **WHEN:** 2026-03-13
 - **PROJECT:** brink
@@ -303,3 +320,51 @@
 - **SCOPE:** architectural
 - **WHAT:** XLIFF 2.0 support is split into two crates: a general-purpose XLIFF 2.0 crate (format-only, publishable to crates.io) and `brink-intl` (brink-specific reconciliation, locale tooling). The XLIFF crate is a dependency of brink-intl. The XLIFF crate handles read/write/data model for XLIFF 2.0 documents. All brink-specific concerns (regeneration/merge workflow, `.inkl` compilation, content hash comparison, audio ref mapping) live in brink-intl.
 - **WHY:** The Rust ecosystem has no usable XLIFF 2.0 library (the existing `xliff` crate is abandoned, alpha-only, and only supports XLIFF 1.2). Keeping the format crate general-purpose benefits the community and enforces clean separation from brink-specific concerns. The XLIFF spec is complex enough to warrant its own crate boundary.
+
+## Break opcode format for slot count
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** brink-format / intl-spec
+- **SCOPE:** architectural
+- **WHAT:** Change `EmitLine(u16)` → `EmitLine(u16, u8)` and `EvalLine(u16)` → `EvalLine(u16, u8)` to carry slot count. Breaking format change.
+- **WHY:** We're still greenfield — better to do it properly now than work around it later. Explicit slot count catches codegen bugs at runtime.
+
+## Combine interpolation recognizers
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** brink-ir / intl-spec
+- **SCOPE:** moderate
+- **WHAT:** Single-interpolation and multi-interpolation pattern recognizers are implemented as one general recognizer, not phased separately.
+- **WHY:** The implementation is naturally general — no algorithmic reason to limit to one slot. The spec's phasing was a suggestion for incremental delivery, not a hard requirement.
+
+## Dedicated template test corpus
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** brink-test-harness / intl-spec
+- **SCOPE:** moderate
+- **WHAT:** Build a dedicated test corpus for template features since the episode corpus (based on inklecate) can't validate them.
+- **WHY:** Templates are a brink-specific feature that other ink runtimes don't have. Requires investment in purpose-built test cases.
+
+## Metadata fields as stubs
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** brink-format / intl-spec
+- **SCOPE:** minor/local
+- **WHAT:** Add `slot_info` and `source_location` to `LineEntry` as stub fields (types defined, serialized, but not populated with real data yet).
+- **WHY:** Get the types and binary format in place now so we don't need another format break later.
+
+## Select defaults to fallback
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** brink-runtime / intl-spec
+- **SCOPE:** moderate
+- **WHAT:** Template resolution handles `LinePart::Select` by always using the `default` value. Full plural resolution deferred to Phase 6.
+- **WHY:** Unblocks template support without requiring ICU4X/PluralResolver infrastructure. The default fallback is correct behavior when no resolver is configured.
+
+## Regeneration uses hash-based alignment, not index-based matching
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** brink-intl
+- **SCOPE:** moderate
+- **WHAT:** `regenerate-lines` matches old→new lines by aligning the hash sequences within each scope (LCS or similar), not by matching on `(scope_id, line_index)`. Index-matched lines with mismatched hashes are not assumed to be "changed" — they may be shifted. Hash-equal lines are presumed identical regardless of index. After alignment: unmatched new lines are `untranslated`, unmatched old lines are `orphaned`, hash-matched lines at different indices preserve their translation.
+- **WHY:** Inserting or deleting a line in the middle of a scope shifts all subsequent indices. Naive index matching would mark every shifted line as `needs_review` and lose the association between the old translation and its (unchanged) source line. Hash-based alignment correctly detects that the content didn't change — only its position did.

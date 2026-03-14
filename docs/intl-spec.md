@@ -461,33 +461,45 @@ When source `.ink` files change and are recompiled, existing translations must b
 
 ### Matching strategy
 
-Lines are matched by `LineId = (DefinitionId, u16)`:
-- **`DefinitionId`** — the lexical scope's identity, stable across recompiles (hash of fully qualified path). A knot renamed or moved gets a new `DefinitionId` and its translations are orphaned.
-- **Line index (`u16`)** — incrementing counter within the scope. Stable as long as the compiler visits content in the same order (top-down AST walk). Inserting a line before existing lines shifts subsequent indices.
+Matching operates in two tiers: **scope matching** then **line matching within each scope**.
 
-### Diff rules
+**Scope matching** uses `DefinitionId` — the lexical scope's identity, stable across recompiles (hash of fully qualified path). A knot renamed or moved gets a new `DefinitionId` and its translations are orphaned. Scopes present in the old translation but absent from the new `.inkb` are orphaned. Scopes in the new `.inkb` with no old translation are new.
 
-For each line in the new `.inkb`:
+**Line matching** within a scope uses `source_hash` alignment, not line index. Line indices are unstable — inserting or deleting a line shifts all subsequent indices within the scope. Matching by index would incorrectly mark every shifted line as changed.
 
-| Old state | New state | Action |
-|-----------|-----------|--------|
-| Same `LineId`, same `hash` | Unchanged | Preserve translation as-is |
-| Same `LineId`, different `hash` | Source changed | Update source content, mark as `needs_review`, preserve old translation as reference |
-| New `LineId` | New line | Add with no translation, mark as `untranslated` |
+Instead, the regeneration tool aligns the old and new hash sequences within each scope using longest common subsequence (LCS). The hash sequence is the ordered list of `source_hash` values from the line table. LCS finds the largest set of lines that appear in the same relative order in both old and new, identifying which lines are unchanged, which are inserted, and which are deleted.
 
-For each line in the old translation not present in the new `.inkb`:
+### Alignment algorithm
 
-| State | Action |
-|-------|--------|
-| `LineId` not in new `.inkb` | Mark as `orphaned` or remove (configurable) |
+Given old hashes `[h0, h1, h2, h3, h4]` and new hashes `[h0, h1, hX, h2, h3, h4]` (line inserted at index 2):
 
-### Line index stability
+1. Compute LCS of the two hash sequences → `[h0, h1, h2, h3, h4]`
+2. LCS-aligned pairs are **unchanged** — preserve translation, update index
+3. New-side elements not in the LCS (`hX` at new index 2) are **insertions** → `untranslated`
+4. Old-side elements not in the LCS are **deletions** → `orphaned`
 
-Line indices are stable across recompiles when:
-- Content order within a scope does not change
-- No lines are inserted or removed before existing lines
+Deletion works symmetrically: old `[h0, h1, h2, h3, h4]` → new `[h0, h1, h3, h4]` produces LCS `[h0, h1, h3, h4]`, and `h2` is orphaned.
 
-When lines are inserted or removed, subsequent indices shift. The `source_hash` provides a secondary match signal — if a line's hash matches at a different index, the regeneration tool can suggest it was moved rather than replaced. This heuristic is best-effort and not guaranteed.
+### Duplicate hashes
+
+A scope may contain duplicate lines (same text, same hash). LCS handles this naturally — it aligns by position within the sequence, so two identical lines at positions 3 and 7 are matched to their positional counterparts, not confused with each other.
+
+### Changed lines
+
+When a line's text is edited (not inserted or deleted), its hash changes. LCS will not align the old and new versions — the old hash appears as a deletion and the new hash as an insertion. To detect edits vs insert+delete pairs, the tool applies a secondary heuristic after LCS:
+
+For each unmatched old line and unmatched new line at the **same original position** (or adjacent positions), if they are the only unmatched lines in that region, treat them as an **edit** → `needs_review`, preserve old translation as reference.
+
+This heuristic is best-effort. Ambiguous cases (multiple adjacent changes) fall back to orphan + untranslated, which is safe — no translation is silently applied to wrong content.
+
+### Diff summary
+
+| Alignment result | Status | Action |
+|-----------------|--------|--------|
+| LCS-aligned (same hash, possibly different index) | `translated` | Preserve translation, update to new index |
+| New-side only, no edit match | `untranslated` | New line, no translation |
+| Old-side only, no edit match | `orphaned` | Removed line, mark or discard (configurable) |
+| Positional edit match (old hash ≠ new hash) | `needs_review` | Preserve old translation as reference, flag for review |
 
 ### Status tracking
 
