@@ -3,6 +3,7 @@
 //! Provides line table export for localization workflows and
 //! locale overlay compilation.
 
+pub mod align;
 mod compile;
 mod error;
 mod export;
