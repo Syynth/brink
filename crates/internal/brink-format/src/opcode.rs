@@ -390,13 +390,13 @@ pub enum Opcode {
     ThreadDone,
 
     // ── Output ──────────────────────────────────────────────────────────
-    EmitLine(u16),
+    EmitLine(u16, u8),
     EmitValue,
     EmitNewline,
     Glue,
     BeginTag,
     EndTag,
-    EvalLine(u16),
+    EvalLine(u16, u8),
 
     // ── Choices ─────────────────────────────────────────────────────────
     BeginChoice(ChoiceFlags, DefinitionId),
@@ -600,18 +600,20 @@ impl Opcode {
             Self::ThreadDone => write_u8(buf, THREAD_DONE),
 
             // Output
-            Self::EmitLine(idx) => {
+            Self::EmitLine(idx, slot_count) => {
                 write_u8(buf, EMIT_LINE);
                 write_u16(buf, idx);
+                write_u8(buf, slot_count);
             }
             Self::EmitValue => write_u8(buf, EMIT_VALUE),
             Self::EmitNewline => write_u8(buf, EMIT_NEWLINE),
             Self::Glue => write_u8(buf, GLUE),
             Self::BeginTag => write_u8(buf, BEGIN_TAG),
             Self::EndTag => write_u8(buf, END_TAG),
-            Self::EvalLine(idx) => {
+            Self::EvalLine(idx, slot_count) => {
                 write_u8(buf, EVAL_LINE);
                 write_u16(buf, idx);
+                write_u8(buf, slot_count);
             }
 
             // Choices
@@ -769,13 +771,21 @@ impl Opcode {
             THREAD_DONE => Self::ThreadDone,
 
             // Output
-            EMIT_LINE => Self::EmitLine(read_u16(buf, offset)?),
+            EMIT_LINE => {
+                let idx = read_u16(buf, offset)?;
+                let slot_count = read_u8(buf, offset)?;
+                Self::EmitLine(idx, slot_count)
+            }
             EMIT_VALUE => Self::EmitValue,
             EMIT_NEWLINE => Self::EmitNewline,
             GLUE => Self::Glue,
             BEGIN_TAG => Self::BeginTag,
             END_TAG => Self::EndTag,
-            EVAL_LINE => Self::EvalLine(read_u16(buf, offset)?),
+            EVAL_LINE => {
+                let idx = read_u16(buf, offset)?;
+                let slot_count = read_u8(buf, offset)?;
+                Self::EvalLine(idx, slot_count)
+            }
 
             // Choices
             BEGIN_CHOICE => {
@@ -992,15 +1002,15 @@ mod tests {
 
     #[test]
     fn roundtrip_output() {
-        roundtrip(&Opcode::EmitLine(0));
-        roundtrip(&Opcode::EmitLine(999));
+        roundtrip(&Opcode::EmitLine(0, 0));
+        roundtrip(&Opcode::EmitLine(999, 3));
         roundtrip(&Opcode::EmitValue);
         roundtrip(&Opcode::EmitNewline);
         roundtrip(&Opcode::Glue);
         roundtrip(&Opcode::BeginTag);
         roundtrip(&Opcode::EndTag);
-        roundtrip(&Opcode::EvalLine(0));
-        roundtrip(&Opcode::EvalLine(42));
+        roundtrip(&Opcode::EvalLine(0, 0));
+        roundtrip(&Opcode::EvalLine(42, 2));
     }
 
     #[test]

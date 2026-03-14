@@ -128,7 +128,7 @@ impl ContainerEmitter<'_> {
             match part {
                 lir::StringPart::Literal(text) => {
                     let idx = self.add_line(text);
-                    self.emit(Opcode::EmitLine(idx));
+                    self.emit(Opcode::EmitLine(idx, 0));
                 }
                 lir::StringPart::Interpolation(expr) => {
                     self.emit_expr(expr);

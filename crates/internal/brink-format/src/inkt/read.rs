@@ -979,13 +979,21 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "thread_done" => Ok(Opcode::ThreadDone),
 
         // Output
-        "emit_line" => Ok(Opcode::EmitLine(parse_operand_u16(&operands, 0, mnemonic)?)),
+        "emit_line" => {
+            let idx = parse_operand_u16(&operands, 0, mnemonic)?;
+            let slots = parse_operand_u8(&operands, 1, mnemonic)?;
+            Ok(Opcode::EmitLine(idx, slots))
+        }
         "emit_value" => Ok(Opcode::EmitValue),
         "emit_newline" => Ok(Opcode::EmitNewline),
         "glue" => Ok(Opcode::Glue),
         "begin_tag" => Ok(Opcode::BeginTag),
         "end_tag" => Ok(Opcode::EndTag),
-        "eval_line" => Ok(Opcode::EvalLine(parse_operand_u16(&operands, 0, mnemonic)?)),
+        "eval_line" => {
+            let idx = parse_operand_u16(&operands, 0, mnemonic)?;
+            let slots = parse_operand_u8(&operands, 1, mnemonic)?;
+            Ok(Opcode::EvalLine(idx, slots))
+        }
 
         // Choices
         "begin_choice" => {
@@ -1181,6 +1189,15 @@ fn parse_operand_f32(operands: &[P<'_>], idx: usize, context: &str) -> Result<f3
     let s = operand_str(operands, idx, context)?;
     s.parse().map_err(|_| InktParseError {
         message: format!("invalid f32 operand for {context}: {s}"),
+        line: 0,
+        col: 0,
+    })
+}
+
+fn parse_operand_u8(operands: &[P<'_>], idx: usize, context: &str) -> Result<u8, InktParseError> {
+    let s = operand_str(operands, idx, context)?;
+    s.parse().map_err(|_| InktParseError {
+        message: format!("invalid u8 operand for {context}: {s}"),
         line: 0,
         col: 0,
     })

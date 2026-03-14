@@ -149,7 +149,7 @@ impl<'a> ContainerEmitter<'a> {
                     self.emit(&Opcode::PushString(name_id.0));
                 } else {
                     let idx = self.add_line(s)?;
-                    self.emit(&Opcode::EmitLine(idx));
+                    self.emit(&Opcode::EmitLine(idx, 0));
                 }
             }
 

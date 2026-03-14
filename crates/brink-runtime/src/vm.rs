@@ -99,11 +99,11 @@ pub(crate) fn step(
     // ── Dispatch ────────────────────────────────────────────────────────
     match op {
         // ── Output ──────────────────────────────────────────────────
-        Opcode::EmitLine(idx) => {
+        Opcode::EmitLine(idx, _slot_count) => {
             let text = resolve_line(state.program(), &pos, idx);
             flow.output.push_text(&text);
         }
-        Opcode::EvalLine(idx) => {
+        Opcode::EvalLine(idx, _slot_count) => {
             let text = resolve_line(state.program(), &pos, idx);
             flow.value_stack.push(Value::String(text.into()));
         }

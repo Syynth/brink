@@ -10,7 +10,7 @@ impl ContainerEmitter<'_> {
         match &emission.line {
             lir::RecognizedLine::Plain(text) => {
                 let idx = self.add_line_with_hash(text, emission.metadata.source_hash);
-                self.emit(Opcode::EmitLine(idx));
+                self.emit(Opcode::EmitLine(idx, 0));
             }
         }
 
@@ -42,7 +42,7 @@ impl ContainerEmitter<'_> {
             match part {
                 lir::ContentPart::Text(s) => {
                     let idx = self.add_line(s);
-                    self.emit(Opcode::EmitLine(idx));
+                    self.emit(Opcode::EmitLine(idx, 0));
                 }
                 lir::ContentPart::Glue => {
                     self.emit(Opcode::Glue);

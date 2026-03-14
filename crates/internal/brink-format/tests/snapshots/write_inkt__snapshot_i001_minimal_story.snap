@@ -31,7 +31,7 @@ expression: buf
     (scope $01_406ea523c53def)
     (path_hash 48)
     (code
-      emit_line 0
+      emit_line 0 0
       emit_newline
       enter_container $01_ab1ed7229c18b5
     )

@@ -378,13 +378,13 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::ThreadDone => write!(w, "thread_done"),
 
         // Output
-        Opcode::EmitLine(idx) => write!(w, "emit_line {idx}"),
+        Opcode::EmitLine(idx, slots) => write!(w, "emit_line {idx} {slots}"),
         Opcode::EmitValue => write!(w, "emit_value"),
         Opcode::EmitNewline => write!(w, "emit_newline"),
         Opcode::Glue => write!(w, "glue"),
         Opcode::BeginTag => write!(w, "begin_tag"),
         Opcode::EndTag => write!(w, "end_tag"),
-        Opcode::EvalLine(idx) => write!(w, "eval_line {idx}"),
+        Opcode::EvalLine(idx, slots) => write!(w, "eval_line {idx} {slots}"),
 
         // Choices
         Opcode::BeginChoice(flags, target) => {
