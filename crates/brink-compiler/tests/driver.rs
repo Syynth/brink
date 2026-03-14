@@ -1674,3 +1674,69 @@ Content
         "thread-in-logic should produce 'Content', got: {result:?}"
     );
 }
+
+// ── Template tests (intl-spec phase 3) ──────────────────────────────
+
+#[test]
+fn template_single_variable() {
+    let source = "VAR name = \"World\"\nHello, {name}!\n";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "Hello, World!\n");
+}
+
+#[test]
+fn template_multiple_interpolations() {
+    let source = "VAR a = \"one\"\nVAR b = \"two\"\n{a} and {b}\n";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "one and two\n");
+}
+
+#[test]
+fn template_expression_interpolation() {
+    let source = "VAR n = 3\nResult: {n * 2}\n";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "Result: 6\n");
+}
+
+#[test]
+fn template_interpolation_at_start() {
+    let source = "VAR x = \"Hello\"\n{x} world\n";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "Hello world\n");
+}
+
+#[test]
+fn template_interpolation_at_end() {
+    let source = "VAR x = \"world\"\nHello {x}\n";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "Hello world\n");
+}
+
+#[test]
+fn plain_text_regression() {
+    // Ensure plain text lines still work after template support.
+    let source = "Just plain text.\n";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "Just plain text.\n");
+}
+
+#[test]
+fn template_integer_interpolation() {
+    let source = "VAR count = 42\nThere are {count} items.\n";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "There are 42 items.\n");
+}
+
+#[test]
+fn template_float_interpolation() {
+    let source = "VAR pi = 3.14\nPi is {pi}.\n";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "Pi is 3.14.\n");
+}
+
+#[test]
+fn template_bool_interpolation() {
+    let source = "VAR flag = true\nFlag: {flag}\n";
+    let result = compile_and_run(source, &[]);
+    assert_eq!(result, "Flag: true\n");
+}
