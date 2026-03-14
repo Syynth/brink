@@ -98,6 +98,17 @@ fn collect_text(stmts: &[lir::Stmt]) -> Vec<String> {
                         texts.push(s.clone());
                     }
                 }
+                lir::RecognizedLine::Template { parts, .. } => {
+                    let mut line = String::new();
+                    for part in parts {
+                        if let brink_format::LinePart::Literal(s) = part {
+                            line.push_str(s);
+                        }
+                    }
+                    if !line.is_empty() {
+                        texts.push(line);
+                    }
+                }
             },
             _ => {}
         }
@@ -438,19 +449,20 @@ fn list_global_referenced_in_expression() {
     let g = find_global(&p, "mood");
     let r = root(&p);
 
-    // Find the interpolation that references mood
+    // Find the template slot expression that references mood
     let has_get_global_with_var_id = r.body.iter().any(|s| {
-        if let lir::Stmt::EmitContent(c) = s {
-            c.parts.iter().any(|part| {
-                matches!(part, lir::ContentPart::Interpolation(lir::Expr::GetGlobal(id)) if *id == g.id)
-            })
-        } else {
-            false
+        if let lir::Stmt::EmitLine(e) = s
+            && let lir::RecognizedLine::Template { slot_exprs, .. } = &e.line
+        {
+            return slot_exprs
+                .iter()
+                .any(|expr| matches!(expr, lir::Expr::GetGlobal(id) if *id == g.id));
         }
+        false
     });
     assert!(
         has_get_global_with_var_id,
-        "interpolation should reference the GlobalVar ID, not the ListDef ID"
+        "template slot should reference the GlobalVar ID, not the ListDef ID"
     );
 }
 
@@ -1042,16 +1054,14 @@ fn assignment_with_operator() {
 fn interpolation_in_content() {
     let p = lower_ink("VAR name = \"world\"\nHello {name}!\n");
     let r = root(&p);
-    let has_interpolation = r.body.iter().any(|s| {
-        if let lir::Stmt::EmitContent(c) = s {
-            c.parts
-                .iter()
-                .any(|p| matches!(p, lir::ContentPart::Interpolation(_)))
-        } else {
-            false
-        }
+    // Interpolations are now recognized as templates (phase 3).
+    let has_template = r.body.iter().any(|s| {
+        matches!(s, lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Template { .. }))
     });
-    assert!(has_interpolation, "content should have an interpolation");
+    assert!(
+        has_template,
+        "content with interpolation should be recognized as Template"
+    );
 }
 
 #[test]
@@ -1998,16 +2008,50 @@ fn plain_text_with_tag_recognized() {
     }
 }
 
+fn find_template(body: &[lir::Stmt]) -> Option<(Vec<brink_format::LinePart>, usize)> {
+    body.iter().find_map(|s| {
+        if let lir::Stmt::EmitLine(e) = s
+            && let lir::RecognizedLine::Template { parts, slot_exprs } = &e.line
+        {
+            return Some((parts.clone(), slot_exprs.len()));
+        }
+        None
+    })
+}
+
 #[test]
-fn interpolation_not_recognized() {
+fn interpolation_recognized_as_template() {
     let program = lower_ink("VAR name = \"world\"\nHello, {name}!\n");
-    // Find the content stmt (skip DeclareTemp/Assign for the VAR)
     let body = &root(&program).body;
-    let has_emit_content = body.iter().any(|s| matches!(s, lir::Stmt::EmitContent(_)));
-    assert!(
-        has_emit_content,
-        "interpolation should fall back to EmitContent"
-    );
+    let (parts, slot_count) = find_template(body).expect("should be recognized as Template");
+    assert_eq!(slot_count, 1, "one slot expression");
+    assert_eq!(parts.len(), 3, "literal + slot + literal");
+    assert!(matches!(&parts[0], brink_format::LinePart::Literal(s) if s == "Hello, "));
+    assert!(matches!(&parts[1], brink_format::LinePart::Slot(0)));
+    assert!(matches!(&parts[2], brink_format::LinePart::Literal(s) if s == "!"));
+}
+
+#[test]
+fn multiple_interpolations_recognized() {
+    let program = lower_ink("VAR x = 1\nVAR y = 2\n{x} and {y}\n");
+    let body = &root(&program).body;
+    let (parts, slot_count) =
+        find_template(body).expect("multiple interpolations should be recognized as Template");
+    assert_eq!(slot_count, 2, "two slot expressions");
+    assert!(matches!(&parts[0], brink_format::LinePart::Slot(0)));
+    assert!(matches!(&parts[1], brink_format::LinePart::Literal(s) if s == " and "));
+    assert!(matches!(&parts[2], brink_format::LinePart::Slot(1)));
+}
+
+#[test]
+fn interpolation_only_recognized() {
+    let program = lower_ink("VAR x = 1\n{x}\n");
+    let body = &root(&program).body;
+    let (parts, slot_count) =
+        find_template(body).expect("single interpolation should be recognized as Template");
+    assert_eq!(slot_count, 1);
+    assert_eq!(parts.len(), 1);
+    assert!(matches!(&parts[0], brink_format::LinePart::Slot(0)));
 }
 
 #[test]
@@ -2018,6 +2062,17 @@ fn glue_not_recognized() {
     assert!(
         has_emit_content,
         "content with glue should fall back to EmitContent"
+    );
+}
+
+#[test]
+fn glue_with_interpolation_not_recognized() {
+    let program = lower_ink("VAR x = 1\nHello<>{x}\n");
+    let body = &root(&program).body;
+    let has_emit_content = body.iter().any(|s| matches!(s, lir::Stmt::EmitContent(_)));
+    assert!(
+        has_emit_content,
+        "content with glue and interpolation should fall back to EmitContent"
     );
 }
 

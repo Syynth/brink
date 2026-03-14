@@ -383,11 +383,14 @@ pub struct LineMetadata {
     // Phase 3+: slot_info, source_location
 }
 
-/// A recognized line. Phase 1: plain text only.
+/// A recognized line pattern from content analysis.
 #[derive(Clone)]
 pub enum RecognizedLine {
     Plain(String),
-    // Phase 2+: Template { template: LineTemplate, slot_exprs: Vec<Expr> }
+    Template {
+        parts: Vec<brink_format::LinePart>,
+        slot_exprs: Vec<Expr>,
+    },
 }
 
 /// Result of pattern recognition on a content line.

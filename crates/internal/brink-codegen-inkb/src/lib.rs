@@ -118,6 +118,19 @@ impl<'a> ContainerEmitter<'a> {
         idx
     }
 
+    #[expect(clippy::cast_possible_truncation)]
+    fn add_template_line(&mut self, parts: brink_format::LineTemplate, source_hash: u64) -> u16 {
+        let idx = self.scope_line_table.len() as u16;
+        self.scope_line_table.push(LineEntry {
+            content: LineContent::Template(parts),
+            source_hash,
+            audio_ref: None,
+            slot_info: Vec::new(),
+            source_location: None,
+        });
+        idx
+    }
+
     fn intern_string(&mut self, s: &str) -> NameId {
         if let Some(&id) = self.state_name_index.get(s) {
             return id;

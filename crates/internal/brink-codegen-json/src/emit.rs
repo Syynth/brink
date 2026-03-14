@@ -99,6 +99,28 @@ fn emit_stmt(
                 lir::RecognizedLine::Plain(text) => {
                     out.push(Element::Value(InkValue::String(text.clone())));
                 }
+                lir::RecognizedLine::Template { parts, slot_exprs } => {
+                    // JSON codegen emits template parts inline — text as strings,
+                    // slots as eval'd expressions.
+                    for part in parts {
+                        match part {
+                            brink_format::LinePart::Literal(s) => {
+                                out.push(Element::Value(InkValue::String(s.clone())));
+                            }
+                            brink_format::LinePart::Slot(idx) => {
+                                if let Some(expr) = slot_exprs.get(*idx as usize) {
+                                    out.push(ev());
+                                    emit_expr(expr, lookups, cctx, out);
+                                    out.push(Element::ControlCommand(ControlCommand::Output));
+                                    out.push(end_ev());
+                                }
+                            }
+                            brink_format::LinePart::Select { default, .. } => {
+                                out.push(Element::Value(InkValue::String(default.clone())));
+                            }
+                        }
+                    }
+                }
             }
             for tag in &emission.tags {
                 out.push(Element::ControlCommand(ControlCommand::Tag));

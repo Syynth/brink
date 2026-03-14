@@ -2,7 +2,9 @@
 
 use std::rc::Rc;
 
-use brink_format::{ChoiceFlags, CountingFlags, DefinitionId, LineContent, Opcode, Value};
+use brink_format::{
+    ChoiceFlags, CountingFlags, DefinitionId, LineContent, LinePart, Opcode, Value,
+};
 
 use crate::error::RuntimeError;
 use crate::list_ops;
@@ -99,12 +101,12 @@ pub(crate) fn step(
     // ── Dispatch ────────────────────────────────────────────────────────
     match op {
         // ── Output ──────────────────────────────────────────────────
-        Opcode::EmitLine(idx, _slot_count) => {
-            let text = resolve_line(state.program(), &pos, idx);
+        Opcode::EmitLine(idx, slot_count) => {
+            let text = resolve_line(state.program(), flow, &pos, idx, slot_count)?;
             flow.output.push_text(&text);
         }
-        Opcode::EvalLine(idx, _slot_count) => {
-            let text = resolve_line(state.program(), &pos, idx);
+        Opcode::EvalLine(idx, slot_count) => {
+            let text = resolve_line(state.program(), flow, &pos, idx, slot_count)?;
             flow.value_stack.push(Value::String(text.into()));
         }
         Opcode::EmitValue => {
@@ -855,18 +857,44 @@ pub(crate) fn step(
     Ok(Stepped::Continue)
 }
 
-fn resolve_line(program: &Program, pos: &ContainerPosition, idx: u16) -> String {
+fn resolve_line(
+    program: &Program,
+    flow: &mut Flow,
+    pos: &ContainerPosition,
+    idx: u16,
+    slot_count: u8,
+) -> Result<String, RuntimeError> {
+    // Pop slot values from the stack (LIFO order — reverse to match slot indices).
+    let mut slots = Vec::with_capacity(slot_count as usize);
+    for _ in 0..slot_count {
+        slots.push(flow.pop_value()?);
+    }
+    slots.reverse();
+
     let lines = program.line_table(pos.container_idx);
-    if let Some(entry) = lines.get(idx as usize) {
-        match &entry.content {
-            LineContent::Plain(s) => s.clone(),
-            LineContent::Template(_parts) => {
-                // Template lines need slot resolution - stub for now
-                "[template]".to_owned()
+    let Some(entry) = lines.get(idx as usize) else {
+        return Ok(String::new());
+    };
+
+    match &entry.content {
+        LineContent::Plain(s) => Ok(s.clone()),
+        LineContent::Template(parts) => {
+            let mut result = String::new();
+            for part in parts {
+                match part {
+                    LinePart::Literal(s) => result.push_str(s),
+                    LinePart::Slot(n) => {
+                        if let Some(val) = slots.get(*n as usize) {
+                            result.push_str(&value_ops::stringify(val, program));
+                        }
+                    }
+                    LinePart::Select { default, .. } => {
+                        result.push_str(default);
+                    }
+                }
             }
+            Ok(result)
         }
-    } else {
-        String::new()
     }
 }
 

@@ -935,6 +935,12 @@ fn collect_counting_refs(
                 collect_counting_refs_content(content, visit_ids, turns_ids);
             }
             lir::Stmt::EmitLine(emission) => {
+                // Template slot expressions may contain counting refs.
+                if let lir::RecognizedLine::Template { slot_exprs, .. } = &emission.line {
+                    for e in slot_exprs {
+                        collect_counting_refs_expr(e, visit_ids, turns_ids);
+                    }
+                }
                 // Tags may contain dynamic expressions — traverse them.
                 for tag in &emission.tags {
                     for part in tag {

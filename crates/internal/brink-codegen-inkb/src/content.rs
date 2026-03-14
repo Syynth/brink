@@ -12,6 +12,19 @@ impl ContainerEmitter<'_> {
                 let idx = self.add_line_with_hash(text, emission.metadata.source_hash);
                 self.emit(Opcode::EmitLine(idx, 0));
             }
+            lir::RecognizedLine::Template {
+                parts: template_parts,
+                slot_exprs,
+            } => {
+                // Evaluate slot expressions first — they push values onto the stack.
+                for expr in slot_exprs {
+                    self.emit_expr(expr);
+                }
+                let idx =
+                    self.add_template_line(template_parts.clone(), emission.metadata.source_hash);
+                #[expect(clippy::cast_possible_truncation)]
+                self.emit(Opcode::EmitLine(idx, slot_exprs.len() as u8));
+            }
         }
 
         for tag in &emission.tags {
