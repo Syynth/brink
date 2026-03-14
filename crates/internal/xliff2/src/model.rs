@@ -45,6 +45,7 @@ pub struct Group {
 pub struct Unit {
     pub id: String,
     pub name: Option<String>,
+    pub translate: Option<bool>,
     pub notes: Vec<Note>,
     pub sub_units: Vec<SubUnit>,
     pub original_data: Option<OriginalData>,

@@ -40,6 +40,9 @@ enum Commands {
         /// BCP 47 source language tag (e.g. "en")
         #[arg(long, default_value = "en")]
         src_lang: String,
+        /// BCP 47 target language tag (e.g. "es")
+        #[arg(long)]
+        trg_lang: Option<String>,
         /// Output .xlf file (defaults to stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -111,9 +114,12 @@ fn main() -> ExitCode {
             Commands::ExportXliff {
                 input,
                 src_lang,
+                trg_lang,
                 output,
             } => {
-                if let Err(e) = run_export_xliff(&input, &src_lang, output.as_deref()) {
+                if let Err(e) =
+                    run_export_xliff(&input, &src_lang, trg_lang.as_deref(), output.as_deref())
+                {
                     tracing::error!("{e}");
                     return ExitCode::FAILURE;
                 }
@@ -245,6 +251,7 @@ fn run_convert(
 fn run_export_xliff(
     input: &std::path::Path,
     src_lang: &str,
+    trg_lang: Option<&str>,
     output: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // For .inkb files, extract the checksum from the header.
@@ -257,7 +264,7 @@ fn run_export_xliff(
         (load_story_data(input)?, 0)
     };
 
-    let doc = brink_intl::generate_locale(&data, checksum, src_lang);
+    let doc = brink_intl::generate_locale(&data, checksum, src_lang, trg_lang);
     let xml = xliff2::write::to_string(&doc)?;
 
     if let Some(path) = output {

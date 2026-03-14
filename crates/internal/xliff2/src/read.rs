@@ -352,6 +352,7 @@ fn read_group(attrs: &Attributes, reader: &mut Reader<&[u8]>) -> Result<Group, X
 fn read_unit(attrs: &Attributes, reader: &mut Reader<&[u8]>) -> Result<Unit, Xliff2Error> {
     let mut id = None;
     let mut name = None;
+    let mut translate = None;
     let mut ext = Extensions::default();
 
     for attr in attrs.clone() {
@@ -361,6 +362,7 @@ fn read_unit(attrs: &Attributes, reader: &mut Reader<&[u8]>) -> Result<Unit, Xli
         match key {
             "id" => id = Some(val.to_owned()),
             "name" => name = Some(val.to_owned()),
+            "translate" => translate = Some(parse_yes_no(val, "unit", "translate")?),
             _ => extensions::collect_ext_attribute(key, val, &mut ext),
         }
     }
@@ -407,6 +409,7 @@ fn read_unit(attrs: &Attributes, reader: &mut Reader<&[u8]>) -> Result<Unit, Xli
     Ok(Unit {
         id,
         name,
+        translate,
         notes,
         sub_units,
         original_data,
@@ -585,6 +588,18 @@ fn parse_state(val: &str) -> Result<State, Xliff2Error> {
         _ => Err(Xliff2Error::InvalidAttribute {
             element: "segment".to_owned(),
             attribute: "state".to_owned(),
+            value: val.to_owned(),
+        }),
+    }
+}
+
+fn parse_yes_no(val: &str, element: &str, attribute: &str) -> Result<bool, Xliff2Error> {
+    match val {
+        "yes" => Ok(true),
+        "no" => Ok(false),
+        _ => Err(Xliff2Error::InvalidAttribute {
+            element: element.to_owned(),
+            attribute: attribute.to_owned(),
             value: val.to_owned(),
         }),
     }

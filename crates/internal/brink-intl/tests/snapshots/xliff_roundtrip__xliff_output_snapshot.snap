@@ -1,17 +1,17 @@
 ---
 source: crates/internal/brink-intl/tests/xliff_roundtrip.rs
-assertion_line: 229
+assertion_line: 287
 expression: xml
 ---
 <?xml version="1.0" encoding="UTF-8"?>
 <xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en" xmlns:brink="urn:brink:xliff:extensions:1.0" brink:checksum="0xdeadbeef" brink:version="1">
-  <file id="0x0100000000000001" original="root">
-    <unit id="0x0100000000000001:0" brink:hash="aaaa1234">
+  <file id="root" brink:scope-id="0x0100000000000001">
+    <unit id="root:0" brink:hash="aaaa1234">
       <segment state="initial">
         <source>Hello world</source>
       </segment>
     </unit>
-    <unit id="0x0100000000000001:1" brink:hash="bbbb5678" brink:audio="audio/count.wav">
+    <unit id="root:1" brink:hash="bbbb5678" brink:audio="audio/count.wav">
       <segment state="initial">
         <source>Count: <ph id="s0" equiv="{slot 0}"/></source>
       </segment>

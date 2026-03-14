@@ -19,24 +19,37 @@ const BRINK_PREFIX: &str = "brink";
 /// Convert a `LinesJson` to an XLIFF 2.0 `Document`.
 ///
 /// `source_lang` is a BCP 47 language tag for the source content (e.g. `"en"`).
-pub fn lines_json_to_xliff(lines: &LinesJson, source_lang: &str) -> Document {
+/// `trg_lang` is an optional BCP 47 target language tag (e.g. `"es"`).
+pub fn lines_json_to_xliff(
+    lines: &LinesJson,
+    source_lang: &str,
+    trg_lang: Option<&str>,
+) -> Document {
     let files: Vec<File> = lines
         .scopes
         .iter()
         .map(|scope| {
+            let display_name = scope.name.as_deref().unwrap_or(&scope.id);
             let units: Vec<Unit> = scope
                 .lines
                 .iter()
-                .map(|line| line_to_unit(&scope.id, line))
+                .map(|line| line_to_unit(display_name, line))
                 .collect();
             File {
-                id: scope.id.clone(),
-                original: scope.name.clone(),
+                id: display_name.to_string(),
+                original: None,
                 notes: Vec::new(),
                 skeleton: None,
                 groups: Vec::new(),
                 units,
-                extensions: Extensions::default(),
+                extensions: Extensions {
+                    elements: Vec::new(),
+                    attributes: vec![ExtensionAttribute {
+                        namespace: BRINK_PREFIX.to_string(),
+                        local_name: "scope-id".to_string(),
+                        value: scope.id.clone(),
+                    }],
+                },
             }
         })
         .collect();
@@ -44,7 +57,7 @@ pub fn lines_json_to_xliff(lines: &LinesJson, source_lang: &str) -> Document {
     Document {
         version: "2.0".to_string(),
         src_lang: source_lang.to_string(),
-        trg_lang: None,
+        trg_lang: trg_lang.map(str::to_string),
         files,
         extensions: Extensions {
             elements: Vec::new(),
@@ -87,9 +100,13 @@ pub fn xliff_to_lines_json(doc: &Document) -> Result<LinesJson, IntlError> {
         for unit in &file.units {
             lines.push(unit_to_line(unit)?);
         }
+        // Prefer brink:scope-id extension for the hex definition ID;
+        // fall back to file.id for backwards compatibility.
+        let scope_id = ext_attr_value(&file.extensions, "scope-id")
+            .map_or_else(|| file.id.clone(), str::to_string);
         scopes.push(ScopeJson {
-            name: file.original.clone(),
-            id: file.id.clone(),
+            name: Some(file.id.clone()),
+            id: scope_id,
             lines,
         });
     }
@@ -103,8 +120,21 @@ pub fn xliff_to_lines_json(doc: &Document) -> Result<LinesJson, IntlError> {
 
 // ── LinesJson → XLIFF helpers ──────────────────────────────────────────
 
-fn line_to_unit(scope_id: &str, line: &LineJson) -> Unit {
-    let unit_id = format!("{scope_id}:{}", line.index);
+fn is_whitespace_only(line: &LineJson) -> bool {
+    match &line.content {
+        None => true,
+        Some(ContentJson::Plain(s)) => s.trim().is_empty(),
+        Some(ContentJson::Template { .. }) => false,
+    }
+}
+
+fn line_to_unit(scope_name: &str, line: &LineJson) -> Unit {
+    let unit_id = format!("{scope_name}:{}", line.index);
+    let translate = if is_whitespace_only(line) {
+        Some(false)
+    } else {
+        None
+    };
 
     let mut ext_attrs = vec![ExtensionAttribute {
         namespace: BRINK_PREFIX.to_string(),
@@ -138,6 +168,7 @@ fn line_to_unit(scope_id: &str, line: &LineJson) -> Unit {
     Unit {
         id: unit_id,
         name: None,
+        translate,
         notes: Vec::new(),
         sub_units: vec![SubUnit::Segment(segment)],
         original_data,
@@ -368,7 +399,7 @@ mod tests {
     }
 
     fn roundtrip(lines: &LinesJson) -> LinesJson {
-        let doc = lines_json_to_xliff(lines, "en");
+        let doc = lines_json_to_xliff(lines, "en", None);
         // Set targets to source content (simulating translation).
         let doc = set_targets_from_source(doc);
         xliff_to_lines_json(&doc).unwrap()
@@ -491,7 +522,7 @@ mod tests {
                 None,
             )],
         )]);
-        let doc = lines_json_to_xliff(&lines, "en");
+        let doc = lines_json_to_xliff(&lines, "en", None);
         // Don't set targets — simulates untranslated.
         let result = xliff_to_lines_json(&doc).unwrap();
         assert!(result.scopes[0].lines[0].content.is_none());
@@ -538,7 +569,7 @@ mod tests {
             None,
             vec![make_line(0, "hash1", None, None)],
         )]);
-        let doc = lines_json_to_xliff(&lines, "en");
+        let doc = lines_json_to_xliff(&lines, "en", None);
         // Source should be empty for None content.
         let SubUnit::Segment(seg) = &doc.files[0].units[0].sub_units[0] else {
             unreachable!()

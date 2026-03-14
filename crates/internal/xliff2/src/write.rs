@@ -154,6 +154,9 @@ fn write_unit<W: Write>(unit: &Unit, w: &mut Writer<W>) -> Result<(), Xliff2Erro
     if let Some(ref name) = unit.name {
         elem.push_attribute(("name", name.as_str()));
     }
+    if let Some(translate) = unit.translate {
+        elem.push_attribute(("translate", if translate { "yes" } else { "no" }));
+    }
     extensions::write_ext_attributes(&unit.extensions, &mut elem);
     w.write_event(Event::Start(elem))?;
 

@@ -14,6 +14,7 @@ fn minimal_doc() -> Document {
             units: vec![Unit {
                 id: "u1".to_owned(),
                 name: None,
+                translate: None,
                 notes: vec![],
                 sub_units: vec![SubUnit::Segment(Segment {
                     id: Some("s1".to_owned()),
@@ -67,6 +68,7 @@ fn round_trip_with_inline_codes() {
             units: vec![Unit {
                 id: "u1".to_owned(),
                 name: None,
+                translate: None,
                 notes: vec![],
                 sub_units: vec![SubUnit::Segment(Segment {
                     id: None,
@@ -136,6 +138,7 @@ fn round_trip_with_notes() {
             units: vec![Unit {
                 id: "u1".to_owned(),
                 name: Some("greeting".to_owned()),
+                translate: None,
                 notes: vec![Note {
                     id: None,
                     category: None,
@@ -192,6 +195,7 @@ fn round_trip_with_groups() {
                     units: vec![Unit {
                         id: "u1".to_owned(),
                         name: None,
+                        translate: None,
                         notes: vec![],
                         sub_units: vec![SubUnit::Segment(Segment {
                             id: None,
@@ -237,6 +241,7 @@ fn round_trip_spanning_codes() {
             units: vec![Unit {
                 id: "u1".to_owned(),
                 name: None,
+                translate: None,
                 notes: vec![],
                 sub_units: vec![SubUnit::Segment(Segment {
                     id: None,
@@ -300,6 +305,7 @@ fn round_trip_annotations() {
             units: vec![Unit {
                 id: "u1".to_owned(),
                 name: None,
+                translate: None,
                 notes: vec![],
                 sub_units: vec![SubUnit::Segment(Segment {
                     id: None,
@@ -362,6 +368,7 @@ fn round_trip_ignorable() {
             units: vec![Unit {
                 id: "u1".to_owned(),
                 name: None,
+                translate: None,
                 notes: vec![],
                 sub_units: vec![
                     SubUnit::Segment(Segment {

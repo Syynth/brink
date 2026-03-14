@@ -15,7 +15,7 @@ fn main() {
     let index = brink_format::read_inkb_index(&inkb_bytes).expect("failed to read inkb index");
     let data = brink_format::read_inkb(&inkb_bytes).expect("failed to decode inkb");
 
-    let doc = brink_intl::generate_locale(&data, index.checksum, "en");
+    let doc = brink_intl::generate_locale(&data, index.checksum, "en", None);
     let xml = xliff2::write::to_string(&doc).expect("failed to serialize XLIFF");
 
     std::fs::write(&args[2], xml).expect("failed to write output");

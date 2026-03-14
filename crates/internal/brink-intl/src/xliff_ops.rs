@@ -14,9 +14,14 @@ use crate::xliff_convert::{lines_json_to_xliff, xliff_to_lines_json};
 /// Export a story's line tables as an XLIFF 2.0 document.
 ///
 /// This is the XLIFF equivalent of `export_lines` → JSON serialization.
-pub fn generate_locale(story: &StoryData, source_checksum: u32, source_lang: &str) -> Document {
+pub fn generate_locale(
+    story: &StoryData,
+    source_checksum: u32,
+    source_lang: &str,
+    trg_lang: Option<&str>,
+) -> Document {
     let lines = export_lines(story, source_checksum);
-    lines_json_to_xliff(&lines, source_lang)
+    lines_json_to_xliff(&lines, source_lang, trg_lang)
 }
 
 /// Compile a translated XLIFF document into `.inkl` locale overlay bytes.
@@ -47,7 +52,7 @@ pub fn regenerate_locale(
     let existing_lines = xliff_to_lines_json(existing)?;
     let merged = regenerate_lines(&new_export, &existing_lines);
 
-    let mut doc = lines_json_to_xliff(&merged, source_lang);
+    let mut doc = lines_json_to_xliff(&merged, source_lang, None);
 
     // Carry forward target language from existing document.
     if doc.trg_lang.is_none() {

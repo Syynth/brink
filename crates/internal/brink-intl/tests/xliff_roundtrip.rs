@@ -111,7 +111,7 @@ fn full_roundtrip_through_xml() {
     ]);
 
     // LinesJson → XLIFF Document
-    let doc = lines_json_to_xliff(&lines, "en");
+    let doc = lines_json_to_xliff(&lines, "en", None);
     assert_eq!(doc.src_lang, "en");
     assert_eq!(doc.files.len(), 2);
 
@@ -163,7 +163,7 @@ fn generate_and_compile_xliff() {
     let data = brink_converter::convert(&story).unwrap();
 
     // Generate XLIFF
-    let doc = generate_locale(&data, 0x1234, "en");
+    let doc = generate_locale(&data, 0x1234, "en", None);
     assert_eq!(doc.version, "2.0");
     assert_eq!(doc.src_lang, "en");
 
@@ -215,7 +215,7 @@ fn regeneration_preserves_translations() {
     )]);
 
     // Create "existing" XLIFF with translations
-    let mut existing = lines_json_to_xliff(&lines_v1, "en");
+    let mut existing = lines_json_to_xliff(&lines_v1, "en", None);
     existing.trg_lang = Some("es".to_string());
     // Set translated content
     for file in &mut existing.files {
@@ -282,7 +282,7 @@ fn xliff_output_snapshot() {
         ],
     )]);
 
-    let doc = lines_json_to_xliff(&lines, "en");
+    let doc = lines_json_to_xliff(&lines, "en", None);
     let xml = xliff2::write::to_string(&doc).unwrap();
     insta::assert_snapshot!(xml);
 }
