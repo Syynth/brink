@@ -1,0 +1,9 @@
+[submodule "crates/internal/xliff2/tests/oasis-suite"]
+	path = crates/internal/xliff2/tests/oasis-suite
+	url = https://github.com/oasis-tcs/xliff-xliff-22.git
+[submodule "tree-sitter-ink"]
+	path = tree-sitter-ink
+	url = ./tree-sitter-ink
+[submodule "crates/zed-brink/grammars/ink"]
+	path = crates/zed-brink/grammars/ink
+	url = ./tree-sitter-ink

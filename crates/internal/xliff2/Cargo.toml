@@ -1,0 +1,22 @@
+[package]
+name = "xliff2"
+description = "XLIFF 2.0 read/write library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+metadata = []
+
+[dependencies]
+quick-xml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+
+[lints]
+workspace = true

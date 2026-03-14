@@ -1,0 +1,16 @@
+---
+source: crates/internal/xliff2/tests/round_trip.rs
+assertion_line: 44
+expression: xml
+---
+<?xml version="1.0" encoding="UTF-8"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en" trgLang="fr">
+  <file id="f1" original="hello.txt">
+    <unit id="u1">
+      <segment id="s1" state="initial">
+        <source>Hello</source>
+        <target>Bonjour</target>
+      </segment>
+    </unit>
+  </file>
+</xliff>
