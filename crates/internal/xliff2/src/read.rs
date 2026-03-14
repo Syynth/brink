@@ -53,8 +53,11 @@ fn read_xliff_element(
             "version" => version = Some(val.to_owned()),
             "srcLang" => src_lang = Some(val.to_owned()),
             "trgLang" => trg_lang = Some(val.to_owned()),
-            "xmlns" => {}
-            k if k.starts_with("xmlns:") => {}
+            "xmlns" => {} // skip default XLIFF namespace
+            k if k.starts_with("xmlns:") => {
+                // Preserve non-XLIFF namespace declarations for round-trip fidelity
+                extensions::collect_ext_attribute(key, val, &mut ext);
+            }
             _ => extensions::collect_ext_attribute(key, val, &mut ext),
         }
     }
@@ -73,17 +76,12 @@ fn read_xliff_element(
     loop {
         match reader.read_event()? {
             Event::Start(e) => {
-                let name = local_name(&e);
-                match name.as_str() {
-                    "file" => files.push(read_file(&e.attributes(), reader)?),
-                    _ => {
-                        extensions::read_ext_element_into(
-                            &name,
-                            &e.attributes(),
-                            reader,
-                            &mut ext,
-                        )?;
-                    }
+                let ln = local_name(&e);
+                if ln == "file" {
+                    files.push(read_file(&e.attributes(), reader)?);
+                } else {
+                    let rn = raw_name(&e);
+                    extensions::read_ext_element_into(&rn, &e.attributes(), reader, &mut ext)?;
                 }
             }
             Event::End(e) if local_name_end(&e) == "xliff" => break,
@@ -130,27 +128,25 @@ fn read_file(attrs: &Attributes, reader: &mut Reader<&[u8]>) -> Result<File, Xli
     loop {
         match reader.read_event()? {
             Event::Start(e) => {
-                let name = local_name(&e);
-                match name.as_str() {
+                let ln = local_name(&e);
+                match ln.as_str() {
                     "notes" => notes = read_notes(reader)?,
                     "skeleton" => skeleton = Some(read_skeleton(&e.attributes(), reader)?),
                     "group" => groups.push(read_group(&e.attributes(), reader)?),
                     "unit" => units.push(read_unit(&e.attributes(), reader)?),
                     _ => {
-                        extensions::read_ext_element_into(
-                            &name,
-                            &e.attributes(),
-                            reader,
-                            &mut ext,
-                        )?;
+                        let rn = raw_name(&e);
+                        extensions::read_ext_element_into(&rn, &e.attributes(), reader, &mut ext)?;
                     }
                 }
             }
             Event::Empty(e) => {
-                let name = local_name(&e);
-                match name.as_str() {
-                    "skeleton" => skeleton = Some(read_skeleton_empty(&e.attributes())?),
-                    _ => extensions::collect_empty_ext_element(&name, &e.attributes(), &mut ext)?,
+                let ln = local_name(&e);
+                if ln == "skeleton" {
+                    skeleton = Some(read_skeleton_empty(&e.attributes())?);
+                } else {
+                    let rn = raw_name(&e);
+                    extensions::collect_empty_ext_element(&rn, &e.attributes(), &mut ext)?;
                 }
             }
             Event::End(e) if local_name_end(&e) == "file" => break,
@@ -328,13 +324,14 @@ fn read_group(attrs: &Attributes, reader: &mut Reader<&[u8]>) -> Result<Group, X
                     "group" => groups.push(read_group(&e.attributes(), reader)?),
                     "unit" => units.push(read_unit(&e.attributes(), reader)?),
                     _ => {
-                        extensions::read_ext_element_into(&ln, &e.attributes(), reader, &mut ext)?;
+                        let rn = raw_name(&e);
+                        extensions::read_ext_element_into(&rn, &e.attributes(), reader, &mut ext)?;
                     }
                 }
             }
             Event::Empty(e) => {
-                let ln = local_name(&e);
-                extensions::collect_empty_ext_element(&ln, &e.attributes(), &mut ext)?;
+                let rn = raw_name(&e);
+                extensions::collect_empty_ext_element(&rn, &e.attributes(), &mut ext)?;
             }
             Event::End(e) if local_name_end(&e) == "group" => break,
             Event::Eof => return Err(Xliff2Error::UnexpectedEof),
@@ -392,13 +389,14 @@ fn read_unit(attrs: &Attributes, reader: &mut Reader<&[u8]>) -> Result<Unit, Xli
                             .push(SubUnit::Ignorable(read_ignorable(&e.attributes(), reader)?));
                     }
                     _ => {
-                        extensions::read_ext_element_into(&ln, &e.attributes(), reader, &mut ext)?;
+                        let rn = raw_name(&e);
+                        extensions::read_ext_element_into(&rn, &e.attributes(), reader, &mut ext)?;
                     }
                 }
             }
             Event::Empty(e) => {
-                let ln = local_name(&e);
-                extensions::collect_empty_ext_element(&ln, &e.attributes(), &mut ext)?;
+                let rn = raw_name(&e);
+                extensions::collect_empty_ext_element(&rn, &e.attributes(), &mut ext)?;
             }
             Event::End(e) if local_name_end(&e) == "unit" => break,
             Event::Eof => return Err(Xliff2Error::UnexpectedEof),
@@ -615,6 +613,12 @@ fn local_name(e: &quick_xml::events::BytesStart) -> String {
     let name = e.name();
     let full = String::from_utf8_lossy(name.as_ref());
     strip_prefix(&full)
+}
+
+/// Extract the full raw name (including prefix) from a start event.
+fn raw_name(e: &quick_xml::events::BytesStart) -> String {
+    let name = e.name();
+    String::from_utf8_lossy(name.as_ref()).into_owned()
 }
 
 /// Extract local name from an end event, stripping any namespace prefix.

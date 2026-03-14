@@ -4,6 +4,9 @@ use super::extensions::Extensions;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InlineElement {
     Text(String),
+    CData(String),
+    /// Code point (`<cp hex="XXXX"/>`). Stores the hex string (e.g. `"0001"`).
+    Cp(String),
     Ph(Ph),
     Pc(Pc),
     Sc(Sc),

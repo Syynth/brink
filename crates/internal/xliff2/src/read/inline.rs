@@ -26,7 +26,7 @@ pub fn read_inline_content(
             Event::CData(e) => {
                 let text = std::str::from_utf8(&e)?.to_owned();
                 if !text.is_empty() {
-                    elements.push(InlineElement::Text(text));
+                    elements.push(InlineElement::CData(text));
                 }
             }
             Event::Start(e) => {
@@ -64,6 +64,7 @@ pub fn read_inline_content(
                     "ec" => elements.push(InlineElement::Ec(read_ec_empty(&e.attributes())?)),
                     "sm" => elements.push(InlineElement::Sm(read_sm_empty(&e.attributes())?)),
                     "em" => elements.push(InlineElement::Em(read_em_empty(&e.attributes())?)),
+                    "cp" => elements.push(read_cp_empty(&e.attributes())?),
                     _ => {}
                 }
             }
@@ -395,6 +396,23 @@ fn parse_yes_no(val: &str) -> Result<bool, Xliff2Error> {
             value: val.to_owned(),
         }),
     }
+}
+
+fn read_cp_empty(attrs: &Attributes) -> Result<InlineElement, Xliff2Error> {
+    let mut hex = None;
+    for attr in attrs.clone() {
+        let attr = attr?;
+        let key = std::str::from_utf8(attr.key.as_ref())?;
+        let val = std::str::from_utf8(&attr.value)?;
+        if key == "hex" {
+            hex = Some(val.to_owned());
+        }
+    }
+    let hex = hex.ok_or_else(|| Xliff2Error::MissingAttribute {
+        element: "cp".to_owned(),
+        attribute: "hex".to_owned(),
+    })?;
+    Ok(InlineElement::Cp(hex))
 }
 
 fn parse_can_reorder(val: &str) -> Result<CanReorder, Xliff2Error> {

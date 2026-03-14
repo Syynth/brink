@@ -25,6 +25,14 @@ fn write_inline_element<W: Write>(
         InlineElement::Text(text) => {
             w.write_event(Event::Text(BytesText::new(text)))?;
         }
+        InlineElement::CData(text) => {
+            w.write_event(Event::CData(quick_xml::events::BytesCData::new(text)))?;
+        }
+        InlineElement::Cp(hex) => {
+            let mut elem = BytesStart::new("cp");
+            elem.push_attribute(("hex", hex.as_str()));
+            w.write_event(Event::Empty(elem))?;
+        }
         InlineElement::Ph(ph) => write_ph(ph, w)?,
         InlineElement::Pc(pc) => write_pc(pc, w)?,
         InlineElement::Sc(sc) => write_sc(sc, w)?,

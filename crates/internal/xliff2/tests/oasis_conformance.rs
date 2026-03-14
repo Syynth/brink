@@ -100,10 +100,9 @@ fn round_trip_oasis_valid_core() {
             failures.join("\n")
         );
     }
-    // Allow up to 4 failures for now (namespace/CDATA fidelity edge cases)
     assert!(
-        failures.len() <= 4,
-        "regression: expected at most 4 round-trip failures, got {}:\n{}",
+        failures.is_empty(),
+        "round-trip failures ({}):\n{}",
         failures.len(),
         failures.join("\n")
     );

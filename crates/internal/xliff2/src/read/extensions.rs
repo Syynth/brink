@@ -6,6 +6,7 @@ use crate::error::Xliff2Error;
 use crate::model::extensions::{ExtensionAttribute, ExtensionElement, ExtensionNode, Extensions};
 
 /// Collect an unknown attribute into extension storage.
+/// Stores the full qualified name (e.g. `my:attr`, `xmlns:mtc`) as-is for round-trip fidelity.
 pub fn collect_ext_attribute(key: &str, val: &str, ext: &mut Extensions) {
     if let Some(pos) = key.find(':') {
         let ns = &key[..pos];
@@ -61,22 +62,28 @@ fn read_ext_element(
             Event::Text(e) => {
                 let text = e.unescape()?.into_owned();
                 if !text.is_empty() {
-                    children.push(ExtensionNode::Text(text));
+                    // Merge adjacent text nodes (e.g. when XML comments between
+                    // text are dropped, the surrounding text events should coalesce).
+                    if let Some(ExtensionNode::Text(prev)) = children.last_mut() {
+                        prev.push_str(&text);
+                    } else {
+                        children.push(ExtensionNode::Text(text));
+                    }
                 }
             }
             Event::CData(e) => {
                 let text = std::str::from_utf8(&e)?.to_owned();
                 if !text.is_empty() {
-                    children.push(ExtensionNode::Text(text));
+                    children.push(ExtensionNode::CData(text));
                 }
             }
             Event::Start(e) => {
-                let child_name = super::local_name(&e);
+                let child_name = super::raw_name(&e);
                 let child = read_ext_element(&child_name, &e.attributes(), reader)?;
                 children.push(ExtensionNode::Element(child));
             }
             Event::Empty(e) => {
-                let child_name = super::local_name(&e);
+                let child_name = super::raw_name(&e);
                 let child_attrs = read_ext_attrs(&e.attributes())?;
                 children.push(ExtensionNode::Element(ExtensionElement {
                     namespace: String::new(),
@@ -105,10 +112,7 @@ fn read_ext_attrs(attrs: &Attributes) -> Result<Vec<(String, String)>, Xliff2Err
         let attr = attr?;
         let key = std::str::from_utf8(attr.key.as_ref())?.to_owned();
         let val = std::str::from_utf8(&attr.value)?.to_owned();
-        // Skip xmlns declarations
-        if key == "xmlns" || key.starts_with("xmlns:") {
-            continue;
-        }
+        // Preserve xmlns declarations for round-trip fidelity
         result.push((key, val));
     }
     Ok(result)

@@ -27,4 +27,5 @@ pub struct ExtensionElement {
 pub enum ExtensionNode {
     Element(ExtensionElement),
     Text(String),
+    CData(String),
 }

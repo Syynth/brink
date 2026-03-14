@@ -12,12 +12,24 @@ pub fn write_ext_attributes(ext: &Extensions, elem: &mut BytesStart) {
     }
 }
 
+/// Write extension elements without indentation to preserve round-trip fidelity.
+/// Extension element trees contain their own whitespace from the original document;
+/// the indent writer must not inject additional whitespace.
 pub fn write_ext_elements<W: Write>(
     ext: &Extensions,
     w: &mut Writer<W>,
 ) -> Result<(), Xliff2Error> {
     for element in &ext.elements {
-        write_ext_element(element, w)?;
+        // Serialize the entire extension element tree into a raw buffer
+        // using a non-indenting writer, then write through the main writer
+        // with just the leading indentation.
+        let mut raw_buf = Vec::new();
+        {
+            let mut raw_writer = Writer::new(&mut raw_buf);
+            write_ext_element(element, &mut raw_writer)?;
+        }
+        w.write_indent()?;
+        w.get_mut().write_all(&raw_buf)?;
     }
     Ok(())
 }
@@ -46,6 +58,9 @@ fn write_ext_element<W: Write>(
                 ExtensionNode::Element(e) => write_ext_element(e, w)?,
                 ExtensionNode::Text(text) => {
                     w.write_event(Event::Text(BytesText::new(text)))?;
+                }
+                ExtensionNode::CData(text) => {
+                    w.write_event(Event::CData(quick_xml::events::BytesCData::new(text)))?;
                 }
             }
         }
