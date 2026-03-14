@@ -1,76 +1,36 @@
 use brink_format::DecodeError;
 
 /// Errors that can occur during internationalization operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum IntlError {
-    /// JSON serialization failed.
-    Serialize(serde_json::Error),
-    /// The scope ID string could not be parsed.
+    #[error("failed to serialize: {0}")]
+    Serialize(#[from] serde_json::Error),
+    #[error("invalid scope id: {0}")]
     InvalidScopeId(String),
-    /// A scope in the translated lines was not found in the base .inkb.
+    #[error("scope not found in base: {0}")]
     ScopeNotInBase(String),
-    /// The line count for a scope doesn't match the base.
+    #[error("line count mismatch for scope {scope_id}: expected {expected}, got {actual}")]
     LineCountMismatch {
         scope_id: String,
         expected: usize,
         actual: usize,
     },
-    /// The locale tag is empty or invalid.
+    #[error("invalid locale tag: {0}")]
     InvalidLocaleTag(String),
-    /// Failed to decode the base .inkb file.
-    BaseFormat(DecodeError),
-    /// A select key string could not be parsed.
+    #[error("base format error: {0}")]
+    BaseFormat(#[from] DecodeError),
+    #[error("invalid select key: {0}")]
     InvalidSelectKey(String),
-    /// A line has no translation content (content is None).
+    #[error("untranslated line at index {line_index} in scope {scope_id}")]
     UntranslatedLine { scope_id: String, line_index: u16 },
-}
-
-impl core::fmt::Display for IntlError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Serialize(e) => write!(f, "failed to serialize: {e}"),
-            Self::InvalidScopeId(id) => write!(f, "invalid scope id: {id}"),
-            Self::ScopeNotInBase(id) => write!(f, "scope not found in base: {id}"),
-            Self::LineCountMismatch {
-                scope_id,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "line count mismatch for scope {scope_id}: expected {expected}, got {actual}"
-            ),
-            Self::InvalidLocaleTag(tag) => write!(f, "invalid locale tag: {tag}"),
-            Self::BaseFormat(e) => write!(f, "base format error: {e}"),
-            Self::InvalidSelectKey(key) => write!(f, "invalid select key: {key}"),
-            Self::UntranslatedLine {
-                scope_id,
-                line_index,
-            } => write!(
-                f,
-                "untranslated line at index {line_index} in scope {scope_id}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for IntlError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Serialize(e) => Some(e),
-            Self::BaseFormat(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<serde_json::Error> for IntlError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Serialize(e)
-    }
-}
-
-impl From<DecodeError> for IntlError {
-    fn from(e: DecodeError) -> Self {
-        Self::BaseFormat(e)
-    }
+    #[error("XLIFF error: {0}")]
+    Xliff(#[from] xliff2::Xliff2Error),
+    #[error("invalid XLIFF unit id `{0}`: expected format `scope_id:line_index`")]
+    InvalidUnitId(String),
+    #[error("missing brink:hash on unit `{0}`")]
+    MissingHash(String),
+    #[error("select data not found for dataRef `{0}`")]
+    MissingSelectData(String),
+    #[error("invalid select JSON in originalData: {0}")]
+    InvalidSelectJson(String),
 }
