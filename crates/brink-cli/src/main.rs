@@ -56,6 +56,18 @@ enum Commands {
         #[arg(short, long)]
         output: PathBuf,
     },
+    /// Regenerate lines.json preserving existing translations after recompilation
+    RegenerateLines {
+        /// Recompiled .inkb file
+        #[arg(long)]
+        base: PathBuf,
+        /// Existing translated lines.json
+        #[arg(long)]
+        existing: PathBuf,
+        /// Output updated lines.json (defaults to stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Play an ink story interactively
     Play {
         /// Story file (.ink.json, .inkb, or .inkt)
@@ -103,6 +115,16 @@ fn main() -> ExitCode {
                 output,
             } => {
                 if let Err(e) = run_compile_locale(&base, &lines, &locale, &output) {
+                    tracing::error!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            Commands::RegenerateLines {
+                base,
+                existing,
+                output,
+            } => {
+                if let Err(e) = run_regenerate_lines(&base, &existing, output.as_deref()) {
                     tracing::error!("{e}");
                     return ExitCode::FAILURE;
                 }
@@ -248,6 +270,37 @@ fn run_compile_locale(
     let lines_json: brink_intl::LinesJson = serde_json::from_str(&lines_text)?;
     let inkl_bytes = brink_intl::compile_locale(&base_bytes, &lines_json, locale)?;
     std::fs::write(output, &inkl_bytes)?;
+    Ok(())
+}
+
+fn run_regenerate_lines(
+    base: &std::path::Path,
+    existing: &std::path::Path,
+    output: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Export fresh lines from the recompiled .inkb.
+    let base_bytes = std::fs::read(base)?;
+    let index = brink_format::read_inkb_index(&base_bytes)?;
+    let data = brink_format::read_inkb(&base_bytes)?;
+    let new_export = brink_intl::export_lines(&data, index.checksum);
+
+    // Read the existing translated lines.json.
+    let existing_text = std::fs::read_to_string(existing)?;
+    let existing_lines: brink_intl::LinesJson = serde_json::from_str(&existing_text)?;
+
+    // Regenerate, preserving translations.
+    let merged = brink_intl::regenerate_lines(&new_export, &existing_lines);
+    let json = serde_json::to_string_pretty(&merged)?;
+
+    if let Some(path) = output {
+        std::fs::write(path, &json)?;
+    } else {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        handle.write_all(json.as_bytes())?;
+        handle.write_all(b"\n")?;
+    }
+
     Ok(())
 }
 

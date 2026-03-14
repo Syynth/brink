@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Top-level `lines.json` structure.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LinesJson {
     pub version: u32,
     pub source_checksum: String,
@@ -11,7 +11,7 @@ pub struct LinesJson {
 }
 
 /// A single scope (root, knot, or stitch) in the line table export.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScopeJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
