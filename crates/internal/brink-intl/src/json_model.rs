@@ -20,17 +20,18 @@ pub struct ScopeJson {
 }
 
 /// A single line entry within a scope.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LineJson {
     pub index: u16,
-    pub content: ContentJson,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<ContentJson>,
     pub hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<String>,
 }
 
 /// Line content — either a plain string or a template with parts.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ContentJson {
     Template { template: Vec<PartJson> },
@@ -38,7 +39,7 @@ pub enum ContentJson {
 }
 
 /// A single part of a template line.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PartJson {
     Slot { slot: u8 },
@@ -47,7 +48,7 @@ pub enum PartJson {
 }
 
 /// A plural/keyword select over a slot value.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SelectJson {
     pub slot: u8,
     pub variants: Vec<serde_json::Map<String, serde_json::Value>>,

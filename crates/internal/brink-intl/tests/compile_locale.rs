@@ -50,7 +50,7 @@ fn compile_modified_text() {
     // Modify the first line of the first scope to have different text
     assert!(!lines.scopes.is_empty());
     assert!(!lines.scopes[0].lines.is_empty());
-    lines.scopes[0].lines[0].content = ContentJson::Plain("Hola mundo\n".to_string());
+    lines.scopes[0].lines[0].content = Some(ContentJson::Plain("Hola mundo\n".to_string()));
 
     let inkl_bytes = compile_locale(&inkb, &lines, "es").unwrap();
     let locale = read_inkl(&inkl_bytes).unwrap();
@@ -121,7 +121,7 @@ fn error_line_count_mismatch() {
     assert!(!lines.scopes[0].lines.is_empty());
     lines.scopes[0].lines.push(brink_intl::LineJson {
         index: 99,
-        content: ContentJson::Plain("extra".to_string()),
+        content: Some(ContentJson::Plain("extra".to_string())),
         hash: "0000000000000000".to_string(),
         audio: None,
     });
@@ -175,12 +175,12 @@ fn end_to_end_localize_and_run() {
     // Modify text — replace first line content with localized version
     assert!(!lines.scopes.is_empty());
     assert!(!lines.scopes[0].lines.is_empty());
-    let ContentJson::Plain(original_text) = &lines.scopes[0].lines[0].content else {
+    let Some(ContentJson::Plain(original_text)) = &lines.scopes[0].lines[0].content else {
         unreachable!("I001 first line should be plain content")
     };
     let original_text = original_text.clone();
     let localized_text = format!("[ES] {original_text}");
-    lines.scopes[0].lines[0].content = ContentJson::Plain(localized_text.clone());
+    lines.scopes[0].lines[0].content = Some(ContentJson::Plain(localized_text.clone()));
 
     // Compile locale
     let inkl_bytes = compile_locale(&inkb, &lines, "es").unwrap();

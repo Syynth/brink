@@ -21,6 +21,8 @@ pub enum IntlError {
     BaseFormat(DecodeError),
     /// A select key string could not be parsed.
     InvalidSelectKey(String),
+    /// A line has no translation content (content is None).
+    UntranslatedLine { scope_id: String, line_index: u16 },
 }
 
 impl core::fmt::Display for IntlError {
@@ -40,6 +42,13 @@ impl core::fmt::Display for IntlError {
             Self::InvalidLocaleTag(tag) => write!(f, "invalid locale tag: {tag}"),
             Self::BaseFormat(e) => write!(f, "base format error: {e}"),
             Self::InvalidSelectKey(key) => write!(f, "invalid select key: {key}"),
+            Self::UntranslatedLine {
+                scope_id,
+                line_index,
+            } => write!(
+                f,
+                "untranslated line at index {line_index} in scope {scope_id}"
+            ),
         }
     }
 }

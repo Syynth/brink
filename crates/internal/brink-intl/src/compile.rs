@@ -52,7 +52,14 @@ pub fn compile_locale(
 
         let mut lines = Vec::with_capacity(scope.lines.len());
         for line in &scope.lines {
-            let content = convert_content_json(&line.content)?;
+            let content_json =
+                line.content
+                    .as_ref()
+                    .ok_or_else(|| IntlError::UntranslatedLine {
+                        scope_id: scope.id.clone(),
+                        line_index: line.index,
+                    })?;
+            let content = convert_content_json(content_json)?;
             lines.push(LocaleLineEntry {
                 content,
                 audio_ref: line.audio.clone(),

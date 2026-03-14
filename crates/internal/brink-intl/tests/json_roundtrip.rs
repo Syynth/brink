@@ -10,7 +10,7 @@ fn roundtrip(lines: &LinesJson) -> LinesJson {
 fn make_line(index: u16, content: ContentJson, audio: Option<String>) -> LineJson {
     LineJson {
         index,
-        content,
+        content: Some(content),
         hash: "0000000000000000".to_string(),
         audio,
     }
