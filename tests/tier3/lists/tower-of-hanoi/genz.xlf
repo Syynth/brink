@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en" trgLang="en-x-genz" xmlns:brink="urn:brink:xliff:extensions:1.0" brink:checksum="0xa2d01c15" brink:version="1">
+  <file id="name" brink:scope-id="0x0113282cf7cf5f72">
+    <unit id="name:0" brink:hash="fb4240631a159c13">
+      <segment state="translated">
+        <source>the <ph id="s0" equiv="{slot 0}"/> temple</source>
+        <target>the <ph id="s0" equiv="{slot 0}"/> vibe shrine</target>
+      </segment>
+    </unit>
+  </file>
+  <file id="postToPlace" brink:scope-id="0x014457b538d4826d">
+    <unit id="postToPlace:0" brink:hash="21bcdc5b32efc5ff">
+      <segment state="translated">
+        <source>first</source>
+        <target>main character</target>
+      </segment>
+    </unit>
+    <unit id="postToPlace:1" brink:hash="840e56b8f6a2e59f">
+      <segment state="translated">
+        <source>second</source>
+        <target>mid</target>
+      </segment>
+    </unit>
+    <unit id="postToPlace:2" brink:hash="ab7331b388607f12">
+      <segment state="translated">
+        <source>third</source>
+        <target>NPC</target>
+      </segment>
+    </unit>
+  </file>
+  <file id="describe_pillar" brink:scope-id="0x0165978e0f9ffb2f">
+    <unit id="describe_pillar:0" brink:hash="cb1679fd4762a382">
+      <segment state="translated">
+        <source><ph id="s0" equiv="{slot 0}"/> is empty.</source>
+        <target><ph id="s0" equiv="{slot 0}"/> has nothing going on fr fr.</target>
+      </segment>
+    </unit>
+    <unit id="describe_pillar:1" brink:hash="0156a5788ee7b878">
+      <segment state="translated">
+        <source>The <ph id="s0" equiv="{slot 0}"/> ring lies on <ph id="s1" equiv="{slot 1}"/>.</source>
+        <target>The <ph id="s0" equiv="{slot 0}"/> ring is just vibing on <ph id="s1" equiv="{slot 1}"/>.</target>
+      </segment>
+    </unit>
+    <unit id="describe_pillar:2" brink:hash="38d74fcc77208642">
+      <segment state="translated">
+        <source>On <ph id="s0" equiv="{slot 0}"/>, are the discs numbered <ph id="s1" equiv="{slot 1}"/>.</source>
+        <target>On <ph id="s0" equiv="{slot 0}"/>, the discs <ph id="s1" equiv="{slot 1}"/> are literally just sitting there.</target>
+      </segment>
+    </unit>
+  </file>
+  <file id="gameloop" brink:scope-id="0x018cd3641ffbd8ea">
+    <unit id="gameloop:0" brink:hash="e5cee658bc6eb7f5">
+      <segment state="translated">
+        <source>Staring down from the heavens you see your followers finishing construction of the last of the great temples, ready to begin the work.</source>
+        <target>No cap you're looking down from the cloud and your stans just finished building the last vibe shrine, ready to get this bread.</target>
+      </segment>
+    </unit>
+    <unit id="gameloop:1" brink:hash="19a3d84c108a0a81">
+      <segment state="translated">
+        <source> Regard the temples</source>
+        <target> Check the vibe shrines</target>
+      </segment>
+    </unit>
+    <unit id="gameloop:2" brink:hash="db9d7c744e6c6454">
+      <segment state="translated">
+        <source>You regard each of the temples in turn. On each is stacked the rings of stone. <ph id="s0" equiv="{slot 0}"/> <ph id="s1" equiv="{slot 1}"/> <ph id="s2" equiv="{slot 2}"/></source>
+        <target>You peep each vibe shrine one by one. They got these thicc stone rings stacked up no cap. <ph id="s0" equiv="{slot 0}"/> <ph id="s1" equiv="{slot 1}"/> <ph id="s2" equiv="{slot 2}"/></target>
+      </segment>
+    </unit>
+  </file>
+  <file id="gameloop.move_post" brink:scope-id="0x01a7486876bf1b57">
+    <unit id="gameloop.move_post:0" brink:hash="4b8fbad551f857d5">
+      <segment state="translated">
+        <source> Move a ring from </source>
+        <target> Yeet a ring from </target>
+      </segment>
+    </unit>
+    <unit id="gameloop.move_post:1" brink:hash="912fc25d95bff0da">
+      <segment state="translated">
+        <source> to </source>
+        <target> to </target>
+      </segment>
+    </unit>
+    <unit id="gameloop.move_post:2" translate="no" brink:hash="4b77e91d19ea14cc">
+      <segment state="initial">
+        <source> </source>
+      </segment>
+    </unit>
+    <unit id="gameloop.move_post:3" brink:hash="5998794078c67bcd">
+      <segment state="translated">
+        <source><ph id="s0" equiv="{slot 0}"/></source>
+        <target><ph id="s0" equiv="{slot 0}"/></target>
+      </segment>
+    </unit>
+    <unit id="gameloop.move_post:4" brink:hash="ecf17f77dac60693">
+      <segment state="translated">
+        <source>The priests far below construct a great harness, and after many years of work, the great stone ring is lifted up into the air, and swung over to the next of the temples.</source>
+        <target>The simps way down there build this absolute unit of a harness, and after grinding for ages, the giant stone ring gets literally launched into the air and flung over to the next vibe shrine.</target>
+      </segment>
+    </unit>
+    <unit id="gameloop.move_post:5" brink:hash="7779f0d89a1b5175">
+      <segment state="translated">
+        <source>The ropes are slashed, and in the blink of an eye it falls once more.</source>
+        <target>They cut the ropes and it drops faster than your wifi on a Tuesday. Sheesh.</target>
+      </segment>
+    </unit>
+    <unit id="gameloop.move_post:6" brink:hash="83f2791fca8d8256">
+      <segment state="translated">
+        <source>Your next decree is met with a great feast and many sacrifices. After the funeary smoke has cleared, work to shift the great stone ring begins in earnest. A generation grows and falls, and the ring falls into its ordained place.</source>
+        <target>Your next hot take goes viral and they throw a massive rager with tons of sacrifices. After the funeral smoke clears (RIP), they start grinding on moving the big rock donut for real. A whole generation gets born, lives, and gets ratio'd, and the ring finally lands where it's supposed to slay.</target>
+      </segment>
+    </unit>
+    <unit id="gameloop.move_post:7" brink:hash="b48966b9be8ba820">
+      <segment state="translated">
+        <source>Years pass as the ring is slowly moved.</source>
+        <target>It's giving slow burn as the ring takes literally forever to move bestie.</target>
+      </segment>
+    </unit>
+    <unit id="gameloop.move_post:8" brink:hash="3f92cfd38b69fe24">
+      <segment state="translated">
+        <source>The priests below fight a war over what colour robes to wear, but while they fall and die, the work is still completed.</source>
+        <target>The priests below start beefing over drip colors but even tho they're all catching L's and unaliving each other, the work still gets done somehow lmao.</target>
+      </segment>
+    </unit>
+  </file>
+  <file id="Name" brink:scope-id="0x01e1061e818a34e0">
+    <unit id="Name:0" brink:hash="8f3b08ef7c2a6f36">
+      <segment state="translated">
+        <source>The <ph id="s0" equiv="{slot 0}"/> temple</source>
+        <target>The <ph id="s0" equiv="{slot 0}"/> vibe shrine</target>
+      </segment>
+    </unit>
+  </file>
+</xliff>

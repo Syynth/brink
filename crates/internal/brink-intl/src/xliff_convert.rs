@@ -292,7 +292,7 @@ fn extract_target_content(
     unit: &Unit,
     data_map: &HashMap<&str, &str>,
 ) -> Result<Option<ContentJson>, IntlError> {
-    // Find the first segment's target.
+    // Find the first segment.
     let segment = unit.sub_units.iter().find_map(|su| match su {
         SubUnit::Segment(seg) => Some(seg),
         SubUnit::Ignorable(_) => None,
@@ -302,15 +302,19 @@ fn extract_target_content(
         return Ok(None);
     };
 
-    let Some(target) = &segment.target else {
-        return Ok(None);
-    };
+    // Prefer target content; fall back to source (for untranslated /
+    // translate="no" units that still need content for compilation).
+    let content = segment
+        .target
+        .as_ref()
+        .filter(|t| !t.elements.is_empty())
+        .unwrap_or(&segment.source);
 
-    if target.elements.is_empty() {
+    if content.elements.is_empty() {
         return Ok(None);
     }
 
-    inline_to_content(&target.elements, data_map).map(Some)
+    inline_to_content(&content.elements, data_map).map(Some)
 }
 
 fn inline_to_content(
@@ -523,9 +527,12 @@ mod tests {
             )],
         )]);
         let doc = lines_json_to_xliff(&lines, "en", None);
-        // Don't set targets — simulates untranslated.
+        // Don't set targets — untranslated lines fall back to source content.
         let result = xliff_to_lines_json(&doc).unwrap();
-        assert!(result.scopes[0].lines[0].content.is_none());
+        assert_eq!(
+            result.scopes[0].lines[0].content,
+            Some(ContentJson::Plain("hello".to_string()))
+        );
     }
 
     #[test]
