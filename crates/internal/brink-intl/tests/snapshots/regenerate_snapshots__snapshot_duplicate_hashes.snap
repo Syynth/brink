@@ -1,0 +1,35 @@
+---
+source: crates/internal/brink-intl/tests/regenerate_snapshots.rs
+expression: result
+---
+{
+  "version": 1,
+  "source_checksum": "0x00000002",
+  "scopes": [
+    {
+      "name": "root",
+      "id": "0x01",
+      "lines": [
+        {
+          "index": 0,
+          "content": "[TR] first",
+          "hash": "aaa"
+        },
+        {
+          "index": 1,
+          "content": "[TR] second",
+          "hash": "aaa"
+        },
+        {
+          "index": 2,
+          "content": "[TR] third",
+          "hash": "bbb"
+        },
+        {
+          "index": 3,
+          "hash": "aaa"
+        }
+      ]
+    }
+  ]
+}

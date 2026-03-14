@@ -1,0 +1,15 @@
+---
+source: crates/internal/brink-intl/tests/regenerate_snapshots.rs
+expression: result
+---
+{
+  "version": 1,
+  "source_checksum": "0x00000002",
+  "scopes": [
+    {
+      "name": "empty_knot",
+      "id": "0x01",
+      "lines": []
+    }
+  ]
+}
