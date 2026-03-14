@@ -368,3 +368,35 @@
 - **SCOPE:** moderate
 - **WHAT:** `regenerate-lines` matches old→new lines by aligning the hash sequences within each scope (LCS or similar), not by matching on `(scope_id, line_index)`. Index-matched lines with mismatched hashes are not assumed to be "changed" — they may be shifted. Hash-equal lines are presumed identical regardless of index. After alignment: unmatched new lines are `untranslated`, unmatched old lines are `orphaned`, hash-matched lines at different indices preserve their translation.
 - **WHY:** Inserting or deleting a line in the middle of a scope shifts all subsequent indices. Naive index matching would mark every shifted line as `needs_review` and lose the association between the old translation and its (unchanged) source line. Hash-based alignment correctly detects that the content didn't change — only its position did.
+
+## xliff2 crate naming
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** intl-spec
+- **SCOPE:** moderate
+- **WHAT:** The publishable XLIFF crate is named `xliff2`, covering XLIFF 2.0 only.
+- **WHY:** `xliff` is taken on crates.io. XLIFF 1.2 and 2.0 are fundamentally different schemas — bundling both doubles surface area for no immediate benefit. The `2` suffix clearly communicates scope. 1.2 can be a separate crate later if needed.
+
+## Use thiserror for error types
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** cross-system
+- **SCOPE:** moderate
+- **WHAT:** All error types should use `thiserror` derives, not hand-rolled `Display` + `Error` impls. New crates must use thiserror. Existing crates should be migrated when touched.
+- **WHY:** The hand-rolled pattern is boilerplate-heavy and error-prone. `thiserror` is already in workspace deps and produces identical output with less code.
+
+## xliff2 module architecture
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** xliff2 crate / intl-spec
+- **SCOPE:** architectural
+- **WHAT:** Core XLIFF 2.0 types carry generic extension storage (raw namespace-qualified elements/attributes). Known modules (Metadata, etc.) are feature-gated and provide typed accessors over the extensions bag. Unknown extensions are preserved through read/write round-trips. Initial release includes core + metadata module.
+- **WHY:** XLIFF 2.0 modules are separate namespaces by design. A generic extensions mechanism means adding module support later is purely additive — no core type changes needed. Feature gates keep the dependency/surface area minimal for consumers who don't need every module.
+
+## CLI intl commands speak XLIFF only
+- **WHEN:** 2026-03-14
+- **PROJECT:** brink
+- **SYSTEM:** brink-cli / brink-intl
+- **SCOPE:** moderate
+- **WHAT:** The CLI's localization commands use XLIFF 2.0 as the sole external format. `LinesJson` is an internal implementation detail, not a user-facing format.
+- **WHY:** The JSON lines format was a placeholder internal representation. XLIFF is the industry-standard TMS interchange format — there's no reason to expose two formats to users.

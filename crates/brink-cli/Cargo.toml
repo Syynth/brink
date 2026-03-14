@@ -16,6 +16,7 @@ brink-json = { path = "../internal/brink-json" }
 brink-converter = { path = "../internal/brink-converter" }
 brink-intl = { path = "../internal/brink-intl" }
 brink-runtime = { path = "../brink-runtime" }
+xliff2 = { path = "../internal/xliff2" }
 clap.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

@@ -200,6 +200,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "xliff2",
 ]
 
 [[package]]

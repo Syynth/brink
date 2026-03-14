@@ -33,22 +33,25 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Export line tables from a compiled story to lines.json
-    ExportLines {
-        /// Input story file (.inkb, .inkt, or .ink.json)
+    /// Export line tables from a compiled story as XLIFF 2.0
+    ExportXliff {
+        /// Input story file (.inkb, .ink.json, or .inkt)
         input: PathBuf,
-        /// Output lines.json file (defaults to stdout)
+        /// BCP 47 source language tag (e.g. "en")
+        #[arg(long, default_value = "en")]
+        src_lang: String,
+        /// Output .xlf file (defaults to stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Compile translated lines.json into a .inkl locale overlay
+    /// Compile a translated XLIFF file into a .inkl locale overlay
     CompileLocale {
         /// Base .inkb file
         #[arg(long)]
         base: PathBuf,
-        /// Translated lines.json file
+        /// Translated .xlf file
         #[arg(long)]
-        lines: PathBuf,
+        xliff: PathBuf,
         /// BCP 47 locale tag (e.g. "es", "ja")
         #[arg(long)]
         locale: String,
@@ -56,15 +59,18 @@ enum Commands {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Regenerate lines.json preserving existing translations after recompilation
-    RegenerateLines {
+    /// Regenerate XLIFF preserving existing translations after recompilation
+    RegenerateXliff {
         /// Recompiled .inkb file
         #[arg(long)]
         base: PathBuf,
-        /// Existing translated lines.json
+        /// Existing translated .xlf file
         #[arg(long)]
         existing: PathBuf,
-        /// Output updated lines.json (defaults to stdout)
+        /// BCP 47 source language tag (e.g. "en")
+        #[arg(long, default_value = "en")]
+        src_lang: String,
+        /// Output updated .xlf file (defaults to stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -102,29 +108,35 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
-            Commands::ExportLines { input, output } => {
-                if let Err(e) = run_export_lines(&input, output.as_deref()) {
+            Commands::ExportXliff {
+                input,
+                src_lang,
+                output,
+            } => {
+                if let Err(e) = run_export_xliff(&input, &src_lang, output.as_deref()) {
                     tracing::error!("{e}");
                     return ExitCode::FAILURE;
                 }
             }
             Commands::CompileLocale {
                 base,
-                lines,
+                xliff,
                 locale,
                 output,
             } => {
-                if let Err(e) = run_compile_locale(&base, &lines, &locale, &output) {
+                if let Err(e) = run_compile_locale(&base, &xliff, &locale, &output) {
                     tracing::error!("{e}");
                     return ExitCode::FAILURE;
                 }
             }
-            Commands::RegenerateLines {
+            Commands::RegenerateXliff {
                 base,
                 existing,
+                src_lang,
                 output,
             } => {
-                if let Err(e) = run_regenerate_lines(&base, &existing, output.as_deref()) {
+                if let Err(e) = run_regenerate_xliff(&base, &existing, &src_lang, output.as_deref())
+                {
                     tracing::error!("{e}");
                     return ExitCode::FAILURE;
                 }
@@ -230,8 +242,9 @@ fn run_convert(
     Ok(())
 }
 
-fn run_export_lines(
+fn run_export_xliff(
     input: &std::path::Path,
+    src_lang: &str,
     output: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // For .inkb files, extract the checksum from the header.
@@ -244,15 +257,15 @@ fn run_export_lines(
         (load_story_data(input)?, 0)
     };
 
-    let lines_json = brink_intl::export_lines(&data, checksum);
-    let json = serde_json::to_string_pretty(&lines_json)?;
+    let doc = brink_intl::generate_locale(&data, checksum, src_lang);
+    let xml = xliff2::write::to_string(&doc)?;
 
     if let Some(path) = output {
-        std::fs::write(path, &json)?;
+        std::fs::write(path, &xml)?;
     } else {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
-        handle.write_all(json.as_bytes())?;
+        handle.write_all(xml.as_bytes())?;
         handle.write_all(b"\n")?;
     }
 
@@ -261,43 +274,40 @@ fn run_export_lines(
 
 fn run_compile_locale(
     base: &std::path::Path,
-    lines: &std::path::Path,
+    xliff: &std::path::Path,
     locale: &str,
     output: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let base_bytes = std::fs::read(base)?;
-    let lines_text = std::fs::read_to_string(lines)?;
-    let lines_json: brink_intl::LinesJson = serde_json::from_str(&lines_text)?;
-    let inkl_bytes = brink_intl::compile_locale(&base_bytes, &lines_json, locale)?;
+    let xliff_text = std::fs::read_to_string(xliff)?;
+    let doc = xliff2::read::read_xliff(&xliff_text)?;
+    let inkl_bytes = brink_intl::compile_locale_xliff(&base_bytes, &doc, locale)?;
     std::fs::write(output, &inkl_bytes)?;
     Ok(())
 }
 
-fn run_regenerate_lines(
+fn run_regenerate_xliff(
     base: &std::path::Path,
     existing: &std::path::Path,
+    src_lang: &str,
     output: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Export fresh lines from the recompiled .inkb.
     let base_bytes = std::fs::read(base)?;
     let index = brink_format::read_inkb_index(&base_bytes)?;
     let data = brink_format::read_inkb(&base_bytes)?;
-    let new_export = brink_intl::export_lines(&data, index.checksum);
 
-    // Read the existing translated lines.json.
     let existing_text = std::fs::read_to_string(existing)?;
-    let existing_lines: brink_intl::LinesJson = serde_json::from_str(&existing_text)?;
+    let existing_doc = xliff2::read::read_xliff(&existing_text)?;
 
-    // Regenerate, preserving translations.
-    let merged = brink_intl::regenerate_lines(&new_export, &existing_lines);
-    let json = serde_json::to_string_pretty(&merged)?;
+    let merged_doc = brink_intl::regenerate_locale(&data, index.checksum, src_lang, &existing_doc)?;
+    let xml = xliff2::write::to_string(&merged_doc)?;
 
     if let Some(path) = output {
-        std::fs::write(path, &json)?;
+        std::fs::write(path, &xml)?;
     } else {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
-        handle.write_all(json.as_bytes())?;
+        handle.write_all(xml.as_bytes())?;
         handle.write_all(b"\n")?;
     }
 
