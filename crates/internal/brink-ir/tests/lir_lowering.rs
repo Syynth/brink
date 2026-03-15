@@ -920,6 +920,49 @@ fn choice_output_is_content_only() {
     );
 }
 
+#[test]
+fn interpolated_choice_text_is_recognized_as_template() {
+    let p = lower_ink(
+        "\
+== scene ==
+VAR name = \"Alice\"
+* Hello {name}[ world.] goodbye.
+- -> END
+",
+    );
+    let scene = find_child(&p.root, "scene");
+
+    // Find the ChoiceSet statement
+    let choice_set = scene
+        .body
+        .iter()
+        .find_map(|s| match s {
+            lir::Stmt::ChoiceSet(cs) => Some(cs),
+            _ => None,
+        })
+        .unwrap();
+
+    let choice = &choice_set.choices[0];
+
+    // Display (start + bracket) should be recognized as a Template
+    assert!(
+        matches!(
+            choice.display_emission.as_ref().map(|e| &e.line),
+            Some(lir::RecognizedLine::Template { .. })
+        ),
+        "display_emission should be Some(Template)"
+    );
+
+    // Output (start + inner) should be recognized as a Template
+    assert!(
+        matches!(
+            choice.output_emission.as_ref().map(|e| &e.line),
+            Some(lir::RecognizedLine::Template { .. })
+        ),
+        "output_emission should be Some(Template)"
+    );
+}
+
 // ─── Nested choices ─────────────────────────────────────────────────
 
 #[test]

@@ -716,13 +716,6 @@ fn lower_choice_with_child(
 
     // ── Compose and recognize display/output content at HIR level ──
     // Display = start + bracket, Output = start + inner.
-    // Skip recognition when start has interpolations and both parts are
-    // present — avoids double-evaluation of side-effectful expressions.
-    let start_has_interp = choice
-        .start_content
-        .as_ref()
-        .is_some_and(recognize::has_interpolations);
-
     let display_hir = recognize::compose_hir_content_opt(
         choice.start_content.as_ref(),
         choice.bracket_content.as_ref(),
@@ -732,12 +725,7 @@ fn lower_choice_with_child(
         choice.inner_content.as_ref(),
     );
 
-    let skip_display =
-        start_has_interp && choice.start_content.is_some() && choice.bracket_content.is_some();
-    let skip_output =
-        start_has_interp && choice.start_content.is_some() && choice.inner_content.is_some();
-
-    // Also skip recognition when composed content starts with whitespace-only
+    // Skip recognition when composed content starts with whitespace-only
     // text — the inline emission path's `push_text` suppresses leading whitespace
     // that `EvalLine`/`EmitLine` would preserve, changing observable behavior.
     let display_ws = display_hir
@@ -747,14 +735,14 @@ fn lower_choice_with_child(
         .as_ref()
         .is_some_and(recognize::starts_with_whitespace_only_text);
 
-    let display_emission = if skip_display || display_ws {
+    let display_emission = if display_ws {
         None
     } else {
         display_hir
             .as_ref()
             .and_then(|c| recognize::try_recognize(c, ctx))
     };
-    let output_emission = if skip_output || output_ws {
+    let output_emission = if output_ws {
         None
     } else {
         output_hir

@@ -62,14 +62,6 @@ pub fn starts_with_whitespace_only_text(content: &hir::Content) -> bool {
     matches!(content.parts.first(), Some(hir::ContentPart::Text(s)) if !s.is_empty() && s.trim().is_empty())
 }
 
-/// Check whether HIR content contains any `Interpolation` parts.
-pub fn has_interpolations(content: &hir::Content) -> bool {
-    content
-        .parts
-        .iter()
-        .any(|p| matches!(p, hir::ContentPart::Interpolation(_)))
-}
-
 /// Try to recognize a HIR content line as a known pattern.
 ///
 /// Phase 1: matches `[Text(s)]` (exactly one text part, no dynamic content)
