@@ -6,7 +6,9 @@
 //! are semantic nodes — with weave nesting resolved and syntactic sugar stripped.
 
 mod lower;
+mod normalize;
 mod types;
 
 pub use lower::{WeaveItem, fold_weave, lower, lower_knot, lower_top_level};
+pub use normalize::normalize_file;
 pub use types::*;

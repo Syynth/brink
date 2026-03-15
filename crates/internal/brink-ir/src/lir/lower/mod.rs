@@ -35,6 +35,18 @@ pub fn lower_to_program(
     resolutions: &ResolutionMap,
     file_paths: &HashMap<FileId, String>,
 ) -> lir::Program {
+    // ── Step 0: Normalize HIR (pre-LIR regularization) ──────────
+    let normalized: Vec<(FileId, hir::HirFile)> = files
+        .iter()
+        .map(|(id, hir_file)| {
+            let mut h = (*hir_file).clone();
+            hir::normalize_file(&mut h);
+            (*id, h)
+        })
+        .collect();
+    let files: Vec<(FileId, &hir::HirFile)> = normalized.iter().map(|(id, h)| (*id, h)).collect();
+    let files = &files;
+
     let resolutions = ResolutionLookup::build(resolutions);
     let mut names = NameTable::new();
     let mut ids = context::IdAllocator::new();
