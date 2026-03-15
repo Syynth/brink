@@ -714,6 +714,54 @@ fn lower_choice_with_child(
         .as_ref()
         .map(|c| content::lower_content(c, ctx));
 
+    // ── Compose and recognize display/output content at HIR level ──
+    // Display = start + bracket, Output = start + inner.
+    // Skip recognition when start has interpolations and both parts are
+    // present — avoids double-evaluation of side-effectful expressions.
+    let start_has_interp = choice
+        .start_content
+        .as_ref()
+        .is_some_and(recognize::has_interpolations);
+
+    let display_hir = recognize::compose_hir_content_opt(
+        choice.start_content.as_ref(),
+        choice.bracket_content.as_ref(),
+    );
+    let output_hir = recognize::compose_hir_content_opt(
+        choice.start_content.as_ref(),
+        choice.inner_content.as_ref(),
+    );
+
+    let skip_display =
+        start_has_interp && choice.start_content.is_some() && choice.bracket_content.is_some();
+    let skip_output =
+        start_has_interp && choice.start_content.is_some() && choice.inner_content.is_some();
+
+    // Also skip recognition when composed content starts with whitespace-only
+    // text — the inline emission path's `push_text` suppresses leading whitespace
+    // that `EvalLine`/`EmitLine` would preserve, changing observable behavior.
+    let display_ws = display_hir
+        .as_ref()
+        .is_some_and(recognize::starts_with_whitespace_only_text);
+    let output_ws = output_hir
+        .as_ref()
+        .is_some_and(recognize::starts_with_whitespace_only_text);
+
+    let display_emission = if skip_display || display_ws {
+        None
+    } else {
+        display_hir
+            .as_ref()
+            .and_then(|c| recognize::try_recognize(c, ctx))
+    };
+    let output_emission = if skip_output || output_ws {
+        None
+    } else {
+        output_hir
+            .as_ref()
+            .and_then(|c| recognize::try_recognize(c, ctx))
+    };
+
     let condition = choice.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
     let tags: Vec<Vec<lir::ContentPart>> = choice
         .tags
@@ -742,21 +790,26 @@ fn lower_choice_with_child(
     // 1. Choice output preamble: start+inner content with their tags.
     // Tags on start/inner content appear in the output after choosing;
     // bracket-only tags are suppressed (they only affect choice display).
-    let mut output_parts = Vec::new();
-    let mut output_tags = Vec::new();
-    if let Some(ref sc) = start_content {
-        output_parts.extend(sc.parts.clone());
-        output_tags.extend(sc.tags.clone());
-    }
-    if let Some(ref ic) = inner_content {
-        output_parts.extend(ic.parts.clone());
-        output_tags.extend(ic.tags.clone());
-    }
-    if !output_parts.is_empty() || !output_tags.is_empty() {
-        body.push(lir::Stmt::ChoiceOutput(lir::Content {
-            parts: output_parts,
-            tags: output_tags,
-        }));
+    {
+        let mut output_parts = Vec::new();
+        let mut output_tags = Vec::new();
+        if let Some(ref sc) = start_content {
+            output_parts.extend(sc.parts.clone());
+            output_tags.extend(sc.tags.clone());
+        }
+        if let Some(ref ic) = inner_content {
+            output_parts.extend(ic.parts.clone());
+            output_tags.extend(ic.tags.clone());
+        }
+        if !output_parts.is_empty() || !output_tags.is_empty() {
+            body.push(lir::Stmt::ChoiceOutput {
+                content: lir::Content {
+                    parts: output_parts,
+                    tags: output_tags,
+                },
+                emission: output_emission.clone(),
+            });
+        }
     }
 
     // 2. Body statements from the choice's block (includes inline divert + EndOfLine)
@@ -824,6 +877,8 @@ fn lower_choice_with_child(
         start_content,
         choice_only_content,
         inner_content,
+        display_emission,
+        output_emission,
         target,
         tags,
     };
@@ -959,10 +1014,10 @@ fn collect_counting_refs(
 ) {
     for stmt in stmts {
         match stmt {
-            lir::Stmt::EmitContent(content) | lir::Stmt::ChoiceOutput(content) => {
+            lir::Stmt::EmitContent(content) | lir::Stmt::ChoiceOutput { content, .. } => {
                 collect_counting_refs_content(content, visit_ids, turns_ids);
             }
-            lir::Stmt::EmitLine(emission) => {
+            lir::Stmt::EmitLine(emission) | lir::Stmt::EvalLine(emission) => {
                 // Template slot expressions may contain counting refs.
                 if let lir::RecognizedLine::Template { slot_exprs, .. } = &emission.line {
                     for e in slot_exprs {
@@ -997,6 +1052,18 @@ fn collect_counting_refs(
                     }
                     if let Some(ref c) = choice.inner_content {
                         collect_counting_refs_content(c, visit_ids, turns_ids);
+                    }
+                    // Traverse recognized emissions for counting refs in slot exprs.
+                    for emission in choice
+                        .display_emission
+                        .iter()
+                        .chain(choice.output_emission.iter())
+                    {
+                        if let lir::RecognizedLine::Template { slot_exprs, .. } = &emission.line {
+                            for e in slot_exprs {
+                                collect_counting_refs_expr(e, visit_ids, turns_ids);
+                            }
+                        }
                     }
                 }
             }

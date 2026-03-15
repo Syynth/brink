@@ -173,13 +173,23 @@ pub enum Stmt {
     /// Emit a recognized line (pattern recognizer matched).
     EmitLine(ContentEmission),
 
+    /// Evaluate a recognized line and push the result onto the value stack.
+    /// Used for choice display text that has been promoted to a line table entry.
+    EvalLine(ContentEmission),
+
     /// Emit choice output content (start + inner) at the top of a choice
     /// target container. Emits content parts only — no newline or divert.
     /// The divert and newline are handled by the body stmts that follow.
     ///
     /// Skipped entirely by the JSON codegen — inklecate structures this
     /// content via child container references, not inline.
-    ChoiceOutput(Content),
+    ///
+    /// When `emission` is `Some`, bytecode codegen uses `EmitLine` for the
+    /// recognized line table entry instead of emitting inline content parts.
+    ChoiceOutput {
+        content: Content,
+        emission: Option<ContentEmission>,
+    },
 
     /// `-> target` — divert to another container, DONE, or END.
     Divert(Divert),
@@ -332,6 +342,12 @@ pub struct Choice {
     pub choice_only_content: Option<Content>,
     /// Text after `]` — appears only after selection.
     pub inner_content: Option<Content>,
+    /// Recognized display text (start+bracket) for the line table.
+    /// `Some` when pattern recognition succeeds on the composed display content.
+    pub display_emission: Option<ContentEmission>,
+    /// Recognized output text (start+inner) for the line table.
+    /// `Some` when pattern recognition succeeds on the composed output content.
+    pub output_emission: Option<ContentEmission>,
     /// The container holding the choice body (content after selection).
     pub target: DefinitionId,
     pub tags: Vec<Vec<ContentPart>>,

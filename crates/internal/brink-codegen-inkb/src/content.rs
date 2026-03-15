@@ -45,6 +45,41 @@ impl ContainerEmitter<'_> {
         }
     }
 
+    /// Emit a recognized line as an `EvalLine` opcode (pushes result onto value stack).
+    /// Used for choice display text promoted to a line table entry.
+    pub(super) fn emit_eval_line(&mut self, emission: &lir::ContentEmission) {
+        let slot_info = emission.metadata.slot_info.clone();
+        let source_location = emission.metadata.source_location.clone();
+        match &emission.line {
+            lir::RecognizedLine::Plain(text) => {
+                let idx = self.add_line_with_hash(
+                    text,
+                    emission.metadata.source_hash,
+                    slot_info,
+                    source_location,
+                );
+                self.emit(Opcode::EvalLine(idx, 0));
+            }
+            lir::RecognizedLine::Template {
+                parts: template_parts,
+                slot_exprs,
+            } => {
+                for expr in slot_exprs {
+                    self.emit_expr(expr);
+                }
+                let idx = self.add_template_line(
+                    template_parts.clone(),
+                    emission.metadata.source_hash,
+                    slot_info,
+                    source_location,
+                );
+                #[expect(clippy::cast_possible_truncation)]
+                self.emit(Opcode::EvalLine(idx, slot_exprs.len() as u8));
+            }
+        }
+        // No tags for EvalLine — choice tags are emitted separately after EndChoice.
+    }
+
     pub(super) fn emit_content(&mut self, content: &lir::Content) {
         self.emit_content_parts(&content.parts);
 

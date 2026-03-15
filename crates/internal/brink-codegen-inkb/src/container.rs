@@ -16,9 +16,17 @@ impl ContainerEmitter<'_> {
         match stmt {
             lir::Stmt::EmitContent(content) => self.emit_content(content),
             lir::Stmt::EmitLine(emission) => self.emit_recognized_line(emission),
-            lir::Stmt::ChoiceOutput(content) => {
-                // Emit content parts + tags (tags appear in output after choosing).
-                self.emit_content(content);
+            lir::Stmt::EvalLine(emission) => self.emit_eval_line(emission),
+            lir::Stmt::ChoiceOutput {
+                content, emission, ..
+            } => {
+                if let Some(em) = emission {
+                    // Recognized output — emit as a line table entry.
+                    self.emit_recognized_line(em);
+                } else {
+                    // Fallback: emit content parts + tags inline.
+                    self.emit_content(content);
+                }
             }
 
             lir::Stmt::Divert(divert) => self.emit_divert(divert),
@@ -225,7 +233,10 @@ impl ContainerEmitter<'_> {
         // condition first (from top), then display.
 
         // 1. Display text (combined start + choice_only) — pushed first
-        if let Some(ref display) = display {
+        if let Some(ref emission) = choice.display_emission {
+            // Recognized display — use EvalLine to push onto value stack.
+            self.emit_eval_line(emission);
+        } else if let Some(ref display) = display {
             self.emit(Opcode::BeginStringEval);
             self.emit_choice_content(display);
             self.emit(Opcode::EndStringEval);

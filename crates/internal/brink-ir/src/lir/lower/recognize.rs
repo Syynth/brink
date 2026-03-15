@@ -8,6 +8,68 @@ use super::context::LowerCtx;
 use super::expr::lower_expr;
 use super::lir;
 
+/// Compose two HIR content objects by concatenating their parts and tags.
+///
+/// Adjacent `Text` parts at the boundary are merged into one. The resulting
+/// content uses the first content's `ptr` for source location.
+pub fn compose_hir_content(a: &hir::Content, b: &hir::Content) -> hir::Content {
+    let mut parts = a.parts.clone();
+
+    // Merge adjacent text parts at the boundary.
+    if let (Some(hir::ContentPart::Text(last)), Some(hir::ContentPart::Text(first))) =
+        (parts.last(), b.parts.first())
+    {
+        let merged = format!("{last}{first}");
+        let len = parts.len();
+        parts[len - 1] = hir::ContentPart::Text(merged);
+        parts.extend(b.parts.iter().skip(1).cloned());
+    } else {
+        parts.extend(b.parts.iter().cloned());
+    }
+
+    let mut tags = a.tags.clone();
+    tags.extend(b.tags.iter().cloned());
+
+    hir::Content {
+        ptr: a.ptr,
+        parts,
+        tags,
+    }
+}
+
+/// Compose display or output content from optional HIR content parts.
+///
+/// Returns `None` if both parts are `None`.
+pub fn compose_hir_content_opt(
+    a: Option<&hir::Content>,
+    b: Option<&hir::Content>,
+) -> Option<hir::Content> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(c), None) | (None, Some(c)) => Some(c.clone()),
+        (Some(a_content), Some(b_content)) => Some(compose_hir_content(a_content, b_content)),
+    }
+}
+
+/// Check whether HIR content starts with a whitespace-only text part.
+///
+/// When content with leading whitespace is emitted inline via
+/// `push_text`, the runtime's output buffer suppresses whitespace-only
+/// text at the start. `EvalLine`/`EmitLine` bypass this filtering
+/// (they resolve the template in one shot), so we must skip recognition
+/// for content that relies on the runtime's whitespace suppression.
+pub fn starts_with_whitespace_only_text(content: &hir::Content) -> bool {
+    matches!(content.parts.first(), Some(hir::ContentPart::Text(s)) if !s.is_empty() && s.trim().is_empty())
+}
+
+/// Check whether HIR content contains any `Interpolation` parts.
+pub fn has_interpolations(content: &hir::Content) -> bool {
+    content
+        .parts
+        .iter()
+        .any(|p| matches!(p, hir::ContentPart::Interpolation(_)))
+}
+
 /// Try to recognize a HIR content line as a known pattern.
 ///
 /// Phase 1: matches `[Text(s)]` (exactly one text part, no dynamic content)

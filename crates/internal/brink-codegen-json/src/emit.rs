@@ -133,7 +133,8 @@ fn emit_stmt(
         // Inklecate structures this as child container references in the
         // choice target path, not as inline content. The divert and newline
         // are now separate body stmts and will be emitted by those arms.
-        lir::Stmt::ChoiceOutput(_) => {}
+        // EvalLine is only used by bytecode codegen for choice display text.
+        lir::Stmt::ChoiceOutput { .. } | lir::Stmt::EvalLine(_) => {}
 
         lir::Stmt::Divert(divert) => emit_divert(divert, lookups, cctx, out),
 
@@ -885,7 +886,10 @@ fn emit_choice_set(
         let has_content = gather.body.iter().any(|s| {
             matches!(
                 s,
-                lir::Stmt::EmitContent(_) | lir::Stmt::EmitLine(_) | lir::Stmt::ChoiceOutput(_)
+                lir::Stmt::EmitContent(_)
+                    | lir::Stmt::EmitLine(_)
+                    | lir::Stmt::EvalLine(_)
+                    | lir::Stmt::ChoiceOutput { .. }
             )
         });
         let ends_terminal = gather.body.last().is_some_and(|s| {
@@ -1147,7 +1151,8 @@ fn build_choice_target(
                 s,
                 lir::Stmt::EmitContent(_)
                     | lir::Stmt::EmitLine(_)
-                    | lir::Stmt::ChoiceOutput(_)
+                    | lir::Stmt::EvalLine(_)
+                    | lir::Stmt::ChoiceOutput { .. }
                     | lir::Stmt::EndOfLine
             )
         });

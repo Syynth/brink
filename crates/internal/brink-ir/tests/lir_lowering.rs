@@ -782,10 +782,13 @@ Arrived.
     let c0 = find_child(scene, "c-0");
     assert_eq!(c0.kind, lir::ContainerKind::ChoiceTarget);
 
-    // Body should be: ChoiceOutput("Go somewhere"), Divert(other), EndOfLine, Divert(gather)
+    // Body should be: EmitLine("Go somewhere") or ChoiceOutput, Divert(other), EndOfLine, Divert(gather)
     assert!(
-        matches!(&c0.body[0], lir::Stmt::ChoiceOutput(content) if !content.parts.is_empty()),
-        "first stmt should be ChoiceOutput with content, got {:?}",
+        matches!(
+            &c0.body[0],
+            lir::Stmt::EmitLine(_) | lir::Stmt::ChoiceOutput { .. }
+        ),
+        "first stmt should be EmitLine or ChoiceOutput with content, got {:?}",
         std::mem::discriminant(&c0.body[0])
     );
     assert!(
@@ -814,10 +817,13 @@ fn choice_no_divert_endofline_in_target_body() {
     let scene = find_child(&p.root, "scene");
     let c0 = find_child(scene, "c-0");
 
-    // Body: ChoiceOutput("Stay here"), EndOfLine, EmitContent("Some body text."), EndOfLine, Divert(gather)
+    // Body: EmitLine("Stay here") or ChoiceOutput, EndOfLine, EmitContent("Some body text."), EndOfLine, Divert(gather)
     assert!(
-        matches!(&c0.body[0], lir::Stmt::ChoiceOutput(_)),
-        "first stmt should be ChoiceOutput"
+        matches!(
+            &c0.body[0],
+            lir::Stmt::EmitLine(_) | lir::Stmt::ChoiceOutput { .. }
+        ),
+        "first stmt should be EmitLine or ChoiceOutput"
     );
     assert!(
         matches!(&c0.body[1], lir::Stmt::EndOfLine),
@@ -880,17 +886,27 @@ fn choice_output_is_content_only() {
     let scene = find_child(&p.root, "scene");
     let c0 = find_child(scene, "c-0");
 
-    // ChoiceOutput should just have content parts, nothing else
-    if let lir::Stmt::ChoiceOutput(content) = &c0.body[0] {
-        assert!(
-            content
-                .parts
-                .iter()
-                .all(|p| matches!(p, lir::ContentPart::Text(_))),
-            "ChoiceOutput should only contain text parts"
-        );
-    } else {
-        panic!("expected ChoiceOutput as first body stmt");
+    // Output should be EmitLine (recognized) or ChoiceOutput (fallback)
+    match &c0.body[0] {
+        lir::Stmt::EmitLine(emission) => {
+            assert!(
+                matches!(&emission.line, lir::RecognizedLine::Plain(s) if s == "Hello world"),
+                "EmitLine should contain 'Hello world'"
+            );
+        }
+        lir::Stmt::ChoiceOutput { content, .. } => {
+            assert!(
+                content
+                    .parts
+                    .iter()
+                    .all(|p| matches!(p, lir::ContentPart::Text(_))),
+                "ChoiceOutput should only contain text parts"
+            );
+        }
+        other => panic!(
+            "expected EmitLine or ChoiceOutput as first body stmt, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 
     // The divert to END follows as a separate stmt
