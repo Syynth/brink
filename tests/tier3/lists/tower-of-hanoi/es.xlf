@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en" trgLang="en-x-genz" xmlns:brink="urn:brink:xliff:extensions:1.0" brink:checksum="0xa762608b" brink:version="1">
+<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en" trgLang="es" xmlns:brink="urn:brink:xliff:extensions:1.0" brink:checksum="0xa762608b" brink:version="1">
   <file id="name" brink:scope-id="0x0113282cf7cf5f72">
     <unit id="name:0" brink:hash="fb4240631a159c13">
       <segment state="translated">
         <source>the <ph id="s0" equiv="{slot 0}" disp="postToPlace(...)"/> temple</source>
-        <target>the <ph id="s0" equiv="{slot 0}"/> vibe shrine</target>
+        <target>el <ph id="s0" equiv="{slot 0}"/> templo</target>
       </segment>
     </unit>
   </file>
@@ -12,19 +12,19 @@
     <unit id="postToPlace:0" brink:hash="21bcdc5b32efc5ff">
       <segment state="translated">
         <source>first</source>
-        <target>main character</target>
+        <target>primer</target>
       </segment>
     </unit>
     <unit id="postToPlace:1" brink:hash="840e56b8f6a2e59f">
       <segment state="translated">
         <source>second</source>
-        <target>mid</target>
+        <target>segundo</target>
       </segment>
     </unit>
     <unit id="postToPlace:2" brink:hash="ab7331b388607f12">
       <segment state="translated">
         <source>third</source>
-        <target>NPC</target>
+        <target>tercer</target>
       </segment>
     </unit>
   </file>
@@ -32,19 +32,19 @@
     <unit id="describe_pillar:0" brink:hash="cb1679fd4762a382">
       <segment state="translated">
         <source><ph id="s0" equiv="{slot 0}" disp="Name(...)"/> is empty.</source>
-        <target><ph id="s0" equiv="{slot 0}"/> has nothing going on fr fr.</target>
+        <target><ph id="s0" equiv="{slot 0}"/> no tiene nada.</target>
       </segment>
     </unit>
     <unit id="describe_pillar:1" brink:hash="0156a5788ee7b878">
       <segment state="translated">
         <source>The <ph id="s0" equiv="{slot 0}" disp="list"/> ring lies on <ph id="s1" equiv="{slot 1}" disp="name(...)"/>.</source>
-        <target>The <ph id="s0" equiv="{slot 0}"/> ring is just vibing on <ph id="s1" equiv="{slot 1}"/>.</target>
+        <target>El anillo <ph id="s0" equiv="{slot 0}"/> descansa sobre <ph id="s1" equiv="{slot 1}"/>.</target>
       </segment>
     </unit>
     <unit id="describe_pillar:2" brink:hash="38d74fcc77208642">
       <segment state="translated">
         <source>On <ph id="s0" equiv="{slot 0}" disp="name(...)"/>, are the discs numbered <ph id="s1" equiv="{slot 1}" disp="list"/>.</source>
-        <target>On <ph id="s0" equiv="{slot 0}"/>, the discs <ph id="s1" equiv="{slot 1}"/> are literally just sitting there.</target>
+        <target>Sobre <ph id="s0" equiv="{slot 0}"/> se encuentran los discos <ph id="s1" equiv="{slot 1}"/>.</target>
       </segment>
     </unit>
   </file>
@@ -52,19 +52,19 @@
     <unit id="gameloop:0" brink:hash="e5cee658bc6eb7f5">
       <segment state="translated">
         <source>Staring down from the heavens you see your followers finishing construction of the last of the great temples, ready to begin the work.</source>
-        <target>No cap you&apos;re looking down from the cloud and your stans just finished building the last vibe shrine, ready to get this bread.</target>
+        <target>Desde los cielos observas a tus seguidores terminando la construccion del ultimo de los grandes templos, listos para comenzar la obra.</target>
       </segment>
     </unit>
     <unit id="gameloop:1" brink:hash="19a3d84c108a0a81">
       <segment state="translated">
         <source> Regard the temples</source>
-        <target> Check the vibe shrines</target>
+        <target> Contemplar los templos</target>
       </segment>
     </unit>
     <unit id="gameloop:2" brink:hash="db9d7c744e6c6454">
       <segment state="translated">
         <source>You regard each of the temples in turn. On each is stacked the rings of stone. <ph id="s0" equiv="{slot 0}" disp="describe_pillar(...)"/> <ph id="s1" equiv="{slot 1}" disp="describe_pillar(...)"/> <ph id="s2" equiv="{slot 2}" disp="describe_pillar(...)"/></source>
-        <target>You peep each vibe shrine one by one. They got these thicc stone rings stacked up no cap. <ph id="s0" equiv="{slot 0}"/> <ph id="s1" equiv="{slot 1}"/> <ph id="s2" equiv="{slot 2}"/></target>
+        <target>Contemplas cada uno de los templos. Sobre cada uno se apilan los anillos de piedra. <ph id="s0" equiv="{slot 0}"/> <ph id="s1" equiv="{slot 1}"/> <ph id="s2" equiv="{slot 2}"/></target>
       </segment>
     </unit>
   </file>
@@ -72,7 +72,7 @@
     <unit id="gameloop.move_post:0" brink:hash="039452188f5abafd">
       <segment state="translated">
         <source> Move a ring from <ph id="s0" equiv="{slot 0}" disp="name(...)"/> to <ph id="s1" equiv="{slot 1}" disp="name(...)"/> </source>
-        <target> Yeet a ring from <ph id="s0" equiv="{slot 0}"/> to <ph id="s1" equiv="{slot 1}"/> </target>
+        <target> Mover un anillo de <ph id="s0" equiv="{slot 0}"/> a <ph id="s1" equiv="{slot 1}"/> </target>
       </segment>
     </unit>
     <unit id="gameloop.move_post:1" brink:hash="5998794078c67bcd">
@@ -84,31 +84,31 @@
     <unit id="gameloop.move_post:2" brink:hash="ecf17f77dac60693">
       <segment state="translated">
         <source>The priests far below construct a great harness, and after many years of work, the great stone ring is lifted up into the air, and swung over to the next of the temples.</source>
-        <target>The simps way down there build this absolute unit of a harness, and after grinding for ages, the giant stone ring gets literally launched into the air and flung over to the next vibe shrine.</target>
+        <target>Los sacerdotes alla abajo construyen un gran arnes, y tras muchos anos de trabajo, el gran anillo de piedra se eleva por los aires y se balancea hasta el siguiente templo.</target>
       </segment>
     </unit>
     <unit id="gameloop.move_post:3" brink:hash="7779f0d89a1b5175">
       <segment state="translated">
         <source>The ropes are slashed, and in the blink of an eye it falls once more.</source>
-        <target>They cut the ropes and it drops faster than your wifi on a Tuesday. Sheesh.</target>
+        <target>Las cuerdas se cortan, y en un abrir y cerrar de ojos cae una vez mas.</target>
       </segment>
     </unit>
     <unit id="gameloop.move_post:4" brink:hash="83f2791fca8d8256">
       <segment state="translated">
         <source>Your next decree is met with a great feast and many sacrifices. After the funeary smoke has cleared, work to shift the great stone ring begins in earnest. A generation grows and falls, and the ring falls into its ordained place.</source>
-        <target>Your next hot take goes viral and they throw a massive rager with tons of sacrifices. After the funeral smoke clears (RIP), they start grinding on moving the big rock donut for real. A whole generation gets born, lives, and gets ratio&apos;d, and the ring finally lands where it&apos;s supposed to slay.</target>
+        <target>Tu siguiente decreto se recibe con un gran festin y muchos sacrificios. Cuando el humo funerario se disipa, el trabajo de mover el gran anillo de piedra comienza en serio. Una generacion crece y cae, y el anillo desciende a su lugar designado.</target>
       </segment>
     </unit>
     <unit id="gameloop.move_post:5" brink:hash="b48966b9be8ba820">
       <segment state="translated">
         <source>Years pass as the ring is slowly moved.</source>
-        <target>It&apos;s giving slow burn as the ring takes literally forever to move bestie.</target>
+        <target>Pasan los anos mientras el anillo se mueve lentamente.</target>
       </segment>
     </unit>
     <unit id="gameloop.move_post:6" brink:hash="3f92cfd38b69fe24">
       <segment state="translated">
         <source>The priests below fight a war over what colour robes to wear, but while they fall and die, the work is still completed.</source>
-        <target>The priests below start beefing over drip colors but even tho they&apos;re all catching L&apos;s and unaliving each other, the work still gets done somehow lmao.</target>
+        <target>Los sacerdotes de abajo libran una guerra sobre el color de sus tunicas, pero mientras caen y mueren, el trabajo aun se completa.</target>
       </segment>
     </unit>
   </file>
@@ -116,7 +116,7 @@
     <unit id="Name:0" brink:hash="8f3b08ef7c2a6f36">
       <segment state="translated">
         <source>The <ph id="s0" equiv="{slot 0}" disp="postToPlace(...)"/> temple</source>
-        <target>The <ph id="s0" equiv="{slot 0}"/> vibe shrine</target>
+        <target>El <ph id="s0" equiv="{slot 0}"/> templo</target>
       </segment>
     </unit>
   </file>
