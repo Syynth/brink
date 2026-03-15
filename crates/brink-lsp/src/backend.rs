@@ -1414,14 +1414,12 @@ fn collect_content_part_folds(
 // ─── Formatting helpers ─────────────────────────────────────────────
 
 fn format_config_from_options(
-    options: &tower_lsp::lsp_types::FormattingOptions,
+    _options: &tower_lsp::lsp_types::FormattingOptions,
 ) -> brink_fmt::FormatConfig {
-    let indent = if options.insert_spaces {
-        brink_fmt::IndentStyle::Spaces(options.tab_size)
-    } else {
-        brink_fmt::IndentStyle::Tabs
-    };
-    brink_fmt::FormatConfig { indent }
+    // Always use the formatter's default (2-space indent) regardless of
+    // the editor's tab_size setting. Ink indentation is structural, not
+    // configurable per-editor.
+    brink_fmt::FormatConfig::default()
 }
 
 /// Format only a specific knot or stitch region, leaving the rest unchanged.
@@ -1694,8 +1692,15 @@ fn sort_knots_in_source(source: &str) -> String {
         return source.to_owned();
     }
 
+    // Separate trailing whitespace after the last knot's AST node so it
+    // stays in place after sorting.
+    let last_knot_ast_end: usize = knots
+        .last()
+        .map_or(source.len(), |k| k.syntax().text_range().end().into());
+    let trailing = &source[last_knot_ast_end..];
+
     // Build (name, source_slice) pairs. Each knot owns the text from its start
-    // to just before the next knot (or EOF).
+    // to just before the next knot (or the last knot's AST end).
     let mut knot_slices: Vec<(String, &str)> = Vec::with_capacity(knots.len());
     for (i, knot) in knots.iter().enumerate() {
         let name = knot.header().and_then(|h| h.name()).unwrap_or_default();
@@ -1703,7 +1708,7 @@ fn sort_knots_in_source(source: &str) -> String {
         let end: usize = if i + 1 < knots.len() {
             knots[i + 1].syntax().text_range().start().into()
         } else {
-            source.len()
+            last_knot_ast_end
         };
         knot_slices.push((name, &source[start..end]));
     }
@@ -1720,6 +1725,7 @@ fn sort_knots_in_source(source: &str) -> String {
     for (_, slice) in &knot_slices {
         result.push_str(slice);
     }
+    result.push_str(trailing);
 
     result
 }
@@ -1758,6 +1764,14 @@ fn sort_stitches_in_knot(source: &str, knot_name: &str) -> String {
     let region_start: usize = stitches[0].syntax().text_range().start().into();
     let region_end: usize = knot_end;
 
+    // The last stitch's slice would extend to knot_end, which may include
+    // trailing whitespace that belongs to the file structure, not the stitch.
+    // Separate that trailing whitespace so it stays in place after sorting.
+    let last_stitch_ast_end: usize = stitches
+        .last()
+        .map_or(region_end, |s| s.syntax().text_range().end().into());
+    let trailing = &source[last_stitch_ast_end..region_end];
+
     let mut stitch_slices: Vec<(String, &str)> = Vec::with_capacity(stitches.len());
     for (i, stitch) in stitches.iter().enumerate() {
         let name = stitch.header().and_then(|h| h.name()).unwrap_or_default();
@@ -1765,7 +1779,7 @@ fn sort_stitches_in_knot(source: &str, knot_name: &str) -> String {
         let end: usize = if i + 1 < stitches.len() {
             stitches[i + 1].syntax().text_range().start().into()
         } else {
-            region_end
+            last_stitch_ast_end
         };
         stitch_slices.push((name, &source[start..end]));
     }
@@ -1777,6 +1791,7 @@ fn sort_stitches_in_knot(source: &str, knot_name: &str) -> String {
     for (_, slice) in &stitch_slices {
         result.push_str(slice);
     }
+    result.push_str(trailing);
     result.push_str(&source[region_end..]);
 
     result

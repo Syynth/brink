@@ -28,7 +28,7 @@ pub struct FormatConfig {
 impl Default for FormatConfig {
     fn default() -> Self {
         Self {
-            indent: IndentStyle::Spaces(4),
+            indent: IndentStyle::Spaces(2),
         }
     }
 }
@@ -114,18 +114,28 @@ fn walk_block_for_depth(
     line_starts: &[usize],
     depth_map: &mut [u32],
 ) {
-    // Set depth for the block's label line (gather labels, etc.).
+    walk_block_for_depth_ctx(block, depth, depth, line_starts, depth_map);
+}
+
+fn walk_block_for_depth_ctx(
+    block: &brink_ir::Block,
+    depth: u32,
+    gather_depth: u32,
+    line_starts: &[usize],
+    depth_map: &mut [u32],
+) {
     if let Some(label) = &block.label {
         set_depth_for_range(label.range, depth, line_starts, depth_map);
     }
     for stmt in &block.stmts {
-        walk_stmt_for_depth(stmt, depth, line_starts, depth_map);
+        walk_stmt_for_depth(stmt, depth, gather_depth, line_starts, depth_map);
     }
 }
 
 fn walk_stmt_for_depth(
     stmt: &brink_ir::Stmt,
     depth: u32,
+    gather_depth: u32,
     line_starts: &[usize],
     depth_map: &mut [u32],
 ) {
@@ -162,14 +172,46 @@ fn walk_stmt_for_depth(
                 set_depth_for_range(choice.ptr.text_range(), depth, line_starts, depth_map);
                 walk_block_for_depth(&choice.body, depth + 1, line_starts, depth_map);
             }
-            walk_block_for_depth(&cs.continuation, depth, line_starts, depth_map);
+            // Continuation gather pops back to the gather depth that started
+            // this weave. The gather line (label or first stmt if unlabeled)
+            // is at gather_depth; subsequent body content is indented deeper.
+            let gather_line = cs
+                .continuation
+                .label
+                .as_ref()
+                .map(|l| {
+                    let offset: usize = l.range.start().into();
+                    line_for_offset(line_starts, offset)
+                })
+                .or_else(|| {
+                    cs.continuation
+                        .stmts
+                        .first()
+                        .and_then(|s| stmt_start_line(s, line_starts))
+                });
+            if let Some(label) = &cs.continuation.label {
+                set_depth_for_range(label.range, gather_depth, line_starts, depth_map);
+            }
+            for stmt in &cs.continuation.stmts {
+                let stmt_line = stmt_start_line(stmt, line_starts);
+                // Stmts on the same line as the gather marker stay at
+                // gather_depth (e.g. `- -> waited`); others indent.
+                let d = if gather_line.is_some() && stmt_line == gather_line {
+                    gather_depth
+                } else {
+                    gather_depth + 1
+                };
+                walk_stmt_for_depth(stmt, d, gather_depth, line_starts, depth_map);
+            }
         }
         brink_ir::Stmt::LabeledBlock(block) => {
-            // Set depth for the label's source line (gather line).
+            // Gather line at current depth; body content indented one level.
             if let Some(label) = &block.label {
                 set_depth_for_range(label.range, depth, line_starts, depth_map);
             }
-            walk_block_for_depth(block, depth, line_starts, depth_map);
+            for stmt in &block.stmts {
+                walk_stmt_for_depth(stmt, depth + 1, depth, line_starts, depth_map);
+            }
         }
         brink_ir::Stmt::Conditional(cond) => {
             set_depth_for_range(cond.ptr.text_range(), depth, line_starts, depth_map);
@@ -185,6 +227,26 @@ fn walk_stmt_for_depth(
         }
         brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine => {}
     }
+}
+
+/// Get the source line of the first token in a statement, if available.
+fn stmt_start_line(stmt: &brink_ir::Stmt, line_starts: &[usize]) -> Option<usize> {
+    let range = match stmt {
+        brink_ir::Stmt::Content(c) => c.ptr.as_ref()?.text_range(),
+        brink_ir::Stmt::Divert(d) => d.ptr.as_ref()?.text_range(),
+        brink_ir::Stmt::TunnelCall(tc) => tc.ptr.text_range(),
+        brink_ir::Stmt::ThreadStart(ts) => ts.ptr.text_range(),
+        brink_ir::Stmt::TempDecl(td) => td.ptr.text_range(),
+        brink_ir::Stmt::Assignment(a) => a.ptr.text_range(),
+        brink_ir::Stmt::Return(r) => r.ptr.as_ref()?.text_range(),
+        brink_ir::Stmt::ChoiceSet(cs) => cs.choices.first()?.ptr.text_range(),
+        brink_ir::Stmt::LabeledBlock(b) => b.label.as_ref()?.range,
+        brink_ir::Stmt::Conditional(c) => c.ptr.text_range(),
+        brink_ir::Stmt::Sequence(s) => s.ptr.text_range(),
+        brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine => return None,
+    };
+    let offset: usize = range.start().into();
+    Some(line_for_offset(line_starts, offset))
 }
 
 fn set_depth_for_range(
@@ -223,26 +285,33 @@ fn propagate_depth(source: &str, line_starts: &[usize], depth_map: &mut [u32]) {
     };
 
     // Forward pass: inherit depth from the nearest preceding annotated line.
+    // Reset when crossing a top-level line so root-scope comments/blanks
+    // don't inherit depth from inside a knot body.
     let mut last_depth = 0u32;
     #[expect(
         clippy::needless_range_loop,
         reason = "mutating depth_map[i] based on prior state"
     )]
     for i in 0..depth_map.len() {
-        if depth_map[i] > 0 {
+        if is_top_level_line(i) {
+            last_depth = 0;
+        } else if depth_map[i] > 0 {
             last_depth = depth_map[i];
-        } else if last_depth > 0 && !is_top_level_line(i) {
+        } else if last_depth > 0 {
             depth_map[i] = last_depth;
         }
     }
 
     // Backward pass: only fill lines still at depth 0 (forward couldn't
     // reach them — e.g. lines before the first annotated line in a block).
+    // Reset when crossing a top-level line.
     let mut next_depth = 0u32;
     for i in (0..depth_map.len()).rev() {
-        if depth_map[i] > 0 {
+        if is_top_level_line(i) {
+            next_depth = 0;
+        } else if depth_map[i] > 0 {
             next_depth = depth_map[i];
-        } else if next_depth > 0 && !is_top_level_line(i) {
+        } else if next_depth > 0 {
             depth_map[i] = next_depth;
         }
     }
@@ -621,13 +690,14 @@ fn collapse_whitespace(s: &str) -> String {
 /// Format a stitch header: `= name`
 fn format_stitch_header(raw: &str) -> String {
     let trimmed = raw.trim();
-    let inner = trimmed.trim_start_matches('=').trim();
+    let inner = trimmed.trim_start_matches('=').trim_end_matches('=').trim();
 
     if inner.is_empty() {
         return "=".to_owned();
     }
 
-    format!("= {inner}")
+    let normalized = collapse_whitespace(inner);
+    format!("= {normalized}")
 }
 
 /// Format a choice line: `{bullets} {rest}`
@@ -759,8 +829,13 @@ mod tests {
 
     #[test]
     fn stitch_header_normalized() {
-        // Standalone stitch (promoted to knot) — depth 0.
+        // Standalone stitch at root level — parser promotes to knot, but the
+        // CST node is still STITCH_HEADER, so the formatter uses stitch format.
         assert_eq!(fmt("=  mystitch\n"), "= mystitch\n");
+        // Inside a knot, stitch headers are indented.
+        let input = "=== myknot ===\n= mystitch\nContent\n";
+        let result = fmt(input);
+        assert!(result.contains("  = mystitch\n"));
     }
 
     #[test]
@@ -858,10 +933,7 @@ mod tests {
     fn knot_body_indented() {
         let input = "=== myknot ===\nHello from knot\n* A choice\n";
         let result = fmt(input);
-        assert_eq!(
-            result,
-            "=== myknot ===\n    Hello from knot\n    * A choice\n"
-        );
+        assert_eq!(result, "=== myknot ===\n  Hello from knot\n  * A choice\n");
     }
 
     #[test]
@@ -869,8 +941,8 @@ mod tests {
         let input = "=== myknot ===\n= mystitch\nContent here\n";
         let result = fmt(input);
         // Stitch header at depth 1, content at depth 2.
-        assert!(result.contains("    = mystitch\n"));
-        assert!(result.contains("        Content here\n"));
+        assert!(result.contains("  = mystitch\n"));
+        assert!(result.contains("    Content here\n"));
     }
 
     #[test]
@@ -878,13 +950,13 @@ mod tests {
         let input = "=== myknot ===\n* Choice\n  After choice\n";
         let result = fmt(input);
         // Choice at depth 1 (knot body), content after choice at depth 2.
-        assert!(result.contains("    * Choice\n"));
-        assert!(result.contains("        After choice\n"));
+        assert_eq!(result, "=== myknot ===\n  * Choice\n    After choice\n");
     }
 
     #[test]
     fn idempotent() {
-        let input = "=== knot ===\n\n    Hello world\n\n    * Choice one\n    * Choice two\n\n    - Gathered\n";
+        let input =
+            "=== knot ===\n\n  Hello world\n\n  * Choice one\n  * Choice two\n\n  - Gathered\n";
         let first = fmt(input);
         let second = fmt(&first);
         assert_eq!(first, second, "formatting should be idempotent");
@@ -894,7 +966,7 @@ mod tests {
     fn tabs_indent_knot() {
         let input = "=== myknot ===\nContent\n";
         let result = fmt_tabs(input);
-        assert!(result.contains("\tContent\n"));
+        assert_eq!(result, "=== myknot ===\n\tContent\n");
     }
 
     #[test]
@@ -934,60 +1006,49 @@ mod tests {
 \t\t*\t[Wait]\t\t\n\
 \t- \t-> waited\n";
 
-        let i1 = "    ";
-        let i2 = "        ";
-        let i3 = "            ";
-        let expected = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
-            "=== start ===",                                    // 1
-            "",                                                 // 2
-            format_args!("{i1}//  Intro"),                      // 3
-            format_args!("{i1}- They are keeping me waiting."), // 4
-            format_args!("{i1}* Hut 14[]. The door was locked after I sat down."), // 5
-            format_args!(
-                "{i2}I don't even have a pen to do any work. There's a copy of the morning's intercept in my pocket, but staring at the jumbled letters will only drive me mad."
-            ), // 6
-            format_args!("{i2}I am not a machine, whatever they say about me."), // 7
-            "",                                                 // 8
-            format_args!("{i1}- (opts)"),                       // 9
-            format_args!("{i1}{{|I rattle my fingers on the field table.|}}"), // 10
-            format_args!("{i1}* (think) [Think]"),              // 11
-            format_args!(
-                "{i2}They suspect me to be a traitor. They think I stole the component from the calculating machine. They will be searching my bunk and cases."
-            ), // 12
-            format_args!(
-                "{i2}When they don't find it, {{plan:then}} they'll come back and demand I talk."
-            ), // 13
-            format_args!("{i2}-> opts"),                        // 14
-            format_args!("{i1}* (plan) [Plan]"),                // 15
-            format_args!(
-                "{i2}{{not think:What I am is|I am}} a problem\u{2014}solver. Good with figures, quick with crosswords, excellent at chess."
-            ), // 16
-            format_args!(
-                "{i2}But in this scenario \u{2014} in this trap \u{2014} what is the winning play?"
-            ), // 17
-            format_args!("{i2}** (cooperate) [Co\u{2014}operate]"), // 18
-            format_args!(
-                "{i3}I must co\u{2014}operate. My credibility is my main asset. To contradict myself, or another source, would be fatal."
-            ), // 19
-            format_args!(
-                "{i3}I must simply hope they do not ask the questions I do not want to answer."
-            ), // 20
-            format_args!("{i3}~ lower(forceful)"),              // 21
-            format_args!("{i2}** [Dissemble]"),                 // 22
-            format_args!(
-                "{i3}Misinformation, then. Just as the war in Europe is one of plans and interceptions, not planes and bombs."
-            ), // 23
-            format_args!("{i3}My best hope is a story they prefer to the truth."), // 24
-            format_args!("{i3}~ raise(forceful)"),              // 25
-            format_args!("{i2}** (delay) [Divert]"),            // 26
-            format_args!(
-                "{i3}Avoidance and delay. The military machine never fights on a single front. If I move slowly enough, things will resolve themselves some other way, my reputation intact."
-            ), // 27
-            format_args!("{i3}~ raise(evasive)"),               // 28
-            format_args!("{i1}* [Wait]"),                       // 29
-            format_args!("{i1}- -> waited"),                    // 30
-        );
+        // NOTE: The first gather `- They are keeping me waiting.` and its
+        // following `* Hut 14[]` choice are siblings in the HIR (not parent-
+        // child), so the choice is at knot-body depth (1) rather than inside
+        // the gather body (depth 2). The `- (opts)` continuation gather
+        // correctly indents its body content because the HIR models it as a
+        // ChoiceSet continuation block.
+        let i1 = "  ";
+        let i2 = "    ";
+        let i3 = "      ";
+        let i4 = "        ";
+        let expected = [
+            "=== start ===",
+            "",
+            &format!("{i1}//  Intro"),
+            &format!("{i1}- They are keeping me waiting."),
+            &format!("{i1}* Hut 14[]. The door was locked after I sat down."),
+            &format!("{i2}I don't even have a pen to do any work. There's a copy of the morning's intercept in my pocket, but staring at the jumbled letters will only drive me mad."),
+            &format!("{i2}I am not a machine, whatever they say about me."),
+            "",
+            &format!("{i1}- (opts)"),
+            &format!("{i2}{{|I rattle my fingers on the field table.|}}"),
+            &format!("{i2}* (think) [Think]"),
+            &format!("{i3}They suspect me to be a traitor. They think I stole the component from the calculating machine. They will be searching my bunk and cases."),
+            &format!("{i3}When they don't find it, {{plan:then}} they'll come back and demand I talk."),
+            &format!("{i3}-> opts"),
+            &format!("{i2}* (plan) [Plan]"),
+            &format!("{i3}{{not think:What I am is|I am}} a problem\u{2014}solver. Good with figures, quick with crosswords, excellent at chess."),
+            &format!("{i3}But in this scenario \u{2014} in this trap \u{2014} what is the winning play?"),
+            &format!("{i3}** (cooperate) [Co\u{2014}operate]"),
+            &format!("{i4}I must co\u{2014}operate. My credibility is my main asset. To contradict myself, or another source, would be fatal."),
+            &format!("{i4}I must simply hope they do not ask the questions I do not want to answer."),
+            &format!("{i4}~ lower(forceful)"),
+            &format!("{i3}** [Dissemble]"),
+            &format!("{i4}Misinformation, then. Just as the war in Europe is one of plans and interceptions, not planes and bombs."),
+            &format!("{i4}My best hope is a story they prefer to the truth."),
+            &format!("{i4}~ raise(forceful)"),
+            &format!("{i3}** (delay) [Divert]"),
+            &format!("{i4}Avoidance and delay. The military machine never fights on a single front. If I move slowly enough, things will resolve themselves some other way, my reputation intact."),
+            &format!("{i4}~ raise(evasive)"),
+            &format!("{i2}* [Wait]"),
+            &format!("{i1}- -> waited"),
+            "",  // trailing newline
+        ].join("\n");
 
         let result = fmt(input);
         assert_eq!(result, expected);
