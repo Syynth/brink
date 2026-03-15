@@ -14,7 +14,9 @@ brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-db = { path = "../internal/brink-db" }
 brink-fmt = { path = "../internal/brink-fmt" }
 brink-ir = { path = "../internal/brink-ir" }
+brink-syntax = { path = "../internal/brink-syntax" }
 rowan.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tower-lsp.workspace = true
 tracing.workspace = true

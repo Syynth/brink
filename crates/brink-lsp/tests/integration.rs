@@ -473,3 +473,113 @@ fn folding_ranges_for_dice_rolling_functions() {
     drop(stdout);
     let _ = child.wait();
 }
+
+#[test]
+fn code_actions_sort_knots() {
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start brink-lsp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    // --- initialize ---
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": null,
+            }
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    // --- didOpen with unsorted knots ---
+    let ink_source = "\
+=== charlie ===
+Charlie content.
+
+=== alpha ===
+Alpha content.
+
+=== bravo ===
+Bravo content.
+";
+
+    let file_uri = "file:///tmp/sort_test.ink";
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": ink_source,
+                }
+            }
+        }),
+    );
+
+    // --- codeAction (id=2) ---
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": file_uri },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 0 }
+                },
+                "context": {
+                    "diagnostics": []
+                }
+            }
+        }),
+    );
+
+    let (resp, _) = recv_response(&mut stdout, 2);
+    eprintln!(
+        "code_action response: {}",
+        serde_json::to_string_pretty(&resp).unwrap()
+    );
+
+    let actions = resp["result"]
+        .as_array()
+        .expect("expected array of code actions");
+
+    assert!(!actions.is_empty(), "expected at least one code action");
+
+    assert_eq!(
+        actions[0]["title"].as_str(),
+        Some("Sort knots alphabetically"),
+    );
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+}

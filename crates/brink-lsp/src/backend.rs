@@ -909,11 +909,96 @@ impl LanguageServer for Backend {
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         tracing::debug!(uri = %params.text_document.uri, "code_action");
-        Ok(Some(vec![]))
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return Ok(Some(vec![]));
+        };
+
+        let source = {
+            let db = lock_db(&self.db);
+            let Some(file_id) = db.file_id(&path) else {
+                return Ok(Some(vec![]));
+            };
+            db.source(file_id).map(String::from)
+        };
+
+        let Some(source) = source else {
+            return Ok(Some(vec![]));
+        };
+
+        Ok(Some(collect_code_actions(
+            &source,
+            params.text_document.uri.as_ref(),
+            params.range.start,
+        )))
     }
 
-    async fn code_action_resolve(&self, action: CodeAction) -> Result<CodeAction> {
+    async fn code_action_resolve(&self, mut action: CodeAction) -> Result<CodeAction> {
         tracing::debug!(title = %action.title, "code_action_resolve");
+
+        let data = match &action.data {
+            Some(obj) => obj.clone(),
+            None => return Ok(action),
+        };
+
+        let kind = data.get("kind").and_then(serde_json::Value::as_str);
+        let uri_str = data
+            .get("uri")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+
+        let Ok(uri) = Url::parse(uri_str) else {
+            return Ok(action);
+        };
+
+        let Some(path) = Self::uri_to_path(&uri) else {
+            return Ok(action);
+        };
+
+        let source = {
+            let db = lock_db(&self.db);
+            let Some(file_id) = db.file_id(&path) else {
+                return Ok(action);
+            };
+            db.source(file_id).map(String::from)
+        };
+
+        let Some(source) = source else {
+            return Ok(action);
+        };
+
+        let knot_name = data
+            .get("knot")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+
+        let new_source = match kind {
+            Some("sort_knots") => sort_knots_in_source(&source),
+            Some("sort_stitches") => sort_stitches_in_knot(&source, knot_name),
+            Some("format_knot") => format_region(&source, knot_name, None),
+            Some("format_stitch") => {
+                let stitch_name = data
+                    .get("stitch")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                format_region(&source, knot_name, Some(stitch_name))
+            }
+            _ => return Ok(action),
+        };
+
+        if new_source == source {
+            return Ok(action);
+        }
+
+        let edits = diff_to_edits(&source, &new_source);
+        let mut changes = HashMap::new();
+        changes.insert(uri, edits);
+
+        action.edit = Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        });
+
         Ok(action)
     }
 
@@ -1337,6 +1422,364 @@ fn format_config_from_options(
         brink_fmt::IndentStyle::Tabs
     };
     brink_fmt::FormatConfig { indent }
+}
+
+/// Format only a specific knot or stitch region, leaving the rest unchanged.
+///
+/// Formats the whole document, then replaces only the lines corresponding to
+/// the targeted region. Since formatting can change line lengths (shifting byte
+/// offsets), we identify the region by line number in the original source.
+fn format_region(source: &str, knot_name: &str, stitch_name: Option<&str>) -> String {
+    use brink_syntax::ast::AstNode as _;
+
+    let parse = brink_syntax::parse(source);
+    let tree = parse.tree();
+
+    let knots: Vec<_> = tree.knots().collect();
+    let Some((ki, knot)) = knots
+        .iter()
+        .enumerate()
+        .find(|(_, k)| k.header().and_then(|h| h.name()).as_deref() == Some(knot_name))
+    else {
+        return source.to_owned();
+    };
+
+    let knot_start: usize = knot.syntax().text_range().start().into();
+    let knot_end: usize = if ki + 1 < knots.len() {
+        knots[ki + 1].syntax().text_range().start().into()
+    } else {
+        source.len()
+    };
+
+    let (region_start, region_end) = if let Some(sname) = stitch_name {
+        let Some(body) = knot.body() else {
+            return source.to_owned();
+        };
+        let stitches: Vec<_> = body.stitches().collect();
+        let Some((si, stitch)) = stitches
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.header().and_then(|h| h.name()).as_deref() == Some(sname))
+        else {
+            return source.to_owned();
+        };
+        let start: usize = stitch.syntax().text_range().start().into();
+        let end: usize = if si + 1 < stitches.len() {
+            stitches[si + 1].syntax().text_range().start().into()
+        } else {
+            knot_end
+        };
+        (start, end)
+    } else {
+        (knot_start, knot_end)
+    };
+
+    // Format the whole file
+    let config = brink_fmt::FormatConfig::default();
+    let formatted = brink_fmt::format(source, &config);
+
+    // Splice: keep original before/after region, use formatted for the region.
+    // Because formatting is line-based and preserves structure, the byte offsets
+    // in the original source correctly delimit the region to replace.
+    // The formatted output has the same structure, so we re-parse it to find the
+    // matching region boundaries.
+    let fmt_parse = brink_syntax::parse(&formatted);
+    let fmt_tree = fmt_parse.tree();
+
+    let fmt_knots: Vec<_> = fmt_tree.knots().collect();
+    let Some((fki, fmt_knot)) = fmt_knots
+        .iter()
+        .enumerate()
+        .find(|(_, k)| k.header().and_then(|h| h.name()).as_deref() == Some(knot_name))
+    else {
+        return source.to_owned();
+    };
+
+    let fmt_knot_start: usize = fmt_knot.syntax().text_range().start().into();
+    let fmt_knot_end: usize = if fki + 1 < fmt_knots.len() {
+        fmt_knots[fki + 1].syntax().text_range().start().into()
+    } else {
+        formatted.len()
+    };
+
+    let (fmt_region_start, fmt_region_end) = if let Some(sname) = stitch_name {
+        let Some(body) = fmt_knot.body() else {
+            return source.to_owned();
+        };
+        let fmt_stitches: Vec<_> = body.stitches().collect();
+        let Some((fsi, fmt_stitch)) = fmt_stitches
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.header().and_then(|h| h.name()).as_deref() == Some(sname))
+        else {
+            return source.to_owned();
+        };
+        let start: usize = fmt_stitch.syntax().text_range().start().into();
+        let end: usize = if fsi + 1 < fmt_stitches.len() {
+            fmt_stitches[fsi + 1].syntax().text_range().start().into()
+        } else {
+            fmt_knot_end
+        };
+        (start, end)
+    } else {
+        (fmt_knot_start, fmt_knot_end)
+    };
+
+    let mut result = String::with_capacity(formatted.len());
+    result.push_str(&source[..region_start]);
+    result.push_str(&formatted[fmt_region_start..fmt_region_end]);
+    result.push_str(&source[region_end..]);
+    result
+}
+
+// ─── Code action helpers ────────────────────────────────────────────
+
+/// Collect all applicable code actions for the given source and cursor position.
+#[expect(clippy::too_many_lines, reason = "sequential action collection")]
+fn collect_code_actions(
+    source: &str,
+    uri_str: &str,
+    cursor_pos: Position,
+) -> Vec<tower_lsp::lsp_types::CodeActionOrCommand> {
+    use brink_syntax::ast::AstNode as _;
+
+    let parse = brink_syntax::parse(source);
+    let tree = parse.tree();
+
+    let mut actions = Vec::new();
+
+    // ── Sort knots ──────────────────────────────────────────────
+    let knot_names: Vec<String> = tree.knots().filter_map(|k| k.header()?.name()).collect();
+
+    if knot_names.len() >= 2 {
+        let already_sorted = knot_names
+            .windows(2)
+            .all(|w| w[0].to_lowercase() <= w[1].to_lowercase());
+
+        if !already_sorted {
+            actions.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
+                CodeAction {
+                    title: "Sort knots alphabetically".to_owned(),
+                    kind: Some(CodeActionKind::SOURCE),
+                    data: Some(serde_json::json!({
+                        "kind": "sort_knots",
+                        "uri": uri_str,
+                    })),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+
+    // ── Cursor-scoped actions ───────────────────────────────────
+    let idx = LineIndex::new(source);
+    let cursor = idx.offset(cursor_pos.line, cursor_pos.character);
+
+    let config = brink_fmt::FormatConfig::default();
+    let formatted = brink_fmt::format(source, &config);
+
+    let knots: Vec<_> = tree.knots().collect();
+    for (ki, knot) in knots.iter().enumerate() {
+        let knot_range = knot.syntax().text_range();
+        if cursor < knot_range.start() || cursor > knot_range.end() {
+            continue;
+        }
+
+        let knot_name = knot.header().and_then(|h| h.name()).unwrap_or_default();
+
+        let knot_start: usize = knot_range.start().into();
+        let knot_end: usize = if ki + 1 < knots.len() {
+            knots[ki + 1].syntax().text_range().start().into()
+        } else {
+            source.len()
+        };
+
+        // Format knot
+        if source.get(knot_start..knot_end) != formatted.get(knot_start..knot_end) {
+            actions.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
+                CodeAction {
+                    title: format!("Format knot '{knot_name}'"),
+                    kind: Some(CodeActionKind::SOURCE),
+                    data: Some(serde_json::json!({
+                        "kind": "format_knot",
+                        "uri": uri_str,
+                        "knot": knot_name,
+                    })),
+                    ..Default::default()
+                },
+            ));
+        }
+
+        // Sort stitches
+        let Some(body) = knot.body() else { break };
+        let stitches: Vec<_> = body.stitches().collect();
+
+        let stitch_names: Vec<String> =
+            stitches.iter().filter_map(|s| s.header()?.name()).collect();
+
+        if stitch_names.len() >= 2 {
+            let already_sorted = stitch_names
+                .windows(2)
+                .all(|w| w[0].to_lowercase() <= w[1].to_lowercase());
+
+            if !already_sorted {
+                actions.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
+                    CodeAction {
+                        title: format!("Sort stitches in '{knot_name}' alphabetically"),
+                        kind: Some(CodeActionKind::SOURCE),
+                        data: Some(serde_json::json!({
+                            "kind": "sort_stitches",
+                            "uri": uri_str,
+                            "knot": knot_name,
+                        })),
+                        ..Default::default()
+                    },
+                ));
+            }
+        }
+
+        // Format stitch
+        for (si, stitch) in stitches.iter().enumerate() {
+            let stitch_range = stitch.syntax().text_range();
+            if cursor < stitch_range.start() || cursor > stitch_range.end() {
+                continue;
+            }
+
+            let stitch_name = stitch.header().and_then(|h| h.name()).unwrap_or_default();
+
+            let stitch_start: usize = stitch_range.start().into();
+            let stitch_end: usize = if si + 1 < stitches.len() {
+                stitches[si + 1].syntax().text_range().start().into()
+            } else {
+                knot_end
+            };
+
+            if source.get(stitch_start..stitch_end) != formatted.get(stitch_start..stitch_end) {
+                actions.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
+                    CodeAction {
+                        title: format!("Format stitch '{stitch_name}'"),
+                        kind: Some(CodeActionKind::SOURCE),
+                        data: Some(serde_json::json!({
+                            "kind": "format_stitch",
+                            "uri": uri_str,
+                            "knot": knot_name,
+                            "stitch": stitch_name,
+                        })),
+                        ..Default::default()
+                    },
+                ));
+            }
+            break;
+        }
+
+        break;
+    }
+
+    actions
+}
+
+/// Sort knot definitions in the source alphabetically by name.
+///
+/// Returns the full source with knots reordered. The preamble (everything before
+/// the first knot) is preserved. Each knot's slice runs from its start to just
+/// before the next knot (or EOF).
+fn sort_knots_in_source(source: &str) -> String {
+    use brink_syntax::ast::AstNode as _;
+
+    let parse = brink_syntax::parse(source);
+    let tree = parse.tree();
+
+    let knots: Vec<_> = tree.knots().collect();
+    if knots.len() < 2 {
+        return source.to_owned();
+    }
+
+    // Build (name, source_slice) pairs. Each knot owns the text from its start
+    // to just before the next knot (or EOF).
+    let mut knot_slices: Vec<(String, &str)> = Vec::with_capacity(knots.len());
+    for (i, knot) in knots.iter().enumerate() {
+        let name = knot.header().and_then(|h| h.name()).unwrap_or_default();
+        let start: usize = knot.syntax().text_range().start().into();
+        let end: usize = if i + 1 < knots.len() {
+            knots[i + 1].syntax().text_range().start().into()
+        } else {
+            source.len()
+        };
+        knot_slices.push((name, &source[start..end]));
+    }
+
+    // Preamble: everything before the first knot
+    let preamble_end: usize = knots[0].syntax().text_range().start().into();
+    let preamble = &source[..preamble_end];
+
+    // Sort by name, case-insensitive
+    knot_slices.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+    let mut result = String::with_capacity(source.len());
+    result.push_str(preamble);
+    for (_, slice) in &knot_slices {
+        result.push_str(slice);
+    }
+
+    result
+}
+
+/// Sort stitch definitions within the named knot alphabetically.
+///
+/// Preserves the knot's preamble content (everything before the first stitch).
+/// Each stitch's slice runs from its start to just before the next stitch (or end
+/// of the knot body).
+fn sort_stitches_in_knot(source: &str, knot_name: &str) -> String {
+    use brink_syntax::ast::AstNode as _;
+
+    let parse = brink_syntax::parse(source);
+    let tree = parse.tree();
+
+    let Some(knot) = tree
+        .knots()
+        .find(|k| k.header().and_then(|h| h.name()).as_deref() == Some(knot_name))
+    else {
+        return source.to_owned();
+    };
+
+    let Some(body) = knot.body() else {
+        return source.to_owned();
+    };
+
+    let stitches: Vec<_> = body.stitches().collect();
+    if stitches.len() < 2 {
+        return source.to_owned();
+    }
+
+    // The knot body region we'll rewrite: from first stitch start to the end of
+    // the knot's AST node (which is just before the next knot or EOF — the knot
+    // owns trailing content up to the next knot boundary).
+    let knot_end: usize = knot.syntax().text_range().end().into();
+    let region_start: usize = stitches[0].syntax().text_range().start().into();
+    let region_end: usize = knot_end;
+
+    let mut stitch_slices: Vec<(String, &str)> = Vec::with_capacity(stitches.len());
+    for (i, stitch) in stitches.iter().enumerate() {
+        let name = stitch.header().and_then(|h| h.name()).unwrap_or_default();
+        let start: usize = stitch.syntax().text_range().start().into();
+        let end: usize = if i + 1 < stitches.len() {
+            stitches[i + 1].syntax().text_range().start().into()
+        } else {
+            region_end
+        };
+        stitch_slices.push((name, &source[start..end]));
+    }
+
+    stitch_slices.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+    let mut result = String::with_capacity(source.len());
+    result.push_str(&source[..region_start]);
+    for (_, slice) in &stitch_slices {
+        result.push_str(slice);
+    }
+    result.push_str(&source[region_end..]);
+
+    result
 }
 
 /// Replace the entire document with the formatted text via a single `TextEdit`.

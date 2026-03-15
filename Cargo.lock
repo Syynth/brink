@@ -336,6 +336,7 @@ dependencies = [
  "brink-db",
  "brink-fmt",
  "brink-ir",
+ "brink-syntax",
  "rowan",
  "serde",
  "serde_json",
