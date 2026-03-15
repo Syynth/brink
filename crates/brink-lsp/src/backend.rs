@@ -13,14 +13,15 @@ use tower_lsp::lsp_types::{
     FoldingRangeParams, FoldingRangeProviderCapability, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
     InitializeResult, InlayHint, InlayHintParams, Location, MarkupContent, MarkupKind, OneOf,
-    Position, PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams,
-    SaveOptions, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
-    SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SymbolInformation,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions,
-    WorkspaceEdit, WorkspaceSymbolParams,
+    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams,
+    RenameOptions, RenameParams, SaveOptions, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensRangeParams,
+    SemanticTokensRangeResult, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, ServerInfo, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
+    SignatureInformation, SymbolInformation, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
+    WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -530,7 +531,87 @@ impl LanguageServer for Backend {
             uri = %params.text_document_position_params.text_document.uri,
             "signature_help",
         );
-        Ok(None)
+
+        let Some(path) = Self::uri_to_path(&params.text_document_position_params.text_document.uri)
+        else {
+            return Ok(None);
+        };
+
+        let Some(snap) = self.navigation_snapshot(&path) else {
+            return Ok(None);
+        };
+
+        let idx = LineIndex::new(&snap.source);
+        let pos = params.text_document_position_params.position;
+        let offset = idx.offset(pos.line, pos.character);
+        let byte_offset: usize = offset.into();
+
+        let Some((func_name, active_param)) = find_call_context(&snap.source, byte_offset) else {
+            return Ok(None);
+        };
+
+        // Look up the function in the symbol index.
+        let info = snap.analysis.index.symbols.values().find(|info| {
+            matches!(
+                info.kind,
+                brink_ir::SymbolKind::Knot
+                    | brink_ir::SymbolKind::Stitch
+                    | brink_ir::SymbolKind::External
+            ) && info.name == func_name
+                && !info.params.is_empty()
+        });
+
+        let Some(info) = info else {
+            return Ok(None);
+        };
+
+        let param_infos: Vec<ParameterInformation> = info
+            .params
+            .iter()
+            .map(|p| {
+                let label = if p.is_ref {
+                    format!("ref {}", p.name)
+                } else if p.is_divert {
+                    format!("-> {}", p.name)
+                } else {
+                    p.name.clone()
+                };
+                ParameterInformation {
+                    label: ParameterLabel::Simple(label),
+                    documentation: None,
+                }
+            })
+            .collect();
+
+        let param_labels: Vec<String> = param_infos
+            .iter()
+            .map(|p| match &p.label {
+                ParameterLabel::Simple(s) => s.clone(),
+                ParameterLabel::LabelOffsets(_) => String::new(),
+            })
+            .collect();
+
+        let signature_label = format!("{}({})", func_name, param_labels.join(", "));
+
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "active param index fits in u32"
+        )]
+        let active = active_param.min(info.params.len().saturating_sub(1)) as u32;
+
+        Ok(Some(SignatureHelp {
+            signatures: vec![SignatureInformation {
+                label: signature_label,
+                documentation: info
+                    .detail
+                    .as_ref()
+                    .map(|d| tower_lsp::lsp_types::Documentation::String(d.clone())),
+                parameters: Some(param_infos),
+                active_parameter: Some(active),
+            }],
+            active_signature: Some(0),
+            active_parameter: Some(active),
+        }))
     }
 
     // ── Completion ───────────────────────────────────────────────────
@@ -1212,6 +1293,61 @@ fn builtin_hover_text(name: &str) -> Option<String> {
         _ => return None,
     };
     Some(format!("**built-in** `{signature}`\n\n{description}"))
+}
+
+// ─── Signature help helpers ────────────────────────────────────────
+
+/// Find the function call context at the given byte offset.
+///
+/// Returns `(function_name, active_parameter_index)` if the cursor is inside
+/// a function call's parentheses, e.g. `myFunc(a, |)` → `("myFunc", 1)`.
+fn find_call_context(source: &str, byte_offset: usize) -> Option<(String, usize)> {
+    let before = source.get(..byte_offset)?;
+
+    // Scan backwards to find the matching open paren, tracking nesting.
+    let mut depth = 0i32;
+    let mut commas = 0usize;
+    let mut paren_pos = None;
+
+    for (i, ch) in before.char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    paren_pos = Some(i);
+                    break;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => commas += 1,
+            '\n' if depth == 0 => return None, // don't cross line boundaries at depth 0
+            _ => {}
+        }
+    }
+
+    let paren_pos = paren_pos?;
+
+    // Extract the identifier immediately before the open paren.
+    let before_paren = before[..paren_pos].trim_end();
+    if before_paren.is_empty() {
+        return None;
+    }
+
+    // Walk backwards over identifier characters.
+    let name_end = before_paren.len();
+    let name_start = before_paren
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
+        .last()
+        .map_or(name_end, |(i, _)| i);
+
+    let name = &before_paren[name_start..name_end];
+    if name.is_empty() {
+        return None;
+    }
+
+    Some((name.to_owned(), commas))
 }
 
 // ─── Hover helpers ─────────────────────────────────────────────────
