@@ -52,7 +52,9 @@ pub fn regenerate_locale(
     let existing_lines = xliff_to_lines_json(existing)?;
     let merged = regenerate_lines(&new_export, &existing_lines);
 
-    let mut doc = lines_json_to_xliff(&merged, source_lang, None);
+    // Build the document from the *new export* so <source> elements contain
+    // the original English text. Translations from `merged` go into <target>.
+    let mut doc = lines_json_to_xliff(&new_export, source_lang, None);
 
     // Carry forward target language from existing document.
     if doc.trg_lang.is_none() {
@@ -62,7 +64,7 @@ pub fn regenerate_locale(
     // Build hash→state map from existing XLIFF for state restoration.
     let state_map = build_state_map(existing);
 
-    // Restore states on matched lines and set targets.
+    // Overlay translations from the merged result onto the fresh source doc.
     for (file, merged_scope) in doc.files.iter_mut().zip(&merged.scopes) {
         for (unit, merged_line) in file.units.iter_mut().zip(&merged_scope.lines) {
             for su in &mut unit.sub_units {
