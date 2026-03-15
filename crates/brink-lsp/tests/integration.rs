@@ -410,23 +410,18 @@ fn folding_ranges_for_dice_rolling_functions() {
             .any(|(s, e, t)| *s == start && *e == end && *t == Some(text))
     };
 
-    // Knot folds (0-indexed lines)
-    assert!(
-        has_fold(8, 22, "== _start_rolling =="),
-        "missing _start_rolling knot fold"
-    );
-    assert!(
-        has_fold(22, 49, "== _keep_rolling =="),
-        "missing _keep_rolling knot fold"
-    );
-    assert!(
-        has_fold(49, 58, "== player_roll =="),
-        "missing player_roll knot fold"
-    );
-    assert!(
-        has_fold(69, 93, "== opposite_roll =="),
-        "missing opposite_roll knot fold"
-    );
+    // Knot folds (0-indexed lines, trimmed to exclude trailing whitespace).
+    // collapsed_text is None — the editor already shows the header line.
+    let has_knot_fold = |start: u64, end: u64| -> bool {
+        folds
+            .iter()
+            .any(|(s, e, t)| *s == start && *e == end && t.is_none())
+    };
+
+    assert!(has_knot_fold(8, 20), "missing _start_rolling knot fold");
+    assert!(has_knot_fold(22, 48), "missing _keep_rolling knot fold");
+    assert!(has_knot_fold(49, 56), "missing player_roll knot fold");
+    assert!(has_knot_fold(69, 91), "missing opposite_roll knot fold");
 
     // Conditionals inside _start_rolling (lines 10-12, 13-15, 16-18)
     assert!(

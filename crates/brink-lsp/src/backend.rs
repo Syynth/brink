@@ -852,41 +852,17 @@ impl LanguageServer for Backend {
         let mut ranges = Vec::new();
 
         // Root-level block content
-        collect_block_folds(&hir.root_content, &idx, &mut ranges);
+        collect_block_folds(&hir.root_content, source, &idx, &mut ranges);
 
         for knot in &hir.knots {
-            let knot_range = knot.ptr.text_range();
-            let (start_line, _) = idx.line_col(knot_range.start());
-            let (end_line, _) = idx.line_col(knot_range.end());
-            if end_line > start_line {
-                ranges.push(FoldingRange {
-                    start_line,
-                    start_character: None,
-                    end_line,
-                    end_character: None,
-                    kind: Some(FoldingRangeKind::Region),
-                    collapsed_text: Some(format!("== {} ==", knot.name.text)),
-                });
-            }
+            push_fold(knot.ptr.text_range(), None, source, &idx, &mut ranges);
 
-            collect_block_folds(&knot.body, &idx, &mut ranges);
+            collect_block_folds(&knot.body, source, &idx, &mut ranges);
 
             for stitch in &knot.stitches {
-                let stitch_range = stitch.ptr.text_range();
-                let (s_start, _) = idx.line_col(stitch_range.start());
-                let (s_end, _) = idx.line_col(stitch_range.end());
-                if s_end > s_start {
-                    ranges.push(FoldingRange {
-                        start_line: s_start,
-                        start_character: None,
-                        end_line: s_end,
-                        end_character: None,
-                        kind: Some(FoldingRangeKind::Region),
-                        collapsed_text: Some(format!("= {}", stitch.name.text)),
-                    });
-                }
+                push_fold(stitch.ptr.text_range(), None, source, &idx, &mut ranges);
 
-                collect_block_folds(&stitch.body, &idx, &mut ranges);
+                collect_block_folds(&stitch.body, source, &idx, &mut ranges);
             }
         }
 
@@ -1045,11 +1021,29 @@ fn word_range_at_offset(source: &str, offset: rowan::TextSize) -> Option<rowan::
 fn push_fold(
     range: rowan::TextRange,
     collapsed: Option<String>,
+    source: &str,
     idx: &LineIndex,
     out: &mut Vec<FoldingRange>,
 ) {
-    let (start_line, _) = idx.line_col(range.start());
-    let (end_line, _) = idx.line_col(range.end());
+    let start_byte = usize::from(range.start());
+    let end_byte = usize::from(range.end()).min(source.len());
+    let slice = &source[start_byte..end_byte];
+
+    // Trim leading whitespace to find the real start line
+    let trimmed_start = start_byte + (slice.len() - slice.trim_start().len());
+    // Trim trailing whitespace to find the real end line
+    let trimmed_end = start_byte + slice.trim_end().len();
+
+    if trimmed_start >= trimmed_end {
+        return;
+    }
+
+    let (start_line, _) = idx.line_col(rowan::TextSize::from(
+        u32::try_from(trimmed_start).unwrap_or(u32::MAX),
+    ));
+    let (end_line, _) = idx.line_col(rowan::TextSize::from(
+        u32::try_from(trimmed_end).unwrap_or(u32::MAX),
+    ));
     if end_line > start_line {
         out.push(FoldingRange {
             start_line,
@@ -1062,38 +1056,60 @@ fn push_fold(
     }
 }
 
-fn collect_block_folds(block: &brink_ir::Block, idx: &LineIndex, out: &mut Vec<FoldingRange>) {
+fn collect_block_folds(
+    block: &brink_ir::Block,
+    source: &str,
+    idx: &LineIndex,
+    out: &mut Vec<FoldingRange>,
+) {
     for stmt in &block.stmts {
-        collect_stmt_folds(stmt, idx, out);
+        collect_stmt_folds(stmt, source, idx, out);
     }
 }
 
-fn collect_stmt_folds(stmt: &brink_ir::Stmt, idx: &LineIndex, out: &mut Vec<FoldingRange>) {
+fn collect_stmt_folds(
+    stmt: &brink_ir::Stmt,
+    source: &str,
+    idx: &LineIndex,
+    out: &mut Vec<FoldingRange>,
+) {
     match stmt {
         brink_ir::Stmt::ChoiceSet(cs) => {
             for choice in &cs.choices {
-                push_fold(choice.ptr.text_range(), None, idx, out);
-                collect_block_folds(&choice.body, idx, out);
+                push_fold(choice.ptr.text_range(), None, source, idx, out);
+                collect_block_folds(&choice.body, source, idx, out);
             }
-            collect_block_folds(&cs.continuation, idx, out);
+            collect_block_folds(&cs.continuation, source, idx, out);
         }
         brink_ir::Stmt::LabeledBlock(block) => {
-            collect_block_folds(block, idx, out);
+            collect_block_folds(block, source, idx, out);
         }
         brink_ir::Stmt::Conditional(cond) => {
-            push_fold(cond.ptr.text_range(), Some("{...}".to_owned()), idx, out);
+            push_fold(
+                cond.ptr.text_range(),
+                Some("{...}".to_owned()),
+                source,
+                idx,
+                out,
+            );
             for branch in &cond.branches {
-                collect_block_folds(&branch.body, idx, out);
+                collect_block_folds(&branch.body, source, idx, out);
             }
         }
         brink_ir::Stmt::Sequence(seq) => {
-            push_fold(seq.ptr.text_range(), Some("{...}".to_owned()), idx, out);
+            push_fold(
+                seq.ptr.text_range(),
+                Some("{...}".to_owned()),
+                source,
+                idx,
+                out,
+            );
             for branch in &seq.branches {
-                collect_block_folds(branch, idx, out);
+                collect_block_folds(branch, source, idx, out);
             }
         }
         brink_ir::Stmt::Content(content) => {
-            collect_content_folds(content, idx, out);
+            collect_content_folds(content, source, idx, out);
         }
         _ => {}
     }
@@ -1101,29 +1117,43 @@ fn collect_stmt_folds(stmt: &brink_ir::Stmt, idx: &LineIndex, out: &mut Vec<Fold
 
 fn collect_content_folds(
     content: &brink_ir::Content,
+    source: &str,
     idx: &LineIndex,
     out: &mut Vec<FoldingRange>,
 ) {
-    collect_content_part_folds(&content.parts, idx, out);
+    collect_content_part_folds(&content.parts, source, idx, out);
 }
 
 fn collect_content_part_folds(
     parts: &[brink_ir::ContentPart],
+    source: &str,
     idx: &LineIndex,
     out: &mut Vec<FoldingRange>,
 ) {
     for part in parts {
         match part {
             brink_ir::ContentPart::InlineConditional(cond) => {
-                push_fold(cond.ptr.text_range(), Some("{...}".to_owned()), idx, out);
+                push_fold(
+                    cond.ptr.text_range(),
+                    Some("{...}".to_owned()),
+                    source,
+                    idx,
+                    out,
+                );
                 for branch in &cond.branches {
-                    collect_block_folds(&branch.body, idx, out);
+                    collect_block_folds(&branch.body, source, idx, out);
                 }
             }
             brink_ir::ContentPart::InlineSequence(seq) => {
-                push_fold(seq.ptr.text_range(), Some("{...}".to_owned()), idx, out);
+                push_fold(
+                    seq.ptr.text_range(),
+                    Some("{...}".to_owned()),
+                    source,
+                    idx,
+                    out,
+                );
                 for branch in &seq.branches {
-                    collect_block_folds(branch, idx, out);
+                    collect_block_folds(branch, source, idx, out);
                 }
             }
             _ => {}
