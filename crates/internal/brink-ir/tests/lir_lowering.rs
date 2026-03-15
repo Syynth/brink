@@ -2183,8 +2183,7 @@ fn glue_leading_recognized_as_plain() {
             lir::Stmt::EmitLine(e) => {
                 assert!(
                     matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Hello world"),
-                    "expected Plain(\"Hello world\"), got {:?}",
-                    e.line
+                    "expected Plain(\"Hello world\")"
                 );
                 found_line = true;
             }
@@ -2210,8 +2209,7 @@ fn glue_trailing_recognized_as_plain() {
             lir::Stmt::EmitLine(e) => {
                 assert!(
                     matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Hello world"),
-                    "expected Plain(\"Hello world\"), got {:?}",
-                    e.line
+                    "expected Plain(\"Hello world\")"
                 );
                 found_line = true;
                 line_pos = Some(i);

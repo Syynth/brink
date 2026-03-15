@@ -1,6 +1,7 @@
 use crate::hir;
 use crate::symbols::SymbolKind;
 
+use super::content::lower_content;
 use super::context::LowerCtx;
 use super::expr::{lower_expr, path_to_string};
 use super::lir;
@@ -95,14 +96,23 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
         // ChoiceSet, LabeledBlock, Conditional, and Sequence are dispatched
         // by lower_block_with_children before reaching lower_stmt. If they
         // reach here, it indicates a dispatch bug.
+        // Content is intercepted by lower_block_with_children for glue-aware
+        // recognition, but may still reach here from lower_inline_block.
+        hir::Stmt::Content(content) => {
+            if let Some(emission) = super::recognize::try_recognize(content, ctx) {
+                Some(lir::Stmt::EmitLine(emission))
+            } else {
+                Some(lir::Stmt::EmitContent(lower_content(content, ctx)))
+            }
+        }
+
         hir::Stmt::ChoiceSet(_)
         | hir::Stmt::LabeledBlock(_)
         | hir::Stmt::Conditional(_)
-        | hir::Stmt::Sequence(_)
-        | hir::Stmt::Content(_) => {
+        | hir::Stmt::Sequence(_) => {
             debug_assert!(
                 false,
-                "ChoiceSet/LabeledBlock/Conditional/Sequence/Content should not reach lower_stmt"
+                "ChoiceSet/LabeledBlock/Conditional/Sequence should not reach lower_stmt"
             );
             None
         }
