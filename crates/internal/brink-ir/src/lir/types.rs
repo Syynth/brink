@@ -380,7 +380,8 @@ pub struct Sequence {
 #[derive(Clone)]
 pub struct LineMetadata {
     pub source_hash: u64,
-    // Phase 3+: slot_info, source_location
+    pub slot_info: Vec<brink_format::SlotInfo>,
+    pub source_location: Option<brink_format::SourceLocation>,
 }
 
 /// A recognized line pattern from content analysis.

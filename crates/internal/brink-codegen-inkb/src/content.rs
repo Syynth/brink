@@ -7,9 +7,16 @@ use crate::ContainerEmitter;
 
 impl ContainerEmitter<'_> {
     pub(super) fn emit_recognized_line(&mut self, emission: &lir::ContentEmission) {
+        let slot_info = emission.metadata.slot_info.clone();
+        let source_location = emission.metadata.source_location.clone();
         match &emission.line {
             lir::RecognizedLine::Plain(text) => {
-                let idx = self.add_line_with_hash(text, emission.metadata.source_hash);
+                let idx = self.add_line_with_hash(
+                    text,
+                    emission.metadata.source_hash,
+                    slot_info,
+                    source_location,
+                );
                 self.emit(Opcode::EmitLine(idx, 0));
             }
             lir::RecognizedLine::Template {
@@ -20,8 +27,12 @@ impl ContainerEmitter<'_> {
                 for expr in slot_exprs {
                     self.emit_expr(expr);
                 }
-                let idx =
-                    self.add_template_line(template_parts.clone(), emission.metadata.source_hash);
+                let idx = self.add_template_line(
+                    template_parts.clone(),
+                    emission.metadata.source_hash,
+                    slot_info,
+                    source_location,
+                );
                 #[expect(clippy::cast_possible_truncation)]
                 self.emit(Opcode::EmitLine(idx, slot_exprs.len() as u8));
             }

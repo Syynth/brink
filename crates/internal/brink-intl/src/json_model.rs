@@ -19,6 +19,21 @@ pub struct ScopeJson {
     pub lines: Vec<LineJson>,
 }
 
+/// Slot metadata in the JSON export.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlotJson {
+    pub index: u8,
+    pub name: String,
+}
+
+/// Source location metadata in the JSON export.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceJson {
+    pub file: String,
+    pub range_start: u32,
+    pub range_end: u32,
+}
+
 /// A single line entry within a scope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LineJson {
@@ -28,6 +43,10 @@ pub struct LineJson {
     pub hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub slots: Vec<SlotJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceJson>,
 }
 
 /// Line content — either a plain string or a template with parts.

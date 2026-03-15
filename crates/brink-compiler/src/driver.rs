@@ -61,7 +61,12 @@ where
         .into_iter()
         .filter_map(|id| db.hir(id).map(|hir| (id, hir)))
         .collect();
-    let program = brink_ir::lir::lower_to_program(&files, &result.index, &result.resolutions);
+    let file_paths: std::collections::HashMap<_, _> = files
+        .iter()
+        .filter_map(|(id, _)| db.file_path(*id).map(|p| (*id, p.to_string())))
+        .collect();
+    let program =
+        brink_ir::lir::lower_to_program(&files, &result.index, &result.resolutions, &file_paths);
 
     info!(globals = program.globals.len(), "LIR lowering complete");
 

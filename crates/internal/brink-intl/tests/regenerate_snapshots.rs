@@ -8,6 +8,8 @@ fn make_line(index: u16, hash: &str, content: Option<&str>, audio: Option<&str>)
         content: content.map(|s| ContentJson::Plain(s.to_string())),
         hash: hash.to_string(),
         audio: audio.map(str::to_string),
+        slots: Vec::new(),
+        source: None,
     }
 }
 

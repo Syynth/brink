@@ -79,6 +79,8 @@ fn regenerate_scope_lines(new_lines: &[LineJson], old_lines: &[LineJson]) -> Vec
                     content: old_line.content.clone(),
                     hash: new_line.hash.clone(),
                     audio: old_line.audio.clone(),
+                    slots: Vec::new(),
+                    source: None,
                 });
             }
             Alignment::Removed { old_idx } => {
@@ -95,6 +97,8 @@ fn regenerate_scope_lines(new_lines: &[LineJson], old_lines: &[LineJson]) -> Vec
                         content: removed.content.clone(),
                         hash: new_line.hash.clone(),
                         audio: removed.audio.clone(),
+                        slots: Vec::new(),
+                        source: None,
                     });
                 } else {
                     // Pure insertion — no translation available.
@@ -103,6 +107,8 @@ fn regenerate_scope_lines(new_lines: &[LineJson], old_lines: &[LineJson]) -> Vec
                         content: None,
                         hash: new_line.hash.clone(),
                         audio: None,
+                        slots: Vec::new(),
+                        source: None,
                     });
                 }
             }
@@ -123,6 +129,8 @@ mod tests {
             content: content.map(|s| ContentJson::Plain(s.to_string())),
             hash: hash.to_string(),
             audio: audio.map(str::to_string),
+            slots: Vec::new(),
+            source: None,
         }
     }
 

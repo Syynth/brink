@@ -7,6 +7,8 @@ mod recognize;
 mod stmts;
 mod temps;
 
+use std::collections::HashMap;
+
 use brink_format::CountingFlags;
 
 use crate::FileId;
@@ -20,10 +22,18 @@ use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
 ///
 /// All references are resolved — the returned `Program` is self-contained
 /// and does not need the `SymbolIndex` or `ResolutionMap`.
+///
+/// `file_paths` maps each `FileId` to its source file path for populating
+/// `SourceLocation` on recognized lines.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, no need to generalize"
+)]
 pub fn lower_to_program(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
+    file_paths: &HashMap<FileId, String>,
 ) -> lir::Program {
     let resolutions = ResolutionLookup::build(resolutions);
     let mut names = NameTable::new();
@@ -39,7 +49,15 @@ pub fn lower_to_program(
     let externals = decls::collect_externals(files, index, &mut names);
 
     // ── Step 3: Lower containers as a tree ──────────────────────────
-    let root = lower_root(files, &resolutions, index, &mut names, &plan, &mut ids);
+    let root = lower_root(
+        files,
+        &resolutions,
+        index,
+        &mut names,
+        &plan,
+        &mut ids,
+        file_paths,
+    );
 
     // ── Step 4: Counting flags ──────────────────────────────────────
     let mut root = root;
@@ -64,6 +82,7 @@ fn lower_root(
     names: &mut NameTable,
     plan: &plan::ContainerPlan,
     ids: &mut context::IdAllocator,
+    file_paths: &HashMap<FileId, String>,
 ) -> lir::Container {
     let mut body = Vec::new();
     let mut children = Vec::new();
@@ -82,6 +101,7 @@ fn lower_root(
             ids,
             String::new(),
             &[],
+            file_paths,
         );
         let mut cc = 0;
         let mut gc = 0;
@@ -108,6 +128,7 @@ fn lower_root(
                 names,
                 ids,
                 plan,
+                file_paths,
             ));
         }
     }
@@ -148,6 +169,7 @@ fn lower_knot(
     names: &mut NameTable,
     ids: &mut context::IdAllocator,
     plan: &plan::ContainerPlan,
+    file_paths: &HashMap<FileId, String>,
 ) -> lir::Container {
     let knot_name = &knot.name.text;
     let knot_id = plan
@@ -175,6 +197,7 @@ fn lower_knot(
         ids,
         knot_name.clone(),
         &knot_param_names,
+        file_paths,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -194,6 +217,7 @@ fn lower_knot(
             names,
             ids,
             plan,
+            file_paths,
         ));
     }
 
@@ -237,6 +261,7 @@ fn lower_stitch(
     names: &mut NameTable,
     ids: &mut context::IdAllocator,
     plan: &plan::ContainerPlan,
+    file_paths: &HashMap<FileId, String>,
 ) -> lir::Container {
     let stitch_name = &stitch.name.text;
     let stitch_path = format!("{}.{stitch_name}", knot.name.text);
@@ -258,6 +283,7 @@ fn lower_stitch(
         ids,
         stitch_path,
         &stitch_param_names,
+        file_paths,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -821,6 +847,7 @@ fn make_ctx<'a>(
     ids: &'a mut context::IdAllocator,
     scope_path: String,
     param_names: &[&str],
+    file_paths: &'a HashMap<FileId, String>,
 ) -> LowerCtx<'a> {
     LowerCtx {
         file,
@@ -832,6 +859,7 @@ fn make_ctx<'a>(
         scope_path,
         pending_children: Vec::new(),
         visible_temps: param_names.iter().map(|s| (*s).to_string()).collect(),
+        file_paths,
     }
 }
 

@@ -441,6 +441,115 @@ pub enum InfixOp {
     HasNot,
 }
 
+// ─── Expression display ─────────────────────────────────────────────
+
+/// Reconstruct a human-readable name from an HIR expression.
+///
+/// Used to derive slot names for interpolation slots in template lines.
+/// E.g. `Path(["player_name"])` → `"player_name"`, `Infix(x, Add, y)` → `"x + y"`.
+#[must_use]
+pub fn display_expr(expr: &Expr) -> String {
+    match expr {
+        Expr::Path(p) => {
+            let mut out = String::new();
+            for (i, seg) in p.segments.iter().enumerate() {
+                if i > 0 {
+                    out.push('.');
+                }
+                out.push_str(&seg.text);
+            }
+            out
+        }
+        Expr::Int(n) => n.to_string(),
+        Expr::Float(f) => f.to_f64().to_string(),
+        Expr::Bool(b) => b.to_string(),
+        Expr::String(_) => "\"...\"".to_string(),
+        Expr::Null => "null".to_string(),
+        Expr::DivertTarget(p) => {
+            let mut out = "-> ".to_string();
+            for (i, seg) in p.segments.iter().enumerate() {
+                if i > 0 {
+                    out.push('.');
+                }
+                out.push_str(&seg.text);
+            }
+            out
+        }
+        Expr::ListLiteral(_) => "(...)".to_string(),
+        Expr::Prefix(op, inner) => {
+            format!("{}{}", op.as_str(), display_expr(inner))
+        }
+        Expr::Infix(lhs, op, rhs) => {
+            format!(
+                "{} {} {}",
+                display_expr(lhs),
+                op.as_str(),
+                display_expr(rhs)
+            )
+        }
+        Expr::Postfix(inner, op) => {
+            format!("{}{}", display_expr(inner), op.as_str())
+        }
+        Expr::Call(path, _) => {
+            let mut name = String::new();
+            for (i, seg) in path.segments.iter().enumerate() {
+                if i > 0 {
+                    name.push('.');
+                }
+                name.push_str(&seg.text);
+            }
+            format!("{name}(...)")
+        }
+    }
+}
+
+impl PrefixOp {
+    /// Operator symbol as a string.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Negate => "-",
+            Self::Not => "not ",
+        }
+    }
+}
+
+impl PostfixOp {
+    /// Operator symbol as a string.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Increment => "++",
+            Self::Decrement => "--",
+        }
+    }
+}
+
+impl InfixOp {
+    /// Operator symbol as a string.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::Div => "/",
+            Self::Mod => "%",
+            Self::Intersect => "^",
+            Self::Eq => "==",
+            Self::NotEq => "!=",
+            Self::Lt => "<",
+            Self::Gt => ">",
+            Self::LtEq => "<=",
+            Self::GtEq => ">=",
+            Self::And => "&&",
+            Self::Or => "||",
+            Self::Has => "?",
+            Self::HasNot => "!?",
+        }
+    }
+}
+
 // ─── Declarations ───────────────────────────────────────────────────
 
 /// `VAR x = expr`

@@ -70,6 +70,8 @@ fn insertion_leaves_new_line_untranslated() {
         content: Some(ContentJson::Plain("brand new line\n".to_string())),
         hash: "ffffffffffffffff".to_string(),
         audio: None,
+        slots: Vec::new(),
+        source: None,
     };
     new_export.scopes[0].lines.insert(1, new_line);
 
@@ -144,6 +146,8 @@ fn new_scope_all_lines_untranslated() {
             content: Some(ContentJson::Plain("new knot text\n".to_string())),
             hash: "1111111111111111".to_string(),
             audio: None,
+            slots: Vec::new(),
+            source: None,
         }],
     });
 
@@ -167,6 +171,8 @@ fn removed_scope_dropped_from_output() {
             content: Some(ContentJson::Plain("orphaned\n".to_string())),
             hash: "2222222222222222".to_string(),
             audio: None,
+            slots: Vec::new(),
+            source: None,
         }],
     });
 
@@ -196,6 +202,8 @@ fn multiple_changes_in_same_scope() {
         content: Some(ContentJson::Plain("appended\n".to_string())),
         hash: "bbbbbbbbbbbbbbbb".to_string(),
         audio: None,
+        slots: Vec::new(),
+        source: None,
     });
 
     let result = regenerate_lines(&new_export, &existing);

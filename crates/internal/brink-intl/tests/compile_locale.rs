@@ -124,6 +124,8 @@ fn error_line_count_mismatch() {
         content: Some(ContentJson::Plain("extra".to_string())),
         hash: "0000000000000000".to_string(),
         audio: None,
+        slots: Vec::new(),
+        source: None,
     });
 
     let err = compile_locale(&inkb, &lines, "en").unwrap_err();

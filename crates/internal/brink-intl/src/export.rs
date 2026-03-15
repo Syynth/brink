@@ -4,7 +4,9 @@ use std::collections::HashMap;
 
 use brink_format::{DefinitionId, LineContent, LinePart, SelectKey, StoryData};
 
-use crate::json_model::{ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson};
+use crate::json_model::{
+    ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson, SlotJson, SourceJson,
+};
 
 /// Export line tables from a compiled story as a `LinesJson` structure.
 ///
@@ -40,6 +42,19 @@ pub fn export_lines(story: &StoryData, source_checksum: u32) -> LinesJson {
                         content: Some(convert_content(&entry.content)),
                         hash: format!("{:016x}", entry.source_hash),
                         audio: entry.audio_ref.clone(),
+                        slots: entry
+                            .slot_info
+                            .iter()
+                            .map(|s| SlotJson {
+                                index: s.index,
+                                name: s.name.clone(),
+                            })
+                            .collect(),
+                        source: entry.source_location.as_ref().map(|loc| SourceJson {
+                            file: loc.file.clone(),
+                            range_start: loc.range_start,
+                            range_end: loc.range_end,
+                        }),
                     }
                 })
                 .collect();

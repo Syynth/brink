@@ -69,7 +69,8 @@ pub fn regenerate_locale(
                 if let SubUnit::Segment(seg) = su {
                     // If this line has translated content, set the target.
                     if let Some(ref content) = merged_line.content {
-                        let (elements, _) = crate::xliff_convert::content_to_inline(content);
+                        let (elements, _) =
+                            crate::xliff_convert::content_to_inline(content, &merged_line.slots);
                         seg.target = Some(xliff2::Content {
                             lang: None,
                             elements,

@@ -1,6 +1,7 @@
-use brink_format::LinePart;
+use brink_format::{LinePart, SlotInfo, SourceLocation};
 
 use crate::hir;
+use crate::hir::display_expr;
 
 use super::content::lower_content_parts_pub;
 use super::context::LowerCtx;
@@ -26,6 +27,7 @@ pub fn try_recognize(
         && let hir::ContentPart::Text(s) = &content.parts[0]
     {
         let source_hash = brink_format::content_hash(s);
+        let source_location = build_source_location(content, ctx);
         let tags = content
             .tags
             .iter()
@@ -33,7 +35,11 @@ pub fn try_recognize(
             .collect();
         return Some(lir::ContentEmission {
             line: lir::RecognizedLine::Plain(s.clone()),
-            metadata: lir::LineMetadata { source_hash },
+            metadata: lir::LineMetadata {
+                source_hash,
+                slot_info: Vec::new(),
+                source_location,
+            },
             tags,
         });
     }
@@ -43,6 +49,7 @@ pub fn try_recognize(
         // All parts are Text or Interpolation — build template.
         let mut template_parts = Vec::new();
         let mut slot_exprs = Vec::new();
+        let mut slot_info = Vec::new();
         let mut hash_source = String::new();
         let mut slot_idx: u8 = 0;
 
@@ -55,6 +62,10 @@ pub fn try_recognize(
                 hir::ContentPart::Interpolation(expr) => {
                     template_parts.push(LinePart::Slot(slot_idx));
                     slot_exprs.push(lower_expr(expr, ctx));
+                    slot_info.push(SlotInfo {
+                        index: slot_idx,
+                        name: display_expr(expr),
+                    });
                     hash_source.push_str("{…}");
                     slot_idx = slot_idx.saturating_add(1);
                 }
@@ -63,6 +74,7 @@ pub fn try_recognize(
         }
 
         let source_hash = brink_format::content_hash(&hash_source);
+        let source_location = build_source_location(content, ctx);
         let tags = content
             .tags
             .iter()
@@ -74,12 +86,28 @@ pub fn try_recognize(
                 parts: template_parts,
                 slot_exprs,
             },
-            metadata: lir::LineMetadata { source_hash },
+            metadata: lir::LineMetadata {
+                source_hash,
+                slot_info,
+                source_location,
+            },
             tags,
         });
     }
 
     None
+}
+
+/// Build a `SourceLocation` from the content's syntax pointer and the file path map.
+fn build_source_location(content: &hir::Content, ctx: &LowerCtx<'_>) -> Option<SourceLocation> {
+    let ptr = content.ptr.as_ref()?;
+    let range = ptr.text_range();
+    let file = ctx.file_paths.get(&ctx.file)?;
+    Some(SourceLocation {
+        file: file.clone(),
+        range_start: range.start().into(),
+        range_end: range.end().into(),
+    })
 }
 
 /// Check if all content parts are Text or Interpolation, with ≥1 Interpolation.

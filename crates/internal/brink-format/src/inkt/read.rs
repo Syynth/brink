@@ -6,7 +6,7 @@ use pest_derive::Parser;
 use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
-    ScopeLineTable,
+    ScopeLineTable, SlotInfo, SourceLocation,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -658,27 +658,68 @@ fn parse_line_entry(pair: P<'_>) -> Result<LineEntry, InktParseError> {
     let hash_str = hash_pair.as_str();
     let source_hash = parse_hex_u64(&format!("0x{}", &hash_str[1..]))?;
 
-    let audio_ref = if let Some(audio_pair) = inner.next() {
-        // audio_field → "(" "audio" string ")"
-        let s = audio_pair
-            .into_inner()
-            .next()
-            .ok_or_else(|| InktParseError {
-                message: "expected audio string".into(),
-                line: 0,
-                col: 0,
-            })?;
-        Some(unescape_string(s.as_str()))
-    } else {
-        None
-    };
+    let mut audio_ref = None;
+    let mut slot_info = Vec::new();
+    let mut source_location = None;
+
+    for remaining in inner {
+        match remaining.as_rule() {
+            Rule::audio_field => {
+                let s = remaining
+                    .into_inner()
+                    .next()
+                    .ok_or_else(|| InktParseError {
+                        message: "expected audio string".into(),
+                        line: 0,
+                        col: 0,
+                    })?;
+                audio_ref = Some(unescape_string(s.as_str()));
+            }
+            Rule::slots_field => {
+                for slot_entry in remaining.into_inner() {
+                    if slot_entry.as_rule() == Rule::slot_entry {
+                        let mut parts = slot_entry.into_inner();
+                        let idx_str = parts.next().map_or("0", |p| p.as_str());
+                        let idx: u8 = idx_str.parse().unwrap_or(0);
+                        let name_str = parts
+                            .next()
+                            .map_or_else(String::new, |p| unescape_string(p.as_str()));
+                        slot_info.push(SlotInfo {
+                            index: idx,
+                            name: name_str,
+                        });
+                    }
+                }
+            }
+            Rule::source_field => {
+                let mut parts = remaining.into_inner();
+                let file = parts
+                    .next()
+                    .map_or_else(String::new, |p| unescape_string(p.as_str()));
+                let start: u32 = parts
+                    .next()
+                    .and_then(|p| p.as_str().parse().ok())
+                    .unwrap_or(0);
+                let end: u32 = parts
+                    .next()
+                    .and_then(|p| p.as_str().parse().ok())
+                    .unwrap_or(0);
+                source_location = Some(SourceLocation {
+                    file,
+                    range_start: start,
+                    range_end: end,
+                });
+            }
+            _ => {}
+        }
+    }
 
     Ok(LineEntry {
         content,
         source_hash,
         audio_ref,
-        slot_info: Vec::new(),
-        source_location: None,
+        slot_info,
+        source_location,
     })
 }
 

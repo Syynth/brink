@@ -17,6 +17,8 @@ fn make_line(
         content,
         hash: hash.to_string(),
         audio: audio.map(str::to_string),
+        slots: Vec::new(),
+        source: None,
     }
 }
 

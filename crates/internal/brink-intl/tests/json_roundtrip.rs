@@ -13,6 +13,8 @@ fn make_line(index: u16, content: ContentJson, audio: Option<String>) -> LineJso
         content: Some(content),
         hash: "0000000000000000".to_string(),
         audio,
+        slots: Vec::new(),
+        source: None,
     }
 }
 

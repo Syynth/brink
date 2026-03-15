@@ -150,7 +150,7 @@ fn line_to_unit(scope_name: &str, line: &LineJson) -> Unit {
     }
 
     let (source_elements, original_data) = match &line.content {
-        Some(content) => content_to_inline(content),
+        Some(content) => content_to_inline(content, &line.slots),
         None => (Vec::new(), None),
     };
 
@@ -181,6 +181,7 @@ fn line_to_unit(scope_name: &str, line: &LineJson) -> Unit {
 
 pub(crate) fn content_to_inline(
     content: &ContentJson,
+    slots: &[crate::json_model::SlotJson],
 ) -> (Vec<InlineElement>, Option<OriginalData>) {
     match content {
         ContentJson::Plain(s) => (vec![InlineElement::Text(s.clone())], None),
@@ -195,11 +196,15 @@ pub(crate) fn content_to_inline(
                         elements.push(InlineElement::Text(s.clone()));
                     }
                     PartJson::Slot { slot } => {
+                        let disp = slots
+                            .iter()
+                            .find(|s| s.index == *slot)
+                            .map(|s| s.name.clone());
                         elements.push(InlineElement::Ph(Ph {
                             id: format!("s{slot}"),
                             data_ref: None,
                             equiv: Some(format!("{{slot {slot}}}")),
-                            disp: None,
+                            disp,
                             sub_type: None,
                             extensions: Extensions::default(),
                         }));
@@ -275,6 +280,8 @@ fn unit_to_line(unit: &Unit) -> Result<LineJson, IntlError> {
         content,
         hash,
         audio,
+        slots: Vec::new(),
+        source: None,
     })
 }
 
@@ -399,6 +406,8 @@ mod tests {
             content,
             hash: hash.to_string(),
             audio: audio.map(str::to_string),
+            slots: Vec::new(),
+            source: None,
         }
     }
 

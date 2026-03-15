@@ -103,31 +103,43 @@ impl<'a> ContainerEmitter<'a> {
     }
 
     fn add_line(&mut self, text: &str) -> u16 {
-        self.add_line_with_hash(text, brink_format::content_hash(text))
+        self.add_line_with_hash(text, brink_format::content_hash(text), Vec::new(), None)
     }
 
     #[expect(clippy::cast_possible_truncation)]
-    fn add_line_with_hash(&mut self, text: &str, source_hash: u64) -> u16 {
+    fn add_line_with_hash(
+        &mut self,
+        text: &str,
+        source_hash: u64,
+        slot_info: Vec<brink_format::SlotInfo>,
+        source_location: Option<brink_format::SourceLocation>,
+    ) -> u16 {
         let idx = self.scope_line_table.len() as u16;
         self.scope_line_table.push(LineEntry {
             content: LineContent::Plain(text.to_string()),
             source_hash,
             audio_ref: None,
-            slot_info: Vec::new(),
-            source_location: None,
+            slot_info,
+            source_location,
         });
         idx
     }
 
     #[expect(clippy::cast_possible_truncation)]
-    fn add_template_line(&mut self, parts: brink_format::LineTemplate, source_hash: u64) -> u16 {
+    fn add_template_line(
+        &mut self,
+        parts: brink_format::LineTemplate,
+        source_hash: u64,
+        slot_info: Vec<brink_format::SlotInfo>,
+        source_location: Option<brink_format::SourceLocation>,
+    ) -> u16 {
         let idx = self.scope_line_table.len() as u16;
         self.scope_line_table.push(LineEntry {
             content: LineContent::Template(parts),
             source_hash,
             audio_ref: None,
-            slot_info: Vec::new(),
-            source_location: None,
+            slot_info,
+            source_location,
         });
         idx
     }

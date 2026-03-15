@@ -203,7 +203,12 @@ fn lower_lir(source: &str) -> lir::Program {
     let result = brink_analyzer::analyze(&files_for_analysis);
 
     let files_for_lir: Vec<(FileId, &HirFile)> = vec![(file_id, &hir)];
-    lir::lower_to_program(&files_for_lir, &result.index, &result.resolutions)
+    lir::lower_to_program(
+        &files_for_lir,
+        &result.index,
+        &result.resolutions,
+        &std::collections::HashMap::new(),
+    )
 }
 
 #[test]

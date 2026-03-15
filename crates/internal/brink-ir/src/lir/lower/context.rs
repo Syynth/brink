@@ -120,6 +120,8 @@ pub struct LowerCtx<'a> {
     /// Forward-referenced temps (used before declaration) should resolve as
     /// globals, matching inklecate's behavior.
     pub visible_temps: std::collections::HashSet<String>,
+    /// Mapping from `FileId` to source file path, for populating `SourceLocation`.
+    pub file_paths: &'a std::collections::HashMap<FileId, String>,
 }
 
 impl<'a> LowerCtx<'a> {
