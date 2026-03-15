@@ -593,6 +593,36 @@ fn lower_block_with_children(
                 stmts.push(lir::Stmt::EnterContainer(wrapper_id));
                 pos += 1;
             }
+            hir::Stmt::Content(content) => {
+                // Try direct recognition first.
+                if let Some(emission) = recognize::try_recognize(content, ctx) {
+                    stmts.push(lir::Stmt::EmitLine(emission));
+                }
+                // Try with boundary glue stripping.
+                else if let Some((leading, emission, trailing)) =
+                    recognize::try_recognize_with_glue(content, ctx)
+                {
+                    if leading {
+                        stmts.push(lir::Stmt::EmitContent(lir::Content {
+                            parts: vec![lir::ContentPart::Glue],
+                            tags: vec![],
+                        }));
+                    }
+                    stmts.push(lir::Stmt::EmitLine(emission));
+                    if trailing {
+                        stmts.push(lir::Stmt::EmitContent(lir::Content {
+                            parts: vec![lir::ContentPart::Glue],
+                            tags: vec![],
+                        }));
+                    }
+                }
+                // Fallback: emit content parts individually.
+                else {
+                    stmts.push(lir::Stmt::EmitContent(content::lower_content(content, ctx)));
+                }
+                children.append(&mut ctx.pending_children);
+                pos += 1;
+            }
             _ => {
                 if let Some(s) = stmts::lower_stmt(stmt, ctx) {
                     stmts.push(s);

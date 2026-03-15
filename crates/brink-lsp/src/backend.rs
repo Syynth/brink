@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use brink_analyzer::AnalysisResult;
@@ -12,14 +13,14 @@ use tower_lsp::lsp_types::{
     FoldingRangeParams, FoldingRangeProviderCapability, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
     InitializeResult, InlayHint, InlayHintParams, Location, MarkupContent, MarkupKind, OneOf,
-    PrepareRenameResponse, ReferenceParams, RenameOptions, RenameParams, SaveOptions,
-    SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
-    SignatureHelpOptions, SignatureHelpParams, SymbolInformation, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
-    WorkspaceSymbolParams,
+    Position, PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams,
+    SaveOptions, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SymbolInformation,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions,
+    WorkspaceEdit, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -791,7 +792,45 @@ impl LanguageServer for Backend {
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         tracing::debug!(uri = %params.text_document.uri, "prepare_rename");
-        Ok(None)
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let Some(snap) = self.navigation_snapshot(&path) else {
+            return Ok(None);
+        };
+
+        let idx = LineIndex::new(&snap.source);
+        let offset = convert::to_text_size(params.position, &idx);
+
+        let Some(info) = find_def_at_offset(&snap, offset) else {
+            return Ok(None);
+        };
+
+        // Builtins and externals cannot be renamed
+        if matches!(info.kind, brink_ir::SymbolKind::External) {
+            return Ok(None);
+        }
+
+        // Return the range of the symbol under the cursor (reference or definition site)
+        let rename_range = snap
+            .analysis
+            .resolutions
+            .iter()
+            .find(|r| {
+                r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset)
+            })
+            .map(|r| r.range)
+            .or_else(|| (info.file == snap.file_id).then_some(info.range));
+
+        let Some(range) = rename_range else {
+            return Ok(None);
+        };
+
+        Ok(Some(PrepareRenameResponse::Range(convert::to_lsp_range(
+            range, &idx,
+        ))))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -800,7 +839,72 @@ impl LanguageServer for Backend {
             new_name = %params.new_name,
             "rename",
         );
-        Ok(None)
+
+        let Some(path) = Self::uri_to_path(&params.text_document_position.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let Some(snap) = self.navigation_snapshot(&path) else {
+            return Ok(None);
+        };
+
+        let idx = LineIndex::new(&snap.source);
+        let offset = convert::to_text_size(params.text_document_position.position, &idx);
+
+        let Some(info) = find_def_at_offset(&snap, offset) else {
+            return Ok(None);
+        };
+
+        if matches!(info.kind, brink_ir::SymbolKind::External) {
+            return Ok(None);
+        }
+
+        let def_id = info.id;
+        let new_name = &params.new_name;
+
+        // Collect all edits grouped by file URI
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+
+        // 1. Rename the definition site
+        if let Some((_, def_path, def_source)) =
+            snap.all_files.iter().find(|(fid, _, _)| *fid == info.file)
+            && let Ok(uri) = Url::from_file_path(def_path)
+        {
+            let def_idx = LineIndex::new(def_source);
+            changes.entry(uri).or_default().push(TextEdit {
+                range: convert::to_lsp_range(info.range, &def_idx),
+                new_text: new_name.clone(),
+            });
+        }
+
+        // 2. Rename all reference sites
+        for resolved in &snap.analysis.resolutions {
+            if resolved.target != def_id {
+                continue;
+            }
+
+            if let Some((_, file_path, file_source)) = snap
+                .all_files
+                .iter()
+                .find(|(fid, _, _)| *fid == resolved.file)
+                && let Ok(uri) = Url::from_file_path(file_path)
+            {
+                let file_idx = LineIndex::new(file_source);
+                changes.entry(uri).or_default().push(TextEdit {
+                    range: convert::to_lsp_range(resolved.range, &file_idx),
+                    new_text: new_name.clone(),
+                });
+            }
+        }
+
+        if changes.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
@@ -817,7 +921,31 @@ impl LanguageServer for Backend {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         tracing::debug!(uri = %params.text_document.uri, "formatting");
-        Ok(None)
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let source = {
+            let db = lock_db(&self.db);
+            let Some(file_id) = db.file_id(&path) else {
+                return Ok(None);
+            };
+            db.source(file_id).map(String::from)
+        };
+
+        let Some(source) = source else {
+            return Ok(None);
+        };
+
+        let config = format_config_from_options(&params.options);
+        let formatted = brink_fmt::format(&source, &config);
+
+        if formatted == source {
+            return Ok(None);
+        }
+
+        Ok(Some(diff_to_edits(&source, &formatted)))
     }
 
     async fn range_formatting(
@@ -825,7 +953,44 @@ impl LanguageServer for Backend {
         params: DocumentRangeFormattingParams,
     ) -> Result<Option<Vec<TextEdit>>> {
         tracing::debug!(uri = %params.text_document.uri, "range_formatting");
-        Ok(None)
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let source = {
+            let db = lock_db(&self.db);
+            let Some(file_id) = db.file_id(&path) else {
+                return Ok(None);
+            };
+            db.source(file_id).map(String::from)
+        };
+
+        let Some(source) = source else {
+            return Ok(None);
+        };
+
+        let config = format_config_from_options(&params.options);
+        let formatted = brink_fmt::format(&source, &config);
+
+        if formatted == source {
+            return Ok(None);
+        }
+
+        let all_edits = diff_to_edits(&source, &formatted);
+        let range = params.range;
+
+        // Filter edits to those that overlap the requested range.
+        let filtered: Vec<TextEdit> = all_edits
+            .into_iter()
+            .filter(|edit| ranges_overlap(&edit.range, &range))
+            .collect();
+
+        if filtered.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(filtered))
+        }
     }
 
     // ── Structure ────────────────────────────────────────────────────
@@ -1159,4 +1324,54 @@ fn collect_content_part_folds(
             _ => {}
         }
     }
+}
+
+// ─── Formatting helpers ─────────────────────────────────────────────
+
+fn format_config_from_options(
+    options: &tower_lsp::lsp_types::FormattingOptions,
+) -> brink_fmt::FormatConfig {
+    let indent = if options.insert_spaces {
+        brink_fmt::IndentStyle::Spaces(options.tab_size)
+    } else {
+        brink_fmt::IndentStyle::Tabs
+    };
+    brink_fmt::FormatConfig { indent }
+}
+
+/// Replace the entire document with the formatted text via a single `TextEdit`.
+fn diff_to_edits(old: &str, new: &str) -> Vec<TextEdit> {
+    let old_lines: Vec<&str> = old.lines().collect();
+
+    // Compute end position of the old document.
+    let end = if old_lines.is_empty() {
+        Position::new(0, 0)
+    } else {
+        #[expect(clippy::cast_possible_truncation, reason = "line count fits in u32")]
+        let last_line = (old_lines.len() - 1) as u32;
+        #[expect(clippy::cast_possible_truncation, reason = "line length fits in u32")]
+        let last_col = old_lines.last().map_or(0, |l| l.len() as u32);
+        // If old ends with a newline, the cursor is at the start of the next line.
+        if old.ends_with('\n') {
+            Position::new(last_line + 1, 0)
+        } else {
+            Position::new(last_line, last_col)
+        }
+    };
+
+    vec![TextEdit {
+        range: Range {
+            start: Position::new(0, 0),
+            end,
+        },
+        new_text: new.to_owned(),
+    }]
+}
+
+/// Check whether two LSP ranges overlap.
+fn ranges_overlap(a: &Range, b: &Range) -> bool {
+    !(a.end.line < b.start.line
+        || (a.end.line == b.start.line && a.end.character <= b.start.character)
+        || b.end.line < a.start.line
+        || (b.end.line == a.start.line && b.end.character <= a.start.character))
 }

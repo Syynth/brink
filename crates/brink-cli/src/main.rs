@@ -77,6 +77,17 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Format .ink source files
+    Fmt {
+        /// .ink files to format
+        files: Vec<PathBuf>,
+        /// Check formatting without writing (exit 1 if unformatted)
+        #[arg(long)]
+        check: bool,
+        /// Read from stdin, write formatted output to stdout
+        #[arg(long)]
+        stdin: bool,
+    },
     /// Play an ink story interactively
     Play {
         /// Story file (.ink.json, .inkb, or .inkt)
@@ -146,6 +157,16 @@ fn main() -> ExitCode {
             } => {
                 if let Err(e) = run_regenerate_xliff(&base, &existing, &src_lang, output.as_deref())
                 {
+                    tracing::error!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            Commands::Fmt {
+                files,
+                check,
+                stdin,
+            } => {
+                if let Err(e) = run_fmt(&files, check, stdin) {
                     tracing::error!("{e}");
                     return ExitCode::FAILURE;
                 }
@@ -326,6 +347,44 @@ fn run_regenerate_xliff(
         let mut handle = stdout.lock();
         handle.write_all(xml.as_bytes())?;
         handle.write_all(b"\n")?;
+    }
+
+    Ok(())
+}
+
+fn run_fmt(files: &[PathBuf], check: bool, stdin: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let config = brink_fmt::FormatConfig::default();
+
+    if stdin {
+        let mut source = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut source)?;
+        let formatted = brink_fmt::format(&source, &config);
+        std::io::Write::write_all(&mut std::io::stdout().lock(), formatted.as_bytes())?;
+        return Ok(());
+    }
+
+    if files.is_empty() {
+        return Err("no files specified; use --stdin to read from stdin".into());
+    }
+
+    let mut any_unformatted = false;
+
+    for path in files {
+        let source = std::fs::read_to_string(path)?;
+        let formatted = brink_fmt::format(&source, &config);
+
+        if check {
+            if formatted != source {
+                tracing::error!("{}: not formatted", path.display());
+                any_unformatted = true;
+            }
+        } else if formatted != source {
+            std::fs::write(path, &formatted)?;
+        }
+    }
+
+    if check && any_unformatted {
+        return Err("some files are not formatted".into());
     }
 
     Ok(())

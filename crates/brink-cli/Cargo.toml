@@ -11,6 +11,7 @@ description = "CLI for compiling and running ink stories"
 
 [dependencies]
 brink-compiler = { path = "../brink-compiler" }
+brink-fmt = { path = "../internal/brink-fmt" }
 brink-format = { path = "../internal/brink-format", features = ["inkt"] }
 brink-json = { path = "../internal/brink-json" }
 brink-converter = { path = "../internal/brink-converter" }

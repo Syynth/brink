@@ -191,6 +191,7 @@ version = "0.0.1"
 dependencies = [
  "brink-compiler",
  "brink-converter",
+ "brink-fmt",
  "brink-format",
  "brink-intl",
  "brink-json",
@@ -264,6 +265,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "brink-fmt"
+version = "0.0.1"
+dependencies = [
+ "brink-ir",
+ "brink-syntax",
+ "insta",
+ "rowan",
+]
+
+[[package]]
 name = "brink-format"
 version = "0.0.1"
 dependencies = [
@@ -323,6 +334,7 @@ version = "0.0.1"
 dependencies = [
  "brink-analyzer",
  "brink-db",
+ "brink-fmt",
  "brink-ir",
  "rowan",
  "serde",

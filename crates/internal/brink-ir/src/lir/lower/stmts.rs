@@ -1,7 +1,6 @@
 use crate::hir;
 use crate::symbols::SymbolKind;
 
-use super::content::lower_content;
 use super::context::LowerCtx;
 use super::expr::{lower_expr, path_to_string};
 use super::lir;
@@ -13,14 +12,6 @@ use super::lir;
 /// containers. This function handles all remaining statement types.
 pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir::Stmt> {
     match stmt {
-        hir::Stmt::Content(content) => {
-            if let Some(emission) = super::recognize::try_recognize(content, ctx) {
-                Some(lir::Stmt::EmitLine(emission))
-            } else {
-                Some(lir::Stmt::EmitContent(lower_content(content, ctx)))
-            }
-        }
-
         hir::Stmt::Divert(divert) => {
             Some(lir::Stmt::Divert(lower_divert_target(&divert.target, ctx)))
         }
@@ -107,10 +98,11 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
         hir::Stmt::ChoiceSet(_)
         | hir::Stmt::LabeledBlock(_)
         | hir::Stmt::Conditional(_)
-        | hir::Stmt::Sequence(_) => {
+        | hir::Stmt::Sequence(_)
+        | hir::Stmt::Content(_) => {
             debug_assert!(
                 false,
-                "ChoiceSet/LabeledBlock/Conditional/Sequence should not reach lower_stmt"
+                "ChoiceSet/LabeledBlock/Conditional/Sequence/Content should not reach lower_stmt"
             );
             None
         }

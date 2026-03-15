@@ -152,6 +152,105 @@ pub fn try_recognize(
     None
 }
 
+/// Strip leading and trailing `Glue` parts from content and merge interior
+/// `[Text, Glue, Text]` runs into a single `Text`.
+///
+/// Returns `(has_leading_glue, stripped_content, has_trailing_glue)`.
+/// Interior glue adjacent to non-text parts (Interpolation, `InlineConditional`,
+/// etc.) is NOT stripped — those prevent recognition.
+pub fn strip_boundary_glue(content: &hir::Content) -> (bool, hir::Content, bool) {
+    let parts = &content.parts;
+
+    // Strip leading glue
+    let mut start = 0;
+    let mut has_leading = false;
+    while start < parts.len() && parts[start] == hir::ContentPart::Glue {
+        has_leading = true;
+        start += 1;
+    }
+
+    // Strip trailing glue
+    let mut end = parts.len();
+    let mut has_trailing = false;
+    while end > start && parts[end - 1] == hir::ContentPart::Glue {
+        has_trailing = true;
+        end -= 1;
+    }
+
+    // Merge interior [Text, Glue, Text] runs into single Text.
+    // Interior glue adjacent to non-Text parts is left alone (will prevent recognition).
+    let interior = &parts[start..end];
+    let mut merged_parts: Vec<hir::ContentPart> = Vec::with_capacity(interior.len());
+    for part in interior {
+        match part {
+            hir::ContentPart::Glue => {
+                // Check if both the previous and next parts are Text.
+                // At this point we only have the previous part available, so we
+                // check the previous. We'll merge when we see the next Text.
+                if matches!(merged_parts.last(), Some(hir::ContentPart::Text(_))) {
+                    // Tentatively mark as "pending merge" by pushing Glue.
+                    // We'll resolve this when the next part arrives.
+                    merged_parts.push(hir::ContentPart::Glue);
+                } else {
+                    // Glue adjacent to non-Text — keep it (will block recognition).
+                    merged_parts.push(hir::ContentPart::Glue);
+                }
+            }
+            hir::ContentPart::Text(s) => {
+                // If the previous part is Glue and the part before that is Text,
+                // merge all three into one Text.
+                if matches!(merged_parts.last(), Some(hir::ContentPart::Glue)) {
+                    merged_parts.pop(); // remove the Glue
+                    if let Some(hir::ContentPart::Text(prev)) = merged_parts.last_mut() {
+                        prev.push_str(s);
+                    } else {
+                        // Glue was at the start of interior (shouldn't happen after
+                        // boundary stripping, but be safe) — keep as separate text.
+                        merged_parts.push(hir::ContentPart::Text(s.clone()));
+                    }
+                } else {
+                    merged_parts.push(part.clone());
+                }
+            }
+            _ => {
+                merged_parts.push(part.clone());
+            }
+        }
+    }
+
+    let stripped = hir::Content {
+        ptr: content.ptr,
+        parts: merged_parts,
+        tags: content.tags.clone(),
+    };
+
+    (has_leading, stripped, has_trailing)
+}
+
+/// Try to recognize content after stripping boundary glue.
+///
+/// Returns `None` if no glue was stripped (caller already tried plain
+/// `try_recognize`) or if the stripped interior is still unrecognizable.
+pub fn try_recognize_with_glue(
+    content: &hir::Content,
+    ctx: &mut LowerCtx<'_>,
+) -> Option<(bool, lir::ContentEmission, bool)> {
+    let (has_leading, stripped, has_trailing) = strip_boundary_glue(content);
+
+    // If nothing changed, don't retry — caller already tried try_recognize.
+    if !has_leading && !has_trailing && stripped.parts.len() == content.parts.len() {
+        return None;
+    }
+
+    // Empty interior after stripping? Not recognizable.
+    if stripped.parts.is_empty() {
+        return None;
+    }
+
+    let emission = try_recognize(&stripped, ctx)?;
+    Some((has_leading, emission, has_trailing))
+}
+
 /// Build a `SourceLocation` from the content's syntax pointer and the file path map.
 fn build_source_location(content: &hir::Content, ctx: &LowerCtx<'_>) -> Option<SourceLocation> {
     let ptr = content.ptr.as_ref()?;

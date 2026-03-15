@@ -12,6 +12,7 @@ description = "Language server for inkle's ink narrative scripting language"
 [dependencies]
 brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-db = { path = "../internal/brink-db" }
+brink-fmt = { path = "../internal/brink-fmt" }
 brink-ir = { path = "../internal/brink-ir" }
 rowan.workspace = true
 tokio.workspace = true
