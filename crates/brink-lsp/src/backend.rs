@@ -630,45 +630,58 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let items: Vec<CompletionItem> = snap
-            .analysis
-            .index
-            .symbols
-            .values()
-            .map(|info| {
-                let kind = match info.kind {
-                    brink_ir::SymbolKind::Knot => CompletionItemKind::MODULE,
-                    brink_ir::SymbolKind::Stitch | brink_ir::SymbolKind::External => {
-                        CompletionItemKind::FUNCTION
-                    }
-                    brink_ir::SymbolKind::Variable
-                    | brink_ir::SymbolKind::Constant
-                    | brink_ir::SymbolKind::Param
-                    | brink_ir::SymbolKind::Temp => CompletionItemKind::VARIABLE,
-                    brink_ir::SymbolKind::List => CompletionItemKind::ENUM,
-                    brink_ir::SymbolKind::ListItem => CompletionItemKind::ENUM_MEMBER,
-                    brink_ir::SymbolKind::Label => CompletionItemKind::REFERENCE,
-                };
+        let pos = params.text_document_position.position;
+        let idx = LineIndex::new(&snap.source);
+        let byte_offset: usize = idx.offset(pos.line, pos.character).into();
 
-                let detail = match info.kind {
-                    brink_ir::SymbolKind::Knot if info.detail.as_deref() == Some("function") => {
-                        Some("function knot".to_string())
-                    }
-                    _ if !info.params.is_empty() => {
-                        let params: Vec<_> = info.params.iter().map(|p| p.name.as_str()).collect();
-                        Some(format!("({})", params.join(", ")))
-                    }
-                    _ => None,
-                };
+        let ctx = detect_completion_context(&snap.source, byte_offset);
+        let cursor_scope = cursor_scope(&snap.source, byte_offset);
 
-                CompletionItem {
-                    label: info.name.clone(),
-                    kind: Some(kind),
-                    detail,
-                    ..Default::default()
+        let mut items: Vec<CompletionItem> = Vec::new();
+
+        // For dotted paths, show only children of the specified knot.
+        if let CompletionContext::DottedPath { ref knot } = ctx {
+            let prefix = format!("{knot}.");
+            for (name, ids) in &snap.analysis.index.by_name {
+                if let Some(suffix) = name.strip_prefix(&*prefix) {
+                    for &def_id in ids {
+                        let Some(info) = snap.analysis.index.symbols.get(&def_id) else {
+                            continue;
+                        };
+                        if !matches!(
+                            info.kind,
+                            brink_ir::SymbolKind::Stitch | brink_ir::SymbolKind::Label
+                        ) {
+                            continue;
+                        }
+                        items.push(make_completion_item(info, Some(suffix.to_owned())));
+                    }
                 }
-            })
-            .collect();
+            }
+            return Ok(Some(CompletionResponse::Array(items)));
+        }
+
+        for info in snap.analysis.index.symbols.values() {
+            if !is_visible_in_context(&ctx, info, &cursor_scope) {
+                continue;
+            }
+            items.push(make_completion_item(info, None));
+        }
+
+        // Add synthetic DONE/END for divert context.
+        if matches!(
+            ctx,
+            CompletionContext::Divert | CompletionContext::InlineExpr
+        ) {
+            for label in &["DONE", "END"] {
+                items.push(CompletionItem {
+                    label: (*label).to_owned(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    detail: Some("built-in".to_owned()),
+                    ..Default::default()
+                });
+            }
+        }
 
         Ok(Some(CompletionResponse::Array(items)))
     }
@@ -1968,4 +1981,362 @@ fn ranges_overlap(a: &Range, b: &Range) -> bool {
         || (a.end.line == b.start.line && a.end.character <= b.start.character)
         || b.end.line < a.start.line
         || (b.end.line == a.start.line && b.end.character <= a.start.character))
+}
+
+// ─── Completion helpers ─────────────────────────────────────────────
+
+/// What kind of completion context the cursor is in.
+enum CompletionContext {
+    /// After `->` — show divert targets.
+    Divert,
+    /// After `knot_name.` — show children of that knot.
+    DottedPath { knot: String },
+    /// Inside `{ }` — inline expression.
+    InlineExpr,
+    /// On a `~` logic line.
+    Logic,
+    /// Inside `( )` — function arguments.
+    FunctionArgs,
+    /// Default — show everything.
+    General,
+}
+
+/// Determine the completion context by scanning backwards from the cursor.
+fn detect_completion_context(source: &str, byte_offset: usize) -> CompletionContext {
+    // Find line start.
+    let line_start = source[..byte_offset].rfind('\n').map_or(0, |pos| pos + 1);
+    let line_prefix = &source[line_start..byte_offset];
+    let trimmed = line_prefix.trim_start();
+
+    let is_logic_line = trimmed.starts_with('~');
+
+    // Scan backwards through the line prefix for context clues.
+    // More specific contexts (parens, braces, divert) take priority over the
+    // logic-line fallback.
+    let bytes = line_prefix.as_bytes();
+    let mut brace_depth: i32 = 0;
+    let mut paren_depth: i32 = 0;
+    let mut i = bytes.len();
+
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b'}' => brace_depth += 1,
+            b'{' => {
+                if brace_depth > 0 {
+                    brace_depth -= 1;
+                } else {
+                    return CompletionContext::InlineExpr;
+                }
+            }
+            b')' => paren_depth += 1,
+            b'(' => {
+                if paren_depth > 0 {
+                    paren_depth -= 1;
+                } else {
+                    return CompletionContext::FunctionArgs;
+                }
+            }
+            b'>' if i > 0 && bytes[i - 1] == b'-' && brace_depth == 0 && paren_depth == 0 => {
+                return CompletionContext::Divert;
+            }
+            b'.' if brace_depth == 0 && paren_depth == 0 => {
+                // Check for identifier before the dot.
+                let before_dot = &line_prefix[..i];
+                let ident_start = before_dot
+                    .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+                    .map_or(0, |p| p + 1);
+                let knot = &before_dot[ident_start..];
+                if !knot.is_empty() {
+                    return CompletionContext::DottedPath {
+                        knot: knot.to_owned(),
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if is_logic_line {
+        return CompletionContext::Logic;
+    }
+
+    CompletionContext::General
+}
+
+/// The scope (knot/stitch) containing the cursor.
+struct CursorScope {
+    knot: Option<String>,
+    stitch: Option<String>,
+}
+
+/// Determine which knot/stitch the cursor is inside.
+fn cursor_scope(source: &str, byte_offset: usize) -> CursorScope {
+    use brink_syntax::ast::AstNode as _;
+
+    let parse = brink_syntax::parse(source);
+    let tree = parse.tree();
+    let cursor = rowan::TextSize::from(u32::try_from(byte_offset).unwrap_or(u32::MAX));
+
+    let mut result = CursorScope {
+        knot: None,
+        stitch: None,
+    };
+
+    for knot in tree.knots() {
+        let range = knot.syntax().text_range();
+        if cursor < range.start() || cursor > range.end() {
+            continue;
+        }
+        result.knot = knot.header().and_then(|h| h.name());
+
+        if let Some(body) = knot.body() {
+            for stitch in body.stitches() {
+                let sr = stitch.syntax().text_range();
+                if cursor >= sr.start() && cursor <= sr.end() {
+                    result.stitch = stitch.header().and_then(|h| h.name());
+                    break;
+                }
+            }
+        }
+        break;
+    }
+
+    result
+}
+
+/// Check whether a symbol should be shown in the given completion context.
+fn is_visible_in_context(
+    ctx: &CompletionContext,
+    info: &brink_ir::SymbolInfo,
+    scope: &CursorScope,
+) -> bool {
+    use brink_ir::SymbolKind;
+
+    // Scope filter: locals are only visible if we're in their scope.
+    if matches!(info.kind, SymbolKind::Param | SymbolKind::Temp)
+        && let Some(ref sym_scope) = info.scope
+    {
+        let knot_matches = scope.knot.as_deref() == sym_scope.knot.as_deref();
+        let stitch_visible =
+            sym_scope.stitch.is_none() || scope.stitch.as_deref() == sym_scope.stitch.as_deref();
+        if !knot_matches || !stitch_visible {
+            return false;
+        }
+    }
+
+    match ctx {
+        CompletionContext::Divert => matches!(
+            info.kind,
+            SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
+        ),
+        CompletionContext::DottedPath { .. } => {
+            // Handled separately in the caller.
+            false
+        }
+        CompletionContext::InlineExpr => matches!(
+            info.kind,
+            SymbolKind::Variable
+                | SymbolKind::Constant
+                | SymbolKind::Param
+                | SymbolKind::Temp
+                | SymbolKind::List
+                | SymbolKind::ListItem
+                | SymbolKind::Knot
+                | SymbolKind::External
+        ),
+        CompletionContext::Logic => matches!(
+            info.kind,
+            SymbolKind::Variable
+                | SymbolKind::Constant
+                | SymbolKind::Param
+                | SymbolKind::Temp
+                | SymbolKind::External
+        ),
+        CompletionContext::FunctionArgs => matches!(
+            info.kind,
+            SymbolKind::Variable
+                | SymbolKind::Constant
+                | SymbolKind::Param
+                | SymbolKind::Temp
+                | SymbolKind::ListItem
+        ),
+        CompletionContext::General => true,
+    }
+}
+
+/// Build a `CompletionItem` from a `SymbolInfo`.
+fn make_completion_item(
+    info: &brink_ir::SymbolInfo,
+    label_override: Option<String>,
+) -> CompletionItem {
+    let kind = match info.kind {
+        brink_ir::SymbolKind::Knot => CompletionItemKind::MODULE,
+        brink_ir::SymbolKind::Stitch | brink_ir::SymbolKind::External => {
+            CompletionItemKind::FUNCTION
+        }
+        brink_ir::SymbolKind::Variable
+        | brink_ir::SymbolKind::Constant
+        | brink_ir::SymbolKind::Param
+        | brink_ir::SymbolKind::Temp => CompletionItemKind::VARIABLE,
+        brink_ir::SymbolKind::List => CompletionItemKind::ENUM,
+        brink_ir::SymbolKind::ListItem => CompletionItemKind::ENUM_MEMBER,
+        brink_ir::SymbolKind::Label => CompletionItemKind::REFERENCE,
+    };
+
+    let detail = match info.kind {
+        brink_ir::SymbolKind::Knot if info.detail.as_deref() == Some("function") => {
+            Some("function knot".to_string())
+        }
+        _ if !info.params.is_empty() => {
+            let params: Vec<_> = info.params.iter().map(|p| p.name.as_str()).collect();
+            Some(format!("({})", params.join(", ")))
+        }
+        _ => None,
+    };
+
+    CompletionItem {
+        label: label_override.unwrap_or_else(|| info.name.clone()),
+        kind: Some(kind),
+        detail,
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_divert() {
+        let src = "-> ";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::Divert
+        ));
+    }
+
+    #[test]
+    fn context_divert_no_space() {
+        let src = "->";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::Divert
+        ));
+    }
+
+    #[test]
+    fn context_divert_partial() {
+        let src = "-> kno";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::Divert
+        ));
+    }
+
+    #[test]
+    fn context_dotted_path() {
+        let src = "-> my_knot.";
+        let ctx = detect_completion_context(src, src.len());
+        assert!(matches!(ctx, CompletionContext::DottedPath { ref knot } if knot == "my_knot"));
+    }
+
+    #[test]
+    fn context_inline_expr() {
+        let src = "Hello {";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::InlineExpr
+        ));
+    }
+
+    #[test]
+    fn context_inline_expr_nested() {
+        let src = "Hello {x + ";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::InlineExpr
+        ));
+    }
+
+    #[test]
+    fn context_logic_line() {
+        let src = "~ x = ";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::Logic
+        ));
+    }
+
+    #[test]
+    fn context_logic_line_indented() {
+        let src = "    ~ temp x = ";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::Logic
+        ));
+    }
+
+    #[test]
+    fn context_function_args() {
+        let src = "~ foo(";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::FunctionArgs
+        ));
+    }
+
+    #[test]
+    fn context_function_args_partial() {
+        let src = "~ foo(x, ";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::FunctionArgs
+        ));
+    }
+
+    #[test]
+    fn context_general() {
+        let src = "Hello world ";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::General
+        ));
+    }
+
+    #[test]
+    fn context_closed_braces_is_general() {
+        // Braces are balanced — not inside an expression.
+        let src = "{x} and then ";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::General
+        ));
+    }
+
+    #[test]
+    fn cursor_scope_in_knot() {
+        let src = "=== my_knot ===\nSome text\n";
+        let offset = src.find("Some").unwrap_or(src.len());
+        let scope = cursor_scope(src, offset);
+        assert_eq!(scope.knot.as_deref(), Some("my_knot"));
+        assert!(scope.stitch.is_none());
+    }
+
+    #[test]
+    fn cursor_scope_in_stitch() {
+        let src = "=== my_knot ===\n= my_stitch\nSome text\n";
+        let offset = src.find("Some").unwrap_or(src.len());
+        let scope = cursor_scope(src, offset);
+        assert_eq!(scope.knot.as_deref(), Some("my_knot"));
+        assert_eq!(scope.stitch.as_deref(), Some("my_stitch"));
+    }
+
+    #[test]
+    fn cursor_scope_top_level() {
+        let src = "Some text before any knot\n";
+        let scope = cursor_scope(src, 5);
+        assert!(scope.knot.is_none());
+        assert!(scope.stitch.is_none());
+    }
 }
