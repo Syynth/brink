@@ -133,17 +133,15 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineT
     (
         arb_def_id(),
         prop::collection::vec(any::<u8>(), 0..32),
-        any::<u64>(),
         arb_counting_flags(),
         prop::collection::vec(arb_line_entry(), 0..4),
     )
-        .prop_map(|(id, bytecode, content_hash, counting_flags, lines)| {
+        .prop_map(|(id, bytecode, counting_flags, lines)| {
             let def = ContainerDef {
                 id,
                 scope_id: id,
                 name: None,
                 bytecode,
-                content_hash,
                 counting_flags,
                 path_hash: 0,
             };

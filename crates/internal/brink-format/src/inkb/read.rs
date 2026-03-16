@@ -419,7 +419,6 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
     } else {
         None
     };
-    let content_hash = read_u64(buf, off)?;
     let counting_bits = read_u8(buf, off)?;
     let counting_flags = CountingFlags::from_bits(counting_bits).unwrap_or(CountingFlags::empty());
     let path_hash = read_i32(buf, off)?;
@@ -436,7 +435,6 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
         scope_id,
         name,
         bytecode,
-        content_hash,
         counting_flags,
         path_hash,
     })

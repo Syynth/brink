@@ -190,9 +190,6 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
     writeln!(w)?;
     writeln!(w, "  (container {}", c.id)?;
 
-    // Content hash
-    writeln!(w, "    (hash 0x{:016x})", c.content_hash)?;
-
     // Scope (only when different from container id)
     if c.scope_id != c.id {
         writeln!(w, "    (scope {})", c.scope_id)?;

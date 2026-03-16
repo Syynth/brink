@@ -670,7 +670,6 @@ pub fn process_container(
         scope_id,
         name,
         bytecode: emitter.bytecode,
-        content_hash: 0,
         counting_flags,
         path_hash,
     };

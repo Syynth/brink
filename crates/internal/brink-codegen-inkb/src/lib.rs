@@ -230,7 +230,6 @@ fn walk_container(
         scope_id,
         name,
         bytecode: emitter.bytecode,
-        content_hash: 0,
         counting_flags: container.counting_flags,
         path_hash,
     };

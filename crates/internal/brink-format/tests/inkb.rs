@@ -378,7 +378,6 @@ fn roundtrip_line_entry_with_audio_ref() {
             scope_id,
             name: Some(NameId(0)),
             bytecode: vec![],
-            content_hash: 0,
             counting_flags: CountingFlags::empty(),
             path_hash: 0,
         }],

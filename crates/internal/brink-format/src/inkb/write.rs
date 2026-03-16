@@ -346,7 +346,6 @@ fn encode_container(c: &ContainerDef, buf: &mut Vec<u8>) {
             write_u8(buf, 0);
         }
     }
-    write_u64(buf, c.content_hash);
     write_u8(buf, c.counting_flags.bits());
     write_i32(buf, c.path_hash);
     write_u32(buf, c.bytecode.len() as u32);

@@ -548,7 +548,6 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
         col: 0,
     })?)?;
 
-    let mut content_hash = 0u64;
     let mut counting_flags = CountingFlags::empty();
     let mut path_hash = 0i32;
     let mut lines = Vec::new();
@@ -559,14 +558,6 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
 
     for child in inner {
         match child.as_rule() {
-            Rule::hash_field => {
-                let hex = child.into_inner().next().ok_or_else(|| InktParseError {
-                    message: "expected hex in hash".into(),
-                    line: 0,
-                    col: 0,
-                })?;
-                content_hash = parse_hex_u64(hex.as_str())?;
-            }
             Rule::scope_field => {
                 let scope_pair = child.into_inner().next().ok_or_else(|| InktParseError {
                     message: "expected def_id in scope".into(),
@@ -622,7 +613,6 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
         scope_id,
         name,
         bytecode,
-        content_hash,
         counting_flags,
         path_hash,
     };

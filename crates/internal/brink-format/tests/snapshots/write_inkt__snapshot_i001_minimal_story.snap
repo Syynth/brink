@@ -15,7 +15,6 @@ expression: buf
   )
 
   (container $01_406ea523c53def
-    (hash 0x0000000000000000)
     (name 0)
     (lines
       0 "Hello, world!" @626e7681b4e2e7bc
@@ -27,7 +26,6 @@ expression: buf
   )
 
   (container $01_6647014fb554e5
-    (hash 0x0000000000000000)
     (scope $01_406ea523c53def)
     (path_hash 48)
     (code
@@ -38,7 +36,6 @@ expression: buf
   )
 
   (container $01_ab1ed7229c18b5
-    (hash 0x0000000000000000)
     (scope $01_406ea523c53def)
     (path_hash 144)
     (code
