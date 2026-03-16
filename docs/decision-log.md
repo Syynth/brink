@@ -418,6 +418,14 @@
 - **WHAT:** StoryData does not carry source `.ink` filenames. XLIFF `<file original>` should ideally reference the source file, but this data isn't available. Needs to be addressed in brink-format.
 - **WHY:** Translators need source file context. Multi-file ink projects would benefit from knowing which `.ink` file a scope came from.
 
+## Branch expansion for inline sequences/conditionals in content recognizer
+- **WHEN:** 2026-03-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-ir / content recognizer
+- **SCOPE:** moderate/architectural
+- **WHAT:** Inline sequences and inline conditionals in content lines should be expanded at compile time into their cartesian product of complete lines. Each expanded line is independently recognized as Plain/Template and gets its own LineEntry. The runtime selects which line to emit rather than assembling text from parts. Multiple branch points in a single line produce the full cartesian product (which accurately reflects the number of distinct voicelines/translations needed). Branches containing interpolations become templates. If after expansion a branch still contains unrecognizable content, that branch falls back to EmitContent. No arbitrary complexity threshold — just recurse until recognition succeeds or falls back naturally.
+- **WHY:** Each combination of branches IS a distinct translatable/voiceable line. Translators should see complete sentences, not template fragments with invisible alternatives. This also means the line table accurately represents the full set of possible outputs, which is required for translation coverage and voiceover workflows.
+
 ## Extricate line_tables from Program
 - **WHEN:** 2026-03-14
 - **PROJECT:** brink
@@ -425,3 +433,11 @@
 - **SCOPE:** architectural
 - **WHAT:** `Program.line_tables` should not be owned by `Program`. Line tables are mutable per-locale content, not immutable linked program data. They should be extracted into a separate structure that can be swapped without touching `Program` or fighting the borrow checker.
 - **WHY:** `Program` is designed as immutable post-link, but `apply_locale()` requires `&mut self` solely to swap line tables. This forces `Story` (which borrows `&Program`) to be dropped and recreated for locale changes. The line tables were placed in `Program` by agents who didn't anticipate runtime locale switching. Separating them enables hot-swap without state gymnastics.
+
+## #voice tags are not real
+- **WHEN:** 2026-03-15
+- **PROJECT:** brink
+- **SYSTEM:** intl
+- **SCOPE:** minor/local
+- **WHAT:** `#voice:` tags are not a real ink feature. Remove references to audio_ref population via tag parsing from intl docs/specs. The `audio_ref` field on `LineEntry` stays as a carrier for game-engine integration, but the compiler will never populate it from tags.
+- **WHY:** `#voice:` was an assumed feature that doesn't exist in ink. Documenting it as planned work creates false expectations.

@@ -111,7 +111,7 @@ struct SourceLocation {
 
 **`slot_info`** — for each `Slot(n)` in a template, the compiler records the source expression that produced that slot value. This lets tooling display `{player_name}` instead of `{slot 0}`. For simple variable references, the name is the variable name. For complex expressions, it is the full source expression text. The runtime ignores this field — it only needs the stack index.
 
-**`audio_ref`** — an audio asset identifier associated with this line (e.g., from `#voice:` tags or derived by tooling). Stored alongside content so that localized versions can provide locale-specific audio. Both `.inkb` and `.inkl` carry audio refs — the localized version replaces the base.
+**`audio_ref`** — an audio asset identifier associated with this line, populated by external tooling (not by the compiler). Stored alongside content so that localized versions can provide locale-specific audio. Both `.inkb` and `.inkl` carry audio refs — the localized version replaces the base.
 
 **`source_location`** — the file and byte range of the ink source text that produced this line. Enables tooling to show surrounding context, link back to the source for review, and correlate lines across recompiles even when indices shift. The runtime ignores this field.
 
@@ -161,7 +161,7 @@ For every line added to a scope's line table, the pipeline must:
 2. **Compute a real `source_hash`** — from the original ink text, before decomposition (currently hardcoded to `0`)
 3. **Populate `slot_info`** — one entry per slot in the template, with the source expression name
 4. **Populate `source_location`** — file path and byte range of the source text that produced this line
-5. **Populate `audio_ref`** — from `#voice:` tags or other audio association mechanisms
+5. **Populate `audio_ref`** — via external tooling or game-engine integration (the compiler does not populate this field)
 
 Items 3 and 4 are metadata for tooling. They are serialized into the `.inkb` line tables section but are not loaded by the runtime's fast path. The `.inkl` overlay format carries `content` and `audio_ref` but NOT slot info or source location — those are source-language concerns, not translation concerns.
 

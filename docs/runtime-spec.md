@@ -681,7 +681,7 @@ struct LineEntry {
 }
 ```
 
-`audio_ref` lives alongside content in the same entry, not in a separate audio table. Both explicit audio refs (from `#voice:` tags) and derived audio refs (from tooling) are stored here by the compiler/tooling.
+`audio_ref` lives alongside content in the same entry, not in a separate audio table. Audio refs are populated by external tooling or game-engine integration, not by the compiler. The field is a carrier for game-specific audio asset identifiers.
 
 ### resolve_line
 
