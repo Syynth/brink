@@ -1,6 +1,6 @@
 # brink compiler specification
 
-`brink-compiler` turns `.ink` source text into `.inkb` bytecode through a multi-pass pipeline. It depends on `brink-syntax` (parsing), `brink-db` (file discovery and caching), `brink-ir` (HIR and LIR lowering), `brink-analyzer` (semantic analysis), `brink-codegen-inkb` (bytecode emission), and `brink-format` (output types). See [format-spec](format-spec.md) for the types and file formats the compiler produces.
+`brink-compiler` turns `.ink` source text into `.inkb` bytecode through a multi-pass pipeline. It depends on `brink-driver` (pipeline orchestration), `brink-codegen-inkb` (bytecode emission), and `brink-codegen-json` (JSON emission). The driver in turn composes `brink-db` (incremental file caching), `brink-ir` (HIR and LIR lowering), and `brink-analyzer` (semantic analysis). See [format-spec](format-spec.md) for the types and file formats the compiler produces, [brink-driver-spec](brink-driver-spec.md) for the orchestration layer, and [brink-ide-spec](brink-ide-spec.md) for the IDE query layer.
 
 ## Compilation pipeline
 
@@ -8,13 +8,13 @@ The pipeline is organized as a sequence of passes:
 
 ```
 Pass 1:  Parse + Lower    (brink-syntax, brink-ir::hir)  per-file     → HIR + SymbolManifest + diagnostics
-Pass 2:  Discover          (brink-db)                     cross-file   → resolved INCLUDE graph
-Pass 3:  Analyze           (brink-analyzer)               cross-file   → SymbolIndex + ResolutionMap + diagnostics
+Pass 2:  Discover          (brink-driver)                 cross-file   → resolved INCLUDE graph
+Pass 3:  Analyze           (brink-driver → brink-analyzer) cross-file  → SymbolIndex + ResolutionMap + diagnostics
 Pass 4:  LIR Lower         (brink-ir::lir)                whole-program → Program (container tree + definitions)
 Pass 5:  Codegen           (brink-codegen-inkb)           per-container → StoryData (bytecode + tables)
 ```
 
-The LSP uses the same `ProjectDb` and runs passes 1–3 incrementally. The compiler runs all 5.
+`brink-driver` orchestrates passes 2–3 and diagnostic collection. `brink-db` caches pass 1 results per file with incremental knot-level re-lowering. The LSP and compiler both use `brink-driver` for orchestration; the LSP additionally uses `brink-ide` for interactive queries (goto-def, hover, completions, etc.). The compiler runs all 5 passes.
 
 Two backends consume the LIR:
 - **Bytecode backend** (`brink-codegen-inkb`): linearizes to opcodes + line tables → `.inkb`
@@ -126,30 +126,37 @@ The weave folder (`fold_weave`) converts a flat stream of `WeaveItem`s (choices,
 - **No container boundary decisions** — the HIR has knots, stitches, choices, gathers as semantic nodes; LIR lowering decides which become bytecode containers
 - **No temp slot allocation** — handled by LIR lowering
 
-### Pass 2: Discover (brink-db)
+### Pass 2: Discover (brink-driver)
 
-- **Input:** entry file path + file reader
+- **Input:** entry file path + `read_file` callback
 - **Output:** fully populated `ProjectDb` with all reachable files parsed and lowered
 
-`ProjectDb` is the stateful, incremental project model used by both the compiler (one-shot) and LSP (long-lived). It performs BFS INCLUDE resolution starting from the entry file — each discovered file is immediately parsed and lowered (pass 1), and its INCLUDE declarations are followed transitively.
+`brink-driver::Driver::discover()` performs BFS INCLUDE resolution starting from the entry file — each discovered file is parsed and lowered (pass 1) via `ProjectDb::set_file()`, and its INCLUDE declarations are followed transitively. Include path resolution is string-based (splits on `/`), not `std::path`-based, since ink uses `/` as path separator universally.
 
-The database caches:
+`ProjectDb` is the stateful, incremental cache used by both the compiler (one-shot) and LSP (long-lived). It caches:
 - Parsed CST (rowan green tree) per file
 - Lowered HIR + SymbolManifest per knot within each file
 - Per-file diagnostics (parse errors + HIR lowering diagnostics)
+- Suppression directives per file
 
-For the compiler, `discover()` is a single call that loads the entire project. For the LSP, `set_file()` updates a single file incrementally — only changed knots are re-lowered (detected via rowan green node identity), and the INCLUDE graph is updated.
+For the compiler, `driver.discover()` is a single call that loads the entire project. For the LSP, `db.set_file()` / `db.update_file()` updates a single file incrementally — only changed knots are re-lowered (detected via rowan green node identity), and the INCLUDE graph is updated. See [brink-driver-spec](brink-driver-spec.md) for the full orchestration API.
 
-### Pass 3: Analyze (brink-analyzer)
+### Pass 3: Analyze (brink-driver → brink-analyzer)
 
 - **Input:** `Vec<(FileId, &HirFile, &SymbolManifest)>` from all files
 - **Output:** `AnalysisResult { index: SymbolIndex, resolutions: ResolutionMap, diagnostics: Vec<Diagnostic> }`
 
-Analysis runs as a single `analyze()` call that performs three responsibilities in sequence:
+`brink-driver` orchestrates analysis via `Driver::analyze()`, which calls `brink_analyzer::analyze()` on the cached HIR/manifest data. Analysis performs three responsibilities in sequence:
 
-1. **Merge manifests** (`manifest::merge_manifests`) — merge per-file symbol manifests into a unified `SymbolIndex`. Duplicate declarations are silently accepted (matching inklecate's behavior of permitting redefinition).
-2. **Resolve references** (`resolve::resolve_refs`) — name resolution: unresolved `Path` nodes → concrete `DefinitionId`s. Handles scope analysis (temp is function-scoped, VAR/CONST are global). Produces a `ResolutionMap` mapping source ranges to their resolved definitions. Resolution follows ink's hierarchical scoping: local stitches/labels first, then knots, then top-level, then labels by suffix match.
-3. **Validate** (`validate::validate`) — structural validation. Currently limited to `check_choices_in_inline_context` (E029).
+1. **Merge manifests** (`manifest::merge_manifests`) — merge per-file symbol manifests into a unified `SymbolIndex`. Duplicate declarations emit warnings (E022/E023/E026) matching inklecate's permissive behavior (first-wins semantics). Names that shadow built-in functions emit E035.
+2. **Resolve references** (`resolve::resolve_refs`) — name resolution: unresolved `Path` nodes → concrete `DefinitionId`s. Handles scope analysis (temp is function-scoped, VAR/CONST are global). Produces a `ResolutionMap` mapping source ranges to their resolved definitions. Resolution follows ink's hierarchical scoping: local stitches/labels first, then knots, then top-level, then labels by suffix match. Function call arity is checked (E031).
+3. **Validate** (`validate::validate`) — structural validation passes over the HIR:
+   - E029: choices in inline context (conditional/sequence) without explicit divert
+   - E032: `~ return` statement outside a function knot
+   - E033: unreachable code after divert/return/tunnel (warning)
+   - E034: choice set consisting entirely of fallback choices (warning)
+
+After analysis, `brink-driver::Driver::collect_diagnostics()` gathers both per-file lowering diagnostics and cross-file analysis diagnostics, applies suppression directives (`brink-disable`, `brink-expect`), and partitions into errors and warnings. See [brink-driver-spec](brink-driver-spec.md).
 
 ### Pass 4: LIR Lower (brink-ir::lir)
 
@@ -328,24 +335,25 @@ See [intl-spec](intl-spec.md) for full details on the localization pipeline, lin
 
 ## LSP (brink-lsp)
 
-Thin protocol adapter over `brink-analyzer`. Depends on analyzer and `brink-db`, NOT on the compiler or codegen.
+Thin protocol adapter over `brink-ide`. The LSP owns concurrency (tokio, Arc/Mutex, debounced background analysis) and protocol handling (tower-lsp). All IDE intelligence lives in `brink-ide`, which the LSP calls and converts results to LSP types. See [brink-ide-spec](brink-ide-spec.md).
 
-The LSP holds a long-lived `ProjectDb`, updates incrementally on file edits (per-knot re-lowering via green node identity), and serves queries against cached analysis results. The compiler creates a one-shot `ProjectDb`, discovers all files, and runs the full pipeline.
+The LSP holds a long-lived `ProjectDb`, updates incrementally on file edits (per-knot re-lowering via green node identity), and serves queries against cached analysis results. The compiler creates a one-shot `Driver`, discovers all files, and runs the full pipeline.
 
-Implemented:
-
-- Diagnostics (streamed on every change)
-- Go to definition (via SymbolIndex position lookup)
-- Autocomplete (knot/stitch names at diverts, globals, local vars, context-aware filtering)
-- Semantic tokens (syntax highlighting via semantic token types)
-- Signature help (function call parameter info)
-
-Not yet implemented:
-
+Implemented features:
+- Diagnostics (streamed on every change, with suppression directives)
+- Go to definition
 - Find references
-- Rename (find references → workspace edit)
-- Hover (symbol type, doc comment, usage count)
-- Document/workspace symbols
+- Rename (cross-file)
+- Hover (symbol info, built-in function docs)
+- Autocomplete (context-aware: diverts, expressions, dotted paths)
+- Semantic tokens (full syntax highlighting with resolution-based classification)
+- Signature help (function call parameter info)
+- Document symbols / workspace symbols
+- Folding ranges
+- Inlay hints (parameter names at call sites)
+- Code actions (sort knots/stitches, format region)
+- Document formatting (via brink-fmt)
+- Workspace file discovery and file watcher registration
 
 ## Ink semantics (compiler perspective)
 
@@ -365,14 +373,12 @@ Issues that are documented here so they are not silently rediscovered. Each shou
 
 - **`AUTHOR_WARNING` / `TODO:` nodes** — silently dropped during HIR lowering. The `lower_body_children` match does not handle `AUTHOR_WARNING` syntax kind; it falls through to a `debug_assert!` that is a no-op in release builds. These should either be preserved as HIR nodes (for LSP display) or explicitly skipped with a comment.
 - **Const evaluation of binary expressions** — `eval_const_expr` in `decls.rs` returns `ConstValue::Null` for any expression that is not a literal, path, divert target, list literal, or prefix negation/not. This means `VAR x = 2 + 3` silently initializes `x` to `Null` instead of `5`. The catch-all `_ => Null` should at minimum emit a diagnostic.
-- **String interpolation in const context** — `hir::StringPart::Interpolation(_) => None` silently discards interpolation parts when evaluating const string values, producing a partial string.
-- **Warning diagnostics discarded** — the compiler driver (`driver.rs`) filters diagnostics to errors only. Warning-severity diagnostics (e.g., E014 "logic line has no effect") are silently discarded with no mechanism to report them to the caller.
+- **String interpolation in const context** — `hir::StringPart::Interpolation(_) => None` silently discards interpolation parts when evaluating const string values, producing a partial string. E030 is emitted as a warning.
 
 ### Analyzer gaps
 
-- **No type checking or arity checking.** The spec previously stated the analyzer handles "type checking during resolution" — this is not implemented. Function call argument counts are not validated. Type mismatches (e.g., using a string where a divert target is expected) are not detected.
-- **No duplicate definition diagnostics.** `merge_manifests` silently accepts duplicate declarations (matching inklecate's permissive behavior). No diagnostic is emitted.
-- **Minimal structural validation.** Only one validation rule exists (E029: choices in inline context). Dead code detection, unused variables, and circular reference checking are not implemented.
+- **No type checking.** Type mismatches (e.g., using a string where a divert target is expected) are not detected.
+- **Limited structural validation.** Dead code detection (beyond E033 unreachable-after-divert), unused variable detection, and circular reference checking are not implemented.
 
 ### Codegen gaps
 
