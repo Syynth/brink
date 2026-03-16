@@ -55,6 +55,7 @@ brink-ir::hir produces a **rich semantic tree** — it preserves the full struct
 - **Strip trivia and syntactic sugar:** comments, whitespace, and surface syntax are removed; semantic content is preserved.
 - **Symbol manifest:** collect declarations (knots, stitches, variables, lists, externals) and unresolved references (divert targets, variable references that may be cross-file).
 - **Structural diagnostics:** malformed weave nesting, orphaned gathers, gathers inside conditional blocks, choices in conditionals without explicit diverts.
+- **Normalization pass:** `normalize_file()` runs after lowering, lifting inline sequences and inline conditionals within content to block-level `Stmt` nodes. This simplifies LIR lowering and codegen by ensuring only plain text and interpolations appear as inline content parts; block-level control flow is always represented as `Stmt::Conditional` / `Stmt::Sequence`.
 
 #### Source provenance
 
@@ -146,11 +147,9 @@ For the compiler, `discover()` is a single call that loads the entire project. F
 
 Analysis runs as a single `analyze()` call that performs three responsibilities in sequence:
 
-1. **Merge manifests** (`manifest::merge_manifests`) — merge per-file symbol manifests into a unified `SymbolIndex`. Detects duplicate declarations across files.
-2. **Resolve references** (`resolve::resolve_refs`) — name resolution: unresolved `Path` nodes → concrete `DefinitionId`s. Also handles scope analysis (temp is function-scoped, VAR/CONST are global) and type checking during resolution. Produces a `ResolutionMap` mapping source ranges to their resolved definitions.
-3. **Validate** (`validate::validate`) — structural validation: undefined targets, dead code, unused variables, circular includes.
-
-These are logically distinct responsibilities but execute in one pass, not three separate pipeline stages.
+1. **Merge manifests** (`manifest::merge_manifests`) — merge per-file symbol manifests into a unified `SymbolIndex`. Duplicate declarations are silently accepted (matching inklecate's behavior of permitting redefinition).
+2. **Resolve references** (`resolve::resolve_refs`) — name resolution: unresolved `Path` nodes → concrete `DefinitionId`s. Handles scope analysis (temp is function-scoped, VAR/CONST are global). Produces a `ResolutionMap` mapping source ranges to their resolved definitions. Resolution follows ink's hierarchical scoping: local stitches/labels first, then knots, then top-level, then labels by suffix match.
+3. **Validate** (`validate::validate`) — structural validation. Currently limited to `check_choices_in_inline_context` (E029).
 
 ### Pass 4: LIR Lower (brink-ir::lir)
 
@@ -171,7 +170,7 @@ LIR is the critical bridge between the high-level semantic HIR and backend codeg
 
 - **Structured statements.** Conditionals, sequences, and choice sets keep their branch structure within each container. Each backend serializes this structure into its output format (jump offsets for bytecode, nested arrays for JSON). This avoids committing to a bytecode-specific linearization that the JSON backend can't use.
 
-- **Fully resolved.** No unresolved `Path` nodes. Every reference is a `DefinitionId` (globals, containers, list items, externals) or a temp slot index (`u16`). The LIR never needs the `SymbolIndex` or `ResolutionMap` — all lookups are done during lowering.
+- **Fully resolved.** No unresolved `Path` nodes. Every reference is a `DefinitionId` (globals, containers, list items, externals) or a temp slot index (`u16`). The LIR never needs the `SymbolIndex` or `ResolutionMap` — all lookups are done during lowering. Unresolved paths (expected to be already reported by the analyzer) fall back to `Expr::Null` for expressions and `DivertTarget::Done` for diverts.
 
 #### LIR lowering responsibilities
 
@@ -183,6 +182,7 @@ LIR is the critical bridge between the high-level semantic HIR and backend codeg
 - **Built-in function recognition:** intercepts function calls whose names match ink built-in functions (`TURNS_SINCE`, `LIST_COUNT`, `INT`, `FLOOR`, etc.) and converts them to `Expr::CallBuiltin` nodes instead of container calls.
 - **Divert target resolution:** classifies divert targets as `Address`, `Variable` (global holding a divert target), `VariableTemp` (temp/param holding a divert target), `Done`, or `End`.
 - **Call argument resolution:** resolves `ref` arguments to `RefGlobal(DefinitionId)` or `RefTemp(slot, name)`.
+- **Template recognition:** the recognizer pass (`recognize.rs`) inspects content lines and produces `RecognizedLine::Plain` or `RecognizedLine::Template` with full metadata (source hash, slot info, source location). Currently recognizes plain text and interpolation patterns (`Text + Interpolation` mixtures). Content with inline conditionals, sequences, or glue mixed with expressions falls back to per-part emission (`ContentEmission::EmitContent`).
 
 ### Pass 5: Codegen (brink-codegen-inkb)
 
@@ -198,37 +198,59 @@ Codegen walks the LIR container tree and emits bytecode for each container:
 - **Conditional lowering** → condition evaluation + `JumpIfFalse` + branch bodies
 - **Divert/tunnel/thread lowering** → `Goto`/`TunnelCall`/`ThreadCall` and variable variants
 - **Implicit diverts:** end-of-root-story gets implicit gather + `-> DONE`
-- **Text decomposition:** content lines → line table entries (plain text or templates with slot placeholders)
-- **Per-container line table building** (each line entry has content + source text content hash)
+- **Text decomposition:** recognized lines → scope line table entries; unrecognized content → inline emit opcodes
+- **Per-scope line table building** — all containers within a lexical scope (knot/stitch/root) share one line table keyed by scope `DefinitionId`. Each line entry carries content, source hash, slot info, source location, and optional audio ref.
 - **Address table building** for intra-container labels
 - **All cross-definition references use `DefinitionId`** — no resolved indices in the output
 
+**Note:** `StoryData.source_checksum` is currently hardcoded to `0`. This field is intended to identify a specific compilation but is not yet computed.
+
 ## Text decomposition
 
-Brink separates executable logic from localizable text. The bytecode is locale-independent — all user-visible text is referenced via `LineId = (DefinitionId, u16)`, a container-scoped local index into the container's line sub-table. Locale-specific content lives in `.inkl` overlay files that replace line content per container.
+Brink separates executable logic from localizable text. The bytecode is locale-independent — all user-visible text is referenced via `EmitLine(idx, slot_count)`, a scope-relative index into the lexical scope's line table. Locale-specific content lives in `.inkl` overlay files that replace line content per scope.
 
-During codegen, the compiler decomposes text into line entries in the container's line sub-table:
+During codegen, the compiler decomposes text into line entries in the scope's line table:
 
-- **Plain text** (no interpolation, no inline logic) → a line with a single `Literal`, emitted via `EmitLine(u16)`.
-- **Interpolated or structured text** (contains `{variables}`, inline conditionals, or inline sequences) → a line with a `LineTemplate`, emitted via `EmitLine(u16)`. The compiler pushes slot values onto the stack before the emit.
+- **Plain text** (no interpolation, no inline logic) → `LineContent::Plain(s)`, emitted via `EmitLine(idx, 0)`.
+- **Interpolated text** (contains `{variables}`) → `LineContent::Template([Literal, Slot, ...])`, emitted via `EmitLine(idx, slot_count)`. The compiler pushes slot values onto the stack before the emit.
+- **Unrecognized content** (inline conditionals, sequences, glue mixed with expressions) → emitted as individual opcodes (`EmitLine` for text fragments, `EmitValue` for expressions, inline conditional/sequence logic). Falls back to per-part emission, not a single template.
 
-The `u16` is the local line index within the current container. The runtime resolves this to the container's line sub-table entry.
+The `idx` is the local line index within the current lexical scope. The runtime resolves this via `LinkedContainer.scope_table_idx` to the scope's line table.
 
-Example: `I found {num_gems} {num_gems > 1: gems | gem} in the {cave_name}.` compiles to:
+Example: `I found {num_gems} gems in the {cave_name}.` compiles to:
 
 ```
 GetLocal(num_gems)          // push slot 0
 GetLocal(cave_name)         // push slot 1
-EmitLine(2)                 // format line 2's template with 2 slots from stack
+EmitLine(2, 2)              // format line 2's template with 2 slots from stack
 ```
 
-Line sub-table entry 2:
+Scope line table entry 2:
 
 ```
-I found {0} {0 -> one: gem | other: gems} in the {1}.
+LineContent::Template([Literal("I found "), Slot(0), Literal(" gems in the "), Slot(1), Literal(".")])
 ```
 
-The plural logic lives in the line template, not the bytecode. Translators can restructure sentences, reorder slots, and alter plural/gender forms per locale without touching the compiled program.
+Translators can restructure sentences, reorder slots, and alter plural/gender forms per locale without touching the compiled program.
+
+### Template recognition
+
+Template recognition runs during **LIR lowering** in `recognize.rs`, not during codegen. This is the last layer with access to:
+
+- The **HIR** with `AstPtr` → source provenance (text ranges, original source text)
+- The **SymbolIndex** with resolved variable names
+- The content structure **before** artificial container boundaries are inserted
+
+The recognizer produces `RecognizedLine` variants with full `LineMetadata` (source hash, slot info, source location). Codegen consumes these directly — `emit_recognized_line()` for templates, `emit_plain_line()` for plain text.
+
+**Currently recognized patterns:**
+- Plain text: `[Text(s)]` → `RecognizedLine::Plain`
+- Interpolation: `[Text, Interpolation, Text, ...]` with at least one `Interpolation` → `RecognizedLine::Template` with `Literal`/`Slot` parts
+
+**Not yet recognized (falls back to per-part emission):**
+- Inline conditionals as `LinePart::Select`
+- Inline sequences as `LinePart::Slot`
+- Glue-joined cross-line content
 
 ### Scope of text decomposition
 
@@ -237,9 +259,7 @@ The compiler can only build message templates for **static text blocks** — con
 **Can be one line:**
 
 - A single line with interpolation: `Hello, {name}!`
-- A single line with inline conditionals: `{flag: yes|no}`
-- A single line with inline sequences: `{a|b|c}` (sequence index becomes a slot)
-- Statically glued lines (both sides are literals or simple interpolations)
+- A single line with multiple interpolations: `{a} and {b}`
 - Choice display / choice output text
 
 **Each fragment is its own line (cannot be merged):**
@@ -247,6 +267,7 @@ The compiler can only build message templates for **static text blocks** — con
 - Text across container boundaries (diverts, tunnels, function calls, threads)
 - Text in dynamically bounded loops
 - Text produced by external function calls
+- Content with inline conditionals or sequences (currently emitted as per-part opcodes)
 
 The boundary rule: if it crosses a container call, each side is independent.
 
@@ -272,9 +293,9 @@ This three-part split is a source-language authoring convenience. For localizati
 **High-level (static/templated text):** The compiler resolves bracket syntax at compile time and stores both texts as line table entries. `EvalLine` reads a line and pushes it as a String to the value stack (same as `EmitLine` but targeting the value stack instead of the output buffer). `ChoiceOutput` stores a line table reference on the pending choice for emission when the player selects it.
 
 ```
-EvalLine(5)                   // push display text from line table
+EvalLine(5, 0)                // push display text from line table
 BeginChoice(flags, target)    // pop display text, register choice
-  ChoiceOutput(6)             // output text line reference
+  ChoiceOutput(6, 0)          // output text line reference
 EndChoice
 ```
 
@@ -294,16 +315,16 @@ Both patterns are first-class. `BeginChoice` is agnostic to how the display text
 
 ## Localization authoring (XLIFF)
 
-Localization source files use **XLIFF 2.0** — one file per locale (e.g., `translations/ja-JP.xlf`). Containers are represented as `<file>` elements within the XLIFF document. Brink-specific metadata (content hashes, audio asset references) uses XLIFF's custom namespace extension mechanism.
+Localization source files use **XLIFF 2.0** — one file per locale (e.g., `translations/ja-JP.xlf`). Scopes are represented as `<file>` elements within the XLIFF document. Brink-specific metadata (content hashes, audio asset references) uses XLIFF's custom namespace extension mechanism (`xmlns:brink="urn:brink:xliff:extensions:1.0"`).
 
 Workflow:
 
-1. **Generate:** `brink-cli generate-locale` reads a compiled `.inkb` and produces an XLIFF file with all translatable lines (organized by container), including context annotations for translators.
-2. **Translate:** Translators work in the XLIFF file directly or import it into a translation management platform (Lokalise, Crowdin, etc.). Audio asset references are added to the XLIFF via the `brink:audio` extension attribute. Translation state tracking uses XLIFF's built-in `state` attribute (`initial`/`translated`/`reviewed`/`final`).
-3. **Compile:** `brink-cli compile-locale` reads the translated XLIFF and produces a binary `.inkl` overlay.
-4. **Regenerate (on source changes):** `brink-cli generate-locale` diffs the new `.inkb` against the existing XLIFF by `LineId`, preserving human-edited fields (translations, audio refs), updating machine-managed fields (original text, context), and using the source text content hash to detect changed lines and reset their review status.
+1. **Export:** `brink export-xliff` reads a compiled `.inkb` and produces an XLIFF file with all translatable lines organized by lexical scope, including context annotations for translators.
+2. **Translate:** Translators work in the XLIFF file directly or import it into a translation management platform (Lokalise, Crowdin, etc.). Audio asset references are added via the `brink:audio` extension attribute. Translation state tracking uses XLIFF's built-in `state` attribute (`initial`/`translated`/`reviewed`/`final`).
+3. **Compile:** `brink compile-locale` reads the translated XLIFF and produces a binary `.inkl` overlay.
+4. **Regenerate (on source changes):** `brink regenerate-xliff` diffs the new `.inkb` against the existing XLIFF by scope + content hash (LCS alignment), preserving translations, updating source text, and resetting state for changed lines.
 
-XLIFF was chosen because every major translation management platform natively imports/exports it, and the spec requires tools to preserve unknown extensions — brink-specific metadata survives round-trips through external tooling.
+See [intl-spec](intl-spec.md) for full details on the localization pipeline, line table export, regeneration algorithm, and plural resolution.
 
 ## LSP (brink-lsp)
 
@@ -311,17 +332,20 @@ Thin protocol adapter over `brink-analyzer`. Depends on analyzer and `brink-db`,
 
 The LSP holds a long-lived `ProjectDb`, updates incrementally on file edits (per-knot re-lowering via green node identity), and serves queries against cached analysis results. The compiler creates a one-shot `ProjectDb`, discovers all files, and runs the full pipeline.
 
-Planned features:
+Implemented:
 
 - Diagnostics (streamed on every change)
 - Go to definition (via SymbolIndex position lookup)
+- Autocomplete (knot/stitch names at diverts, globals, local vars, context-aware filtering)
+- Semantic tokens (syntax highlighting via semantic token types)
+- Signature help (function call parameter info)
+
+Not yet implemented:
+
 - Find references
 - Rename (find references → workspace edit)
 - Hover (symbol type, doc comment, usage count)
-- Autocomplete (knot/stitch names at diverts, globals, local vars)
-- Semantic tokens
 - Document/workspace symbols
-- Signature help (external function parameters)
 
 ## Ink semantics (compiler perspective)
 
@@ -332,3 +356,24 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 - **Root entry point:** all top-level content becomes an implicit root container. The compiler appends an implicit gather + `-> DONE` so the story terminates gracefully.
 - **Gathers:** convergence points in the HIR (with optional labels, content, and tags). Gathers do not own a body — content after a gather is the next sibling statement in the parent block. At the bytecode level, gathers become named containers that choice branches divert to — LIR lowering handles the container creation.
 - **Choices inside conditional blocks:** choices (`*`) can appear inside `{ - condition: ... }` multiline conditional blocks. Gathers (`-`) are explicitly forbidden inside conditional blocks — the reference compiler errors with "You can't use a gather (the dashes) within the { curly braces } context." In the HIR, conditional blocks are structurally opaque — the weave folder does NOT extract choices from inside conditionals to merge them into the outer weave. Instead, choices inside conditionals stay nested within the `Stmt::Conditional` node. Weave transparency is deferred to LIR lowering/codegen via loose end propagation. brink-syntax's `multiline_branch_body` handles this: `STAR`/`PLUS` dispatches to `choice()`, while `MINUS` breaks out of the body loop (gathers end the branch, matching the reference's gather-forbidden semantics).
+
+## Known limitations
+
+Issues that are documented here so they are not silently rediscovered. Each should be addressed or explicitly accepted.
+
+### Silent data drops
+
+- **`AUTHOR_WARNING` / `TODO:` nodes** — silently dropped during HIR lowering. The `lower_body_children` match does not handle `AUTHOR_WARNING` syntax kind; it falls through to a `debug_assert!` that is a no-op in release builds. These should either be preserved as HIR nodes (for LSP display) or explicitly skipped with a comment.
+- **Const evaluation of binary expressions** — `eval_const_expr` in `decls.rs` returns `ConstValue::Null` for any expression that is not a literal, path, divert target, list literal, or prefix negation/not. This means `VAR x = 2 + 3` silently initializes `x` to `Null` instead of `5`. The catch-all `_ => Null` should at minimum emit a diagnostic.
+- **String interpolation in const context** — `hir::StringPart::Interpolation(_) => None` silently discards interpolation parts when evaluating const string values, producing a partial string.
+- **Warning diagnostics discarded** — the compiler driver (`driver.rs`) filters diagnostics to errors only. Warning-severity diagnostics (e.g., E014 "logic line has no effect") are silently discarded with no mechanism to report them to the caller.
+
+### Analyzer gaps
+
+- **No type checking or arity checking.** The spec previously stated the analyzer handles "type checking during resolution" — this is not implemented. Function call argument counts are not validated. Type mismatches (e.g., using a string where a divert target is expected) are not detected.
+- **No duplicate definition diagnostics.** `merge_manifests` silently accepts duplicate declarations (matching inklecate's permissive behavior). No diagnostic is emitted.
+- **Minimal structural validation.** Only one validation rule exists (E029: choices in inline context). Dead code detection, unused variables, and circular reference checking are not implemented.
+
+### Codegen gaps
+
+- **`StoryData.source_checksum` hardcoded to `0`.** This field exists in the output format but is never computed. It is intended to identify a specific compilation for cache invalidation or locale overlay validation.
