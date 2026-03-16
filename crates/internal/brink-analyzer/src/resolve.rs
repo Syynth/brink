@@ -267,6 +267,7 @@ fn resolve_function(
             range: uref.range,
             target: id,
         });
+        check_arity(index, file_id, uref, id, diagnostics);
         return;
     }
 
@@ -277,6 +278,7 @@ fn resolve_function(
             range: uref.range,
             target: id,
         });
+        check_arity(index, file_id, uref, id, diagnostics);
         return;
     }
 
@@ -316,6 +318,37 @@ fn resolve_function(
         path,
         DiagnosticCode::E025,
     ));
+}
+
+/// Check that the number of arguments at the call site matches the target's parameter count.
+fn check_arity(
+    index: &SymbolIndex,
+    file_id: FileId,
+    uref: &brink_ir::UnresolvedRef,
+    target: DefinitionId,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(call_arg_count) = uref.arg_count else {
+        return;
+    };
+    let Some(info) = index.symbols.get(&target) else {
+        return;
+    };
+    let expected = info.params.len();
+    if call_arg_count != expected {
+        diagnostics.push(Diagnostic {
+            file: file_id,
+            range: uref.range,
+            message: format!(
+                "{}: `{}` expects {} argument(s), got {}",
+                DiagnosticCode::E031.title(),
+                uref.path,
+                expected,
+                call_arg_count,
+            ),
+            code: DiagnosticCode::E031,
+        });
+    }
 }
 
 fn resolve_list_ref(
@@ -659,6 +692,16 @@ mod tests {
     }
 
     fn uref(path: &str, kind: RefKind, knot: Option<&str>, stitch: Option<&str>) -> UnresolvedRef {
+        uref_with_args(path, kind, knot, stitch, None)
+    }
+
+    fn uref_with_args(
+        path: &str,
+        kind: RefKind,
+        knot: Option<&str>,
+        stitch: Option<&str>,
+        arg_count: Option<usize>,
+    ) -> UnresolvedRef {
         UnresolvedRef {
             path: path.to_string(),
             range: range(900, path.len() as u32),
@@ -667,6 +710,7 @@ mod tests {
                 knot: knot.map(String::from),
                 stitch: stitch.map(String::from),
             },
+            arg_count,
         }
     }
 
@@ -908,5 +952,132 @@ mod tests {
         assert_eq!(resolutions.len(), 1);
         let info = index.symbols.get(&resolutions[0].target).unwrap();
         assert_eq!(info.name, "Color.red");
+    }
+
+    // ── Arity checking ──────────────────────────────────────────────
+
+    /// Make a manifest with a knot that has a specific number of params.
+    fn make_manifest_with_params(
+        knot_name: &str,
+        param_count: usize,
+        unresolved: Vec<UnresolvedRef>,
+    ) -> SymbolManifest {
+        let mut manifest = SymbolManifest::default();
+        let r = range(0, knot_name.len() as u32);
+        let params: Vec<brink_ir::ParamInfo> = (0..param_count)
+            .map(|i| brink_ir::ParamInfo {
+                name: format!("p{i}"),
+                is_ref: false,
+                is_divert: false,
+            })
+            .collect();
+        manifest.knots.push(DeclaredSymbol {
+            name: knot_name.to_string(),
+            range: r,
+            params,
+            detail: Some("function".to_string()),
+        });
+        manifest.unresolved = unresolved;
+        manifest
+    }
+
+    #[test]
+    fn arity_match_no_warning() {
+        // Call `greet(x)` where greet takes 1 param — no warning.
+        let manifest = make_manifest_with_params(
+            "greet",
+            1,
+            vec![uref_with_args(
+                "greet",
+                RefKind::Function,
+                None,
+                None,
+                Some(1),
+            )],
+        );
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _) = merge_manifests(&files);
+        let (resolutions, diags) = resolve_refs(&index, &files);
+
+        assert_eq!(resolutions.len(), 1);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for matching arity, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn arity_mismatch_emits_e031() {
+        // Call `greet(x, y)` where greet takes 1 param — E031 warning.
+        let manifest = make_manifest_with_params(
+            "greet",
+            1,
+            vec![uref_with_args(
+                "greet",
+                RefKind::Function,
+                None,
+                None,
+                Some(2),
+            )],
+        );
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _) = merge_manifests(&files);
+        let (resolutions, diags) = resolve_refs(&index, &files);
+
+        assert_eq!(
+            resolutions.len(),
+            1,
+            "should still resolve despite arity mismatch"
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E031);
+        assert!(diags[0].message.contains("expects 1"));
+        assert!(diags[0].message.contains("got 2"));
+    }
+
+    #[test]
+    fn arity_check_no_arg_count_no_warning() {
+        // Non-function ref (arg_count=None) should never trigger arity check.
+        let manifest =
+            make_manifest_with_params("greet", 1, vec![uref("greet", RefKind::Divert, None, None)]);
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _) = merge_manifests(&files);
+        let (_resolutions, diags) = resolve_refs(&index, &files);
+
+        assert!(
+            diags.is_empty(),
+            "divert should not trigger arity check: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn arity_mismatch_external() {
+        // Call external with wrong arity.
+        let mut manifest = SymbolManifest::default();
+        let r = range(0, 5);
+        manifest.externals.push(DeclaredSymbol {
+            name: "print".to_string(),
+            range: r,
+            params: vec![brink_ir::ParamInfo {
+                name: "msg".into(),
+                is_ref: false,
+                is_divert: false,
+            }],
+            detail: None,
+        });
+        manifest.unresolved.push(uref_with_args(
+            "print",
+            RefKind::Function,
+            None,
+            None,
+            Some(3),
+        ));
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _) = merge_manifests(&files);
+        let (resolutions, diags) = resolve_refs(&index, &files);
+
+        assert_eq!(resolutions.len(), 1);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E031);
     }
 }

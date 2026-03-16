@@ -34,7 +34,7 @@ pub fn lower_to_program(
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
     file_paths: &HashMap<FileId, String>,
-) -> lir::Program {
+) -> (lir::Program, Vec<crate::Diagnostic>) {
     // ── Step 0: Normalize HIR (pre-LIR regularization) ──────────
     let normalized: Vec<(FileId, hir::HirFile)> = files
         .iter()
@@ -55,7 +55,9 @@ pub fn lower_to_program(
     let plan = plan::plan_containers(files, index, &mut ids);
 
     // ── Step 2: Collect declarations ────────────────────────────────
-    let mut globals = decls::collect_globals(files, index, &mut names, &resolutions);
+    let mut lir_diagnostics = Vec::new();
+    let mut globals =
+        decls::collect_globals(files, index, &mut names, &resolutions, &mut lir_diagnostics);
     let (lists, list_items, list_globals) = decls::collect_lists(files, index, &mut names);
     globals.extend(list_globals);
     let externals = decls::collect_externals(files, index, &mut names);
@@ -75,14 +77,17 @@ pub fn lower_to_program(
     let mut root = root;
     apply_counting_flags(&mut root, &globals);
 
-    lir::Program {
-        root,
-        globals,
-        lists,
-        list_items,
-        externals,
-        name_table: names.into_entries(),
-    }
+    (
+        lir::Program {
+            root,
+            globals,
+            lists,
+            list_items,
+            externals,
+            name_table: names.into_entries(),
+        },
+        lir_diagnostics,
+    )
 }
 
 // ─── Tree-building lowering ─────────────────────────────────────────

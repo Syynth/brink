@@ -1,8 +1,7 @@
 use brink_format::{DefinitionId, DefinitionTag};
 
-use crate::FileId;
-use crate::hir;
 use crate::symbols::{SymbolIndex, SymbolKind};
+use crate::{Diagnostic, DiagnosticCode, FileId, hir};
 
 use super::context::{NameTable, ResolutionLookup};
 use super::lir;
@@ -16,6 +15,7 @@ pub fn collect_globals(
     index: &SymbolIndex,
     names: &mut NameTable,
     resolutions: &ResolutionLookup,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<lir::GlobalDef> {
     use std::collections::HashMap;
 
@@ -27,8 +27,14 @@ pub fn collect_globals(
         for cst in &hir_file.constants {
             if let Some(id) = lookup_global(index, &cst.name.text, SymbolKind::Constant) {
                 let name = names.intern(&cst.name.text);
-                let default =
-                    eval_const_expr(&cst.value, index, resolutions, file_id, &const_values);
+                let default = eval_const_expr(
+                    &cst.value,
+                    index,
+                    resolutions,
+                    file_id,
+                    &const_values,
+                    diagnostics,
+                );
                 const_values.insert(id, default.clone());
                 globals.push(lir::GlobalDef {
                     id,
@@ -45,8 +51,14 @@ pub fn collect_globals(
         for var in &hir_file.variables {
             if let Some(id) = lookup_global(index, &var.name.text, SymbolKind::Variable) {
                 let name = names.intern(&var.name.text);
-                let default =
-                    eval_const_expr(&var.value, index, resolutions, file_id, &const_values);
+                let default = eval_const_expr(
+                    &var.value,
+                    index,
+                    resolutions,
+                    file_id,
+                    &const_values,
+                    diagnostics,
+                );
                 globals.push(lir::GlobalDef {
                     id,
                     name,
@@ -191,37 +203,33 @@ pub fn eval_const_expr(
     resolutions: &ResolutionLookup,
     file: FileId,
     const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
     match expr {
         hir::Expr::Int(n) => lir::ConstValue::Int(*n),
         hir::Expr::Float(bits) => lir::ConstValue::Float(bits.to_f64() as f32),
         hir::Expr::Bool(b) => lir::ConstValue::Bool(*b),
-        hir::Expr::String(s) => {
-            let text: String = s
-                .parts
-                .iter()
-                .filter_map(|p| match p {
-                    hir::StringPart::Literal(t) => Some(t.as_str()),
-                    hir::StringPart::Interpolation(_) => None,
-                })
-                .collect();
-            lir::ConstValue::String(text)
-        }
+        hir::Expr::String(s) => eval_const_string(s, file, diagnostics),
         hir::Expr::Prefix(hir::PrefixOp::Negate, inner) => {
-            match eval_const_expr(inner, index, resolutions, file, const_values) {
+            match eval_const_expr(inner, index, resolutions, file, const_values, diagnostics) {
                 lir::ConstValue::Int(n) => lir::ConstValue::Int(-n),
                 lir::ConstValue::Float(f) => lir::ConstValue::Float(-f),
                 _ => lir::ConstValue::Null,
             }
         }
         hir::Expr::Prefix(hir::PrefixOp::Not, inner) => {
-            match eval_const_expr(inner, index, resolutions, file, const_values) {
+            match eval_const_expr(inner, index, resolutions, file, const_values, diagnostics) {
                 lir::ConstValue::Bool(b) => lir::ConstValue::Bool(!b),
                 lir::ConstValue::Int(n) => lir::ConstValue::Bool(n == 0),
                 lir::ConstValue::Float(f) => lir::ConstValue::Bool(f == 0.0),
                 lir::ConstValue::Null => lir::ConstValue::Bool(true),
                 _ => lir::ConstValue::Null,
             }
+        }
+        hir::Expr::Infix(lhs, op, rhs) => {
+            let l = eval_const_expr(lhs, index, resolutions, file, const_values, diagnostics);
+            let r = eval_const_expr(rhs, index, resolutions, file, const_values, diagnostics);
+            eval_const_infix(&l, *op, &r)
         }
         hir::Expr::Path(path) => {
             if let Some(id) = resolutions.resolve(file, path.range) {
@@ -285,5 +293,146 @@ pub fn eval_const_expr(
             lir::ConstValue::List { items, origins }
         }
         _ => lir::ConstValue::Null,
+    }
+}
+
+/// Evaluate a compile-time string, emitting E030 if interpolation is present.
+fn eval_const_string(
+    s: &hir::StringExpr,
+    file: FileId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    let mut has_interpolation = false;
+    let text: String = s
+        .parts
+        .iter()
+        .filter_map(|p| match p {
+            hir::StringPart::Literal(t) => Some(t.as_str()),
+            hir::StringPart::Interpolation(_) => {
+                has_interpolation = true;
+                None
+            }
+        })
+        .collect();
+    if has_interpolation {
+        diagnostics.push(Diagnostic {
+            file,
+            range: rowan::TextRange::default(),
+            message: DiagnosticCode::E030.title().to_string(),
+            code: DiagnosticCode::E030,
+        });
+    }
+    lir::ConstValue::String(text)
+}
+
+/// Evaluate a binary operation on two const values.
+fn eval_const_infix(
+    lhs: &lir::ConstValue,
+    op: hir::InfixOp,
+    rhs: &lir::ConstValue,
+) -> lir::ConstValue {
+    use hir::InfixOp;
+    use lir::ConstValue;
+
+    // List operations are not const-foldable.
+    if matches!(op, InfixOp::Has | InfixOp::HasNot | InfixOp::Intersect) {
+        return ConstValue::Null;
+    }
+
+    // String concatenation: Add on String×String → String.
+    if op == InfixOp::Add
+        && let (ConstValue::String(a), ConstValue::String(b)) = (lhs, rhs)
+    {
+        return ConstValue::String(format!("{a}{b}"));
+    }
+
+    // Promote to float if either side is float.
+    match (lhs, rhs) {
+        (ConstValue::Int(a), ConstValue::Int(b)) => eval_int_infix(*a, op, *b),
+        (ConstValue::Float(a), ConstValue::Float(b)) => {
+            eval_float_infix(f64::from(*a), op, f64::from(*b))
+        }
+        (ConstValue::Int(a), ConstValue::Float(b)) => {
+            eval_float_infix(f64::from(*a), op, f64::from(*b))
+        }
+        (ConstValue::Float(a), ConstValue::Int(b)) => {
+            eval_float_infix(f64::from(*a), op, f64::from(*b))
+        }
+        (ConstValue::Bool(a), ConstValue::Bool(b)) => eval_bool_infix(*a, op, *b),
+        _ => ConstValue::Null,
+    }
+}
+
+fn eval_int_infix(a: i32, op: hir::InfixOp, b: i32) -> lir::ConstValue {
+    use hir::InfixOp;
+    use lir::ConstValue;
+
+    match op {
+        InfixOp::Add => ConstValue::Int(a.wrapping_add(b)),
+        InfixOp::Sub => ConstValue::Int(a.wrapping_sub(b)),
+        InfixOp::Mul => ConstValue::Int(a.wrapping_mul(b)),
+        InfixOp::Div => {
+            if b == 0 {
+                ConstValue::Null
+            } else {
+                ConstValue::Int(a.wrapping_div(b))
+            }
+        }
+        InfixOp::Mod => {
+            if b == 0 {
+                ConstValue::Null
+            } else {
+                ConstValue::Int(a.wrapping_rem(b))
+            }
+        }
+        InfixOp::Eq => ConstValue::Bool(a == b),
+        InfixOp::NotEq => ConstValue::Bool(a != b),
+        InfixOp::Lt => ConstValue::Bool(a < b),
+        InfixOp::Gt => ConstValue::Bool(a > b),
+        InfixOp::LtEq => ConstValue::Bool(a <= b),
+        InfixOp::GtEq => ConstValue::Bool(a >= b),
+        InfixOp::And => ConstValue::Bool(a != 0 && b != 0),
+        InfixOp::Or => ConstValue::Bool(a != 0 || b != 0),
+        _ => ConstValue::Null,
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::float_cmp,
+    reason = "f64→f32 is intentional per ink spec; ink uses exact float comparison"
+)]
+fn eval_float_infix(a: f64, op: hir::InfixOp, b: f64) -> lir::ConstValue {
+    use hir::InfixOp;
+    use lir::ConstValue;
+
+    match op {
+        InfixOp::Add => ConstValue::Float((a + b) as f32),
+        InfixOp::Sub => ConstValue::Float((a - b) as f32),
+        InfixOp::Mul => ConstValue::Float((a * b) as f32),
+        InfixOp::Div => ConstValue::Float((a / b) as f32),
+        InfixOp::Mod => ConstValue::Float((a % b) as f32),
+        InfixOp::Eq => ConstValue::Bool(a == b),
+        InfixOp::NotEq => ConstValue::Bool(a != b),
+        InfixOp::Lt => ConstValue::Bool(a < b),
+        InfixOp::Gt => ConstValue::Bool(a > b),
+        InfixOp::LtEq => ConstValue::Bool(a <= b),
+        InfixOp::GtEq => ConstValue::Bool(a >= b),
+        InfixOp::And => ConstValue::Bool(a != 0.0 && b != 0.0),
+        InfixOp::Or => ConstValue::Bool(a != 0.0 || b != 0.0),
+        _ => ConstValue::Null,
+    }
+}
+
+fn eval_bool_infix(a: bool, op: hir::InfixOp, b: bool) -> lir::ConstValue {
+    use hir::InfixOp;
+    use lir::ConstValue;
+
+    match op {
+        InfixOp::And => ConstValue::Bool(a && b),
+        InfixOp::Or => ConstValue::Bool(a || b),
+        InfixOp::Eq => ConstValue::Bool(a == b),
+        InfixOp::NotEq => ConstValue::Bool(a != b),
+        _ => ConstValue::Null,
     }
 }

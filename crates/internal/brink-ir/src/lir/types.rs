@@ -69,7 +69,7 @@ pub struct ExternalDef {
 
 /// A compile-time constant value for global variable defaults and
 /// const initializers. These are always statically evaluable.
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ConstValue {
     Int(i32),
     Float(f32),

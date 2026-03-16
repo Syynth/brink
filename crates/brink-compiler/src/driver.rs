@@ -3,13 +3,12 @@
 use std::io;
 
 use brink_db::ProjectDb;
-use brink_format::StoryData;
 use tracing::info;
 
-use crate::CompileError;
+use crate::{CompileError, CompileOutput, LirOutput};
 
 /// Run the full compilation pipeline through LIR lowering.
-fn compile_lir<F>(entry: &str, mut read_file: F) -> Result<brink_ir::lir::Program, CompileError>
+fn compile_lir<F>(entry: &str, mut read_file: F) -> Result<LirOutput, CompileError>
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
@@ -23,16 +22,18 @@ where
     info!(file_count, "all files parsed and lowered");
 
     // ── Pass 2b: Collect per-file diagnostics (parse + HIR lowering) ──
-    let mut all_diagnostics: Vec<brink_ir::Diagnostic> = db
-        .file_ids()
-        .flat_map(|id| {
-            db.file_diagnostics(id)
-                .unwrap_or_default()
-                .iter()
-                .filter(|d| d.code.severity() == brink_ir::Severity::Error)
-                .cloned()
-        })
-        .collect();
+    let mut all_warnings: Vec<brink_ir::Diagnostic> = Vec::new();
+    let mut all_errors: Vec<brink_ir::Diagnostic> = Vec::new();
+
+    for id in db.file_ids() {
+        for d in db.file_diagnostics(id).unwrap_or_default() {
+            if d.code.severity() == brink_ir::Severity::Error {
+                all_errors.push(d.clone());
+            } else {
+                all_warnings.push(d.clone());
+            }
+        }
+    }
 
     // ── Pass 3-5: Analyze ───────────────────────────────────────────
     let result = db.analyze().clone();
@@ -43,10 +44,18 @@ where
         "analysis complete"
     );
 
-    all_diagnostics.extend(result.diagnostics.clone());
+    for d in &result.diagnostics {
+        if d.code.severity() == brink_ir::Severity::Error {
+            all_errors.push(d.clone());
+        } else {
+            all_warnings.push(d.clone());
+        }
+    }
 
-    if !all_diagnostics.is_empty() {
-        return Err(CompileError::Diagnostics(all_diagnostics));
+    if !all_errors.is_empty() {
+        // Include warnings alongside errors so callers can see both.
+        all_errors.extend(all_warnings);
+        return Err(CompileError::Diagnostics(all_errors));
     }
 
     // ── Pass 6a: Build LIR ────────────────────────────────────────
@@ -65,16 +74,21 @@ where
         .iter()
         .filter_map(|(id, _)| db.file_path(*id).map(|p| (*id, p.to_string())))
         .collect();
-    let program =
+    let (program, lir_warnings) =
         brink_ir::lir::lower_to_program(&files, &result.index, &result.resolutions, &file_paths);
+
+    all_warnings.extend(lir_warnings);
 
     info!(globals = program.globals.len(), "LIR lowering complete");
 
-    Ok(program)
+    Ok(LirOutput {
+        program,
+        warnings: all_warnings,
+    })
 }
 
 /// Compile to LIR — public for the JSON backend.
-pub fn compile_to_lir<F>(entry: &str, read_file: F) -> Result<brink_ir::lir::Program, CompileError>
+pub fn compile_to_lir<F>(entry: &str, read_file: F) -> Result<LirOutput, CompileError>
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
@@ -82,12 +96,15 @@ where
 }
 
 /// Run the full compilation pipeline.
-pub fn compile<F>(entry: &str, read_file: F) -> Result<StoryData, CompileError>
+pub fn compile<F>(entry: &str, read_file: F) -> Result<CompileOutput, CompileError>
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
-    let program = compile_lir(entry, read_file)?;
+    let lir_output = compile_lir(entry, read_file)?;
 
     // ── Pass 6b: Codegen ────────────────────────────────────────────
-    Ok(brink_codegen_inkb::emit(&program))
+    Ok(CompileOutput {
+        data: brink_codegen_inkb::emit(&lir_output.program),
+        warnings: lir_output.warnings,
+    })
 }

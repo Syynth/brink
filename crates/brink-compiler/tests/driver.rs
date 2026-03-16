@@ -18,6 +18,7 @@ fn compile_mem(
             )
         })
     })
+    .map(|output| output.data)
 }
 
 // ── Single file ─────────────────────────────────────────────────────
@@ -150,7 +151,7 @@ fn compile_path_reads_from_disk() {
 
     let story = brink_compiler::compile_path(&path).unwrap();
     assert!(
-        !story.containers.is_empty(),
+        !story.data.containers.is_empty(),
         "expected non-empty containers"
     );
 }
@@ -162,7 +163,7 @@ fn compile_path_nested_includes_from_disk() {
 
     let story = brink_compiler::compile_path(&path).unwrap();
     assert!(
-        !story.containers.is_empty(),
+        !story.data.containers.is_empty(),
         "expected non-empty containers"
     );
 }
@@ -1739,4 +1740,62 @@ fn template_bool_interpolation() {
     let source = "VAR flag = true\nFlag: {flag}\n";
     let result = compile_and_run(source, &[]);
     assert_eq!(result, "Flag: true\n");
+}
+
+// ── Warning surfacing ───────────────────────────────────────────────
+
+/// Helper: compile and return the full `CompileOutput` (data + warnings).
+fn compile_mem_with_warnings(
+    entry: &str,
+    files: &HashMap<&str, &str>,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    brink_compiler::compile(entry, |path| {
+        files.get(path).map(|s| (*s).to_string()).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("file not found: {path}"),
+            )
+        })
+    })
+}
+
+#[test]
+fn warnings_surfaced_alongside_successful_compilation() {
+    // A CONST with string interpolation should compile successfully
+    // but produce an E030 warning.
+    let files: HashMap<&str, &str> = HashMap::from([(
+        "main.ink",
+        "VAR name = \"world\"\nCONST greeting = \"hi {name}\"\n{greeting}\n",
+    )]);
+
+    let output = compile_mem_with_warnings("main.ink", &files).unwrap();
+    assert!(
+        !output.data.containers.is_empty(),
+        "compilation should succeed"
+    );
+    assert!(
+        output.warnings.iter().any(|w| w.code.as_str() == "E030"),
+        "expected E030 warning, got: {:?}",
+        output
+            .warnings
+            .iter()
+            .map(|w| w.code.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn clean_compilation_has_no_warnings() {
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", "Hello, world!\n-> END\n")]);
+
+    let output = compile_mem_with_warnings("main.ink", &files).unwrap();
+    assert!(
+        output.warnings.is_empty(),
+        "expected no warnings for clean source, got: {:?}",
+        output
+            .warnings
+            .iter()
+            .map(|w| format!("[{}] {}", w.code.as_str(), w.message))
+            .collect::<Vec<_>>()
+    );
 }

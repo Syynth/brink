@@ -725,6 +725,12 @@ pub enum DiagnosticCode {
     // ── Compile errors ────────────────────────────────────────────
     /// Choice nested in conditional without explicit divert.
     E029,
+
+    // ── Warnings ─────────────────────────────────────────────────
+    /// String interpolation in constant initializer is ignored.
+    E030,
+    /// Function call argument count mismatch.
+    E031,
 }
 
 impl DiagnosticCode {
@@ -761,6 +767,8 @@ impl DiagnosticCode {
             Self::E027 => "E027",
             Self::E028 => "E028",
             Self::E029 => "E029",
+            Self::E030 => "E030",
+            Self::E031 => "E031",
         }
     }
 
@@ -797,6 +805,8 @@ impl DiagnosticCode {
             Self::E027 => "ambiguous bare list item reference",
             Self::E028 => "circular INCLUDE dependency",
             Self::E029 => "choice in conditional must explicitly divert",
+            Self::E030 => "string interpolation in constant initializer is ignored",
+            Self::E031 => "function call argument count mismatch",
         }
     }
 
@@ -804,7 +814,7 @@ impl DiagnosticCode {
     #[must_use]
     pub fn severity(self) -> Severity {
         match self {
-            Self::E014 => Severity::Warning,
+            Self::E014 | Self::E030 | Self::E031 => Severity::Warning,
             _ => Severity::Error,
         }
     }

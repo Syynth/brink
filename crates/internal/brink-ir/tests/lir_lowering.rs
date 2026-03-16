@@ -7,6 +7,12 @@ use brink_ir::{FileId, HirFile, SymbolManifest};
 
 /// Parse ink source → HIR lower → analyze → LIR lower. Returns the full Program.
 fn lower_ink(source: &str) -> lir::Program {
+    let (program, _warnings) = lower_ink_with_warnings(source);
+    program
+}
+
+/// Parse ink source → HIR lower → analyze → LIR lower. Returns program + warnings.
+fn lower_ink_with_warnings(source: &str) -> (lir::Program, Vec<brink_ir::Diagnostic>) {
     let parsed = brink_syntax::parse(source);
     let tree = parsed.tree();
     let file_id = FileId(0);
@@ -2400,4 +2406,130 @@ fn no_glue_plain_still_works() {
         matches!(s, lir::Stmt::EmitLine(e) if matches!(&e.line, lir::RecognizedLine::Plain(s) if s == "Hello world"))
     });
     assert!(found_line, "plain text should still be recognized as Plain");
+}
+
+// ─── Const folding for binary expressions ───────────────────────────
+
+#[test]
+fn const_fold_int_addition() {
+    let program = lower_ink("VAR x = 2 + 3\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::Int(5));
+}
+
+#[test]
+fn const_fold_int_subtraction() {
+    let program = lower_ink("VAR x = 10 - 4\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::Int(6));
+}
+
+#[test]
+fn const_fold_int_multiplication() {
+    let program = lower_ink("VAR x = 3 * 7\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::Int(21));
+}
+
+#[test]
+fn const_fold_int_division() {
+    let program = lower_ink("VAR x = 20 / 4\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::Int(5));
+}
+
+#[test]
+fn const_fold_int_modulo() {
+    let program = lower_ink("VAR x = 7 % 3\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::Int(1));
+}
+
+#[test]
+fn const_fold_comparison_eq() {
+    let program = lower_ink("VAR x = 5 == 5\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::Bool(true));
+}
+
+#[test]
+fn const_fold_comparison_lt() {
+    let program = lower_ink("VAR x = 3 < 5\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::Bool(true));
+}
+
+#[test]
+fn const_fold_logical_and() {
+    let program = lower_ink("VAR x = true && false\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::Bool(false));
+}
+
+#[test]
+fn const_fold_logical_or() {
+    let program = lower_ink("VAR x = false || true\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::Bool(true));
+}
+
+#[test]
+fn const_fold_string_concatenation() {
+    let program = lower_ink("VAR x = \"hello\" + \" world\"\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::String("hello world".into()));
+}
+
+#[test]
+fn const_fold_nested_arithmetic() {
+    // (2 + 3) * 4 — depends on parser precedence, but the key test is
+    // that nested infix expressions are recursively folded.
+    let program = lower_ink("VAR x = 2 + 3 * 4\n{x}\n");
+    let g = find_global(&program, "x");
+    // 3 * 4 = 12, 2 + 12 = 14 (standard precedence)
+    assert_eq!(g.default, lir::ConstValue::Int(14));
+}
+
+#[test]
+fn const_fold_const_reference_in_binary() {
+    let program = lower_ink("CONST a = 10\nVAR x = a + 5\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::Int(15));
+}
+
+#[test]
+fn const_fold_division_by_zero_yields_null() {
+    let program = lower_ink("VAR x = 10 / 0\n{x}\n");
+    let g = find_global(&program, "x");
+    assert_eq!(g.default, lir::ConstValue::Null);
+}
+
+// ─── AUTHOR_WARNING handling ────────────────────────────────────────
+
+#[test]
+fn author_warning_does_not_panic() {
+    // TODO: author warning — should be silently skipped without hitting
+    // the debug_assert in lower_body_children.
+    let program = lower_ink("TODO: fix this later\nHello\n");
+    let body = &root(&program).body;
+    // The TODO line is skipped, but "Hello" content should still be present.
+    let texts = collect_text(body);
+    assert!(
+        texts.iter().any(|t| t.contains("Hello")),
+        "content after AUTHOR_WARNING should be preserved"
+    );
+}
+
+// ─── String interpolation in const context ──────────────────────────
+
+#[test]
+fn string_interpolation_in_const_emits_e030() {
+    let source = "VAR name = \"world\"\nCONST greeting = \"hello {name}\"\n{greeting}\n";
+    let (_program, warnings) = lower_ink_with_warnings(source);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.code == brink_ir::DiagnosticCode::E030),
+        "expected E030 warning for string interpolation in const, got: {warnings:?}"
+    );
 }

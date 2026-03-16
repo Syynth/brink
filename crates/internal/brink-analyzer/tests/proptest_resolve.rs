@@ -162,6 +162,7 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                         range: range(ref_offset, path.len() as u32),
                         kind: *kind,
                         scope: scope.clone(),
+                        arg_count: None,
                     });
                     ref_offset += path.len() as u32 + 100;
                 }
@@ -462,6 +463,7 @@ proptest! {
             range: range(5000, missing.len() as u32),
             kind,
             scope: Scope::default(),
+            arg_count: None,
         });
 
         let hir = empty_hir();

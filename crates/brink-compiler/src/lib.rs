@@ -14,11 +14,24 @@ use brink_ir::Diagnostic;
 use std::io;
 use std::path::Path;
 
+/// Successful compilation output, including any non-fatal warnings.
+#[derive(Debug)]
+pub struct CompileOutput {
+    pub data: StoryData,
+    pub warnings: Vec<Diagnostic>,
+}
+
+/// Successful LIR compilation output, including any non-fatal warnings.
+pub struct LirOutput {
+    pub program: brink_ir::lir::Program,
+    pub warnings: Vec<Diagnostic>,
+}
+
 /// Compile an ink story from an entry-point file path.
 ///
 /// Reads files from disk, follows INCLUDEs, and runs the full compilation
 /// pipeline. Returns the compiled story data or a list of diagnostics.
-pub fn compile_path(path: &Path) -> Result<StoryData, CompileError> {
+pub fn compile_path(path: &Path) -> Result<CompileOutput, CompileError> {
     compile(path.to_string_lossy().as_ref(), |p| {
         std::fs::read_to_string(p).map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))
     })
@@ -29,7 +42,7 @@ pub fn compile_path(path: &Path) -> Result<StoryData, CompileError> {
 /// The `read_file` callback is called for the entry point and each
 /// `INCLUDE`d file discovered during parsing. This enables compilation in
 /// WASM, tests, and editor contexts where files are not on disk.
-pub fn compile<F>(entry: &str, read_file: F) -> Result<StoryData, CompileError>
+pub fn compile<F>(entry: &str, read_file: F) -> Result<CompileOutput, CompileError>
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
@@ -43,8 +56,8 @@ pub fn compile_to_json<F>(entry: &str, read_file: F) -> Result<brink_json::InkJs
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
-    let program = driver::compile_to_lir(entry, read_file)?;
-    Ok(brink_codegen_json::emit(&program))
+    let lir_output = driver::compile_to_lir(entry, read_file)?;
+    Ok(brink_codegen_json::emit(&lir_output.program))
 }
 
 /// Compile ink source from a string to the ink.json format.

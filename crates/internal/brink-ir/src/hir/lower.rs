@@ -158,6 +158,16 @@ impl LowerCtx {
     }
 
     fn add_unresolved(&mut self, path: &str, range: TextRange, kind: RefKind) {
+        self.add_unresolved_with_args(path, range, kind, None);
+    }
+
+    fn add_unresolved_with_args(
+        &mut self,
+        path: &str,
+        range: TextRange,
+        kind: RefKind,
+        arg_count: Option<usize>,
+    ) {
         if path.is_empty() {
             return;
         }
@@ -166,6 +176,7 @@ impl LowerCtx {
             range,
             kind,
             scope: self.current_scope(),
+            arg_count,
         });
     }
 }
@@ -666,6 +677,7 @@ impl LowerCtx {
 // ─── Phase 3: Expression lowering ───────────────────────────────────
 
 impl LowerCtx {
+    #[expect(clippy::too_many_lines, reason = "match arms are individually simple")]
     fn lower_expr(&mut self, expr: &ast::Expr) -> Option<Expr> {
         match expr {
             ast::Expr::IntegerLit(lit) =>
@@ -738,11 +750,16 @@ impl LowerCtx {
                     segments: vec![make_name(name_text.clone(), range)],
                     range,
                 };
-                self.add_unresolved(&name_text, range, RefKind::Function);
                 let args: Vec<Expr> = fc
                     .arg_list()
                     .map(|al| al.args().filter_map(|a| self.lower_expr(&a)).collect())
                     .unwrap_or_default();
+                self.add_unresolved_with_args(
+                    &name_text,
+                    range,
+                    RefKind::Function,
+                    Some(args.len()),
+                );
                 Some(Expr::Call(path, args))
             }
             ast::Expr::DivertTarget(dt) => {
@@ -2201,6 +2218,7 @@ pub enum WeaveItem {
 }
 
 impl LowerCtx {
+    #[expect(clippy::too_many_lines, reason = "match arms are individually simple")]
     fn lower_body_children(&mut self, parent: &brink_syntax::SyntaxNode) -> Block {
         let mut items = Vec::new();
 
@@ -2298,7 +2316,8 @@ impl LowerCtx {
                 | SyntaxKind::EXTERNAL_DECL
                 | SyntaxKind::INCLUDE_STMT
                 | SyntaxKind::EMPTY_LINE
-                | SyntaxKind::STRAY_CLOSING_BRACE => {}
+                | SyntaxKind::STRAY_CLOSING_BRACE
+                | SyntaxKind::AUTHOR_WARNING => {}
                 other => {
                     debug_assert!(
                         other.is_trivia(),

@@ -59,6 +59,8 @@ pub struct UnresolvedRef {
     pub kind: RefKind,
     /// The scope where this reference was encountered.
     pub scope: Scope,
+    /// For `RefKind::Function` calls, the number of arguments at the call site.
+    pub arg_count: Option<usize>,
 }
 
 /// What kind of reference this is, for diagnostic context.

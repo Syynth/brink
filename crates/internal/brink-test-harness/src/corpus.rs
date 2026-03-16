@@ -96,8 +96,8 @@ pub fn convert_ink_json(json_path: &Path) -> Result<brink_format::StoryData, Str
 ///
 /// Returns `Err` if compilation or linking fails.
 pub fn explore_from_ink(ink_path: &Path, config: &ExploreConfig) -> Result<Vec<Episode>, String> {
-    let data = brink_compiler::compile_path(ink_path).map_err(|e| format!("compile: {e}"))?;
-    let program = brink_runtime::link(&data).map_err(|e| format!("link: {e}"))?;
+    let output = brink_compiler::compile_path(ink_path).map_err(|e| format!("compile: {e}"))?;
+    let program = brink_runtime::link(&output.data).map_err(|e| format!("link: {e}"))?;
     Ok(crate::explore(&program, config))
 }
 
@@ -108,10 +108,10 @@ pub fn compile_and_explore_from_ink(
     ink_path: &Path,
     config: &ExploreConfig,
 ) -> Result<(brink_format::StoryData, Vec<Episode>), String> {
-    let data = brink_compiler::compile_path(ink_path).map_err(|e| format!("compile: {e}"))?;
-    let program = brink_runtime::link(&data).map_err(|e| format!("link: {e}"))?;
+    let output = brink_compiler::compile_path(ink_path).map_err(|e| format!("compile: {e}"))?;
+    let program = brink_runtime::link(&output.data).map_err(|e| format!("link: {e}"))?;
     let episodes = crate::explore(&program, config);
-    Ok((data, episodes))
+    Ok((output.data, episodes))
 }
 
 /// Result of compiling `.ink` → JSON → roundtrip → convert → explore.

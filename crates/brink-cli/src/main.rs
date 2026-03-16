@@ -194,7 +194,11 @@ fn run_compile(
     input: &std::path::Path,
     output: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let data = brink_compiler::compile_path(input)?;
+    let output_result = brink_compiler::compile_path(input)?;
+    for w in &output_result.warnings {
+        tracing::warn!("[{}] {}", w.code.as_str(), w.message);
+    }
+    let data = output_result.data;
 
     let out_ext = output
         .and_then(|p| p.extension())
