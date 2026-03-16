@@ -1,3 +1,4 @@
+// brink-disable-all
 INCLUDE characters.ink
 
 Тестирование выбора персонажей.

@@ -441,3 +441,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** `#voice:` tags are not a real ink feature. Remove references to audio_ref population via tag parsing from intl docs/specs. The `audio_ref` field on `LineEntry` stays as a carrier for game-engine integration, but the compiler will never populate it from tags.
 - **WHY:** `#voice:` was an assumed feature that doesn't exist in ink. Documenting it as planned work creates false expectations.
+
+## User-configurable project scoping in LSP
+- **WHEN:** 2026-03-16
+- **PROJECT:** brink
+- **SYSTEM:** brink-lsp
+- **SCOPE:** moderate
+- **WHAT:** The LSP should eventually support user-configurable control over how .ink files are grouped into projects for analysis. The current auto-discovery (root = file with no includers) is a reasonable default, but users need a way to override it.
+- **WHY:** Auto-discovery produces false positives when a workspace contains multiple independent include trees that share files (e.g., test harness files that INCLUDE a subset). Users need to be able to declare project roots, exclude files, or otherwise control scoping.

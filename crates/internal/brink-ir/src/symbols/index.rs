@@ -36,6 +36,8 @@ pub struct SymbolInfo {
     pub detail: Option<String>,
     /// Scope context — `Some` for locals (params/temps), `None` for globals.
     pub scope: Option<Scope>,
+    /// For `Param` symbols: ref/divert metadata from the parent declaration.
+    pub param_detail: Option<ParamInfo>,
 }
 
 /// Parameter metadata for hover/signature help.

@@ -25,12 +25,22 @@ where
     let mut all_warnings: Vec<brink_ir::Diagnostic> = Vec::new();
     let mut all_errors: Vec<brink_ir::Diagnostic> = Vec::new();
 
+    // Check if the entry file has brink-disable-all
+    let entry_id = db.file_id(entry);
+    let disable_all = entry_id
+        .and_then(|id| db.suppressions(id))
+        .is_some_and(|s| s.disable_all);
+
     for id in db.file_ids() {
-        for d in db.file_diagnostics(id).unwrap_or_default() {
+        let raw: Vec<brink_ir::Diagnostic> = db.file_diagnostics(id).unwrap_or_default().to_vec();
+        let source = db.source(id).unwrap_or_default();
+        let suppressions = db.suppressions(id).cloned().unwrap_or_default();
+        let filtered = brink_ir::suppressions::apply_suppressions(id, source, raw, &suppressions);
+        for d in filtered {
             if d.code.severity() == brink_ir::Severity::Error {
-                all_errors.push(d.clone());
+                all_errors.push(d);
             } else {
-                all_warnings.push(d.clone());
+                all_warnings.push(d);
             }
         }
     }
@@ -44,11 +54,25 @@ where
         "analysis complete"
     );
 
-    for d in &result.diagnostics {
-        if d.code.severity() == brink_ir::Severity::Error {
-            all_errors.push(d.clone());
-        } else {
-            all_warnings.push(d.clone());
+    if !disable_all {
+        // Group analysis diagnostics by file and apply per-file suppressions
+        let mut by_file: std::collections::HashMap<brink_ir::FileId, Vec<brink_ir::Diagnostic>> =
+            std::collections::HashMap::new();
+        for d in &result.diagnostics {
+            by_file.entry(d.file).or_default().push(d.clone());
+        }
+        for (fid, diags) in by_file {
+            let source = db.source(fid).unwrap_or_default();
+            let suppressions = db.suppressions(fid).cloned().unwrap_or_default();
+            let filtered =
+                brink_ir::suppressions::apply_suppressions(fid, source, diags, &suppressions);
+            for d in filtered {
+                if d.code.severity() == brink_ir::Severity::Error {
+                    all_errors.push(d);
+                } else {
+                    all_warnings.push(d);
+                }
+            }
         }
     }
 

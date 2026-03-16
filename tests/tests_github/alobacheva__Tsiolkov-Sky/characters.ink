@@ -117,4 +117,3 @@ VAR _char_buffer = ()
 + [{char_name(char_variant)}]
     ~ current_char = char_variant
 - ->redirect
-

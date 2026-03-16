@@ -105,18 +105,24 @@ pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec
 
 fn insert_symbol(
     index: &mut SymbolIndex,
-    _diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
     file: FileId,
     sym: &brink_ir::DeclaredSymbol,
     kind: SymbolKind,
-    _dup_code: DiagnosticCode,
+    dup_code: DiagnosticCode,
 ) {
-    // Skip duplicates of the same kind silently — inklecate permits redefinition.
+    // Skip duplicates of the same kind — inklecate permits redefinition but we warn.
     if let Some(existing_ids) = index.by_name.get(&sym.name) {
         let has_dup = existing_ids
             .iter()
             .any(|id| index.symbols.get(id).is_some_and(|info| info.kind == kind));
         if has_dup {
+            diagnostics.push(Diagnostic {
+                file,
+                range: sym.range,
+                message: format!("{}: `{}`", dup_code.title(), sym.name),
+                code: dup_code,
+            });
             return;
         }
     }
@@ -136,9 +142,24 @@ fn insert_symbol(
             params: sym.params.clone(),
             detail: sym.detail.clone(),
             scope: None,
+            param_detail: None,
         },
     );
     index.by_name.entry(sym.name.clone()).or_default().push(id);
+
+    // Warn if the symbol name shadows a built-in function.
+    if matches!(
+        kind,
+        SymbolKind::Knot | SymbolKind::Variable | SymbolKind::Constant | SymbolKind::External
+    ) && crate::resolve::is_builtin_function(&sym.name)
+    {
+        diagnostics.push(Diagnostic {
+            file,
+            range: sym.range,
+            message: format!("{}: `{}`", DiagnosticCode::E035.title(), sym.name),
+            code: DiagnosticCode::E035,
+        });
+    }
 }
 
 fn insert_local(index: &mut SymbolIndex, file: FileId, local: &LocalSymbol) {
@@ -165,6 +186,7 @@ fn insert_local(index: &mut SymbolIndex, file: FileId, local: &LocalSymbol) {
             params: Vec::new(),
             detail: None,
             scope: Some(local.scope.clone()),
+            param_detail: local.param_detail.clone(),
         },
     );
     index
@@ -179,4 +201,92 @@ fn hash_name(name: &str, tag: DefinitionTag) -> u64 {
     tag.hash(&mut hasher);
     name.hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(test)]
+#[expect(clippy::cast_possible_truncation, reason = "test helper ranges")]
+mod tests {
+    use brink_ir::{DeclaredSymbol, DiagnosticCode, FileId, SymbolManifest};
+    use rowan::{TextRange, TextSize};
+
+    use super::merge_manifests;
+
+    fn range(offset: u32, len: u32) -> TextRange {
+        TextRange::new(TextSize::new(offset), TextSize::new(offset + len))
+    }
+
+    fn sym(name: &str, offset: u32) -> DeclaredSymbol {
+        DeclaredSymbol {
+            name: name.to_string(),
+            range: range(offset, name.len() as u32),
+            params: Vec::new(),
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn duplicate_knot_emits_e022() {
+        let mut m1 = SymbolManifest::default();
+        m1.knots.push(sym("start", 0));
+
+        let mut m2 = SymbolManifest::default();
+        m2.knots.push(sym("start", 100));
+
+        let files = vec![(FileId(0), &m1), (FileId(1), &m2)];
+        let (_index, diags) = merge_manifests(&files);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E022);
+    }
+
+    #[test]
+    fn duplicate_variable_emits_e023() {
+        let mut m1 = SymbolManifest::default();
+        m1.variables.push(sym("score", 0));
+
+        let mut m2 = SymbolManifest::default();
+        m2.variables.push(sym("score", 100));
+
+        let files = vec![(FileId(0), &m1), (FileId(1), &m2)];
+        let (_index, diags) = merge_manifests(&files);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E023);
+    }
+
+    #[test]
+    fn different_kind_same_name_no_warning() {
+        let mut manifest = SymbolManifest::default();
+        manifest.knots.push(sym("thing", 0));
+        manifest.variables.push(sym("thing", 100));
+
+        let files = vec![(FileId(0), &manifest)];
+        let (_index, diags) = merge_manifests(&files);
+
+        // A knot and a variable with the same name are different kinds — no duplicate.
+        assert!(diags.is_empty(), "expected no diagnostics: {diags:?}");
+    }
+
+    #[test]
+    fn builtin_name_shadow_emits_e035() {
+        let mut manifest = SymbolManifest::default();
+        manifest.knots.push(sym("RANDOM", 0));
+
+        let files = vec![(FileId(0), &manifest)];
+        let (_index, diags) = merge_manifests(&files);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E035);
+    }
+
+    #[test]
+    fn non_builtin_name_no_shadow_warning() {
+        let mut manifest = SymbolManifest::default();
+        manifest.knots.push(sym("my_function", 0));
+
+        let files = vec![(FileId(0), &manifest)];
+        let (_index, diags) = merge_manifests(&files);
+
+        assert!(diags.is_empty(), "expected no diagnostics: {diags:?}");
+    }
 }

@@ -1,3 +1,4 @@
+// brink-disable-all
 INCLUDE dice_rolling.ink
 
 Начало игры.

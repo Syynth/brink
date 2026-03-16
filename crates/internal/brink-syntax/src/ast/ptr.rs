@@ -19,6 +19,15 @@ pub struct SyntaxNodePtr {
 }
 
 impl SyntaxNodePtr {
+    /// Create a dummy pointer from a range — for test helpers only.
+    #[doc(hidden)]
+    pub fn from_range(range: TextRange) -> Self {
+        Self {
+            kind: SyntaxKind::ERROR,
+            range,
+        }
+    }
+
     /// Create a pointer from a live syntax node.
     pub fn from_node(node: &SyntaxNode) -> Self {
         Self {
@@ -111,6 +120,16 @@ impl<N: AstNode> std::hash::Hash for AstPtr<N> {
 }
 
 impl<N: AstNode> AstPtr<N> {
+    /// Create a dummy pointer from a range — for test helpers only.
+    #[doc(hidden)]
+    pub fn from_range(range: TextRange) -> Self {
+        Self {
+            kind: SyntaxKind::ERROR,
+            range,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Create a pointer from a live AST node.
     pub fn new(node: &N) -> Self {
         let syntax = node.syntax();

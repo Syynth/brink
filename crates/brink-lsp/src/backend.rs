@@ -119,8 +119,17 @@ impl Backend {
             };
             let idx = LineIndex::new(&source);
 
-            db.file_diagnostics(file_id)
-                .unwrap_or_default()
+            let raw_diags: Vec<brink_ir::Diagnostic> =
+                db.file_diagnostics(file_id).unwrap_or_default().to_vec();
+            let suppressions = db.suppressions(file_id).cloned().unwrap_or_default();
+            let filtered = brink_ir::suppressions::apply_suppressions(
+                file_id,
+                &source,
+                raw_diags,
+                &suppressions,
+            );
+
+            filtered
                 .iter()
                 .map(|d| convert::diagnostic_to_lsp(d, &idx))
                 .collect()
@@ -221,6 +230,12 @@ impl Backend {
         for root in &roots {
             self.walk_and_load(root);
         }
+
+        // Rebuild include graph now that all files are loaded — set_file
+        // can only create edges to files already in the db, so files loaded
+        // before their include targets will have missing edges.
+        let mut db = lock_db(&self.db);
+        db.rebuild_include_graph();
     }
 
     /// Recursively walk a directory, loading all .ink files.
@@ -2721,7 +2736,7 @@ pub async fn analysis_loop(
         tokio::task::yield_now().await;
 
         // Snapshot inputs under lock
-        let (projects, file_meta, per_file_diags) = {
+        let (projects, file_meta, per_file_diags, file_suppressions) = {
             let db = lock_db(&db);
             let project_defs = db.compute_projects();
             let project_inputs: Vec<_> = project_defs
@@ -2733,7 +2748,11 @@ pub async fn analysis_loop(
                 .iter()
                 .filter_map(|(fid, _, _)| Some((*fid, db.file_diagnostics(*fid)?.to_vec())))
                 .collect();
-            (project_inputs, meta, diags)
+            let suppressions: HashMap<brink_ir::FileId, brink_ir::suppressions::Suppressions> =
+                meta.iter()
+                    .filter_map(|(fid, _, _)| Some((*fid, db.suppressions(*fid)?.clone())))
+                    .collect();
+            (project_inputs, meta, diags, suppressions)
         };
 
         // Run per-project analysis OUTSIDE the lock
@@ -2776,6 +2795,7 @@ pub async fn analysis_loop(
             &result,
             &file_meta,
             &per_file_diags,
+            &file_suppressions,
             &last_published,
         )
         .await;
@@ -2854,11 +2874,13 @@ fn collect_multiproject_diags(
 /// Compute full diagnostic set for each file and publish if changed.
 ///
 /// Unions analysis diagnostics from all projects containing a file.
+/// Applies suppression directives before publishing.
 async fn publish_all_diagnostics(
     client: &Client,
     projects: &ProjectAnalyses,
     file_meta: &[(brink_ir::FileId, String, String)],
     per_file_diags: &[(brink_ir::FileId, Vec<brink_ir::Diagnostic>)],
+    file_suppressions: &HashMap<brink_ir::FileId, brink_ir::suppressions::Suppressions>,
     last_published: &Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>,
 ) {
     let lowering_diags: HashMap<brink_ir::FileId, &[brink_ir::Diagnostic]> = per_file_diags
@@ -2871,65 +2893,115 @@ async fn publish_all_diagnostics(
         .map(|(fid, path, _)| (*fid, path.as_str()))
         .collect();
 
+    // Build set of files whose project root has disable_all
+    let disable_all_files: std::collections::HashSet<brink_ir::FileId> = projects
+        .project_members
+        .iter()
+        .filter(|(root, _)| file_suppressions.get(root).is_some_and(|s| s.disable_all))
+        .flat_map(|(_, members)| members.iter().copied())
+        .collect();
+
     for (file_id, path, source) in file_meta {
         let idx = LineIndex::new(source);
 
-        let mut lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic> = lowering_diags
+        // Collect raw IR diagnostics (lowering + analysis) for this file
+        let mut raw_diags: Vec<brink_ir::Diagnostic> = lowering_diags
             .get(file_id)
             .copied()
             .unwrap_or_default()
+            .to_vec();
+
+        let analyses = projects.all_for_file(*file_id);
+        if !disable_all_files.contains(file_id) {
+            if analyses.len() <= 1 {
+                if let Some(analysis) = analyses.first() {
+                    for d in &analysis.diagnostics {
+                        if d.file == *file_id {
+                            raw_diags.push(d.clone());
+                        }
+                    }
+                }
+            } else {
+                // Multi-project: collect analysis diags, then convert to LSP
+                // (multi-project annotation needs LSP-level conversion)
+                let sup = file_suppressions.get(file_id);
+                let filtered_lowering = if let Some(sup) = sup {
+                    brink_ir::suppressions::apply_suppressions(*file_id, source, raw_diags, sup)
+                } else {
+                    raw_diags
+                };
+
+                let mut lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic> = filtered_lowering
+                    .iter()
+                    .map(|d| convert::diagnostic_to_lsp(d, &idx))
+                    .collect();
+
+                let roots = projects
+                    .file_to_roots
+                    .get(file_id)
+                    .map_or(&[][..], Vec::as_slice);
+                collect_multiproject_diags(
+                    *file_id,
+                    &analyses,
+                    roots,
+                    &file_path_map,
+                    &idx,
+                    &mut lsp_diags,
+                );
+
+                publish_if_changed(client, last_published, *file_id, path, lsp_diags).await;
+                continue;
+            }
+        }
+
+        // Apply suppressions to the combined diagnostic list
+        let sup = file_suppressions.get(file_id);
+        let filtered = if let Some(sup) = sup {
+            brink_ir::suppressions::apply_suppressions(*file_id, source, raw_diags, sup)
+        } else {
+            raw_diags
+        };
+
+        let lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic> = filtered
             .iter()
             .map(|d| convert::diagnostic_to_lsp(d, &idx))
             .collect();
 
-        let analyses = projects.all_for_file(*file_id);
-        if analyses.len() <= 1 {
-            if let Some(analysis) = analyses.first() {
-                for d in &analysis.diagnostics {
-                    if d.file == *file_id {
-                        lsp_diags.push(convert::diagnostic_to_lsp(d, &idx));
-                    }
-                }
-            }
-        } else {
-            let roots = projects
-                .file_to_roots
-                .get(file_id)
-                .map_or(&[][..], Vec::as_slice);
-            collect_multiproject_diags(
-                *file_id,
-                &analyses,
-                roots,
-                &file_path_map,
-                &idx,
-                &mut lsp_diags,
-            );
-        }
+        publish_if_changed(client, last_published, *file_id, path, lsp_diags).await;
+    }
+}
 
-        let should_publish = {
-            let published = match last_published.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            match published.get(file_id) {
-                Some(prev) => *prev != lsp_diags,
-                None => !lsp_diags.is_empty(),
-            }
+/// Publish diagnostics if they differ from the last published set.
+async fn publish_if_changed(
+    client: &Client,
+    last_published: &Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>,
+    file_id: brink_ir::FileId,
+    path: &str,
+    lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic>,
+) {
+    let should_publish = {
+        let published = match last_published.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
         };
-
-        if should_publish {
-            if let Ok(uri) = Url::from_file_path(path) {
-                client
-                    .publish_diagnostics(uri, lsp_diags.clone(), None)
-                    .await;
-            }
-
-            let mut published = match last_published.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            published.insert(*file_id, lsp_diags);
+        match published.get(&file_id) {
+            Some(prev) => *prev != lsp_diags,
+            None => !lsp_diags.is_empty(),
         }
+    };
+
+    if should_publish {
+        if let Ok(uri) = Url::from_file_path(path) {
+            client
+                .publish_diagnostics(uri, lsp_diags.clone(), None)
+                .await;
+        }
+
+        let mut published = match last_published.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        published.insert(file_id, lsp_diags);
     }
 }
 

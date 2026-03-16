@@ -49,6 +49,8 @@ pub struct LocalSymbol {
     pub scope: Scope,
     /// Whether this is a param or a temp.
     pub kind: super::SymbolKind,
+    /// For params: ref/divert metadata.
+    pub param_detail: Option<super::ParamInfo>,
 }
 
 /// An unresolved reference that needs cross-file resolution.

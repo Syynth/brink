@@ -456,7 +456,7 @@ fn lookup_local_in_scope(
 }
 
 /// Ink built-in functions that are resolved at LIR lowering, not by the symbol index.
-fn is_builtin_function(name: &str) -> bool {
+pub(crate) fn is_builtin_function(name: &str) -> bool {
     matches!(
         name,
         "TURNS_SINCE"
@@ -797,18 +797,19 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_knot_is_silently_accepted() {
+    fn duplicate_knot_emits_warning() {
         let mut m1 = make_manifest(&["start"], &[], &[], &[], &[], &[], vec![]);
         let m2 = make_manifest(&["start"], &[], &[], &[], &[], &[], vec![]);
 
-        // Give m2 different ranges so they don't collide
+        // Give m1 different range so they don't collide
         m1.knots[0].range = range(0, 5);
 
         let files = vec![(FileId(0), &m1), (FileId(1), &m2)];
         let (_index, diags) = merge_manifests(&files);
 
-        // Inklecate permits duplicate definitions — no diagnostic emitted.
-        assert!(diags.is_empty());
+        // Inklecate permits duplicate definitions — we warn but don't error.
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E022);
     }
 
     #[test]

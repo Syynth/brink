@@ -1,3 +1,4 @@
+use brink_ir::suppressions::Suppressions;
 use brink_ir::{Block, Diagnostic, HirFile, Knot, SymbolManifest};
 use brink_syntax::Parse;
 use rowan::GreenNode;
@@ -37,4 +38,6 @@ pub(crate) struct FileState {
     pub manifest: SymbolManifest,
     /// Combined parse + lowering diagnostics.
     pub diagnostics: Vec<Diagnostic>,
+    /// Parsed suppression/expectation directives.
+    pub suppressions: Suppressions,
 }

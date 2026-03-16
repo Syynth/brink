@@ -9,6 +9,7 @@
 
 pub mod hir;
 pub mod lir;
+pub mod suppressions;
 pub mod symbols;
 
 // Re-export HIR and symbol types at the crate root for convenience.

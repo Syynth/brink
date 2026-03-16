@@ -347,8 +347,8 @@ proptest! {
         }
     }
 
-    /// When two files declare a knot with the same name, duplicates are
-    /// silently accepted (inklecate permits redefinition).
+    /// When two files declare a knot with the same name, a duplicate
+    /// warning (E022) is emitted. First-wins semantics preserved.
     #[test]
     fn duplicate_knots_across_files(name in arb_ident()) {
         let m1 = SymbolManifest {
@@ -386,14 +386,14 @@ proptest! {
 
         prop_assert_eq!(
             dup_diags.len(),
-            0,
-            "expected no duplicate diagnostics for knot `{}`, got {}",
+            1,
+            "expected exactly one duplicate warning for knot `{}`, got {}",
             name, dup_diags.len(),
         );
     }
 
-    /// When two files declare a global variable with the same name, duplicates
-    /// are silently accepted (inklecate permits redefinition).
+    /// When two files declare a global variable with the same name, a
+    /// duplicate warning (E023) is emitted.
     #[test]
     fn duplicate_variables_across_files(name in arb_ident()) {
         let m1 = SymbolManifest {
@@ -431,8 +431,8 @@ proptest! {
 
         prop_assert_eq!(
             dup_diags.len(),
-            0,
-            "expected no duplicate diagnostics for variable `{}`, got {}",
+            1,
+            "expected exactly one duplicate warning for variable `{}`, got {}",
             name, dup_diags.len(),
         );
     }
@@ -725,8 +725,8 @@ fn integration_duplicate_knot_across_files() {
         .iter()
         .filter(|d| d.code == DiagnosticCode::E022)
         .collect();
-    // Duplicates are silently accepted (inklecate permits redefinition)
-    assert!(dups.is_empty());
+    // Duplicates emit a warning (not error) — inklecate permits redefinition.
+    assert_eq!(dups.len(), 1);
 }
 
 #[test]
@@ -935,12 +935,23 @@ fn integration_duplicate_knot_no_error() {
         "VAR x = 0\n== shared ==\n~ x = 1\n-> END\n",
         "== shared ==\n{x} -> END\n",
     ]);
-    // Duplicates should not prevent compilation
+    // Duplicates emit warnings but should not prevent compilation.
+    // Expect 1 E022 (duplicate knot), no errors.
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code.severity() == brink_ir::Severity::Error)
+        .collect();
     assert!(
-        result.diagnostics.is_empty(),
-        "duplicates should be silently accepted: {:?}",
-        result.diagnostics,
+        errors.is_empty(),
+        "duplicate should be a warning, not an error: {errors:?}",
     );
+    let dups: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E022)
+        .collect();
+    assert_eq!(dups.len(), 1);
 }
 
 #[test]

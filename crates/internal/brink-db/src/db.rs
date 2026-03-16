@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io;
 
 use brink_analyzer::AnalysisResult;
+use brink_ir::suppressions::{Suppressions, parse_suppressions};
 use brink_ir::{Diagnostic, FileId, HirFile, SymbolManifest, lower, lower_knot, lower_top_level};
 use brink_syntax::ast::AstNode as _;
 use brink_syntax::{Parse, parse_with_cache};
@@ -70,6 +71,8 @@ impl ProjectDb {
         let (hir, manifest, diagnostics) =
             Self::assemble(file_id, &knot_entries, &top_level, &tree);
 
+        let suppressions = parse_suppressions(&source);
+
         let state = FileState {
             source,
             parse,
@@ -78,6 +81,7 @@ impl ProjectDb {
             hir,
             manifest,
             diagnostics,
+            suppressions,
         };
 
         // Update include graph
@@ -158,6 +162,8 @@ impl ProjectDb {
         let (hir, manifest, diagnostics) =
             Self::assemble(file_id, &knot_entries, &top_level, &tree);
 
+        let suppressions = parse_suppressions(&source);
+
         let state = FileState {
             source,
             parse,
@@ -166,6 +172,7 @@ impl ProjectDb {
             hir,
             manifest,
             diagnostics,
+            suppressions,
         };
 
         // Update include graph
@@ -242,6 +249,40 @@ impl ProjectDb {
     /// Get per-file diagnostics (parse + lowering).
     pub fn file_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
         self.files.get(&id).map(|s| s.diagnostics.as_slice())
+    }
+
+    /// Get parsed suppression directives for a file.
+    pub fn suppressions(&self, id: FileId) -> Option<&Suppressions> {
+        self.files.get(&id).map(|s| &s.suppressions)
+    }
+
+    /// Rebuild include graph edges for all files.
+    ///
+    /// Must be called after batch-loading files (e.g. workspace discovery)
+    /// because `set_file` can only create edges to files already in the db.
+    /// Files loaded before their include targets will have missing edges.
+    pub fn rebuild_include_graph(&mut self) {
+        let file_list: Vec<(FileId, String)> = self
+            .files
+            .keys()
+            .filter_map(|&id| self.id_to_path.get(&id).map(|p| (id, p.clone())))
+            .collect();
+
+        for (file_id, file_path) in &file_list {
+            if let Some(state) = self.files.get(file_id) {
+                let include_ids: Vec<FileId> = state
+                    .hir
+                    .includes
+                    .iter()
+                    .filter_map(|inc| {
+                        let resolved = resolve_include_path(file_path, &inc.file_path);
+                        self.path_to_id.get(&resolved).copied()
+                    })
+                    .collect();
+                self.include_graph.update(*file_id, include_ids);
+            }
+        }
+        self.analysis = None;
     }
 
     /// Compute independent projects from include relationships.

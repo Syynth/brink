@@ -731,6 +731,18 @@ pub enum DiagnosticCode {
     E030,
     /// Function call argument count mismatch.
     E031,
+
+    // ── Structural validation ───────────────────────────────────
+    /// Return statement outside function.
+    E032,
+    /// Unreachable code after divert.
+    E033,
+    /// Choice set has only fallback choices.
+    E034,
+    /// Name shadows a built-in function.
+    E035,
+    /// Expected diagnostic not produced (`// brink-expect`).
+    E036,
 }
 
 impl DiagnosticCode {
@@ -769,6 +781,11 @@ impl DiagnosticCode {
             Self::E029 => "E029",
             Self::E030 => "E030",
             Self::E031 => "E031",
+            Self::E032 => "E032",
+            Self::E033 => "E033",
+            Self::E034 => "E034",
+            Self::E035 => "E035",
+            Self::E036 => "E036",
         }
     }
 
@@ -807,6 +824,11 @@ impl DiagnosticCode {
             Self::E029 => "choice in conditional must explicitly divert",
             Self::E030 => "string interpolation in constant initializer is ignored",
             Self::E031 => "function call argument count mismatch",
+            Self::E032 => "return statement outside function",
+            Self::E033 => "unreachable code after divert",
+            Self::E034 => "choice set has only fallback choices",
+            Self::E035 => "name shadows a built-in function",
+            Self::E036 => "expected diagnostic not produced",
         }
     }
 
@@ -814,8 +836,60 @@ impl DiagnosticCode {
     #[must_use]
     pub fn severity(self) -> Severity {
         match self {
-            Self::E014 | Self::E030 | Self::E031 => Severity::Warning,
+            Self::E014
+            | Self::E022
+            | Self::E023
+            | Self::E026
+            | Self::E030
+            | Self::E031
+            | Self::E033
+            | Self::E034
+            | Self::E035 => Severity::Warning,
             _ => Severity::Error,
+        }
+    }
+
+    /// Parse a diagnostic code from its string representation (e.g., `"E027"`).
+    #[must_use]
+    pub fn from_str_code(s: &str) -> Option<Self> {
+        match s {
+            "E001" => Some(Self::E001),
+            "E002" => Some(Self::E002),
+            "E003" => Some(Self::E003),
+            "E004" => Some(Self::E004),
+            "E005" => Some(Self::E005),
+            "E006" => Some(Self::E006),
+            "E007" => Some(Self::E007),
+            "E008" => Some(Self::E008),
+            "E009" => Some(Self::E009),
+            "E010" => Some(Self::E010),
+            "E011" => Some(Self::E011),
+            "E012" => Some(Self::E012),
+            "E013" => Some(Self::E013),
+            "E014" => Some(Self::E014),
+            "E015" => Some(Self::E015),
+            "E016" => Some(Self::E016),
+            "E017" => Some(Self::E017),
+            "E018" => Some(Self::E018),
+            "E019" => Some(Self::E019),
+            "E020" => Some(Self::E020),
+            "E021" => Some(Self::E021),
+            "E022" => Some(Self::E022),
+            "E023" => Some(Self::E023),
+            "E024" => Some(Self::E024),
+            "E025" => Some(Self::E025),
+            "E026" => Some(Self::E026),
+            "E027" => Some(Self::E027),
+            "E028" => Some(Self::E028),
+            "E029" => Some(Self::E029),
+            "E030" => Some(Self::E030),
+            "E031" => Some(Self::E031),
+            "E032" => Some(Self::E032),
+            "E033" => Some(Self::E033),
+            "E034" => Some(Self::E034),
+            "E035" => Some(Self::E035),
+            "E036" => Some(Self::E036),
+            _ => None,
         }
     }
 }

@@ -314,6 +314,11 @@ impl LowerCtx {
                 range: p.name.range,
                 scope: self.current_scope(),
                 kind: crate::SymbolKind::Param,
+                param_detail: Some(crate::ParamInfo {
+                    name: p.name.text.clone(),
+                    is_ref: p.is_ref,
+                    is_divert: p.is_divert,
+                }),
             });
         }
         let (body, stitches) = knot.body().map_or_else(
@@ -399,6 +404,11 @@ impl LowerCtx {
                 range: p.name.range,
                 scope: self.current_scope(),
                 kind: crate::SymbolKind::Param,
+                param_detail: Some(crate::ParamInfo {
+                    name: p.name.text.clone(),
+                    is_ref: p.is_ref,
+                    is_divert: p.is_divert,
+                }),
             });
         }
         let body = stitch
@@ -456,6 +466,11 @@ impl LowerCtx {
                 range: p.name.range,
                 scope: self.current_scope(),
                 kind: crate::SymbolKind::Param,
+                param_detail: Some(crate::ParamInfo {
+                    name: p.name.text.clone(),
+                    is_ref: p.is_ref,
+                    is_divert: p.is_divert,
+                }),
             });
         }
         let body = stitch
@@ -1777,6 +1792,7 @@ impl LowerCtx {
                 range: name.range,
                 scope: self.current_scope(),
                 kind: crate::SymbolKind::Temp,
+                param_detail: None,
             });
             return Some(Stmt::TempDecl(TempDecl {
                 ptr: AstPtr::new(&temp),

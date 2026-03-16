@@ -13,10 +13,10 @@ publish = false
 [dependencies]
 brink-ir = { path = "../brink-ir" }
 brink-format = { path = "../brink-format" }
+brink-syntax = { path = "../brink-syntax" }
 rowan.workspace = true
 
 [dev-dependencies]
-brink-syntax = { path = "../brink-syntax" }
 proptest.workspace = true
 
 [lints]
