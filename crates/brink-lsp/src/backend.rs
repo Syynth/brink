@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use brink_analyzer::AnalysisResult;
+use tokio::sync::{Notify, watch};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionParams, CodeActionProviderCapability,
@@ -31,11 +33,31 @@ use crate::semantic_tokens;
 pub struct Backend {
     client: Client,
     db: Arc<Mutex<brink_db::ProjectDb>>,
+    analysis_rx: watch::Receiver<Option<Arc<AnalysisResult>>>,
+    analysis_trigger: Arc<Notify>,
+    generation: Arc<AtomicU64>,
+    last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
 }
 
 impl Backend {
-    pub fn new(client: Client, db: Arc<Mutex<brink_db::ProjectDb>>) -> Self {
-        Self { client, db }
+    pub fn new(
+        client: Client,
+        db: Arc<Mutex<brink_db::ProjectDb>>,
+        analysis_rx: watch::Receiver<Option<Arc<AnalysisResult>>>,
+        analysis_trigger: Arc<Notify>,
+        generation: Arc<AtomicU64>,
+        last_published: Arc<
+            Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>,
+        >,
+    ) -> Self {
+        Self {
+            client,
+            db,
+            analysis_rx,
+            analysis_trigger,
+            generation,
+            last_published,
+        }
     }
 
     fn uri_to_path(uri: &Url) -> Option<String> {
@@ -44,9 +66,11 @@ impl Backend {
             .map(|p| p.to_string_lossy().into_owned())
     }
 
-    async fn publish_diagnostics_for_file(&self, uri: &Url, path: &str) {
+    /// Publish per-file diagnostics (parse + lowering only, no analysis).
+    /// This gives instant syntax error feedback without waiting for background analysis.
+    async fn publish_perfile_diagnostics(&self, uri: &Url, path: &str) {
         let lsp_diags = {
-            let mut db = lock_db(&self.db);
+            let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(path) else {
                 return;
             };
@@ -56,28 +80,22 @@ impl Backend {
             };
             let idx = LineIndex::new(&source);
 
-            // Per-file diagnostics (parse + lowering)
-            let mut diags: Vec<_> = db
-                .file_diagnostics(file_id)
+            db.file_diagnostics(file_id)
                 .unwrap_or_default()
                 .iter()
                 .map(|d| convert::diagnostic_to_lsp(d, &idx))
-                .collect();
-
-            // Cross-file diagnostics filtered to this file
-            let analysis = db.analyze().clone();
-            for diag in &analysis.diagnostics {
-                if diag.file == file_id {
-                    diags.push(convert::diagnostic_to_lsp(diag, &idx));
-                }
-            }
-
-            diags
+                .collect()
         };
 
         self.client
             .publish_diagnostics(uri.clone(), lsp_diags, None)
             .await;
+    }
+
+    /// Bump the generation counter and notify the background analysis task.
+    fn trigger_analysis(&self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.analysis_trigger.notify_one();
     }
 }
 
@@ -90,7 +108,7 @@ fn lock_db(db: &Arc<Mutex<brink_db::ProjectDb>>) -> std::sync::MutexGuard<'_, br
 
 /// Snapshot of analysis + per-file data needed for navigation handlers.
 struct NavigationSnapshot {
-    analysis: AnalysisResult,
+    analysis: Arc<AnalysisResult>,
     source: String,
     file_id: brink_ir::FileId,
     /// (`FileId`, path, source) for all files in the db.
@@ -98,12 +116,13 @@ struct NavigationSnapshot {
 }
 
 impl Backend {
-    /// Take a consistent snapshot under a single lock acquisition.
+    /// Take a consistent snapshot without running analysis.
+    /// Reads the latest analysis result from the watch channel.
     fn navigation_snapshot(&self, path: &str) -> Option<NavigationSnapshot> {
-        let mut db = lock_db(&self.db);
+        let analysis = self.analysis_rx.borrow().clone()?;
+        let db = lock_db(&self.db);
         let file_id = db.file_id(path)?;
         let source = db.source(file_id)?.to_owned();
-        let analysis = db.analyze().clone();
         let all_files: Vec<_> = db
             .file_ids()
             .filter_map(|fid| {
@@ -231,8 +250,9 @@ impl LanguageServer for Backend {
             db.set_file(&path, params.text_document.text);
         }
 
-        self.publish_diagnostics_for_file(&params.text_document.uri, &path)
+        self.publish_perfile_diagnostics(&params.text_document.uri, &path)
             .await;
+        self.trigger_analysis();
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -256,8 +276,9 @@ impl LanguageServer for Backend {
             db.update_file(&path, change.text);
         }
 
-        self.publish_diagnostics_for_file(&params.text_document.uri, &path)
+        self.publish_perfile_diagnostics(&params.text_document.uri, &path)
             .await;
+        self.trigger_analysis();
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
@@ -272,8 +293,9 @@ impl LanguageServer for Backend {
             db.update_file(&path, text);
         }
 
-        self.publish_diagnostics_for_file(&params.text_document.uri, &path)
+        self.publish_perfile_diagnostics(&params.text_document.uri, &path)
             .await;
+        self.trigger_analysis();
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -283,14 +305,24 @@ impl LanguageServer for Backend {
             return;
         };
 
-        {
+        let file_id = {
             let mut db = lock_db(&self.db);
+            let fid = db.file_id(&path);
             db.remove_file(&path);
+            fid
+        };
+
+        // Clear from last_published tracking
+        if let Some(fid) = file_id
+            && let Ok(mut published) = self.last_published.lock()
+        {
+            published.remove(&fid);
         }
 
         self.client
             .publish_diagnostics(params.text_document.uri, vec![], None)
             .await;
+        self.trigger_analysis();
     }
 
     // ── Navigation ───────────────────────────────────────────────────
@@ -804,18 +836,19 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<SymbolInformation>>> {
         tracing::debug!(query = %params.query, "workspace_symbol");
 
-        let (analysis, all_files) = {
-            let mut db = lock_db(&self.db);
-            let analysis = db.analyze().clone();
-            let files: Vec<_> = db
-                .file_ids()
+        let Some(analysis) = self.analysis_rx.borrow().clone() else {
+            return Ok(Some(vec![]));
+        };
+
+        let all_files = {
+            let db = lock_db(&self.db);
+            db.file_ids()
                 .filter_map(|fid| {
                     let p = db.file_path(fid)?.to_owned();
                     let s = db.source(fid)?.to_owned();
                     Some((fid, p, s))
                 })
-                .collect();
-            (analysis, files)
+                .collect::<Vec<_>>()
         };
 
         let query = params.query.to_lowercase();
@@ -867,8 +900,12 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let (source, root, analysis, file_id) = {
-            let mut db = lock_db(&self.db);
+        let Some(analysis) = self.analysis_rx.borrow().clone() else {
+            return Ok(None);
+        };
+
+        let (source, root, file_id) = {
+            let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(&path) else {
                 return Ok(None);
             };
@@ -879,8 +916,7 @@ impl LanguageServer for Backend {
                 return Ok(None);
             };
             let root = parse.syntax();
-            let analysis = db.analyze().clone();
-            (source, root, analysis, file_id)
+            (source, root, file_id)
         };
 
         let data = semantic_tokens::compute_semantic_tokens(&source, &root, &analysis, file_id);
@@ -901,8 +937,12 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let (source, root, analysis, file_id) = {
-            let mut db = lock_db(&self.db);
+        let Some(analysis) = self.analysis_rx.borrow().clone() else {
+            return Ok(None);
+        };
+
+        let (source, root, file_id) = {
+            let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(&path) else {
                 return Ok(None);
             };
@@ -913,8 +953,7 @@ impl LanguageServer for Backend {
                 return Ok(None);
             };
             let root = parse.syntax();
-            let analysis = db.analyze().clone();
-            (source, root, analysis, file_id)
+            (source, root, file_id)
         };
 
         let range = params.range;
@@ -2254,6 +2293,132 @@ fn make_completion_item(
         kind: Some(kind),
         detail,
         ..Default::default()
+    }
+}
+
+// ── Background analysis loop ────────────────────────────────────────
+
+/// Background task that runs cross-file analysis outside the db lock.
+///
+/// Woken by `trigger.notify_one()` whenever a file changes. Uses `yield_now()`
+/// to coalesce rapid edits, then snapshots analysis inputs under the lock,
+/// runs analysis without holding the lock, and publishes diagnostics for all
+/// files whose diagnostic set changed.
+pub async fn analysis_loop(
+    db: Arc<Mutex<brink_db::ProjectDb>>,
+    _generation: Arc<AtomicU64>,
+    trigger: Arc<Notify>,
+    tx: watch::Sender<Option<Arc<AnalysisResult>>>,
+    client: Client,
+    last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
+) {
+    loop {
+        trigger.notified().await;
+        // Coalesce rapid edits — yield so any queued notifications collapse
+        tokio::task::yield_now().await;
+
+        // Snapshot inputs under lock
+        let (inputs, file_meta, per_file_diags) = {
+            let db = lock_db(&db);
+            let inputs = db.analysis_inputs();
+            let meta = db.file_metadata();
+            let diags: Vec<_> = meta
+                .iter()
+                .filter_map(|(fid, _, _)| Some((*fid, db.file_diagnostics(*fid)?.to_vec())))
+                .collect();
+            (inputs, meta, diags)
+        };
+
+        // Run analysis OUTSIDE the lock — this is the key change
+        let file_refs: Vec<_> = inputs
+            .iter()
+            .map(|(id, hir, manifest)| (*id, hir, manifest))
+            .collect();
+        let result = brink_analyzer::analyze(&file_refs);
+        let result = Arc::new(result);
+
+        // Publish to watch channel
+        let _ = tx.send(Some(Arc::clone(&result)));
+
+        // Publish diagnostics for all affected files
+        publish_all_diagnostics(
+            &client,
+            &result,
+            &file_meta,
+            &per_file_diags,
+            &last_published,
+        )
+        .await;
+    }
+}
+
+/// Compute full diagnostic set for each file and publish if changed.
+async fn publish_all_diagnostics(
+    client: &Client,
+    analysis: &AnalysisResult,
+    file_meta: &[(brink_ir::FileId, String, String)],
+    per_file_diags: &[(brink_ir::FileId, Vec<brink_ir::Diagnostic>)],
+    last_published: &Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>,
+) {
+    // Build per-file diagnostic map from analysis
+    let mut analysis_diags_by_file: HashMap<brink_ir::FileId, Vec<&brink_ir::Diagnostic>> =
+        HashMap::new();
+    for diag in &analysis.diagnostics {
+        analysis_diags_by_file
+            .entry(diag.file)
+            .or_default()
+            .push(diag);
+    }
+
+    // Build per-file lowering diagnostic map
+    let lowering_diags: HashMap<brink_ir::FileId, &[brink_ir::Diagnostic]> = per_file_diags
+        .iter()
+        .map(|(fid, diags)| (*fid, diags.as_slice()))
+        .collect();
+
+    for (file_id, path, source) in file_meta {
+        let idx = LineIndex::new(source);
+
+        // Combine per-file (parse+lowering) + cross-file (analysis) diagnostics
+        let empty: &[brink_ir::Diagnostic] = &[];
+        let mut lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic> = lowering_diags
+            .get(file_id)
+            .unwrap_or(&empty)
+            .iter()
+            .map(|d| convert::diagnostic_to_lsp(d, &idx))
+            .collect();
+
+        if let Some(analysis_diags) = analysis_diags_by_file.get(file_id) {
+            for d in analysis_diags {
+                lsp_diags.push(convert::diagnostic_to_lsp(d, &idx));
+            }
+        }
+
+        // Only publish if diagnostics changed for this file
+        let should_publish = {
+            let published = match last_published.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            match published.get(file_id) {
+                Some(prev) => *prev != lsp_diags,
+                None => !lsp_diags.is_empty(),
+            }
+        };
+
+        if should_publish {
+            if let Ok(uri) = Url::from_file_path(path) {
+                client
+                    .publish_diagnostics(uri, lsp_diags.clone(), None)
+                    .await;
+            }
+
+            let mut published = match last_published.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            published.insert(*file_id, lsp_diags);
+        }
     }
 }
 

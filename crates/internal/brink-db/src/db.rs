@@ -244,6 +244,37 @@ impl ProjectDb {
         self.files.get(&id).map(|s| s.diagnostics.as_slice())
     }
 
+    /// Snapshot all analysis inputs for background analysis.
+    ///
+    /// Returns `(FileId, HirFile, SymbolManifest)` tuples cloned out of the db,
+    /// so the caller can run `brink_analyzer::analyze()` without holding the lock.
+    pub fn analysis_inputs(&self) -> Vec<(FileId, HirFile, SymbolManifest)> {
+        let mut inputs: Vec<_> = self
+            .files
+            .iter()
+            .map(|(&id, state)| (id, state.hir.clone(), state.manifest.clone()))
+            .collect();
+        inputs.sort_by_key(|(id, _, _)| id.0);
+        inputs
+    }
+
+    /// Snapshot file metadata for diagnostic publishing.
+    ///
+    /// Returns `(FileId, path, source)` tuples for all files in the db.
+    pub fn file_metadata(&self) -> Vec<(FileId, String, String)> {
+        let mut meta: Vec<_> = self
+            .files
+            .keys()
+            .filter_map(|&id| {
+                let path = self.id_to_path.get(&id)?.clone();
+                let source = self.files.get(&id)?.source.clone();
+                Some((id, path, source))
+            })
+            .collect();
+        meta.sort_by_key(|(id, _, _)| id.0);
+        meta
+    }
+
     /// Run cross-file analysis (or return cached result).
     #[expect(
         clippy::expect_used,
