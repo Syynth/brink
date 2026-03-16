@@ -15,16 +15,14 @@ brink-format = { path = "../internal/brink-format" }
 brink-json = { path = "../internal/brink-json" }
 brink-codegen-json = { path = "../internal/brink-codegen-json" }
 brink-codegen-inkb = { path = "../internal/brink-codegen-inkb" }
-brink-analyzer = { path = "../internal/brink-analyzer" }
-brink-syntax = { path = "../internal/brink-syntax" }
-brink-db = { path = "../internal/brink-db" }
 brink-driver = { path = "../internal/brink-driver" }
-rowan.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-runtime = { path = "../brink-runtime" }
+brink-syntax = { path = "../internal/brink-syntax" }
 brink-format = { path = "../internal/brink-format", features = ["inkt"] }
 brink-test-harness = { path = "../internal/brink-test-harness" }
 serde_json.workspace = true

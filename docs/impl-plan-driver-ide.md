@@ -17,89 +17,43 @@ cargo check --target wasm32-unknown-unknown -p brink-ide         # wasm compat
 
 ---
 
-## Phase 1: Create brink-driver
+## Phase 1: Create brink-driver + migrate compiler ✅
 
 Reference: [brink-driver-spec § API surface](brink-driver-spec.md#api-surface)
 
-### Step 1.1: Scaffold crate
-- [ ] Create `crates/internal/brink-driver/` with Cargo.toml (deps: brink-db, brink-analyzer, brink-ir, thiserror, tracing)
-- [ ] Add to workspace Cargo.toml
-- [ ] Create `src/lib.rs` with `Driver` struct wrapping `ProjectDb`, `DiscoverError` type
-- [ ] Verify: `cargo check -p brink-driver`
+**Done** in commit `79cec0f`. Phases 1 and 2 were implemented together since Driver methods delegate to ProjectDb and the compiler was the natural first consumer.
 
-### Step 1.2: Move discover
-- [ ] Implement `Driver::discover()` — move BFS logic from `ProjectDb::discover()`
-- [ ] Implement `resolve_include_path()` as string-based (`rfind('/')`) — replaces `std::path::Path` version
-- [ ] Add tests for `resolve_include_path` (basic, nested, no-directory, trailing-slash edge cases)
-- [ ] Verify: `cargo test -p brink-driver`
-
-### Step 1.3: Move analysis orchestration
-- [ ] Implement `Driver::analyze()` — calls `brink_analyzer::analyze()` on db inputs, caches result
-- [ ] Implement `Driver::analyze_project()` — analysis for a subset of files (no cache)
-- [ ] Implement `Driver::analysis_inputs()` / `Driver::analysis_inputs_for()`
-- [ ] Verify: `cargo test -p brink-driver`
-
-### Step 1.4: Move project computation + graph queries
-- [ ] Implement `Driver::compute_projects()` — delegates to db's include graph
-- [ ] Implement `Driver::file_ids_topo()` — delegates to db's include graph
-- [ ] Implement `Driver::file_metadata()`
-- [ ] Add thin public wrappers on `ProjectDb` for graph queries (`file_ids_topo`, `compute_projects`, `find_cycle`) if not already public
-- [ ] Verify: `cargo test -p brink-driver`
-
-### Step 1.5: Implement diagnostic collection
-- [ ] Implement `Driver::collect_diagnostics()` — consolidation of compiler + LSP logic
-- [ ] Implement `DiagnosticReport` type
-- [ ] Logic: gather lowering diagnostics per file + analysis diagnostics, apply suppressions, partition by severity, handle `disable_all` on entry file
-- [ ] Add tests: basic partitioning, suppression filtering, disable_all behavior
-- [ ] Verify: `cargo test -p brink-driver`
-
-### Step 1.6: Implement LIR input preparation
-- [ ] Implement `Driver::lir_inputs()` — topo-sorted HIR files + file path map
-- [ ] Verify: `cargo test -p brink-driver`, full workspace check
+What was done:
+- [x] `brink-driver` crate: `Driver` struct, `discover.rs` (BFS + `DiscoverError`), `diagnostics.rs` (`collect_diagnostics` + `DiagnosticReport`)
+- [x] `resolve_include_path` made `pub` in brink-db, changed to string-based `rfind('/')` for WASM compat
+- [x] `ProjectDb::find_cycle()` public wrapper added
+- [x] Compiler rewritten to use `Driver` (discover → analyze → collect_diagnostics → lir_inputs → lower → emit)
+- [x] `CompileError::From<brink_driver::DiscoverError>` replaces `From<brink_db::DiscoverError>`
+- [x] 9 unit tests: 5 path resolution, 4 diagnostic collection
+- [x] All verification checks pass: workspace clippy, fmt, tests, episode ratchet, wasm target
 
 ---
 
-## Phase 2: Migrate brink-compiler to brink-driver
+## Phase 3+4: LSP migration + brink-db cleanup ✅
 
-Reference: [brink-driver-spec § Changes to brink-compiler](brink-driver-spec.md#changes-to-brink-compiler)
+Reference: [brink-driver-spec § Changes to brink-lsp](brink-driver-spec.md#changes-to-brink-lsp), [§ Changes to brink-db](brink-driver-spec.md#changes-to-brink-db)
 
-### Step 2.1: Rewrite compiler driver
-- [ ] Change `brink-compiler` to depend on `brink-driver`
-- [ ] Rewrite `driver.rs` to use `Driver` (discover → analyze → collect_diagnostics → lir_inputs → lower → emit)
-- [ ] Remove direct `brink-db` and `brink-analyzer` from `brink-compiler` Cargo.toml
-- [ ] Verify: `cargo test -p brink-compiler`, episode corpus ratchet unchanged
+**Done** in commit `4c1f19a`. Phases 3 and 4 were combined — the LSP's diagnostic code is structurally different from the compiler's (per-project analysis outside the lock with multi-project annotation), so `Driver::collect_diagnostics()` doesn't fit. LSP migration was minimal (add dep only); the real work was the brink-db cleanup.
 
----
+What was done:
+- [x] Removed `ProjectDb::analyze()`, `ProjectDb::discover()`, `analysis` field, all cache invalidation
+- [x] Removed `DiscoverError` enum and `pub use brink_analyzer::AnalysisResult` re-export from brink-db
+- [x] Removed `brink-analyzer` dependency from brink-db
+- [x] Moved analysis cache into `Driver` with auto-invalidation on `db_mut()`
+- [x] Fixed diagnostic tests to use `brink_analyzer::analyze()` directly
+- [x] Cleaned brink-compiler prod deps: removed `brink-db`, `brink-analyzer`, `brink-syntax`, `rowan` (moved `brink-analyzer`, `brink-syntax` to dev-deps for test file)
+- [x] Added `brink-driver` to brink-lsp (dep only, no functional code changes)
+- [x] All verification checks pass: workspace clippy, fmt, tests, episode ratchet, wasm target
 
-## Phase 3: Migrate brink-lsp to brink-driver
+What was kept on `ProjectDb` (cache accessors used by both Driver and LSP):
+- `compute_projects()`, `analysis_inputs()`, `analysis_inputs_for()`, `file_metadata()`, `file_ids_topo()`
 
-Reference: [brink-driver-spec § Changes to brink-lsp](brink-driver-spec.md#changes-to-brink-lsp)
-
-### Step 3.1: Use driver for diagnostic collection
-- [ ] Add `brink-driver` to `brink-lsp` dependencies
-- [ ] Refactor `analysis_loop` to use `Driver::collect_diagnostics()` for gather-suppress-partition
-- [ ] Multi-project annotation stays in LSP
-- [ ] Verify: LSP tests pass, manual smoke test if feasible
-
----
-
-## Phase 4: Clean up brink-db
-
-Reference: [brink-driver-spec § Changes to brink-db](brink-driver-spec.md#changes-to-brink-db)
-
-### Step 4.1: Remove migrated methods
-- [ ] Remove `ProjectDb::discover()` (callers now use `Driver::discover()`)
-- [ ] Remove `ProjectDb::analyze()` (callers now use `Driver::analyze()`)
-- [ ] Remove `ProjectDb::analysis_inputs()` / `analysis_inputs_for()` / `file_metadata()`
-- [ ] Remove `pub use brink_analyzer::AnalysisResult` re-export from `brink-db/src/lib.rs`
-- [ ] Remove `brink-analyzer` from `brink-db` Cargo.toml dependencies
-- [ ] Remove `DiscoverError` from brink-db (now in brink-driver)
-- [ ] Verify: full workspace builds, all tests pass
-
-### Step 4.2: Fix resolve_include_path in brink-db internals
-- [ ] Replace `std::path::Path`-based `resolve_include_path` in `db.rs` (used by `set_file`/`update_file`/`rebuild_include_graph`) with the string-based version from brink-driver (or import it)
-- [ ] Remove `use std::path::Path` from brink-db
-- [ ] Verify: episode corpus unchanged, `cargo check --target wasm32-unknown-unknown -p brink-db`
+Note: Step 4.2 (resolve_include_path) was already done in Phase 1 — `resolve_include_path` in brink-db was already string-based (`rfind('/')`), no `std::path::Path` usage existed.
 
 ---
 

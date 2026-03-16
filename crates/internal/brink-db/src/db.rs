@@ -1,13 +1,11 @@
 use std::collections::HashMap;
-use std::io;
 
-use brink_analyzer::AnalysisResult;
 use brink_ir::suppressions::{Suppressions, parse_suppressions};
 use brink_ir::{Diagnostic, FileId, HirFile, SymbolManifest, lower, lower_knot, lower_top_level};
 use brink_syntax::ast::AstNode as _;
 use brink_syntax::{Parse, parse_with_cache};
 use rowan::{GreenNode, NodeCache};
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::file_state::{FileState, TopLevelEntry};
 use crate::include_graph::IncludeGraph;
@@ -24,7 +22,6 @@ pub struct ProjectDb {
     id_to_path: HashMap<FileId, String>,
     next_id: u32,
     include_graph: IncludeGraph,
-    analysis: Option<AnalysisResult>,
     node_cache: NodeCache,
 }
 
@@ -37,7 +34,6 @@ impl ProjectDb {
             id_to_path: HashMap::new(),
             next_id: 0,
             include_graph: IncludeGraph::new(),
-            analysis: None,
             node_cache: NodeCache::default(),
         }
     }
@@ -97,7 +93,6 @@ impl ProjectDb {
         self.include_graph.update(file_id, include_ids);
 
         self.files.insert(file_id, state);
-        self.analysis = None;
 
         debug!(path, id = file_id.0, "set_file complete");
         file_id
@@ -188,7 +183,7 @@ impl ProjectDb {
         self.include_graph.update(file_id, include_ids);
 
         self.files.insert(file_id, state);
-        self.analysis = None;
+
         file_id
     }
 
@@ -198,7 +193,6 @@ impl ProjectDb {
             self.id_to_path.remove(&id);
             self.files.remove(&id);
             self.include_graph.remove(id);
-            self.analysis = None;
         }
     }
 
@@ -282,7 +276,6 @@ impl ProjectDb {
                 self.include_graph.update(*file_id, include_ids);
             }
         }
-        self.analysis = None;
     }
 
     /// Detect cycles in the include graph.
@@ -347,92 +340,6 @@ impl ProjectDb {
             .collect();
         meta.sort_by_key(|(id, _, _)| id.0);
         meta
-    }
-
-    /// Run cross-file analysis (or return cached result).
-    #[expect(
-        clippy::expect_used,
-        reason = "analysis is always Some after the if-block above"
-    )]
-    pub fn analyze(&mut self) -> &AnalysisResult {
-        if self.analysis.is_none() {
-            let files: Vec<_> = self
-                .files
-                .iter()
-                .map(|(&id, state)| (id, &state.hir, &state.manifest))
-                .collect();
-
-            info!(files = files.len(), "running cross-file analysis");
-            self.analysis = Some(brink_analyzer::analyze(&files));
-        }
-        self.analysis.as_ref().expect("just set above")
-    }
-
-    /// BFS discovery of all files reachable via INCLUDEs from the entry point.
-    pub fn discover<F>(
-        &mut self,
-        entry: &str,
-        read_file: &mut F,
-    ) -> Result<(), crate::DiscoverError>
-    where
-        F: FnMut(&str) -> Result<String, io::Error>,
-    {
-        let mut queue: Vec<String> = vec![entry.to_string()];
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        while let Some(path) = queue.pop() {
-            if !seen.insert(path.clone()) {
-                continue;
-            }
-
-            let source = read_file(&path)?;
-            let file_id = self.set_file(&path, source);
-
-            // Discover INCLUDEs
-            if let Some(state) = self.files.get(&file_id) {
-                for include in &state.hir.includes {
-                    let resolved = resolve_include_path(&path, &include.file_path);
-                    if !seen.contains(&resolved) {
-                        debug!(from = path, include = resolved, "discovered INCLUDE");
-                        queue.push(resolved);
-                    }
-                }
-            }
-        }
-
-        // Rebuild include graph now that all files are loaded
-        let file_list: Vec<(FileId, String)> = self
-            .files
-            .keys()
-            .filter_map(|&id| self.id_to_path.get(&id).map(|p| (id, p.clone())))
-            .collect();
-
-        for (file_id, file_path) in &file_list {
-            if let Some(state) = self.files.get(file_id) {
-                let include_ids: Vec<FileId> = state
-                    .hir
-                    .includes
-                    .iter()
-                    .filter_map(|inc| {
-                        let resolved = resolve_include_path(file_path, &inc.file_path);
-                        self.path_to_id.get(&resolved).copied()
-                    })
-                    .collect();
-                self.include_graph.update(*file_id, include_ids);
-            }
-        }
-
-        // Detect circular includes
-        if let Some(cycle) = self.include_graph.find_cycle() {
-            let names: Vec<_> = cycle
-                .iter()
-                .filter_map(|id| self.id_to_path.get(id).map(String::as_str))
-                .collect();
-            return Err(crate::DiscoverError::CircularInclude(names.join(" -> ")));
-        }
-
-        info!(files = seen.len(), "discovery complete");
-        Ok(())
     }
 
     // ── Internal helpers ──────────────────────────────────────────────

@@ -20,6 +20,7 @@ pub use discover::DiscoverError;
 /// Pipeline orchestration wrapper around `ProjectDb`.
 pub struct Driver {
     db: ProjectDb,
+    analysis: Option<AnalysisResult>,
 }
 
 impl Driver {
@@ -27,12 +28,13 @@ impl Driver {
     pub fn new() -> Self {
         Self {
             db: ProjectDb::new(),
+            analysis: None,
         }
     }
 
     /// Create a driver from an existing database.
     pub fn from_db(db: ProjectDb) -> Self {
-        Self { db }
+        Self { db, analysis: None }
     }
 
     /// Borrow the underlying database.
@@ -41,7 +43,11 @@ impl Driver {
     }
 
     /// Mutably borrow the underlying database.
+    ///
+    /// Invalidates the cached analysis result, since any mutation may change
+    /// HIR/manifest data that analysis depends on.
     pub fn db_mut(&mut self) -> &mut ProjectDb {
+        self.analysis = None;
         &mut self.db
     }
 
@@ -63,8 +69,22 @@ impl Driver {
     // ── Analysis ─────────────────────────────────────────────────────
 
     /// Run cross-file analysis on all files (or return cached result).
+    #[expect(
+        clippy::expect_used,
+        reason = "analysis is always Some after the if-block above"
+    )]
     pub fn analyze(&mut self) -> &AnalysisResult {
-        self.db.analyze()
+        if self.analysis.is_none() {
+            let inputs = self.db.analysis_inputs();
+            let files: Vec<_> = inputs
+                .iter()
+                .map(|(id, hir, manifest)| (*id, hir, manifest))
+                .collect();
+
+            tracing::info!(files = files.len(), "running cross-file analysis");
+            self.analysis = Some(brink_analyzer::analyze(&files));
+        }
+        self.analysis.as_ref().expect("just set above")
     }
 
     /// Run analysis on a specific subset of files (one project). Not cached.

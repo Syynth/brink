@@ -228,7 +228,6 @@ dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
  "brink-codegen-json",
- "brink-db",
  "brink-driver",
  "brink-format",
  "brink-ir",
@@ -236,7 +235,6 @@ dependencies = [
  "brink-runtime",
  "brink-syntax",
  "brink-test-harness",
- "rowan",
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
@@ -257,7 +255,6 @@ dependencies = [
 name = "brink-db"
 version = "0.0.1"
 dependencies = [
- "brink-analyzer",
  "brink-ir",
  "brink-syntax",
  "rowan",
@@ -348,6 +345,7 @@ version = "0.0.1"
 dependencies = [
  "brink-analyzer",
  "brink-db",
+ "brink-driver",
  "brink-fmt",
  "brink-ir",
  "brink-syntax",

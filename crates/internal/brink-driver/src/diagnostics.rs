@@ -109,12 +109,21 @@ mod tests {
         assert!(!report.errors.is_empty());
     }
 
+    fn run_analysis(db: &ProjectDb) -> AnalysisResult {
+        let inputs = db.analysis_inputs();
+        let file_refs: Vec<_> = inputs
+            .iter()
+            .map(|(id, hir, manifest)| (*id, hir, manifest))
+            .collect();
+        brink_analyzer::analyze(&file_refs)
+    }
+
     #[test]
     fn analysis_diagnostics_included_when_no_disable_all() {
         let mut db = ProjectDb::new();
         // A file with an unresolved divert target (will produce analysis diagnostic)
         db.set_file("test.ink", "-> missing_knot\n".to_string());
-        let analysis_result = db.analyze().clone();
+        let analysis_result = run_analysis(&db);
         let entry = db.file_id("test.ink");
         let report = collect_diagnostics(&db, &analysis_result, entry);
         // Should have the unresolved divert as an error
@@ -130,7 +139,7 @@ mod tests {
             "test.ink",
             "// brink-disable-all\n-> missing_knot\n".to_string(),
         );
-        let analysis_result = db.analyze().clone();
+        let analysis_result = run_analysis(&db);
         let entry = db.file_id("test.ink");
         let report = collect_diagnostics(&db, &analysis_result, entry);
         // Analysis diagnostics should be skipped; only lowering diagnostics remain

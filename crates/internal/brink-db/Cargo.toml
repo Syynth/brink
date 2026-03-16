@@ -13,7 +13,6 @@ publish = false
 [dependencies]
 brink-syntax = { path = "../brink-syntax" }
 brink-ir = { path = "../brink-ir" }
-brink-analyzer = { path = "../brink-analyzer" }
 rowan.workspace = true
 tracing.workspace = true
 thiserror.workspace = true

@@ -9,17 +9,5 @@ mod file_state;
 mod include_graph;
 mod knot_cache;
 
-pub use brink_analyzer::AnalysisResult;
 pub use brink_ir::FileId;
 pub use db::{ProjectDb, resolve_include_path};
-
-/// Errors from file discovery.
-#[derive(Debug, thiserror::Error)]
-pub enum DiscoverError {
-    /// File I/O error during discovery.
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-    /// Circular INCLUDE dependency detected.
-    #[error("circular INCLUDE: {0}")]
-    CircularInclude(String),
-}
