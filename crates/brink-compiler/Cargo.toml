@@ -18,6 +18,7 @@ brink-codegen-inkb = { path = "../internal/brink-codegen-inkb" }
 brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-syntax = { path = "../internal/brink-syntax" }
 brink-db = { path = "../internal/brink-db" }
+brink-driver = { path = "../internal/brink-driver" }
 rowan.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

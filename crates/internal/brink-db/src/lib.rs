@@ -11,7 +11,7 @@ mod knot_cache;
 
 pub use brink_analyzer::AnalysisResult;
 pub use brink_ir::FileId;
-pub use db::ProjectDb;
+pub use db::{ProjectDb, resolve_include_path};
 
 /// Errors from file discovery.
 #[derive(Debug, thiserror::Error)]

@@ -79,11 +79,11 @@ pub enum CompileError {
     CircularInclude(String),
 }
 
-impl From<brink_db::DiscoverError> for CompileError {
-    fn from(err: brink_db::DiscoverError) -> Self {
+impl From<brink_driver::DiscoverError> for CompileError {
+    fn from(err: brink_driver::DiscoverError) -> Self {
         match err {
-            brink_db::DiscoverError::Io(e) => Self::Io(e),
-            brink_db::DiscoverError::CircularInclude(msg) => Self::CircularInclude(msg),
+            brink_driver::DiscoverError::Io(e) => Self::Io(e),
+            brink_driver::DiscoverError::CircularInclude(msg) => Self::CircularInclude(msg),
         }
     }
 }

@@ -285,6 +285,13 @@ impl ProjectDb {
         self.analysis = None;
     }
 
+    /// Detect cycles in the include graph.
+    ///
+    /// Returns the first cycle found as an ordered path of file IDs.
+    pub fn find_cycle(&self) -> Option<Vec<FileId>> {
+        self.include_graph.find_cycle()
+    }
+
     /// Compute independent projects from include relationships.
     ///
     /// Returns `(root, members)` pairs sorted by root `FileId`.
@@ -527,10 +534,13 @@ fn merge_manifest_into(dst: &mut SymbolManifest, src: &SymbolManifest) {
 }
 
 /// Resolve an INCLUDE path relative to the including file's directory.
-fn resolve_include_path(from_file: &str, include_path: &str) -> String {
-    if let Some(dir) = std::path::Path::new(from_file).parent() {
-        dir.join(include_path).to_string_lossy().into_owned()
-    } else {
-        include_path.to_string()
+///
+/// Uses string-based path manipulation (`rfind('/')`) rather than
+/// `std::path::Path` to avoid platform-specific separator issues and
+/// to work in WASM contexts.
+pub fn resolve_include_path(from_file: &str, include_path: &str) -> String {
+    match from_file.rfind('/') {
+        Some(i) => format!("{}/{include_path}", &from_file[..i]),
+        None => include_path.to_string(),
     }
 }

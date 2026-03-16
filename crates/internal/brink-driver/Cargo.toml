@@ -1,0 +1,21 @@
+[package]
+name = "brink-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Pipeline orchestration for the brink ink compiler"
+publish = false
+
+[dependencies]
+brink-db = { path = "../brink-db" }
+brink-analyzer = { path = "../brink-analyzer" }
+brink-ir = { path = "../brink-ir" }
+tracing.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

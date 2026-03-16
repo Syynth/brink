@@ -229,6 +229,7 @@ dependencies = [
  "brink-codegen-inkb",
  "brink-codegen-json",
  "brink-db",
+ "brink-driver",
  "brink-format",
  "brink-ir",
  "brink-json",
@@ -260,6 +261,17 @@ dependencies = [
  "brink-ir",
  "brink-syntax",
  "rowan",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "brink-driver"
+version = "0.0.1"
+dependencies = [
+ "brink-analyzer",
+ "brink-db",
+ "brink-ir",
  "thiserror 2.0.18",
  "tracing",
 ]
