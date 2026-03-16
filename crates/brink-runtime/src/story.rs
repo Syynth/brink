@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use brink_format::{ChoiceFlags, DefinitionId, Value};
+use brink_format::{ChoiceFlags, DefinitionId, PluralResolver, Value};
 
 use crate::error::RuntimeError;
 use crate::output::{OutputBuffer, clean_output_whitespace};
@@ -575,8 +575,9 @@ impl FlowInstance {
         &mut self,
         program: &Program,
         handler: &dyn ExternalFnHandler,
+        resolver: Option<&dyn PluralResolver>,
     ) -> Result<StepResult, RuntimeError> {
-        self.run_loop::<R>(program, handler, None)
+        self.run_loop::<R>(program, handler, resolver, None)
     }
 
     /// Execute until the next yield point with a [`WriteObserver`] that
@@ -585,9 +586,10 @@ impl FlowInstance {
         &mut self,
         program: &Program,
         handler: &dyn ExternalFnHandler,
+        resolver: Option<&dyn PluralResolver>,
         observer: &mut dyn WriteObserver,
     ) -> Result<StepResult, RuntimeError> {
-        self.run_loop::<R>(program, handler, Some(observer))
+        self.run_loop::<R>(program, handler, resolver, Some(observer))
     }
 
     /// Maximum VM steps per `continue_maximally` call before erroring.
@@ -599,6 +601,7 @@ impl FlowInstance {
         &mut self,
         program: &Program,
         handler: &dyn ExternalFnHandler,
+        resolver: Option<&dyn PluralResolver>,
         mut observer: Option<&mut dyn WriteObserver>,
     ) -> Result<StepResult, RuntimeError> {
         if self.status == StoryStatus::Ended {
@@ -629,10 +632,10 @@ impl FlowInstance {
 
             // Build state (observed or plain) and run one VM step.
             let stepped = if let Some(ref mut obs) = observer {
-                let mut state = ObservedState::<R>::new(program, context, *obs);
+                let mut state = ObservedState::<R>::new(program, context, resolver, *obs);
                 vm::step(flow, &mut state, stats)?
             } else {
-                let mut state = RuntimeState::<R>::new(program, context);
+                let mut state = RuntimeState::<R>::new(program, context, resolver);
                 vm::step(flow, &mut state, stats)?
             };
 
@@ -648,10 +651,10 @@ impl FlowInstance {
                     extend_lines(&mut all_lines, flow.output.flush_lines());
 
                     if let Some(ref mut obs) = observer {
-                        let mut state = ObservedState::<R>::new(program, context, *obs);
+                        let mut state = ObservedState::<R>::new(program, context, resolver, *obs);
                         state.increment_turn_index();
                     } else {
-                        let mut state = RuntimeState::<R>::new(program, context);
+                        let mut state = RuntimeState::<R>::new(program, context, resolver);
                         state.increment_turn_index();
                     }
 
@@ -670,10 +673,11 @@ impl FlowInstance {
 
                     if all_invisible {
                         if let Some(ref mut obs) = observer {
-                            let mut state = ObservedState::<R>::new(program, context, *obs);
+                            let mut state =
+                                ObservedState::<R>::new(program, context, resolver, *obs);
                             select_choice(flow, &mut state, status, stats, 0)?;
                         } else {
-                            let mut state = RuntimeState::<R>::new(program, context);
+                            let mut state = RuntimeState::<R>::new(program, context, resolver);
                             select_choice(flow, &mut state, status, stats, 0)?;
                         }
                         continue;
@@ -705,10 +709,10 @@ impl FlowInstance {
                     extend_lines(&mut all_lines, flow.output.flush_lines());
 
                     if let Some(ref mut obs) = observer {
-                        let mut state = ObservedState::<R>::new(program, context, *obs);
+                        let mut state = ObservedState::<R>::new(program, context, resolver, *obs);
                         state.increment_turn_index();
                     } else {
-                        let mut state = RuntimeState::<R>::new(program, context);
+                        let mut state = RuntimeState::<R>::new(program, context, resolver);
                         state.increment_turn_index();
                     }
 
@@ -721,11 +725,16 @@ impl FlowInstance {
     }
 
     /// Select a choice by index. Call [`step_with`] afterward to continue.
-    fn choose<R: StoryRng>(&mut self, program: &Program, index: usize) -> Result<(), RuntimeError> {
+    fn choose<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        index: usize,
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Result<(), RuntimeError> {
         if self.status != StoryStatus::WaitingForChoice {
             return Err(RuntimeError::NotWaitingForChoice);
         }
-        let mut state = RuntimeState::<R>::new(program, &mut self.context);
+        let mut state = RuntimeState::<R>::new(program, &mut self.context, resolver);
         select_choice(
             &mut self.flow,
             &mut state,
@@ -867,12 +876,24 @@ fn finalize_lines(lines: &[(String, Vec<String>)]) -> (String, Vec<Vec<String>>)
 ///
 /// Generic over `R: StoryRng` — defaults to [`FastRng`]. Use
 /// [`DotNetRng`](crate::DotNetRng) for .NET-compatible deterministic output.
-#[derive(Clone)]
 pub struct Story<'p, R: StoryRng = FastRng> {
     program: &'p Program,
     pub(crate) default: FlowInstance,
     instances: HashMap<String, FlowInstance>,
+    resolver: Option<Box<dyn PluralResolver>>,
     _rng: PhantomData<R>,
+}
+
+impl<R: StoryRng> Clone for Story<'_, R> {
+    fn clone(&self) -> Self {
+        Self {
+            program: self.program,
+            default: self.default.clone(),
+            instances: self.instances.clone(),
+            resolver: None,
+            _rng: PhantomData,
+        }
+    }
 }
 
 /// Owned story state that can be detached from a `Program` and reattached later.
@@ -893,8 +914,14 @@ impl<'p, R: StoryRng> Story<'p, R> {
             program,
             default: FlowInstance::new_at_root(program),
             instances: HashMap::new(),
+            resolver: None,
             _rng: PhantomData,
         }
+    }
+
+    /// Set the plural resolver for Select resolution in localized lines.
+    pub fn set_plural_resolver(&mut self, resolver: Box<dyn PluralResolver>) {
+        self.resolver = Some(resolver);
     }
 
     /// Detach story state from the program, consuming the story.
@@ -916,6 +943,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
             program,
             default: snapshot.default,
             instances: snapshot.instances,
+            resolver: None,
             _rng: PhantomData,
         }
     }
@@ -929,7 +957,9 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// [`continue_maximally_with`](Self::continue_maximally_with)
     /// to provide a custom external function handler.
     pub fn continue_maximally(&mut self) -> Result<StepResult, RuntimeError> {
-        self.default.step_with::<R>(self.program, &FallbackHandler)
+        let resolver = self.resolver.as_deref();
+        self.default
+            .step_with::<R>(self.program, &FallbackHandler, resolver)
     }
 
     /// Execute until the next yield point, using the given external
@@ -938,7 +968,8 @@ impl<'p, R: StoryRng> Story<'p, R> {
         &mut self,
         handler: &dyn ExternalFnHandler,
     ) -> Result<StepResult, RuntimeError> {
-        self.default.step_with::<R>(self.program, handler)
+        let resolver = self.resolver.as_deref();
+        self.default.step_with::<R>(self.program, handler, resolver)
     }
 
     /// Execute until the next yield point with a [`WriteObserver`] that
@@ -947,14 +978,16 @@ impl<'p, R: StoryRng> Story<'p, R> {
         &mut self,
         observer: &mut dyn WriteObserver,
     ) -> Result<StepResult, RuntimeError> {
+        let resolver = self.resolver.as_deref();
         self.default
-            .step_with_observed::<R>(self.program, &FallbackHandler, observer)
+            .step_with_observed::<R>(self.program, &FallbackHandler, resolver, observer)
     }
 
     /// Select a choice by index. Call [`continue_maximally`](Story::continue_maximally)
     /// afterward to continue.
     pub fn choose(&mut self, index: usize) -> Result<(), RuntimeError> {
-        self.default.choose::<R>(self.program, index)
+        let resolver = self.resolver.as_deref();
+        self.default.choose::<R>(self.program, index, resolver)
     }
 
     /// Get the current execution status.
@@ -1046,20 +1079,22 @@ impl<'p, R: StoryRng> Story<'p, R> {
         name: &str,
         handler: &dyn ExternalFnHandler,
     ) -> Result<StepResult, RuntimeError> {
+        let resolver = self.resolver.as_deref();
         let instance = self
             .instances
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
-        instance.step_with::<R>(self.program, handler)
+        instance.step_with::<R>(self.program, handler, resolver)
     }
 
     /// Select a choice in a named flow.
     pub fn choose_flow(&mut self, name: &str, index: usize) -> Result<(), RuntimeError> {
+        let resolver = self.resolver.as_deref();
         let instance = self
             .instances
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
-        instance.choose::<R>(self.program, index)
+        instance.choose::<R>(self.program, index, resolver)
     }
 
     /// Destroy a named flow instance.

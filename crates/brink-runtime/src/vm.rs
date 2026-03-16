@@ -3,7 +3,8 @@
 use std::rc::Rc;
 
 use brink_format::{
-    ChoiceFlags, CountingFlags, DefinitionId, LineContent, LinePart, Opcode, Value,
+    ChoiceFlags, CountingFlags, DefinitionId, LineContent, LinePart, Opcode, PluralCategory,
+    PluralResolver, SelectKey, Value,
 };
 
 use crate::error::RuntimeError;
@@ -102,11 +103,25 @@ pub(crate) fn step(
     match op {
         // ── Output ──────────────────────────────────────────────────
         Opcode::EmitLine(idx, slot_count) => {
-            let text = resolve_line(state.program(), flow, &pos, idx, slot_count)?;
+            let text = resolve_line(
+                state.program(),
+                flow,
+                &pos,
+                idx,
+                slot_count,
+                state.plural_resolver(),
+            )?;
             flow.output.push_text(&text);
         }
         Opcode::EvalLine(idx, slot_count) => {
-            let text = resolve_line(state.program(), flow, &pos, idx, slot_count)?;
+            let text = resolve_line(
+                state.program(),
+                flow,
+                &pos,
+                idx,
+                slot_count,
+                state.plural_resolver(),
+            )?;
             flow.value_stack.push(Value::String(text.into()));
         }
         Opcode::EmitValue => {
@@ -863,6 +878,7 @@ fn resolve_line(
     pos: &ContainerPosition,
     idx: u16,
     slot_count: u8,
+    resolver: Option<&dyn PluralResolver>,
 ) -> Result<String, RuntimeError> {
     // Pop slot values from the stack (LIFO order — reverse to match slot indices).
     let mut slots = Vec::with_capacity(slot_count as usize);
@@ -888,14 +904,96 @@ fn resolve_line(
                             result.push_str(&value_ops::stringify(val, program));
                         }
                     }
-                    LinePart::Select { default, .. } => {
-                        result.push_str(default);
+                    LinePart::Select {
+                        slot,
+                        variants,
+                        default,
+                    } => {
+                        let text = resolve_select(*slot, variants, default, &slots, resolver);
+                        result.push_str(text);
                     }
                 }
             }
             Ok(result)
         }
     }
+}
+
+/// Resolve a Select part against its slot value.
+///
+/// Cascade: Exact → Keyword → Cardinal/Ordinal → default.
+fn resolve_select<'a>(
+    slot: u8,
+    variants: &'a [(SelectKey, String)],
+    default: &'a str,
+    slots: &[Value],
+    resolver: Option<&dyn PluralResolver>,
+) -> &'a str {
+    let Some(val) = slots.get(slot as usize) else {
+        return default;
+    };
+
+    // Coerce slot value to integer for numeric matching.
+    #[expect(clippy::cast_possible_truncation)]
+    let n: Option<i64> = match val {
+        Value::Int(i) => Some(i64::from(*i)),
+        Value::Float(f) => Some(*f as i64),
+        _ => None,
+    };
+
+    // 1. Exact match (integer equality).
+    if let Some(n) = n {
+        #[expect(clippy::cast_possible_truncation)]
+        let n32 = n as i32;
+        for (key, text) in variants {
+            if let SelectKey::Exact(e) = key
+                && *e == n32
+            {
+                return text;
+            }
+        }
+    }
+
+    // 2. Keyword match (string equality against stringified value).
+    let stringified = match val {
+        Value::String(s) => Some(s.as_ref()),
+        _ => None,
+    };
+    if let Some(s) = stringified {
+        for (key, text) in variants {
+            if let SelectKey::Keyword(k) = key
+                && k == s
+            {
+                return text;
+            }
+        }
+    }
+
+    // 3. Plural resolution (Cardinal/Ordinal) via resolver.
+    if let (Some(n), Some(r)) = (n, resolver) {
+        // Try cardinal keys.
+        let cardinal: PluralCategory = r.cardinal(n, None);
+        for (key, text) in variants {
+            if let SelectKey::Cardinal(cat) = key
+                && *cat == cardinal
+            {
+                return text;
+            }
+        }
+
+        // Try ordinal keys.
+        let ordinal: PluralCategory = r.ordinal(n);
+        for (key, text) in variants {
+            if let SelectKey::Ordinal(cat) = key
+                && *cat == ordinal
+            {
+                return text;
+            }
+        }
+    }
+
+    // 4. Fallback.
+    default
 }
 
 /// Handle a frame whose container stack has been exhausted.

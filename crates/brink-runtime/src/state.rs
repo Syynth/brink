@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use brink_format::{DefinitionId, Value};
+use brink_format::{DefinitionId, PluralResolver, Value};
 
 use crate::program::Program;
 use crate::rng::StoryRng;
@@ -62,6 +62,11 @@ pub trait StoryState {
     /// `count` times, returning all values. Used by shuffle sequences
     /// that need multiple correlated random values from one RNG instance.
     fn random_sequence(&mut self, seed: i32, count: usize) -> Vec<i32>;
+
+    /// Access the plural resolver for Select resolution.
+    ///
+    /// Returns `None` if no resolver is configured (Select falls back to default).
+    fn plural_resolver(&self) -> Option<&dyn PluralResolver>;
 }
 
 /// Runtime implementation of [`StoryState`].
@@ -71,14 +76,20 @@ pub trait StoryState {
 pub(crate) struct RuntimeState<'a, R: StoryRng> {
     program: &'a Program,
     context: &'a mut Context,
+    resolver: Option<&'a dyn PluralResolver>,
     _rng: PhantomData<R>,
 }
 
 impl<'a, R: StoryRng> RuntimeState<'a, R> {
-    pub fn new(program: &'a Program, context: &'a mut Context) -> Self {
+    pub fn new(
+        program: &'a Program,
+        context: &'a mut Context,
+        resolver: Option<&'a dyn PluralResolver>,
+    ) -> Self {
         Self {
             program,
             context,
+            resolver,
             _rng: PhantomData,
         }
     }
@@ -160,6 +171,10 @@ impl<R: StoryRng> StoryState for RuntimeState<'_, R> {
         let mut rng = R::from_seed(seed);
         (0..count).map(|_| rng.next_int()).collect()
     }
+
+    fn plural_resolver(&self) -> Option<&dyn PluralResolver> {
+        self.resolver
+    }
 }
 
 // ── WriteObserver ──────────────────────────────────────────────────────────
@@ -192,10 +207,11 @@ impl<'a, 'o, R: StoryRng> ObservedState<'a, 'o, R> {
     pub fn new(
         program: &'a Program,
         context: &'a mut Context,
+        resolver: Option<&'a dyn PluralResolver>,
         observer: &'o mut dyn WriteObserver,
     ) -> Self {
         Self {
-            inner: RuntimeState::new(program, context),
+            inner: RuntimeState::new(program, context, resolver),
             observer,
         }
     }
@@ -282,5 +298,9 @@ impl<R: StoryRng> StoryState for ObservedState<'_, '_, R> {
 
     fn random_sequence(&mut self, seed: i32, count: usize) -> Vec<i32> {
         self.inner.random_sequence(seed, count)
+    }
+
+    fn plural_resolver(&self) -> Option<&dyn PluralResolver> {
+        self.inner.plural_resolver()
     }
 }
