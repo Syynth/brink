@@ -1,6 +1,6 @@
 # brink internationalization specification
 
-`brink-intl` provides localization tooling for brink stories — line table export/import, locale overlay compilation, XLIFF generation, and plural resolution. It depends on `brink-format` (types and file formats) and consumes compiled `.inkb` files. See [format-spec](format-spec.md) for line table types and `.inkl` layout, [runtime-spec](runtime-spec.md) for locale loading and line resolution, [compiler-spec](compiler-spec.md) for text decomposition and template production.
+`brink-intl` provides localization tooling for brink stories — line table export/import, locale overlay compilation, XLIFF round-trip, plural resolution, and translation regeneration. It depends on `brink-format` (types and file formats) and consumes compiled `.inkb` files. See [format-spec](format-spec.md) for line table types and `.inkl` layout, [runtime-spec](runtime-spec.md) for locale loading and line resolution, [compiler-spec](compiler-spec.md) for text decomposition and template production.
 
 ## Architecture
 
@@ -16,10 +16,11 @@
                     │  export:   .inkb → lines.json    │
                     │  compile:  lines.json → .inkl    │
                     │                                  │
-                    │  (future)                        │
                     │  export:   .inkb → .xliff        │
                     │  import:   .xliff → lines.json   │
                     │  regen:    .inkb + .xliff → .xliff│
+                    │                                  │
+                    │  plural:   IcuPluralResolver     │
                     └───────────────┬─────────────────┘
                                     │
                     ┌───────────────▼─────────────────┐
@@ -30,19 +31,17 @@
 
 `brink-intl` sits between the compiler and runtime. The compiler produces `.inkb` files with base-locale line tables. `brink-intl` exports those line tables for translation and compiles translated content back into `.inkl` overlays that the runtime loads.
 
-A separate, general-purpose XLIFF 2.0 crate handles the XLIFF format (data model, read, write). `brink-intl` depends on it for XLIFF import/export but does not require it for the JSON-based workflow.
+A separate, general-purpose XLIFF 2.0 crate (`xliff2`) handles the XLIFF format (data model, read, write). `brink-intl` depends on it for XLIFF import/export but does not require it for the JSON-based workflow.
 
 ## Line table scoping
 
-### Current model (per-container)
+Line tables are scoped to **lexical scopes** — knots and stitches. A knot and all its internal containers (gathers, choice targets, inline sequence wrappers) share one line table. `EmitLine(5)` means "line 5 of the current scope's line table."
 
-Line tables are currently per-container. Every container (knot, stitch, gather, choice target, inline sequence wrapper) has its own line table. `EmitLine(5)` means "line 5 of this container's table." This produces dozens of tiny tables, many for compiler-internal containers with no meaningful identity from the author's or translator's perspective.
+### Implementation
 
-### Proposed model (per-lexical-scope)
+`ScopeLineTable` in `brink-format` groups line entries by scope `DefinitionId`. Each `ContainerDef` stores a `scope_id` field pointing to its enclosing lexical scope. At link time, the linker builds a `scope_id → table_index` mapping, and each `LinkedContainer` stores a `scope_table_idx` so the VM can resolve `program.line_table(container_idx)` in O(1).
 
-Line tables are scoped to **lexical scopes** — knots and stitches. A knot and all its internal containers (gathers, choice targets, inline sequence wrappers) share one line table. `EmitLine(5)` means "line 5 of the current frame's line table."
-
-The active line table is determined by the **call stack frame**, not by which container the VM is currently inside. When the VM enters a knot, the frame carries that knot's line table. Internal containers within that knot — gathers, choice targets, inline sequences — all emit against the same table via the frame. When control diverts to another knot or calls a tunnel, that pushes a new frame with a different line table.
+Scope-defining containers (root, knots, stitches) introduce their own scope. Non-scope containers (gathers, choice targets, inline sequences) inherit their parent's scope. Line indices are assigned during codegen per-scope — `add_line()` appends to the scope's table, and the returned index is relative within that scope.
 
 ```
 === knot "shop" (lexical scope) ===
@@ -56,7 +55,6 @@ The active line table is determined by the **call stack frame**, not by which co
     6: "Thanks for your purchase!"          ← emitted from a gather
 
   All containers within "shop" reference this same table.
-  Entering "shop" makes this table active on the frame.
 ```
 
 This is better for localization because:
@@ -66,30 +64,16 @@ This is better for localization because:
 - The line table boundary IS the public container boundary — no separate "boundary rule" needed
 
 And better for the runtime because:
-- Lookup is `frame.line_table[idx]` — O(1) with no container-to-table indirection
-- The mapping is 1:1 with the call stack, which is already managed
-
-### Impact on other specs
-
-This model changes assumptions in format-spec and runtime-spec:
-
-- **`LineId` meaning changes** — `(DefinitionId, u16)` where the `DefinitionId` is the lexical scope (knot/stitch), not the individual container. This affects `.inkl` keying and the regeneration workflow's stability guarantees.
-- **Line index assignment moves to LIR lowering** — it's the layer that knows both the lexical scope and the content structure. It assigns indices across all content within a scope, not per-container.
-- **`StoryData.line_tables` changes** — from one-per-container (parallel to `containers`) to one-per-scope. Line tables need their own scope-to-table mapping, independent of the container list.
-- **Call frame gains a line table reference** — currently the call frame has container index + offset. It also needs to know which line table is active. Could be implicit (derived from the container's scope at link time, stored in `ContainerDef`) or explicit (stored on the frame at entry time).
-- **Codegen changes** — `add_line` currently adds to "this container's table." It needs to add to "this scope's table," which means codegen needs to know which scope it's emitting into.
-
-These changes need to be reconciled into format-spec and runtime-spec before implementation.
+- Lookup is `program.line_table(container_idx)` → scope table — O(1) with no search
+- The mapping is implicit via `LinkedContainer.scope_table_idx`, set once at link time
 
 ## Codegen contract
 
-Localization tooling operates post-compilation — it reads `.inkb` files and extracts everything it needs from `StoryData`. This only works if the compiler puts enough information into `LineEntry` during codegen. The codegen contract defines what the compiler must produce for the tooling to function.
+Localization tooling operates post-compilation — it reads `.inkb` files and extracts everything it needs from `StoryData`. The compiler must put enough information into `LineEntry` during codegen for the tooling to function.
 
-### LineEntry enrichment
+### LineEntry
 
-The current `LineEntry` carries `content: LineContent` and `source_hash: u64`. This is insufficient for localization tooling. The enriched entry adds slot metadata, audio references, and source provenance:
-
-```
+```rust
 struct LineEntry {
     content: LineContent,              // Plain(String) or Template(LineTemplate)
     source_hash: u64,                  // hash of original ink source text
@@ -105,39 +89,34 @@ struct SlotInfo {
 
 struct SourceLocation {
     file: String,                      // source file path (relative to project root)
-    range: (u32, u32),                 // byte offset start, byte offset end in the source file
+    range_start: u32,                  // byte offset start in the source file
+    range_end: u32,                    // byte offset end in the source file
 }
 ```
 
-**`slot_info`** — for each `Slot(n)` in a template, the compiler records the source expression that produced that slot value. This lets tooling display `{player_name}` instead of `{slot 0}`. For simple variable references, the name is the variable name. For complex expressions, it is the full source expression text. The runtime ignores this field — it only needs the stack index.
+**`content`** — `Plain` for simple text, `Template` for interpolated text. The compiler's LIR recognizer (`recognize.rs`) identifies interpolation patterns and produces templates with `Literal` and `Slot` parts.
+
+**`source_hash`** — computed via `brink_format::content_hash()` (64-bit, Rust `DefaultHasher`). For plain text, hashes the text directly. For templates, hashes a normalized form with `"{…}"` placeholders for interpolations. Computed during LIR recognition where source text is still available via `AstPtr`.
+
+**`slot_info`** — for each `Slot(n)` in a template, the compiler records the source expression that produced that slot value. This lets tooling display `{player_name}` instead of `{slot 0}`. Populated during LIR lowering. The runtime ignores this field.
 
 **`audio_ref`** — an audio asset identifier associated with this line, populated by external tooling (not by the compiler). Stored alongside content so that localized versions can provide locale-specific audio. Both `.inkb` and `.inkl` carry audio refs — the localized version replaces the base.
 
-**`source_location`** — the file and byte range of the ink source text that produced this line. Enables tooling to show surrounding context, link back to the source for review, and correlate lines across recompiles even when indices shift. The runtime ignores this field.
+**`source_location`** — the file and byte range of the ink source text that produced this line. Populated during LIR lowering from `AstPtr` → `TextRange`. The runtime ignores this field.
 
-### Template recognition layer
+### Template recognition
 
-Template recognition should happen during **LIR lowering**, not during codegen. LIR lowering is the last layer with access to:
+Template recognition runs during **LIR lowering** in `recognize.rs`. The recognizer inspects HIR content nodes and either:
 
-- The **HIR** with `AstPtr` → source provenance (text ranges, original source text)
-- The **SymbolIndex** with resolved variable names
-- The content structure **before** artificial container boundaries are inserted
+- **Matches:** produces a `RecognizedLine::Template` with the `LineTemplate`, slot expressions, and full metadata (source hash, slot info, source location)
+- **Declines:** falls through to plain text recognition or per-part lowering
 
-This avoids the problem of reconstructing source information at the codegen layer where it's already been discarded.
+The LIR `RecognizedLine` enum carries the recognition result:
 
-The LIR `Content` type gains a variant for recognized templates:
-
-```
-enum ContentEmission {
-    /// Fallback: emit parts individually (current behavior)
-    Parts(Vec<ContentPart>),
-
-    /// Recognized template: emit as single EmitLine with slot pushes
-    Template {
-        template: LineTemplate,
-        slot_exprs: Vec<Expr>,
-        metadata: LineMetadata,
-    },
+```rust
+enum RecognizedLine {
+    Plain { text: String, metadata: LineMetadata },
+    Template { template_parts: Vec<LinePart>, slot_exprs: Vec<Expr>, metadata: LineMetadata },
 }
 
 struct LineMetadata {
@@ -147,31 +126,33 @@ struct LineMetadata {
 }
 ```
 
-LIR lowering runs the recognizers on HIR content nodes. If a recognizer matches, it produces a `Template` with full metadata computed right there while the HIR is still in hand. If no recognizer matches, the existing per-part lowering fires as-is and codegen handles them individually.
+Codegen handles both:
+- `RecognizedLine::Template` → evaluate slot expressions (push to stack) + `EmitLine(idx, slot_count)`, add enriched `LineEntry` with `LineContent::Template` to the scope's line table
+- `RecognizedLine::Plain` → `EmitLine(idx, 0)`, add `LineEntry` with `LineContent::Plain`
 
-Codegen then handles both cases:
-- `ContentEmission::Template` → emit slot pushes + `EmitLine(template_idx)`, add enriched `LineEntry` to the scope's line table
-- `ContentEmission::Parts` → emit per-part as today (individual `EmitLine`/`EmitValue`/etc.)
+### Implemented recognizers
 
-### What codegen must produce
+**Plain text:** `[Text(s)]` → `LineContent::Plain(s)`. Single text part with no interpolations.
 
-For every line added to a scope's line table, the pipeline must:
+**Interpolation templates:** `[Text, Interpolation, Text, ...]` with at least one `Interpolation` → `LineContent::Template([Literal, Slot, Literal, ...])`. Handles single and multiple interpolations. Each interpolation becomes a `Slot(n)` with its expression pushed to the stack before `EmitLine`.
 
-1. **Produce the correct `LineContent`** — `Plain` for simple text, `Template` for interpolated/structured text (via the recognizer pipeline)
-2. **Compute a real `source_hash`** — from the original ink text, before decomposition (currently hardcoded to `0`)
-3. **Populate `slot_info`** — one entry per slot in the template, with the source expression name
-4. **Populate `source_location`** — file path and byte range of the source text that produced this line
-5. **Populate `audio_ref`** — via external tooling or game-engine integration (the compiler does not populate this field)
+### Future recognizers
 
-Items 3 and 4 are metadata for tooling. They are serialized into the `.inkb` line tables section but are not loaded by the runtime's fast path. The `.inkl` overlay format carries `content` and `audio_ref` but NOT slot info or source location — those are source-language concerns, not translation concerns.
+**Inline conditionals as Select:** `[Text(a), InlineConditional(cond), Text(b)]` → `Template([Literal(a), Select { slot: 0, ... }, Literal(b)])`. Would allow the compiler to produce `LinePart::Select` entries directly from ink inline conditionals. Currently Select entries only come from hand-authored translations compiled via `compile-locale`.
 
-### Binary format impact
+**Inline sequences as slots:** `[Text(a), InlineSequence(seq), Text(b)]` → `Template([Literal(a), Slot(0), Literal(b)])`. The sequence index becomes a slot value.
 
-The `.inkb` line table section gains new fields per entry. These are appended after the existing fields to maintain forward compatibility:
+### Container boundary rule
+
+Template merging does not cross **public container boundaries** — diverts, tunnels, and function calls. Content within compiler-internal containers (inline sequence wrappers, choice content containers) is still one logical block and may be merged. Under the lexical scope model, this is natural: all content within a scope shares one line table, and the scope boundary IS the public container boundary.
+
+### Binary format
+
+The `.inkb` line table section encodes per entry:
 
 ```
 LineEntry encoding:
-  [existing: content + source_hash]
+  [content + source_hash]
   has_audio_ref: u8 (0 or 1)
   if has_audio_ref:
     audio_ref: length-prefixed string
@@ -186,9 +167,13 @@ LineEntry encoding:
     range_end: u32 LE
 ```
 
+The `.inkl` overlay format carries `content` and `audio_ref` but NOT slot info or source location — those are source-language concerns, not translation concerns.
+
 ## Line table export (lines.json)
 
-The primary export format is a JSON file representing the full line table contents of a compiled `.inkb`. This is the simplest way to inspect, edit, and round-trip line tables without XLIFF tooling.
+The primary export format is a JSON file representing the full line table contents of a compiled `.inkb`. The simplest way to inspect, edit, and round-trip line tables without XLIFF tooling.
+
+Implemented in `brink_intl::export_lines()`.
 
 ### Format
 
@@ -346,6 +331,8 @@ The `hash` field is preserved from the source — it records which version of th
 
 `brink-intl` compiles a translated `lines.json` into a binary `.inkl` overlay file that the runtime loads via `load_locale()`.
 
+Implemented in `brink_intl::compile_locale()`.
+
 ### Process
 
 1. Read the translated `lines.json`
@@ -375,89 +362,51 @@ The `source_hash` field on each `LineEntry` enables the regeneration workflow. I
 
 ### Hash computation
 
-The hash is a 64-bit value derived from the **source text content** of the line — the ink text as written by the author, before any decomposition into template parts. For a plain line `Hello, {name}!`, the hash covers the entire string `Hello, {name}!`, not the decomposed template.
+The hash is a 64-bit value computed via `brink_format::content_hash()` using Rust's `DefaultHasher`. The input depends on the line type:
+
+- **Plain text:** hashes the text string directly.
+- **Templates:** hashes a normalized form where literal text is preserved and each interpolation is replaced with `"{…}"`. This means refactoring the compiler's decomposition strategy (e.g., changing what becomes a slot vs literal) does NOT change the hash.
 
 This means:
 - Changing the text changes the hash
-- Refactoring the compiler's decomposition strategy (e.g., changing what becomes a slot vs literal) does NOT change the hash
 - Adding/removing whitespace or tags DOES change the hash
+- The hash is stable across compiler internals changes
 
-The hash function is not specified — any deterministic 64-bit hash is acceptable. The only requirement is consistency within a single `.inkb` build.
-
-### Current state
-
-`source_hash` is currently hardcoded to `0` in the compiler. Computing real hashes is the first implementation step.
-
-### Hash input for templates
-
-Template recognition runs during LIR lowering, where the HIR with `AstPtr` is still available. Each HIR content node's `AstPtr` provides a `TextRange` back into the CST, which can be used to slice the original source text directly. The hash is computed from this raw source text — no reconstruction, no synthetic representation.
-
-For a content line spanning `Hello, {name}!`, the `AstPtr` gives the byte range of that entire line in the source file. The recognizer slices the source text at that range and hashes it. This is the same source text that populates `SourceLocation`, so both are computed from the same data in the same pass — no circular dependency.
+The hash is computed during LIR recognition where source text is still available via `AstPtr`. Each HIR content node's `AstPtr` provides a `TextRange` back into the CST, which is used to derive the hash input. This is the same source data that populates `SourceLocation`, so both are computed in the same pass.
 
 ## Template production (compiler-side)
 
-The compiler currently produces only `LineContent::Plain` for all text. Template production requires a pattern recognition pass that identifies sequences of content parts that can be merged into a single `LineTemplate`.
+The compiler produces `LineContent::Template` entries via the LIR recognition pass in `brink-ir/src/lir/lower/recognize.rs`.
 
-### Pattern recognizer infrastructure
+### How it works
 
-Template recognizers run during **LIR lowering**, where the HIR (with source provenance via `AstPtr`) and resolved symbols (via `SymbolIndex`) are still available. Each recognizer inspects HIR content nodes and either:
+The recognizer inspects sequences of HIR content parts for each line. When a line contains at least one `Interpolation` part mixed with `Text` parts, the recognizer:
 
-- **Matches:** consumes a run of content nodes, returns a `ContentEmission::Template` with the `LineTemplate`, slot expressions, and full metadata (source hash, slot info, source location)
-- **Declines:** returns `None`, falls through to the next recognizer or to per-part lowering
+1. Walks the parts, building `LinePart::Literal` for text and `LinePart::Slot(n)` for interpolations
+2. Collects the slot expressions (for stack evaluation before `EmitLine`)
+3. Computes `LineMetadata` (source hash, slot info with expression names, source location)
+4. Returns `RecognizedLine::Template`
 
-This design allows incremental addition of recognizers without modifying existing ones. The recognizer that fires first wins.
+Codegen (`brink-codegen-inkb/src/content.rs`) then:
+1. Evaluates each slot expression (pushing values to the stack)
+2. Calls `add_template_line()` to register the `LineContent::Template` in the scope's line table
+3. Emits `Opcode::EmitLine(idx, slot_count)` where `slot_count = slot_exprs.len()`
 
-### Container boundary rule
+The runtime's `resolve_line()` pops `slot_count` values from the stack, then walks the template parts — substituting `Slot(n)` with the stringified stack value and resolving `Select` parts via the plural resolver cascade.
 
-Template merging must not cross **public container boundaries** — diverts, tunnels, and function calls. Content that flows through compiler-internal containers (inline sequence wrappers, choice content containers) is still one logical block and may be merged. Under the lexical scope model, this is natural: all content within a scope shares one line table, and the scope boundary IS the public container boundary.
+### Template boundaries and glue
 
-### Recognizer progression
-
-Recognizers are added incrementally, starting from the simplest patterns:
-
-**Phase 1: Plain text**
-```
-[Text(s)] → LineContent::Plain(s)
-```
-This is what the compiler already does, but routed through the recognizer infrastructure to prove the plumbing works.
-
-**Phase 2: Single interpolation**
-```
-[Text(a), Interpolation(expr), Text(b)]
-  → Template([Literal(a), Slot(0), Literal(b)])
-  + push expr before EmitLine
-```
-
-**Phase 3: Multiple interpolations**
-```
-[Text(a), Interpolation(e1), Text(b), Interpolation(e2), Text(c)]
-  → Template([Literal(a), Slot(0), Literal(b), Slot(1), Literal(c)])
-  + push e1, push e2 before EmitLine
-```
-
-**Phase 4: Inline conditionals as Select**
-```
-[Text(a), InlineConditional(cond), Text(b)]
-  → Template([Literal(a), Select { slot: 0, ... }, Literal(b)])
-```
-Requires the conditional to have statically-known branches that can be expressed as select variants.
-
-**Phase 5: Inline sequences as slots**
-```
-[Text(a), InlineSequence(seq), Text(b)]
-  → Template([Literal(a), Slot(0), Literal(b)])
-```
-The sequence index becomes a slot value.
-
-Each phase is independently testable and shippable.
+The template boundary is the **end of line** — each source line of ink content produces at most one line table entry. Glue (`<>`) suppresses line breaks and can cause content from adjacent source lines to merge at runtime, but recognizers do not merge across glue boundaries.
 
 ### Fallback
 
-When no recognizer matches a run of parts, the compiler falls back to per-part emission (the current behavior). This is always correct — it just doesn't produce localizable templates for that content.
+When no recognizer matches a run of parts (e.g., content with only text and no interpolations, or patterns not yet recognized), the compiler falls back to `LineContent::Plain` or per-part emission. This is always correct — it just doesn't produce localizable templates for that content.
 
 ## Regeneration workflow
 
 When source `.ink` files change and are recompiled, existing translations must be preserved. The regeneration workflow diffs a new `.inkb` against an existing translated `lines.json` (or XLIFF) and produces an updated file.
+
+Implemented in `brink_intl::regenerate_lines()` (JSON) and `brink_intl::regenerate_locale()` (XLIFF).
 
 ### Matching strategy
 
@@ -518,13 +467,13 @@ In `lines.json`, status is tracked implicitly:
 - Needs review: `content` is present but `hash` doesn't match the current source hash
 - Orphaned: present in old file, absent in new `.inkb`
 
-## XLIFF workflow (future)
+## XLIFF workflow
 
-The JSON workflow is sufficient for programmatic use and basic manual translation. For professional translation workflows, `brink-intl` will support XLIFF 2.0 import/export via a separate general-purpose XLIFF crate.
+For professional translation workflows, `brink-intl` supports XLIFF 2.0 import/export via the `xliff2` crate.
 
-### XLIFF crate
+### xliff2 crate
 
-A general-purpose Rust XLIFF 2.0 crate (not brink-specific, publishable to crates.io). Provides:
+A general-purpose Rust XLIFF 2.0 crate (`crates/internal/xliff2/`). Provides:
 
 - **Data model:** `Document`, `File`, `Unit`, `Segment`, `Source`, `Target`, inline elements (`Ph`, `Sc`, `Ec`, `Mrk`)
 - **Write:** serialize data model to XLIFF 2.0 XML
@@ -535,7 +484,7 @@ Built on `quick-xml`. No brink-specific types or logic.
 
 ### brink-intl XLIFF integration
 
-`brink-intl` maps between its line table model and XLIFF:
+`brink-intl` maps between its line table model and XLIFF via `xliff_convert.rs`:
 
 | brink concept | XLIFF element |
 |---------------|---------------|
@@ -554,22 +503,22 @@ Brink-specific metadata uses XLIFF's custom namespace extension mechanism (`xmln
 ### XLIFF generation
 
 ```
-brink generate-locale --input story.inkb --output en.xliff --source-lang en
+brink export-xliff --input story.inkb --output en.xliff --source-lang en
 ```
 
-Reads `.inkb`, walks line tables, emits XLIFF 2.0 with scopes as `<file>` elements and lines as `<unit>` elements. Equivalent to exporting `lines.json` but in XLIFF format.
+Implemented in `brink_intl::generate_locale()`. Reads `.inkb`, exports `LinesJson` via `export_lines()`, converts to XLIFF via `lines_json_to_xliff()`. Scopes become `<file>` elements, lines become `<unit>` elements.
 
 ### XLIFF regeneration
 
 ```
-brink regenerate-locale --input story.inkb --existing en-to-ja.xliff --output en-to-ja.xliff
+brink regenerate-xliff --input story.inkb --existing en-to-ja.xliff --output en-to-ja.xliff
 ```
 
-Same diff rules as the JSON regeneration workflow, but operating on XLIFF:
+Implemented in `brink_intl::regenerate_locale()`. Same diff rules as the JSON regeneration workflow, but operating on XLIFF:
 - Unchanged lines: preserve `<target>` and `state`
 - Changed lines: update `<source>`, reset `state` to `initial`, preserve `<target>` as reference
 - New lines: add `<unit>` with `state="initial"`
-- Orphaned lines: remove or mark (configurable)
+- Orphaned lines: removed from output
 
 ### XLIFF to .inkl compilation
 
@@ -577,36 +526,56 @@ Same diff rules as the JSON regeneration workflow, but operating on XLIFF:
 brink compile-locale --input ja.xliff --base story.inkb --output ja.inkl --locale ja
 ```
 
-Reads translated XLIFF, extracts `<target>` content, and compiles to `.inkl`. Equivalent to the JSON compile path but reading from XLIFF.
+Implemented in `brink_intl::compile_locale_xliff()`. Converts XLIFF back to `LinesJson` via `xliff_to_lines_json()`, then delegates to `compile_locale()` for `.inkl` generation.
 
 ## Plural resolution
 
-The runtime defines a `PluralResolver` trait (see [format-spec](format-spec.md)):
+The `PluralResolver` trait is defined in `brink-format`:
 
-```
-trait PluralResolver {
+```rust
+pub trait PluralResolver {
     fn cardinal(&self, n: i64, locale_override: Option<&str>) -> PluralCategory;
     fn ordinal(&self, n: i64) -> PluralCategory;
 }
 ```
 
-`brink-intl` provides a batteries-included implementation backed by ICU4X baked data.
+### IcuPluralResolver
 
-### ICU4X resolver
-
-The `brink-intl` resolver uses ICU4X's `PluralRules` with baked data, pruned at build time to only the locales the consumer specifies via Cargo features.
+`brink-intl` provides `IcuPluralResolver`, backed by ICU4X's `PluralRules` with baked CLDR data (`icu_plurals` + `icu_locale_core`). All locales are shipped — the compiled data is ~50KB total, so per-locale feature gating is unnecessary.
 
 ```rust
-// Cargo.toml
-[dependencies]
-brink-intl = { version = "...", features = ["locale-en", "locale-ja", "locale-ar"] }
+use brink_intl::IcuPluralResolver;
+
+let resolver = IcuPluralResolver::new("en")?;
+assert_eq!(resolver.cardinal(1, None), PluralCategory::One);
+assert_eq!(resolver.cardinal(2, None), PluralCategory::Other);
+
+// Locale override for individual calls
+assert_eq!(resolver.cardinal(0, Some("ar")), PluralCategory::Zero);
+
+// Ordinal
+assert_eq!(resolver.ordinal(1), PluralCategory::One);   // 1st
+assert_eq!(resolver.ordinal(2), PluralCategory::Two);   // 2nd
+assert_eq!(resolver.ordinal(3), PluralCategory::Few);   // 3rd
+assert_eq!(resolver.ordinal(4), PluralCategory::Other); // 4th
 ```
 
-Each locale feature gates the baked CLDR data for that locale. The resolver binary contains only the plural rules for enabled locales. No runtime data loading.
+### DefaultPluralResolver
 
-### Fallback resolver
+`brink-intl` also exports `DefaultPluralResolver`, a no-op that always returns `PluralCategory::Other`. Used as the fallback when no locale-aware resolver is configured.
 
-Stories without localization don't need a resolver. When no resolver is provided, all plural lookups fall back to `PluralCategory::Other`. This is the default behavior — a story compiled without templates works identically with or without `brink-intl`.
+### Runtime wiring
+
+The resolver is set on `Story` and accessed through the `StoryState` trait:
+
+```rust
+use brink_intl::IcuPluralResolver;
+
+let mut story = Story::new(&program);
+story.set_plural_resolver(Box::new(IcuPluralResolver::new("en")?));
+```
+
+The VM's `resolve_line()` receives the resolver via `state.plural_resolver()` and passes it to `resolve_select()`. The select cascade is: **Exact → Keyword → Cardinal/Ordinal → default**. Without a resolver, Select parts fall back to their default text.
 
 ## CLI commands
 
@@ -614,19 +583,13 @@ All localization commands are subcommands of the `brink` CLI:
 
 | Command | Description |
 |---------|-------------|
-| `brink export-lines` | Export line tables from `.inkb` to `lines.json` |
-| `brink compile-locale` | Compile translated `lines.json` to `.inkl` |
-| `brink regenerate-lines` | Diff new `.inkb` against existing `lines.json`, produce updated file |
-| `brink generate-locale` | (future) Export line tables from `.inkb` to XLIFF |
-| `brink regenerate-locale` | (future) Diff new `.inkb` against existing XLIFF |
+| `brink export-xliff` | Export line tables from `.inkb` to XLIFF 2.0 |
+| `brink compile-locale` | Compile translated XLIFF to `.inkl` |
+| `brink regenerate-xliff` | Diff new `.inkb` against existing XLIFF, produce updated file |
+
+The JSON workflow (`export-lines`, `compile-locale` from JSON, `regenerate-lines`) is available programmatically via `brink-intl` functions but not exposed as separate CLI commands — the XLIFF workflow is the primary user-facing interface.
 
 ## Open questions
-
-### Template boundaries and glue
-
-The default template boundary is the **end of line** — each source line of ink content produces at most one line table entry. Glue (`<>`) suppresses line breaks and can cause content from adjacent source lines to merge at runtime, but recognizers are not required to merge across glue boundaries initially.
-
-Recognizers MAY absorb glue and merge across source line boundaries in the future. This is a natural extension of the recognizer infrastructure — a more aggressive recognizer can consume `[Text, Glue, Text, Interpolation, Text]` as a single template. But the initial implementation treats end-of-line as the boundary.
 
 ### Choice text in the export
 
@@ -636,56 +599,10 @@ Choices produce two lines (display + output) via the dual-path model. Under the 
 
 `export-lines` emits all scopes that have at least one line entry. Scopes with zero line entries (pure control flow, no user-visible text) are omitted. No other filtering is applied — trivial scopes with one or two lines are included.
 
-### EmitLine slot count
+### Inline conditional recognition
 
-`EmitLine` gains a slot count parameter: `EmitLine(line_idx: u16, slot_count: u8)`. Codegen pushes `slot_count` values onto the stack before emitting the opcode. The runtime pops that many values and passes them to the template resolver.
+The compiler does not yet recognize ink inline conditionals as `LinePart::Select` entries. Currently Select entries only come from hand-authored translations compiled via `compile-locale`. A future recognizer could pattern-match `{count > 1: apples | apple}` into `Select { slot, variants, default }`, allowing the compiler to produce localizable plural forms directly from ink source.
 
-For `LineContent::Plain` lines, `slot_count` is `0` and no values are popped. For templates, `slot_count` equals the number of distinct `Slot` and `Select` parts in the template. The runtime can validate at execution time that the slot count matches the template's actual slot count — a mismatch is a codegen bug and should produce a runtime error, not silent corruption.
+### Inline sequence recognition
 
-`EvalLine` (push line content as string value) gets the same treatment: `EvalLine(line_idx: u16, slot_count: u8)`.
-
-This change needs to be reflected in format-spec (opcode encoding) and runtime-spec (execution semantics).
-
-### .inkl binary layout
-
-The format-spec gives a one-line description of `.inkl` layout. An implementer writing `.inkl` serialization needs the byte-level format: section headers, scope-to-table indexing, entry counts, per-entry encoding. The layout follows the same principles as `.inkb` (length-prefixed sections, DefinitionId keys) but the specific encoding needs to be specified in format-spec before Phase 2 implementation. The `.inkl` carries `content` and `audio_ref` per line entry — no slot info or source location.
-
-## Implementation phasing
-
-### Phase 1: Foundation
-
-1. Reconcile lexical scope line table model into format-spec and runtime-spec
-2. Compute real `source_hash` in codegen (currently hardcoded to `0`)
-3. Pattern recognizer infrastructure in LIR lowering — plain text recognizer
-4. Create `brink-intl` crate with `export-lines` (`.inkb` → `lines.json`)
-
-### Phase 2: Round-trip
-
-5. Specify `.inkl` binary layout in format-spec
-6. `.inkl` binary write support in `brink-format`
-7. `compile-locale` in `brink-intl` (`lines.json` → `.inkl`)
-8. Runtime `.inkl` loading (wiring up the existing `load_locale` spec)
-
-### Phase 3: Templates
-
-9. Single-interpolation pattern recognizer (with slot info + source location metadata)
-10. Multi-interpolation pattern recognizer
-11. Template-aware `lines.json` export
-12. Template-aware `resolve_line` in the runtime (replacing the `"[template]"` stub)
-
-### Phase 4: Regeneration
-
-13. `regenerate-lines` workflow (`lines.json` diffing)
-14. Status tracking in `lines.json`
-
-### Phase 5: XLIFF
-
-15. General-purpose XLIFF 2.0 crate
-16. `generate-locale` (XLIFF export)
-17. `regenerate-locale` (XLIFF diffing)
-18. XLIFF → `.inkl` compilation
-
-### Phase 6: Plural resolution
-
-19. ICU4X-backed `PluralResolver` in `brink-intl`
-20. Locale feature gates for baked data pruning
+Similarly, inline sequences could be recognized as `Slot` entries where the sequence index becomes the slot value. This is a natural extension of the recognizer infrastructure.
