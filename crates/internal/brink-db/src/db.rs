@@ -244,6 +244,32 @@ impl ProjectDb {
         self.files.get(&id).map(|s| s.diagnostics.as_slice())
     }
 
+    /// Compute independent projects from include relationships.
+    ///
+    /// Returns `(root, members)` pairs sorted by root `FileId`.
+    pub fn compute_projects(&self) -> Vec<(FileId, Vec<FileId>)> {
+        let all: Vec<_> = self.files.keys().copied().collect();
+        self.include_graph.compute_projects(&all)
+    }
+
+    /// Snapshot analysis inputs for a subset of files.
+    ///
+    /// Like `analysis_inputs()` but filtered to the given set.
+    pub fn analysis_inputs_for(
+        &self,
+        file_ids: &[FileId],
+    ) -> Vec<(FileId, HirFile, SymbolManifest)> {
+        let mut inputs: Vec<_> = file_ids
+            .iter()
+            .filter_map(|&id| {
+                let state = self.files.get(&id)?;
+                Some((id, state.hir.clone(), state.manifest.clone()))
+            })
+            .collect();
+        inputs.sort_by_key(|(id, _, _)| id.0);
+        inputs
+    }
+
     /// Snapshot all analysis inputs for background analysis.
     ///
     /// Returns `(FileId, HirFile, SymbolManifest)` tuples cloned out of the db,

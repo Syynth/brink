@@ -33,10 +33,44 @@ use tower_lsp::{Client, LanguageServer};
 use crate::convert::{self, LineIndex};
 use crate::semantic_tokens;
 
+/// Per-project analysis results, keyed by project root.
+pub(crate) struct ProjectAnalyses {
+    /// Per-project analysis, keyed by root `FileId`.
+    by_root: HashMap<brink_ir::FileId, Arc<AnalysisResult>>,
+    /// Reverse: file → all project roots that contain it (sorted).
+    file_to_roots: HashMap<brink_ir::FileId, Vec<brink_ir::FileId>>,
+    /// Project membership: root → member file IDs.
+    project_members: HashMap<brink_ir::FileId, Vec<brink_ir::FileId>>,
+}
+
+impl ProjectAnalyses {
+    /// Primary project for navigation (first/lowest root).
+    fn for_file(&self, file: brink_ir::FileId) -> Option<&Arc<AnalysisResult>> {
+        let roots = self.file_to_roots.get(&file)?;
+        let root = roots.first()?;
+        self.by_root.get(root)
+    }
+
+    /// All projects containing this file (for diagnostic union).
+    fn all_for_file(&self, file: brink_ir::FileId) -> Vec<&Arc<AnalysisResult>> {
+        self.file_to_roots
+            .get(&file)
+            .map(|roots| roots.iter().filter_map(|r| self.by_root.get(r)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Project members for the primary project of a file.
+    fn project_files_for(&self, file: brink_ir::FileId) -> Option<&[brink_ir::FileId]> {
+        let roots = self.file_to_roots.get(&file)?;
+        let root = roots.first()?;
+        self.project_members.get(root).map(Vec::as_slice)
+    }
+}
+
 pub struct Backend {
     client: Client,
     db: Arc<Mutex<brink_db::ProjectDb>>,
-    analysis_rx: watch::Receiver<Option<Arc<AnalysisResult>>>,
+    analysis_rx: watch::Receiver<Option<Arc<ProjectAnalyses>>>,
     analysis_trigger: Arc<Notify>,
     generation: Arc<AtomicU64>,
     last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
@@ -47,7 +81,7 @@ impl Backend {
     pub fn new(
         client: Client,
         db: Arc<Mutex<brink_db::ProjectDb>>,
-        analysis_rx: watch::Receiver<Option<Arc<AnalysisResult>>>,
+        analysis_rx: watch::Receiver<Option<Arc<ProjectAnalyses>>>,
         analysis_trigger: Arc<Notify>,
         generation: Arc<AtomicU64>,
         last_published: Arc<
@@ -218,31 +252,38 @@ struct NavigationSnapshot {
     analysis: Arc<AnalysisResult>,
     source: String,
     file_id: brink_ir::FileId,
-    /// (`FileId`, path, source) for all files in the db.
-    all_files: Vec<(brink_ir::FileId, String, String)>,
+    /// (`FileId`, path, source) for files in the same project.
+    project_files: Vec<(brink_ir::FileId, String, String)>,
 }
 
 impl Backend {
     /// Take a consistent snapshot without running analysis.
-    /// Reads the latest analysis result from the watch channel.
+    /// Reads the latest analysis result from the watch channel, scoped to the
+    /// project that contains the given file.
     fn navigation_snapshot(&self, path: &str) -> Option<NavigationSnapshot> {
-        let analysis = self.analysis_rx.borrow().clone()?;
+        let projects = self.analysis_rx.borrow().clone()?;
         let db = lock_db(&self.db);
         let file_id = db.file_id(path)?;
+        let analysis = Arc::clone(projects.for_file(file_id)?);
         let source = db.source(file_id)?.to_owned();
-        let all_files: Vec<_> = db
-            .file_ids()
-            .filter_map(|fid| {
+
+        // Only include files from the same project
+        let project_files: Vec<_> = projects
+            .project_files_for(file_id)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|&fid| {
                 let p = db.file_path(fid)?.to_owned();
                 let s = db.source(fid)?.to_owned();
                 Some((fid, p, s))
             })
             .collect();
+
         Some(NavigationSnapshot {
             analysis,
             source,
             file_id,
-            all_files,
+            project_files,
         })
     }
 }
@@ -565,8 +606,10 @@ impl LanguageServer for Backend {
         };
 
         // Find the target file in our snapshot
-        let Some((_, target_path, target_source)) =
-            snap.all_files.iter().find(|(fid, _, _)| *fid == info.file)
+        let Some((_, target_path, target_source)) = snap
+            .project_files
+            .iter()
+            .find(|(fid, _, _)| *fid == info.file)
         else {
             return Ok(None);
         };
@@ -631,8 +674,10 @@ impl LanguageServer for Backend {
         // Include the definition itself if requested
         if params.context.include_declaration
             && let Some(info) = snap.analysis.index.symbols.get(&def_id)
-            && let Some((_, def_path, def_source)) =
-                snap.all_files.iter().find(|(fid, _, _)| *fid == info.file)
+            && let Some((_, def_path, def_source)) = snap
+                .project_files
+                .iter()
+                .find(|(fid, _, _)| *fid == info.file)
             && let Ok(uri) = Url::from_file_path(def_path)
         {
             let def_idx = LineIndex::new(def_source);
@@ -649,7 +694,7 @@ impl LanguageServer for Backend {
             }
 
             if let Some((_, file_path, file_source)) = snap
-                .all_files
+                .project_files
                 .iter()
                 .find(|(fid, _, _)| *fid == resolved.file)
                 && let Ok(uri) = Url::from_file_path(file_path)
@@ -730,7 +775,7 @@ impl LanguageServer for Backend {
                 .map_or(String::new(), |d| format!(" [{d}]"));
 
             let file_note = snap
-                .all_files
+                .project_files
                 .iter()
                 .find(|(fid, _, _)| *fid == info.file)
                 .map_or(String::new(), |(_, p, _)| format!("\n\n*Defined in `{p}`*"));
@@ -1048,7 +1093,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<SymbolInformation>>> {
         tracing::debug!(query = %params.query, "workspace_symbol");
 
-        let Some(analysis) = self.analysis_rx.borrow().clone() else {
+        let Some(projects) = self.analysis_rx.borrow().clone() else {
             return Ok(Some(vec![]));
         };
 
@@ -1065,36 +1110,45 @@ impl LanguageServer for Backend {
 
         let query = params.query.to_lowercase();
         let mut results = Vec::new();
+        let mut seen_symbols = std::collections::HashSet::new();
 
-        for info in analysis.index.symbols.values() {
-            if !query.is_empty() && !info.name.to_lowercase().contains(&query) {
-                continue;
+        // Search across ALL projects for workspace symbols
+        for analysis in projects.by_root.values() {
+            for info in analysis.index.symbols.values() {
+                if !query.is_empty() && !info.name.to_lowercase().contains(&query) {
+                    continue;
+                }
+
+                // Deduplicate: same file + range = same symbol across projects
+                if !seen_symbols.insert((info.file, info.range)) {
+                    continue;
+                }
+
+                let Some((_, file_path, file_source)) =
+                    all_files.iter().find(|(fid, _, _)| *fid == info.file)
+                else {
+                    continue;
+                };
+                let Ok(uri) = Url::from_file_path(file_path) else {
+                    continue;
+                };
+
+                let idx = LineIndex::new(file_source);
+
+                #[expect(deprecated, reason = "SymbolInformation requires this field")]
+                let sym = SymbolInformation {
+                    name: info.name.clone(),
+                    kind: convert::symbol_kind_to_lsp(info.kind),
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri,
+                        range: convert::to_lsp_range(info.range, &idx),
+                    },
+                    container_name: None,
+                };
+                results.push(sym);
             }
-
-            let Some((_, file_path, file_source)) =
-                all_files.iter().find(|(fid, _, _)| *fid == info.file)
-            else {
-                continue;
-            };
-            let Ok(uri) = Url::from_file_path(file_path) else {
-                continue;
-            };
-
-            let idx = LineIndex::new(file_source);
-
-            #[expect(deprecated, reason = "SymbolInformation requires this field")]
-            let sym = SymbolInformation {
-                name: info.name.clone(),
-                kind: convert::symbol_kind_to_lsp(info.kind),
-                tags: None,
-                deprecated: None,
-                location: Location {
-                    uri,
-                    range: convert::to_lsp_range(info.range, &idx),
-                },
-                container_name: None,
-            };
-            results.push(sym);
         }
 
         Ok(Some(results))
@@ -1112,13 +1166,14 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let Some(analysis) = self.analysis_rx.borrow().clone() else {
-            return Ok(None);
-        };
-
-        let (source, root, file_id) = {
+        let (analysis, source, root, file_id) = {
+            let projects = self.analysis_rx.borrow().clone();
             let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(&path) else {
+                return Ok(None);
+            };
+            let analysis = projects.and_then(|p| p.for_file(file_id).cloned());
+            let Some(analysis) = analysis else {
                 return Ok(None);
             };
             let Some(source) = db.source(file_id).map(str::to_owned) else {
@@ -1128,7 +1183,7 @@ impl LanguageServer for Backend {
                 return Ok(None);
             };
             let root = parse.syntax();
-            (source, root, file_id)
+            (analysis, source, root, file_id)
         };
 
         let data = semantic_tokens::compute_semantic_tokens(&source, &root, &analysis, file_id);
@@ -1149,13 +1204,14 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let Some(analysis) = self.analysis_rx.borrow().clone() else {
-            return Ok(None);
-        };
-
-        let (source, root, file_id) = {
+        let (analysis, source, root, file_id) = {
+            let projects = self.analysis_rx.borrow().clone();
             let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(&path) else {
+                return Ok(None);
+            };
+            let analysis = projects.and_then(|p| p.for_file(file_id).cloned());
+            let Some(analysis) = analysis else {
                 return Ok(None);
             };
             let Some(source) = db.source(file_id).map(str::to_owned) else {
@@ -1165,7 +1221,7 @@ impl LanguageServer for Backend {
                 return Ok(None);
             };
             let root = parse.syntax();
-            (source, root, file_id)
+            (analysis, source, root, file_id)
         };
 
         let range = params.range;
@@ -1265,8 +1321,10 @@ impl LanguageServer for Backend {
         let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
 
         // 1. Rename the definition site
-        if let Some((_, def_path, def_source)) =
-            snap.all_files.iter().find(|(fid, _, _)| *fid == info.file)
+        if let Some((_, def_path, def_source)) = snap
+            .project_files
+            .iter()
+            .find(|(fid, _, _)| *fid == info.file)
             && let Ok(uri) = Url::from_file_path(def_path)
         {
             let def_idx = LineIndex::new(def_source);
@@ -1283,7 +1341,7 @@ impl LanguageServer for Backend {
             }
 
             if let Some((_, file_path, file_source)) = snap
-                .all_files
+                .project_files
                 .iter()
                 .find(|(fid, _, _)| *fid == resolved.file)
                 && let Ok(uri) = Url::from_file_path(file_path)
@@ -2561,10 +2619,13 @@ fn is_visible_in_context(
     }
 
     match ctx {
-        CompletionContext::Divert => matches!(
-            info.kind,
-            SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
-        ),
+        CompletionContext::Divert => {
+            matches!(
+                info.kind,
+                SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
+            ) || (info.kind == SymbolKind::Param
+                && info.param_detail.as_ref().is_some_and(|p| p.is_divert))
+        }
         CompletionContext::DottedPath { .. } => {
             // Handled separately in the caller.
             false
@@ -2640,17 +2701,17 @@ fn make_completion_item(
 
 // ── Background analysis loop ────────────────────────────────────────
 
-/// Background task that runs cross-file analysis outside the db lock.
+/// Background task that runs per-project cross-file analysis outside the db lock.
 ///
 /// Woken by `trigger.notify_one()` whenever a file changes. Uses `yield_now()`
 /// to coalesce rapid edits, then snapshots analysis inputs under the lock,
-/// runs analysis without holding the lock, and publishes diagnostics for all
-/// files whose diagnostic set changed.
+/// runs per-project analysis without holding the lock, and publishes diagnostics
+/// for all files whose diagnostic set changed.
 pub async fn analysis_loop(
     db: Arc<Mutex<brink_db::ProjectDb>>,
     _generation: Arc<AtomicU64>,
     trigger: Arc<Notify>,
-    tx: watch::Sender<Option<Arc<AnalysisResult>>>,
+    tx: watch::Sender<Option<Arc<ProjectAnalyses>>>,
     client: Client,
     last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
 ) {
@@ -2660,24 +2721,51 @@ pub async fn analysis_loop(
         tokio::task::yield_now().await;
 
         // Snapshot inputs under lock
-        let (inputs, file_meta, per_file_diags) = {
+        let (projects, file_meta, per_file_diags) = {
             let db = lock_db(&db);
-            let inputs = db.analysis_inputs();
+            let project_defs = db.compute_projects();
+            let project_inputs: Vec<_> = project_defs
+                .iter()
+                .map(|(root, members)| (*root, db.analysis_inputs_for(members)))
+                .collect();
             let meta = db.file_metadata();
             let diags: Vec<_> = meta
                 .iter()
                 .filter_map(|(fid, _, _)| Some((*fid, db.file_diagnostics(*fid)?.to_vec())))
                 .collect();
-            (inputs, meta, diags)
+            (project_inputs, meta, diags)
         };
 
-        // Run analysis OUTSIDE the lock — this is the key change
-        let file_refs: Vec<_> = inputs
-            .iter()
-            .map(|(id, hir, manifest)| (*id, hir, manifest))
-            .collect();
-        let result = brink_analyzer::analyze(&file_refs);
-        let result = Arc::new(result);
+        // Run per-project analysis OUTSIDE the lock
+        let mut by_root = HashMap::new();
+        let mut file_to_roots: HashMap<brink_ir::FileId, Vec<brink_ir::FileId>> = HashMap::new();
+        let mut project_members = HashMap::new();
+
+        for (root, inputs) in &projects {
+            let file_refs: Vec<_> = inputs
+                .iter()
+                .map(|(id, hir, manifest)| (*id, hir, manifest))
+                .collect();
+            let result = brink_analyzer::analyze(&file_refs);
+            by_root.insert(*root, Arc::new(result));
+
+            let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();
+            for &member in &members {
+                file_to_roots.entry(member).or_default().push(*root);
+            }
+            project_members.insert(*root, members);
+        }
+
+        // Sort the root lists for deterministic primary-project selection
+        for roots in file_to_roots.values_mut() {
+            roots.sort_by_key(|id| id.0);
+        }
+
+        let result = Arc::new(ProjectAnalyses {
+            by_root,
+            file_to_roots,
+            project_members,
+        });
 
         // Publish to watch channel
         let _ = tx.send(Some(Arc::clone(&result)));
@@ -2694,49 +2782,130 @@ pub async fn analysis_loop(
     }
 }
 
+/// Build a `DiagnosticRelatedInformation` pointing to a project root file.
+fn make_project_annotation(
+    root_path: &str,
+) -> Option<tower_lsp::lsp_types::DiagnosticRelatedInformation> {
+    let root_uri = Url::from_file_path(root_path).ok()?;
+    Some(tower_lsp::lsp_types::DiagnosticRelatedInformation {
+        location: Location {
+            uri: root_uri,
+            range: Range::default(),
+        },
+        message: format!("in project: {root_path}"),
+    })
+}
+
+/// Collect multi-project analysis diagnostics for a file, deduplicating and
+/// annotating with project-root related information.
+fn collect_multiproject_diags(
+    file_id: brink_ir::FileId,
+    analyses: &[&Arc<AnalysisResult>],
+    roots: &[brink_ir::FileId],
+    file_path_map: &HashMap<brink_ir::FileId, &str>,
+    idx: &LineIndex,
+    lsp_diags: &mut Vec<tower_lsp::lsp_types::Diagnostic>,
+) {
+    let mut seen: HashMap<(u32, u32, String, String), usize> = HashMap::new();
+
+    for (analysis, root) in analyses.iter().zip(roots) {
+        for d in &analysis.diagnostics {
+            if d.file != file_id {
+                continue;
+            }
+            let key = (
+                d.range.start().into(),
+                d.range.end().into(),
+                format!("{:?}", d.code),
+                d.message.clone(),
+            );
+            if let Some(&existing_idx) = seen.get(&key) {
+                if let Some(ref mut related) = lsp_diags[existing_idx].related_information
+                    && let Some(root_path) = file_path_map.get(root)
+                    && let Some(annotation) = make_project_annotation(root_path)
+                {
+                    related.push(annotation);
+                }
+            } else {
+                let mut lsp_diag = convert::diagnostic_to_lsp(d, idx);
+                if let Some(root_path) = file_path_map.get(root)
+                    && let Some(annotation) = make_project_annotation(root_path)
+                {
+                    lsp_diag.related_information = Some(vec![annotation]);
+                }
+                let diag_idx = lsp_diags.len();
+                seen.insert(key, diag_idx);
+                lsp_diags.push(lsp_diag);
+            }
+        }
+    }
+
+    // Remove annotations from diagnostics that appear in ALL projects (universal)
+    let num_projects = analyses.len();
+    for &diag_idx in seen.values() {
+        if let Some(ref related) = lsp_diags[diag_idx].related_information
+            && related.len() >= num_projects
+        {
+            lsp_diags[diag_idx].related_information = None;
+        }
+    }
+}
+
 /// Compute full diagnostic set for each file and publish if changed.
+///
+/// Unions analysis diagnostics from all projects containing a file.
 async fn publish_all_diagnostics(
     client: &Client,
-    analysis: &AnalysisResult,
+    projects: &ProjectAnalyses,
     file_meta: &[(brink_ir::FileId, String, String)],
     per_file_diags: &[(brink_ir::FileId, Vec<brink_ir::Diagnostic>)],
     last_published: &Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>,
 ) {
-    // Build per-file diagnostic map from analysis
-    let mut analysis_diags_by_file: HashMap<brink_ir::FileId, Vec<&brink_ir::Diagnostic>> =
-        HashMap::new();
-    for diag in &analysis.diagnostics {
-        analysis_diags_by_file
-            .entry(diag.file)
-            .or_default()
-            .push(diag);
-    }
-
-    // Build per-file lowering diagnostic map
     let lowering_diags: HashMap<brink_ir::FileId, &[brink_ir::Diagnostic]> = per_file_diags
         .iter()
         .map(|(fid, diags)| (*fid, diags.as_slice()))
         .collect();
 
+    let file_path_map: HashMap<brink_ir::FileId, &str> = file_meta
+        .iter()
+        .map(|(fid, path, _)| (*fid, path.as_str()))
+        .collect();
+
     for (file_id, path, source) in file_meta {
         let idx = LineIndex::new(source);
 
-        // Combine per-file (parse+lowering) + cross-file (analysis) diagnostics
-        let empty: &[brink_ir::Diagnostic] = &[];
         let mut lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic> = lowering_diags
             .get(file_id)
-            .unwrap_or(&empty)
+            .copied()
+            .unwrap_or_default()
             .iter()
             .map(|d| convert::diagnostic_to_lsp(d, &idx))
             .collect();
 
-        if let Some(analysis_diags) = analysis_diags_by_file.get(file_id) {
-            for d in analysis_diags {
-                lsp_diags.push(convert::diagnostic_to_lsp(d, &idx));
+        let analyses = projects.all_for_file(*file_id);
+        if analyses.len() <= 1 {
+            if let Some(analysis) = analyses.first() {
+                for d in &analysis.diagnostics {
+                    if d.file == *file_id {
+                        lsp_diags.push(convert::diagnostic_to_lsp(d, &idx));
+                    }
+                }
             }
+        } else {
+            let roots = projects
+                .file_to_roots
+                .get(file_id)
+                .map_or(&[][..], Vec::as_slice);
+            collect_multiproject_diags(
+                *file_id,
+                &analyses,
+                roots,
+                &file_path_map,
+                &idx,
+                &mut lsp_diags,
+            );
         }
 
-        // Only publish if diagnostics changed for this file
         let should_publish = {
             let published = match last_published.lock() {
                 Ok(guard) => guard,

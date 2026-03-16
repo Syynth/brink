@@ -136,6 +136,83 @@ impl IncludeGraph {
         order
     }
 
+    /// Discover independent projects from include relationships.
+    ///
+    /// A "project" is a root `.ink` file plus everything it transitively INCLUDEs.
+    /// Roots are files in `all_ids` that are not included by any other file.
+    /// Returns `(root, members)` pairs sorted by root `FileId`.
+    pub fn compute_projects(&self, all_ids: &[FileId]) -> Vec<(FileId, Vec<FileId>)> {
+        use std::collections::HashSet;
+
+        let all_set: HashSet<FileId> = all_ids.iter().copied().collect();
+
+        // Roots: files not included by any other file in the set
+        let mut roots: Vec<FileId> = all_ids
+            .iter()
+            .copied()
+            .filter(|&id| {
+                self.included_by(id)
+                    .iter()
+                    .all(|parent| !all_set.contains(parent))
+            })
+            .collect();
+        roots.sort_by_key(|id| id.0);
+
+        // For each root, DFS forward to collect members
+        let mut claimed: HashSet<FileId> = HashSet::new();
+        let mut projects: Vec<(FileId, Vec<FileId>)> = Vec::new();
+
+        for &root in &roots {
+            let mut members = Vec::new();
+            let mut stack = vec![root];
+            let mut visited = HashSet::new();
+
+            while let Some(node) = stack.pop() {
+                if !visited.insert(node) || !all_set.contains(&node) {
+                    continue;
+                }
+                members.push(node);
+                claimed.insert(node);
+                for &child in self.includes(node) {
+                    stack.push(child);
+                }
+            }
+            members.sort_by_key(|id| id.0);
+            projects.push((root, members));
+        }
+
+        // Any files not claimed by a root become single-file projects
+        let mut orphans: Vec<FileId> = all_ids
+            .iter()
+            .copied()
+            .filter(|id| !claimed.contains(id))
+            .collect();
+        orphans.sort_by_key(|id| id.0);
+        for orphan in orphans {
+            projects.push((orphan, vec![orphan]));
+        }
+
+        projects.sort_by_key(|(root, _)| root.0);
+        projects
+    }
+
+    /// Return root file IDs (files not included by any other file in `all_ids`).
+    pub fn roots(&self, all_ids: &[FileId]) -> Vec<FileId> {
+        use std::collections::HashSet;
+        let all_set: HashSet<FileId> = all_ids.iter().copied().collect();
+        let mut roots: Vec<FileId> = all_ids
+            .iter()
+            .copied()
+            .filter(|&id| {
+                self.included_by(id)
+                    .iter()
+                    .all(|parent| !all_set.contains(parent))
+            })
+            .collect();
+        roots.sort_by_key(|id| id.0);
+        roots
+    }
+
     /// Remove a file from the graph entirely.
     pub fn remove(&mut self, file: FileId) {
         // Remove forward edges and their reverse entries
