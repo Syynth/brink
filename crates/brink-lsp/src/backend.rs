@@ -1,29 +1,32 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use brink_analyzer::AnalysisResult;
+use brink_syntax::ast::AstNode;
 use tokio::sync::{Notify, watch};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionParams, CodeActionProviderCapability,
     CodeActionResponse, CodeLens, CodeLensOptions, CodeLensParams, CompletionItem,
     CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentFormattingParams, DocumentRangeFormattingParams,
-    DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeKind,
-    FoldingRangeParams, FoldingRangeProviderCapability, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InlayHint, InlayHintParams, Location, MarkupContent, MarkupKind, OneOf,
-    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams,
-    RenameOptions, RenameParams, SaveOptions, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensRangeParams,
-    SemanticTokensRangeResult, SemanticTokensResult, SemanticTokensServerCapabilities,
-    ServerCapabilities, ServerInfo, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
-    SignatureInformation, SymbolInformation, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
-    WorkspaceSymbolParams,
+    DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+    DocumentRangeFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FileChangeType,
+    FileSystemWatcher, FoldingRange, FoldingRangeKind, FoldingRangeParams,
+    FoldingRangeProviderCapability, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, InlayHint, InlayHintLabel, InlayHintParams, Location, MarkupContent,
+    MarkupKind, OneOf, ParameterInformation, ParameterLabel, Position, PrepareRenameResponse,
+    Range, ReferenceParams, Registration, RenameOptions, RenameParams, SaveOptions, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolInformation,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions,
+    WorkspaceEdit, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -37,6 +40,7 @@ pub struct Backend {
     analysis_trigger: Arc<Notify>,
     generation: Arc<AtomicU64>,
     last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
+    workspace_roots: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl Backend {
@@ -57,6 +61,7 @@ impl Backend {
             analysis_trigger,
             generation,
             last_published,
+            workspace_roots: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -96,6 +101,108 @@ impl Backend {
     fn trigger_analysis(&self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
         self.analysis_trigger.notify_one();
+    }
+
+    /// Chase INCLUDE directives from a file that's already in the db.
+    fn chase_includes(&self, path: &str) {
+        let includes = {
+            let db = lock_db(&self.db);
+            let Some(fid) = db.file_id(path) else {
+                return;
+            };
+            let Some(hir) = db.hir(fid) else { return };
+            hir.includes
+                .iter()
+                .map(|inc| inc.file_path.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let base_dir = std::path::Path::new(path).parent();
+        for inc_path in &includes {
+            if let Some(resolved) =
+                base_dir.map(|d| d.join(inc_path).to_string_lossy().into_owned())
+            {
+                self.load_file_from_disk(&resolved);
+            }
+        }
+    }
+
+    /// Load a file from disk into the database if not already present.
+    /// Recursively chases INCLUDE directives.
+    fn load_file_from_disk(&self, path: &str) {
+        // Check if already loaded
+        {
+            let db = lock_db(&self.db);
+            if db.file_id(path).is_some() {
+                return;
+            }
+        }
+
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            tracing::warn!(path, "failed to read file from disk");
+            return;
+        };
+
+        let mut db = lock_db(&self.db);
+        // Double-check under lock
+        if db.file_id(path).is_some() {
+            return;
+        }
+        db.set_file(path, contents);
+
+        // Collect includes to chase (release the lock first)
+        let includes = db
+            .file_id(path)
+            .and_then(|fid| db.hir(fid))
+            .map(|hir| {
+                hir.includes
+                    .iter()
+                    .map(|inc| inc.file_path.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let base_dir = std::path::Path::new(path).parent();
+        let resolved: Vec<String> = includes
+            .iter()
+            .filter_map(|inc_path| {
+                base_dir
+                    .map(|d| d.join(inc_path))
+                    .map(|p| p.to_string_lossy().into_owned())
+            })
+            .collect();
+        drop(db);
+
+        for resolved_path in resolved {
+            self.load_file_from_disk(&resolved_path);
+        }
+    }
+
+    /// Scan workspace directories for .ink files and load them all.
+    fn load_workspace_files(&self) {
+        let roots = match self.workspace_roots.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+
+        for root in &roots {
+            self.walk_and_load(root);
+        }
+    }
+
+    /// Recursively walk a directory, loading all .ink files.
+    fn walk_and_load(&self, dir: &std::path::Path) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                self.walk_and_load(&path);
+            } else if path.extension().is_some_and(|ext| ext == "ink") {
+                let path_str = path.to_string_lossy().into_owned();
+                self.load_file_from_disk(&path_str);
+            }
+        }
     }
 }
 
@@ -142,7 +249,29 @@ impl Backend {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // Save workspace roots for use in initialized()
+        let mut roots = Vec::new();
+        if let Some(folders) = &params.workspace_folders {
+            for folder in folders {
+                if let Ok(path) = folder.uri.to_file_path() {
+                    roots.push(path);
+                }
+            }
+        }
+        if roots.is_empty() {
+            // Fallback: legacy root_uri
+            let legacy_uri = params.root_uri.as_ref();
+            if let Some(uri) = legacy_uri
+                && let Ok(path) = uri.to_file_path()
+            {
+                roots.push(path);
+            }
+        }
+        if let Ok(mut ws) = self.workspace_roots.lock() {
+            *ws = roots;
+        }
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 // ── Sync ──
@@ -232,6 +361,86 @@ impl LanguageServer for Backend {
         Ok(())
     }
 
+    async fn initialized(&self, _: InitializedParams) {
+        tracing::debug!("initialized");
+
+        // Register file watcher for **/*.ink (fire-and-forget — some test
+        // clients don't respond to server-initiated requests)
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let watcher = FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/*.ink".to_owned()),
+                kind: None,
+            };
+            let registration = Registration {
+                id: "ink-file-watcher".to_owned(),
+                method: "workspace/didChangeWatchedFiles".to_owned(),
+                register_options: serde_json::to_value(
+                    tower_lsp::lsp_types::DidChangeWatchedFilesRegistrationOptions {
+                        watchers: vec![watcher],
+                    },
+                )
+                .ok(),
+            };
+            if let Err(e) = client.register_capability(vec![registration]).await {
+                tracing::warn!("failed to register file watcher: {e}");
+            }
+        });
+
+        // Scan workspace directories for .ink files
+        self.load_workspace_files();
+        self.trigger_analysis();
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        tracing::debug!(count = params.changes.len(), "did_change_watched_files");
+
+        let mut changed = false;
+        for change in &params.changes {
+            let Some(path) = Self::uri_to_path(&change.uri) else {
+                continue;
+            };
+
+            match change.typ {
+                FileChangeType::CREATED | FileChangeType::CHANGED => {
+                    let Ok(contents) = tokio::fs::read_to_string(&path).await else {
+                        tracing::warn!(path, "failed to read watched file");
+                        continue;
+                    };
+                    let mut db = lock_db(&self.db);
+                    if db.file_id(&path).is_some() {
+                        db.update_file(&path, contents);
+                    } else {
+                        db.set_file(&path, contents);
+                    }
+                    changed = true;
+                }
+                FileChangeType::DELETED => {
+                    let file_id = {
+                        let mut db = lock_db(&self.db);
+                        let fid = db.file_id(&path);
+                        db.remove_file(&path);
+                        fid
+                    };
+                    if let Some(fid) = file_id
+                        && let Ok(mut published) = self.last_published.lock()
+                    {
+                        published.remove(&fid);
+                    }
+                    self.client
+                        .publish_diagnostics(change.uri.clone(), vec![], None)
+                        .await;
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+
+        if changed {
+            self.trigger_analysis();
+        }
+    }
+
     // ── Document sync ────────────────────────────────────────────────
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
@@ -249,6 +458,9 @@ impl LanguageServer for Backend {
             let mut db = lock_db(&self.db);
             db.set_file(&path, params.text_document.text);
         }
+
+        // Chase INCLUDE directives — load referenced files from disk
+        self.chase_includes(&path);
 
         self.publish_perfile_diagnostics(&params.text_document.uri, &path)
             .await;
@@ -1308,7 +1520,58 @@ impl LanguageServer for Backend {
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         tracing::debug!(uri = %params.text_document.uri, "inlay_hint");
-        Ok(None)
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let Some(snap) = self.navigation_snapshot(&path) else {
+            return Ok(None);
+        };
+
+        let idx = LineIndex::new(&snap.source);
+        let range_start = convert::to_text_size(params.range.start, &idx);
+        let range_end = convert::to_text_size(params.range.end, &idx);
+        let request_range = rowan::TextRange::new(range_start, range_end);
+
+        let db = lock_db(&self.db);
+        let Some(file_id) = db.file_id(&path) else {
+            return Ok(None);
+        };
+        let Some(parse) = db.parse(file_id) else {
+            return Ok(None);
+        };
+        let root = parse.tree();
+        drop(db);
+
+        let mut hints = Vec::new();
+
+        // Walk syntax tree for function calls and divert targets with args
+        for node in root.syntax().descendants() {
+            let node_range = node.text_range();
+            // Skip nodes entirely outside the requested range
+            if node_range.end() < request_range.start() || node_range.start() > request_range.end()
+            {
+                continue;
+            }
+
+            if let Some(call) = brink_syntax::ast::FunctionCall::cast(node.clone()) {
+                if let Some(name) = call.name() {
+                    collect_param_hints(&name, call.arg_list(), &snap.analysis, &idx, &mut hints);
+                }
+            } else if let Some(target) = brink_syntax::ast::DivertTargetWithArgs::cast(node.clone())
+                && let Some(path_node) = target.path()
+            {
+                let name = path_node.full_name();
+                collect_param_hints(&name, target.arg_list(), &snap.analysis, &idx, &mut hints);
+            }
+        }
+
+        if hints.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(hints))
+        }
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
@@ -1319,6 +1582,85 @@ impl LanguageServer for Backend {
     async fn code_lens_resolve(&self, lens: CodeLens) -> Result<CodeLens> {
         tracing::debug!("code_lens_resolve");
         Ok(lens)
+    }
+}
+
+// ─── Inlay hint helpers ────────────────────────────────────────────
+
+/// Collect parameter name inlay hints for a call with the given callee name.
+fn collect_param_hints(
+    callee_name: &str,
+    arg_list: Option<brink_syntax::ast::ArgList>,
+    analysis: &AnalysisResult,
+    idx: &LineIndex,
+    hints: &mut Vec<InlayHint>,
+) {
+    let Some(arg_list) = arg_list else { return };
+    let args: Vec<_> = arg_list.args().collect();
+    if args.is_empty() {
+        return;
+    }
+
+    // Look up the callee in the symbol index
+    let Some(ids) = analysis.index.by_name.get(callee_name) else {
+        return;
+    };
+
+    // Find a matching symbol with params. Prefer one whose param count matches.
+    let info = ids
+        .iter()
+        .filter_map(|id| analysis.index.symbols.get(id))
+        .find(|info| {
+            matches!(
+                info.kind,
+                brink_ir::SymbolKind::Knot
+                    | brink_ir::SymbolKind::Stitch
+                    | brink_ir::SymbolKind::External
+            ) && info.params.len() == args.len()
+        })
+        .or_else(|| {
+            // Fallback: any callable with params
+            ids.iter()
+                .filter_map(|id| analysis.index.symbols.get(id))
+                .find(|info| {
+                    matches!(
+                        info.kind,
+                        brink_ir::SymbolKind::Knot
+                            | brink_ir::SymbolKind::Stitch
+                            | brink_ir::SymbolKind::External
+                    ) && !info.params.is_empty()
+                })
+        });
+
+    let Some(info) = info else { return };
+
+    for (arg, param) in args.iter().zip(&info.params) {
+        // Skip hint if the argument text already matches the parameter name
+        let arg_text = arg.syntax().text().to_string();
+        let arg_text = arg_text.trim();
+        if arg_text == param.name {
+            continue;
+        }
+
+        let label = if param.is_ref {
+            format!("ref {}:", param.name)
+        } else if param.is_divert {
+            format!("-> {}:", param.name)
+        } else {
+            format!("{}:", param.name)
+        };
+
+        let (line, col) = idx.line_col(arg.syntax().text_range().start());
+        hints.push(InlayHint {
+            position: Position::new(line, col),
+            label: InlayHintLabel::String(label),
+            kind: Some(tower_lsp::lsp_types::InlayHintKind::PARAMETER),
+            text_edits: None,
+            tooltip: None,
+            padding_left: None,
+            padding_right: Some(true),
+            data: None,
+        });
     }
 }
 

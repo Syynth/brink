@@ -108,10 +108,9 @@ pub fn diagnostic_to_lsp(diag: &brink_ir::Diagnostic, idx: &LineIndex) -> lsp_ty
     lsp_types::Diagnostic {
         range: to_lsp_range(diag.range, idx),
         severity: Some(severity_to_lsp(diag.code.severity())),
-        code: Some(lsp_types::NumberOrString::String(format!(
-            "{:?}",
-            diag.code
-        ))),
+        code: Some(lsp_types::NumberOrString::String(
+            diag.code.as_str().to_owned(),
+        )),
         source: Some("brink".to_owned()),
         message: diag.message.clone(),
         ..Default::default()
