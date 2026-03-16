@@ -862,9 +862,32 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         tracing::debug!(uri = %params.text_document.uri, "semantic_tokens_full");
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let (source, root, analysis, file_id) = {
+            let mut db = lock_db(&self.db);
+            let Some(file_id) = db.file_id(&path) else {
+                return Ok(None);
+            };
+            let Some(source) = db.source(file_id).map(str::to_owned) else {
+                return Ok(None);
+            };
+            let Some(parse) = db.parse(file_id) else {
+                return Ok(None);
+            };
+            let root = parse.syntax();
+            let analysis = db.analyze().clone();
+            (source, root, analysis, file_id)
+        };
+
+        let data = semantic_tokens::compute_semantic_tokens(&source, &root, &analysis, file_id);
+
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
-            data: vec![],
+            data,
         })))
     }
 
@@ -873,9 +896,40 @@ impl LanguageServer for Backend {
         params: SemanticTokensRangeParams,
     ) -> Result<Option<SemanticTokensRangeResult>> {
         tracing::debug!(uri = %params.text_document.uri, "semantic_tokens_range");
+
+        let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
+            return Ok(None);
+        };
+
+        let (source, root, analysis, file_id) = {
+            let mut db = lock_db(&self.db);
+            let Some(file_id) = db.file_id(&path) else {
+                return Ok(None);
+            };
+            let Some(source) = db.source(file_id).map(str::to_owned) else {
+                return Ok(None);
+            };
+            let Some(parse) = db.parse(file_id) else {
+                return Ok(None);
+            };
+            let root = parse.syntax();
+            let analysis = db.analyze().clone();
+            (source, root, analysis, file_id)
+        };
+
+        let range = params.range;
+        let data = semantic_tokens::compute_semantic_tokens_range(
+            &source,
+            &root,
+            &analysis,
+            file_id,
+            range.start.line,
+            range.end.line,
+        );
+
         Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
             result_id: None,
-            data: vec![],
+            data,
         })))
     }
 
