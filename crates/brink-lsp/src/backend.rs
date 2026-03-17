@@ -17,22 +17,21 @@ use tower_lsp::lsp_types::{
     FileSystemWatcher, FoldingRange, FoldingRangeKind, FoldingRangeParams,
     FoldingRangeProviderCapability, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse,
     Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    InitializedParams, InlayHint, InlayHintLabel, InlayHintParams, Location, MarkupContent,
-    MarkupKind, OneOf, ParameterInformation, ParameterLabel, Position, PrepareRenameResponse,
-    Range, ReferenceParams, Registration, RenameOptions, RenameParams, SaveOptions, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensRangeParams, SemanticTokensRangeResult, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
-    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolInformation,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions,
-    WorkspaceEdit, WorkspaceSymbolParams,
+    InitializedParams, InlayHint as LspInlayHint, InlayHintLabel, InlayHintParams, Location,
+    MarkupContent, MarkupKind, OneOf, ParameterInformation, ParameterLabel, Position,
+    PrepareRenameResponse, Range, ReferenceParams, Registration, RenameOptions, RenameParams,
+    SaveOptions, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
+    SymbolInformation, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Url,
+    WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use brink_ide::{
-    CompletionContext, builtin_hover_text, cursor_scope, detect_completion_context,
-    find_call_context, is_visible_in_context, word_at_offset, word_range_at_offset,
+    CompletionContext, cursor_scope, detect_completion_context, is_visible_in_context,
 };
 
 use crate::convert::{self, LineIndex};
@@ -621,7 +620,9 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
 
-        let Some(info) = find_def_at_offset(&snap, offset) else {
+        let Some(loc) =
+            brink_ide::navigation::goto_definition(&snap.analysis, snap.file_id, offset)
+        else {
             return Ok(None);
         };
 
@@ -629,13 +630,13 @@ impl LanguageServer for Backend {
         let Some((_, target_path, target_source)) = snap
             .project_files
             .iter()
-            .find(|(fid, _, _)| *fid == info.file)
+            .find(|(fid, _, _)| *fid == loc.file)
         else {
             return Ok(None);
         };
 
         let target_idx = LineIndex::new(target_source);
-        let target_range = convert::to_lsp_range(info.range, &target_idx);
+        let target_range = convert::to_lsp_range(loc.range, &target_idx);
         let Ok(target_uri) = Url::from_file_path(target_path) else {
             return Ok(None);
         };
@@ -663,69 +664,32 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position.position, &idx);
 
-        // Find which definition the cursor is on
-        let def_id = snap
-            .analysis
-            .resolutions
-            .iter()
-            .find(|r| {
-                r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset)
-            })
-            .map(|r| r.target)
-            .or_else(|| {
-                // Maybe the cursor is on a definition site
-                snap.analysis
-                    .index
-                    .symbols
-                    .values()
-                    .find(|info| {
-                        info.file == snap.file_id
-                            && (info.range.contains(offset) || info.range.start() == offset)
-                    })
-                    .map(|info| info.id)
-            });
+        let refs = brink_ide::navigation::find_references(
+            &snap.analysis,
+            snap.file_id,
+            offset,
+            params.context.include_declaration,
+        );
 
-        let Some(def_id) = def_id else {
+        if refs.is_empty() {
             return Ok(None);
-        };
-
-        let mut locations = Vec::new();
-
-        // Include the definition itself if requested
-        if params.context.include_declaration
-            && let Some(info) = snap.analysis.index.symbols.get(&def_id)
-            && let Some((_, def_path, def_source)) = snap
-                .project_files
-                .iter()
-                .find(|(fid, _, _)| *fid == info.file)
-            && let Ok(uri) = Url::from_file_path(def_path)
-        {
-            let def_idx = LineIndex::new(def_source);
-            locations.push(Location {
-                uri,
-                range: convert::to_lsp_range(info.range, &def_idx),
-            });
         }
 
-        // Collect all reference sites that resolve to this definition.
-        for resolved in &snap.analysis.resolutions {
-            if resolved.target != def_id {
-                continue;
-            }
-
-            if let Some((_, file_path, file_source)) = snap
-                .project_files
-                .iter()
-                .find(|(fid, _, _)| *fid == resolved.file)
-                && let Ok(uri) = Url::from_file_path(file_path)
-            {
+        let locations: Vec<_> = refs
+            .iter()
+            .filter_map(|loc| {
+                let (_, file_path, file_source) = snap
+                    .project_files
+                    .iter()
+                    .find(|(fid, _, _)| *fid == loc.file)?;
                 let file_idx = LineIndex::new(file_source);
-                locations.push(Location {
+                let uri = Url::from_file_path(file_path).ok()?;
+                Some(Location {
                     uri,
-                    range: convert::to_lsp_range(resolved.range, &file_idx),
-                });
-            }
-        }
+                    range: convert::to_lsp_range(loc.range, &file_idx),
+                })
+            })
+            .collect();
 
         if locations.is_empty() {
             Ok(None)
@@ -754,82 +718,22 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
 
-        let value = if let Some(info) = find_def_at_offset(&snap, offset) {
-            let kind_str = match info.kind {
-                brink_ir::SymbolKind::Knot => "knot",
-                brink_ir::SymbolKind::Stitch => "stitch",
-                brink_ir::SymbolKind::Variable => "variable",
-                brink_ir::SymbolKind::Constant => "constant",
-                brink_ir::SymbolKind::List => "list",
-                brink_ir::SymbolKind::ListItem => "list item",
-                brink_ir::SymbolKind::External => "external function",
-                brink_ir::SymbolKind::Label => "label",
-                brink_ir::SymbolKind::Param => "parameter",
-                brink_ir::SymbolKind::Temp => "temp variable",
-            };
-
-            let params_str = if info.params.is_empty() {
-                String::new()
-            } else {
-                let parts: Vec<_> = info
-                    .params
-                    .iter()
-                    .map(|p| {
-                        let mut s = String::new();
-                        if p.is_ref {
-                            s.push_str("ref ");
-                        }
-                        if p.is_divert {
-                            s.push_str("-> ");
-                        }
-                        s.push_str(&p.name);
-                        s
-                    })
-                    .collect();
-                format!("({})", parts.join(", "))
-            };
-
-            let detail_str = info
-                .detail
-                .as_deref()
-                .map_or(String::new(), |d| format!(" [{d}]"));
-
-            let file_note = snap
-                .project_files
-                .iter()
-                .find(|(fid, _, _)| *fid == info.file)
-                .map_or(String::new(), |(_, p, _)| format!("\n\n*Defined in `{p}`*"));
-
-            format!(
-                "**{kind_str}** `{}{params_str}`{detail_str}{file_note}",
-                info.name
-            )
-        } else if let Some(builtin) =
-            word_at_offset(&snap.source, offset).and_then(builtin_hover_text)
-        {
-            builtin
-        } else {
+        let Some(info) = brink_ide::hover::hover(
+            &snap.analysis,
+            snap.file_id,
+            &snap.source,
+            offset,
+            &snap.project_files,
+        ) else {
             return Ok(None);
         };
 
-        let hover_range = snap
-            .analysis
-            .resolutions
-            .iter()
-            .find(|r| {
-                r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset)
-            })
-            .map(|r| convert::to_lsp_range(r.range, &idx))
-            .or_else(|| {
-                // For locals/builtins matched by word text, compute range from word bounds.
-                let word_range = word_range_at_offset(&snap.source, offset)?;
-                Some(convert::to_lsp_range(word_range, &idx))
-            });
+        let hover_range = info.range.map(|r| convert::to_lsp_range(r, &idx));
 
         Ok(Some(Hover {
             contents: tower_lsp::lsp_types::HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value,
+                value: info.content,
             }),
             range: hover_range,
         }))
@@ -855,71 +759,32 @@ impl LanguageServer for Backend {
         let offset = idx.offset(pos.line, pos.character);
         let byte_offset: usize = offset.into();
 
-        let Some((func_name, active_param)) = find_call_context(&snap.source, byte_offset) else {
+        let Some(sig) =
+            brink_ide::signature::signature_help(&snap.analysis, &snap.source, byte_offset)
+        else {
             return Ok(None);
         };
 
-        // Look up the function in the symbol index.
-        let info = snap.analysis.index.symbols.values().find(|info| {
-            matches!(
-                info.kind,
-                brink_ir::SymbolKind::Knot
-                    | brink_ir::SymbolKind::Stitch
-                    | brink_ir::SymbolKind::External
-            ) && info.name == func_name
-                && !info.params.is_empty()
-        });
-
-        let Some(info) = info else {
-            return Ok(None);
-        };
-
-        let param_infos: Vec<ParameterInformation> = info
-            .params
+        let param_infos: Vec<ParameterInformation> = sig
+            .parameters
             .iter()
-            .map(|p| {
-                let label = if p.is_ref {
-                    format!("ref {}", p.name)
-                } else if p.is_divert {
-                    format!("-> {}", p.name)
-                } else {
-                    p.name.clone()
-                };
-                ParameterInformation {
-                    label: ParameterLabel::Simple(label),
-                    documentation: None,
-                }
+            .map(|p| ParameterInformation {
+                label: ParameterLabel::Simple(p.label.clone()),
+                documentation: None,
             })
             .collect();
-
-        let param_labels: Vec<String> = param_infos
-            .iter()
-            .map(|p| match &p.label {
-                ParameterLabel::Simple(s) => s.clone(),
-                ParameterLabel::LabelOffsets(_) => String::new(),
-            })
-            .collect();
-
-        let signature_label = format!("{}({})", func_name, param_labels.join(", "));
-
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "active param index fits in u32"
-        )]
-        let active = active_param.min(info.params.len().saturating_sub(1)) as u32;
 
         Ok(Some(SignatureHelp {
             signatures: vec![SignatureInformation {
-                label: signature_label,
-                documentation: info
-                    .detail
-                    .as_ref()
-                    .map(|d| tower_lsp::lsp_types::Documentation::String(d.clone())),
+                label: sig.label,
+                documentation: sig
+                    .documentation
+                    .map(tower_lsp::lsp_types::Documentation::String),
                 parameters: Some(param_infos),
-                active_parameter: Some(active),
+                active_parameter: Some(sig.active_parameter),
             }],
             active_signature: Some(0),
-            active_parameter: Some(active),
+            active_parameter: Some(sig.active_parameter),
         }))
     }
 
@@ -1027,82 +892,12 @@ impl LanguageServer for Backend {
         };
 
         let idx = LineIndex::new(source);
-        let mut symbols = Vec::new();
+        let domain_symbols = brink_ide::document::document_symbols(hir, manifest);
 
-        // Knots with their stitches as children
-        for knot in &hir.knots {
-            let children: Vec<_> = knot
-                .stitches
-                .iter()
-                .map(|stitch| {
-                    #[expect(deprecated, reason = "DocumentSymbol requires this field")]
-                    tower_lsp::lsp_types::DocumentSymbol {
-                        name: stitch.name.text.clone(),
-                        detail: None,
-                        kind: tower_lsp::lsp_types::SymbolKind::METHOD,
-                        tags: None,
-                        deprecated: None,
-                        range: convert::to_lsp_range(stitch.name.range, &idx),
-                        selection_range: convert::to_lsp_range(stitch.name.range, &idx),
-                        children: None,
-                    }
-                })
-                .collect();
-
-            #[expect(deprecated, reason = "DocumentSymbol requires this field")]
-            let sym = tower_lsp::lsp_types::DocumentSymbol {
-                name: knot.name.text.clone(),
-                detail: if knot.is_function {
-                    Some("function".to_owned())
-                } else {
-                    None
-                },
-                kind: tower_lsp::lsp_types::SymbolKind::FUNCTION,
-                tags: None,
-                deprecated: None,
-                range: convert::to_lsp_range(knot.name.range, &idx),
-                selection_range: convert::to_lsp_range(knot.name.range, &idx),
-                children: if children.is_empty() {
-                    None
-                } else {
-                    Some(children)
-                },
-            };
-            symbols.push(sym);
-        }
-
-        // Top-level declarations from manifest
-        let decl_groups: &[(
-            &[brink_ir::DeclaredSymbol],
-            tower_lsp::lsp_types::SymbolKind,
-        )] = &[
-            (
-                &manifest.variables,
-                tower_lsp::lsp_types::SymbolKind::VARIABLE,
-            ),
-            (&manifest.lists, tower_lsp::lsp_types::SymbolKind::ENUM),
-            (
-                &manifest.externals,
-                tower_lsp::lsp_types::SymbolKind::FUNCTION,
-            ),
-        ];
-
-        for (decls, kind) in decl_groups {
-            for decl in *decls {
-                #[expect(deprecated, reason = "DocumentSymbol requires this field")]
-                let sym = tower_lsp::lsp_types::DocumentSymbol {
-                    name: decl.name.clone(),
-                    detail: None,
-                    kind: *kind,
-                    tags: None,
-                    deprecated: None,
-                    range: convert::to_lsp_range(decl.range, &idx),
-                    selection_range: convert::to_lsp_range(decl.range, &idx),
-                    children: None,
-                };
-                symbols.push(sym);
-            }
-        }
+        let symbols = domain_symbols
+            .into_iter()
+            .map(|s| domain_symbol_to_lsp(s, &idx))
+            .collect();
 
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
@@ -1128,48 +923,34 @@ impl LanguageServer for Backend {
                 .collect::<Vec<_>>()
         };
 
-        let query = params.query.to_lowercase();
-        let mut results = Vec::new();
-        let mut seen_symbols = std::collections::HashSet::new();
+        let domain_symbols = brink_ide::document::workspace_symbols(
+            projects.by_root.values().map(std::convert::AsRef::as_ref),
+            &params.query,
+        );
 
-        // Search across ALL projects for workspace symbols
-        for analysis in projects.by_root.values() {
-            for info in analysis.index.symbols.values() {
-                if !query.is_empty() && !info.name.to_lowercase().contains(&query) {
-                    continue;
-                }
-
-                // Deduplicate: same file + range = same symbol across projects
-                if !seen_symbols.insert((info.file, info.range)) {
-                    continue;
-                }
-
-                let Some((_, file_path, file_source)) =
-                    all_files.iter().find(|(fid, _, _)| *fid == info.file)
-                else {
-                    continue;
-                };
-                let Ok(uri) = Url::from_file_path(file_path) else {
-                    continue;
-                };
-
+        let results = domain_symbols
+            .into_iter()
+            .filter_map(|ws| {
+                let (_, file_path, file_source) =
+                    all_files.iter().find(|(fid, _, _)| *fid == ws.file)?;
+                let uri = Url::from_file_path(file_path).ok()?;
                 let idx = LineIndex::new(file_source);
 
                 #[expect(deprecated, reason = "SymbolInformation requires this field")]
                 let sym = SymbolInformation {
-                    name: info.name.clone(),
-                    kind: convert::symbol_kind_to_lsp(info.kind),
+                    name: ws.name,
+                    kind: convert::symbol_kind_to_lsp(ws.kind),
                     tags: None,
                     deprecated: None,
                     location: Location {
                         uri,
-                        range: convert::to_lsp_range(info.range, &idx),
+                        range: convert::to_lsp_range(ws.range, &idx),
                     },
                     container_name: None,
                 };
-                results.push(sym);
-            }
-        }
+                Some(sym)
+            })
+            .collect();
 
         Ok(Some(results))
     }
@@ -1279,27 +1060,8 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.position, &idx);
 
-        let Some(info) = find_def_at_offset(&snap, offset) else {
-            return Ok(None);
-        };
-
-        // Builtins and externals cannot be renamed
-        if matches!(info.kind, brink_ir::SymbolKind::External) {
-            return Ok(None);
-        }
-
-        // Return the range of the symbol under the cursor (reference or definition site)
-        let rename_range = snap
-            .analysis
-            .resolutions
-            .iter()
-            .find(|r| {
-                r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset)
-            })
-            .map(|r| r.range)
-            .or_else(|| (info.file == snap.file_id).then_some(info.range));
-
-        let Some(range) = rename_range else {
+        let Some(range) = brink_ide::rename::prepare_rename(&snap.analysis, snap.file_id, offset)
+        else {
             return Ok(None);
         };
 
@@ -1326,50 +1088,25 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position.position, &idx);
 
-        let Some(info) = find_def_at_offset(&snap, offset) else {
+        let Some(result) =
+            brink_ide::rename::rename(&snap.analysis, snap.file_id, offset, &params.new_name)
+        else {
             return Ok(None);
         };
 
-        if matches!(info.kind, brink_ir::SymbolKind::External) {
-            return Ok(None);
-        }
-
-        let def_id = info.id;
-        let new_name = &params.new_name;
-
-        // Collect all edits grouped by file URI
+        // Convert domain edits to LSP WorkspaceEdit
         let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-
-        // 1. Rename the definition site
-        if let Some((_, def_path, def_source)) = snap
-            .project_files
-            .iter()
-            .find(|(fid, _, _)| *fid == info.file)
-            && let Ok(uri) = Url::from_file_path(def_path)
-        {
-            let def_idx = LineIndex::new(def_source);
-            changes.entry(uri).or_default().push(TextEdit {
-                range: convert::to_lsp_range(info.range, &def_idx),
-                new_text: new_name.clone(),
-            });
-        }
-
-        // 2. Rename all reference sites
-        for resolved in &snap.analysis.resolutions {
-            if resolved.target != def_id {
-                continue;
-            }
-
+        for edit in &result.edits {
             if let Some((_, file_path, file_source)) = snap
                 .project_files
                 .iter()
-                .find(|(fid, _, _)| *fid == resolved.file)
+                .find(|(fid, _, _)| *fid == edit.file)
                 && let Ok(uri) = Url::from_file_path(file_path)
             {
                 let file_idx = LineIndex::new(file_source);
                 changes.entry(uri).or_default().push(TextEdit {
-                    range: convert::to_lsp_range(resolved.range, &file_idx),
-                    new_text: new_name.clone(),
+                    range: convert::to_lsp_range(edit.range, &file_idx),
+                    new_text: edit.new_text.clone(),
                 });
             }
         }
@@ -1403,11 +1140,61 @@ impl LanguageServer for Backend {
             return Ok(Some(vec![]));
         };
 
-        Ok(Some(collect_code_actions(
-            &source,
-            params.text_document.uri.as_ref(),
-            params.range.start,
-        )))
+        let idx = LineIndex::new(&source);
+        let cursor_offset: usize = idx
+            .offset(params.range.start.line, params.range.start.character)
+            .into();
+
+        let domain_actions = brink_ide::code_actions::code_actions(&source, cursor_offset);
+
+        let lsp_actions = domain_actions
+            .into_iter()
+            .map(|a| {
+                let kind = match a.kind {
+                    brink_ide::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
+                    brink_ide::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
+                    brink_ide::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
+                };
+
+                let data = match &a.data {
+                    brink_ide::code_actions::CodeActionData::SortKnots => serde_json::json!({
+                        "kind": "sort_knots",
+                        "uri": params.text_document.uri.as_str(),
+                    }),
+                    brink_ide::code_actions::CodeActionData::SortStitches { knot } => {
+                        serde_json::json!({
+                            "kind": "sort_stitches",
+                            "uri": params.text_document.uri.as_str(),
+                            "knot": knot,
+                        })
+                    }
+                    brink_ide::code_actions::CodeActionData::FormatKnot { knot } => {
+                        serde_json::json!({
+                            "kind": "format_knot",
+                            "uri": params.text_document.uri.as_str(),
+                            "knot": knot,
+                        })
+                    }
+                    brink_ide::code_actions::CodeActionData::FormatStitch { knot, stitch } => {
+                        serde_json::json!({
+                            "kind": "format_stitch",
+                            "uri": params.text_document.uri.as_str(),
+                            "knot": knot,
+                            "stitch": stitch,
+                        })
+                    }
+                };
+
+                tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(CodeAction {
+                    title: a.title,
+                    kind: Some(kind),
+                    data: Some(data),
+                    ..Default::default()
+                })
+            })
+            .collect();
+
+        Ok(Some(lsp_actions))
     }
 
     async fn code_action_resolve(&self, mut action: CodeAction) -> Result<CodeAction> {
@@ -1449,23 +1236,31 @@ impl LanguageServer for Backend {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
 
-        let new_source = match kind {
-            Some("sort_knots") => sort_knots_in_source(&source),
-            Some("sort_stitches") => sort_stitches_in_knot(&source, knot_name),
-            Some("format_knot") => format_region(&source, knot_name, None),
+        let action_data = match kind {
+            Some("sort_knots") => brink_ide::code_actions::CodeActionData::SortKnots,
+            Some("sort_stitches") => brink_ide::code_actions::CodeActionData::SortStitches {
+                knot: knot_name.to_owned(),
+            },
+            Some("format_knot") => brink_ide::code_actions::CodeActionData::FormatKnot {
+                knot: knot_name.to_owned(),
+            },
             Some("format_stitch") => {
                 let stitch_name = data
                     .get("stitch")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default();
-                format_region(&source, knot_name, Some(stitch_name))
+                brink_ide::code_actions::CodeActionData::FormatStitch {
+                    knot: knot_name.to_owned(),
+                    stitch: stitch_name.to_owned(),
+                }
             }
             _ => return Ok(action),
         };
 
-        if new_source == source {
+        let Some(new_source) = brink_ide::code_actions::resolve_code_action(&source, &action_data)
+        else {
             return Ok(action);
-        }
+        };
 
         let edits = diff_to_lsp_edits(&source, &new_source);
         let mut changes = HashMap::new();
@@ -1575,28 +1370,24 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let idx = LineIndex::new(source);
-        let mut ranges = Vec::new();
+        let domain_ranges = brink_ide::folding::folding_ranges(hir, source);
 
-        // Root-level block content
-        collect_block_folds(&hir.root_content, source, &idx, &mut ranges);
-
-        for knot in &hir.knots {
-            push_fold(knot.ptr.text_range(), None, source, &idx, &mut ranges);
-
-            collect_block_folds(&knot.body, source, &idx, &mut ranges);
-
-            for stitch in &knot.stitches {
-                push_fold(stitch.ptr.text_range(), None, source, &idx, &mut ranges);
-
-                collect_block_folds(&stitch.body, source, &idx, &mut ranges);
-            }
-        }
+        let ranges = domain_ranges
+            .into_iter()
+            .map(|r| FoldingRange {
+                start_line: r.start_line,
+                start_character: None,
+                end_line: r.end_line,
+                end_character: None,
+                kind: Some(FoldingRangeKind::Region),
+                collapsed_text: r.collapsed_text,
+            })
+            .collect();
 
         Ok(Some(ranges))
     }
 
-    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<LspInlayHint>>> {
         tracing::debug!(uri = %params.text_document.uri, "inlay_hint");
 
         let Some(path) = Self::uri_to_path(&params.text_document.uri) else {
@@ -1622,34 +1413,31 @@ impl LanguageServer for Backend {
         let root = parse.tree();
         drop(db);
 
-        let mut hints = Vec::new();
+        let domain_hints =
+            brink_ide::inlay_hints::inlay_hints(root.syntax(), &snap.analysis, request_range);
 
-        // Walk syntax tree for function calls and divert targets with args
-        for node in root.syntax().descendants() {
-            let node_range = node.text_range();
-            // Skip nodes entirely outside the requested range
-            if node_range.end() < request_range.start() || node_range.start() > request_range.end()
-            {
-                continue;
-            }
+        if domain_hints.is_empty() {
+            return Ok(None);
+        }
 
-            if let Some(call) = brink_syntax::ast::FunctionCall::cast(node.clone()) {
-                if let Some(name) = call.name() {
-                    collect_param_hints(&name, call.arg_list(), &snap.analysis, &idx, &mut hints);
+        let hints = domain_hints
+            .into_iter()
+            .map(|h| {
+                let (line, col) = idx.line_col(h.offset);
+                LspInlayHint {
+                    position: Position::new(line, col),
+                    label: InlayHintLabel::String(h.label),
+                    kind: Some(tower_lsp::lsp_types::InlayHintKind::PARAMETER),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: None,
+                    padding_right: Some(h.padding_right),
+                    data: None,
                 }
-            } else if let Some(target) = brink_syntax::ast::DivertTargetWithArgs::cast(node.clone())
-                && let Some(path_node) = target.path()
-            {
-                let name = path_node.full_name();
-                collect_param_hints(&name, target.arg_list(), &snap.analysis, &idx, &mut hints);
-            }
-        }
+            })
+            .collect();
 
-        if hints.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(hints))
-        }
+        Ok(Some(hints))
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
@@ -1663,667 +1451,34 @@ impl LanguageServer for Backend {
     }
 }
 
-// ─── Inlay hint helpers ────────────────────────────────────────────
+// ─── LSP adapter helpers ────────────────────────────────────────────
 
-/// Collect parameter name inlay hints for a call with the given callee name.
-fn collect_param_hints(
-    callee_name: &str,
-    arg_list: Option<brink_syntax::ast::ArgList>,
-    analysis: &AnalysisResult,
+/// Convert a domain `DocumentSymbol` to an LSP `DocumentSymbol`.
+#[expect(deprecated, reason = "DocumentSymbol requires deprecated fields")]
+fn domain_symbol_to_lsp(
+    sym: brink_ide::document::DocumentSymbol,
     idx: &LineIndex,
-    hints: &mut Vec<InlayHint>,
-) {
-    let Some(arg_list) = arg_list else { return };
-    let args: Vec<_> = arg_list.args().collect();
-    if args.is_empty() {
-        return;
-    }
-
-    // Look up the callee in the symbol index
-    let Some(ids) = analysis.index.by_name.get(callee_name) else {
-        return;
-    };
-
-    // Find a matching symbol with params. Prefer one whose param count matches.
-    let info = ids
-        .iter()
-        .filter_map(|id| analysis.index.symbols.get(id))
-        .find(|info| {
-            matches!(
-                info.kind,
-                brink_ir::SymbolKind::Knot
-                    | brink_ir::SymbolKind::Stitch
-                    | brink_ir::SymbolKind::External
-            ) && info.params.len() == args.len()
-        })
-        .or_else(|| {
-            // Fallback: any callable with params
-            ids.iter()
-                .filter_map(|id| analysis.index.symbols.get(id))
-                .find(|info| {
-                    matches!(
-                        info.kind,
-                        brink_ir::SymbolKind::Knot
-                            | brink_ir::SymbolKind::Stitch
-                            | brink_ir::SymbolKind::External
-                    ) && !info.params.is_empty()
-                })
-        });
-
-    let Some(info) = info else { return };
-
-    for (arg, param) in args.iter().zip(&info.params) {
-        // Skip hint if the argument text already matches the parameter name
-        let arg_text = arg.syntax().text().to_string();
-        let arg_text = arg_text.trim();
-        if arg_text == param.name {
-            continue;
-        }
-
-        let label = if param.is_ref {
-            format!("ref {}:", param.name)
-        } else if param.is_divert {
-            format!("-> {}:", param.name)
-        } else {
-            format!("{}:", param.name)
-        };
-
-        let (line, col) = idx.line_col(arg.syntax().text_range().start());
-        hints.push(InlayHint {
-            position: Position::new(line, col),
-            label: InlayHintLabel::String(label),
-            kind: Some(tower_lsp::lsp_types::InlayHintKind::PARAMETER),
-            text_edits: None,
-            tooltip: None,
-            padding_left: None,
-            padding_right: Some(true),
-            data: None,
-        });
-    }
-}
-
-// ─── Definition lookup ─────────────────────────────────────────────
-
-/// Find the definition id for the symbol at `offset`.
-///
-/// Tries, in order: resolved references, declaration sites, then local
-/// variables (params/temps) by identifier text.
-fn find_def_at_offset(
-    snap: &NavigationSnapshot,
-    offset: rowan::TextSize,
-) -> Option<&brink_ir::SymbolInfo> {
-    // 1. Resolved reference at this position
-    let def_id = snap
-        .analysis
-        .resolutions
-        .iter()
-        .find(|r| r.file == snap.file_id && (r.range.contains(offset) || r.range.start() == offset))
-        .map(|r| r.target)
-        // 2. Declaration site at this position
-        .or_else(|| {
-            snap.analysis
-                .index
-                .symbols
-                .values()
-                .find(|info| {
-                    info.file == snap.file_id
-                        && (info.range.contains(offset) || info.range.start() == offset)
-                })
-                .map(|info| info.id)
-        });
-
-    def_id.and_then(|id| snap.analysis.index.symbols.get(&id))
-}
-
-// ─── Folding range helpers ──────────────────────────────────────────
-
-fn push_fold(
-    range: rowan::TextRange,
-    collapsed: Option<String>,
-    source: &str,
-    idx: &LineIndex,
-    out: &mut Vec<FoldingRange>,
-) {
-    let start_byte = usize::from(range.start());
-    let end_byte = usize::from(range.end()).min(source.len());
-    let slice = &source[start_byte..end_byte];
-
-    // Trim leading whitespace to find the real start line
-    let trimmed_start = start_byte + (slice.len() - slice.trim_start().len());
-    // Trim trailing whitespace to find the real end line
-    let trimmed_end = start_byte + slice.trim_end().len();
-
-    if trimmed_start >= trimmed_end {
-        return;
-    }
-
-    let (start_line, _) = idx.line_col(rowan::TextSize::from(
-        u32::try_from(trimmed_start).unwrap_or(u32::MAX),
-    ));
-    let (end_line, _) = idx.line_col(rowan::TextSize::from(
-        u32::try_from(trimmed_end).unwrap_or(u32::MAX),
-    ));
-    if end_line > start_line {
-        out.push(FoldingRange {
-            start_line,
-            start_character: None,
-            end_line,
-            end_character: None,
-            kind: Some(FoldingRangeKind::Region),
-            collapsed_text: collapsed,
-        });
-    }
-}
-
-fn collect_block_folds(
-    block: &brink_ir::Block,
-    source: &str,
-    idx: &LineIndex,
-    out: &mut Vec<FoldingRange>,
-) {
-    for stmt in &block.stmts {
-        collect_stmt_folds(stmt, source, idx, out);
-    }
-}
-
-fn collect_stmt_folds(
-    stmt: &brink_ir::Stmt,
-    source: &str,
-    idx: &LineIndex,
-    out: &mut Vec<FoldingRange>,
-) {
-    match stmt {
-        brink_ir::Stmt::ChoiceSet(cs) => {
-            for choice in &cs.choices {
-                push_fold(choice.ptr.text_range(), None, source, idx, out);
-                collect_block_folds(&choice.body, source, idx, out);
-            }
-            collect_block_folds(&cs.continuation, source, idx, out);
-        }
-        brink_ir::Stmt::LabeledBlock(block) => {
-            collect_block_folds(block, source, idx, out);
-        }
-        brink_ir::Stmt::Conditional(cond) => {
-            push_fold(
-                cond.ptr.text_range(),
-                Some("{...}".to_owned()),
-                source,
-                idx,
-                out,
-            );
-            for branch in &cond.branches {
-                collect_block_folds(&branch.body, source, idx, out);
-            }
-        }
-        brink_ir::Stmt::Sequence(seq) => {
-            push_fold(
-                seq.ptr.text_range(),
-                Some("{...}".to_owned()),
-                source,
-                idx,
-                out,
-            );
-            for branch in &seq.branches {
-                collect_block_folds(branch, source, idx, out);
-            }
-        }
-        brink_ir::Stmt::Content(content) => {
-            collect_content_folds(content, source, idx, out);
-        }
-        _ => {}
-    }
-}
-
-fn collect_content_folds(
-    content: &brink_ir::Content,
-    source: &str,
-    idx: &LineIndex,
-    out: &mut Vec<FoldingRange>,
-) {
-    collect_content_part_folds(&content.parts, source, idx, out);
-}
-
-fn collect_content_part_folds(
-    parts: &[brink_ir::ContentPart],
-    source: &str,
-    idx: &LineIndex,
-    out: &mut Vec<FoldingRange>,
-) {
-    for part in parts {
-        match part {
-            brink_ir::ContentPart::InlineConditional(cond) => {
-                push_fold(
-                    cond.ptr.text_range(),
-                    Some("{...}".to_owned()),
-                    source,
-                    idx,
-                    out,
-                );
-                for branch in &cond.branches {
-                    collect_block_folds(&branch.body, source, idx, out);
-                }
-            }
-            brink_ir::ContentPart::InlineSequence(seq) => {
-                push_fold(
-                    seq.ptr.text_range(),
-                    Some("{...}".to_owned()),
-                    source,
-                    idx,
-                    out,
-                );
-                for branch in &seq.branches {
-                    collect_block_folds(branch, source, idx, out);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-// ─── Formatting helpers ─────────────────────────────────────────────
-
-fn format_config_from_options(
-    _options: &tower_lsp::lsp_types::FormattingOptions,
-) -> brink_fmt::FormatConfig {
-    // Always use the formatter's default (2-space indent) regardless of
-    // the editor's tab_size setting. Ink indentation is structural, not
-    // configurable per-editor.
-    brink_fmt::FormatConfig::default()
-}
-
-/// Format only a specific knot or stitch region, leaving the rest unchanged.
-///
-/// Formats the whole document, then replaces only the lines corresponding to
-/// the targeted region. Since formatting can change line lengths (shifting byte
-/// offsets), we identify the region by line number in the original source.
-fn format_region(source: &str, knot_name: &str, stitch_name: Option<&str>) -> String {
-    use brink_syntax::ast::AstNode as _;
-
-    let parse = brink_syntax::parse(source);
-    let tree = parse.tree();
-
-    let knots: Vec<_> = tree.knots().collect();
-    let Some((ki, knot)) = knots
-        .iter()
-        .enumerate()
-        .find(|(_, k)| k.header().and_then(|h| h.name()).as_deref() == Some(knot_name))
-    else {
-        return source.to_owned();
-    };
-
-    let knot_start: usize = knot.syntax().text_range().start().into();
-    let knot_end: usize = if ki + 1 < knots.len() {
-        knots[ki + 1].syntax().text_range().start().into()
-    } else {
-        source.len()
-    };
-
-    let (region_start, region_end) = if let Some(sname) = stitch_name {
-        let Some(body) = knot.body() else {
-            return source.to_owned();
-        };
-        let stitches: Vec<_> = body.stitches().collect();
-        let Some((si, stitch)) = stitches
-            .iter()
-            .enumerate()
-            .find(|(_, s)| s.header().and_then(|h| h.name()).as_deref() == Some(sname))
-        else {
-            return source.to_owned();
-        };
-        let start: usize = stitch.syntax().text_range().start().into();
-        let end: usize = if si + 1 < stitches.len() {
-            stitches[si + 1].syntax().text_range().start().into()
-        } else {
-            knot_end
-        };
-        (start, end)
-    } else {
-        (knot_start, knot_end)
-    };
-
-    // Format the whole file
-    let config = brink_fmt::FormatConfig::default();
-    let formatted = brink_fmt::format(source, &config);
-
-    // Splice: keep original before/after region, use formatted for the region.
-    // Because formatting is line-based and preserves structure, the byte offsets
-    // in the original source correctly delimit the region to replace.
-    // The formatted output has the same structure, so we re-parse it to find the
-    // matching region boundaries.
-    let fmt_parse = brink_syntax::parse(&formatted);
-    let fmt_tree = fmt_parse.tree();
-
-    let fmt_knots: Vec<_> = fmt_tree.knots().collect();
-    let Some((fki, fmt_knot)) = fmt_knots
-        .iter()
-        .enumerate()
-        .find(|(_, k)| k.header().and_then(|h| h.name()).as_deref() == Some(knot_name))
-    else {
-        return source.to_owned();
-    };
-
-    let fmt_knot_start: usize = fmt_knot.syntax().text_range().start().into();
-    let fmt_knot_end: usize = if fki + 1 < fmt_knots.len() {
-        fmt_knots[fki + 1].syntax().text_range().start().into()
-    } else {
-        formatted.len()
-    };
-
-    let (fmt_region_start, fmt_region_end) = if let Some(sname) = stitch_name {
-        let Some(body) = fmt_knot.body() else {
-            return source.to_owned();
-        };
-        let fmt_stitches: Vec<_> = body.stitches().collect();
-        let Some((fsi, fmt_stitch)) = fmt_stitches
-            .iter()
-            .enumerate()
-            .find(|(_, s)| s.header().and_then(|h| h.name()).as_deref() == Some(sname))
-        else {
-            return source.to_owned();
-        };
-        let start: usize = fmt_stitch.syntax().text_range().start().into();
-        let end: usize = if fsi + 1 < fmt_stitches.len() {
-            fmt_stitches[fsi + 1].syntax().text_range().start().into()
-        } else {
-            fmt_knot_end
-        };
-        (start, end)
-    } else {
-        (fmt_knot_start, fmt_knot_end)
-    };
-
-    let mut result = String::with_capacity(formatted.len());
-    result.push_str(&source[..region_start]);
-    result.push_str(&formatted[fmt_region_start..fmt_region_end]);
-    result.push_str(&source[region_end..]);
-    result
-}
-
-// ─── Code action helpers ────────────────────────────────────────────
-
-/// Collect all applicable code actions for the given source and cursor position.
-#[expect(clippy::too_many_lines, reason = "sequential action collection")]
-fn collect_code_actions(
-    source: &str,
-    uri_str: &str,
-    cursor_pos: Position,
-) -> Vec<tower_lsp::lsp_types::CodeActionOrCommand> {
-    use brink_syntax::ast::AstNode as _;
-
-    let parse = brink_syntax::parse(source);
-    let tree = parse.tree();
-
-    let mut actions = Vec::new();
-
-    // ── Sort knots ──────────────────────────────────────────────
-    let knot_names: Vec<String> = tree.knots().filter_map(|k| k.header()?.name()).collect();
-
-    if knot_names.len() >= 2 {
-        let already_sorted = knot_names
-            .windows(2)
-            .all(|w| w[0].to_lowercase() <= w[1].to_lowercase());
-
-        if !already_sorted {
-            actions.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
-                CodeAction {
-                    title: "Sort knots alphabetically".to_owned(),
-                    kind: Some(CodeActionKind::SOURCE),
-                    data: Some(serde_json::json!({
-                        "kind": "sort_knots",
-                        "uri": uri_str,
-                    })),
-                    ..Default::default()
-                },
-            ));
-        }
-    }
-
-    // ── Cursor-scoped actions ───────────────────────────────────
-    let idx = LineIndex::new(source);
-    let cursor = idx.offset(cursor_pos.line, cursor_pos.character);
-
-    let config = brink_fmt::FormatConfig::default();
-    let formatted = brink_fmt::format(source, &config);
-
-    let knots: Vec<_> = tree.knots().collect();
-    for (ki, knot) in knots.iter().enumerate() {
-        let knot_range = knot.syntax().text_range();
-        if cursor < knot_range.start() || cursor > knot_range.end() {
-            continue;
-        }
-
-        let knot_name = knot.header().and_then(|h| h.name()).unwrap_or_default();
-
-        let knot_start: usize = knot_range.start().into();
-        let knot_end: usize = if ki + 1 < knots.len() {
-            knots[ki + 1].syntax().text_range().start().into()
-        } else {
-            source.len()
-        };
-
-        // Format knot
-        if source.get(knot_start..knot_end) != formatted.get(knot_start..knot_end) {
-            actions.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
-                CodeAction {
-                    title: format!("Format knot '{knot_name}'"),
-                    kind: Some(CodeActionKind::SOURCE),
-                    data: Some(serde_json::json!({
-                        "kind": "format_knot",
-                        "uri": uri_str,
-                        "knot": knot_name,
-                    })),
-                    ..Default::default()
-                },
-            ));
-        }
-
-        // Sort stitches
-        let Some(body) = knot.body() else { break };
-        let stitches: Vec<_> = body.stitches().collect();
-
-        let stitch_names: Vec<String> =
-            stitches.iter().filter_map(|s| s.header()?.name()).collect();
-
-        if stitch_names.len() >= 2 {
-            let already_sorted = stitch_names
-                .windows(2)
-                .all(|w| w[0].to_lowercase() <= w[1].to_lowercase());
-
-            if !already_sorted {
-                actions.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
-                    CodeAction {
-                        title: format!("Sort stitches in '{knot_name}' alphabetically"),
-                        kind: Some(CodeActionKind::SOURCE),
-                        data: Some(serde_json::json!({
-                            "kind": "sort_stitches",
-                            "uri": uri_str,
-                            "knot": knot_name,
-                        })),
-                        ..Default::default()
-                    },
-                ));
-            }
-        }
-
-        // Format stitch
-        for (si, stitch) in stitches.iter().enumerate() {
-            let stitch_range = stitch.syntax().text_range();
-            if cursor < stitch_range.start() || cursor > stitch_range.end() {
-                continue;
-            }
-
-            let stitch_name = stitch.header().and_then(|h| h.name()).unwrap_or_default();
-
-            let stitch_start: usize = stitch_range.start().into();
-            let stitch_end: usize = if si + 1 < stitches.len() {
-                stitches[si + 1].syntax().text_range().start().into()
-            } else {
-                knot_end
-            };
-
-            if source.get(stitch_start..stitch_end) != formatted.get(stitch_start..stitch_end) {
-                actions.push(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
-                    CodeAction {
-                        title: format!("Format stitch '{stitch_name}'"),
-                        kind: Some(CodeActionKind::SOURCE),
-                        data: Some(serde_json::json!({
-                            "kind": "format_stitch",
-                            "uri": uri_str,
-                            "knot": knot_name,
-                            "stitch": stitch_name,
-                        })),
-                        ..Default::default()
-                    },
-                ));
-            }
-            break;
-        }
-
-        break;
-    }
-
-    actions
-}
-
-/// Sort knot definitions in the source alphabetically by name.
-///
-/// Returns the full source with knots reordered. The preamble (everything before
-/// the first knot) is preserved. Each knot's slice runs from its start to just
-/// before the next knot (or EOF).
-fn sort_knots_in_source(source: &str) -> String {
-    use brink_syntax::ast::AstNode as _;
-
-    let parse = brink_syntax::parse(source);
-    let tree = parse.tree();
-
-    let knots: Vec<_> = tree.knots().collect();
-    if knots.len() < 2 {
-        return source.to_owned();
-    }
-
-    // Separate trailing whitespace after the last knot's AST node so it
-    // stays in place after sorting.
-    let last_knot_ast_end: usize = knots
-        .last()
-        .map_or(source.len(), |k| k.syntax().text_range().end().into());
-    let trailing = &source[last_knot_ast_end..];
-
-    // Build (name, source_slice) pairs. Each knot owns the text from its start
-    // to just before the next knot (or the last knot's AST end).
-    let mut knot_slices: Vec<(String, &str)> = Vec::with_capacity(knots.len());
-    for (i, knot) in knots.iter().enumerate() {
-        let name = knot.header().and_then(|h| h.name()).unwrap_or_default();
-        let start: usize = knot.syntax().text_range().start().into();
-        let end: usize = if i + 1 < knots.len() {
-            knots[i + 1].syntax().text_range().start().into()
-        } else {
-            last_knot_ast_end
-        };
-        knot_slices.push((name, &source[start..end]));
-    }
-
-    // Preamble: everything before the first knot
-    let preamble_end: usize = knots[0].syntax().text_range().start().into();
-    let preamble = &source[..preamble_end];
-
-    // Sort by name, case-insensitive
-    knot_slices.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-
-    let mut result = String::with_capacity(source.len());
-    result.push_str(preamble);
-    for (_, slice) in &knot_slices {
-        result.push_str(slice);
-    }
-    result.push_str(trailing);
-
-    result
-}
-
-/// Sort stitch definitions within the named knot alphabetically.
-///
-/// Preserves the knot's preamble content (everything before the first stitch).
-/// Each stitch's slice runs from its start to just before the next stitch (or end
-/// of the knot body).
-fn sort_stitches_in_knot(source: &str, knot_name: &str) -> String {
-    use brink_syntax::ast::AstNode as _;
-
-    let parse = brink_syntax::parse(source);
-    let tree = parse.tree();
-
-    let Some(knot) = tree
-        .knots()
-        .find(|k| k.header().and_then(|h| h.name()).as_deref() == Some(knot_name))
-    else {
-        return source.to_owned();
-    };
-
-    let Some(body) = knot.body() else {
-        return source.to_owned();
-    };
-
-    let stitches: Vec<_> = body.stitches().collect();
-    if stitches.len() < 2 {
-        return source.to_owned();
-    }
-
-    // The knot body region we'll rewrite: from first stitch start to the end of
-    // the knot's AST node (which is just before the next knot or EOF — the knot
-    // owns trailing content up to the next knot boundary).
-    let knot_end: usize = knot.syntax().text_range().end().into();
-    let region_start: usize = stitches[0].syntax().text_range().start().into();
-    let region_end: usize = knot_end;
-
-    // The last stitch's slice would extend to knot_end, which may include
-    // trailing whitespace that belongs to the file structure, not the stitch.
-    // Separate that trailing whitespace so it stays in place after sorting.
-    let last_stitch_ast_end: usize = stitches
-        .last()
-        .map_or(region_end, |s| s.syntax().text_range().end().into());
-    let trailing = &source[last_stitch_ast_end..region_end];
-
-    let mut stitch_slices: Vec<(String, &str)> = Vec::with_capacity(stitches.len());
-    for (i, stitch) in stitches.iter().enumerate() {
-        let name = stitch.header().and_then(|h| h.name()).unwrap_or_default();
-        let start: usize = stitch.syntax().text_range().start().into();
-        let end: usize = if i + 1 < stitches.len() {
-            stitches[i + 1].syntax().text_range().start().into()
-        } else {
-            last_stitch_ast_end
-        };
-        stitch_slices.push((name, &source[start..end]));
-    }
-
-    stitch_slices.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-
-    let mut result = String::with_capacity(source.len());
-    result.push_str(&source[..region_start]);
-    for (_, slice) in &stitch_slices {
-        result.push_str(slice);
-    }
-    result.push_str(trailing);
-    result.push_str(&source[region_end..]);
-
-    result
-}
-
-/// Convert `brink_ide::diff_to_edits` output to LSP `TextEdit`s.
-fn diff_to_lsp_edits(old: &str, new: &str) -> Vec<TextEdit> {
-    let idx = LineIndex::new(old);
-    brink_ide::diff_to_edits(old, new)
+) -> tower_lsp::lsp_types::DocumentSymbol {
+    let children: Vec<_> = sym
+        .children
         .into_iter()
-        .map(|(range, new_text)| TextEdit {
-            range: convert::to_lsp_range(range, &idx),
-            new_text,
-        })
-        .collect()
-}
+        .map(|c| domain_symbol_to_lsp(c, idx))
+        .collect();
 
-/// Check whether two LSP ranges overlap.
-fn ranges_overlap(a: &Range, b: &Range) -> bool {
-    !(a.end.line < b.start.line
-        || (a.end.line == b.start.line && a.end.character <= b.start.character)
-        || b.end.line < a.start.line
-        || (b.end.line == a.start.line && b.end.character <= a.start.character))
+    tower_lsp::lsp_types::DocumentSymbol {
+        name: sym.name,
+        detail: sym.detail,
+        kind: convert::symbol_kind_to_lsp(sym.kind),
+        tags: None,
+        deprecated: None,
+        range: convert::to_lsp_range(sym.range, idx),
+        selection_range: convert::to_lsp_range(sym.range, idx),
+        children: if children.is_empty() {
+            None
+        } else {
+            Some(children)
+        },
+    }
 }
 
 /// Build a `CompletionItem` from a `SymbolInfo`.
@@ -2362,6 +1517,32 @@ fn make_completion_item(
         detail,
         ..Default::default()
     }
+}
+
+fn format_config_from_options(
+    _options: &tower_lsp::lsp_types::FormattingOptions,
+) -> brink_fmt::FormatConfig {
+    brink_fmt::FormatConfig::default()
+}
+
+/// Convert `brink_ide::diff_to_edits` output to LSP `TextEdit`s.
+fn diff_to_lsp_edits(old: &str, new: &str) -> Vec<TextEdit> {
+    let idx = LineIndex::new(old);
+    brink_ide::diff_to_edits(old, new)
+        .into_iter()
+        .map(|(range, new_text)| TextEdit {
+            range: convert::to_lsp_range(range, &idx),
+            new_text,
+        })
+        .collect()
+}
+
+/// Check whether two LSP ranges overlap.
+fn ranges_overlap(a: &Range, b: &Range) -> bool {
+    !(a.end.line < b.start.line
+        || (a.end.line == b.start.line && a.end.character <= b.start.character)
+        || b.end.line < a.start.line
+        || (b.end.line == a.start.line && b.end.character <= a.start.character))
 }
 
 // ── Background analysis loop ────────────────────────────────────────
