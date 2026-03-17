@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>brink playground</title>
+<script type="importmap">
+{
+  "imports": {
+    "@codemirror/state": "https://esm.sh/@codemirror/state@6.5.2",
+    "@codemirror/view": "https://esm.sh/@codemirror/view@6.36.5?external=@codemirror/state",
+    "@codemirror/language": "https://esm.sh/@codemirror/language@6.10.8?external=@codemirror/state,@codemirror/view",
+    "@codemirror/commands": "https://esm.sh/@codemirror/commands@6.8.0?external=@codemirror/state,@codemirror/view,@codemirror/language",
+    "@codemirror/lint": "https://esm.sh/@codemirror/lint@6.8.5?external=@codemirror/state,@codemirror/view",
+    "@codemirror/autocomplete": "https://esm.sh/@codemirror/autocomplete@6.18.6?external=@codemirror/state,@codemirror/view,@codemirror/language,@codemirror/commands",
+    "@codemirror/search": "https://esm.sh/@codemirror/search@6.5.10?external=@codemirror/state,@codemirror/view",
+    "@lezer/highlight": "https://esm.sh/@lezer/highlight@1.2.1",
+    "codemirror": "https://esm.sh/codemirror@6.0.1?external=@codemirror/state,@codemirror/view,@codemirror/language,@codemirror/commands,@codemirror/search,@codemirror/autocomplete,@codemirror/lint"
+  }
+}
+</script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #1e1e2e;
+  --bg-surface: #252536;
+  --bg-panel: #2a2a3d;
+  --fg: #cdd6f4;
+  --fg-dim: #6c7086;
+  --accent: #89b4fa;
+  --border: #45475a;
+  --green: #a6e3a1;
+  --red: #f38ba8;
+  --yellow: #f9e2af;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+#app {
+  display: flex;
+  height: 100%;
+}
+
+#editor-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  min-width: 0;
+}
+
+#editor-pane .header {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+#editor {
+  flex: 1;
+  overflow: auto;
+}
+
+#editor .cm-editor {
+  height: 100%;
+  background: var(--bg);
+}
+
+#editor .cm-editor .cm-scroller {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+#editor .cm-editor .cm-gutters {
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  color: var(--fg-dim);
+}
+
+#editor .cm-editor .cm-activeLineGutter,
+#editor .cm-editor .cm-activeLine {
+  background: var(--bg-surface);
+}
+
+#editor .cm-editor .cm-selectionBackground {
+  background: #44475a !important;
+}
+
+#editor .cm-editor .cm-cursor {
+  border-left-color: var(--accent);
+}
+
+#editor .cm-editor .cm-content {
+  caret-color: var(--accent);
+  color: var(--fg);
+}
+
+#player-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+#player-pane .header {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#player-pane .header .toolbar {
+  display: flex;
+  gap: 6px;
+}
+
+#player-pane .header button {
+  background: var(--bg-panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#player-pane .header button:hover {
+  background: var(--border);
+}
+
+#player {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+#player .story-text p {
+  margin-bottom: 8px;
+  line-height: 1.6;
+  font-size: 15px;
+}
+
+#player .choices {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#player .choices button {
+  background: var(--bg-panel);
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+#player .choices button:hover {
+  background: var(--border);
+}
+
+#player .end-marker {
+  margin-top: 16px;
+  padding: 8px;
+  text-align: center;
+  color: var(--fg-dim);
+  font-style: italic;
+  font-size: 13px;
+}
+
+#player .error {
+  color: var(--red);
+  font-family: monospace;
+  font-size: 13px;
+  padding: 8px;
+  background: rgba(243, 139, 168, 0.1);
+  border-radius: 4px;
+  margin-top: 8px;
+}
+
+/* CM6 lint panel overrides */
+.cm-panel.cm-panel-lint {
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+}
+
+.cm-diagnostic-error { border-left-color: var(--red); }
+.cm-diagnostic-warning { border-left-color: var(--yellow); }
+
+/* Semantic token classes */
+.tok-namespace   { color: #cba6f7; }
+.tok-function    { color: #89b4fa; }
+.tok-variable    { color: #cdd6f4; }
+.tok-string      { color: #a6e3a1; }
+.tok-number      { color: #fab387; }
+.tok-keyword     { color: #cba6f7; font-weight: 600; }
+.tok-operator    { color: #89dceb; }
+.tok-comment     { color: #6c7086; font-style: italic; }
+.tok-enum        { color: #f9e2af; }
+.tok-enumMember  { color: #f9e2af; }
+.tok-parameter   { color: #f2cdcd; }
+.tok-decorator   { color: #fab387; }
+.tok-label       { color: #f5c2e7; }
+
+#loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--fg-dim);
+  font-size: 14px;
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="editor-pane">
+    <div class="header">Editor</div>
+    <div id="editor"><div id="loading">Loading wasm...</div></div>
+  </div>
+  <div id="player-pane">
+    <div class="header">
+      <span>Story</span>
+      <div class="toolbar">
+        <button id="btn-run">Run</button>
+        <button id="btn-restart">Restart</button>
+      </div>
+    </div>
+    <div id="player"></div>
+  </div>
+</div>
+<script type="module" src="main.js"></script>
+</body>
+</html>

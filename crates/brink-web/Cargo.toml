@@ -1,0 +1,26 @@
+[package]
+name = "brink-web"
+description = "WASM bindings for brink IDE and runtime — powers the web playground"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+brink-compiler = { path = "../brink-compiler" }
+brink-ide = { path = "../internal/brink-ide" }
+brink-runtime = { path = "../brink-runtime" }
+brink-syntax = { path = "../internal/brink-syntax" }
+brink-analyzer = { path = "../internal/brink-analyzer" }
+brink-ir = { path = "../internal/brink-ir" }
+brink-format = { path = "../internal/brink-format" }
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "0.2"
+
+[lints]
+workspace = true

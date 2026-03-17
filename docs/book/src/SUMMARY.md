@@ -32,6 +32,10 @@
 - [XLIFF Workflow](./localization/xliff.md)
 - [Plural Resolution](./localization/plurals.md)
 
+# Playground
+
+- [Playground](./playground.md)
+
 # Contributing
 
 - [Crate Layout](./contributing/crate-layout.md)
