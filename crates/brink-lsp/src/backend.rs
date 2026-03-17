@@ -30,6 +30,11 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer};
 
+use brink_ide::{
+    CompletionContext, builtin_hover_text, cursor_scope, detect_completion_context,
+    find_call_context, is_visible_in_context, word_at_offset, word_range_at_offset,
+};
+
 use crate::convert::{self, LineIndex};
 use crate::semantic_tokens;
 
@@ -1462,7 +1467,7 @@ impl LanguageServer for Backend {
             return Ok(action);
         }
 
-        let edits = diff_to_edits(&source, &new_source);
+        let edits = diff_to_lsp_edits(&source, &new_source);
         let mut changes = HashMap::new();
         changes.insert(uri, edits);
 
@@ -1502,7 +1507,7 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
 
-        Ok(Some(diff_to_edits(&source, &formatted)))
+        Ok(Some(diff_to_lsp_edits(&source, &formatted)))
     }
 
     async fn range_formatting(
@@ -1534,7 +1539,7 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
 
-        let all_edits = diff_to_edits(&source, &formatted);
+        let all_edits = diff_to_lsp_edits(&source, &formatted);
         let range = params.range;
 
         // Filter edits to those that overlap the requested range.
@@ -1768,159 +1773,6 @@ fn find_def_at_offset(
         });
 
     def_id.and_then(|id| snap.analysis.index.symbols.get(&id))
-}
-
-// ─── Builtin hover ─────────────────────────────────────────────────
-
-/// Return hover markdown for an ink built-in function, or `None` if not a builtin.
-fn builtin_hover_text(name: &str) -> Option<String> {
-    let (signature, description) = match name {
-        "CHOICE_COUNT" => ("CHOICE_COUNT()", "Number of currently available choices"),
-        "TURNS_SINCE" => (
-            "TURNS_SINCE(-> knot)",
-            "Turns since a knot was last visited (-1 if never)",
-        ),
-        "READ_COUNT" => (
-            "READ_COUNT(-> knot)",
-            "Number of times a knot has been visited",
-        ),
-        "RANDOM" => (
-            "RANDOM(min, max)",
-            "Random integer between min and max (inclusive)",
-        ),
-        "SEED_RANDOM" => ("SEED_RANDOM(seed)", "Seed the random number generator"),
-        "INT" => ("INT(value)", "Cast to integer"),
-        "FLOAT" => ("FLOAT(value)", "Cast to float"),
-        "FLOOR" => ("FLOOR(value)", "Round down to nearest integer"),
-        "CEILING" => ("CEILING(value)", "Round up to nearest integer"),
-        "POW" => ("POW(base, exp)", "Raise base to the power of exp"),
-        "MIN" => ("MIN(a, b)", "Minimum of two values"),
-        "MAX" => ("MAX(a, b)", "Maximum of two values"),
-        "LIST_COUNT" => ("LIST_COUNT(list)", "Number of items in a list value"),
-        "LIST_MIN" => ("LIST_MIN(list)", "Lowest-valued item in a list"),
-        "LIST_MAX" => ("LIST_MAX(list)", "Highest-valued item in a list"),
-        "LIST_ALL" => ("LIST_ALL(list)", "All possible items for a list's type"),
-        "LIST_INVERT" => ("LIST_INVERT(list)", "Items not in the list (from its type)"),
-        "LIST_RANGE" => (
-            "LIST_RANGE(list, min, max)",
-            "Items in list between min and max",
-        ),
-        "LIST_RANDOM" => ("LIST_RANDOM(list)", "Random item from a list"),
-        "LIST_VALUE" => ("LIST_VALUE(item)", "Numeric value of a list item"),
-        "LIST_FROM_INT" => (
-            "LIST_FROM_INT(list, n)",
-            "Item at numeric position n in a list type",
-        ),
-        _ => return None,
-    };
-    Some(format!("**built-in** `{signature}`\n\n{description}"))
-}
-
-// ─── Signature help helpers ────────────────────────────────────────
-
-/// Find the function call context at the given byte offset.
-///
-/// Returns `(function_name, active_parameter_index)` if the cursor is inside
-/// a function call's parentheses, e.g. `myFunc(a, |)` → `("myFunc", 1)`.
-fn find_call_context(source: &str, byte_offset: usize) -> Option<(String, usize)> {
-    let before = source.get(..byte_offset)?;
-
-    // Scan backwards to find the matching open paren, tracking nesting.
-    let mut depth = 0i32;
-    let mut commas = 0usize;
-    let mut paren_pos = None;
-
-    for (i, ch) in before.char_indices().rev() {
-        match ch {
-            ')' => depth += 1,
-            '(' => {
-                if depth == 0 {
-                    paren_pos = Some(i);
-                    break;
-                }
-                depth -= 1;
-            }
-            ',' if depth == 0 => commas += 1,
-            '\n' if depth == 0 => return None, // don't cross line boundaries at depth 0
-            _ => {}
-        }
-    }
-
-    let paren_pos = paren_pos?;
-
-    // Extract the identifier immediately before the open paren.
-    let before_paren = before[..paren_pos].trim_end();
-    if before_paren.is_empty() {
-        return None;
-    }
-
-    // Walk backwards over identifier characters.
-    let name_end = before_paren.len();
-    let name_start = before_paren
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
-        .last()
-        .map_or(name_end, |(i, _)| i);
-
-    let name = &before_paren[name_start..name_end];
-    if name.is_empty() {
-        return None;
-    }
-
-    Some((name.to_owned(), commas))
-}
-
-// ─── Hover helpers ─────────────────────────────────────────────────
-
-/// Extract the identifier word surrounding `offset` in `source`.
-fn word_at_offset(source: &str, offset: rowan::TextSize) -> Option<&str> {
-    let pos: usize = offset.into();
-    if pos >= source.len() {
-        return None;
-    }
-    let bytes = source.as_bytes();
-    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    // The cursor must be on a word character
-    if !is_word(bytes[pos]) {
-        return None;
-    }
-    let mut start = pos;
-    while start > 0 && is_word(bytes[start - 1]) {
-        start -= 1;
-    }
-    let mut end = pos + 1;
-    while end < bytes.len() && is_word(bytes[end]) {
-        end += 1;
-    }
-    Some(&source[start..end])
-}
-
-/// Like `word_at_offset` but returns the `TextRange` of the word.
-fn word_range_at_offset(source: &str, offset: rowan::TextSize) -> Option<rowan::TextRange> {
-    let pos: usize = offset.into();
-    if pos >= source.len() {
-        return None;
-    }
-    let bytes = source.as_bytes();
-    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    if !is_word(bytes[pos]) {
-        return None;
-    }
-    let mut start = pos;
-    while start > 0 && is_word(bytes[start - 1]) {
-        start -= 1;
-    }
-    let mut end = pos + 1;
-    while end < bytes.len() && is_word(bytes[end]) {
-        end += 1;
-    }
-    let start = u32::try_from(start).ok()?;
-    let end = u32::try_from(end).ok()?;
-    Some(rowan::TextRange::new(
-        rowan::TextSize::from(start),
-        rowan::TextSize::from(end),
-    ))
 }
 
 // ─── Folding range helpers ──────────────────────────────────────────
@@ -2454,33 +2306,16 @@ fn sort_stitches_in_knot(source: &str, knot_name: &str) -> String {
     result
 }
 
-/// Replace the entire document with the formatted text via a single `TextEdit`.
-fn diff_to_edits(old: &str, new: &str) -> Vec<TextEdit> {
-    let old_lines: Vec<&str> = old.lines().collect();
-
-    // Compute end position of the old document.
-    let end = if old_lines.is_empty() {
-        Position::new(0, 0)
-    } else {
-        #[expect(clippy::cast_possible_truncation, reason = "line count fits in u32")]
-        let last_line = (old_lines.len() - 1) as u32;
-        #[expect(clippy::cast_possible_truncation, reason = "line length fits in u32")]
-        let last_col = old_lines.last().map_or(0, |l| l.len() as u32);
-        // If old ends with a newline, the cursor is at the start of the next line.
-        if old.ends_with('\n') {
-            Position::new(last_line + 1, 0)
-        } else {
-            Position::new(last_line, last_col)
-        }
-    };
-
-    vec![TextEdit {
-        range: Range {
-            start: Position::new(0, 0),
-            end,
-        },
-        new_text: new.to_owned(),
-    }]
+/// Convert `brink_ide::diff_to_edits` output to LSP `TextEdit`s.
+fn diff_to_lsp_edits(old: &str, new: &str) -> Vec<TextEdit> {
+    let idx = LineIndex::new(old);
+    brink_ide::diff_to_edits(old, new)
+        .into_iter()
+        .map(|(range, new_text)| TextEdit {
+            range: convert::to_lsp_range(range, &idx),
+            new_text,
+        })
+        .collect()
 }
 
 /// Check whether two LSP ranges overlap.
@@ -2489,191 +2324,6 @@ fn ranges_overlap(a: &Range, b: &Range) -> bool {
         || (a.end.line == b.start.line && a.end.character <= b.start.character)
         || b.end.line < a.start.line
         || (b.end.line == a.start.line && b.end.character <= a.start.character))
-}
-
-// ─── Completion helpers ─────────────────────────────────────────────
-
-/// What kind of completion context the cursor is in.
-enum CompletionContext {
-    /// After `->` — show divert targets.
-    Divert,
-    /// After `knot_name.` — show children of that knot.
-    DottedPath { knot: String },
-    /// Inside `{ }` — inline expression.
-    InlineExpr,
-    /// On a `~` logic line.
-    Logic,
-    /// Inside `( )` — function arguments.
-    FunctionArgs,
-    /// Default — show everything.
-    General,
-}
-
-/// Determine the completion context by scanning backwards from the cursor.
-fn detect_completion_context(source: &str, byte_offset: usize) -> CompletionContext {
-    // Find line start.
-    let line_start = source[..byte_offset].rfind('\n').map_or(0, |pos| pos + 1);
-    let line_prefix = &source[line_start..byte_offset];
-    let trimmed = line_prefix.trim_start();
-
-    let is_logic_line = trimmed.starts_with('~');
-
-    // Scan backwards through the line prefix for context clues.
-    // More specific contexts (parens, braces, divert) take priority over the
-    // logic-line fallback.
-    let bytes = line_prefix.as_bytes();
-    let mut brace_depth: i32 = 0;
-    let mut paren_depth: i32 = 0;
-    let mut i = bytes.len();
-
-    while i > 0 {
-        i -= 1;
-        match bytes[i] {
-            b'}' => brace_depth += 1,
-            b'{' => {
-                if brace_depth > 0 {
-                    brace_depth -= 1;
-                } else {
-                    return CompletionContext::InlineExpr;
-                }
-            }
-            b')' => paren_depth += 1,
-            b'(' => {
-                if paren_depth > 0 {
-                    paren_depth -= 1;
-                } else {
-                    return CompletionContext::FunctionArgs;
-                }
-            }
-            b'>' if i > 0 && bytes[i - 1] == b'-' && brace_depth == 0 && paren_depth == 0 => {
-                return CompletionContext::Divert;
-            }
-            b'.' if brace_depth == 0 && paren_depth == 0 => {
-                // Check for identifier before the dot.
-                let before_dot = &line_prefix[..i];
-                let ident_start = before_dot
-                    .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-                    .map_or(0, |p| p + 1);
-                let knot = &before_dot[ident_start..];
-                if !knot.is_empty() {
-                    return CompletionContext::DottedPath {
-                        knot: knot.to_owned(),
-                    };
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if is_logic_line {
-        return CompletionContext::Logic;
-    }
-
-    CompletionContext::General
-}
-
-/// The scope (knot/stitch) containing the cursor.
-struct CursorScope {
-    knot: Option<String>,
-    stitch: Option<String>,
-}
-
-/// Determine which knot/stitch the cursor is inside.
-fn cursor_scope(source: &str, byte_offset: usize) -> CursorScope {
-    use brink_syntax::ast::AstNode as _;
-
-    let parse = brink_syntax::parse(source);
-    let tree = parse.tree();
-    let cursor = rowan::TextSize::from(u32::try_from(byte_offset).unwrap_or(u32::MAX));
-
-    let mut result = CursorScope {
-        knot: None,
-        stitch: None,
-    };
-
-    for knot in tree.knots() {
-        let range = knot.syntax().text_range();
-        if cursor < range.start() || cursor > range.end() {
-            continue;
-        }
-        result.knot = knot.header().and_then(|h| h.name());
-
-        if let Some(body) = knot.body() {
-            for stitch in body.stitches() {
-                let sr = stitch.syntax().text_range();
-                if cursor >= sr.start() && cursor <= sr.end() {
-                    result.stitch = stitch.header().and_then(|h| h.name());
-                    break;
-                }
-            }
-        }
-        break;
-    }
-
-    result
-}
-
-/// Check whether a symbol should be shown in the given completion context.
-fn is_visible_in_context(
-    ctx: &CompletionContext,
-    info: &brink_ir::SymbolInfo,
-    scope: &CursorScope,
-) -> bool {
-    use brink_ir::SymbolKind;
-
-    // Scope filter: locals are only visible if we're in their scope.
-    if matches!(info.kind, SymbolKind::Param | SymbolKind::Temp)
-        && let Some(ref sym_scope) = info.scope
-    {
-        let knot_matches = scope.knot.as_deref() == sym_scope.knot.as_deref();
-        let stitch_visible =
-            sym_scope.stitch.is_none() || scope.stitch.as_deref() == sym_scope.stitch.as_deref();
-        if !knot_matches || !stitch_visible {
-            return false;
-        }
-    }
-
-    match ctx {
-        CompletionContext::Divert => {
-            matches!(
-                info.kind,
-                SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
-            ) || (info.kind == SymbolKind::Param
-                && info.param_detail.as_ref().is_some_and(|p| p.is_divert))
-        }
-        CompletionContext::DottedPath { .. } => {
-            // Handled separately in the caller.
-            false
-        }
-        CompletionContext::InlineExpr => matches!(
-            info.kind,
-            SymbolKind::Variable
-                | SymbolKind::Constant
-                | SymbolKind::Param
-                | SymbolKind::Temp
-                | SymbolKind::List
-                | SymbolKind::ListItem
-                | SymbolKind::Knot
-                | SymbolKind::External
-        ),
-        CompletionContext::Logic => matches!(
-            info.kind,
-            SymbolKind::Variable
-                | SymbolKind::Constant
-                | SymbolKind::Param
-                | SymbolKind::Temp
-                | SymbolKind::External
-        ),
-        CompletionContext::FunctionArgs => matches!(
-            info.kind,
-            SymbolKind::Variable
-                | SymbolKind::Constant
-                | SymbolKind::Param
-                | SymbolKind::Temp
-                | SymbolKind::ListItem
-        ),
-        CompletionContext::General => true,
-    }
 }
 
 /// Build a `CompletionItem` from a `SymbolInfo`.
@@ -3002,143 +2652,5 @@ async fn publish_if_changed(
             Err(poisoned) => poisoned.into_inner(),
         };
         published.insert(file_id, lsp_diags);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn context_divert() {
-        let src = "-> ";
-        assert!(matches!(
-            detect_completion_context(src, src.len()),
-            CompletionContext::Divert
-        ));
-    }
-
-    #[test]
-    fn context_divert_no_space() {
-        let src = "->";
-        assert!(matches!(
-            detect_completion_context(src, src.len()),
-            CompletionContext::Divert
-        ));
-    }
-
-    #[test]
-    fn context_divert_partial() {
-        let src = "-> kno";
-        assert!(matches!(
-            detect_completion_context(src, src.len()),
-            CompletionContext::Divert
-        ));
-    }
-
-    #[test]
-    fn context_dotted_path() {
-        let src = "-> my_knot.";
-        let ctx = detect_completion_context(src, src.len());
-        assert!(matches!(ctx, CompletionContext::DottedPath { ref knot } if knot == "my_knot"));
-    }
-
-    #[test]
-    fn context_inline_expr() {
-        let src = "Hello {";
-        assert!(matches!(
-            detect_completion_context(src, src.len()),
-            CompletionContext::InlineExpr
-        ));
-    }
-
-    #[test]
-    fn context_inline_expr_nested() {
-        let src = "Hello {x + ";
-        assert!(matches!(
-            detect_completion_context(src, src.len()),
-            CompletionContext::InlineExpr
-        ));
-    }
-
-    #[test]
-    fn context_logic_line() {
-        let src = "~ x = ";
-        assert!(matches!(
-            detect_completion_context(src, src.len()),
-            CompletionContext::Logic
-        ));
-    }
-
-    #[test]
-    fn context_logic_line_indented() {
-        let src = "    ~ temp x = ";
-        assert!(matches!(
-            detect_completion_context(src, src.len()),
-            CompletionContext::Logic
-        ));
-    }
-
-    #[test]
-    fn context_function_args() {
-        let src = "~ foo(";
-        assert!(matches!(
-            detect_completion_context(src, src.len()),
-            CompletionContext::FunctionArgs
-        ));
-    }
-
-    #[test]
-    fn context_function_args_partial() {
-        let src = "~ foo(x, ";
-        assert!(matches!(
-            detect_completion_context(src, src.len()),
-            CompletionContext::FunctionArgs
-        ));
-    }
-
-    #[test]
-    fn context_general() {
-        let src = "Hello world ";
-        assert!(matches!(
-            detect_completion_context(src, src.len()),
-            CompletionContext::General
-        ));
-    }
-
-    #[test]
-    fn context_closed_braces_is_general() {
-        // Braces are balanced — not inside an expression.
-        let src = "{x} and then ";
-        assert!(matches!(
-            detect_completion_context(src, src.len()),
-            CompletionContext::General
-        ));
-    }
-
-    #[test]
-    fn cursor_scope_in_knot() {
-        let src = "=== my_knot ===\nSome text\n";
-        let offset = src.find("Some").unwrap_or(src.len());
-        let scope = cursor_scope(src, offset);
-        assert_eq!(scope.knot.as_deref(), Some("my_knot"));
-        assert!(scope.stitch.is_none());
-    }
-
-    #[test]
-    fn cursor_scope_in_stitch() {
-        let src = "=== my_knot ===\n= my_stitch\nSome text\n";
-        let offset = src.find("Some").unwrap_or(src.len());
-        let scope = cursor_scope(src, offset);
-        assert_eq!(scope.knot.as_deref(), Some("my_knot"));
-        assert_eq!(scope.stitch.as_deref(), Some("my_stitch"));
-    }
-
-    #[test]
-    fn cursor_scope_top_level() {
-        let src = "Some text before any knot\n";
-        let scope = cursor_scope(src, 5);
-        assert!(scope.knot.is_none());
-        assert!(scope.stitch.is_none());
     }
 }

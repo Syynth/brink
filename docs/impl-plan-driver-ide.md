@@ -57,33 +57,32 @@ Note: Step 4.2 (resolve_include_path) was already done in Phase 1 — `resolve_i
 
 ---
 
-## Phase 5: Create brink-ide
+## Phase 5: Create brink-ide ✅
 
 Reference: [brink-ide-spec § API surface](brink-ide-spec.md#api-surface), [§ Domain types](brink-ide-spec.md#domain-types)
 
-### Step 5.1: Scaffold crate
-- [ ] Create `crates/internal/brink-ide/` with Cargo.toml (deps: brink-syntax, brink-ir, brink-analyzer, brink-fmt, bitflags, rowan)
-- [ ] Add to workspace Cargo.toml
-- [ ] Create `src/lib.rs`
-- [ ] Verify: `cargo check -p brink-ide`, `cargo check --target wasm32-unknown-unknown -p brink-ide`
+**Done.** Crate scaffolded, foundational types and text utilities moved from brink-lsp. Compiles for both native and `wasm32-unknown-unknown`.
 
-### Step 5.2: Move LineIndex
-- [ ] Move `LineIndex` from `brink-lsp/src/convert.rs` to `brink-ide`
-- [ ] Move `to_lsp_range` / `to_text_size` helpers — keep LSP-specific wrappers in brink-lsp that delegate
-- [ ] Update brink-lsp to import from brink-ide
-- [ ] Move LineIndex tests
-- [ ] Verify: `cargo test -p brink-ide`, `cargo test -p brink-lsp`
+What was done:
+- [x] Scaffolded `crates/internal/brink-ide/` with Cargo.toml (deps: brink-syntax, brink-ir, brink-analyzer, brink-fmt, rowan). No `bitflags` yet — needed in Phase 6.3 for semantic tokens.
+- [x] Workspace auto-includes via `crates/internal/*` glob — no root Cargo.toml edit needed
+- [x] Moved `LineIndex` struct + `new()`, `line_col()`, `offset()` from `brink-lsp/src/convert.rs` to `brink-ide/src/line_index.rs`. 5 original tests moved + 1 new roundtrip test added.
+- [x] `brink-lsp/src/convert.rs`: replaced struct definition with `pub use brink_ide::LineIndex`. Kept `to_lsp_range`, `to_text_size`, `symbol_kind_to_lsp`, `severity_to_lsp`, `diagnostic_to_lsp` and their tests.
+- [x] Moved text utilities to `brink-ide/src/text.rs`: `word_at_offset`, `word_range_at_offset`, `builtin_hover_text`, `find_call_context`
+- [x] Moved `diff_to_edits` to `brink-ide/src/text.rs` — rewritten to return `Vec<(TextRange, String)>` instead of LSP `TextEdit`. Added `diff_to_lsp_edits` adapter in backend.rs that converts via `LineIndex`.
+- [x] Moved completion helpers to `brink-ide/src/completion.rs`: `CompletionContext` enum, `CursorScope` struct, `detect_completion_context`, `cursor_scope`, `is_visible_in_context` — all made `pub`.
+- [x] Moved 14 completion/scope tests from `brink-lsp/src/backend.rs` to `brink-ide/src/completion.rs`
+- [x] Added `brink-ide` dependency to `brink-lsp/Cargo.toml`
+- [x] Updated `brink-lsp/src/backend.rs`: removed moved functions/types/tests, added imports from `brink_ide`
+- [x] 21 brink-ide tests pass, 21 brink-lsp tests pass, full workspace passes
+- [x] All verification checks pass: native + wasm compile, clippy, fmt
 
-### Step 5.3: Move text utilities
-- [ ] Define domain types: `TextEdit` (with `TextRange`)
-- [ ] Move `word_at_offset`, `word_range_at_offset`, `builtin_hover_text`
-- [ ] Move `diff_to_edits` (return `TextEdit` with `TextRange`, not LSP `Range`)
-- [ ] Move `find_call_context` (signature help helper)
-- [ ] Move `detect_completion_context`, `cursor_scope`, `is_visible_in_context`
-- [ ] Move `find_def_at_offset` core logic
-- [ ] Update brink-lsp to import from brink-ide
-- [ ] Add tests for moved functions
-- [ ] Verify: `cargo test -p brink-ide`, `cargo test -p brink-lsp`
+What was NOT moved (deferred to Phase 6):
+- `find_def_at_offset` — depends on LSP-specific `NavigationSnapshot` (Phase 6.8)
+- `make_completion_item` — returns `lsp_types::CompletionItem` (Phase 6.4)
+- `collect_code_actions`, `format_region`, `sort_knots_in_source`, `sort_stitches_in_knot` — query functions (Phase 6.10, 6.1)
+- `collect_param_hints` — query function (Phase 6.7)
+- Semantic tokens module — entire file (Phase 6.3)
 
 ---
 
@@ -114,7 +113,7 @@ Each migration follows the same pattern:
 - [ ] `token_type_names`, `token_modifier_names`
 
 ### Step 6.4: Completion
-- [ ] `CompletionContext`, `CompletionItem`, `CursorScope` domain types
+- [ ] `CompletionItem` domain type (distinct from `lsp_types::CompletionItem`)
 - [ ] `completions` function
 
 ### Step 6.5: Hover

@@ -299,6 +299,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "brink-ide"
+version = "0.0.1"
+dependencies = [
+ "brink-analyzer",
+ "brink-fmt",
+ "brink-ir",
+ "brink-syntax",
+ "rowan",
+]
+
+[[package]]
 name = "brink-intl"
 version = "0.0.1"
 dependencies = [
@@ -347,6 +358,7 @@ dependencies = [
  "brink-db",
  "brink-driver",
  "brink-fmt",
+ "brink-ide",
  "brink-ir",
  "brink-syntax",
  "rowan",

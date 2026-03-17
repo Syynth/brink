@@ -1,0 +1,18 @@
+[package]
+name = "brink-ide"
+description = "Protocol-agnostic IDE query library for inkle's ink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+brink-syntax = { path = "../brink-syntax" }
+brink-ir = { path = "../brink-ir" }
+brink-analyzer = { path = "../brink-analyzer" }
+brink-fmt = { path = "../brink-fmt" }
+rowan.workspace = true
+
+[lints]
+workspace = true

@@ -14,6 +14,7 @@ brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-db = { path = "../internal/brink-db" }
 brink-driver = { path = "../internal/brink-driver" }
 brink-fmt = { path = "../internal/brink-fmt" }
+brink-ide = { path = "../internal/brink-ide" }
 brink-ir = { path = "../internal/brink-ir" }
 brink-syntax = { path = "../internal/brink-syntax" }
 rowan.workspace = true
