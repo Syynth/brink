@@ -1,8 +1,72 @@
 import { type Extension, RangeSetBuilder } from "@codemirror/state";
-import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
 import { elementTypeField, elementClass, ElementType } from "./element-type.js";
 
 const DEPTH_INDENT_EM = 2;
+
+// ── Superscript depth indicators ───────────────────────────────────
+
+const SUPERSCRIPT_DIGITS = ["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"];
+
+function superscriptNumber(n: number): string {
+  return String(n)
+    .split("")
+    .map((ch) => SUPERSCRIPT_DIGITS[Number(ch)])
+    .join("");
+}
+
+class DepthSigilWidget extends WidgetType {
+  constructor(
+    readonly sigil: string,
+    readonly depth: number,
+  ) {
+    super();
+  }
+
+  toDOM(): HTMLElement {
+    const span = document.createElement("span");
+    span.className = "brink-depth-sigil";
+    span.textContent = this.sigil + superscriptNumber(this.depth) + " ";
+    return span;
+  }
+
+  eq(other: DepthSigilWidget): boolean {
+    return this.sigil === other.sigil && this.depth === other.depth;
+  }
+}
+
+// ── Sigil prefix parsing ───────────────────────────────────────────
+
+/** Find the full sigil prefix range (all sigils + spaces) for a choice/gather line. */
+function findSigilRange(
+  text: string,
+  type: ElementType,
+): { start: number; end: number; sigil: string } | null {
+  const trimmed = text.trimStart();
+  const ws = text.length - trimmed.length;
+
+  const validSigils =
+    type === ElementType.Choice ? ["*", "+"] : type === ElementType.Gather ? ["-"] : [];
+  if (validSigils.length === 0) return null;
+
+  let pos = ws;
+  let firstSigil = "";
+
+  while (pos < text.length) {
+    if (validSigils.includes(text[pos])) {
+      if (!firstSigil) firstSigil = text[pos];
+      pos++;
+      while (pos < text.length && text[pos] === " ") pos++;
+    } else {
+      break;
+    }
+  }
+
+  if (!firstSigil) return null;
+  return { start: ws, end: pos, sigil: firstSigil };
+}
+
+// ── Line decorations ──────────────────────────────────────────────
 
 function buildLineDecos(view: EditorView): DecorationSet {
   const infos = view.state.field(elementTypeField);
@@ -31,34 +95,19 @@ function buildLineDecos(view: EditorView): DecorationSet {
 
     builder.add(line.from, line.from, Decoration.line({ attributes: attrs }));
 
-    // Replace decorations to hide extra sigils for deep choices/gathers
+    // Replace sigil prefix with depth widget for choices/gathers at depth > 1
     if (
       (info.type === ElementType.Choice || info.type === ElementType.Gather) &&
       info.depth > 1
     ) {
-      const text = line.text;
-      const leadingWs = text.length - text.trimStart().length;
-      let pos = leadingWs;
-      let sigilCount = 0;
-
-      while (pos < text.length && sigilCount < info.depth - 1) {
-        const ch = text[pos];
-        if (
-          (info.type === ElementType.Choice && (ch === "*" || ch === "+")) ||
-          (info.type === ElementType.Gather && ch === "-")
-        ) {
-          sigilCount++;
-          pos++;
-          // Skip trailing spaces after this sigil
-          while (pos < text.length && text[pos] === " ") pos++;
-        } else {
-          break;
-        }
-      }
-
-      // Hide from leadingWs to pos (the extra sigils)
-      if (sigilCount > 0 && pos > leadingWs) {
-        builder.add(line.from + leadingWs, line.from + pos, Decoration.replace({}));
+      const range = findSigilRange(line.text, info.type);
+      if (range) {
+        const widget = new DepthSigilWidget(range.sigil, info.depth);
+        builder.add(
+          line.from + range.start,
+          line.from + range.end,
+          Decoration.replace({ widget }),
+        );
       }
     }
   }
@@ -85,7 +134,8 @@ const screenplayPlugin = ViewPlugin.fromClass(
   },
 );
 
-// Separate plugin for bracket mark decorations on choice lines
+// ── Bracket mark decorations ──────────────────────────────────────
+
 function buildBracketDecos(view: EditorView): DecorationSet {
   const infos = view.state.field(elementTypeField);
   const builder = new RangeSetBuilder<Decoration>();

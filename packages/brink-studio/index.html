@@ -170,6 +170,11 @@ html, body {
   color: var(--brink-fg-dim);
 }
 
+/* Depth sigil widget */
+.brink-depth-sigil {
+  opacity: 0.7;
+}
+
 /* Choice bracket styling */
 .brink-choice-bracket {
   background: rgba(137, 180, 250, 0.08);
@@ -218,6 +223,24 @@ html, body {
   align-items: center;
 }
 
+.brink-status-keyhint {
+  opacity: 0.7;
+}
+
+.brink-status-element-btn {
+  background: none;
+  border: 1px solid var(--brink-border);
+  color: var(--brink-fg);
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.brink-status-element-btn:hover {
+  background: var(--brink-bg-panel);
+}
+
 .brink-status-cursor {
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
 }
@@ -228,6 +251,35 @@ html, body {
 
 .brink-status-diag.has-warnings {
   color: var(--brink-yellow);
+}
+
+/* Element type dropdown */
+.brink-element-dropdown {
+  position: fixed;
+  background: var(--brink-bg-panel);
+  border: 1px solid var(--brink-border);
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 200;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  min-width: 160px;
+}
+
+.brink-element-dropdown-item {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--brink-fg);
+  padding: 5px 10px;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.brink-element-dropdown-item:hover {
+  background: var(--brink-bg-surface);
 }
 
 /* Hover tooltip */

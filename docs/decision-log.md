@@ -457,3 +457,11 @@
 - **SCOPE:** moderate
 - **WHAT:** Standalone desktop app ships as a Tauri app wrapping the same CM6+wasm frontend. Wasm backend (not native Rust) for now to keep one code path.
 - **WHY:** Natural fit — Rust codebase, tiny binary, proper filesystem access without File System Access API limitations. Wasm-only backend keeps things simple since s92-studio also uses wasm.
+
+## Fountain-inspired context-dependent element transitions
+- **WHEN:** 2026-03-18
+- **PROJECT:** brink-studio
+- **SYSTEM:** editor-ui
+- **SCOPE:** architectural
+- **WHAT:** brink-studio uses Fountain screenplay syntax (https://fountain.io/syntax/) as a spiritual guide for context-dependent element transitions. Element types can depend on preceding elements (e.g., in Fountain: dialogue follows character, character follows blank line). The transition table supports a `context` field for matching on preceding line types.
+- **WHY:** Ink's structural elements (choices, gathers, narrative in choice bodies) have similar context-dependent behavior to Fountain's character/dialogue/parenthetical chain. Making the transition engine context-aware enables natural screenplay-style editing where pressing Enter produces the right element type based on what came before, not just what the current line is.

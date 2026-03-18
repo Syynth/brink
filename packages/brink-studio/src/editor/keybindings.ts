@@ -1,44 +1,39 @@
-import { type Extension } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
-import { elementTypeField, ElementType } from "./element-type.js";
+import { type Extension, Prec } from "@codemirror/state";
+import { keymap, type EditorView } from "@codemirror/view";
+import { elementTypeField } from "./element-type.js";
+import { findTransition, lineHasContent, executeAction, buildContext } from "./transitions.js";
+
+const HANDLED_KEYS = ["Enter", "Shift-Enter", "Tab", "Shift-Tab"] as const;
+
+function handleKey(key: string, view: EditorView): boolean {
+  const { state } = view;
+  const infos = state.field(elementTypeField);
+  const line = state.doc.lineAt(state.selection.main.head);
+  const lineIndex = line.number - 1;
+  const info = infos[lineIndex];
+
+  if (!info) {
+    return key === "Tab" || key === "Shift-Tab";
+  }
+
+  const hasContent = lineHasContent(line.text, info);
+  const lineCtx = buildContext(infos, lineIndex);
+  const transition = findTransition(info, key, hasContent, lineCtx);
+
+  if (!transition) {
+    return key === "Tab" || key === "Shift-Tab";
+  }
+
+  return executeAction(transition.action, view, info);
+}
 
 export function brinkKeymap(): Extension {
-  return keymap.of([
-    {
-      key: "Enter",
-      run(view) {
-        const { state } = view;
-        const infos = state.field(elementTypeField);
-        const cursorPos = state.selection.main.head;
-        const line = state.doc.lineAt(cursorPos);
-        const lineIndex = line.number - 1;
-        const info = infos[lineIndex];
-
-        if (!info || info.type !== ElementType.Choice) {
-          return false; // Let default Enter handle it
-        }
-
-        // Build the sigil prefix for the new choice line
-        const sigil = info.sticky ? "+" : "*";
-        const prefix = (sigil + " ").repeat(info.depth).slice(0, -1) + " ";
-        // Actually, for depth 2 it should be "* * " not "* * * "
-        // Simpler: repeat the sigil `depth` times separated by spaces
-        const sigils = Array.from({ length: info.depth }, () => sigil).join(" ");
-
-        view.dispatch(
-          state.update({
-            changes: {
-              from: cursorPos,
-              insert: "\n" + sigils + " ",
-            },
-            selection: {
-              anchor: cursorPos + 1 + sigils.length + 1,
-            },
-          }),
-        );
-
-        return true;
-      },
-    },
-  ]);
+  return Prec.highest(
+    keymap.of(
+      HANDLED_KEYS.map((key) => ({
+        key,
+        run: (view: EditorView) => handleKey(key, view),
+      })),
+    ),
+  );
 }
