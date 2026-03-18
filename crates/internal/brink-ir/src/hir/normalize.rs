@@ -663,6 +663,7 @@ mod tests {
             choices: vec![choice],
             continuation: mk_block(vec![]),
             context: ChoiceSetContext::Weave,
+            depth: 1,
         };
         let mut hir = mk_hir(vec![Stmt::ChoiceSet(Box::new(cs))]);
         normalize_file(&mut hir);

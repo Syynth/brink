@@ -1,20 +1,8 @@
 import init, {
   compile as wasmCompile,
-  semantic_tokens,
   token_type_names,
   token_modifier_names,
-  completions as wasmCompletions,
-  hover as wasmHover,
-  goto_definition as wasmGotoDef,
-  find_references as wasmFindRefs,
-  prepare_rename as wasmPrepareRename,
-  rename as wasmRename,
-  code_actions as wasmCodeActions,
-  inlay_hints as wasmInlayHints,
-  signature_help as wasmSignatureHelp,
-  folding_ranges as wasmFoldingRanges,
-  document_symbols as wasmDocumentSymbols,
-  format_document as wasmFormatDocument,
+  EditorSession as WasmEditorSession,
   StoryRunner,
 } from "brink-web";
 
@@ -112,6 +100,43 @@ export interface CodeAction {
   kind: string;
 }
 
+// ── Line context types (from brink-ide) ────────────────────────────
+
+export type LineElement =
+  | "knot_header"
+  | "stitch_header"
+  | "narrative"
+  | "choice"
+  | "gather"
+  | "divert"
+  | "logic"
+  | "var_decl"
+  | "comment"
+  | "include"
+  | "external"
+  | "tag"
+  | "blank";
+
+export interface WeavePosition {
+  depth: number;
+  element: WeaveElement;
+}
+
+export type WeaveElement =
+  | "top_level"
+  | { choice_line: { sticky: boolean } }
+  | "choice_body"
+  | "gather_continuation"
+  | "conditional_branch"
+  | "sequence_branch";
+
+export interface LineContext {
+  element: LineElement;
+  weave: WeavePosition;
+  has_tags: boolean;
+  block_comment: boolean;
+}
+
 // ── Wasm initialization ────────────────────────────────────────────
 
 export async function initWasm(): Promise<void> {
@@ -125,12 +150,7 @@ export function compile(source: string): CompileResult {
   return JSON.parse(json) as CompileResult;
 }
 
-// ── Semantic tokens ────────────────────────────────────────────────
-
-export function getSemanticTokens(source: string): SemanticToken[] {
-  const json = semantic_tokens(source);
-  return JSON.parse(json) as SemanticToken[];
-}
+// ── Token legend (stateless) ───────────────────────────────────────
 
 let cachedTypeNames: string[] | null = null;
 let cachedModifierNames: string[] | null = null;
@@ -149,70 +169,96 @@ export function getTokenModifierNames(): string[] {
   return cachedModifierNames;
 }
 
-// ── IDE features ───────────────────────────────────────────────────
+// ── EditorSession wrapper ──────────────────────────────────────────
 
-export function getCompletions(source: string, offset: number): CompletionItem[] {
-  const json = wasmCompletions(source, offset);
-  return JSON.parse(json) as CompletionItem[];
-}
+export class EditorSessionHandle {
+  private session: WasmEditorSession;
 
-export function getHover(source: string, offset: number): HoverInfo | null {
-  const json = wasmHover(source, offset);
-  const result = JSON.parse(json);
-  return result ?? null;
-}
+  constructor() {
+    this.session = new WasmEditorSession();
+  }
 
-export function gotoDefinition(source: string, offset: number): Location | null {
-  const json = wasmGotoDef(source, offset);
-  const result = JSON.parse(json);
-  return result ?? null;
-}
+  updateSource(source: string): void {
+    this.session.update_source(source);
+  }
 
-export function findReferences(source: string, offset: number): Location[] {
-  const json = wasmFindRefs(source, offset);
-  return JSON.parse(json) as Location[];
-}
+  getLineContexts(): LineContext[] {
+    const json = this.session.line_contexts();
+    return JSON.parse(json) as LineContext[];
+  }
 
-export function prepareRename(source: string, offset: number): Location | null {
-  const json = wasmPrepareRename(source, offset);
-  const result = JSON.parse(json);
-  return result ?? null;
-}
+  getSemanticTokens(): SemanticToken[] {
+    const json = this.session.semantic_tokens();
+    return JSON.parse(json) as SemanticToken[];
+  }
 
-export function doRename(source: string, offset: number, newName: string): FileEdit[] {
-  const json = wasmRename(source, offset, newName);
-  return JSON.parse(json) as FileEdit[];
-}
+  getCompletions(offset: number): CompletionItem[] {
+    const json = this.session.completions(offset);
+    return JSON.parse(json) as CompletionItem[];
+  }
 
-export function getCodeActions(source: string, offset: number): CodeAction[] {
-  const json = wasmCodeActions(source, offset);
-  return JSON.parse(json) as CodeAction[];
-}
+  getHover(offset: number): HoverInfo | null {
+    const json = this.session.hover(offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
 
-export function getInlayHints(source: string, start: number, end: number): InlayHint[] {
-  const json = wasmInlayHints(source, start, end);
-  return JSON.parse(json) as InlayHint[];
-}
+  gotoDefinition(offset: number): Location | null {
+    const json = this.session.goto_definition(offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
 
-export function getSignatureHelp(source: string, offset: number): SignatureInfo | null {
-  const json = wasmSignatureHelp(source, offset);
-  const result = JSON.parse(json);
-  return result ?? null;
-}
+  findReferences(offset: number): Location[] {
+    const json = this.session.find_references(offset);
+    return JSON.parse(json) as Location[];
+  }
 
-export function getFoldingRanges(source: string): FoldRange[] {
-  const json = wasmFoldingRanges(source);
-  return JSON.parse(json) as FoldRange[];
-}
+  prepareRename(offset: number): Location | null {
+    const json = this.session.prepare_rename(offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
 
-export function getDocumentSymbols(source: string): DocumentSymbol[] {
-  const json = wasmDocumentSymbols(source);
-  return JSON.parse(json) as DocumentSymbol[];
-}
+  doRename(offset: number, newName: string): FileEdit[] {
+    const json = this.session.rename(offset, newName);
+    return JSON.parse(json) as FileEdit[];
+  }
 
-export function formatDocument(source: string): string {
-  const json = wasmFormatDocument(source);
-  return JSON.parse(json) as string;
+  getCodeActions(offset: number): CodeAction[] {
+    const json = this.session.code_actions(offset);
+    return JSON.parse(json) as CodeAction[];
+  }
+
+  getInlayHints(start: number, end: number): InlayHint[] {
+    const json = this.session.inlay_hints(start, end);
+    return JSON.parse(json) as InlayHint[];
+  }
+
+  getSignatureHelp(offset: number): SignatureInfo | null {
+    const json = this.session.signature_help(offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
+  getFoldingRanges(): FoldRange[] {
+    const json = this.session.folding_ranges();
+    return JSON.parse(json) as FoldRange[];
+  }
+
+  getDocumentSymbols(): DocumentSymbol[] {
+    const json = this.session.document_symbols();
+    return JSON.parse(json) as DocumentSymbol[];
+  }
+
+  formatDocument(): string {
+    const json = this.session.format_document();
+    return JSON.parse(json) as string;
+  }
+
+  free(): void {
+    this.session.free();
+  }
 }
 
 // ── Story runner ───────────────────────────────────────────────────

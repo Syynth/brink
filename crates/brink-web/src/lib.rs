@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 
+use brink_ide::session::IdeSession;
 use brink_runtime::FastRng;
 use rowan::{TextRange, TextSize};
 use serde::Serialize;
@@ -218,33 +219,374 @@ struct ChoiceJs {
     tags: Vec<String>,
 }
 
-// ── IDE: internal types ─────────────────────────────────────────────
+// ── EditorSession ───────────────────────────────────────────────────
 
-struct AnalysisBundle {
-    root: brink_syntax::SyntaxNode,
-    hir: brink_ir::HirFile,
-    manifest: brink_ir::SymbolManifest,
-    analysis: brink_analyzer::AnalysisResult,
-    file_id: brink_ir::FileId,
+/// Stateful IDE session for the web editor. Wraps `IdeSession` and exposes
+/// all IDE queries as methods that return JSON strings.
+#[wasm_bindgen]
+pub struct EditorSession {
+    session: IdeSession,
+    /// The path used for the single-file editor context.
+    path: String,
 }
 
-fn analyze_source(source: &str) -> AnalysisBundle {
-    let parse = brink_syntax::parse(source);
-    let root = parse.syntax();
-    let file_id = brink_ir::FileId(0);
-    let ast = parse.tree();
-    let (hir, manifest, _diags) = brink_ir::hir::lower(file_id, &ast);
-    let analysis = brink_analyzer::analyze(&[(file_id, &hir, &manifest)]);
-    AnalysisBundle {
-        root,
-        hir,
-        manifest,
-        analysis,
-        file_id,
+impl Default for EditorSession {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-// ── IDE: serialization types ────────────────────────────────────────
+#[wasm_bindgen]
+impl EditorSession {
+    /// Create a new empty editor session.
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> EditorSession {
+        EditorSession {
+            session: IdeSession::new(),
+            path: "main.ink".to_owned(),
+        }
+    }
+
+    /// Update the source text. Reparses, lowers, and analyzes.
+    pub fn update_source(&mut self, source: &str) {
+        self.session
+            .update_and_analyze(&self.path, source.to_owned());
+    }
+
+    /// Compute per-line context from the HIR. Returns JSON array of `LineContext`.
+    pub fn line_contexts(&self) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "[]".to_owned();
+        };
+        let (Some(hir), Some(source), Some(root)) = (
+            self.session.hir(file_id),
+            self.session.source(file_id),
+            self.session.syntax_root(file_id),
+        ) else {
+            return "[]".to_owned();
+        };
+
+        let contexts = brink_ide::line_context::line_contexts(hir, source, &root);
+        serde_json::to_string(&contexts).unwrap_or_default()
+    }
+
+    /// Compute semantic tokens. Returns JSON array of tokens.
+    pub fn semantic_tokens(&self) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "[]".to_owned();
+        };
+        let (Some(analysis), Some(source), Some(root)) = (
+            self.session.analysis(),
+            self.session.source(file_id),
+            self.session.syntax_root(file_id),
+        ) else {
+            return "[]".to_owned();
+        };
+
+        let raw = brink_ide::semantic_tokens::semantic_tokens(source, &root, analysis, file_id);
+
+        let tokens: Vec<TokenJs> = raw
+            .iter()
+            .map(|t| TokenJs {
+                line: t.line,
+                start_char: t.start_char,
+                length: t.length,
+                token_type: t.token_type,
+                modifiers: t.modifiers,
+            })
+            .collect();
+
+        serde_json::to_string(&tokens).unwrap_or_default()
+    }
+
+    /// Compute completions at the given byte offset. Returns JSON array.
+    pub fn completions(&self, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "[]".to_owned();
+        };
+        let (Some(analysis), Some(source)) =
+            (self.session.analysis(), self.session.source(file_id))
+        else {
+            return "[]".to_owned();
+        };
+
+        let ctx = brink_ide::detect_completion_context(source, offset as usize);
+        let scope = brink_ide::cursor_scope(source, offset as usize);
+
+        let items: Vec<CompletionItemJs> = analysis
+            .index
+            .symbols
+            .values()
+            .filter(|info| brink_ide::is_visible_in_context(&ctx, info, &scope))
+            .map(|info| CompletionItemJs {
+                name: info.name.clone(),
+                kind: symbol_kind_str(info.kind).to_owned(),
+                detail: info.detail.clone(),
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    /// Compute hover info at the given byte offset. Returns JSON or "null".
+    pub fn hover(&self, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "null".to_owned();
+        };
+        let (Some(analysis), Some(source)) =
+            (self.session.analysis(), self.session.source(file_id))
+        else {
+            return "null".to_owned();
+        };
+
+        let project_files = [(file_id, self.path.clone(), source.to_owned())];
+
+        match brink_ide::hover::hover(
+            analysis,
+            file_id,
+            source,
+            TextSize::new(offset),
+            &project_files,
+        ) {
+            Some(info) => {
+                let js = HoverInfoJs {
+                    content: info.content,
+                    start: info.range.map(|r| r.start().into()),
+                    end: info.range.map(|r| r.end().into()),
+                };
+                serde_json::to_string(&js).unwrap_or_default()
+            }
+            None => "null".to_owned(),
+        }
+    }
+
+    /// Compute goto-definition at the given byte offset. Returns JSON or "null".
+    pub fn goto_definition(&self, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "null".to_owned();
+        };
+        let Some(analysis) = self.session.analysis() else {
+            return "null".to_owned();
+        };
+
+        match brink_ide::navigation::goto_definition(analysis, file_id, TextSize::new(offset)) {
+            Some(loc) => {
+                let js = LocationJs {
+                    start: loc.range.start().into(),
+                    end: loc.range.end().into(),
+                };
+                serde_json::to_string(&js).unwrap_or_default()
+            }
+            None => "null".to_owned(),
+        }
+    }
+
+    /// Find all references. Returns JSON array.
+    pub fn find_references(&self, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "[]".to_owned();
+        };
+        let Some(analysis) = self.session.analysis() else {
+            return "[]".to_owned();
+        };
+
+        let refs =
+            brink_ide::navigation::find_references(analysis, file_id, TextSize::new(offset), true);
+
+        let items: Vec<LocationJs> = refs
+            .iter()
+            .map(|loc| LocationJs {
+                start: loc.range.start().into(),
+                end: loc.range.end().into(),
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    /// Check if rename is possible. Returns JSON or "null".
+    pub fn prepare_rename(&self, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "null".to_owned();
+        };
+        let Some(analysis) = self.session.analysis() else {
+            return "null".to_owned();
+        };
+
+        match brink_ide::rename::prepare_rename(analysis, file_id, TextSize::new(offset)) {
+            Some(range) => {
+                let js = LocationJs {
+                    start: range.start().into(),
+                    end: range.end().into(),
+                };
+                serde_json::to_string(&js).unwrap_or_default()
+            }
+            None => "null".to_owned(),
+        }
+    }
+
+    /// Compute rename edits. Returns JSON array or "null".
+    pub fn rename(&self, offset: u32, new_name: &str) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "null".to_owned();
+        };
+        let Some(analysis) = self.session.analysis() else {
+            return "null".to_owned();
+        };
+
+        match brink_ide::rename::rename(analysis, file_id, TextSize::new(offset), new_name) {
+            Some(result) => {
+                let edits: Vec<FileEditJs> = result
+                    .edits
+                    .iter()
+                    .map(|e| FileEditJs {
+                        start: e.range.start().into(),
+                        end: e.range.end().into(),
+                        new_text: e.new_text.clone(),
+                    })
+                    .collect();
+                serde_json::to_string(&edits).unwrap_or_default()
+            }
+            None => "null".to_owned(),
+        }
+    }
+
+    /// Compute code actions. Returns JSON array.
+    pub fn code_actions(&self, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "[]".to_owned();
+        };
+        let Some(source) = self.session.source(file_id) else {
+            return "[]".to_owned();
+        };
+
+        let actions = brink_ide::code_actions::code_actions(source, offset as usize);
+
+        let items: Vec<CodeActionJs> = actions
+            .iter()
+            .map(|a| CodeActionJs {
+                title: a.title.clone(),
+                kind: code_action_kind_str(&a.kind).to_owned(),
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    /// Compute inlay hints. Returns JSON array.
+    pub fn inlay_hints(&self, start: u32, end: u32) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "[]".to_owned();
+        };
+        let (Some(analysis), Some(root)) =
+            (self.session.analysis(), self.session.syntax_root(file_id))
+        else {
+            return "[]".to_owned();
+        };
+
+        let range = TextRange::new(TextSize::new(start), TextSize::new(end));
+        let hints = brink_ide::inlay_hints::inlay_hints(&root, analysis, range);
+
+        let items: Vec<InlayHintJs> = hints
+            .iter()
+            .map(|h| InlayHintJs {
+                offset: h.offset.into(),
+                label: h.label.clone(),
+                kind: inlay_hint_kind_str(&h.kind).to_owned(),
+                padding_right: h.padding_right,
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    /// Compute signature help. Returns JSON or "null".
+    pub fn signature_help(&self, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "null".to_owned();
+        };
+        let (Some(analysis), Some(source)) =
+            (self.session.analysis(), self.session.source(file_id))
+        else {
+            return "null".to_owned();
+        };
+
+        match brink_ide::signature::signature_help(analysis, source, offset as usize) {
+            Some(info) => {
+                let js = SignatureInfoJs {
+                    label: info.label,
+                    documentation: info.documentation,
+                    parameters: info
+                        .parameters
+                        .iter()
+                        .map(|p| ParamLabelJs {
+                            label: p.label.clone(),
+                        })
+                        .collect(),
+                    active_parameter: info.active_parameter,
+                };
+                serde_json::to_string(&js).unwrap_or_default()
+            }
+            None => "null".to_owned(),
+        }
+    }
+
+    /// Compute folding ranges. Returns JSON array.
+    pub fn folding_ranges(&self) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "[]".to_owned();
+        };
+        let (Some(hir), Some(source)) = (self.session.hir(file_id), self.session.source(file_id))
+        else {
+            return "[]".to_owned();
+        };
+
+        let ranges = brink_ide::folding::folding_ranges(hir, source);
+
+        let items: Vec<FoldRangeJs> = ranges
+            .iter()
+            .map(|r| FoldRangeJs {
+                start_line: r.start_line,
+                end_line: r.end_line,
+                collapsed_text: r.collapsed_text.clone(),
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    /// Compute document symbols (outline). Returns JSON array.
+    pub fn document_symbols(&self) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "[]".to_owned();
+        };
+        let (Some(hir), Some(manifest)) =
+            (self.session.hir(file_id), self.session.manifest(file_id))
+        else {
+            return "[]".to_owned();
+        };
+
+        let syms = brink_ide::document::document_symbols(hir, manifest);
+        let items: Vec<DocumentSymbolJs> = syms.into_iter().map(convert_document_symbol).collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    /// Format the document (sort knots). Returns the formatted source as a JSON string.
+    pub fn format_document(&self) -> String {
+        let Some(file_id) = self.session.file_id(&self.path) else {
+            return "\"\"".to_owned();
+        };
+        let Some(source) = self.session.source(file_id) else {
+            return "\"\"".to_owned();
+        };
+
+        let formatted = brink_ide::sort_knots_in_source(source);
+        serde_json::to_string(&formatted).unwrap_or_default()
+    }
+}
+
+// ── Serialization types ─────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct CompletionItemJs {
@@ -331,7 +673,7 @@ struct TokenJs {
     modifiers: u32,
 }
 
-// ── IDE: helper functions ───────────────────────────────────────────
+// ── Helper functions ────────────────────────────────────────────────
 
 fn symbol_kind_str(kind: brink_ir::SymbolKind) -> &'static str {
     match kind {
@@ -377,33 +719,7 @@ fn convert_document_symbol(sym: brink_ide::document::DocumentSymbol) -> Document
     }
 }
 
-// ── IDE: wasm-bindgen functions ─────────────────────────────────────
-
-/// Compute semantic tokens for syntax highlighting. Returns JSON array of tokens.
-#[wasm_bindgen]
-pub fn semantic_tokens(source: &str) -> String {
-    let bundle = analyze_source(source);
-
-    let raw = brink_ide::semantic_tokens::semantic_tokens(
-        source,
-        &bundle.root,
-        &bundle.analysis,
-        bundle.file_id,
-    );
-
-    let tokens: Vec<TokenJs> = raw
-        .iter()
-        .map(|t| TokenJs {
-            line: t.line,
-            start_char: t.start_char,
-            length: t.length,
-            token_type: t.token_type,
-            modifiers: t.modifiers,
-        })
-        .collect();
-
-    serde_json::to_string(&tokens).unwrap_or_default()
-}
+// ── Legacy stateless functions (token legend) ───────────────────────
 
 /// Get token type names for the legend.
 #[wasm_bindgen]
@@ -415,244 +731,4 @@ pub fn token_type_names() -> String {
 #[wasm_bindgen]
 pub fn token_modifier_names() -> String {
     serde_json::to_string(brink_ide::semantic_tokens::token_modifier_names()).unwrap_or_default()
-}
-
-/// Compute completions at the given byte offset. Returns JSON array.
-#[wasm_bindgen]
-pub fn completions(source: &str, offset: u32) -> String {
-    let bundle = analyze_source(source);
-    let ctx = brink_ide::detect_completion_context(source, offset as usize);
-    let scope = brink_ide::cursor_scope(source, offset as usize);
-
-    let items: Vec<CompletionItemJs> = bundle
-        .analysis
-        .index
-        .symbols
-        .values()
-        .filter(|info| brink_ide::is_visible_in_context(&ctx, info, &scope))
-        .map(|info| CompletionItemJs {
-            name: info.name.clone(),
-            kind: symbol_kind_str(info.kind).to_owned(),
-            detail: info.detail.clone(),
-        })
-        .collect();
-
-    serde_json::to_string(&items).unwrap_or_default()
-}
-
-/// Compute hover info at the given byte offset. Returns JSON or "null".
-#[wasm_bindgen]
-pub fn hover(source: &str, offset: u32) -> String {
-    let bundle = analyze_source(source);
-    let project_files = [(bundle.file_id, "main.ink".to_owned(), source.to_owned())];
-
-    match brink_ide::hover::hover(
-        &bundle.analysis,
-        bundle.file_id,
-        source,
-        TextSize::new(offset),
-        &project_files,
-    ) {
-        Some(info) => {
-            let js = HoverInfoJs {
-                content: info.content,
-                start: info.range.map(|r| r.start().into()),
-                end: info.range.map(|r| r.end().into()),
-            };
-            serde_json::to_string(&js).unwrap_or_default()
-        }
-        None => "null".to_owned(),
-    }
-}
-
-/// Compute goto-definition at the given byte offset. Returns JSON or "null".
-#[wasm_bindgen]
-pub fn goto_definition(source: &str, offset: u32) -> String {
-    let bundle = analyze_source(source);
-
-    match brink_ide::navigation::goto_definition(
-        &bundle.analysis,
-        bundle.file_id,
-        TextSize::new(offset),
-    ) {
-        Some(loc) => {
-            let js = LocationJs {
-                start: loc.range.start().into(),
-                end: loc.range.end().into(),
-            };
-            serde_json::to_string(&js).unwrap_or_default()
-        }
-        None => "null".to_owned(),
-    }
-}
-
-/// Find all references to the symbol at the given byte offset. Returns JSON array.
-#[wasm_bindgen]
-pub fn find_references(source: &str, offset: u32) -> String {
-    let bundle = analyze_source(source);
-
-    let refs = brink_ide::navigation::find_references(
-        &bundle.analysis,
-        bundle.file_id,
-        TextSize::new(offset),
-        true,
-    );
-
-    let items: Vec<LocationJs> = refs
-        .iter()
-        .map(|loc| LocationJs {
-            start: loc.range.start().into(),
-            end: loc.range.end().into(),
-        })
-        .collect();
-
-    serde_json::to_string(&items).unwrap_or_default()
-}
-
-/// Check if rename is possible at the given byte offset. Returns JSON or "null".
-#[wasm_bindgen]
-pub fn prepare_rename(source: &str, offset: u32) -> String {
-    let bundle = analyze_source(source);
-
-    match brink_ide::rename::prepare_rename(&bundle.analysis, bundle.file_id, TextSize::new(offset))
-    {
-        Some(range) => {
-            let js = LocationJs {
-                start: range.start().into(),
-                end: range.end().into(),
-            };
-            serde_json::to_string(&js).unwrap_or_default()
-        }
-        None => "null".to_owned(),
-    }
-}
-
-/// Compute rename edits for the symbol at the given byte offset. Returns JSON array or "null".
-#[wasm_bindgen]
-pub fn rename(source: &str, offset: u32, new_name: &str) -> String {
-    let bundle = analyze_source(source);
-
-    match brink_ide::rename::rename(
-        &bundle.analysis,
-        bundle.file_id,
-        TextSize::new(offset),
-        new_name,
-    ) {
-        Some(result) => {
-            let edits: Vec<FileEditJs> = result
-                .edits
-                .iter()
-                .map(|e| FileEditJs {
-                    start: e.range.start().into(),
-                    end: e.range.end().into(),
-                    new_text: e.new_text.clone(),
-                })
-                .collect();
-            serde_json::to_string(&edits).unwrap_or_default()
-        }
-        None => "null".to_owned(),
-    }
-}
-
-/// Compute code actions at the given byte offset. Returns JSON array.
-#[wasm_bindgen]
-pub fn code_actions(source: &str, offset: u32) -> String {
-    let actions = brink_ide::code_actions::code_actions(source, offset as usize);
-
-    let items: Vec<CodeActionJs> = actions
-        .iter()
-        .map(|a| CodeActionJs {
-            title: a.title.clone(),
-            kind: code_action_kind_str(&a.kind).to_owned(),
-        })
-        .collect();
-
-    serde_json::to_string(&items).unwrap_or_default()
-}
-
-/// Compute inlay hints for the given byte range. Returns JSON array.
-#[wasm_bindgen]
-pub fn inlay_hints(source: &str, start: u32, end: u32) -> String {
-    let bundle = analyze_source(source);
-    let range = TextRange::new(TextSize::new(start), TextSize::new(end));
-
-    let hints = brink_ide::inlay_hints::inlay_hints(&bundle.root, &bundle.analysis, range);
-
-    let items: Vec<InlayHintJs> = hints
-        .iter()
-        .map(|h| InlayHintJs {
-            offset: h.offset.into(),
-            label: h.label.clone(),
-            kind: inlay_hint_kind_str(&h.kind).to_owned(),
-            padding_right: h.padding_right,
-        })
-        .collect();
-
-    serde_json::to_string(&items).unwrap_or_default()
-}
-
-/// Compute signature help at the given byte offset. Returns JSON or "null".
-#[wasm_bindgen]
-pub fn signature_help(source: &str, offset: u32) -> String {
-    let bundle = analyze_source(source);
-
-    match brink_ide::signature::signature_help(&bundle.analysis, source, offset as usize) {
-        Some(info) => {
-            let js = SignatureInfoJs {
-                label: info.label,
-                documentation: info.documentation,
-                parameters: info
-                    .parameters
-                    .iter()
-                    .map(|p| ParamLabelJs {
-                        label: p.label.clone(),
-                    })
-                    .collect(),
-                active_parameter: info.active_parameter,
-            };
-            serde_json::to_string(&js).unwrap_or_default()
-        }
-        None => "null".to_owned(),
-    }
-}
-
-/// Compute folding ranges. Returns JSON array.
-#[wasm_bindgen]
-pub fn folding_ranges(source: &str) -> String {
-    let parse = brink_syntax::parse(source);
-    let file_id = brink_ir::FileId(0);
-    let ast = parse.tree();
-    let (hir, _manifest, _diags) = brink_ir::hir::lower(file_id, &ast);
-
-    let ranges = brink_ide::folding::folding_ranges(&hir, source);
-
-    let items: Vec<FoldRangeJs> = ranges
-        .iter()
-        .map(|r| FoldRangeJs {
-            start_line: r.start_line,
-            end_line: r.end_line,
-            collapsed_text: r.collapsed_text.clone(),
-        })
-        .collect();
-
-    serde_json::to_string(&items).unwrap_or_default()
-}
-
-/// Compute document symbols (outline). Returns JSON array.
-#[wasm_bindgen]
-pub fn document_symbols(source: &str) -> String {
-    let bundle = analyze_source(source);
-
-    let syms = brink_ide::document::document_symbols(&bundle.hir, &bundle.manifest);
-
-    let items: Vec<DocumentSymbolJs> = syms.into_iter().map(convert_document_symbol).collect();
-
-    serde_json::to_string(&items).unwrap_or_default()
-}
-
-/// Format the document (sort knots). Returns the formatted source as a JSON string.
-#[wasm_bindgen]
-pub fn format_document(source: &str) -> String {
-    let formatted = brink_ide::sort_knots_in_source(source);
-    serde_json::to_string(&formatted).unwrap_or_default()
 }

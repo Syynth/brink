@@ -1165,6 +1165,7 @@ impl LowerCtx {
                             choices: vec![choice],
                             continuation: Block::default(),
                             context: ChoiceSetContext::Inline,
+                            depth: 0,
                         })));
                     }
                 }
@@ -1358,6 +1359,7 @@ impl LowerCtx {
                             choices: vec![choice],
                             continuation: Block::default(),
                             context: ChoiceSetContext::Inline,
+                            depth: 0,
                         })));
                     }
                 }
@@ -2572,6 +2574,7 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
                         continuation,
                         last_standalone_label.take(),
                         gather_stmts_start.take(),
+                        base_depth,
                     );
                     // All remaining items consumed — we're done
                     return Block { label: None, stmts };
@@ -2600,6 +2603,7 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
         Block::default(),
         last_standalone_label.take(),
         gather_stmts_start,
+        base_depth,
     );
     Block { label: None, stmts }
 }
@@ -2659,12 +2663,14 @@ fn item_depth(item: &WeaveItem) -> Option<usize> {
     }
 }
 
+#[expect(clippy::cast_possible_truncation)]
 fn flush_choices(
     stmts: &mut Vec<Stmt>,
     choice_acc: &mut Vec<Choice>,
     continuation: Block,
     opening_label: Option<Name>,
     gather_stmts_start: Option<usize>,
+    base_depth: usize,
 ) {
     if choice_acc.is_empty() {
         return;
@@ -2674,6 +2680,7 @@ fn flush_choices(
         choices,
         continuation,
         context: ChoiceSetContext::Weave,
+        depth: base_depth as u32,
     }));
     if let Some(label) = opening_label {
         // Move statements emitted after the standalone gather into the

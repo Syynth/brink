@@ -5,10 +5,12 @@ pub mod folding;
 mod formatting;
 pub mod hover;
 pub mod inlay_hints;
+pub mod line_context;
 mod line_index;
 pub mod navigation;
 pub mod rename;
 pub mod semantic_tokens;
+pub mod session;
 pub mod signature;
 mod text;
 

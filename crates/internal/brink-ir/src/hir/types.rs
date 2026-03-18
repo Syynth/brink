@@ -178,6 +178,9 @@ pub struct ChoiceSet {
     pub continuation: Block,
     /// Where this choice set was created — weave folding or inline content.
     pub context: ChoiceSetContext,
+    /// The weave depth at which this choice set was folded.
+    /// `0` for inline choice sets (inside conditionals/sequences).
+    pub depth: u32,
 }
 
 /// A single choice in a choice set.

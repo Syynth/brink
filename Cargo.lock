@@ -303,10 +303,12 @@ name = "brink-ide"
 version = "0.0.1"
 dependencies = [
  "brink-analyzer",
+ "brink-db",
  "brink-fmt",
  "brink-ir",
  "brink-syntax",
  "rowan",
+ "serde",
 ]
 
 [[package]]

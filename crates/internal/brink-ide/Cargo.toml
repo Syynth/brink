@@ -11,8 +11,10 @@ publish = false
 brink-syntax = { path = "../brink-syntax" }
 brink-ir = { path = "../brink-ir" }
 brink-analyzer = { path = "../brink-analyzer" }
+brink-db = { path = "../brink-db" }
 brink-fmt = { path = "../brink-fmt" }
 rowan.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

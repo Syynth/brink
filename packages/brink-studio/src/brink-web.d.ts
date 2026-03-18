@@ -8,24 +8,30 @@ declare module "brink-web" {
     [Symbol.dispose](): void;
   }
 
-  export function compile(source: string): string;
-  export function semantic_tokens(source: string): string;
-  export function token_modifier_names(): string;
-  export function token_type_names(): string;
+  export class EditorSession {
+    constructor();
+    update_source(source: string): void;
+    line_contexts(): string;
+    semantic_tokens(): string;
+    completions(offset: number): string;
+    hover(offset: number): string;
+    goto_definition(offset: number): string;
+    find_references(offset: number): string;
+    prepare_rename(offset: number): string;
+    rename(offset: number, new_name: string): string;
+    code_actions(offset: number): string;
+    inlay_hints(start: number, end: number): string;
+    signature_help(offset: number): string;
+    folding_ranges(): string;
+    document_symbols(): string;
+    format_document(): string;
+    free(): void;
+    [Symbol.dispose](): void;
+  }
 
-  // IDE features
-  export function completions(source: string, offset: number): string;
-  export function hover(source: string, offset: number): string;
-  export function goto_definition(source: string, offset: number): string;
-  export function find_references(source: string, offset: number): string;
-  export function prepare_rename(source: string, offset: number): string;
-  export function rename(source: string, offset: number, new_name: string): string;
-  export function code_actions(source: string, offset: number): string;
-  export function inlay_hints(source: string, start: number, end: number): string;
-  export function signature_help(source: string, offset: number): string;
-  export function folding_ranges(source: string): string;
-  export function document_symbols(source: string): string;
-  export function format_document(source: string): string;
+  export function compile(source: string): string;
+  export function token_type_names(): string;
+  export function token_modifier_names(): string;
 
   export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 

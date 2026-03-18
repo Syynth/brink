@@ -1,18 +1,8 @@
 import {
   initWasm,
   compile,
-  getSemanticTokens,
   getTokenTypeNames,
-  getCompletions,
-  getHover,
-  gotoDefinition,
-  findReferences,
-  prepareRename,
-  doRename,
-  getCodeActions,
-  getInlayHints,
-  getSignatureHelp,
-  getFoldingRanges,
+  EditorSessionHandle,
   StoryRunnerHandle,
 } from "./wasm.js";
 import { createBrinkEditor } from "./editor/index.js";
@@ -61,21 +51,28 @@ async function main(): Promise<void> {
     (bytes) => new StoryRunnerHandle(bytes),
   );
 
+  // Create stateful editor session for HIR-backed IDE features
+  const session = new EditorSessionHandle();
+
   const editor = createBrinkEditor(editorContainer, {
     initialContent: DEFAULT_INK,
     compile,
-    getSemanticTokens,
+    getSemanticTokens: (source: string) => {
+      session.updateSource(source);
+      return session.getSemanticTokens();
+    },
     getTokenTypeNames,
-    getCompletions,
-    getHover,
-    gotoDefinition,
-    findReferences,
-    prepareRename,
-    doRename,
-    getCodeActions,
-    getInlayHints,
-    getSignatureHelp,
-    getFoldingRanges,
+    session,
+    getCompletions: (_source: string, offset: number) => session.getCompletions(offset),
+    getHover: (_source: string, offset: number) => session.getHover(offset),
+    gotoDefinition: (_source: string, offset: number) => session.gotoDefinition(offset),
+    findReferences: (_source: string, offset: number) => session.findReferences(offset),
+    prepareRename: (_source: string, offset: number) => session.prepareRename(offset),
+    doRename: (_source: string, offset: number, newName: string) => session.doRename(offset, newName),
+    getCodeActions: (_source: string, offset: number) => session.getCodeActions(offset),
+    getInlayHints: (_source: string, start: number, end: number) => session.getInlayHints(start, end),
+    getSignatureHelp: (_source: string, offset: number) => session.getSignatureHelp(offset),
+    getFoldingRanges: () => session.getFoldingRanges(),
     onCompile(result) {
       if (result.ok && result.story_bytes) {
         player.loadStory(new Uint8Array(result.story_bytes));

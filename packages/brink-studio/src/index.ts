@@ -9,21 +9,9 @@ export type { BrinkPlayerHandle } from "./player/index.js";
 export {
   initWasm,
   compile,
-  getSemanticTokens,
   getTokenTypeNames,
   getTokenModifierNames,
-  getCompletions,
-  getHover,
-  gotoDefinition,
-  findReferences,
-  prepareRename,
-  doRename,
-  getCodeActions,
-  getInlayHints,
-  getSignatureHelp,
-  getFoldingRanges,
-  getDocumentSymbols,
-  formatDocument,
+  EditorSessionHandle,
   StoryRunnerHandle,
 } from "./wasm.js";
 export type {
@@ -41,9 +29,13 @@ export type {
   FoldRange,
   DocumentSymbol,
   CodeAction,
+  LineContext,
+  WeavePosition,
+  WeaveElement,
+  LineElement,
 } from "./wasm.js";
 
-export { elementTypeField, ElementType } from "./editor/element-type.js";
+export { elementTypeField, ElementType, setEditorSession } from "./editor/element-type.js";
 export type { LineInfo } from "./editor/element-type.js";
 
 export { brinkTheme } from "./editor/theme.js";

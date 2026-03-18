@@ -1,5 +1,6 @@
 import { Compartment, type Extension } from "@codemirror/state";
-import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, FileEdit, InlayHint, SignatureInfo, FoldRange, CodeAction } from "../wasm.js";
+import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, FileEdit, InlayHint, SignatureInfo, FoldRange, CodeAction, EditorSessionHandle } from "../wasm.js";
+import { setEditorSession } from "./element-type.js";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
 import { highlightExtension } from "./highlight.js";
@@ -22,6 +23,10 @@ export interface BrinkStudioOptions {
   getTokenTypeNames: () => string[];
   onCompile?: (result: CompileResult) => void;
 
+  /** EditorSession for HIR-backed line classification. If provided,
+   *  the editor uses `line_contexts()` instead of the regex classifier. */
+  session?: EditorSessionHandle;
+
   // IDE features (all optional — features are enabled when provided)
   getCompletions?: (source: string, offset: number) => CompletionItem[];
   getHover?: (source: string, offset: number) => HoverInfo | null;
@@ -40,6 +45,11 @@ export const screenplayCompartment = new Compartment();
 export const ideCompartment = new Compartment();
 
 export function brinkStudio(options: BrinkStudioOptions): Extension {
+  // Wire up the session for HIR-backed line classification
+  if (options.session) {
+    setEditorSession(options.session);
+  }
+
   const ideExtensions: Extension[] = [];
 
   if (options.getCompletions) {
