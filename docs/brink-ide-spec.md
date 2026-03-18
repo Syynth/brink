@@ -53,7 +53,7 @@ brink-ide sits at the same tier as `brink-compiler`. It is a product crate that 
 - **Not an async runtime.** All functions are synchronous. Concurrency (locks, channels, debouncing) is the shell's responsibility.
 - **Not a protocol adapter.** It returns domain types, not LSP types or JsValues.
 - **Not a file system accessor.** It takes data (source text, analysis results, parse trees) as inputs. It never reads from disk.
-- **Not a state manager.** It does not own a `ProjectDb` or maintain mutable state. Every query is a pure function of its inputs.
+- **Stateless queries, stateful session.** All query functions are pure functions of their inputs. `IdeSession` is a stateful wrapper that manages the parse/analyze lifecycle and delegates to these pure functions. Shells should use `IdeSession` rather than orchestrating `ProjectDb` + analysis + query calls themselves. See [IdeSession](#idesession).
 
 ## Wasm compatibility
 
@@ -92,6 +92,153 @@ type ProjectFiles = [(FileId, String, String)];
 ```
 
 The shell constructs this from `ProjectDb` under lock and passes it by reference.
+
+## IdeSession
+
+`IdeSession` is the recommended entry point for all IDE operations. It owns a `ProjectDb` and cached `AnalysisResult`, managing the parse/lower/analyze lifecycle so shells do not reimplement it.
+
+The pure query functions in the [API surface](#api-surface) remain public for unit testing and for callers that already have pre-computed analysis data. However, brink-ide does **not** expose any public convenience helpers that take raw source strings and perform the full parse + lower + analyze pipeline. The expensive orchestration lives exclusively inside `IdeSession`. This is deliberate: making it easy to reparse from scratch on every call is exactly the performance problem that `IdeSession` exists to solve.
+
+**Rationale:** brink-web's current architecture calls `analyze_source(source)` on every IDE query -- full parse, HIR lower, and cross-file analysis from scratch. This pattern emerged because the stateless function API makes it trivially easy to do the wrong thing. `IdeSession` makes the right thing (cached, incremental updates) the path of least resistance.
+
+### API
+
+```rust
+pub struct IdeSession {
+    db: ProjectDb,
+    analysis: AnalysisResult,
+}
+
+impl IdeSession {
+    /// Create an empty session.
+    pub fn new() -> Self;
+
+    /// Update source for a file. Triggers parse + HIR lower in the ProjectDb.
+    /// Does NOT re-analyze -- call `update_and_analyze` for single-threaded use,
+    /// or use the snapshot pattern for async shells.
+    pub fn update_source(&mut self, path: &str, source: String);
+
+    /// Take a snapshot of the current state for off-thread analysis.
+    /// The snapshot contains cloned analysis inputs (HIR + manifests).
+    /// The caller can release &mut self, analyze the snapshot, then
+    /// apply results back.
+    pub fn snapshot(&self) -> IdeSnapshot;
+
+    /// Apply analysis results computed from a snapshot.
+    pub fn apply_analysis(&mut self, result: AnalysisResult);
+
+    /// Convenience: update source + re-analyze in one call.
+    /// For single-threaded contexts (wasm) where there is no lock contention.
+    pub fn update_and_analyze(&mut self, path: &str, source: String);
+
+    // -- Query methods --
+    // Each resolves path to FileId, retrieves cached data from
+    // ProjectDb + AnalysisResult, and delegates to the corresponding
+    // pure function.
+
+    pub fn hover(&self, path: &str, offset: TextSize) -> Option<HoverInfo>;
+    pub fn completions(&self, path: &str, offset: usize) -> Vec<CompletionItem>;
+    pub fn goto_definition(&self, path: &str, offset: TextSize) -> Option<LocationResult>;
+    pub fn find_references(
+        &self, path: &str, offset: TextSize, include_declaration: bool,
+    ) -> Vec<LocationResult>;
+    pub fn semantic_tokens(&self, path: &str) -> Vec<SemanticToken>;
+    pub fn line_contexts(&self, path: &str) -> Vec<LineContext>;
+    pub fn document_symbols(&self, path: &str) -> Vec<DocumentSymbol>;
+    pub fn folding_ranges(&self, path: &str) -> Vec<FoldRange>;
+    pub fn inlay_hints(&self, path: &str, range: TextRange) -> Vec<InlayHint>;
+    pub fn signature_help(&self, path: &str, offset: usize) -> Option<SignatureInfo>;
+    pub fn prepare_rename(&self, path: &str, offset: TextSize) -> Option<TextRange>;
+    pub fn rename(
+        &self, path: &str, offset: TextSize, new_name: &str,
+    ) -> Option<RenameResult>;
+    pub fn code_actions(&self, path: &str, offset: usize) -> Vec<CodeAction>;
+    // ... remaining queries follow the same pattern
+}
+```
+
+### IdeSnapshot
+
+`IdeSnapshot` supports the LSP's lock-release-analyze pattern. It captures the analysis inputs (cloned HIR + manifests) so analysis can run without holding `&mut IdeSession`.
+
+```rust
+pub struct IdeSnapshot {
+    inputs: Vec<(FileId, HirFile, SymbolManifest)>,
+}
+
+impl IdeSnapshot {
+    /// Run cross-file analysis on the snapshot's inputs.
+    /// This is the expensive operation that the LSP runs off-thread.
+    pub fn analyze(&self) -> AnalysisResult;
+}
+```
+
+### Shell usage patterns
+
+**brink-web (single-threaded wasm):**
+
+```rust
+// On document change:
+session.update_and_analyze("main.ink", new_source);
+
+// Queries read from cached state -- no reparse:
+let tokens = session.semantic_tokens("main.ink");
+let contexts = session.line_contexts("main.ink");
+```
+
+**brink-lsp (async, multi-threaded):**
+
+```rust
+// In didChange handler:
+{
+    let mut session = self.session.lock();
+    session.update_source(&path, source);  // parse + lower only
+    let snap = session.snapshot();
+}   // lock released -- other queries can proceed
+
+// Off-thread analysis (expensive, no lock held):
+let result = snap.analyze();
+
+// Apply results:
+{
+    let mut session = self.session.lock();
+    session.apply_analysis(result);
+}
+```
+
+The LSP wraps `IdeSession` in `Arc<Mutex<_>>` (or equivalent). The snapshot pattern lets it release the lock during the expensive analysis pass, keeping the session responsive to concurrent queries.
+
+### What brink-web changes
+
+With `IdeSession`, brink-web's wasm exports become thin methods on a `#[wasm_bindgen]` struct that owns an `IdeSession`:
+
+```rust
+#[wasm_bindgen]
+pub struct EditorSession {
+    session: IdeSession,
+}
+
+#[wasm_bindgen]
+impl EditorSession {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self;
+
+    /// Call on every document change. Reparses only the changed file.
+    pub fn update_source(&mut self, source: &str);
+
+    /// Returns JSON-serialized Vec<LineContext>.
+    pub fn line_contexts(&self) -> String;
+
+    /// Returns JSON-serialized Vec<SemanticToken>.
+    pub fn semantic_tokens(&self) -> String;
+
+    // ... all other IDE queries delegate to self.session
+}
+```
+
+The existing stateless `pub fn semantic_tokens(source: &str) -> String` free functions in brink-web are removed. The `compile()` free function and `StoryRunner` struct remain unchanged -- compilation and runtime are separate concerns.
+
+On the TypeScript side, `packages/brink-studio/src/wasm.ts` replaces its collection of `getSemanticTokens(source)`, `getCompletions(source, offset)`, etc. with methods on the `EditorSession` wasm object. The `BrinkStudioOptions` interface in `extensions.ts` changes accordingly: instead of passing individual callback functions, the editor receives an `EditorSession` handle.
 
 ## Domain types
 
@@ -280,6 +427,79 @@ pub struct WorkspaceSymbol {
     pub range: TextRange,
 }
 ```
+
+### Line context
+
+Per-line structural context for the editor's screenplay mode. Produced by `line_contexts()`, this replaces the regex-based `classifyLine` in TypeScript with authoritative data from the HIR and parse tree.
+
+```rust
+/// Per-line context combining syntactic classification, structural position,
+/// and inline element ranges.
+pub struct LineContext {
+    /// What kind of line this is (syntactic classification).
+    pub element: LineElement,
+    /// Where this line sits in the weave structure (from HIR).
+    pub weave: WeavePosition,
+    /// Byte ranges of inline `# tag` annotations on this line.
+    pub tags: Vec<(u32, u32)>,
+    /// Byte range if this line is inside a `/* ... */` block comment.
+    pub block_comment: Option<(u32, u32)>,
+    /// Byte ranges of `[...]` choice bracket content on this line.
+    pub brackets: Vec<(u32, u32)>,
+    /// Byte ranges of `{expr}` inline expressions on this line.
+    pub inline_exprs: Vec<(u32, u32)>,
+}
+
+/// Syntactic line classification. Identifies what kind of ink construct
+/// occupies a source line, independent of its structural position.
+pub enum LineElement {
+    KnotHeader,
+    StitchHeader,
+    Narrative,
+    Choice,
+    Gather,
+    Divert,
+    Logic,
+    VarDecl,
+    Comment,
+    Include,
+    External,
+    Tag,
+    Blank,
+}
+
+/// Structural position within the weave hierarchy.
+/// Depth + element type describe where the cursor sits in ink's
+/// nested choice/gather tree.
+pub struct WeavePosition {
+    /// Weave nesting depth. 0 = top-level (outside any choice/gather).
+    /// 1 = first-level choices, 2 = nested choices, etc.
+    /// Canonical value from `ChoiceSet.depth` in the HIR.
+    pub depth: u32,
+    /// What kind of structural container this line is inside.
+    pub element: WeaveElement,
+}
+
+/// The structural container type for a position in the weave hierarchy.
+pub enum WeaveElement {
+    /// Top-level content (knot/stitch body, outside any choice set).
+    TopLevel,
+    /// A choice line (`*` or `+`).
+    ChoiceLine { sticky: bool },
+    /// Body text inside a choice (the lines after the choice, before
+    /// the next choice or gather at the same depth).
+    ChoiceBody,
+    /// Continuation after a gather (`-`). The gather itself and any
+    /// content that follows it before the next structural break.
+    GatherContinuation,
+    /// Inside a branch of a conditional (`{condition: ... | ...}`).
+    ConditionalBranch,
+    /// Inside a branch of a sequence (`{&|~|!} ...`).
+    SequenceBranch,
+}
+```
+
+`LineElement` and `WeavePosition` are orthogonal. A line classified as `LineElement::Narrative` can have `WeaveElement::TopLevel` (plain narrative in a knot body), `WeaveElement::ChoiceBody` (narrative after a choice), or `WeaveElement::GatherContinuation` (narrative after a gather). The editor uses `LineElement` for visual styling (font, sigil treatment) and `WeavePosition` for structural operations (depth indentation, transition table, status bar display).
 
 ### Folding
 
@@ -591,18 +811,36 @@ pub fn sort_knots(source: &str) -> String;
 pub fn sort_stitches(source: &str, knot_name: &str) -> String;
 ```
 
+### Line context
+
+```rust
+/// Compute per-line structural context by walking the HIR tree top-down
+/// and consulting the parse tree for inline element spans.
+///
+/// Returns one `LineContext` per source line (indexed by 0-based line number).
+/// The implementation uses `AstPtr`/`SyntaxNodePtr` spans on HIR nodes to
+/// determine which source lines each node covers, producing `WeavePosition`
+/// from HIR structure and inline ranges from the `SyntaxNode` tree in a
+/// single pass.
+pub fn line_contexts(
+    hir: &HirFile,
+    source: &str,
+    root: &SyntaxNode,
+) -> Vec<LineContext>;
+```
+
+`cursor_scope` (knot/stitch scope for completion visibility) remains a separate function. It answers "what symbols are visible here?" while `line_contexts` answers "what structural position is this line in?" These are orthogonal queries serving different consumers.
+
 ## What stays in brink-lsp
 
-The LSP crate becomes a thin shell:
+The LSP crate becomes a thin shell. With `IdeSession`, the `Backend` no longer manages `ProjectDb` directly.
 
-1. **`Backend` struct** — owns `Client`, `Arc<Mutex<ProjectDb>>`, watch channels, `Notify`, generation counter. Unchanged in structure.
+1. **`Backend` struct** — owns `Client`, `Arc<Mutex<IdeSession>>`, watch channels, `Notify`, generation counter.
 2. **`LanguageServer` trait impl** — async handler dispatch. Each handler:
    - Extracts path from URI
-   - Takes snapshot (lock db, clone data, release lock)
-   - Converts LSP position to byte offset via `LineIndex`
-   - Calls brink-ide query function
-   - Converts domain result to LSP type
-3. **`analysis_loop`** — background analysis task with debouncing. Will use `brink-driver` for diagnostic collection (see migration plan).
+   - Calls `IdeSession` query methods (which handle FileId resolution, data retrieval, and query delegation internally)
+   - Converts brink-ide domain result to LSP type
+3. **`analysis_loop`** — background analysis task with debouncing. Uses the `IdeSession` snapshot pattern: `lock -> update_source -> snapshot -> unlock -> analyze -> lock -> apply_analysis -> unlock`. Will use `brink-driver` for diagnostic collection (see migration plan).
 4. **URI/path conversion** — `Url::to_file_path()`, `Url::from_file_path()`.
 5. **LSP type conversion** — `convert.rs` keeps only the protocol-specific conversions (`SymbolKind -> lsp_types::SymbolKind`, `Severity -> DiagnosticSeverity`, `diagnostic_to_lsp`). `LineIndex` and `to_lsp_range`/`to_text_size` move to brink-ide.
 6. **Multi-project diagnostic annotation** — LSP-specific UX (related information pointing to project roots).
@@ -716,6 +954,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+brink-db.workspace = true
 brink-syntax.workspace = true
 brink-ir.workspace = true
 brink-analyzer.workspace = true
@@ -729,9 +968,55 @@ brink-ir.workspace = true
 brink-analyzer.workspace = true
 ```
 
-Note: brink-ide does NOT depend on brink-db at the API level. Query functions take `&AnalysisResult`, `&HirFile`, etc. — the shell obtains these from brink-db and passes them in. This keeps brink-ide's dependency set minimal and ensures wasm compatibility (brink-db itself is wasm-compatible, but the decoupling is still valuable for testability).
+brink-ide depends on brink-db for `IdeSession` (which owns a `ProjectDb`). The pure query functions do not use brink-db -- they take `&AnalysisResult`, `&HirFile`, etc. as arguments. brink-db is wasm-compatible, so this dependency does not affect the wasm target.
 
 `bitflags` is used workspace-wide (already a dependency of brink-ir and brink-format), so brink-ide uses it for `TokenModifiers`.
+
+## HIR change: ChoiceSet.depth
+
+`line_contexts()` needs the weave depth of each choice set. The HIR's `ChoiceSet` struct gains a `depth` field populated during `fold_weave`:
+
+```rust
+// In brink-ir::hir::types
+pub struct ChoiceSet {
+    pub choices: Vec<Choice>,
+    pub continuation: Block,
+    pub context: ChoiceSetContext,
+    /// Weave nesting depth. Set during `fold_weave` from the base_depth
+    /// parameter. 1 = top-level choices, 2 = choices nested inside a
+    /// choice body, etc.
+    pub depth: u32,  // NEW
+}
+```
+
+The depth is known during folding -- it is the `base_depth` parameter passed to `fold_weave_at_depth`. Storing it explicitly avoids requiring consumers to reconstruct depth by walking the HIR tree and counting nesting levels.
+
+This is the canonical source of weave depth. `line_contexts()` reads `ChoiceSet.depth` rather than computing depth from tree structure.
+
+## Replacing classifyLine
+
+brink-studio's TypeScript editor currently classifies lines with a regex-based `classifyLine` function in `packages/brink-studio/src/editor/element-type.ts`. This function produces `LineInfo { type: ElementType, depth, sticky, standalone }` by pattern-matching against line text. It has known limitations:
+
+- **Depth is wrong for choice body text.** `classifyLine` only counts sigils on the current line. Narrative text inside a choice body gets depth 0, but its structural depth is the enclosing choice's depth.
+- **No structural awareness.** The regex cannot distinguish narrative in a knot body from narrative in a choice body from narrative after a gather. All are `ElementType.NarrativeText` with depth 0.
+- **Block comment state is lost.** A line inside `/* ... */` may match as narrative or another element type.
+- **Bracket matching is naive.** The bracket highlighting in `screenplay.ts` does single-character `[`/`]` scanning without understanding ink's bracket semantics.
+
+`line_contexts()` replaces all of this with authoritative data from the HIR and parse tree. The migration:
+
+1. **`elementTypeField` StateField** -- currently calls `classifyLine` per line on every doc change. Replaced by calling `EditorSession.line_contexts()` via wasm, which returns `Vec<LineContext>` with both `LineElement` (replacing `ElementType`) and `WeavePosition` (replacing the regex-computed depth).
+
+2. **`screenplay.ts` line decorations** -- reads `LineElement` for CSS class, `WeavePosition.depth` for indentation. The sigil replacement widget reads `WeavePosition.element` to determine sigil type. `WeaveElement::ChoiceLine { sticky }` replaces the `sticky` field on `LineInfo`.
+
+3. **`transitions.ts` state machine** -- reads `LineElement` for element matching, `WeavePosition.depth` for depth predicates, `WeaveElement` for context-dependent transitions (e.g., Enter after `ChoiceBody` vs Enter after `GatherContinuation`).
+
+4. **`statusbar.ts` element label** -- reads `LineElement` for the label, `WeavePosition.depth` for the depth indicator, `WeaveElement::ChoiceLine { sticky }` for the sticky marker.
+
+5. **`screenplay.ts` bracket highlighting** -- replaced by `LineContext.brackets`, which contains the authoritative byte ranges from the parse tree.
+
+6. **Inline element styling** -- `LineContext.tags`, `LineContext.inline_exprs`, and `LineContext.block_comment` provide ranges for inline decorations that the regex classifier could not produce.
+
+The `classifyLine` function and `ElementType` enum in TypeScript are deleted. `LineElement` (from Rust, serialized via wasm) is the single source of truth.
 
 ## Relationship to brink-driver
 
