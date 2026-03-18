@@ -78,6 +78,7 @@ export type ActionId =
   | "convertToBody"
   | "newBodyLine"
   | "convertToNarrative"
+  | "convertToIndentedNarrative"
   | "increaseDepth"
   | "decreaseDepth"
   | "convertToChoice"
@@ -117,22 +118,23 @@ export const TRANSITIONS: Transition[] = [
   { element: ElementType.Choice, key: "Enter",       hasContent: false, action: "convertToBody",   hint: "body text" },
   // Shift+Enter
   { element: ElementType.Choice, key: "Shift-Enter",                    action: "newBodyLine",     hint: "body text" },
-  // Tab
-  { element: ElementType.Choice, key: "Tab",         hasContent: true,  action: "increaseDepth",   hint: "deeper" },
-  { element: ElementType.Choice, key: "Tab",         hasContent: false, action: "convertToBody",   hint: "body text" },
-  // Shift+Tab
-  { element: ElementType.Choice, key: "Shift-Tab",   depth: "min2",     action: "decreaseDepth",   hint: "shallower" },
-  { element: ElementType.Choice, key: "Shift-Tab",                      action: "convertToGather", hint: "gather" },
+  // Tab: choice → body text (strip sigils, indent to depth)
+  { element: ElementType.Choice, key: "Tab",                            action: "convertToIndentedNarrative", hint: "body text" },
+  // Shift+Tab: strip sigils → narrative
+  { element: ElementType.Choice, key: "Shift-Tab",                      action: "convertToNarrative", hint: "narrative" },
 
   // ── Gather ───────────────────────────────────────────────────────
+  // Enter
   { element: ElementType.Gather, key: "Enter",       hasContent: true,  action: "newSibling",        hint: "new gather" },
   { element: ElementType.Gather, key: "Enter",       hasContent: false, action: "convertToNarrative", hint: "narrative" },
+  // Tab: gather → choice (same depth) — completes the cycle
   { element: ElementType.Gather, key: "Tab",                            action: "convertToChoice",   hint: "choice" },
-  { element: ElementType.Gather, key: "Shift-Tab",   depth: "min2",     action: "decreaseDepth",     hint: "shallower" },
+  // Shift+Tab: strip sigils → narrative
   { element: ElementType.Gather, key: "Shift-Tab",                      action: "convertToNarrative", hint: "narrative" },
 
   // ── Narrative ────────────────────────────────────────────────────
-  { element: ElementType.NarrativeText, key: "Tab",                     action: "convertToChoice",   hint: "choice" },
+  // Tab: narrative → gather (enters the cycle)
+  { element: ElementType.NarrativeText, key: "Tab",                     action: "convertToGather",   hint: "gather" },
 ];
 
 // ── Matching ───────────────────────────────────────────────────────
@@ -242,6 +244,18 @@ export function executeAction(action: ActionId, view: EditorView, info: LineInfo
       return true;
     }
 
+    case "convertToIndentedNarrative": {
+      // Strip sigils, replace with depth-based indent, keep content
+      const sigils = info.type === ElementType.Gather ? [...GATHER_SIGILS] : [...CHOICE_SIGILS];
+      const { end } = parseSigilPrefix(line.text, sigils);
+      const indent = "  ".repeat(info.depth);
+      view.dispatch({
+        changes: { from: line.from, to: line.from + end, insert: indent },
+        selection: { anchor: line.from + indent.length },
+      });
+      return true;
+    }
+
     case "convertToNarrative": {
       const sigils = info.type === ElementType.Gather ? [...GATHER_SIGILS] : [...CHOICE_SIGILS];
       const { end } = parseSigilPrefix(line.text, sigils);
@@ -283,7 +297,9 @@ export function executeAction(action: ActionId, view: EditorView, info: LineInfo
     case "convertToChoice": {
       const sigils = info.type === ElementType.Gather ? [...GATHER_SIGILS] : [];
       const { end } = parseSigilPrefix(line.text, sigils);
-      const newPrefix = "* ";
+      // Preserve depth when converting from gather
+      const depth = info.depth > 0 ? info.depth : 1;
+      const newPrefix = buildSigils("*", depth) + " ";
       view.dispatch({
         changes: { from: line.from, to: line.from + end, insert: newPrefix },
         selection: { anchor: line.from + newPrefix.length },
@@ -294,7 +310,9 @@ export function executeAction(action: ActionId, view: EditorView, info: LineInfo
     case "convertToGather": {
       const sigils = info.type === ElementType.Choice ? [...CHOICE_SIGILS] : [];
       const { end } = parseSigilPrefix(line.text, sigils);
-      const newPrefix = "- ";
+      // Preserve depth when converting from choice
+      const depth = info.depth > 0 ? info.depth : 1;
+      const newPrefix = buildSigils("-", depth) + " ";
       view.dispatch({
         changes: { from: line.from, to: line.from + end, insert: newPrefix },
         selection: { anchor: line.from + newPrefix.length },
