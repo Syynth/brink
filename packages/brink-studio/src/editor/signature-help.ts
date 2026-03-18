@@ -25,7 +25,7 @@ export function signatureHelpExtension(options: SignatureHelpOptions): Extension
   return [
     signatureTooltipField,
     EditorView.updateListener.of((update) => {
-      if (!update.docChanged && !update.selectionSet) return;
+      if (!update.docChanged) return;
 
       const { state } = update.view;
       const pos = state.selection.main.head;

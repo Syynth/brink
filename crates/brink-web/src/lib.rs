@@ -38,11 +38,31 @@ pub fn compile(source: &str) -> String {
             serde_json::to_string(&resp).unwrap_or_default()
         }
         Err(e) => {
+            let mut diagnostics = Vec::new();
+            let mut error_msg = None;
+
+            match e {
+                brink_compiler::CompileError::Diagnostics(diags) => {
+                    diagnostics = diags
+                        .iter()
+                        .map(|d| DiagnosticJs {
+                            message: d.message.clone(),
+                            start: d.range.start().into(),
+                            end: d.range.end().into(),
+                            severity: format!("{:?}", d.code.severity()),
+                        })
+                        .collect();
+                }
+                other => {
+                    error_msg = Some(format!("{other}"));
+                }
+            }
+
             let resp = CompileResult {
                 ok: false,
                 story_bytes: None,
-                warnings: Vec::new(),
-                error: Some(format!("{e}")),
+                warnings: diagnostics,
+                error: error_msg,
             };
             serde_json::to_string(&resp).unwrap_or_default()
         }

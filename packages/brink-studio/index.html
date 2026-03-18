@@ -97,8 +97,8 @@ html, body {
 }
 
 #editor .cm-editor .cm-scroller {
-  font-family: "Inter", "SF Pro Text", system-ui, -apple-system, sans-serif;
-  font-size: 15px;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 14px;
   line-height: 1.6;
 }
 
@@ -108,13 +108,17 @@ html, body {
   color: var(--brink-fg-dim);
 }
 
-#editor .cm-editor .cm-activeLineGutter,
-#editor .cm-editor .cm-activeLine {
+#editor .cm-editor .cm-activeLineGutter {
   background: var(--brink-bg-surface);
 }
 
-#editor .cm-editor .cm-selectionBackground {
-  background: #44475a !important;
+#editor .cm-editor .cm-activeLine {
+  background: rgba(37, 37, 54, 0.6);
+}
+
+#editor .cm-editor .cm-selectionBackground,
+#editor .cm-editor.cm-focused .cm-selectionBackground {
+  background: rgba(137, 180, 250, 0.25) !important;
 }
 
 #editor .cm-editor .cm-cursor {
@@ -122,8 +126,6 @@ html, body {
 }
 
 #editor .cm-editor .cm-content {
-  font-family: "Inter", "SF Pro Text", system-ui, -apple-system, sans-serif;
-  font-size: 15px;
   caret-color: var(--brink-accent);
   color: var(--brink-fg);
 }
@@ -131,15 +133,11 @@ html, body {
 /* Screenplay element line styles */
 .cm-line.brink-knot-header {
   font-weight: 700;
-  font-size: 1.5em;
   border-top: 1px solid var(--brink-border);
-  margin-top: 8px;
-  padding-top: 4px;
 }
 
 .cm-line.brink-stitch-header {
   font-weight: 700;
-  font-size: 1.25em;
 }
 
 .cm-line.brink-choice {
@@ -155,8 +153,6 @@ html, body {
 
 .cm-line.brink-logic,
 .cm-line.brink-var-decl {
-  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
-  font-size: 0.9em;
   opacity: 0.7;
 }
 
@@ -167,21 +163,16 @@ html, body {
 
 .cm-line.brink-include,
 .cm-line.brink-external {
-  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
   opacity: 0.7;
 }
 
 .cm-line.brink-tag {
   color: var(--brink-fg-dim);
-  font-size: 0.85em;
 }
 
 /* Choice bracket styling */
 .brink-choice-bracket {
-  background: rgba(137, 180, 250, 0.1);
-  border: 1px solid rgba(137, 180, 250, 0.3);
-  border-radius: 2px;
-  padding: 0 1px;
+  background: rgba(137, 180, 250, 0.08);
 }
 
 /* Semantic token classes */
