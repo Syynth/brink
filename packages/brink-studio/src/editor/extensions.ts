@@ -14,6 +14,7 @@ import { signatureHelpExtension } from "./signature-help.js";
 import { referencesExtension } from "./references.js";
 import { renameExtension } from "./rename.js";
 import { codeActionsExtension } from "./code-actions.js";
+import { statusBarExtension } from "./statusbar.js";
 
 export interface BrinkStudioOptions {
   compile: (source: string) => CompileResult;
@@ -81,6 +82,7 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       onCompile: options.onCompile,
     }),
     brinkKeymap(),
+    statusBarExtension(),
     ideCompartment.of(ideExtensions),
   ];
 }
