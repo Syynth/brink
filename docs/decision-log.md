@@ -465,3 +465,11 @@
 - **SCOPE:** architectural
 - **WHAT:** brink-studio uses Fountain screenplay syntax (https://fountain.io/syntax/) as a spiritual guide for context-dependent element transitions. Element types can depend on preceding elements (e.g., in Fountain: dialogue follows character, character follows blank line). The transition table supports a `context` field for matching on preceding line types.
 - **WHY:** Ink's structural elements (choices, gathers, narrative in choice bodies) have similar context-dependent behavior to Fountain's character/dialogue/parenthetical chain. Making the transition engine context-aware enables natural screenplay-style editing where pressing Enter produces the right element type based on what came before, not just what the current line is.
+
+## EditorSession with cached parse/HIR as single source of truth
+- **WHEN:** 2026-03-18
+- **PROJECT:** brink-studio
+- **SYSTEM:** brink-web, editor-ui
+- **SCOPE:** architectural
+- **WHAT:** Replace the stateless wasm functions and regex-based `classifyLine` with a stateful `EditorSession` that caches parse/HIR/analysis. A new `line_contexts()` method walks the cached HIR to produce authoritative per-line context (weave position with depth, element type, inline ranges for tags/block comments/brackets/etc.). This becomes the single source of truth for all editor decorations, the transition table, and the status bar. Regex-based line classification is removed.
+- **WHY:** The regex classifier (`classifyLine`) is a fast approximation of what the parser already knows, and it gets weave depth wrong for choice body text and nested structures. Every wasm call currently reparses from scratch (no caching). An `EditorSession` fixes both problems: one parse per doc change, and all queries read authoritative data from the cached HIR. `cursor_scope` stays separate (knot/stitch visibility for completions); the new `WeavePosition` (depth + element enum) handles structural position for the editor. `ChoiceSet.depth` is added to the HIR so weave depth survives lowering.
