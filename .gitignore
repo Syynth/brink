@@ -5,3 +5,5 @@ CLAUDE.md
 CLAUDE.md.bak
 .DS_Store
 crates/brink-web/www/pkg/
+node_modules/
+packages/brink-studio/dist/

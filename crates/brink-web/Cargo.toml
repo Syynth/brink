@@ -18,6 +18,7 @@ brink-syntax = { path = "../internal/brink-syntax" }
 brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-ir = { path = "../internal/brink-ir" }
 brink-format = { path = "../internal/brink-format" }
+rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen = "0.2"

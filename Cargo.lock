@@ -415,6 +415,7 @@ dependencies = [
  "brink-ir",
  "brink-runtime",
  "brink-syntax",
+ "rowan",
  "serde",
  "serde_json",
  "wasm-bindgen",

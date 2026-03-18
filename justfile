@@ -31,6 +31,18 @@ cross-language-benchmark:
     bash benchmarks/setup.sh
     bash benchmarks/run.sh
 
+# Build brink-web wasm package
+wasm:
+    wasm-pack build crates/brink-web --target web --out-dir www/pkg
+
+# Run brink-studio dev server (builds wasm first)
+studio-dev: wasm
+    cd packages/brink-studio && pnpm dev
+
+# Build brink-studio for production (builds wasm first)
+studio-build: wasm
+    cd packages/brink-studio && pnpm build
+
 # Duration per fuzz target in seconds (default: 5 minutes)
 fuzz_duration := "300"
 
