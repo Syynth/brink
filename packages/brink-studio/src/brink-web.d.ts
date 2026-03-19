@@ -11,6 +11,15 @@ declare module "brink-web" {
   export class EditorSession {
     constructor();
     update_source(source: string): void;
+    update_file(path: string, source: string): void;
+    remove_file(path: string): void;
+    set_active_file(path: string): boolean;
+    active_file(): string;
+    list_files(): string;
+    get_file_source(path: string): string;
+    file_symbols(path: string): string;
+    compile_project(entry: string): string;
+    project_outline(): string;
     line_contexts(): string;
     semantic_tokens(): string;
     completions(offset: number): string;

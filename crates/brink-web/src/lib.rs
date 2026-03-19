@@ -226,8 +226,8 @@ struct ChoiceJs {
 #[wasm_bindgen]
 pub struct EditorSession {
     session: IdeSession,
-    /// The path used for the single-file editor context.
-    path: String,
+    /// The active file path for IDE queries.
+    active_path: String,
 }
 
 impl Default for EditorSession {
@@ -243,19 +243,189 @@ impl EditorSession {
     pub fn new() -> EditorSession {
         EditorSession {
             session: IdeSession::new(),
-            path: "main.ink".to_owned(),
+            active_path: "main.ink".to_owned(),
         }
     }
 
-    /// Update the source text. Reparses, lowers, and analyzes.
+    /// Update the active file's source text. Reparses, lowers, and analyzes.
     pub fn update_source(&mut self, source: &str) {
         self.session
-            .update_and_analyze(&self.path, source.to_owned());
+            .update_and_analyze(&self.active_path, source.to_owned());
+    }
+
+    /// Add or update a file by path. Re-analyzes the project.
+    pub fn update_file(&mut self, path: &str, source: &str) {
+        self.session.update_and_analyze(path, source.to_owned());
+    }
+
+    /// Remove a file from the project.
+    pub fn remove_file(&mut self, path: &str) {
+        self.session.remove_file(path);
+    }
+
+    /// Switch the active file for IDE queries. Returns false if the file is not loaded.
+    pub fn set_active_file(&mut self, path: &str) -> bool {
+        if self.session.file_id(path).is_some() {
+            path.clone_into(&mut self.active_path);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the current active file path.
+    pub fn active_file(&self) -> String {
+        self.active_path.clone()
+    }
+
+    /// List all loaded files. Returns JSON `[{path}]`.
+    pub fn list_files(&self) -> String {
+        let db = self.session.db();
+        let files: Vec<ProjectFileJs> = db
+            .file_ids()
+            .filter_map(|id| {
+                db.file_path(id)
+                    .map(|p| ProjectFileJs { path: p.to_owned() })
+            })
+            .collect();
+        serde_json::to_string(&files).unwrap_or_default()
+    }
+
+    /// Get the source text for a file. Returns JSON string or `"null"`.
+    pub fn get_file_source(&self, path: &str) -> String {
+        let source = self
+            .session
+            .file_id(path)
+            .and_then(|id| self.session.source(id));
+        match source {
+            Some(s) => serde_json::to_string(s).unwrap_or_default(),
+            None => "null".to_owned(),
+        }
+    }
+
+    /// Get document symbols for a specific file. Returns JSON `DocumentSymbol[]`.
+    pub fn file_symbols(&self, path: &str) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let (Some(hir), Some(manifest)) =
+            (self.session.hir(file_id), self.session.manifest(file_id))
+        else {
+            return "[]".to_owned();
+        };
+
+        let syms = brink_ide::document::document_symbols(hir, manifest);
+        let items: Vec<DocumentSymbolJs> = syms.into_iter().map(convert_document_symbol).collect();
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    /// Compile the project using all loaded files. Returns JSON `CompileResult`.
+    pub fn compile_project(&self, entry: &str) -> String {
+        let session = &self.session;
+        let result = brink_compiler::compile(entry, |path| {
+            session
+                .file_id(path)
+                .and_then(|id| session.source(id))
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("file not found: {path}"),
+                    )
+                })
+        });
+
+        match result {
+            Ok(output) => {
+                let warnings: Vec<DiagnosticJs> = output
+                    .warnings
+                    .iter()
+                    .map(|d| DiagnosticJs {
+                        message: d.message.clone(),
+                        start: d.range.start().into(),
+                        end: d.range.end().into(),
+                        severity: format!("{:?}", d.code.severity()),
+                    })
+                    .collect();
+
+                let data = output.data;
+                let mut bytes = Vec::new();
+                brink_format::write_inkb(&data, &mut bytes);
+
+                let resp = CompileResult {
+                    ok: true,
+                    story_bytes: Some(bytes),
+                    warnings,
+                    error: None,
+                };
+                serde_json::to_string(&resp).unwrap_or_default()
+            }
+            Err(e) => {
+                let mut diagnostics = Vec::new();
+                let mut error_msg = None;
+
+                match e {
+                    brink_compiler::CompileError::Diagnostics(diags) => {
+                        diagnostics = diags
+                            .iter()
+                            .map(|d| DiagnosticJs {
+                                message: d.message.clone(),
+                                start: d.range.start().into(),
+                                end: d.range.end().into(),
+                                severity: format!("{:?}", d.code.severity()),
+                            })
+                            .collect();
+                    }
+                    other => {
+                        error_msg = Some(format!("{other}"));
+                    }
+                }
+
+                let resp = CompileResult {
+                    ok: false,
+                    story_bytes: None,
+                    warnings: diagnostics,
+                    error: error_msg,
+                };
+                serde_json::to_string(&resp).unwrap_or_default()
+            }
+        }
+    }
+
+    /// Get project outline — all files with their symbols. Returns JSON `[{path, symbols}]`.
+    pub fn project_outline(&self) -> String {
+        let db = self.session.db();
+        let mut outline: Vec<FileOutlineJs> = Vec::new();
+
+        for id in db.file_ids() {
+            let Some(path) = db.file_path(id) else {
+                continue;
+            };
+            let (Some(hir), Some(manifest)) = (db.hir(id), db.manifest(id)) else {
+                outline.push(FileOutlineJs {
+                    path: path.to_owned(),
+                    symbols: Vec::new(),
+                });
+                continue;
+            };
+
+            let syms = brink_ide::document::document_symbols(hir, manifest);
+            let items: Vec<DocumentSymbolJs> =
+                syms.into_iter().map(convert_document_symbol).collect();
+            outline.push(FileOutlineJs {
+                path: path.to_owned(),
+                symbols: items,
+            });
+        }
+
+        // Sort by path for deterministic output
+        outline.sort_by(|a, b| a.path.cmp(&b.path));
+        serde_json::to_string(&outline).unwrap_or_default()
     }
 
     /// Compute per-line context from the HIR. Returns JSON array of `LineContext`.
     pub fn line_contexts(&self) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "[]".to_owned();
         };
         let (Some(hir), Some(source), Some(root)) = (
@@ -272,7 +442,7 @@ impl EditorSession {
 
     /// Compute semantic tokens. Returns JSON array of tokens.
     pub fn semantic_tokens(&self) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "[]".to_owned();
         };
         let (Some(analysis), Some(source), Some(root)) = (
@@ -301,7 +471,7 @@ impl EditorSession {
 
     /// Compute completions at the given byte offset. Returns JSON array.
     pub fn completions(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "[]".to_owned();
         };
         let (Some(analysis), Some(source)) =
@@ -330,7 +500,7 @@ impl EditorSession {
 
     /// Compute hover info at the given byte offset. Returns JSON or "null".
     pub fn hover(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "null".to_owned();
         };
         let (Some(analysis), Some(source)) =
@@ -339,7 +509,7 @@ impl EditorSession {
             return "null".to_owned();
         };
 
-        let project_files = [(file_id, self.path.clone(), source.to_owned())];
+        let project_files = [(file_id, self.active_path.clone(), source.to_owned())];
 
         match brink_ide::hover::hover(
             analysis,
@@ -362,7 +532,7 @@ impl EditorSession {
 
     /// Compute goto-definition at the given byte offset. Returns JSON or "null".
     pub fn goto_definition(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "null".to_owned();
         };
         let Some(analysis) = self.session.analysis() else {
@@ -383,7 +553,7 @@ impl EditorSession {
 
     /// Find all references. Returns JSON array.
     pub fn find_references(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "[]".to_owned();
         };
         let Some(analysis) = self.session.analysis() else {
@@ -406,7 +576,7 @@ impl EditorSession {
 
     /// Check if rename is possible. Returns JSON or "null".
     pub fn prepare_rename(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "null".to_owned();
         };
         let Some(analysis) = self.session.analysis() else {
@@ -427,7 +597,7 @@ impl EditorSession {
 
     /// Compute rename edits. Returns JSON array or "null".
     pub fn rename(&self, offset: u32, new_name: &str) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "null".to_owned();
         };
         let Some(analysis) = self.session.analysis() else {
@@ -453,7 +623,7 @@ impl EditorSession {
 
     /// Compute code actions. Returns JSON array.
     pub fn code_actions(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "[]".to_owned();
         };
         let Some(source) = self.session.source(file_id) else {
@@ -475,7 +645,7 @@ impl EditorSession {
 
     /// Compute inlay hints. Returns JSON array.
     pub fn inlay_hints(&self, start: u32, end: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "[]".to_owned();
         };
         let (Some(analysis), Some(root)) =
@@ -502,7 +672,7 @@ impl EditorSession {
 
     /// Compute signature help. Returns JSON or "null".
     pub fn signature_help(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "null".to_owned();
         };
         let (Some(analysis), Some(source)) =
@@ -533,7 +703,7 @@ impl EditorSession {
 
     /// Compute folding ranges. Returns JSON array.
     pub fn folding_ranges(&self) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "[]".to_owned();
         };
         let (Some(hir), Some(source)) = (self.session.hir(file_id), self.session.source(file_id))
@@ -557,7 +727,7 @@ impl EditorSession {
 
     /// Compute document symbols (outline). Returns JSON array.
     pub fn document_symbols(&self) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "[]".to_owned();
         };
         let (Some(hir), Some(manifest)) =
@@ -576,7 +746,7 @@ impl EditorSession {
     ///
     /// Target values: `"narrative"`, `"choice"`, `"sticky_choice"`, `"gather"`, `"choice_body"`.
     pub fn convert_element(&self, offset: u32, target: &str) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "null".to_owned();
         };
         let (Some(hir), Some(source), Some(root)) = (
@@ -604,7 +774,7 @@ impl EditorSession {
 
     /// Format the document (sort knots). Returns the formatted source as a JSON string.
     pub fn format_document(&self) -> String {
-        let Some(file_id) = self.session.file_id(&self.path) else {
+        let Some(file_id) = self.session.file_id(&self.active_path) else {
             return "\"\"".to_owned();
         };
         let Some(source) = self.session.source(file_id) else {
@@ -617,6 +787,17 @@ impl EditorSession {
 }
 
 // ── Serialization types ─────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct ProjectFileJs {
+    path: String,
+}
+
+#[derive(Serialize)]
+struct FileOutlineJs {
+    path: String,
+    symbols: Vec<DocumentSymbolJs>,
+}
 
 #[derive(Serialize)]
 struct CompletionItemJs {

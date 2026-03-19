@@ -33,7 +33,12 @@ export type {
   WeavePosition,
   WeaveElement,
   LineElement,
+  ProjectFile,
+  FileOutline,
 } from "./wasm.js";
+
+export { createBinder } from "./binder/index.js";
+export type { BinderOptions, BinderHandle } from "./binder/index.js";
 
 export { elementTypeField, ElementType, setEditorSession } from "./editor/element-type.js";
 export type { LineInfo } from "./editor/element-type.js";

@@ -45,6 +45,12 @@ impl IdeSession {
         self.db.update_file(path, source)
     }
 
+    /// Remove a file from the project. Clears cached analysis.
+    pub fn remove_file(&mut self, path: &str) {
+        self.db.remove_file(path);
+        self.analysis = None;
+    }
+
     /// Create a snapshot of current analysis inputs.
     pub fn snapshot(&self) -> IdeSnapshot {
         IdeSnapshot {

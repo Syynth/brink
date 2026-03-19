@@ -100,6 +100,17 @@ export interface CodeAction {
   kind: string;
 }
 
+// ── Multi-file project types ────────────────────────────────────────
+
+export interface ProjectFile {
+  path: string;
+}
+
+export interface FileOutline {
+  path: string;
+  symbols: DocumentSymbol[];
+}
+
 // ── Line conversion types ───────────────────────────────────────────
 
 export type ConvertTarget = "narrative" | "choice" | "sticky_choice" | "gather" | "choice_body";
@@ -190,6 +201,48 @@ export class EditorSessionHandle {
 
   updateSource(source: string): void {
     this.session.update_source(source);
+  }
+
+  updateFile(path: string, source: string): void {
+    this.session.update_file(path, source);
+  }
+
+  removeFile(path: string): void {
+    this.session.remove_file(path);
+  }
+
+  setActiveFile(path: string): boolean {
+    return this.session.set_active_file(path);
+  }
+
+  getActiveFile(): string {
+    return this.session.active_file();
+  }
+
+  listFiles(): ProjectFile[] {
+    const json = this.session.list_files();
+    return JSON.parse(json) as ProjectFile[];
+  }
+
+  getFileSource(path: string): string | null {
+    const json = this.session.get_file_source(path);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
+  getFileSymbols(path: string): DocumentSymbol[] {
+    const json = this.session.file_symbols(path);
+    return JSON.parse(json) as DocumentSymbol[];
+  }
+
+  compileProject(entry: string): CompileResult {
+    const json = this.session.compile_project(entry);
+    return JSON.parse(json) as CompileResult;
+  }
+
+  getProjectOutline(): FileOutline[] {
+    const json = this.session.project_outline();
+    return JSON.parse(json) as FileOutline[];
   }
 
   getLineContexts(): LineContext[] {

@@ -1,12 +1,12 @@
 import {
   initWasm,
-  compile,
   getTokenTypeNames,
   EditorSessionHandle,
   StoryRunnerHandle,
 } from "./wasm.js";
 import { createBrinkEditor } from "./editor/index.js";
 import { createBrinkPlayer } from "./player/index.js";
+import { createBinder } from "./binder/index.js";
 
 const DEFAULT_INK = `// Welcome to brink studio!
 // Edit this ink story and watch it run.
@@ -56,7 +56,10 @@ async function main(): Promise<void> {
 
   const editor = createBrinkEditor(editorContainer, {
     initialContent: DEFAULT_INK,
-    compile,
+    compile: (source: string) => {
+      session.updateFile("main.ink", source);
+      return session.compileProject("main.ink");
+    },
     getSemanticTokens: (source: string) => {
       session.updateSource(source);
       return session.getSemanticTokens();
@@ -77,8 +80,28 @@ async function main(): Promise<void> {
       if (result.ok && result.story_bytes) {
         player.loadStory(new Uint8Array(result.story_bytes));
       }
+      binder?.refresh();
     },
   });
+
+  // Mount binder panel if container exists
+  const binderContainer = document.getElementById("binder");
+  let binder: ReturnType<typeof createBinder> | undefined;
+  if (binderContainer) {
+    binder = createBinder({
+      session,
+      onNavigate: (_path, offset) => {
+        // For single-file demo, scroll editor to the symbol offset
+        if (offset != null) {
+          editor.view.dispatch({
+            selection: { anchor: offset },
+            scrollIntoView: true,
+          });
+        }
+      },
+    });
+    binderContainer.appendChild(binder.element);
+  }
 
   document.getElementById("btn-run")?.addEventListener("click", () => {
     editor.triggerCompile();
