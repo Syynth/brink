@@ -4,7 +4,10 @@ import type { Location } from "../wasm.js";
 
 export interface GotoDefinitionOptions {
   gotoDefinition: (source: string, offset: number) => Location | null;
+  /** Called when the definition is in a different file. */
   onNavigateToFile?: (location: Location) => void;
+  /** Returns the current active file path. */
+  getActiveFile?: () => string;
 }
 
 export function gotoDefinitionExtension(options: GotoDefinitionOptions): Extension {
@@ -26,13 +29,19 @@ export function gotoDefinitionExtension(options: GotoDefinitionOptions): Extensi
 
       if (!location) return false;
 
-      // Navigate within the file
+      const activeFile = options.getActiveFile?.();
+      if (activeFile && location.file !== activeFile && options.onNavigateToFile) {
+        options.onNavigateToFile(location);
+        event.preventDefault();
+        return true;
+      }
+
+      // Same-file navigation
       view.dispatch({
         selection: { anchor: location.start },
         effects: EditorView.scrollIntoView(location.start, { y: "center" }),
       });
 
-      // Briefly highlight the target range
       event.preventDefault();
       return true;
     },

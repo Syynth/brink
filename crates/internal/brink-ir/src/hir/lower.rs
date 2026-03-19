@@ -682,8 +682,15 @@ impl LowerCtx {
             self.emit(inc.syntax().text_range(), DiagnosticCode::E011);
             None
         })?;
+        let raw = file_path.text();
+        // Strip surrounding quotes if present — ink's syntax is `INCLUDE path`,
+        // but users sometimes write `INCLUDE "path"`.
+        let cleaned = raw
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(&raw);
         Some(IncludeSite {
-            file_path: file_path.text(),
+            file_path: cleaned.to_owned(),
             ptr: AstPtr::new(inc),
         })
     }

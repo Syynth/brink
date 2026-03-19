@@ -23,6 +23,9 @@ export interface FileProvider {
    *  Content is null when the file was deleted. */
   onExternalChange?(callback: (path: string, content: string | null) => void): void;
 
+  /** Create a new file at the given path. */
+  createFile(path: string, content: string): Promise<void>;
+
   /** Request save of the current project state. */
   requestSave?(): Promise<void>;
 }
@@ -54,6 +57,10 @@ export class InMemoryFileProvider implements FileProvider {
 
   async requestFile(_path: string): Promise<string | null> {
     return this.files.get(_path) ?? null;
+  }
+
+  async createFile(path: string, content: string): Promise<void> {
+    this.files.set(path, content);
   }
 
   onFileChanged(path: string, content: string): void {

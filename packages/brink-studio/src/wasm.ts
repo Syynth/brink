@@ -56,6 +56,7 @@ export interface HoverInfo {
 }
 
 export interface Location {
+  file: string;
   start: number;
   end: number;
 }

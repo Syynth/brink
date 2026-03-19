@@ -204,6 +204,104 @@ html, body {
 .cm-diagnostic-error { border-left-color: var(--brink-red); }
 .cm-diagnostic-warning { border-left-color: var(--brink-yellow); }
 
+/* File tab bar */
+.brink-file-tabs {
+  display: flex;
+  align-items: stretch;
+  background: var(--brink-bg-surface);
+  border-bottom: 1px solid var(--brink-border);
+  overflow-x: auto;
+  min-height: 33px;
+  scrollbar-width: none;
+}
+
+.brink-file-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.brink-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--brink-fg-dim);
+  cursor: pointer;
+  border-right: 1px solid var(--brink-border);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.brink-tab:hover {
+  background: var(--brink-bg-panel);
+}
+
+.brink-tab.active {
+  color: var(--brink-fg);
+  background: var(--brink-bg);
+}
+
+.brink-tab-close {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 3px;
+  color: var(--brink-fg-dim);
+}
+
+.brink-tab:hover .brink-tab-close {
+  display: flex;
+}
+
+.brink-tab-close:hover {
+  background: rgba(243, 139, 168, 0.2);
+  color: var(--brink-red);
+}
+
+.brink-tab-new {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 16px;
+  color: var(--brink-fg-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.brink-tab-new:hover {
+  color: var(--brink-fg);
+  background: var(--brink-bg-panel);
+}
+
+.brink-tab-input-wrapper {
+  display: flex;
+  align-items: center;
+  padding: 4px 6px;
+}
+
+.brink-tab-input {
+  background: var(--brink-bg);
+  color: var(--brink-fg);
+  border: 1px solid var(--brink-border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+.brink-tab-input:focus {
+  border-color: var(--brink-accent);
+}
+
+.brink-tab-input.error {
+  border-color: var(--brink-red);
+}
+
 /* Status bar */
 .brink-statusbar {
   display: flex;
@@ -485,7 +583,6 @@ html, body {
     <div class="placeholder">Coming soon</div>
   </div>
   <div id="editor-pane">
-    <div class="header">Editor</div>
     <div id="editor"><div id="loading">Loading wasm...</div></div>
   </div>
   <div id="player-pane">

@@ -1,9 +1,12 @@
+import { EditorView } from "@codemirror/view";
 import { initWasm, StoryRunnerHandle } from "./wasm.js";
 import { createBrinkEditor } from "./editor/index.js";
 import { createBrinkPlayer } from "./player/index.js";
 import { createBinder } from "./binder/index.js";
 import { InMemoryFileProvider } from "./provider.js";
 import { ProjectSession } from "./project-session.js";
+import { EditorStateManager } from "./editor/state-manager.js";
+import { createFileTabBar } from "./editor/file-tabs.js";
 
 const DEFAULT_INK = `// Welcome to brink studio!
 // Edit this ink story and watch it run.
@@ -38,9 +41,10 @@ async function main(): Promise<void> {
 
   const playerContainer = document.getElementById("player");
   const editorContainer = document.getElementById("editor");
+  const editorPane = document.getElementById("editor-pane");
 
-  if (!playerContainer || !editorContainer) {
-    throw new Error("Missing #player or #editor containers");
+  if (!playerContainer || !editorContainer || !editorPane) {
+    throw new Error("Missing #player, #editor, or #editor-pane containers");
   }
 
   const player = createBrinkPlayer(
@@ -48,6 +52,7 @@ async function main(): Promise<void> {
     (bytes) => new StoryRunnerHandle(bytes),
   );
 
+  // Set up project session
   const provider = new InMemoryFileProvider({ "main.ink": DEFAULT_INK });
   const project = new ProjectSession({ provider, entryFile: "main.ink" });
   await project.initialize();
@@ -56,15 +61,50 @@ async function main(): Promise<void> {
   const binderContainer = document.getElementById("binder");
   let binder: ReturnType<typeof createBinder> | undefined;
 
-  const editor = createBrinkEditor(editorContainer, {
-    ...project.createEditorOptions(),
-    onCompile(result) {
+  // Build studio options with callbacks
+  const studioOptions = {
+    ...project.createStudioOptions(),
+    onCompile(result: import("./wasm.js").CompileResult) {
       if (result.ok && result.story_bytes) {
         player.loadStory(new Uint8Array(result.story_bytes));
       }
       binder?.refresh();
+      tabs.refresh();
+    },
+    onNavigateToFile(location: import("./wasm.js").Location) {
+      void manager.switchTo(location.file).then(() => {
+        tabs.refresh();
+        binder?.refresh();
+        // Scroll to the definition after the state swap
+        const view = manager.getView();
+        view.dispatch({
+          selection: { anchor: location.start },
+          effects: EditorView.scrollIntoView(location.start, { y: "center" }),
+        });
+      });
+    },
+  };
+
+  // Create state manager and editor
+  const manager = new EditorStateManager(project, studioOptions);
+  const initialState = manager.getState(project.getActiveFile());
+
+  const editor = createBrinkEditor(editorContainer, {
+    ...studioOptions,
+    initialContent: "",
+    initialState,
+  });
+
+  manager.setView(editor.view);
+
+  // Mount file tab bar above the editor
+  const tabs = createFileTabBar({
+    manager,
+    onSwitch() {
+      binder?.refresh();
     },
   });
+  editorPane.insertBefore(tabs.element, editorContainer);
 
   if (binderContainer) {
     binder = createBinder({

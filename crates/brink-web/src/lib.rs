@@ -541,7 +541,9 @@ impl EditorSession {
 
         match brink_ide::navigation::goto_definition(analysis, file_id, TextSize::new(offset)) {
             Some(loc) => {
+                let db = self.session.db();
                 let js = LocationJs {
+                    file: db.file_path(loc.file).unwrap_or_default().to_owned(),
                     start: loc.range.start().into(),
                     end: loc.range.end().into(),
                 };
@@ -563,9 +565,11 @@ impl EditorSession {
         let refs =
             brink_ide::navigation::find_references(analysis, file_id, TextSize::new(offset), true);
 
+        let db = self.session.db();
         let items: Vec<LocationJs> = refs
             .iter()
             .map(|loc| LocationJs {
+                file: db.file_path(loc.file).unwrap_or_default().to_owned(),
                 start: loc.range.start().into(),
                 end: loc.range.end().into(),
             })
@@ -586,6 +590,7 @@ impl EditorSession {
         match brink_ide::rename::prepare_rename(analysis, file_id, TextSize::new(offset)) {
             Some(range) => {
                 let js = LocationJs {
+                    file: self.active_path.clone(),
                     start: range.start().into(),
                     end: range.end().into(),
                 };
@@ -851,6 +856,7 @@ struct HoverInfoJs {
 
 #[derive(Serialize)]
 struct LocationJs {
+    file: String,
     start: u32,
     end: u32,
 }

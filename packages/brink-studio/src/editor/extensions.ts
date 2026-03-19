@@ -31,6 +31,10 @@ export interface BrinkStudioOptions {
   getCompletions?: (source: string, offset: number) => CompletionItem[];
   getHover?: (source: string, offset: number) => HoverInfo | null;
   gotoDefinition?: (source: string, offset: number) => Location | null;
+  /** Called when goto-definition targets a different file. */
+  onNavigateToFile?: (location: Location) => void;
+  /** Returns the current active file path (for cross-file navigation detection). */
+  getActiveFile?: () => string;
   findReferences?: (source: string, offset: number) => Location[];
   prepareRename?: (source: string, offset: number) => Location | null;
   doRename?: (source: string, offset: number, newName: string) => FileEdit[];
@@ -59,7 +63,11 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     ideExtensions.push(hoverExtension({ getHover: options.getHover }));
   }
   if (options.gotoDefinition) {
-    ideExtensions.push(gotoDefinitionExtension({ gotoDefinition: options.gotoDefinition }));
+    ideExtensions.push(gotoDefinitionExtension({
+      gotoDefinition: options.gotoDefinition,
+      onNavigateToFile: options.onNavigateToFile,
+      getActiveFile: options.getActiveFile,
+    }));
   }
   if (options.getFoldingRanges) {
     ideExtensions.push(foldingExtension({ getFoldingRanges: options.getFoldingRanges }));

@@ -10,6 +10,8 @@ export type { BrinkStudioOptions };
 
 export interface BrinkEditorOptions extends BrinkStudioOptions {
   initialContent: string;
+  /** If provided, used instead of creating a new state from initialContent. */
+  initialState?: EditorState;
 }
 
 export interface BrinkEditorHandle {
@@ -56,7 +58,7 @@ export function createBrinkEditor(
     options.onCompile?.(result);
   }
 
-  const state = EditorState.create({
+  const state = options.initialState ?? EditorState.create({
     doc: options.initialContent,
     extensions: [
       brinkStudio(options),

@@ -8,6 +8,7 @@
 import type { FileProvider } from "./provider.js";
 import { EditorSessionHandle, getTokenTypeNames } from "./wasm.js";
 import type { BrinkEditorOptions } from "./editor/index.js";
+import type { BrinkStudioOptions } from "./editor/extensions.js";
 
 export interface ProjectSessionOptions {
   provider: FileProvider;
@@ -62,6 +63,11 @@ export class ProjectSession {
     return this.session;
   }
 
+  /** The entry file for compilation. */
+  getEntryFile(): string {
+    return this.entryFile;
+  }
+
   /** Current active file. */
   getActiveFile(): string {
     return this.activeFile;
@@ -84,14 +90,24 @@ export class ProjectSession {
     return this.session.getFileSource(path) ?? "";
   }
 
-  /** Generate BrinkEditorOptions for createBrinkEditor. */
-  createEditorOptions(): BrinkEditorOptions {
+  /** Create a new file and add it to the session. */
+  async addFile(path: string, content: string = ""): Promise<void> {
+    await this.provider.createFile(path, content);
+    this.session.updateFile(path, content);
+  }
+
+  /** Remove a file from the wasm session (does not delete from provider). */
+  closeFile(path: string): void {
+    this.session.removeFile(path);
+  }
+
+  /** Generate BrinkStudioOptions (without initialContent) for state creation. */
+  createStudioOptions(): BrinkStudioOptions {
     const session = this.session;
     const provider = this.provider;
     const self = this;
 
     return {
-      initialContent: session.getFileSource(this.activeFile) ?? "",
       compile: (source: string) => {
         session.updateFile(self.activeFile, source);
         provider.onFileChanged?.(self.activeFile, source);
@@ -108,6 +124,7 @@ export class ProjectSession {
       getCompletions: (_source: string, offset: number) => session.getCompletions(offset),
       getHover: (_source: string, offset: number) => session.getHover(offset),
       gotoDefinition: (_source: string, offset: number) => session.gotoDefinition(offset),
+      getActiveFile: () => self.activeFile,
       findReferences: (_source: string, offset: number) => session.findReferences(offset),
       prepareRename: (_source: string, offset: number) => session.prepareRename(offset),
       doRename: (_source: string, offset: number, newName: string) => session.doRename(offset, newName),
@@ -115,6 +132,14 @@ export class ProjectSession {
       getInlayHints: (_source: string, start: number, end: number) => session.getInlayHints(start, end),
       getSignatureHelp: (_source: string, offset: number) => session.getSignatureHelp(offset),
       getFoldingRanges: () => session.getFoldingRanges(),
+    };
+  }
+
+  /** Generate BrinkEditorOptions for createBrinkEditor. */
+  createEditorOptions(): BrinkEditorOptions {
+    return {
+      ...this.createStudioOptions(),
+      initialContent: this.session.getFileSource(this.activeFile) ?? "",
     };
   }
 
