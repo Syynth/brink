@@ -1,12 +1,9 @@
-import {
-  initWasm,
-  getTokenTypeNames,
-  EditorSessionHandle,
-  StoryRunnerHandle,
-} from "./wasm.js";
+import { initWasm, StoryRunnerHandle } from "./wasm.js";
 import { createBrinkEditor } from "./editor/index.js";
 import { createBrinkPlayer } from "./player/index.js";
 import { createBinder } from "./binder/index.js";
+import { InMemoryFileProvider } from "./provider.js";
+import { ProjectSession } from "./project-session.js";
 
 const DEFAULT_INK = `// Welcome to brink studio!
 // Edit this ink story and watch it run.
@@ -51,31 +48,16 @@ async function main(): Promise<void> {
     (bytes) => new StoryRunnerHandle(bytes),
   );
 
-  // Create stateful editor session for HIR-backed IDE features
-  const session = new EditorSessionHandle();
+  const provider = new InMemoryFileProvider({ "main.ink": DEFAULT_INK });
+  const project = new ProjectSession({ provider, entryFile: "main.ink" });
+  await project.initialize();
+
+  // Mount binder panel if container exists
+  const binderContainer = document.getElementById("binder");
+  let binder: ReturnType<typeof createBinder> | undefined;
 
   const editor = createBrinkEditor(editorContainer, {
-    initialContent: DEFAULT_INK,
-    compile: (source: string) => {
-      session.updateFile("main.ink", source);
-      return session.compileProject("main.ink");
-    },
-    getSemanticTokens: (source: string) => {
-      session.updateSource(source);
-      return session.getSemanticTokens();
-    },
-    getTokenTypeNames,
-    session,
-    getCompletions: (_source: string, offset: number) => session.getCompletions(offset),
-    getHover: (_source: string, offset: number) => session.getHover(offset),
-    gotoDefinition: (_source: string, offset: number) => session.gotoDefinition(offset),
-    findReferences: (_source: string, offset: number) => session.findReferences(offset),
-    prepareRename: (_source: string, offset: number) => session.prepareRename(offset),
-    doRename: (_source: string, offset: number, newName: string) => session.doRename(offset, newName),
-    getCodeActions: (_source: string, offset: number) => session.getCodeActions(offset),
-    getInlayHints: (_source: string, start: number, end: number) => session.getInlayHints(start, end),
-    getSignatureHelp: (_source: string, offset: number) => session.getSignatureHelp(offset),
-    getFoldingRanges: () => session.getFoldingRanges(),
+    ...project.createEditorOptions(),
     onCompile(result) {
       if (result.ok && result.story_bytes) {
         player.loadStory(new Uint8Array(result.story_bytes));
@@ -84,14 +66,10 @@ async function main(): Promise<void> {
     },
   });
 
-  // Mount binder panel if container exists
-  const binderContainer = document.getElementById("binder");
-  let binder: ReturnType<typeof createBinder> | undefined;
   if (binderContainer) {
     binder = createBinder({
-      session,
+      session: project.getSession(),
       onNavigate: (_path, offset) => {
-        // For single-file demo, scroll editor to the symbol offset
         if (offset != null) {
           editor.view.dispatch({
             selection: { anchor: offset },

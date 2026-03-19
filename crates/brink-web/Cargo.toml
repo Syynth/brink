@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 brink-compiler = { path = "../brink-compiler" }
+brink-db = { path = "../internal/brink-db" }
 brink-ide = { path = "../internal/brink-ide" }
 brink-runtime = { path = "../brink-runtime" }
 brink-syntax = { path = "../internal/brink-syntax" }

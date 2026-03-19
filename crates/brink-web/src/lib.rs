@@ -772,6 +772,33 @@ impl EditorSession {
         }
     }
 
+    /// Get resolved INCLUDE paths for a file. Returns JSON `[{path, resolved, loaded}]`.
+    pub fn file_includes(&self, path: &str) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let Some(hir) = self.session.hir(file_id) else {
+            return "[]".to_owned();
+        };
+
+        let db = self.session.db();
+        let items: Vec<IncludeInfoJs> = hir
+            .includes
+            .iter()
+            .map(|inc| {
+                let resolved = brink_db::resolve_include_path(path, &inc.file_path);
+                let loaded = db.file_id(&resolved).is_some();
+                IncludeInfoJs {
+                    path: inc.file_path.clone(),
+                    resolved,
+                    loaded,
+                }
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
     /// Format the document (sort knots). Returns the formatted source as a JSON string.
     pub fn format_document(&self) -> String {
         let Some(file_id) = self.session.file_id(&self.active_path) else {
@@ -791,6 +818,13 @@ impl EditorSession {
 #[derive(Serialize)]
 struct ProjectFileJs {
     path: String,
+}
+
+#[derive(Serialize)]
+struct IncludeInfoJs {
+    path: String,
+    resolved: String,
+    loaded: bool,
 }
 
 #[derive(Serialize)]

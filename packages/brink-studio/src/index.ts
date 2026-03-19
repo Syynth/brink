@@ -35,7 +35,14 @@ export type {
   LineElement,
   ProjectFile,
   FileOutline,
+  IncludeInfo,
 } from "./wasm.js";
+
+export { InMemoryFileProvider } from "./provider.js";
+export type { FileProvider } from "./provider.js";
+
+export { ProjectSession } from "./project-session.js";
+export type { ProjectSessionOptions } from "./project-session.js";
 
 export { createBinder } from "./binder/index.js";
 export type { BinderOptions, BinderHandle } from "./binder/index.js";

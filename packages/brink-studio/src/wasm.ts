@@ -121,6 +121,14 @@ export interface TextEdit {
   insert: string;
 }
 
+// ── Include info types ──────────────────────────────────────────────
+
+export interface IncludeInfo {
+  path: string;
+  resolved: string;
+  loaded: boolean;
+}
+
 // ── Line context types (from brink-ide) ────────────────────────────
 
 export type LineElement =
@@ -312,6 +320,11 @@ export class EditorSessionHandle {
   getDocumentSymbols(): DocumentSymbol[] {
     const json = this.session.document_symbols();
     return JSON.parse(json) as DocumentSymbol[];
+  }
+
+  getFileIncludes(path: string): IncludeInfo[] {
+    const json = this.session.file_includes(path);
+    return JSON.parse(json) as IncludeInfo[];
   }
 
   formatDocument(): string {

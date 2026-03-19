@@ -412,6 +412,7 @@ version = "0.0.1"
 dependencies = [
  "brink-analyzer",
  "brink-compiler",
+ "brink-db",
  "brink-format",
  "brink-ide",
  "brink-ir",

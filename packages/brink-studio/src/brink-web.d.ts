@@ -33,6 +33,7 @@ declare module "brink-web" {
     signature_help(offset: number): string;
     folding_ranges(): string;
     document_symbols(): string;
+    file_includes(path: string): string;
     format_document(): string;
     convert_element(offset: number, target: string): string;
     free(): void;
