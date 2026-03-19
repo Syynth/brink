@@ -59,9 +59,9 @@ export function createBrinkEditor(
   const state = EditorState.create({
     doc: options.initialContent,
     extensions: [
+      brinkStudio(options),
       basicSetup,
       keymap.of(defaultKeymap),
-      brinkStudio(options),
     ],
   });
 

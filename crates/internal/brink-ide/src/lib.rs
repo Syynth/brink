@@ -6,6 +6,7 @@ mod formatting;
 pub mod hover;
 pub mod inlay_hints;
 pub mod line_context;
+pub mod line_convert;
 mod line_index;
 pub mod navigation;
 pub mod rename;

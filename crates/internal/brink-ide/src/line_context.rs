@@ -157,6 +157,11 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
         }
     }
 
+    // ── Pass 4: detect gather lines from source text ──
+    // The HIR only marks gathers via labeled blocks, but a bare `- text`
+    // (no parenthesized label) still needs to show as Gather in the editor.
+    detect_gathers(source, &mut ctx);
+
     ctx
 }
 
@@ -311,12 +316,15 @@ fn walk_choice_set(
             },
         );
 
-        if cs.continuation.label.is_some()
-            && let Some(first_stmt) = cs.continuation.stmts.first()
-            && let Some(line) = stmt_start_line(first_stmt, idx)
-            && line < ctx.len()
-        {
-            ctx[line].element = LineElement::Gather;
+        if let Some(label) = &cs.continuation.label {
+            let line = idx.line_col(label.range.start()).0 as usize;
+            if line < ctx.len() {
+                ctx[line].element = LineElement::Gather;
+                ctx[line].weave = WeavePosition {
+                    depth,
+                    element: WeaveElement::GatherContinuation,
+                };
+            }
         }
     }
 }
@@ -327,12 +335,12 @@ fn walk_labeled_block(
     ctx: &mut [LineContext],
     weave: WeavePosition,
 ) {
-    if block.label.is_some()
-        && let Some(first_stmt) = block.stmts.first()
-        && let Some(line) = stmt_start_line(first_stmt, idx)
-        && line < ctx.len()
-    {
-        ctx[line].element = LineElement::Gather;
+    if let Some(label) = &block.label {
+        let line = idx.line_col(label.range.start()).0 as usize;
+        if line < ctx.len() {
+            ctx[line].element = LineElement::Gather;
+            ctx[line].weave = weave;
+        }
     }
     walk_block(block, idx, ctx, weave);
 }
@@ -420,25 +428,43 @@ fn set_content_lines(
     }
 }
 
-fn stmt_start_line(stmt: &Stmt, idx: &LineIndex) -> Option<usize> {
-    use brink_syntax::ast::{AstPtr, SyntaxNodePtr};
-
-    let range = match stmt {
-        Stmt::Content(c) => c.ptr.as_ref().map(SyntaxNodePtr::text_range),
-        Stmt::Divert(d) => d.ptr.as_ref().map(SyntaxNodePtr::text_range),
-        Stmt::TunnelCall(tc) => Some(tc.ptr.text_range()),
-        Stmt::ThreadStart(ts) => Some(ts.ptr.text_range()),
-        Stmt::TempDecl(td) => Some(td.ptr.text_range()),
-        Stmt::Assignment(a) => Some(a.ptr.text_range()),
-        Stmt::Return(r) => r.ptr.as_ref().map(AstPtr::text_range),
-        Stmt::ChoiceSet(cs) => cs.choices.first().map(|c| c.ptr.text_range()),
-        Stmt::LabeledBlock(_)
-        | Stmt::Conditional(_)
-        | Stmt::Sequence(_)
-        | Stmt::ExprStmt(_)
-        | Stmt::EndOfLine => None,
-    };
-    range.map(|r| idx.line_col(r.start()).0 as usize)
+/// Detect gather lines from source text.
+///
+/// Lines starting with `-` (but not `->`) that the HIR didn't already classify
+/// as `Gather` get promoted here. This handles bare gathers without labels,
+/// where the HIR has no source range to locate the gather line.
+fn detect_gathers(source: &str, ctx: &mut [LineContext]) {
+    for (i, line) in source.lines().enumerate() {
+        if i >= ctx.len() {
+            break;
+        }
+        // Only promote lines the HIR left as Blank or Narrative
+        if !matches!(ctx[i].element, LineElement::Blank | LineElement::Narrative) {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('-') && !trimmed.starts_with("->") {
+            ctx[i].element = LineElement::Gather;
+            // Preserve existing weave info if the HIR set it (GatherContinuation),
+            // otherwise count the sigils for depth
+            if ctx[i].weave.element == WeaveElement::TopLevel {
+                let mut depth = 0u32;
+                let mut pos = 0;
+                let bytes = trimmed.as_bytes();
+                while pos < bytes.len() && bytes[pos] == b'-' {
+                    depth += 1;
+                    pos += 1;
+                    while pos < bytes.len() && bytes[pos] == b' ' {
+                        pos += 1;
+                    }
+                }
+                ctx[i].weave = WeavePosition {
+                    depth,
+                    element: WeaveElement::GatherContinuation,
+                };
+            }
+        }
+    }
 }
 
 /// Detect single-line comments and tag lines from source text.
@@ -542,6 +568,50 @@ mod tests {
         let ctx = make_contexts(source);
         assert_eq!(ctx[0].element, LineElement::Blank);
         assert_eq!(ctx[1].element, LineElement::Blank);
+    }
+
+    #[test]
+    fn choice_body_text_classified() {
+        let source = "=== start ===\n* Choice one\n  Body text here\n";
+        let ctx = make_contexts(source);
+        assert_eq!(ctx[2].element, LineElement::Narrative);
+        assert_eq!(ctx[2].weave.element, WeaveElement::ChoiceBody);
+        assert_eq!(ctx[2].weave.depth, 1);
+    }
+
+    #[test]
+    fn gather_after_choice_with_label() {
+        let source = "=== start ===\n* [Go back]\n- (gather) g\n";
+        let ctx = make_contexts(source);
+        assert_eq!(ctx[2].element, LineElement::Gather);
+        assert_eq!(ctx[2].weave.depth, 1);
+        assert_eq!(ctx[2].weave.element, WeaveElement::GatherContinuation);
+    }
+
+    #[test]
+    fn gather_after_choice_bare() {
+        let source = "=== start ===\n* Choice\n- bare gather\n";
+        let ctx = make_contexts(source);
+        assert_eq!(ctx[2].element, LineElement::Gather);
+        assert_eq!(ctx[2].weave.depth, 1);
+    }
+
+    #[test]
+    fn gather_empty_sigil() {
+        let source = "=== start ===\n* Choice\n- \n";
+        let ctx = make_contexts(source);
+        assert_eq!(ctx[2].element, LineElement::Gather);
+    }
+
+    #[test]
+    fn choice_body_empty_indent_is_blank() {
+        // Just two spaces — no text content. The HIR correctly reports Blank
+        // with TopLevel weave. The *editor* post-pass in TS promotes this to
+        // ChoiceBody based on the preceding Choice line.
+        let source = "=== start ===\n* Choice one\n  \n";
+        let ctx = make_contexts(source);
+        assert_eq!(ctx[2].element, LineElement::Blank);
+        assert_eq!(ctx[2].weave.element, WeaveElement::TopLevel);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import { EditorView } from "@codemirror/view";
 import { ElementType, type LineInfo } from "./element-type.js";
+import type { EditorSessionHandle, ConvertTarget } from "../wasm.js";
 
 // ── Line utilities ─────────────────────────────────────────────────
 
@@ -34,6 +35,9 @@ export function lineHasContent(text: string, info: LineInfo): boolean {
   if (info.type === ElementType.Gather) {
     const { end } = parseSigilPrefix(text, ["-"]);
     return text.slice(end).trim() !== "";
+  }
+  if (info.type === ElementType.ChoiceBody) {
+    return text.trim() !== "";
   }
   return text.trim() !== "";
 }
@@ -114,27 +118,30 @@ export interface Transition {
 export const TRANSITIONS: Transition[] = [
   // ── Choice ───────────────────────────────────────────────────────
   // Enter
-  { element: ElementType.Choice, key: "Enter",       hasContent: true,  action: "newSibling",      hint: "new choice" },
-  { element: ElementType.Choice, key: "Enter",       hasContent: false, action: "convertToBody",   hint: "body text" },
+  { element: ElementType.Choice, key: "Enter",       hasContent: true,  action: "newSibling",               hint: "new choice" },
+  { element: ElementType.Choice, key: "Enter",       hasContent: false, action: "convertToBody",            hint: "body text" },
   // Shift+Enter
-  { element: ElementType.Choice, key: "Shift-Enter",                    action: "newBodyLine",     hint: "body text" },
-  // Tab: choice → body text (strip sigils, indent to depth)
+  { element: ElementType.Choice, key: "Shift-Enter",                    action: "newBodyLine",              hint: "body text" },
+  // Tab: choice → choice body
   { element: ElementType.Choice, key: "Tab",                            action: "convertToIndentedNarrative", hint: "body text" },
-  // Shift+Tab: strip sigils → narrative
-  { element: ElementType.Choice, key: "Shift-Tab",                      action: "convertToNarrative", hint: "narrative" },
+  // Shift+Tab: choice → gather
+  { element: ElementType.Choice, key: "Shift-Tab",                      action: "convertToGather",          hint: "gather" },
+
+  // ── Choice Body ─────────────────────────────────────────────────
+  // Tab: choice body → gather
+  { element: ElementType.ChoiceBody, key: "Tab",                        action: "convertToGather",          hint: "gather" },
+  // Shift+Tab: choice body → choice
+  { element: ElementType.ChoiceBody, key: "Shift-Tab",                  action: "convertToChoice",          hint: "choice" },
 
   // ── Gather ───────────────────────────────────────────────────────
-  // Enter
-  { element: ElementType.Gather, key: "Enter",       hasContent: true,  action: "newSibling",        hint: "new gather" },
-  { element: ElementType.Gather, key: "Enter",       hasContent: false, action: "convertToNarrative", hint: "narrative" },
-  // Tab: gather → choice (same depth) — completes the cycle
-  { element: ElementType.Gather, key: "Tab",                            action: "convertToChoice",   hint: "choice" },
-  // Shift+Tab: strip sigils → narrative
-  { element: ElementType.Gather, key: "Shift-Tab",                      action: "convertToNarrative", hint: "narrative" },
+  // Tab: gather → choice
+  { element: ElementType.Gather, key: "Tab",                            action: "convertToChoice",          hint: "choice" },
+  // Shift+Tab: gather → choice body
+  { element: ElementType.Gather, key: "Shift-Tab",                      action: "convertToBody",            hint: "choice body" },
 
   // ── Narrative ────────────────────────────────────────────────────
   // Tab: narrative → gather (enters the cycle)
-  { element: ElementType.NarrativeText, key: "Tab",                     action: "convertToGather",   hint: "gather" },
+  { element: ElementType.NarrativeText, key: "Tab",                     action: "convertToGather",          hint: "gather" },
 ];
 
 // ── Matching ───────────────────────────────────────────────────────
@@ -205,13 +212,21 @@ function formatKey(key: string): string {
 
 // ── Action execution ───────────────────────────────────────────────
 
-const CHOICE_SIGILS = ["*", "+"] as const;
-const GATHER_SIGILS = ["-"] as const;
+function applyConversion(view: EditorView, session: EditorSessionHandle | null, target: ConvertTarget): boolean {
+  if (!session) return true; // trap the key even if session unavailable
+  const cursorPos = view.state.selection.main.head;
+  const edit = session.convertElement(cursorPos, target);
+  if (!edit) return true; // trap the key even if conversion not applicable
+  view.dispatch({
+    changes: { from: edit.from, to: edit.to, insert: edit.insert },
+    selection: { anchor: edit.from + edit.insert.length },
+  });
+  return true;
+}
 
-export function executeAction(action: ActionId, view: EditorView, info: LineInfo): boolean {
+export function executeAction(action: ActionId, view: EditorView, info: LineInfo, session: EditorSessionHandle | null): boolean {
   const { state } = view;
   const cursorPos = state.selection.main.head;
-  const line = state.doc.lineAt(cursorPos);
 
   switch (action) {
     case "newSibling": {
@@ -226,14 +241,8 @@ export function executeAction(action: ActionId, view: EditorView, info: LineInfo
       return true;
     }
 
-    case "convertToBody": {
-      const indent = "  ".repeat(info.depth);
-      view.dispatch({
-        changes: { from: line.from, to: line.to, insert: indent },
-        selection: { anchor: line.from + indent.length },
-      });
-      return true;
-    }
+    case "convertToBody":
+      return applyConversion(view, session, "choice_body");
 
     case "newBodyLine": {
       const indent = "  ".repeat(info.depth);
@@ -244,83 +253,47 @@ export function executeAction(action: ActionId, view: EditorView, info: LineInfo
       return true;
     }
 
-    case "convertToIndentedNarrative": {
-      // Strip sigils, replace with depth-based indent, keep content
-      const sigils = info.type === ElementType.Gather ? [...GATHER_SIGILS] : [...CHOICE_SIGILS];
-      const { end } = parseSigilPrefix(line.text, sigils);
-      const indent = "  ".repeat(info.depth);
-      view.dispatch({
-        changes: { from: line.from, to: line.from + end, insert: indent },
-        selection: { anchor: line.from + indent.length },
-      });
-      return true;
-    }
+    case "convertToIndentedNarrative":
+      return applyConversion(view, session, "choice_body");
 
-    case "convertToNarrative": {
-      const sigils = info.type === ElementType.Gather ? [...GATHER_SIGILS] : [...CHOICE_SIGILS];
-      const { end } = parseSigilPrefix(line.text, sigils);
-      view.dispatch({
-        changes: { from: line.from, to: line.from + end, insert: "" },
-        selection: { anchor: line.from },
-      });
-      return true;
-    }
+    case "convertToNarrative":
+      return applyConversion(view, session, "narrative");
 
-    case "increaseDepth": {
-      const sigil = info.type === ElementType.Gather
-        ? "-"
-        : info.sticky ? "+" : "*";
-      const sigils = info.type === ElementType.Gather ? [...GATHER_SIGILS] : [...CHOICE_SIGILS];
-      const newPrefix = buildSigils(sigil, info.depth + 1) + " ";
-      const { end } = parseSigilPrefix(line.text, sigils);
-      view.dispatch({
-        changes: { from: line.from, to: line.from + end, insert: newPrefix },
-        selection: { anchor: line.from + newPrefix.length },
-      });
-      return true;
-    }
+    case "increaseDepth":
+    case "decreaseDepth":
+      // These don't map to a simple ConvertTarget — keep TS fallback for now
+      return executeDepthChange(action, view, info);
 
-    case "decreaseDepth": {
-      const sigil = info.type === ElementType.Gather
-        ? "-"
-        : info.sticky ? "+" : "*";
-      const sigils = info.type === ElementType.Gather ? [...GATHER_SIGILS] : [...CHOICE_SIGILS];
-      const newPrefix = buildSigils(sigil, info.depth - 1) + " ";
-      const { end } = parseSigilPrefix(line.text, sigils);
-      view.dispatch({
-        changes: { from: line.from, to: line.from + end, insert: newPrefix },
-        selection: { anchor: line.from + newPrefix.length },
-      });
-      return true;
-    }
+    case "convertToChoice":
+      return applyConversion(view, session, "choice");
 
-    case "convertToChoice": {
-      const sigils = info.type === ElementType.Gather ? [...GATHER_SIGILS] : [];
-      const { end } = parseSigilPrefix(line.text, sigils);
-      // Preserve depth when converting from gather
-      const depth = info.depth > 0 ? info.depth : 1;
-      const newPrefix = buildSigils("*", depth) + " ";
-      view.dispatch({
-        changes: { from: line.from, to: line.from + end, insert: newPrefix },
-        selection: { anchor: line.from + newPrefix.length },
-      });
-      return true;
-    }
-
-    case "convertToGather": {
-      const sigils = info.type === ElementType.Choice ? [...CHOICE_SIGILS] : [];
-      const { end } = parseSigilPrefix(line.text, sigils);
-      // Preserve depth when converting from choice
-      const depth = info.depth > 0 ? info.depth : 1;
-      const newPrefix = buildSigils("-", depth) + " ";
-      view.dispatch({
-        changes: { from: line.from, to: line.from + end, insert: newPrefix },
-        selection: { anchor: line.from + newPrefix.length },
-      });
-      return true;
-    }
+    case "convertToGather":
+      return applyConversion(view, session, "gather");
 
     case "trap":
       return true;
   }
+}
+
+const CHOICE_SIGILS = ["*", "+"] as const;
+const GATHER_SIGILS = ["-"] as const;
+
+function executeDepthChange(action: "increaseDepth" | "decreaseDepth", view: EditorView, info: LineInfo): boolean {
+  const { state } = view;
+  const line = state.doc.lineAt(state.selection.main.head);
+  const delta = action === "increaseDepth" ? 1 : -1;
+  const newDepth = info.depth + delta;
+  if (newDepth < 1) return false;
+
+  const sigil = info.type === ElementType.Gather
+    ? "-"
+    : info.sticky ? "+" : "*";
+  const sigils = info.type === ElementType.Gather ? [...GATHER_SIGILS] : [...CHOICE_SIGILS];
+  const newPrefix = buildSigils(sigil, newDepth) + " ";
+  const { end } = parseSigilPrefix(line.text, sigils);
+  view.dispatch({
+    changes: { from: line.from, to: line.from + end, insert: newPrefix },
+    selection: { anchor: line.from + newPrefix.length },
+  });
+  return true;
 }

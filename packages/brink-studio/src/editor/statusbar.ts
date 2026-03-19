@@ -2,7 +2,7 @@ import { type Extension } from "@codemirror/state";
 import { EditorView, showPanel, type Panel } from "@codemirror/view";
 import { forEachDiagnostic } from "@codemirror/lint";
 import { elementTypeField, ElementType, type LineInfo } from "./element-type.js";
-import { getHintsForElement, lineHasContent, parseSigilPrefix, buildContext } from "./transitions.js";
+import { getHintsForElement, lineHasContent, buildContext } from "./transitions.js";
 
 // ── Element labels ─────────────────────────────────────────────────
 
@@ -11,6 +11,7 @@ const ELEMENT_LABELS: Record<ElementType, string> = {
   [ElementType.StitchHeader]: "Stitch Header",
   [ElementType.NarrativeText]: "Narrative",
   [ElementType.Choice]: "Choice",
+  [ElementType.ChoiceBody]: "Choice Body",
   [ElementType.Gather]: "Gather",
   [ElementType.Divert]: "Divert",
   [ElementType.Logic]: "Logic",

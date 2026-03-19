@@ -100,6 +100,16 @@ export interface CodeAction {
   kind: string;
 }
 
+// ── Line conversion types ───────────────────────────────────────────
+
+export type ConvertTarget = "narrative" | "choice" | "sticky_choice" | "gather" | "choice_body";
+
+export interface TextEdit {
+  from: number;
+  to: number;
+  insert: string;
+}
+
 // ── Line context types (from brink-ide) ────────────────────────────
 
 export type LineElement =
@@ -254,6 +264,12 @@ export class EditorSessionHandle {
   formatDocument(): string {
     const json = this.session.format_document();
     return JSON.parse(json) as string;
+  }
+
+  convertElement(offset: number, target: ConvertTarget): TextEdit | null {
+    const json = this.session.convert_element(offset, target);
+    const result = JSON.parse(json);
+    return result ?? null;
   }
 
   free(): void {

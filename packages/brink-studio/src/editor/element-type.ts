@@ -8,6 +8,7 @@ export enum ElementType {
   StitchHeader,
   NarrativeText,
   Choice,
+  ChoiceBody,
   Gather,
   Divert,
   Logic,
@@ -33,6 +34,7 @@ const ELEMENT_CLASSES: Record<ElementType, string> = {
   [ElementType.StitchHeader]: "brink-stitch-header",
   [ElementType.NarrativeText]: "brink-narrative",
   [ElementType.Choice]: "brink-choice",
+  [ElementType.ChoiceBody]: "brink-choice-body",
   [ElementType.Gather]: "brink-gather",
   [ElementType.Divert]: "brink-divert",
   [ElementType.Logic]: "brink-logic",
@@ -76,7 +78,11 @@ function isSticky(weaveElement: WeaveElement): boolean {
 }
 
 function lineContextToLineInfo(ctx: LineContext, lineText: string): LineInfo {
-  const type = lineElementToType(ctx.element);
+  let type = lineElementToType(ctx.element);
+  // Narrative inside a choice body is "choice body", not plain narrative
+  if (type === ElementType.NarrativeText && ctx.weave.element === "choice_body") {
+    type = ElementType.ChoiceBody;
+  }
   const depth = ctx.weave.depth;
   const sticky = isSticky(ctx.weave.element);
 
@@ -172,6 +178,10 @@ export function setEditorSession(session: EditorSessionHandle): void {
   _sessionRef = session;
 }
 
+export function getEditorSession(): EditorSessionHandle | null {
+  return _sessionRef;
+}
+
 function computeLineInfos(state: EditorState): LineInfo[] {
   if (_sessionRef) {
     // Update the session with current source
@@ -188,6 +198,18 @@ function computeLineInfos(state: EditorState): LineInfo[] {
     for (let i = infos.length; i < state.doc.lines; i++) {
       const line = state.doc.line(i + 1);
       infos.push(classifyLine(line.text));
+    }
+    // Post-pass: blank/whitespace-only lines immediately after a Choice or
+    // ChoiceBody are still inside the choice body — promote them so Tab works.
+    // Only promote lines that are truly blank (no sigils in the text).
+    for (let i = 1; i < infos.length; i++) {
+      if (infos[i].type !== ElementType.Blank) continue;
+      const lineText = state.doc.line(i + 1).text.trimStart();
+      if (lineText !== "" && /^[*+\-]/.test(lineText)) continue;
+      const prev = infos[i - 1];
+      if (prev.type === ElementType.Choice || prev.type === ElementType.ChoiceBody) {
+        infos[i] = { type: ElementType.ChoiceBody, depth: prev.depth, sticky: false, standalone: false };
+      }
     }
     return infos;
   }

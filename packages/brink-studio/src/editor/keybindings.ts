@@ -1,6 +1,6 @@
 import { type Extension, Prec } from "@codemirror/state";
 import { keymap, type EditorView } from "@codemirror/view";
-import { elementTypeField } from "./element-type.js";
+import { elementTypeField, getEditorSession } from "./element-type.js";
 import { findTransition, lineHasContent, executeAction, buildContext } from "./transitions.js";
 
 const HANDLED_KEYS = ["Enter", "Shift-Enter", "Tab", "Shift-Tab"] as const;
@@ -24,7 +24,7 @@ function handleKey(key: string, view: EditorView): boolean {
     return key === "Tab" || key === "Shift-Tab";
   }
 
-  return executeAction(transition.action, view, info);
+  return executeAction(transition.action, view, info, getEditorSession());
 }
 
 export function brinkKeymap(): Extension {

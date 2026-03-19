@@ -25,6 +25,7 @@ declare module "brink-web" {
     folding_ranges(): string;
     document_symbols(): string;
     format_document(): string;
+    convert_element(offset: number, target: string): string;
     free(): void;
     [Symbol.dispose](): void;
   }
