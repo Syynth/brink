@@ -93,6 +93,10 @@ export interface DocumentSymbol {
   detail?: string;
   start: number;
   end: number;
+  /** Start of the full symbol body (including header through end of content). */
+  full_start: number;
+  /** End of the full symbol body. */
+  full_end: number;
   children: DocumentSymbol[];
 }
 

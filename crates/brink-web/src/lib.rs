@@ -906,6 +906,8 @@ struct DocumentSymbolJs {
     detail: Option<String>,
     start: u32,
     end: u32,
+    full_start: u32,
+    full_end: u32,
     children: Vec<DocumentSymbolJs>,
 }
 
@@ -962,6 +964,8 @@ fn convert_document_symbol(sym: brink_ide::document::DocumentSymbol) -> Document
         detail: sym.detail,
         start: sym.range.start().into(),
         end: sym.range.end().into(),
+        full_start: sym.full_range.start().into(),
+        full_end: sym.full_range.end().into(),
         children: sym
             .children
             .into_iter()

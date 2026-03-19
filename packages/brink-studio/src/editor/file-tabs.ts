@@ -1,16 +1,16 @@
 /**
- * FileTabBar — horizontal tab strip for switching between open files.
+ * FileTabBar — horizontal tab strip for switching between open tabs.
  *
- * Renders inside the editor chrome, above the CodeMirror view.
- * Delegates file switching and creation to EditorStateManager.
+ * Supports pinned and unpinned tabs. Unpinned tabs render with italic
+ * labels and no close button. Double-clicking an unpinned tab pins it.
  */
 
-import type { EditorStateManager } from "./state-manager.js";
+import type { EditorStateManager, TabInfo } from "./state-manager.js";
 
 export interface FileTabBarOptions {
   manager: EditorStateManager;
-  /** Called after a file switch completes. */
-  onSwitch?: (path: string) => void;
+  /** Called after a tab switch completes. */
+  onSwitch?: () => void;
 }
 
 export interface FileTabBarHandle {
@@ -30,56 +30,65 @@ export function createFileTabBar(options: FileTabBarOptions): FileTabBarHandle {
 
   let inputActive = false;
 
-  function displayName(path: string): string {
-    const slash = path.lastIndexOf("/");
-    return slash >= 0 ? path.substring(slash + 1) : path;
-  }
+  // Listen for auto-pin events from the editor
+  manager.getView().dom.addEventListener("brink-tab-pinned", () => render());
 
   function render(): void {
-    // Clear existing tabs (but keep input if active)
     const existingInput = root.querySelector(".brink-tab-input-wrapper");
     root.innerHTML = "";
 
-    const files = manager.files();
-    const active = manager.active();
+    const tabs = manager.getTabs();
+    const activeTab = manager.getActiveTab();
 
-    for (const file of files) {
-      const tab = document.createElement("div");
-      tab.className = "brink-tab" + (file === active ? " active" : "");
-      tab.title = file;
+    for (const tab of tabs) {
+      const el = document.createElement("div");
+      el.className = "brink-tab"
+        + (tab.id === activeTab.id ? " active" : "")
+        + (tab.pinned ? "" : " unpinned");
+      el.title = tab.target.kind === "file" ? tab.target.path : `${tab.target.name} in ${tab.target.path}`;
 
       const label = document.createElement("span");
       label.className = "brink-tab-label";
-      label.textContent = displayName(file);
-      tab.appendChild(label);
+      label.textContent = tab.label;
+      el.appendChild(label);
 
-      // Close button (don't show if only one file)
-      if (files.length > 1) {
+      // Close button — only for pinned tabs when there's more than one tab
+      if (tab.pinned && tabs.length > 1) {
         const close = document.createElement("span");
         close.className = "brink-tab-close";
         close.textContent = "\u00d7";
         close.title = "Close";
         close.addEventListener("click", (e) => {
           e.stopPropagation();
-          void manager.closeFile(file).then((closed) => {
+          void manager.closeTab(tab.id).then((closed) => {
             if (closed) {
               render();
-              options.onSwitch?.(manager.active());
+              options.onSwitch?.();
             }
           });
         });
-        tab.appendChild(close);
+        el.appendChild(close);
       }
 
-      tab.addEventListener("click", () => {
-        if (file === active) return;
-        void manager.switchTo(file).then(() => {
+      // Single-click: switch to tab
+      el.addEventListener("click", () => {
+        if (tab.id === activeTab.id) return;
+        void manager.openTab(tab.target, tab.pinned).then(() => {
           render();
-          options.onSwitch?.(file);
+          options.onSwitch?.();
         });
       });
 
-      root.appendChild(tab);
+      // Double-click: pin unpinned tab
+      el.addEventListener("dblclick", (e) => {
+        e.preventDefault();
+        if (!tab.pinned) {
+          manager.pinTab(tab.id);
+          render();
+        }
+      });
+
+      root.appendChild(el);
     }
 
     // "+" button
@@ -122,23 +131,19 @@ export function createFileTabBar(options: FileTabBarOptions): FileTabBarHandle {
         cancel();
         return;
       }
-      // Add .ink extension if none provided
       if (!name.includes(".")) {
         name += ".ink";
       }
-      // Check for duplicates
       if (manager.files().includes(name)) {
         input.classList.add("error");
         return;
       }
       inputActive = false;
       wrapper.remove();
-      void manager.addFile(name).then(() =>
-        manager.switchTo(name).then(() => {
-          render();
-          options.onSwitch?.(name);
-        }),
-      );
+      void manager.addFile(name).then(() => {
+        render();
+        options.onSwitch?.();
+      });
     }
 
     input.addEventListener("keydown", (e) => {

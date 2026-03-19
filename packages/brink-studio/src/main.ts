@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   await project.initialize();
 
   // Mount binder panel if container exists
-  const binderContainer = document.getElementById("binder");
+  const binderContainer = document.getElementById("binder-pane");
   let binder: ReturnType<typeof createBinder> | undefined;
 
   // Build studio options with callbacks
@@ -72,7 +72,7 @@ async function main(): Promise<void> {
       tabs.refresh();
     },
     onNavigateToFile(location: import("./wasm.js").Location) {
-      void manager.switchTo(location.file).then(() => {
+      void manager.openTab({ kind: "file" as const, path: location.file }, true).then(() => {
         tabs.refresh();
         binder?.refresh();
         // Scroll to the definition after the state swap
@@ -97,6 +97,12 @@ async function main(): Promise<void> {
 
   manager.setView(editor.view);
 
+  // Listen for tab changes dispatched by the binder
+  editor.view.dom.addEventListener("brink-tab-changed", () => {
+    tabs.refresh();
+    binder?.refresh();
+  });
+
   // Mount file tab bar above the editor
   const tabs = createFileTabBar({
     manager,
@@ -107,17 +113,17 @@ async function main(): Promise<void> {
   editorPane.insertBefore(tabs.element, editorContainer);
 
   if (binderContainer) {
+    // Replace placeholder content
+    const placeholder = binderContainer.querySelector(".placeholder");
+    if (placeholder) placeholder.remove();
+
     binder = createBinder({
-      session: project.getSession(),
-      onNavigate: (_path, offset) => {
-        if (offset != null) {
-          editor.view.dispatch({
-            selection: { anchor: offset },
-            scrollIntoView: true,
-          });
-        }
+      manager,
+      onFileCreated: () => {
+        tabs.refresh();
       },
     });
+
     binderContainer.appendChild(binder.element);
   }
 

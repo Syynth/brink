@@ -45,6 +45,7 @@ export { ProjectSession } from "./project-session.js";
 export type { ProjectSessionOptions } from "./project-session.js";
 
 export { EditorStateManager } from "./editor/state-manager.js";
+export type { TabTarget, TabInfo } from "./editor/state-manager.js";
 
 export { createFileTabBar } from "./editor/file-tabs.js";
 export type { FileTabBarOptions, FileTabBarHandle } from "./editor/file-tabs.js";

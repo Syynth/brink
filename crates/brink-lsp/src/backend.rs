@@ -1471,7 +1471,7 @@ fn domain_symbol_to_lsp(
         kind: convert::symbol_kind_to_lsp(sym.kind),
         tags: None,
         deprecated: None,
-        range: convert::to_lsp_range(sym.range, idx),
+        range: convert::to_lsp_range(sym.full_range, idx),
         selection_range: convert::to_lsp_range(sym.range, idx),
         children: if children.is_empty() {
             None

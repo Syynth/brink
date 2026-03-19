@@ -9,7 +9,10 @@ pub struct DocumentSymbol {
     pub name: String,
     pub kind: SymbolKind,
     pub detail: Option<String>,
+    /// The range of the symbol name (selection range).
     pub range: TextRange,
+    /// The full range of the symbol including its body.
+    pub full_range: TextRange,
     pub children: Vec<DocumentSymbol>,
 }
 
@@ -35,6 +38,7 @@ pub fn document_symbols(hir: &HirFile, manifest: &SymbolManifest) -> Vec<Documen
                 kind: SymbolKind::Stitch,
                 detail: None,
                 range: stitch.name.range,
+                full_range: stitch.ptr.text_range(),
                 children: Vec::new(),
             })
             .collect();
@@ -48,6 +52,7 @@ pub fn document_symbols(hir: &HirFile, manifest: &SymbolManifest) -> Vec<Documen
                 None
             },
             range: knot.name.range,
+            full_range: knot.ptr.text_range(),
             children,
         };
         symbols.push(sym);
@@ -67,6 +72,7 @@ pub fn document_symbols(hir: &HirFile, manifest: &SymbolManifest) -> Vec<Documen
                 kind: *kind,
                 detail: None,
                 range: decl.range,
+                full_range: decl.range,
                 children: Vec::new(),
             });
         }
