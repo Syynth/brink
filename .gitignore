@@ -7,3 +7,4 @@ CLAUDE.md.bak
 crates/brink-web/www/pkg/
 node_modules/
 packages/brink-studio/dist/
+test-results/
