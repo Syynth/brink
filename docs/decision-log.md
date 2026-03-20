@@ -481,3 +481,11 @@
 - **SCOPE:** architectural
 - **WHAT:** File I/O is async and owned by a host-provided `FileProvider` interface. The driver/session layer bridges the host and wasm session. Compilation is synchronous against pre-loaded files. The `FileProvider` interface includes: `listFiles()`, `readFile(path)`, `requestFile(path)` (driver asks host to load a dependency), `onFileChanged(path, content)` (driver notifies host of editor changes), `onExternalChange(callback)` (host notifies driver of external file modifications), and `requestSave()` (best-effort persist request with no guarantees). Different hosts implement this differently: web uses in-memory + localStorage, Tauri uses the filesystem, s92-studio uses its own backend.
 - **WHY:** brink-studio needs to support multiple host environments (web, Tauri, s92-studio) with a single unified API. Making file operations async covers all cases (disk, network, IndexedDB). Keeping compilation synchronous against pre-loaded files avoids async complexity in the wasm bridge — the host is responsible for having files loaded before compile is called. The driver discovers INCLUDE dependencies during parsing and requests them from the host, so the host doesn't need to know the full file graph upfront.
+
+## View context as native wasm concept
+- **WHEN:** 2026-03-19
+- **PROJECT:** brink / s92-studio
+- **SYSTEM:** editor-session / wasm API
+- **SCOPE:** architectural
+- **WHAT:** The wasm `EditorSession` gains a `set_view_context(path, start, end)` method. When a range is set: `update_source()` splices the fragment into the full file at `[start, end)`; IDE responses (line_contexts, semantic_tokens, completions, hover, etc.) filter to the range and rebase byte offsets. The TypeScript state manager stops owning splice logic — it just calls `set_view_context` before creating an EditorState. This makes "scoped editing of a sub-region" a first-class concept reusable across s92-studio, not a UI-layer hack.
+- **WHY:** The current approach duplicates splice logic in TypeScript, corrupts the session when `updateSource()` is called with a fragment (causes wasm `unreachable` panic via `line_contexts`), and won't generalize to s92-studio's need to present a single knot for editing without exposing the full file.
