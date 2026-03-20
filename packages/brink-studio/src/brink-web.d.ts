@@ -15,6 +15,9 @@ declare module "brink-web" {
     remove_file(path: string): void;
     set_active_file(path: string): boolean;
     active_file(): string;
+    set_view_context(start: number, end: number): void;
+    clear_view_context(): void;
+    get_view_source(): string;
     list_files(): string;
     get_file_source(path: string): string;
     file_symbols(path: string): string;

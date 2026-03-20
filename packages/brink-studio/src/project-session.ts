@@ -109,8 +109,10 @@ export class ProjectSession {
 
     return {
       compile: (source: string) => {
-        session.updateFile(self.activeFile, source);
-        provider.onFileChanged?.(self.activeFile, source);
+        // Use updateSource (not updateFile) so that view-context splicing
+        // is applied when editing a focused sub-region of the file.
+        session.updateSource(source);
+        provider.onFileChanged?.(self.activeFile, session.getFileSource(self.activeFile) ?? source);
         // Kick off async INCLUDE resolution — next compile picks up new files
         void self.resolveIncludes();
         return session.compileProject(self.entryFile);

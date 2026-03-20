@@ -232,6 +232,23 @@ export class EditorSessionHandle {
     return this.session.active_file();
   }
 
+  /** Scope IDE queries to a sub-region `[start, end)` of the active file. */
+  setViewContext(start: number, end: number): void {
+    this.session.set_view_context(start, end);
+  }
+
+  /** Return to full-file mode. */
+  clearViewContext(): void {
+    this.session.clear_view_context();
+  }
+
+  /** Get the source text for the current view context (fragment or full file). */
+  getViewSource(): string | null {
+    const json = this.session.get_view_source();
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
   listFiles(): ProjectFile[] {
     const json = this.session.list_files();
     return JSON.parse(json) as ProjectFile[];

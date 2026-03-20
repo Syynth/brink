@@ -358,32 +358,39 @@ describe("EditorStateManager", () => {
     });
   });
 
-  // ── Compile wrapper ────────────────────────────────────────────
+  // ── View context (native splice) ────────────────────────────────
 
-  describe("compile wrapper", () => {
-    it("file tab compile passes source through directly", () => {
-      let receivedSource = "";
-      const wrapped = manager.wrapCompile((source) => {
-        receivedSource = source;
-        return { ok: true };
-      });
-
-      wrapped("test source");
-      expect(receivedSource).toBe("test source");
-    });
-
-    it("symbol tab compile splices and updates session", async () => {
+  describe("view context", () => {
+    it("updateSource with view context splices fragment into full file", async () => {
       const target: TabTarget = { kind: "symbol", path: "main.ink", name: "start", start: START_KNOT_OFFSET, end: START_KNOT_END };
       await manager.openTab(target, true);
 
-      const wrapped = manager.wrapCompile(() => ({ ok: true }));
-      wrapped("=== start ===\nCompiled content.\n");
+      // Simulate what the diagnostics extension does: call updateSource
+      const session = project.getSession();
+      session.updateSource("=== start ===\nCompiled content.\n");
 
-      // Check that the session got the spliced content
-      const sessionSource = project.getSession().getFileSource("main.ink")!;
-      expect(sessionSource).toContain("Compiled content.");
-      expect(sessionSource).toContain("// Welcome to brink studio!");
-      expect(sessionSource).toContain("=== story ===");
+      // Check that the session has the full file with the spliced content
+      const fullSource = session.getFileSource("main.ink")!;
+      expect(fullSource).toContain("Compiled content.");
+      expect(fullSource).toContain("// Welcome to brink studio!");
+      expect(fullSource).toContain("=== story ===");
+    });
+
+    it("getViewSource returns fragment when view context is active", async () => {
+      const target: TabTarget = { kind: "symbol", path: "main.ink", name: "start", start: START_KNOT_OFFSET, end: START_KNOT_END };
+      await manager.openTab(target, true);
+
+      const viewSource = project.getSession().getViewSource();
+      expect(viewSource).toBe(START_KNOT_TEXT);
+    });
+
+    it("clearViewContext returns to full file mode", async () => {
+      const target: TabTarget = { kind: "symbol", path: "main.ink", name: "start", start: START_KNOT_OFFSET, end: START_KNOT_END };
+      await manager.openTab(target, true);
+
+      project.getSession().clearViewContext();
+      const viewSource = project.getSession().getViewSource();
+      expect(viewSource).toBe(MAIN_INK);
     });
   });
 

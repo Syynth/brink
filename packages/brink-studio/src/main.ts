@@ -97,6 +97,9 @@ async function main(): Promise<void> {
 
   manager.setView(editor.view);
 
+  // Expose for e2e tests
+  (window as any).__brinkView = editor.view;
+
   // Listen for tab changes dispatched by the binder
   editor.view.dom.addEventListener("brink-tab-changed", () => {
     tabs.refresh();

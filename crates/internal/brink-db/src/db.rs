@@ -50,9 +50,11 @@ impl ProjectDb {
             .knots()
             .map(|knot_ast| {
                 let green = knot_ast.syntax().green().into();
+                let offset = knot_ast.syntax().text_range().start();
                 let (knot, manifest, diagnostics) = lower_knot(file_id, &knot_ast);
                 KnotEntry {
                     green,
+                    offset,
                     knot,
                     manifest,
                     diagnostics,
@@ -124,13 +126,15 @@ impl ProjectDb {
         for (i, knot_ast) in new_knot_asts.iter().enumerate() {
             let new_green: GreenNode = knot_ast.syntax().green().into();
 
+            let new_offset = knot_ast.syntax().text_range().start();
             let reuse_entry = old_state
                 .and_then(|s| s.knot_entries.get(i))
-                .filter(|old| old.green == new_green);
+                .filter(|old| old.green == new_green && old.offset == new_offset);
 
             if let Some(old_entry) = reuse_entry {
                 knot_entries.push(KnotEntry {
                     green: new_green,
+                    offset: new_offset,
                     knot: old_entry.knot.clone(),
                     manifest: old_entry.manifest.clone(),
                     diagnostics: old_entry.diagnostics.clone(),
@@ -140,6 +144,7 @@ impl ProjectDb {
                 let (knot, manifest, diagnostics) = lower_knot(file_id, knot_ast);
                 knot_entries.push(KnotEntry {
                     green: new_green,
+                    offset: new_offset,
                     knot,
                     manifest,
                     diagnostics,

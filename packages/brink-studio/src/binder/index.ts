@@ -44,6 +44,37 @@ export function createBinder(options: BinderOptions): BinderHandle {
     manager.getView().dom.dispatchEvent(new CustomEvent("brink-tab-changed"));
   }
 
+  /**
+   * Resolve a symbol's current byte range from the live outline.
+   * Flushes the editor first so the outline reflects the latest edits
+   * (the compile callback is debounced at 500ms, so offsets may be stale).
+   */
+  function resolveTarget(
+    target: import("../editor/state-manager.js").TabTarget,
+  ): import("../editor/state-manager.js").TabTarget {
+    if (target.kind !== "symbol") return target;
+    // Flush current editor content → triggers re-analysis
+    manager.snapshot();
+    const session = manager.getProject().getSession();
+    const view = manager.getView();
+    session.updateSource(view.state.doc.toString());
+
+    const outline = session.getProjectOutline();
+    const file = outline.find((f) => f.path === target.path);
+    if (!file) return target;
+    for (const sym of file.symbols) {
+      if (sym.name === target.name) {
+        return { ...target, start: sym.full_start, end: sym.full_end };
+      }
+      for (const child of sym.children) {
+        if (child.name === target.name) {
+          return { ...target, start: child.full_start, end: child.full_end };
+        }
+      }
+    }
+    return target;
+  }
+
   /** Handle single/double-click discrimination. */
   function attachClickHandlers(
     el: HTMLElement,
@@ -53,13 +84,13 @@ export function createBinder(options: BinderOptions): BinderHandle {
       if (clickTimer) clearTimeout(clickTimer);
       clickTimer = setTimeout(() => {
         clickTimer = null;
-        void manager.openTab(target, false).then(notifyTabChanged);
+        void manager.openTab(resolveTarget(target), false).then(notifyTabChanged);
       }, 200);
     });
     el.addEventListener("dblclick", (e) => {
       e.preventDefault();
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
-      void manager.openTab(target, true).then(notifyTabChanged);
+      void manager.openTab(resolveTarget(target), true).then(notifyTabChanged);
     });
   }
 
@@ -161,6 +192,7 @@ export function createBinder(options: BinderOptions): BinderHandle {
       row.classList.add("brink-binder-active");
     }
 
+    console.log(`[binder] symbol="${symbol.name}" kind=${symbol.kind} full_start=${symbol.full_start} full_end=${symbol.full_end}`);
     attachClickHandlers(row, { kind: "symbol", path, name: symbol.name, start: symbol.full_start, end: symbol.full_end });
 
     parent.appendChild(row);

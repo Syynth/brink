@@ -4,6 +4,10 @@
  * Supports both full-file tabs and focused symbol tabs (knot/stitch).
  * Handles pinned/unpinned tab semantics: at most one unpinned tab,
  * which gets replaced on the next single-click navigation.
+ *
+ * Focused symbol tabs use the wasm session's native view context —
+ * `update_source(fragment)` splices into the full file internally,
+ * and IDE responses return view-relative offsets.
  */
 
 import { EditorState, type Extension } from "@codemirror/state";
@@ -210,7 +214,6 @@ export class EditorStateManager {
 
   /** Close a file (legacy compat — closes its tab). */
   async closeFile(path: string): Promise<boolean> {
-    // Find a tab for this file path
     const tab = this._tabs.find((t) => t.target.path === path && t.target.kind === "file");
     if (!tab) return false;
     return this.closeTab(tab.id);
@@ -223,38 +226,8 @@ export class EditorStateManager {
     }
   }
 
-  // ── Compile wrapper ────────────────────────────────────────────
-
-  /**
-   * Returns a compile function that handles focused symbol tabs by splicing
-   * the edited text back into the full file before compiling.
-   */
-  wrapCompile(rawCompile: (source: string) => import("../wasm.js").CompileResult): (source: string) => import("../wasm.js").CompileResult {
-    return (source: string) => {
-      const tab = this.getActiveTab();
-      if (tab.target.kind === "symbol") {
-        const fullSource = this.project.getSession().getFileSource(tab.target.path) ?? "";
-        const before = fullSource.slice(0, tab.target.start);
-        const after = fullSource.slice(tab.target.end);
-        const spliced = before + source + after;
-        // Update range for next edit
-        tab.target.end = tab.target.start + source.length;
-        // Write the full spliced content back
-        this.project.getSession().updateFile(tab.target.path, spliced);
-        this.project.getSession().setActiveFile(tab.target.path);
-        // Invalidate cached file tab state — it's now stale
-        this.states.delete(tab.target.path);
-        return this.project.getSession().compileProject(this.project.getEntryFile());
-      }
-      return rawCompile(source);
-    };
-  }
-
   // ── Auto-pin extension ─────────────────────────────────────────
 
-  /**
-   * Returns a CM extension that auto-pins the active tab on first edit.
-   */
   autoPinExtension(): Extension {
     const self = this;
     return EditorView.updateListener.of((update) => {
@@ -262,7 +235,6 @@ export class EditorStateManager {
         const tab = self.getActiveTab();
         if (!tab.pinned) {
           tab.pinned = true;
-          // Dispatch a custom event so the tab bar can re-render
           self.view?.dom.dispatchEvent(new CustomEvent("brink-tab-pinned"));
         }
       }
@@ -271,13 +243,16 @@ export class EditorStateManager {
 
   // ── Private ────────────────────────────────────────────────────
 
+  /** Get the text content to display for a tab. */
   private getTabContent(tab: TabInfo): string {
+    const session = this.project.getSession();
     if (tab.target.kind === "file") {
-      return this.project.getSession().getFileSource(tab.target.path) ?? "";
+      session.clearViewContext();
+      return session.getFileSource(tab.target.path) ?? "";
     }
-    // Symbol tab — extract the range from the full file
-    const full = this.project.getSession().getFileSource(tab.target.path) ?? "";
-    return full.slice(tab.target.start, tab.target.end);
+    // Symbol tab — set view context and get the fragment
+    session.setViewContext(tab.target.start, tab.target.end);
+    return session.getViewSource() ?? "";
   }
 
   private async switchToTab(id: string): Promise<void> {
@@ -293,8 +268,19 @@ export class EditorStateManager {
     // Snapshot current CM state
     this.states.set(this.activeTabId, this.view.state);
 
-    // Ensure the wasm session knows about the target file
+    // Ensure the wasm session knows about the target file.
+    // setActiveFile clears the view context, so we must set the view
+    // context AFTER this call and BEFORE creating the EditorState
+    // (state creation triggers computeLineInfos → updateSource).
     await this.project.setActiveFile(tab.target.path);
+
+    // Set or clear the view context BEFORE getState (which creates
+    // the EditorState whose StateField calls updateSource)
+    if (tab.target.kind === "symbol") {
+      this.project.getSession().setViewContext(tab.target.start, tab.target.end);
+    } else {
+      this.project.getSession().clearViewContext();
+    }
 
     // Get or create state for target tab
     const state = this.getState(id);
@@ -307,26 +293,18 @@ export class EditorStateManager {
   private flushCurrentTab(): void {
     if (!this.view) return;
     const tab = this.getActiveTab();
-    if (!tab) return; // guard against tab being replaced before flush
+    if (!tab) return;
     const source = this.view.state.doc.toString();
 
+    // updateSource handles splicing natively when a view context is active
+    this.project.getSession().updateSource(source);
+
     if (tab.target.kind === "symbol") {
-      // Splice focused text back into the full file
-      const full = this.project.getSession().getFileSource(tab.target.path) ?? "";
-      const before = full.slice(0, tab.target.start);
-      const after = full.slice(tab.target.end);
-      const spliced = before + source + after;
       tab.target.end = tab.target.start + source.length;
-      this.project.getSession().updateFile(tab.target.path, spliced);
-      // Invalidate the cached file tab state — it's now stale
       this.states.delete(tab.target.path);
-    } else {
-      this.project.getSession().updateFile(tab.target.path, source);
     }
-    this.project.getSession().setActiveFile(tab.target.path);
   }
 
-  /** Create a fresh EditorState with the shared extensions. */
   private createState(content: string): EditorState {
     return EditorState.create({
       doc: content,
@@ -335,12 +313,8 @@ export class EditorStateManager {
   }
 
   private createExtensions(): Extension[] {
-    // Wrap the compile callback for symbol-tab splice handling
-    const opts = { ...this.studioOptions };
-    opts.compile = this.wrapCompile(this.studioOptions.compile);
-
     return [
-      brinkStudio(opts),
+      brinkStudio(this.studioOptions),
       basicSetup,
       keymap.of(defaultKeymap),
       this.autoPinExtension(),
