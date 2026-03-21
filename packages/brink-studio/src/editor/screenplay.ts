@@ -131,9 +131,9 @@ function buildLineDecos(view: EditorView): DecorationSet {
         line.from + ws + 1,
         Decoration.replace({ widget: new EmptySigilWidget() }),
       );
-      // Hide :<> at end
+      // Hide :<> at end (>= so empty template @:<> also hides)
       const colonGlueStart = line.to - 3; // :<> is 3 chars
-      if (colonGlueStart > line.from + ws + 1) {
+      if (colonGlueStart >= line.from + ws + 1) {
         builder.add(
           colonGlueStart,
           line.to,
@@ -246,9 +246,9 @@ const screenplayAtomicRanges = EditorView.atomicRanges.of((view) => {
       const ws = line.text.length - trimmed.length;
       // @ at start
       builder.add(line.from + ws, line.from + ws + 1, atomicMark);
-      // :<> at end
+      // :<> at end (>= so empty template @:<> is also atomic)
       const colonGlueStart = line.to - 3;
-      if (colonGlueStart > line.from + ws + 1) {
+      if (colonGlueStart >= line.from + ws + 1) {
         builder.add(colonGlueStart, line.to, atomicMark);
       }
     }

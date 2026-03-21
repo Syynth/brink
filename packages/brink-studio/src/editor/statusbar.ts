@@ -3,6 +3,7 @@ import { EditorView, showPanel, type Panel } from "@codemirror/view";
 import { forEachDiagnostic } from "@codemirror/lint";
 import { elementTypeField, ElementType, type LineInfo } from "./element-type.js";
 import { getHintsForElement, lineHasContent, buildContext } from "./transitions.js";
+import { CONVERTIBLE_TYPES, convertLineToType } from "./convert.js";
 
 // ── Element labels ─────────────────────────────────────────────────
 
@@ -35,72 +36,6 @@ function elementLabel(info: LineInfo): string {
     label += " (+)";
   }
   return label;
-}
-
-// ── Dropdown conversion ────────────────────────────────────────────
-
-const CONVERTIBLE_TYPES: { label: string; sigil: string }[] = [
-  { label: "Narrative", sigil: "" },
-  { label: "Choice (*)", sigil: "* " },
-  { label: "Choice (+)", sigil: "+ " },
-  { label: "Gather", sigil: "- " },
-  { label: "Divert", sigil: "-> " },
-  { label: "Logic", sigil: "~ " },
-  { label: "Comment", sigil: "// " },
-  { label: "Tag", sigil: "# " },
-  { label: "Knot Header", sigil: "=== " },
-  { label: "Stitch Header", sigil: "= " },
-  { label: "Character", sigil: "@:<>" },
-  { label: "Parenthetical", sigil: "()<>" },
-];
-
-function getLineSigilRange(text: string): { start: number; end: number } {
-  const trimmed = text.trimStart();
-  const ws = text.length - trimmed.length;
-
-  // Screenplay: @...:<> → entire line is the sigil structure
-  if (/^@[^:]*:<>$/.test(trimmed)) {
-    return { start: ws, end: ws + trimmed.length };
-  }
-  // Screenplay: (...)<> → entire line is the sigil structure
-  if (/^\(.*\)<>$/.test(trimmed)) {
-    return { start: ws, end: ws + trimmed.length };
-  }
-
-  const patterns = [
-    /^={3,}\s*/,
-    /^={2}\s+\w[^=]*={2,}\s*/,
-    /^=\s+/,
-    /^([*+]\s*)+/,
-    /^(-\s*)+(?!>)/,
-    /^->\s*/,
-    /^~\s*/,
-    /^\/\/\s*/,
-    /^\/\*\s*/,
-    /^#\s*/,
-    /^(VAR|CONST|LIST)\s+/,
-    /^INCLUDE\s+/,
-    /^EXTERNAL\s+/,
-  ];
-
-  for (const p of patterns) {
-    const m = trimmed.match(p);
-    if (m) return { start: ws, end: ws + m[0].length };
-  }
-
-  return { start: ws, end: ws };
-}
-
-function convertLineToType(view: EditorView, sigil: string) {
-  const pos = view.state.selection.main.head;
-  const line = view.state.doc.lineAt(pos);
-  const { start, end } = getLineSigilRange(line.text);
-
-  view.dispatch({
-    changes: { from: line.from + start, to: line.from + end, insert: sigil },
-    selection: { anchor: line.from + start + sigil.length },
-  });
-  view.focus();
 }
 
 // ── Rendering ──────────────────────────────────────────────────────

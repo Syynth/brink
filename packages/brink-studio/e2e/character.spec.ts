@@ -293,4 +293,76 @@ test.describe("character lines", () => {
     const doc = await getDocText(page);
     expect(doc.trim()).toBe("");
   });
+
+  // ── Enter at boundaries ─────────────────────────────────────────
+
+  test("Enter at end of name inserts blank line below, keeps character line intact", async ({
+    page,
+  }) => {
+    await setEditorContent(page, "@JOHN:<>");
+    await setCursor(page, 5); // after JOHN, before :<>
+    await page.keyboard.press("Enter");
+
+    expect(await getLineText(page, 1)).toBe("@JOHN:<>");
+    expect(await getLineText(page, 2)).toBe("");
+    expect(await getCursorLine(page)).toBe(2);
+  });
+
+  test("Enter at start of name pushes name to next line, keeps template", async ({
+    page,
+  }) => {
+    await setEditorContent(page, "@JOHN:<>");
+    await setCursor(page, 1); // after @, before J
+    await page.keyboard.press("Enter");
+
+    expect(await getLineText(page, 1)).toBe("@:<>");
+    expect(await getLineText(page, 2)).toBe("JOHN");
+    expect(await getCursorLine(page)).toBe(2);
+  });
+
+  // ── Backspace from next line folds into character name ──────────
+
+  test("backspace at start of line after character folds content into name", async ({
+    page,
+  }) => {
+    // Simulate: @D:<> then ETECTIVE on next line (split name scenario)
+    await setEditorContent(page, "@D:<>\nETECTIVE");
+    // Cursor at start of ETECTIVE (line 2, pos 0)
+    const line2Start = 6; // "@D:<>\n" = 5 chars + newline
+    await setCursor(page, line2Start);
+    await page.keyboard.press("Backspace");
+
+    expect(await getLineText(page, 1)).toBe("@DETECTIVE:<>");
+  });
+
+  test("backspace at start of blank line after character goes to name end", async ({
+    page,
+  }) => {
+    await setEditorContent(page, "@JOHN:<>\n");
+    const line2Start = 9; // "@JOHN:<>\n"
+    await setCursor(page, line2Start);
+    await page.keyboard.press("Backspace");
+
+    // Should fold empty line into character, leaving @JOHN:<>
+    expect(await getLineText(page, 1)).toBe("@JOHN:<>");
+    // Cursor should be at name end
+    expect(await getCursorPos(page)).toBe(5);
+  });
+
+  // ── Status bar dropdown produces correct sigils ─────────────────
+
+  test("converting narrative to character via dropdown wraps content correctly", async ({
+    page,
+  }) => {
+    await setEditorContent(page, "JOHN");
+    await setCursor(page, 2);
+
+    // Click the element type button in the status bar to open dropdown
+    await page.locator(".brink-status-element-btn").click();
+    // Click "Character" in the dropdown
+    await page.locator(".brink-element-dropdown-item", { hasText: "Character" }).click();
+
+    const line = await getLineText(page, 1);
+    expect(line).toBe("@JOHN:<>");
+  });
 });
