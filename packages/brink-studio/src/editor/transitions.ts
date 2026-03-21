@@ -1,6 +1,7 @@
 import { EditorView } from "@codemirror/view";
 import { ElementType, type LineInfo } from "./element-type.js";
 import type { EditorSessionHandle, ConvertTarget } from "../wasm.js";
+import { sigilBypass } from "./screenplay.js";
 
 // ── Line utilities ─────────────────────────────────────────────────
 
@@ -322,6 +323,7 @@ export function executeAction(action: ActionId, view: EditorView, info: LineInfo
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: "()<>" },
         selection: { anchor: line.from + 1 }, // cursor between parens
+        annotations: sigilBypass.of(true),
       });
       return true;
     }
@@ -336,6 +338,7 @@ export function executeAction(action: ActionId, view: EditorView, info: LineInfo
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: prefix + content },
         selection: { anchor: line.from + ws + content.length },
+        annotations: sigilBypass.of(true),
       });
       return true;
     }
@@ -345,6 +348,7 @@ export function executeAction(action: ActionId, view: EditorView, info: LineInfo
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: "" },
         selection: { anchor: line.from },
+        annotations: sigilBypass.of(true),
       });
       return true;
     }
@@ -368,6 +372,7 @@ export function executeAction(action: ActionId, view: EditorView, info: LineInfo
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: prefix + content },
         selection: { anchor: line.from + ws + content.length },
+        annotations: sigilBypass.of(true),
       });
       return true;
     }

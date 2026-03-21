@@ -252,6 +252,14 @@ html, body {
   padding-right: calc(100% - 5in);
 }
 
+/* Hidden sigil widget — zero-width but in flow for cursor anchoring */
+.brink-hidden-sigil {
+  display: inline;
+  width: 0;
+  overflow: hidden;
+  font-size: 0;
+}
+
 /* Depth sigil widget */
 .brink-depth-sigil {
   opacity: 0.7;

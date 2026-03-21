@@ -1,4 +1,4 @@
-import { type Extension, RangeSetBuilder } from "@codemirror/state";
+import { type Extension, RangeSetBuilder, EditorState, Annotation } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
 import { elementTypeField, elementClass, ElementType } from "./element-type.js";
 
@@ -38,7 +38,8 @@ class DepthSigilWidget extends WidgetType {
 class EmptySigilWidget extends WidgetType {
   toDOM(): HTMLElement {
     const span = document.createElement("span");
-    span.style.display = "none";
+    span.className = "brink-hidden-sigil";
+    span.textContent = "\u200B"; // zero-width space for cursor anchoring
     return span;
   }
   eq(): boolean { return true; }
@@ -264,6 +265,48 @@ const screenplayAtomicRanges = EditorView.atomicRanges.of((view) => {
   return builder.finish();
 });
 
+/** Annotation to bypass the sigil guard — used by our own key handlers. */
+export const sigilBypass = Annotation.define<boolean>();
+
+// ── Transaction filter: protect sigil regions from edits ──────────
+// Clamps selections away from sigil regions and blocks changes that
+// touch the @ or :<> / <> parts of character/parenthetical lines.
+
+const screenplaySigilGuard = EditorState.transactionFilter.of((tr) => {
+  if (!tr.docChanged || tr.annotation(sigilBypass)) return tr;
+
+  const infos = tr.startState.field(elementTypeField);
+  let dominated = false;
+
+  tr.changes.iterChanges((fromA, toA) => {
+    if (dominated) return;
+    const line = tr.startState.doc.lineAt(fromA);
+    const info = infos[line.number - 1];
+    if (!info) return;
+
+    if (info.type === ElementType.Character) {
+      const trimmed = line.text.trimStart();
+      const ws = line.text.length - trimmed.length;
+      const nameStart = line.from + ws + 1; // after @
+      const nameEnd = line.to - 3;          // before :<>
+
+      // Block if the change touches sigil regions
+      if (fromA < nameStart || toA > nameEnd) {
+        dominated = true;
+      }
+    }
+
+    if (info.type === ElementType.Parenthetical) {
+      const glueStart = line.to - 2; // before <>
+      if (toA > glueStart) {
+        dominated = true;
+      }
+    }
+  });
+
+  return dominated ? [] : tr;
+});
+
 export function screenplayDecorations(): Extension {
-  return [elementTypeField, screenplayPlugin, bracketPlugin, screenplayAtomicRanges];
+  return [elementTypeField, screenplayPlugin, bracketPlugin, screenplayAtomicRanges, screenplaySigilGuard];
 }
