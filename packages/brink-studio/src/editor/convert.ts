@@ -27,14 +27,18 @@ export const CONVERTIBLE_TYPES: { label: string; sigil: string; key: string }[] 
 
 // ── Content extraction ────────────────────────────────────────────
 
-/** Extract the "meat" from a line, stripping any wrapping sigils. */
+/** Extract the "meat" from a line, stripping any wrapping or prefix sigils. */
 export function extractLineContent(text: string): string {
   const trimmed = text.trimStart();
+  // Character: @Name:<> → Name
   const charMatch = trimmed.match(/^@([^:]*):<>$/);
   if (charMatch) return charMatch[1];
+  // Parenthetical: (text)<> → text
   const parenMatch = trimmed.match(/^\((.*)\)<>$/);
   if (parenMatch) return parenMatch[1];
-  return trimmed;
+  // Prefix sigils: strip via getLineSigilRange
+  const { end } = getLineSigilRange(text);
+  return text.slice(end);
 }
 
 // ── Sigil range detection ─────────────────────────────────────────
