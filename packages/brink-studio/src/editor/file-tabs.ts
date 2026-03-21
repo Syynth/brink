@@ -52,8 +52,8 @@ export function createFileTabBar(options: FileTabBarOptions): FileTabBarHandle {
       label.textContent = tab.label;
       el.appendChild(label);
 
-      // Close button — only for pinned tabs when there's more than one tab
-      if (tab.pinned && tabs.length > 1) {
+      // Close button — available when there's more than one tab
+      if (tabs.length > 1) {
         const close = document.createElement("span");
         close.className = "brink-tab-close";
         close.textContent = "\u00d7";

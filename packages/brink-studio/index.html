@@ -121,7 +121,7 @@ html, body {
 
 /* Editor pane */
 #editor-pane {
-  flex: 1;
+  flex: 2;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--brink-border);
@@ -181,12 +181,22 @@ html, body {
 #editor .cm-editor .cm-content {
   caret-color: var(--brink-accent);
   color: var(--brink-fg);
+  padding-left: 1in;
+  padding-right: 1in;
+  width: 8.5in;
+  max-width: 8.5in;
+  box-sizing: border-box;
+  border-right: 1px solid var(--brink-border);
 }
 
 /* Screenplay element line styles */
 .cm-line.brink-knot-header {
   font-weight: 700;
-  border-top: 1px solid var(--brink-border);
+  border-top: 1px solid rgba(69, 71, 90, 0.6);
+  margin-left: -1in;
+  margin-right: -1in;
+  padding-left: 1in;
+  padding-right: 1in;
 }
 
 .cm-line.brink-stitch-header {
@@ -225,22 +235,21 @@ html, body {
 
 /* Screenplay: character / parenthetical / dialogue */
 .cm-line.brink-character {
-  text-align: center;
   font-weight: 700;
   color: var(--brink-accent);
   text-transform: uppercase;
+  padding-left: 2.5in;
 }
 
 .cm-line.brink-parenthetical {
   font-style: italic;
   color: var(--brink-fg-dim);
-  padding-left: 25%;
-  padding-right: 25%;
+  padding-left: 2in;
 }
 
 .cm-line.brink-dialogue {
-  padding-left: 15%;
-  padding-right: 15%;
+  padding-left: 1.5in;
+  padding-right: calc(100% - 5in);
 }
 
 /* Depth sigil widget */

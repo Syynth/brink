@@ -64,6 +64,7 @@ export function createBrinkEditor(
       brinkStudio(options),
       basicSetup,
       keymap.of(defaultKeymap),
+      EditorView.lineWrapping,
     ],
   });
 

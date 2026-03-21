@@ -317,6 +317,7 @@ export class EditorStateManager {
       brinkStudio(this.studioOptions),
       basicSetup,
       keymap.of(defaultKeymap),
+      EditorView.lineWrapping,
       this.autoPinExtension(),
     ];
   }
