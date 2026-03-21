@@ -34,7 +34,7 @@ async function getKnotLabels(page: Page) {
 
 /** Get all binder file labels. */
 async function getFileLabels(page: Page) {
-  return page.locator(".brink-binder-file-label").allTextContents();
+  return page.locator(".brink-binder-file-row .brink-binder-label").allTextContents();
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -54,29 +54,30 @@ test.describe("binder", () => {
     expect(knots).toContain("interrogation");
   });
 
-  test("file has expand/collapse arrow", async ({ page }) => {
-    const arrow = page.locator(".brink-binder-arrow").first();
-    await expect(arrow).toBeVisible();
-    // Should show down arrow (expanded)
-    const text = await arrow.textContent();
-    expect(text).toBe("\u25bc");
+  test("file has expand/collapse chevron", async ({ page }) => {
+    const chevron = page.locator(".brink-binder-chevron").first();
+    await expect(chevron).toBeVisible();
+    // Chevron is always ▶, rotation is CSS
+    const text = await chevron.textContent();
+    expect(text).toBe("\u25b6");
+    // Expanded state: no .collapsed class
+    await expect(chevron).not.toHaveClass(/collapsed/);
   });
 
   test("collapse hides knots", async ({ page }) => {
-    const arrow = page.locator(".brink-binder-arrow").first();
-    await arrow.click();
+    const chevron = page.locator(".brink-binder-chevron").first();
+    await chevron.click();
 
     // Knots should be hidden
     const knots = await getKnotLabels(page);
     expect(knots).toHaveLength(0);
 
-    // Arrow should be right (collapsed)
-    const text = await arrow.textContent();
-    expect(text).toBe("\u25b6");
+    // Chevron should have .collapsed class
+    await expect(chevron).toHaveClass(/collapsed/);
   });
 
   test("expand shows knots again", async ({ page }) => {
-    const arrow = page.locator(".brink-binder-arrow").first();
+    const arrow = page.locator(".brink-binder-chevron").first();
     // Collapse
     await arrow.click();
     expect(await getKnotLabels(page)).toHaveLength(0);
@@ -147,7 +148,7 @@ test.describe("binder → tab opening", () => {
     await expect(page.locator(".brink-tab", { hasText: "opening (main.ink)" })).toBeVisible({ timeout: 2000 });
 
     // Now single-click the file in binder
-    await page.locator(".brink-binder-file-label", { hasText: "main.ink" }).click();
+    await page.locator(".brink-binder-file-row .brink-binder-label", { hasText: "main.ink" }).click();
 
     // Wait for timer + switch. The main.ink tab already exists and is pinned,
     // so clicking it should just switch to it.
@@ -161,7 +162,7 @@ test.describe("binder → tab opening", () => {
     const tabsBefore = await getTabLabels(page);
 
     // Click the arrow
-    await page.locator(".brink-binder-arrow").first().click();
+    await page.locator(".brink-binder-chevron").first().click();
 
     await page.waitForTimeout(300);
 

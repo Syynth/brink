@@ -62,15 +62,20 @@ html, body {
   overflow-y: auto;
   padding: 4px 0;
   font-size: 13px;
+  --binder-indent: 18px;
+  --binder-row-height: 26px;
+  --binder-guide-color: rgba(108, 112, 134, 0.2);
 }
 
 .brink-binder-row {
   display: flex;
   align-items: center;
-  padding: 3px 8px;
+  height: var(--binder-row-height);
+  padding-right: 8px;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
+  position: relative;
 }
 
 .brink-binder-row:hover {
@@ -78,21 +83,84 @@ html, body {
 }
 
 .brink-binder-row.brink-binder-active {
-  background: rgba(137, 180, 250, 0.12);
-  border-left: 2px solid var(--brink-accent);
-  padding-left: 6px;
+  background: rgba(137, 180, 250, 0.15);
 }
 
-.brink-binder-arrow {
-  width: 14px;
-  text-align: center;
+/* Indent guides — vertical lines for each depth level */
+.brink-binder-guides {
+  display: flex;
+  flex-shrink: 0;
+  height: 100%;
+}
+
+.brink-binder-guide {
+  width: var(--binder-indent);
+  height: 100%;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.brink-binder-guide::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--binder-guide-color);
+}
+
+/* Chevron for expand/collapse */
+.brink-binder-chevron {
+  width: var(--binder-indent);
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
   font-size: 10px;
   color: var(--brink-fg-dim);
-  flex-shrink: 0;
-  cursor: pointer;
+  transition: transform 0.12s ease;
+  transform: rotate(90deg);
 }
 
-.brink-binder-file-label {
+.brink-binder-chevron:hover {
+  color: var(--brink-fg);
+}
+
+.brink-binder-chevron.collapsed {
+  transform: rotate(0deg);
+}
+
+.brink-binder-chevron.leaf {
+  visibility: hidden;
+}
+
+/* Icon */
+.brink-binder-icon {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-right: 6px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.brink-binder-icon-file { color: var(--brink-accent); }
+.brink-binder-icon-knot { color: var(--brink-mauve); }
+.brink-binder-icon-stitch { color: var(--brink-teal); }
+
+/* Label */
+.brink-binder-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.brink-binder-file-row .brink-binder-label {
   font-weight: 600;
 }
 
@@ -109,6 +177,9 @@ html, body {
   margin-top: 4px;
   padding-left: 8px;
   font-size: 12px;
+  height: var(--binder-row-height);
+  display: flex;
+  align-items: center;
 }
 
 .brink-binder-new:hover {

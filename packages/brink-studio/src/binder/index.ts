@@ -1,9 +1,10 @@
 /**
  * Binder — project navigator tree view.
  *
- * Shows files with expand/collapse, knots indented under files,
- * stitches under knots. Single-click opens an unpinned tab,
- * double-click opens a pinned tab.
+ * Tree structure: files → knots → stitches.
+ * Variables, lists, and externals are filtered out.
+ * Chevron on the left, icon + label to the right.
+ * Indent guides as vertical lines.
  */
 
 import type { EditorStateManager } from "../editor/state-manager.js";
@@ -17,12 +18,33 @@ export interface BinderOptions {
 }
 
 export interface BinderHandle {
-  /** Re-query the project outline and re-render the tree. */
   refresh(): void;
-  /** Tear down the binder and remove its DOM element. */
   destroy(): void;
-  /** The root DOM element of the binder panel. */
   readonly element: HTMLElement;
+}
+
+// ── Icons ─────────────────────────────────────────────────────────
+
+const ICON_FILE = "📄";
+const ICON_KNOT = "◆";
+const ICON_STITCH = "◇";
+
+function iconClass(kind: string): string {
+  switch (kind) {
+    case "file": return "brink-binder-icon-file";
+    case "knot": return "brink-binder-icon-knot";
+    case "stitch": return "brink-binder-icon-stitch";
+    default: return "";
+  }
+}
+
+function iconChar(kind: string): string {
+  switch (kind) {
+    case "file": return ICON_FILE;
+    case "knot": return ICON_KNOT;
+    case "stitch": return ICON_STITCH;
+    default: return "·";
+  }
 }
 
 // ── Implementation ─────────────────────────────────────────────────
@@ -33,27 +55,20 @@ export function createBinder(options: BinderOptions): BinderHandle {
   const root = document.createElement("div");
   root.className = "brink-binder";
 
-  /** Tracks which file paths are collapsed. Default: all expanded. */
+  /** Tracks collapsed state by key (file path or "path::knotName"). */
   const collapsed = new Set<string>();
 
   let inputActive = false;
   let clickTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** Emit tab-changed event so tab bar and binder refresh. */
   function notifyTabChanged(): void {
     manager.getView().dom.dispatchEvent(new CustomEvent("brink-tab-changed"));
   }
 
-  /**
-   * Resolve a symbol's current byte range from the live outline.
-   * Flushes the editor first so the outline reflects the latest edits
-   * (the compile callback is debounced at 500ms, so offsets may be stale).
-   */
   function resolveTarget(
     target: import("../editor/state-manager.js").TabTarget,
   ): import("../editor/state-manager.js").TabTarget {
     if (target.kind !== "symbol") return target;
-    // Flush current editor content → triggers re-analysis
     manager.snapshot();
     const session = manager.getProject().getSession();
     const view = manager.getView();
@@ -75,7 +90,6 @@ export function createBinder(options: BinderOptions): BinderHandle {
     return target;
   }
 
-  /** Handle single/double-click discrimination. */
   function attachClickHandlers(
     el: HTMLElement,
     target: import("../editor/state-manager.js").TabTarget,
@@ -99,6 +113,77 @@ export function createBinder(options: BinderOptions): BinderHandle {
     return slash >= 0 ? path.substring(slash + 1) : path;
   }
 
+  // ── Row builder ───────────────────────────────────────────────
+
+  function buildRow(opts: {
+    depth: number;
+    kind: string;
+    label: string;
+    expandable: boolean;
+    expandKey: string;
+    isActive: boolean;
+  }): { row: HTMLElement; chevron: HTMLElement } {
+    const row = document.createElement("div");
+    row.className = "brink-binder-row"
+      + (opts.kind === "file" ? " brink-binder-file-row" : "")
+      + (opts.kind === "knot" ? " brink-binder-knot" : "")
+      + (opts.kind === "stitch" ? " brink-binder-stitch" : "");
+
+    if (opts.isActive) {
+      row.classList.add("brink-binder-active");
+    }
+
+    // Indent guides
+    const guides = document.createElement("div");
+    guides.className = "brink-binder-guides";
+    for (let i = 0; i < opts.depth; i++) {
+      const guide = document.createElement("div");
+      guide.className = "brink-binder-guide";
+      guides.appendChild(guide);
+    }
+    row.appendChild(guides);
+
+    // Chevron
+    const chevron = document.createElement("div");
+    chevron.className = "brink-binder-chevron";
+    if (opts.expandable) {
+      chevron.textContent = "▶";
+      if (!collapsed.has(opts.expandKey)) {
+        // expanded state — rotate to point down
+      } else {
+        chevron.classList.add("collapsed");
+      }
+      chevron.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (collapsed.has(opts.expandKey)) {
+          collapsed.delete(opts.expandKey);
+        } else {
+          collapsed.add(opts.expandKey);
+        }
+        render();
+      });
+    } else {
+      chevron.classList.add("leaf");
+    }
+    row.appendChild(chevron);
+
+    // Icon
+    const icon = document.createElement("span");
+    icon.className = "brink-binder-icon " + iconClass(opts.kind);
+    icon.textContent = iconChar(opts.kind);
+    row.appendChild(icon);
+
+    // Label
+    const label = document.createElement("span");
+    label.className = "brink-binder-label";
+    label.textContent = opts.label;
+    row.appendChild(label);
+
+    return { row, chevron };
+  }
+
+  // ── Render ────────────────────────────────────────────────────
+
   function render(): void {
     root.innerHTML = "";
 
@@ -107,55 +192,31 @@ export function createBinder(options: BinderOptions): BinderHandle {
     const activeTab = manager.getActiveTab();
 
     for (const file of outline) {
-      const fileNode = document.createElement("div");
-      fileNode.className = "brink-binder-file";
+      // Filter to only structural symbols (knots)
+      const knots = file.symbols.filter((s) => s.kind === "knot");
+      const hasChildren = knots.length > 0;
+      const fileKey = file.path;
 
-      // File row
-      const fileRow = document.createElement("div");
-      fileRow.className = "brink-binder-row brink-binder-file-row";
+      const isFileActive = activeTab.target.kind === "file" && activeTab.target.path === file.path;
 
-      // Expand/collapse arrow
-      const hasChildren = file.symbols.length > 0;
-      const arrow = document.createElement("span");
-      arrow.className = "brink-binder-arrow";
-      if (hasChildren) {
-        arrow.textContent = collapsed.has(file.path) ? "\u25b6" : "\u25bc";
-        arrow.addEventListener("click", (e) => {
-          e.stopPropagation();
-          if (collapsed.has(file.path)) {
-            collapsed.delete(file.path);
-          } else {
-            collapsed.add(file.path);
-          }
-          render();
-        });
-      } else {
-        arrow.textContent = " ";
-      }
-      fileRow.appendChild(arrow);
-
-      const fileLabel = document.createElement("span");
-      fileLabel.className = "brink-binder-label brink-binder-file-label";
-      fileLabel.textContent = displayName(file.path);
-      fileRow.appendChild(fileLabel);
-
-      // Highlight active
-      if (activeTab.target.kind === "file" && activeTab.target.path === file.path) {
-        fileRow.classList.add("brink-binder-active");
-      }
+      const { row: fileRow } = buildRow({
+        depth: 0,
+        kind: "file",
+        label: displayName(file.path),
+        expandable: hasChildren,
+        expandKey: fileKey,
+        isActive: isFileActive,
+      });
 
       attachClickHandlers(fileRow, { kind: "file", path: file.path });
-
-      fileNode.appendChild(fileRow);
+      root.appendChild(fileRow);
 
       // Children (if expanded)
-      if (!collapsed.has(file.path)) {
-        for (const symbol of file.symbols) {
-          renderSymbol(fileNode, file.path, symbol, 1, activeTab);
+      if (!collapsed.has(fileKey)) {
+        for (const knot of knots) {
+          renderKnot(file.path, knot, activeTab);
         }
       }
-
-      root.appendChild(fileNode);
     }
 
     // "+ New file" button
@@ -169,38 +230,65 @@ export function createBinder(options: BinderOptions): BinderHandle {
     root.appendChild(newBtn);
   }
 
-  function renderSymbol(
-    parent: HTMLElement,
+  function renderKnot(
     path: string,
-    symbol: DocumentSymbol,
-    depth: number,
+    knot: DocumentSymbol,
     activeTab: ReturnType<typeof manager.getActiveTab>,
   ): void {
-    const kind = symbol.kind === "knot" ? "knot" : "stitch";
-    const row = document.createElement("div");
-    row.className = `brink-binder-row brink-binder-${kind}`;
-    row.style.paddingLeft = `${8 + depth * 14}px`;
+    const stitches = knot.children.filter((c) => c.kind === "stitch");
+    const hasStitches = stitches.length > 0;
+    const knotKey = `${path}::${knot.name}`;
 
-    const label = document.createElement("span");
-    label.className = "brink-binder-label";
-    label.textContent = symbol.name;
-    row.appendChild(label);
+    const isKnotActive = activeTab.id === knotKey;
 
-    // Highlight active symbol
-    const symbolId = `${path}::${symbol.name}`;
-    if (activeTab.id === symbolId) {
-      row.classList.add("brink-binder-active");
-    }
+    const { row: knotRow } = buildRow({
+      depth: 1,
+      kind: "knot",
+      label: knot.name,
+      expandable: hasStitches,
+      expandKey: knotKey,
+      isActive: isKnotActive,
+    });
 
-    console.log(`[binder] symbol="${symbol.name}" kind=${symbol.kind} full_start=${symbol.full_start} full_end=${symbol.full_end}`);
-    attachClickHandlers(row, { kind: "symbol", path, name: symbol.name, start: symbol.full_start, end: symbol.full_end });
+    attachClickHandlers(knotRow, {
+      kind: "symbol", path, name: knot.name,
+      start: knot.full_start, end: knot.full_end,
+    });
+    root.appendChild(knotRow);
 
-    parent.appendChild(row);
-
-    for (const child of symbol.children) {
-      renderSymbol(parent, path, child, depth + 1, activeTab);
+    // Stitches (if expanded)
+    if (hasStitches && !collapsed.has(knotKey)) {
+      for (const stitch of stitches) {
+        renderStitch(path, stitch, activeTab);
+      }
     }
   }
+
+  function renderStitch(
+    path: string,
+    stitch: DocumentSymbol,
+    activeTab: ReturnType<typeof manager.getActiveTab>,
+  ): void {
+    const stitchId = `${path}::${stitch.name}`;
+    const isActive = activeTab.id === stitchId;
+
+    const { row } = buildRow({
+      depth: 2,
+      kind: "stitch",
+      label: stitch.name,
+      expandable: false,
+      expandKey: "",
+      isActive: isActive,
+    });
+
+    attachClickHandlers(row, {
+      kind: "symbol", path, name: stitch.name,
+      start: stitch.full_start, end: stitch.full_end,
+    });
+    root.appendChild(row);
+  }
+
+  // ── New file input ────────────────────────────────────────────
 
   function showNewFileInput(): void {
     inputActive = true;
