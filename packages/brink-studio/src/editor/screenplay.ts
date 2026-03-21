@@ -226,6 +226,44 @@ const bracketPlugin = ViewPlugin.fromClass(
   },
 );
 
+// ── Atomic ranges for screenplay sigils ───────────────────────────
+// Prevents cursor from landing inside hidden @, :<>, <> regions.
+
+const atomicMark = Decoration.mark({});
+
+const screenplayAtomicRanges = EditorView.atomicRanges.of((view) => {
+  const infos = view.state.field(elementTypeField);
+  const builder = new RangeSetBuilder<Decoration>();
+
+  for (let i = 1; i <= view.state.doc.lines; i++) {
+    const line = view.state.doc.line(i);
+    const info = infos[i - 1];
+    if (!info) continue;
+
+    if (info.type === ElementType.Character) {
+      const trimmed = line.text.trimStart();
+      const ws = line.text.length - trimmed.length;
+      // @ at start
+      builder.add(line.from + ws, line.from + ws + 1, atomicMark);
+      // :<> at end
+      const colonGlueStart = line.to - 3;
+      if (colonGlueStart > line.from + ws + 1) {
+        builder.add(colonGlueStart, line.to, atomicMark);
+      }
+    }
+
+    if (info.type === ElementType.Parenthetical) {
+      // <> at end
+      const glueStart = line.to - 2;
+      if (glueStart > line.from) {
+        builder.add(glueStart, line.to, atomicMark);
+      }
+    }
+  }
+
+  return builder.finish();
+});
+
 export function screenplayDecorations(): Extension {
-  return [elementTypeField, screenplayPlugin, bracketPlugin];
+  return [elementTypeField, screenplayPlugin, bracketPlugin, screenplayAtomicRanges];
 }

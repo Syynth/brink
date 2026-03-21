@@ -183,6 +183,68 @@ Every line in the editor is classified as one of the following element types. Ea
 | **Include** (`INCLUDE`) | Monospace, file path styled as a link (clickable to open file). Typically in file preamble. | Type `INCLUDE` at start of line. | Narrative text |
 | **External** (`EXTERNAL`) | Monospace, function signature styling. | Type `EXTERNAL` at start of line. | Narrative text |
 
+### Screenplay elements
+
+Screenplay elements are editor conventions layered on top of valid ink syntax. They are not recognized by `line_contexts()` (which reports them as narrative) — instead, a client-side post-pass in the TS layer pattern-matches their syntax and assigns screenplay element types. This keeps the brink-syntax and brink-ide layers unaware of screenplay conventions.
+
+The underlying ink syntax uses `@Name:<>` for character lines and `(text)<>` for parentheticals. The `:<>` is colon + glue — the runtime sees `@Name:` as a recognizable pattern for downstream game engines, and `<>` (standard ink glue) merges the character/parenthetical line with the following dialogue line into a single output line.
+
+| Element | Ink syntax | Visible in editor | Visual treatment | Entry trigger | Succession (Enter) |
+|---------|-----------|-------------------|-----------------|---------------|---------------------|
+| **Character** | `@Name:<>` | `NAME` (centered, bold, accent color) | `@`, `:`, `<>` hidden by replace widgets. Name text uppercased in display. Centered on the line. | Tab on a blank line preceded by a blank line inserts `@:<>` template, cursor between `@` and `:` | Dialogue (new line below) |
+| **Parenthetical** | `(text)<>` | `(text)` (italic, dimmed, indented) | `<>` hidden by replace widget. Parentheses visible, styled. Indented and italic. | Tab from character line or empty dialogue line | Dialogue (new line below; if empty, converts to dialogue) |
+| **Dialogue** | Plain narrative text following character or parenthetical | Normal text (indented from both margins) | Wider indent than narrative, narrower than full width. Screenplay dialogue layout. | Enter from character or parenthetical line. Tab from narrative after double-blank. | See transition table below |
+
+**Character line structure:**
+```
+@Name:<>
+│ │   ││
+│ │   │└─ glue (hidden) — merges with next line in runtime output
+│ │   └── colon (hidden) — separator for runtime pattern matching
+│ └────── name text (visible, centered, bold, uppercased)
+└──────── character sigil (hidden)
+```
+
+**Parenthetical structure:**
+```
+(text)<>
+│    │││
+│    ││└─ glue (hidden) — merges with next line
+│    │└── close paren (visible, styled)
+│    └─── parenthetical text (visible, italic)
+└──────── open paren (visible, styled)
+```
+
+**Cursor restrictions:** The cursor cannot enter the `@`, `:`, or `<>` regions. These are atomic replace decorations. If the user backspaces from the line below into a character line, the cursor lands between `@` and `:` (in the name text region). If the user presses Enter in the middle of the name (e.g., `@Hello|friend:<>` where `|` is cursor), the result is:
+```
+@Hello:<>
+friend
+```
+The second line becomes plain narrative text (the name is split, the sigils stay with the first part).
+
+**Smart backspace:** On a character line with no name text (`@:<>`), Backspace clears the entire line including all sigils, returning it to a blank line. Shift+Tab on any screenplay element strips the sigils and converts to plain narrative text.
+
+**Screenplay element transitions (Tab / Enter):**
+
+| Current element | Tab | Enter | Shift+Tab |
+|----------------|-----|-------|-----------|
+| **Character** | Parenthetical | Dialogue (new line) | Strip to narrative |
+| **Parenthetical** | Dialogue | Dialogue (empty → convert; non-empty → new line) | Strip to narrative |
+| **Dialogue (empty)** | Parenthetical | Element picker dropdown | Strip to narrative |
+| **Dialogue (with text)** | Parenthetical | Action/narrative | Strip to narrative |
+| **Blank line** (after blank) | Character (insert `@:<>`) | Element picker dropdown | — |
+
+Shift+Enter within dialogue inserts a new line that stays within dialogue format.
+
+The **element picker** is an inline dropdown (similar to the existing element type dropdown in the status bar) that appears on Enter from a blank or empty dialogue line, allowing the user to choose the next element type (character, parenthetical, dialogue, narrative, choice, gather, divert, etc.).
+
+**Classification:** Screenplay elements are identified by a TS post-pass in `element-type.ts`, in the same layer that already promotes blank lines after choices to choice bodies. The post-pass runs after `line_contexts()` returns from wasm and pattern-matches:
+- Line matching `^@[^:]*:<>$` → Character
+- Line matching `^\(.*\)<>$` → Parenthetical
+- Narrative text immediately following a Character or Parenthetical line → Dialogue
+
+**Autocomplete for character names** is deferred to a generic pattern-matching autocomplete capability in brink-ide (see deferred items). When implemented, it will collect all `@Name:` occurrences across the project and suggest them when typing in a character line. This capability will also be reusable for tag autocomplete and other pattern-based suggestions.
+
 ### Inline elements
 
 Inline elements live within content lines and do not have their own element type in the state machine. They receive rich styling within the line:
@@ -303,6 +365,9 @@ The editor uses a proportional body font for narrative content and a monospace f
 | Choice text | Proportional | Normal | Body (1em) |
 | Gather text | Proportional | Normal | Body (1em) |
 | Divert | Proportional | Normal | Body (1em), right-aligned when standalone |
+| Character name | Proportional | Bold | Body (1em), centered, accent color |
+| Parenthetical | Proportional | Normal, italic | Body (1em), indented, dimmed |
+| Dialogue | Proportional | Normal | Body (1em), indented from both margins |
 | Logic / Variable / Temp | Monospace | Normal | Slightly smaller (0.9em) |
 | Comment | Proportional | Normal, italic | Body (1em), dimmed |
 | Tag | Proportional | Normal | Small (0.85em), pill/badge |
@@ -723,8 +788,11 @@ The screenplay mode and live preview are implemented as CM6 extensions. This sec
 | Element type classification | `StateField` | Tracks the element type and weave depth of each line. Updated on document changes by parsing line prefixes against the syntax tree. |
 | Element styling | `EditorView.decorations` (line decorations) | Applies CSS classes per element type. Line-level decorations for font, weight, size, indentation. |
 | Weave indentation | `EditorView.decorations` (replace decorations) | Hides repeated sigils (`* *` → `*`) and applies indentation via line padding. |
+| Screenplay sigil hiding | `EditorView.decorations` (replace decorations) | Hides `@`, `:`, `<>` in character lines and `<>` in parentheticals via atomic replace widgets. Cursor cannot enter these regions. |
+| Screenplay post-pass | Part of `elementTypeField` | After `line_contexts()` returns from wasm, pattern-matches `@Name:<>` → Character, `(text)<>` → Parenthetical, and following narrative → Dialogue. Same mechanism as the existing choice body promotion. |
 | Sigil conversion | `EditorView.inputHandler` | Intercepts single-character input at line start. If the character is a recognized sigil, converts the line's element type instead of inserting the character literally. |
-| State machine keybindings | `keymap` | Enter, Shift+Enter, Tab, Shift+Tab with context-sensitive behavior based on element type and weave depth. |
+| State machine keybindings | `keymap` | Enter, Shift+Enter, Tab, Shift+Tab with context-sensitive behavior based on element type and weave depth. Includes screenplay element transitions (character → parenthetical → dialogue cycle). |
+| Element picker | `EditorView` tooltip/widget | Inline dropdown on Enter from blank/empty-dialogue lines. Lets user choose next element type without a toolbar. |
 | Divert right-alignment | `EditorView.decorations` (line decorations) | Applies right-alignment CSS to standalone divert lines. |
 
 ### Live preview extensions
@@ -869,3 +937,4 @@ This approach requires no JS coordination and works regardless of the host's UI 
 | Export to PDF / print | Out of scope | Not part of the editor's responsibility. |
 | Localization of editor UI | Future | V1 is English-only. |
 | Undo/redo integration with host | Deferred | CM6 has built-in undo/redo. Integration with a host's undo system is a future concern for the embedding layer, not brink-studio itself. |
+| Pattern-based autocomplete (brink-ide) | Deferred | Generic capability to collect pattern matches across the project (e.g., all `@Name:` occurrences for character name autocomplete, all `#tag` occurrences for tag autocomplete). Not screenplay-specific — a general brink-ide feature. |

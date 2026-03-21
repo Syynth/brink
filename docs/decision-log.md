@@ -489,3 +489,31 @@
 - **SCOPE:** architectural
 - **WHAT:** The wasm `EditorSession` gains a `set_view_context(path, start, end)` method. When a range is set: `update_source()` splices the fragment into the full file at `[start, end)`; IDE responses (line_contexts, semantic_tokens, completions, hover, etc.) filter to the range and rebase byte offsets. The TypeScript state manager stops owning splice logic — it just calls `set_view_context` before creating an EditorState. This makes "scoped editing of a sub-region" a first-class concept reusable across s92-studio, not a UI-layer hack.
 - **WHY:** The current approach duplicates splice logic in TypeScript, corrupts the session when `updateSource()` is called with a fragment (causes wasm `unreachable` panic via `line_contexts`), and won't generalize to s92-studio's need to present a single knot for editing without exposing the full file.
+
+## Screenplay conventions (character/dialogue/parenthetical)
+- **WHEN:** 2026-03-21
+- **PROJECT:** brink / s92-studio
+- **SYSTEM:** brink-studio / brink-ide
+- **SCOPE:** architectural
+- **WHAT:** Screenplay formatting is implemented as editor conventions over valid ink syntax, not as language extensions. The ink source uses standard syntax with specific patterns:
+  - **Character line**: `@Name:<>` — `@` prefix marks character, `:<>` is colon + glue. The runtime sees `@Name:` (a recognizable pattern for downstream game engines). The editor hides `@`, `:`, `<>` via widgets, shows just `NAME` centered/bold.
+  - **Parenthetical**: `(text)<>` — parentheses visible, `<>` glue hidden. Text is styled italic/dimmed.
+  - **Dialogue**: plain narrative text on the line following character/parenthetical. Glue (`<>`) makes the character line and dialogue line appear as one output line to the runtime.
+  - State machine: double-blank + Tab → insert `@:<>` template. Backspace on empty character line clears entire `@:<>` structure. Shift+Tab strips sigils back to plain text. Enter mid-name splits correctly. Cursor cannot enter the `@`/`:`/`<>` regions directly.
+  - Character name autocomplete via pattern-matching across project (generic capability in brink-ide, reusable for tags etc).
+- **WHY:** This keeps ink syntax valid and parseable by the standard pipeline. The `@Name:` pattern is meaningful to downstream game engines (consumers of the runtime's `continue_line()` output) without requiring brink-syntax changes. The `<>` glue is standard ink. The editor conventions make it feel like native screenplay formatting while the source remains portable ink.
+
+## Screenplay keybinding transitions
+- **WHEN:** 2026-03-21
+- **PROJECT:** brink / s92-studio
+- **SYSTEM:** brink-studio
+- **SCOPE:** moderate
+- **WHAT:** Tab and Enter on screenplay elements follow Scrivener-like transitions adapted for plaintext ink:
+  - **Character** → Tab: parenthetical, Enter: dialogue
+  - **Parenthetical** → Tab: dialogue, Enter: dialogue (empty line converts to dialogue; non-empty inserts new dialogue line below)
+  - **Dialogue (empty)** → Tab: parenthetical, Enter: element picker dropdown
+  - **Dialogue (text)** → Tab: parenthetical, Enter: action/narrative (Shift+Enter: new line within dialogue)
+  - **Blank line** → Enter on blank: element picker dropdown to select format
+  - **Shift+Tab** on any screenplay element: strip sigils, revert to plain narrative
+  - The element picker is an inline dropdown (like the existing element type dropdown in the status bar) that converts the empty line to the chosen format.
+- **WHY:** Matches Scrivener's muscle memory for screenwriters. The state machine makes screenplay authoring feel native without requiring mode switches. Element picker on blank Enter avoids the need for a toolbar — the keyboard drives everything.

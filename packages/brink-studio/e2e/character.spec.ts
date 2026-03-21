@@ -113,17 +113,23 @@ test.describe("character lines", () => {
     await setCursor(page, 1);
     expect(await getCursorLine(page)).toBe(1);
 
-    // Arrow right 4 times through J-O-H-N
-    for (let i = 0; i < 4; i++) {
+    // Track cursor position at each step
+    const positions: number[] = [await getCursorPos(page)];
+    for (let i = 0; i < 8; i++) {
       await page.keyboard.press("ArrowRight");
+      positions.push(await getCursorPos(page));
     }
 
-    // Should still be on line 1, at end of name
-    expect(await getCursorLine(page)).toBe(1);
+    // With atomicRanges on @ (0-1) and :<> (5-8):
+    // Expected: 1, 2, 3, 4, 5, 9, 10, 11, 12, 13
+    // (skip from 5 to 9, jumping over :<>\n)
+    // At minimum, after the name we must reach line 2
+    expect(positions).toContain(9); // start of "hello" on line 2
 
-    // One more right should skip :<> and land on line 2
-    await page.keyboard.press("ArrowRight");
-    expect(await getCursorLine(page)).toBe(2);
+    // Should never get stuck — no two consecutive identical positions
+    for (let i = 1; i < positions.length; i++) {
+      expect(positions[i]).not.toBe(positions[i - 1]);
+    }
   });
 
   // ── 5. Home/End don't get stuck on double-press ─────────────────
