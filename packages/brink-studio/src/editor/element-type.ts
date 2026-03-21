@@ -18,6 +18,9 @@ export enum ElementType {
   External,
   Tag,
   Blank,
+  Character,
+  Parenthetical,
+  Dialogue,
 }
 
 export interface LineInfo {
@@ -44,6 +47,9 @@ const ELEMENT_CLASSES: Record<ElementType, string> = {
   [ElementType.External]: "brink-external",
   [ElementType.Tag]: "brink-tag",
   [ElementType.Blank]: "brink-blank",
+  [ElementType.Character]: "brink-character",
+  [ElementType.Parenthetical]: "brink-parenthetical",
+  [ElementType.Dialogue]: "brink-dialogue",
 };
 
 export function elementClass(type: ElementType): string {
@@ -166,6 +172,14 @@ function classifyLine(text: string): LineInfo {
     return { type: ElementType.Tag, depth: 0, sticky: false, standalone: false };
   }
 
+  if (/^@[^:]*:<>$/.test(trimmed)) {
+    return { type: ElementType.Character, depth: 0, sticky: false, standalone: false };
+  }
+
+  if (/^\(.*\)<>$/.test(trimmed)) {
+    return { type: ElementType.Parenthetical, depth: 0, sticky: false, standalone: false };
+  }
+
   return { type: ElementType.NarrativeText, depth: 0, sticky: false, standalone: false };
 }
 
@@ -211,6 +225,28 @@ function computeLineInfos(state: EditorState): LineInfo[] {
         infos[i] = { type: ElementType.ChoiceBody, depth: prev.depth, sticky: false, standalone: false };
       }
     }
+
+    // Screenplay post-pass: recognize @Name:<>, (text)<>, and dialogue
+    for (let i = 0; i < infos.length; i++) {
+      const lt = state.doc.line(i + 1).text;
+      const trimmed = lt.trimStart();
+      if (/^@[^:]*:<>$/.test(trimmed)) {
+        infos[i] = { type: ElementType.Character, depth: 0, sticky: false, standalone: false };
+      } else if (/^\(.*\)<>$/.test(trimmed)) {
+        infos[i] = { type: ElementType.Parenthetical, depth: 0, sticky: false, standalone: false };
+      }
+    }
+    // Narrative after character/parenthetical/dialogue → dialogue
+    for (let i = 1; i < infos.length; i++) {
+      const prev = infos[i - 1];
+      if (
+        (prev.type === ElementType.Character || prev.type === ElementType.Parenthetical || prev.type === ElementType.Dialogue) &&
+        infos[i].type === ElementType.NarrativeText
+      ) {
+        infos[i] = { type: ElementType.Dialogue, depth: 0, sticky: false, standalone: false };
+      }
+    }
+
     return infos;
   }
 

@@ -21,6 +21,9 @@ const ELEMENT_LABELS: Record<ElementType, string> = {
   [ElementType.External]: "External",
   [ElementType.Tag]: "Tag",
   [ElementType.Blank]: "Blank",
+  [ElementType.Character]: "Character",
+  [ElementType.Parenthetical]: "Parenthetical",
+  [ElementType.Dialogue]: "Dialogue",
 };
 
 function elementLabel(info: LineInfo): string {
@@ -47,11 +50,22 @@ const CONVERTIBLE_TYPES: { label: string; sigil: string }[] = [
   { label: "Tag", sigil: "# " },
   { label: "Knot Header", sigil: "=== " },
   { label: "Stitch Header", sigil: "= " },
+  { label: "Character", sigil: "@:<>" },
+  { label: "Parenthetical", sigil: "()<>" },
 ];
 
 function getLineSigilRange(text: string): { start: number; end: number } {
   const trimmed = text.trimStart();
   const ws = text.length - trimmed.length;
+
+  // Screenplay: @...:<> → entire line is the sigil structure
+  if (/^@[^:]*:<>$/.test(trimmed)) {
+    return { start: ws, end: ws + trimmed.length };
+  }
+  // Screenplay: (...)<> → entire line is the sigil structure
+  if (/^\(.*\)<>$/.test(trimmed)) {
+    return { start: ws, end: ws + trimmed.length };
+  }
 
   const patterns = [
     /^={3,}\s*/,

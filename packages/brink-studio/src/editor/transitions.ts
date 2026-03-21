@@ -39,6 +39,18 @@ export function lineHasContent(text: string, info: LineInfo): boolean {
   if (info.type === ElementType.ChoiceBody) {
     return text.trim() !== "";
   }
+  if (info.type === ElementType.Character) {
+    // Content is the name between @ and :<>
+    const trimmed = text.trimStart();
+    const m = trimmed.match(/^@([^:]*):<>$/);
+    return m !== null && m[1].trim() !== "";
+  }
+  if (info.type === ElementType.Parenthetical) {
+    // Content is text between ( and )<>
+    const trimmed = text.trimStart();
+    const m = trimmed.match(/^\((.*)\)<>$/);
+    return m !== null && m[1].trim() !== "";
+  }
   return text.trim() !== "";
 }
 
@@ -87,7 +99,12 @@ export type ActionId =
   | "decreaseDepth"
   | "convertToChoice"
   | "convertToGather"
-  | "trap";
+  | "trap"
+  | "newDialogueLine"
+  | "convertToParenthetical"
+  | "convertToDialogue"
+  | "clearScreenplaySigils"
+  | "stripToNarrative";
 
 // ── Transition table ───────────────────────────────────────────────
 
@@ -142,6 +159,25 @@ export const TRANSITIONS: Transition[] = [
   // ── Narrative ────────────────────────────────────────────────────
   // Tab: narrative → gather (enters the cycle)
   { element: ElementType.NarrativeText, key: "Tab",                     action: "convertToGather",          hint: "gather" },
+
+  // ── Character ─────────────────────────────────────────────────
+  { element: ElementType.Character, key: "Tab",         hasContent: true,  action: "convertToParenthetical",   hint: "parenthetical" },
+  { element: ElementType.Character, key: "Tab",         hasContent: false, action: "trap",                     hint: "" },
+  { element: ElementType.Character, key: "Enter",       hasContent: true,  action: "newDialogueLine",          hint: "dialogue" },
+  { element: ElementType.Character, key: "Enter",       hasContent: false, action: "clearScreenplaySigils",    hint: "clear" },
+  { element: ElementType.Character, key: "Shift-Tab",                      action: "stripToNarrative",         hint: "narrative" },
+
+  // ── Parenthetical ─────────────────────────────────────────────
+  { element: ElementType.Parenthetical, key: "Tab",                        action: "convertToDialogue",        hint: "dialogue" },
+  { element: ElementType.Parenthetical, key: "Enter",   hasContent: true,  action: "newDialogueLine",          hint: "dialogue" },
+  { element: ElementType.Parenthetical, key: "Enter",   hasContent: false, action: "convertToDialogue",        hint: "dialogue" },
+  { element: ElementType.Parenthetical, key: "Shift-Tab",                  action: "stripToNarrative",         hint: "narrative" },
+
+  // ── Dialogue ──────────────────────────────────────────────────
+  { element: ElementType.Dialogue, key: "Tab",                             action: "convertToParenthetical",   hint: "parenthetical" },
+  { element: ElementType.Dialogue, key: "Enter",        hasContent: true,  action: "newDialogueLine",          hint: "dialogue" },
+  { element: ElementType.Dialogue, key: "Enter",        hasContent: false, action: "stripToNarrative",         hint: "narrative" },
+  { element: ElementType.Dialogue, key: "Shift-Tab",                       action: "stripToNarrative",         hint: "narrative" },
 ];
 
 // ── Matching ───────────────────────────────────────────────────────
@@ -272,6 +308,69 @@ export function executeAction(action: ActionId, view: EditorView, info: LineInfo
 
     case "trap":
       return true;
+
+    case "newDialogueLine": {
+      view.dispatch(state.update({
+        changes: { from: cursorPos, insert: "\n" },
+        selection: { anchor: cursorPos + 1 },
+      }));
+      return true;
+    }
+
+    case "convertToParenthetical": {
+      const line = state.doc.lineAt(cursorPos);
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: "()<>" },
+        selection: { anchor: line.from + 1 }, // cursor between parens
+      });
+      return true;
+    }
+
+    case "convertToDialogue": {
+      const line = state.doc.lineAt(cursorPos);
+      const trimmed = line.text.trimStart();
+      const ws = line.text.length - trimmed.length;
+      const m = trimmed.match(/^\((.*)\)<>$/);
+      const content = m ? m[1] : trimmed;
+      const prefix = line.text.slice(0, ws);
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: prefix + content },
+        selection: { anchor: line.from + ws + content.length },
+      });
+      return true;
+    }
+
+    case "clearScreenplaySigils": {
+      const line = state.doc.lineAt(cursorPos);
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: "" },
+        selection: { anchor: line.from },
+      });
+      return true;
+    }
+
+    case "stripToNarrative": {
+      const line = state.doc.lineAt(cursorPos);
+      const trimmed = line.text.trimStart();
+      const ws = line.text.length - trimmed.length;
+      const prefix = line.text.slice(0, ws);
+      let content = trimmed;
+      // Strip @...:<> sigils
+      const charMatch = trimmed.match(/^@([^:]*):<>$/);
+      if (charMatch) {
+        content = charMatch[1];
+      }
+      // Strip (...)<> sigils
+      const parenMatch = trimmed.match(/^\((.*)\)<>$/);
+      if (parenMatch) {
+        content = parenMatch[1];
+      }
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: prefix + content },
+        selection: { anchor: line.from + ws + content.length },
+      });
+      return true;
+    }
   }
 }
 

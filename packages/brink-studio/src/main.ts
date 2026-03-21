@@ -8,29 +8,91 @@ import { ProjectSession } from "./project-session.js";
 import { EditorStateManager } from "./editor/state-manager.js";
 import { createFileTabBar } from "./editor/file-tabs.js";
 
-const DEFAULT_INK = `// Welcome to brink studio!
-// Edit this ink story and watch it run.
+const DEFAULT_INK = `// A short screenplay-style demo.
+// Try Tab on a blank line below another blank line to start a character.
 
--> start
+VAR tension = 0
 
-=== start ===
-Hello, world!
-What would you like to do?
+-> opening
 
-* [Tell me a story]
-  -> story
-* [Goodbye]
-  Farewell!
-  -> END
+=== opening ===
+The lights dim. A single bulb swings above a metal table.
 
-=== story ===
-Once upon a time, there was a little compiler.
-It worked very hard to understand stories.
-* [And then?]
-  And then it got everything right!
-  -> END
-* [Go back]
-  -> start
+@DETECTIVE:<>
+(leaning forward)<>
+Where were you last night?
+
+@SUSPECT:<>
+(quietly)<>
+I was at home. Alone.
+
+@DETECTIVE:<>
+Alone. Convenient.
+
+~ tension = tension + 1
+
+* [Press harder]
+  -> interrogation.pressure
+* [Change the subject]
+  -> interrogation.redirect
+* [Show the evidence]
+  -> evidence
+
+=== interrogation ===
+
+= pressure
+@DETECTIVE:<>
+(slamming the table)<>
+We have witnesses who say otherwise.
+
+@SUSPECT:<>
+Then your witnesses are liars.
+
+~ tension = tension + 1
+
+* {tension >= 2} [Suspect is cracking — show the photo]
+  -> evidence
+* [Back off for now]
+  -> interrogation.redirect
+
+= redirect
+@DETECTIVE:<>
+(standing, walking to the window)<>
+Nice night out there. You like the harbour?
+
+@SUSPECT:<>
+(shifting uncomfortably)<>
+What does that have to do with anything?
+
+* [Go back to the pressure]
+  -> interrogation.pressure
+* [Wrap it up]
+  -> ending
+
+=== evidence ===
+The detective slides a photograph across the table.
+
+@DETECTIVE:<>
+Recognise this?
+
+@SUSPECT:<>
+(long pause)<>
+...where did you get that?
+
+@DETECTIVE:<>
+(smiling)<>
+I ask the questions.
+
+-> ending
+
+=== ending ===
+The tape recorder clicks off. The detective stands.
+
+@DETECTIVE:<>
+That will be all. For now.
+
+The suspect is led from the room.
+-> END
 `;
 
 async function main(): Promise<void> {

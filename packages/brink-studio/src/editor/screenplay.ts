@@ -35,6 +35,15 @@ class DepthSigilWidget extends WidgetType {
   }
 }
 
+class EmptySigilWidget extends WidgetType {
+  toDOM(): HTMLElement {
+    const span = document.createElement("span");
+    span.style.display = "none";
+    return span;
+  }
+  eq(): boolean { return true; }
+}
+
 // ── Sigil prefix parsing ───────────────────────────────────────────
 
 /** Find the full sigil prefix range (all sigils + spaces) for a choice/gather line. */
@@ -107,6 +116,39 @@ function buildLineDecos(view: EditorView): DecorationSet {
           line.from + range.start,
           line.from + range.end,
           Decoration.replace({ widget }),
+        );
+      }
+    }
+
+    // Character line: hide @ prefix and :<> suffix
+    if (info.type === ElementType.Character) {
+      const trimmed = line.text.trimStart();
+      const ws = line.text.length - trimmed.length;
+      // Hide @ at start
+      builder.add(
+        line.from + ws,
+        line.from + ws + 1,
+        Decoration.replace({ widget: new EmptySigilWidget() }),
+      );
+      // Hide :<> at end
+      const colonGlueStart = line.to - 3; // :<> is 3 chars
+      if (colonGlueStart > line.from + ws + 1) {
+        builder.add(
+          colonGlueStart,
+          line.to,
+          Decoration.replace({ widget: new EmptySigilWidget() }),
+        );
+      }
+    }
+
+    // Parenthetical line: hide <> at end
+    if (info.type === ElementType.Parenthetical) {
+      const glueStart = line.to - 2; // <> is 2 chars
+      if (glueStart > line.from) {
+        builder.add(
+          glueStart,
+          line.to,
+          Decoration.replace({ widget: new EmptySigilWidget() }),
         );
       }
     }
