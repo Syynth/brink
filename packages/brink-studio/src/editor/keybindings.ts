@@ -252,6 +252,8 @@ function showInlineElementPicker(view: EditorView): boolean {
     } else if (e.key === "Escape") {
       e.preventDefault();
       dismissInlineElementPicker();
+    } else if (e.key === "Shift" || e.key === "Alt" || e.key === "Control" || e.key === "Meta") {
+      // Ignore modifier-only keypresses
     } else {
       // Check for shortcut key match
       const match = CONVERTIBLE_TYPES.find((t) => t.key === e.key.toLowerCase() || t.key === e.key);
