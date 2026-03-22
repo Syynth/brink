@@ -1,0 +1,133 @@
+# CLAUDE.md
+
+## What we're building
+
+A custom Ink language compiler, runtime, and studio in Rust. The compiler pipeline: `.ink` source → parse (`brink-syntax`) → HIR lower (`brink-ir::hir`) → analyze (`brink-analyzer`) → LIR lower (`brink-ir::lir`) → bytecode codegen (`brink-codegen-inkb`) → `StoryData` (`brink-format`) → link + execute (`brink-runtime`).
+
+A parallel **converter** pipeline exists: `.ink.json` (inklecate output) → parse (`brink-json`) → convert (`brink-converter`) → `StoryData`. This is the known-good reference — the converter produces correct `StoryData` from inklecate's output. The goal is to make the brink compiler produce identical behavior.
+
+## Current state
+
+The episode corpus has **950 passing episodes out of 950 golden** (100% passing, 949 after the Line enum refactor — 1 regression in I075 under investigation). The ratchet is at 950. The compiler is functionally complete for the test corpus.
+
+Active work is on **runtime restructuring** — redesigning the runtime's internal architecture to support line-at-a-time execution, deferred locale resolution, and clean separation of concerns. See `docs/runtime-restructuring-spec.md` for the full design.
+
+## Trust hierarchy
+
+1. **Ink language docs** (`~/code/rs/s92-studio/reference/ink/documentation/`) — ground truth
+2. **Reference C# implementation** (`~/code/rs/s92-studio/reference/ink`) — for checking behavior
+3. **Converter pipeline** (ink.json → `StoryData`) — known-good reference for runtime behavior
+4. **Brink compiler** — under test, not trusted
+
+Changes to the runtime or converter pipeline mean we will need to re-evaluate the episode corpus and potentially update. This is a major operation — surface it immediately if necessary.
+
+## Design principles
+
+These are standing values, not situational rules. They apply to all work on this project.
+
+- **Design before implementation.** Discuss the design with the user before writing code for non-trivial changes. Present options and tradeoffs. The user makes architectural decisions — agents propose and implement.
+- **Understand the consumer.** APIs are designed from the consumer's perspective, not the implementor's. Internal VM concepts should not leak into public types. Ask "who calls this and what do they need?" before defining an interface.
+- **Separate concerns by ownership.** If two pieces of data have different lifetimes, mutability, or swap semantics, they belong in different structs. Don't bundle unrelated things for convenience — it creates borrow conflicts and unclear ownership. (Example: `Program` should be immutable; line tables are swappable — they don't belong in the same struct.)
+- **Instrumentation doesn't belong in the production path.** Test harnesses and observers should wrap or compose with production types, not thread optional parameters through them. If an `if observer` branch appears in a hot loop, the abstraction boundary is wrong.
+- **Defer resolution to the latest useful point.** Don't eagerly materialize data (strings, resolved content) if it will be consumed later in a context where you have more information (e.g., current locale). Store structural references and resolve at read time.
+- **Guard against unbounded growth.** Any loop that accumulates data must have a limit. The VM has a step limit. `continue_maximally` has a line limit. If a new accumulation pattern appears, add a cap.
+- **Correctness above all.** The goal is not to make numbers go up. A fix that makes the ratchet go down because it removes a hack that was accidentally passing tests is better than a hack that inflates the count. A correct fix to the wrong layer is worse than no fix.
+
+## Compiler conformance workflow
+
+When working on compiler bugs (making failing episodes pass), follow this process:
+
+1. **Run the corpus report** to identify highest-impact categories.
+2. **Sample 3–5 failing cases**, study the diagnostic dumps (`.ink` source, compiler `.inkt`, converter `.inkt`).
+3. **Root-cause the systematic issue** — trace to the exact pipeline layer.
+4. **Write failing tests** that prove the root cause before changing production code.
+5. **Enter plan mode** and present the RCA + tests + fix approach. Do not implement before plan approval.
+6. **Implement, test, commit.** One fix per commit.
+7. **Verify with the corpus report.** Present before/after comparison.
+
+### What NOT to do
+
+- Do not patch symptoms. Find the root cause.
+- Do not cargo-cult the converter. Understand what it does; don't copy its structure.
+- Do not assume existing compiler code is correct. Every layer was written by agents and may contain fundamental misunderstandings.
+- Do not implement before plan mode for compiler fixes.
+
+Ratchet: `RATCHET_EPISODE_COUNT` in `crates/internal/brink-test-harness/tests/brink_native_episodes.rs`.
+
+Test cases: `tests/tier{1,2,3}/` — each has `story.ink`, `story.ink.json`, and `episodes/*.episode.json`.
+
+## Runtime public API
+
+The runtime exposes a `Line` enum as the primary output type:
+
+```rust
+pub enum Line {
+    Text { text: String, tags: Vec<String> },     // more output coming
+    Done { text: String, tags: Vec<String> },     // turn complete (ink -> DONE)
+    Choices { text: String, tags: Vec<String>, choices: Vec<Choice> },  // pick a choice
+    End { text: String, tags: Vec<String> },      // story permanently ended (ink -> END)
+}
+```
+
+Primary consumer pattern:
+
+```rust
+loop {
+    match story.continue_single()? {
+        Line::Text { text, .. } => print!("{text}"),
+        Line::Done { text, .. } => { print!("{text}"); break; }
+        Line::Choices { text, choices, .. } => {
+            print!("{text}");
+            story.choose(pick)?;
+        }
+        Line::End { text, .. } => { print!("{text}"); break; }
+    }
+}
+```
+
+`continue_maximally()` returns `Vec<Line>` — the last element is always a terminal variant (`Done`, `Choices`, or `End`).
+
+## Key commands
+
+```sh
+cargo check --workspace                          # type-check
+cargo test --workspace                            # run tests
+cargo clippy --workspace --all-targets -- -D warnings  # lint
+cargo fmt --all -- --check                        # format check
+cargo fmt --all                                   # format fix
+
+# Corpus report — triage tool
+cargo test -p brink-test-harness --test corpus_report -- --nocapture
+
+# Episode corpus
+cargo test -p brink-test-harness --test brink_native_episodes -- --nocapture
+
+# Single case — filter by substring
+BRINK_CASE=I002 cargo test -p brink-test-harness --test brink_native_episodes -- --nocapture
+```
+
+## Crate layout
+
+| Crate | Path | Purpose |
+|-------|------|---------|
+| `brink-compiler` | `crates/brink-compiler/` | Pipeline driver |
+| `brink-runtime` | `crates/brink-runtime/` | Bytecode VM |
+| `brink-syntax` | `crates/internal/brink-syntax/` | Lexer, parser, CST, AST |
+| `brink-ir` | `crates/internal/brink-ir/` | HIR, LIR, symbol tables, lowering |
+| `brink-analyzer` | `crates/internal/brink-analyzer/` | Cross-file semantic analysis |
+| `brink-codegen-inkb` | `crates/internal/brink-codegen-inkb/` | Bytecode codegen: LIR → StoryData |
+| `brink-format` | `crates/internal/brink-format/` | Binary interface between compiler and runtime |
+| `brink-converter` | `crates/internal/brink-converter/` | Converts .ink.json → StoryData (reference pipeline) |
+| `brink-test-harness` | `crates/internal/brink-test-harness/` | Episode exploration, diffing, corpus tests |
+
+Full layout and dependency graph in `docs/spec.md`.
+
+## Rules
+
+- **Flag silent data drops.** If a lowering pass silently drops data without a diagnostic, flag it immediately. Silent drops are always bugs until proven otherwise.
+- **VM tests must not hang.** The runtime VM can infinite-loop on malformed bytecode. All VM tests and episode exploration use step limits. If a test hangs, it's a bug — do not increase timeouts, fix the root cause.
+- **Dependencies** use `dep.workspace = true`. Versions in root `Cargo.toml`.
+- **Lints:** `unsafe_code`, `unwrap_used`, `expect_used`, `panic`, `todo`, `print_stdout`, `print_stderr` are denied. Clippy pedantic is on. Tests are exempt via `clippy.toml`.
+- **Determinism matters.** Never iterate `HashMap` keys/values where order affects output. Sort or use `BTreeMap`. We've been burned by this — see converter list items, analyzer label lookup, db file ordering.
+- **Commit after every fix.** Do not accumulate changes. Each fix is one commit. This makes bisecting easy and keeps the history clean.
+- **Never use `.ink.json` in the translation workflow.** The translation pipeline is `.ink` → compile → `.inkb` → export-xliff → `.xlf`. The `.ink.json` files are inklecate output used only by the converter reference pipeline. They must never be used as input to `export-xliff`, `compile-locale`, or any other intl operation.
