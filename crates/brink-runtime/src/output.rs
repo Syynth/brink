@@ -131,6 +131,123 @@ impl OutputBuffer {
         }
     }
 
+    /// Returns true if the buffer contains at least one complete line
+    /// (a Newline whose effect survived glue resolution, confirmed by
+    /// subsequent non-whitespace content).
+    ///
+    /// A Newline is "committed" when non-whitespace text appears after it
+    /// in the buffer — at that point, no future Glue can reach past the
+    /// text to eat the Newline.
+    pub(crate) fn has_completed_line(&self) -> bool {
+        if self.has_checkpoint() || self.parts.is_empty() {
+            return false;
+        }
+
+        // Quick check: any newline at all?
+        if !self.parts.iter().any(|p| matches!(p, OutputPart::Newline)) {
+            return false;
+        }
+
+        // Run glue marking pass to determine which newlines survive.
+        let mut remove = vec![false; self.parts.len()];
+        mark_glue_removals(&self.parts, &mut remove);
+
+        // Walk and find a committed newline: a surviving Newline (not removed,
+        // not in after_glue state) followed by non-whitespace-only text.
+        let mut after_glue = false;
+        let mut found_newline = false;
+
+        for (i, part) in self.parts.iter().enumerate() {
+            if remove[i] {
+                if matches!(part, OutputPart::Glue) {
+                    after_glue = true;
+                }
+                continue;
+            }
+            match part {
+                OutputPart::Text(s) if !s.trim().is_empty() => {
+                    if found_newline {
+                        return true;
+                    }
+                    after_glue = false;
+                }
+                OutputPart::Newline if !after_glue => {
+                    found_newline = true;
+                }
+                OutputPart::Glue | OutputPart::Checkpoint => {
+                    after_glue = true;
+                }
+                _ => {}
+            }
+        }
+
+        false
+    }
+
+    /// Drain the first complete line from the buffer, resolving glue
+    /// on the drained segment. Returns `(text, tags)`. The remainder
+    /// stays in the buffer for future calls.
+    ///
+    /// The returned text includes a trailing `\n` to indicate a complete
+    /// line. This matches the convention that `continue_maximally` joins
+    /// all single-line results with empty string to produce the same
+    /// output as the original `flush_lines` + `finalize_lines`.
+    ///
+    /// Returns `None` if there is no completed line.
+    pub(crate) fn take_first_line(&mut self) -> Option<(String, Vec<String>)> {
+        if self.has_checkpoint() || self.parts.is_empty() {
+            return None;
+        }
+
+        let mut remove = vec![false; self.parts.len()];
+        mark_glue_removals(&self.parts, &mut remove);
+
+        // Find the split point: the first surviving Newline (not removed,
+        // not in after_glue state) that has non-whitespace text after it.
+        let mut after_glue = false;
+        let mut candidate_newline: Option<usize> = None;
+
+        for (i, part) in self.parts.iter().enumerate() {
+            if remove[i] {
+                if matches!(part, OutputPart::Glue) {
+                    after_glue = true;
+                }
+                continue;
+            }
+            match part {
+                OutputPart::Text(s) if !s.trim().is_empty() => {
+                    if candidate_newline.is_some() {
+                        // Content after the newline confirms it's committed.
+                        break;
+                    }
+                    after_glue = false;
+                }
+                OutputPart::Newline if !after_glue => {
+                    candidate_newline = Some(i);
+                }
+                OutputPart::Glue | OutputPart::Checkpoint => {
+                    after_glue = true;
+                }
+                _ => {}
+            }
+        }
+
+        let split_at = candidate_newline?;
+
+        // Drain through the newline (inclusive).
+        let drained: Vec<OutputPart> = self.parts.drain(0..=split_at).collect();
+
+        // Resolve the drained parts into a single line with tags.
+        let mut lines = resolve_lines(&drained);
+        if lines.is_empty() {
+            return None;
+        }
+        let (text, tags) = lines.swap_remove(0);
+        let mut text = clean_output_whitespace(&text);
+        text.push('\n');
+        Some((text, tags))
+    }
+
     /// Resolve glue and flush to a string (ignoring tags).
     ///
     /// Glue removes the newline immediately before it and any leading
@@ -165,13 +282,14 @@ impl OutputBuffer {
     }
 }
 
-/// Resolve glue in a slice of output parts and return the flattened string.
-fn resolve_parts(parts: &[OutputPart]) -> String {
-    // First pass: mark newlines that should be removed by glue.
-    let mut remove = vec![false; parts.len()];
+/// First pass of glue resolution: mark newlines and glue parts for removal.
+///
+/// For each `Glue` part, find the nearest preceding `Newline` (skipping
+/// whitespace-only text, tags, checkpoints, and already-removed parts)
+/// and mark both the newline and the glue for removal.
+fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
     for (i, part) in parts.iter().enumerate() {
         if matches!(part, OutputPart::Glue) {
-            // Remove the nearest preceding newline, skipping whitespace-only text.
             for j in (0..i).rev() {
                 if remove[j] {
                     continue;
@@ -186,10 +304,16 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
                     OutputPart::Text(_) => break,
                 }
             }
-            // Mark glue itself for removal.
             remove[i] = true;
         }
     }
+}
+
+/// Resolve glue in a slice of output parts and return the flattened string.
+fn resolve_parts(parts: &[OutputPart]) -> String {
+    // First pass: mark newlines that should be removed by glue.
+    let mut remove = vec![false; parts.len()];
+    mark_glue_removals(parts, &mut remove);
 
     let mut out = String::new();
     let mut after_glue = false;
@@ -241,25 +365,7 @@ fn resolve_lines(parts: &[OutputPart]) -> Vec<(String, Vec<String>)> {
 
     // First pass: mark newlines/glue for removal (same logic as resolve_parts).
     let mut remove = vec![false; parts.len()];
-    for (i, part) in parts.iter().enumerate() {
-        if matches!(part, OutputPart::Glue) {
-            for j in (0..i).rev() {
-                if remove[j] {
-                    continue;
-                }
-                match &parts[j] {
-                    OutputPart::Newline => {
-                        remove[j] = true;
-                        break;
-                    }
-                    OutputPart::Glue | OutputPart::Checkpoint | OutputPart::Tag(_) => {}
-                    OutputPart::Text(s) if s.trim().is_empty() => {}
-                    OutputPart::Text(_) => break,
-                }
-            }
-            remove[i] = true;
-        }
-    }
+    mark_glue_removals(parts, &mut remove);
 
     let mut lines: Vec<(String, Vec<String>)> = Vec::new();
     let mut current_text = String::new();
@@ -690,5 +796,168 @@ mod tests {
             lines.is_empty(),
             "empty buffer should produce no lines, got: {lines:?}"
         );
+    }
+
+    // ── has_completed_line / take_first_line tests ──────────────────
+
+    #[test]
+    fn has_completed_line_empty() {
+        let buf = OutputBuffer::new();
+        assert!(!buf.has_completed_line());
+    }
+
+    #[test]
+    fn has_completed_line_text_only() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("hello");
+        assert!(!buf.has_completed_line());
+    }
+
+    #[test]
+    fn has_completed_line_text_newline_only() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("hello");
+        buf.push_newline();
+        // No content after the newline → not committed.
+        assert!(!buf.has_completed_line());
+    }
+
+    #[test]
+    fn has_completed_line_text_newline_text() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("hello");
+        buf.push_newline();
+        buf.push_text("world");
+        assert!(buf.has_completed_line());
+    }
+
+    #[test]
+    fn has_completed_line_glue_eats_newline() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("hello");
+        buf.push_newline();
+        buf.push_glue();
+        buf.push_text("world");
+        // Glue eats the newline → no committed newline.
+        assert!(!buf.has_completed_line());
+    }
+
+    #[test]
+    fn has_completed_line_during_capture() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("hello");
+        buf.push_newline();
+        buf.push_text("world");
+        buf.begin_capture();
+        // Active capture → not available for line extraction.
+        assert!(!buf.has_completed_line());
+    }
+
+    #[test]
+    fn take_first_line_basic() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("hello");
+        buf.push_newline();
+        buf.push_text("world");
+
+        let result = buf.take_first_line();
+        assert!(result.is_some());
+        let (text, tags) = result.unwrap();
+        assert_eq!(text, "hello\n");
+        assert!(tags.is_empty());
+
+        // Remainder should produce "world" when flushed.
+        assert_eq!(buf.flush(), "world");
+    }
+
+    #[test]
+    fn take_first_line_with_tags() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("tagged line");
+        buf.push_tag("my_tag".to_string());
+        buf.push_newline();
+        buf.push_text("next line");
+
+        let (text, tags) = buf.take_first_line().unwrap();
+        assert_eq!(text, "tagged line\n");
+        assert_eq!(tags, vec!["my_tag"]);
+
+        assert_eq!(buf.flush(), "next line");
+    }
+
+    #[test]
+    fn take_first_line_multiple_lines() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("line one");
+        buf.push_newline();
+        buf.push_text("line two");
+        buf.push_newline();
+        buf.push_text("line three");
+
+        let (text1, _) = buf.take_first_line().unwrap();
+        assert_eq!(text1, "line one\n");
+
+        let (text2, _) = buf.take_first_line().unwrap();
+        assert_eq!(text2, "line two\n");
+
+        // Only "line three" remains, no newline after it → no completed line.
+        assert!(!buf.has_completed_line());
+        assert_eq!(buf.flush(), "line three");
+    }
+
+    #[test]
+    fn take_first_line_matches_flush_lines() {
+        // Verify take_first_line produces the same first line as flush_lines.
+        let parts = |buf: &mut OutputBuffer| {
+            buf.push_text("A ");
+            buf.push_tag("t1".to_string());
+            buf.push_newline();
+            buf.push_text("B");
+            buf.push_newline();
+            buf.push_text("C");
+        };
+
+        let mut buf1 = OutputBuffer::new();
+        parts(&mut buf1);
+        let all_lines = buf1.flush_lines();
+        let first_from_flush = clean_output_whitespace(&all_lines[0].0);
+
+        let mut buf2 = OutputBuffer::new();
+        parts(&mut buf2);
+        let (first_from_take, tags) = buf2.take_first_line().unwrap();
+        // take_first_line appends \n; strip it for comparison.
+        let first_trimmed = first_from_take.trim_end_matches('\n');
+
+        assert_eq!(first_trimmed, first_from_flush);
+        assert_eq!(tags, all_lines[0].1);
+    }
+
+    #[test]
+    fn take_first_line_glue_preserves_subsequent() {
+        // Glue eats the first newline; second newline survives.
+        let mut buf = OutputBuffer::new();
+        buf.push_text("hello");
+        buf.push_newline();
+        buf.push_glue();
+        buf.push_text(" world");
+        buf.push_newline();
+        buf.push_text("next");
+
+        let (text, _) = buf.take_first_line().unwrap();
+        assert_eq!(text, "hello world\n");
+        assert_eq!(buf.flush(), "next");
+    }
+
+    #[test]
+    fn take_first_line_none_when_empty() {
+        let mut buf = OutputBuffer::new();
+        assert!(buf.take_first_line().is_none());
+    }
+
+    #[test]
+    fn take_first_line_none_when_no_newline() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("no newline");
+        assert!(buf.take_first_line().is_none());
     }
 }

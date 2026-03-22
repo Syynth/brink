@@ -41,5 +41,6 @@ pub use program::Program;
 pub use rng::{DotNetRng, FastRng, StoryRng};
 pub use state::{StoryState, WriteObserver};
 pub use story::{
-    Choice, ExternalFnHandler, ExternalResult, Stats, StepResult, Story, StorySnapshot, StoryStatus,
+    Choice, ExternalFnHandler, ExternalResult, SingleLineResult, Stats, StepResult, Story,
+    StorySnapshot, StoryStatus,
 };

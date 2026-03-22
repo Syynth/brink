@@ -26,6 +26,19 @@ pub enum StoryStatus {
     Ended,
 }
 
+/// Result of calling [`Story::continue_single`].
+///
+/// Contains one line of story output (up to and including the newline
+/// for complete lines, or without for the final partial line).
+#[derive(Debug, Clone)]
+pub struct SingleLineResult {
+    /// One line of story output. Includes a trailing `\n` for complete
+    /// lines; the final line before a yield point may omit it.
+    pub text: String,
+    /// Tags associated with this specific line.
+    pub tags: Vec<String>,
+}
+
 /// Result of calling [`Story::continue_maximally`].
 #[derive(Debug, Clone)]
 pub enum StepResult {
@@ -724,6 +737,149 @@ impl FlowInstance {
         }
     }
 
+    /// Execute until one complete line of output is available, or until
+    /// a yield point (choices/done/ended) if no newline occurs first.
+    ///
+    /// Returns a single line and its tags. The caller should check
+    /// [`can_continue_single`] and [`status`] to determine whether more
+    /// lines are available or whether choices/end have been reached.
+    fn step_single_line<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        handler: &dyn ExternalFnHandler,
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Result<SingleLineResult, RuntimeError> {
+        // 1. If buffer already has a completed line from a previous step,
+        //    take it immediately (no VM stepping needed).
+        if self.flow.output.has_completed_line()
+            && let Some((text, tags)) = self.flow.output.take_first_line()
+        {
+            return Ok(SingleLineResult { text, tags });
+        }
+
+        // 2. If buffer has partial content but VM has already yielded
+        //    (any non-Active state), flush it. At a yield point, no more
+        //    output is coming, so trailing Newlines are committed.
+        if !self.flow.output.parts.is_empty() && self.status != StoryStatus::Active {
+            return Ok(flush_remaining_as_single(&mut self.flow));
+        }
+
+        // 3. Status checks.
+        if self.status == StoryStatus::Ended {
+            return Err(RuntimeError::StoryEnded);
+        }
+        if self.status == StoryStatus::WaitingForChoice {
+            return Err(RuntimeError::NotWaitingForChoice);
+        }
+
+        // 4. Reset Done → Active (resuming after output).
+        if self.status == StoryStatus::Done {
+            self.status = StoryStatus::Active;
+        }
+
+        // 5. Step VM loop.
+        let Self {
+            flow,
+            context,
+            status,
+            stats,
+        } = self;
+        let step_start = stats.steps;
+
+        loop {
+            stats.steps += 1;
+
+            if stats.steps - step_start > Self::STEP_LIMIT {
+                return Err(RuntimeError::StepLimitExceeded(Self::STEP_LIMIT));
+            }
+
+            let stepped = {
+                let mut state = RuntimeState::<R>::new(program, context, resolver);
+                vm::step(flow, &mut state, stats)?
+            };
+            stats.materializations += flow.drain_materializations();
+
+            match stepped {
+                vm::Stepped::Continue | vm::Stepped::ThreadCompleted => {
+                    if flow.output.has_completed_line()
+                        && let Some((text, tags)) = flow.output.take_first_line()
+                    {
+                        return Ok(SingleLineResult { text, tags });
+                    }
+                }
+
+                vm::Stepped::ExternalCall => {
+                    resolve_external_call(flow, program, handler)?;
+                    if flow.output.has_completed_line()
+                        && let Some((text, tags)) = flow.output.take_first_line()
+                    {
+                        return Ok(SingleLineResult { text, tags });
+                    }
+                }
+
+                vm::Stepped::Done => {
+                    {
+                        let mut state = RuntimeState::<R>::new(program, context, resolver);
+                        state.increment_turn_index();
+                    }
+
+                    // Handle invisible default choices: auto-select and keep running.
+                    if !flow.pending_choices.is_empty() {
+                        let all_invisible = flow
+                            .pending_choices
+                            .iter()
+                            .all(|pc| pc.flags.is_invisible_default);
+                        if all_invisible {
+                            let mut state = RuntimeState::<R>::new(program, context, resolver);
+                            select_choice(flow, &mut state, status, stats, 0)?;
+                            // Check for completed line before continuing the loop.
+                            if flow.output.has_completed_line()
+                                && let Some((text, tags)) = flow.output.take_first_line()
+                            {
+                                return Ok(SingleLineResult { text, tags });
+                            }
+                            continue;
+                        }
+                    }
+
+                    // Set status based on remaining choices.
+                    if flow.pending_choices.is_empty() {
+                        *status = StoryStatus::Done;
+                    } else {
+                        *status = StoryStatus::WaitingForChoice;
+                        stats.choices_presented += 1;
+                    }
+
+                    // At a yield point: take completed line if available,
+                    // otherwise flush remaining (trailing \n is committed).
+                    if flow.output.has_completed_line()
+                        && let Some((text, tags)) = flow.output.take_first_line()
+                    {
+                        return Ok(SingleLineResult { text, tags });
+                    }
+
+                    return Ok(flush_remaining_as_single(flow));
+                }
+
+                vm::Stepped::Ended => {
+                    {
+                        let mut state = RuntimeState::<R>::new(program, context, resolver);
+                        state.increment_turn_index();
+                    }
+                    *status = StoryStatus::Ended;
+
+                    if flow.output.has_completed_line()
+                        && let Some((text, tags)) = flow.output.take_first_line()
+                    {
+                        return Ok(SingleLineResult { text, tags });
+                    }
+
+                    return Ok(flush_remaining_as_single(flow));
+                }
+            }
+        }
+    }
+
     /// Select a choice by index. Call [`step_with`] afterward to continue.
     fn choose<R: StoryRng>(
         &mut self,
@@ -866,6 +1022,25 @@ fn finalize_lines(lines: &[(String, Vec<String>)]) -> (String, Vec<Vec<String>>)
     (text, tags)
 }
 
+/// Flush remaining output buffer content into a single [`SingleLineResult`].
+///
+/// At a yield point (Done/Choices/Ended), no more output is coming, so
+/// trailing newlines are committed. Lines are joined with `\n` and tags
+/// are flattened.
+fn flush_remaining_as_single(flow: &mut Flow) -> SingleLineResult {
+    let lines = flow.output.flush_lines();
+    let mut text = String::new();
+    let mut tags = Vec::new();
+    for (i, (line_text, line_tags)) in lines.iter().enumerate() {
+        if i > 0 {
+            text.push('\n');
+        }
+        text.push_str(&clean_output_whitespace(line_text));
+        tags.extend_from_slice(line_tags);
+    }
+    SingleLineResult { text, tags }
+}
+
 // ── Story ───────────────────────────────────────────────────────────────────
 
 /// Per-instance mutable state for executing stories.
@@ -948,18 +1123,54 @@ impl<'p, R: StoryRng> Story<'p, R> {
         }
     }
 
+    // ── Line-at-a-time API ─────────────────────────────────────────
+
+    /// Returns true if [`continue_single`](Self::continue_single) can be
+    /// called — either the VM is actively running, or the output buffer
+    /// has pending content not yet yielded.
+    ///
+    /// Returns false when the VM has reached a yield point (`Done`,
+    /// `WaitingForChoice`, `Ended`) and all buffered lines have been
+    /// drained. At that point, check [`status`](Self::status) to
+    /// determine next action: call
+    /// [`continue_single`](Self::continue_single) again for `Done`,
+    /// [`choose`](Self::choose) for `WaitingForChoice`, or stop for
+    /// `Ended`.
+    pub fn can_continue(&self) -> bool {
+        self.default.status == StoryStatus::Active || !self.default.flow.output.parts.is_empty()
+    }
+
+    /// Execute until one line of content (up to newline), or until a
+    /// yield point (choices/done/ended) if no newline occurs first.
+    ///
+    /// Returns the single line and its tags. After this returns, check
+    /// [`can_continue`](Self::can_continue) to know if more lines are
+    /// available, and [`status`](Self::status) for choices/ended.
+    pub fn continue_single(&mut self) -> Result<SingleLineResult, RuntimeError> {
+        let resolver = self.resolver.as_deref();
+        self.default
+            .step_single_line::<R>(self.program, &FallbackHandler, resolver)
+    }
+
+    /// Like [`continue_single`](Self::continue_single) but with a custom
+    /// external function handler.
+    pub fn continue_single_with(
+        &mut self,
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<SingleLineResult, RuntimeError> {
+        let resolver = self.resolver.as_deref();
+        self.default
+            .step_single_line::<R>(self.program, handler, resolver)
+    }
+
     // ── Default flow API ─────────────────────────────────────────────
 
     /// Execute until the next yield point (done, choices, or end).
     ///
-    /// External functions use fallback ink bodies when available,
-    /// or error if no fallback exists. Use
-    /// [`continue_maximally_with`](Self::continue_maximally_with)
-    /// to provide a custom external function handler.
+    /// Implemented as a loop over [`continue_single`](Self::continue_single),
+    /// collecting all lines into a single result.
     pub fn continue_maximally(&mut self) -> Result<StepResult, RuntimeError> {
-        let resolver = self.resolver.as_deref();
-        self.default
-            .step_with::<R>(self.program, &FallbackHandler, resolver)
+        self.continue_maximally_impl(&FallbackHandler)
     }
 
     /// Execute until the next yield point, using the given external
@@ -968,12 +1179,51 @@ impl<'p, R: StoryRng> Story<'p, R> {
         &mut self,
         handler: &dyn ExternalFnHandler,
     ) -> Result<StepResult, RuntimeError> {
-        let resolver = self.resolver.as_deref();
-        self.default.step_with::<R>(self.program, handler, resolver)
+        self.continue_maximally_impl(handler)
+    }
+
+    /// Shared implementation for `continue_maximally` variants.
+    fn continue_maximally_impl(
+        &mut self,
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<StepResult, RuntimeError> {
+        let mut all_text = String::new();
+        let mut all_tags: Vec<Vec<String>> = Vec::new();
+
+        while self.can_continue() {
+            let resolver = self.resolver.as_deref();
+            let line = self
+                .default
+                .step_single_line::<R>(self.program, handler, resolver)?;
+            all_text.push_str(&line.text);
+            all_tags.push(line.tags);
+        }
+
+        match self.status() {
+            StoryStatus::WaitingForChoice => {
+                let choices = self.take_choices();
+                Ok(StepResult::Choices {
+                    text: all_text,
+                    choices,
+                    tags: all_tags,
+                })
+            }
+            StoryStatus::Ended => Ok(StepResult::Ended {
+                text: all_text,
+                tags: all_tags,
+            }),
+            _ => Ok(StepResult::Done {
+                text: all_text,
+                tags: all_tags,
+            }),
+        }
     }
 
     /// Execute until the next yield point with a [`WriteObserver`] that
     /// receives notifications for every state mutation.
+    ///
+    /// Uses the original `run_loop` implementation to preserve observer
+    /// callback timing semantics.
     pub fn continue_maximally_observed(
         &mut self,
         observer: &mut dyn WriteObserver,
@@ -998,6 +1248,23 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// Read-only access to the default flow's VM statistics.
     pub fn stats(&self) -> &Stats {
         &self.default.stats
+    }
+
+    /// Build the player-visible choice list from pending choices,
+    /// filtering out invisible defaults.
+    fn take_choices(&self) -> Vec<Choice> {
+        self.default
+            .flow
+            .pending_choices
+            .iter()
+            .enumerate()
+            .filter(|(_, pc)| !pc.flags.is_invisible_default)
+            .map(|(i, pc)| Choice {
+                text: pc.display_text.clone(),
+                index: i,
+                tags: pc.tags.clone(),
+            })
+            .collect()
     }
 
     /// Returns `true` if the default flow has a pending external call
