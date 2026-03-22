@@ -292,7 +292,18 @@ impl OutputBuffer {
     }
 
     /// Push a deferred value. Stringified at read time.
+    /// Null values are dropped (they stringify to empty string).
     pub fn push_value_ref(&mut self, value: Value) {
+        if matches!(value, Value::Null) {
+            return;
+        }
+        // Suppress whitespace-only string values when there's no content yet.
+        if !self.has_content()
+            && let Value::String(ref s) = value
+            && s.trim().is_empty()
+        {
+            return;
+        }
         self.parts.push(OutputPart::ValueRef(value));
     }
 
@@ -569,7 +580,14 @@ fn resolve_parts(
         match part {
             OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
                 let s = resolve_part(part, program, line_tables, resolver);
-                out.push_str(&s);
+                // Collapse adjacent whitespace at part boundaries.
+                let s = if s.starts_with(char::is_whitespace) && out.ends_with(char::is_whitespace)
+                {
+                    s.trim_start()
+                } else {
+                    &s
+                };
+                out.push_str(s);
                 if !s.trim().is_empty() {
                     after_glue = false;
                 }
@@ -624,7 +642,15 @@ fn resolve_lines(
         match part {
             OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
                 let s = resolve_part(part, program, line_tables, resolver);
-                current_text.push_str(&s);
+                // Collapse adjacent whitespace at part boundaries.
+                let s = if s.starts_with(char::is_whitespace)
+                    && current_text.ends_with(char::is_whitespace)
+                {
+                    s.trim_start()
+                } else {
+                    &s
+                };
+                current_text.push_str(s);
                 if !s.trim().is_empty() {
                     after_glue = false;
                 }
