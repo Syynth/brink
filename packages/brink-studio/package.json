@@ -11,6 +11,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@brink/wasm-types": "workspace:*",
+    "@brink/wasm": "workspace:*",
+    "@brink/ink-operations": "workspace:*",
+    "@brink/ink-editor": "workspace:*",
+    "@brink/studio-store": "workspace:*",
+    "@brink/studio-ui": "workspace:*",
     "@codemirror/autocomplete": "^6.18.6",
     "@codemirror/commands": "^6.8.0",
     "@codemirror/language": "^6.10.8",
@@ -19,10 +25,16 @@
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.5",
     "@lezer/highlight": "^1.2.1",
-    "codemirror": "^6.0.1"
+    "codemirror": "^6.0.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
     "jsdom": "^29.0.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",

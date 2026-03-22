@@ -691,13 +691,18 @@ html, body {
 #player {
   flex: 1;
   overflow: auto;
-  padding: 16px;
+  padding: 24px 40px;
+  max-width: 8in;
+  margin: 0 auto;
+  box-sizing: border-box;
+  font-family: "Georgia", "Palatino Linotype", "Book Antiqua", serif;
 }
 
 #player .story-text p {
-  margin-bottom: 8px;
-  line-height: 1.6;
-  font-size: 15px;
+  margin-bottom: 12px;
+  line-height: 1.8;
+  font-size: 17px;
+  letter-spacing: 0.01em;
 }
 
 #player .choices {
@@ -712,8 +717,9 @@ html, body {
   color: var(--brink-accent);
   border: 1px solid var(--brink-border);
   border-radius: 6px;
-  padding: 8px 14px;
-  font-size: 14px;
+  padding: 10px 16px;
+  font-size: 16px;
+  font-family: inherit;
   text-align: left;
   cursor: pointer;
   transition: background 0.15s;
@@ -753,24 +759,7 @@ html, body {
 </style>
 </head>
 <body>
-<div id="app">
-  <div id="binder-pane">
-    <div class="header">Binder</div>
-  </div>
-  <div id="editor-pane">
-    <div id="editor"><div id="loading">Loading wasm...</div></div>
-  </div>
-  <div id="player-pane">
-    <div class="header">
-      <span>Story</span>
-      <div class="toolbar">
-        <button id="btn-run">Run</button>
-        <button id="btn-restart">Restart</button>
-      </div>
-    </div>
-    <div id="player"></div>
-  </div>
-</div>
-<script type="module" src="/src/main.ts"></script>
+<div id="app"><div id="loading">Loading wasm...</div></div>
+<script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

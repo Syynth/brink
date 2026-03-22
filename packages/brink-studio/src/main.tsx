@@ -1,0 +1,1265 @@
+import { createRoot } from "react-dom/client";
+import { useRef, useEffect, useCallback } from "react";
+import { initWasm, StoryRunnerHandle } from "@brink/wasm";
+import type { CompileResult, FileOutline, Location } from "@brink/wasm-types";
+import {
+  InkEditor,
+  type InkEditorHandle,
+  type KeyHint,
+  type LineInfo,
+  EditorStateManager,
+  ProjectSession,
+  InMemoryFileProvider,
+} from "@brink/ink-editor";
+import { createStudioStore, type StudioStore } from "@brink/studio-store";
+import { App, StoreProvider } from "@brink/studio-ui";
+import { EditorView } from "@codemirror/view";
+import { forwardRef, useImperativeHandle } from "react";
+import type { BrinkStudioOptions } from "@brink/ink-editor";
+
+const DEFAULT_INK = `// The Quest for Ratchet's Lair
+// A living room fantasy adventure
+
+VAR gold = 20
+VAR health = 20
+VAR sword = false
+VAR shield = false
+VAR potion = 0
+VAR catnip_bomb = false
+VAR ratchet_hp = 3
+VAR visited_shop = false
+VAR pep_talk_done = false
+VAR side_quests_done = false
+VAR charlotte_quest_done = false
+VAR elijah_quest_done = false
+VAR noah_quest_done = false
+VAR violet_quest_done = false
+VAR has_baby_joro = false
+VAR has_iron_suit = false
+VAR has_snake = false
+VAR has_wolf_puppy = false
+
+-> intro
+
+=== intro ===
+The living room has been transformed. Couch cushions form a mighty fortress. Blankets drape from chairs like enchanted curtains. A single lamp casts flickering light across the carpet — the Dungeon of the Great Beast.
+
+Four brave adventurers stand at the edge of the rug.
+
+@CHARLOTTE:<>
+(adjusting her cardboard crown)<>
+Okay everyone. This is it. Beyond the Kitchen Pass lies the lair of the terrible dragon Ratchet.
+
+@ELIJAH:<>
+(waving a wrapping paper tube)<>
+I heard he ate an entire bag of treats last night. He's more powerful than ever.
+
+@NOAH:<>
+(clutching a colander helmet)<>
+Maybe we should just... leave him alone? He looked really sleepy on the windowsill.
+
+@VIOLET:<>
+(stomping her rain boots)<>
+NO. He knocked over my juice box. Twice. Today we fight!
+
+@CHARLOTTE:<>
+Before we face the dragon, we should prepare. There's a shop in the hallway.
+
+* [Head to the shop]
+  -> shop
+* [Go straight to the dragon's lair]
+  @ELIJAH:<>
+  (nervously)<>
+  Without any gear? Charlotte, that's crazy.
+  @CHARLOTTE:<>
+  (grinning)<>
+  Fine, fine. Shop first.
+  -> shop
+* [Give a rousing speech first]
+  -> pep_talk
+
+=== pep_talk ===
+~ pep_talk_done = true
+Charlotte climbs onto the ottoman and clears her throat.
+
+@CHARLOTTE:<>
+(dramatically)<>
+Friends! We have journeyed far — from the front door all the way to this very spot. We have faced terrible dangers. The Lego Minefield of the Hallway. The Mysterious Sticky Spot near the fridge.
+
+@NOAH:<>
+(whispering to Elijah)<>
+That was grape jelly.
+
+@CHARLOTTE:<>
+But nothing — NOTHING — compares to what awaits us. The dragon Ratchet, seventeen pounds of fury and orange fur.
+
+@VIOLET:<>
+He weighs twenty pounds. Mom said.
+
+@CHARLOTTE:<>
+(ignoring her)<>
+Today, we write our names in legend! Who's with me?
+
+@ELIJAH:<>
+(raising his tube sword)<>
+For glory!
+
+@VIOLET:<>
+For the juice box!
+
+@NOAH:<>
+(sighing)<>
+For getting this over with before dinner.
+
+* [Now to the shop]
+  -> shop
+* [Straight to the lair!]
+  -> side_quests
+
+=== shop ===
+~ visited_shop = true
+The hallway has been set up with a folding table. Behind it sits a stuffed bear wearing sunglasses — Gerald, the Merchant.
+
+@ELIJAH:<>
+(putting on a deep voice for Gerald)<>
+Welcome, adventurers. Gerald has the finest wares in all the land.
+
+@CHARLOTTE:<>
+Elijah, you don't have to do the voice.
+
+@ELIJAH:<>
+(deeper voice)<>
+Gerald does not know this "Elijah." Gerald knows only commerce.
+
+You have {gold} gold coins.
+
+-> shop_menu
+
+= shop_menu
+What would you like to buy?
+
+* {not sword and gold >= 5} [Cardboard Sword — 5 gold]
+  ~ gold = gold - 5
+  ~ sword = true
+  @ELIJAH:<>
+  (as Gerald)<>
+  An excellent blade. Gerald wrapped it in tinfoil himself.
+  @VIOLET:<>
+  It's a paper towel roll.
+  @ELIJAH:<>
+  (as Gerald)<>
+  It is ENCHANTED.
+  -> shop_menu
+* {not shield and gold >= 4} [Pot Lid Shield — 4 gold]
+  ~ gold = gold - 4
+  ~ shield = true
+  @ELIJAH:<>
+  (as Gerald)<>
+  Forged in the fires of the kitchen. Very shiny. Do not return with spaghetti stains.
+  @NOAH:<>
+  (examining it)<>
+  This is Mom's good pot lid.
+  @ELIJAH:<>
+  (as Gerald)<>
+  All sales final.
+  -> shop_menu
+* {potion < 3 and gold >= 3} [Juice Box Potion — 3 gold]
+  ~ gold = gold - 3
+  ~ potion = potion + 1
+  @ELIJAH:<>
+  (as Gerald)<>
+  Apple flavour. Restores five hit points. Do not spill on the carpet.
+  You now have {potion} potion{potion > 1:s}.
+  -> shop_menu
+* {not catnip_bomb and gold >= 6} [Catnip Bomb — 6 gold (SECRET WEAPON)]
+  ~ gold = gold - 6
+  ~ catnip_bomb = true
+  @ELIJAH:<>
+  (as Gerald, whispering)<>
+  Gerald's most dangerous item. One whiff and the dragon will be... distracted.
+  @CHARLOTTE:<>
+  (eyes wide)<>
+  Where did you even get catnip?
+  @ELIJAH:<>
+  (breaking character)<>
+  Dad's desk drawer. Don't tell him.
+  -> shop_menu
+* [Done shopping]
+  @ELIJAH:<>
+  (as Gerald)<>
+  Gerald wishes you well. Gerald also accepts returns within thirty minutes with receipt.
+  @CHARLOTTE:<>
+  There's no receipt.
+  @ELIJAH:<>
+  (as Gerald)<>
+  Exactly.
+  -> side_quests
+
+=== side_quests ===
+~ side_quests_done = true
+The party heads down the hallway toward the kitchen, but the corridor is longer than anyone remembers. The blanket curtains shimmer. The air smells like cinnamon and imagination.
+
+@CHARLOTTE:<>
+(stopping suddenly)<>
+Wait. Something's different. The hallway is... enchanted.
+
+@NOAH:<>
+It's the same hallway.
+
+@CHARLOTTE:<>
+It's ENCHANTED, Noah.
+
+The lights flicker. Four doorways appear in the walls — doorways that definitely were not there before. Each one glows a different colour.
+
+@VIOLET:<>
+(pointing)<>
+Dibs on the blue one!
+
+@ELIJAH:<>
+I don't think we should split the party.
+
+@CHARLOTTE:<>
+We'll be fine. Everyone pick a door. We'll meet back here in five minutes.
+
+-> side_quests.pick_door
+
+= pick_door
++ {not charlotte_quest_done} [Charlotte takes the golden door]
+  -> side_quests.charlotte_quest
++ {not elijah_quest_done} [Elijah takes the red door]
+  -> side_quests.elijah_quest
++ {not noah_quest_done} [Noah takes the green door]
+  -> side_quests.noah_quest
++ {not violet_quest_done} [Violet takes the blue door]
+  -> side_quests.violet_quest
+
+= charlotte_quest
+~ charlotte_quest_done = true
+Charlotte pushes open the golden door and steps into a garden. But not a normal garden — the plants are enormous, taller than houses, with leaves the size of trampolines.
+
+And there, suspended between two giant sunflowers, is the most magnificent web she has ever seen.
+
+@CHARLOTTE:<>
+(gasping, hands on her cheeks)<>
+Oh. My. Goodness.
+
+It's a Joro spider. But not just any Joro spider — she's the size of a dinner plate, with legs like golden thread and a body that shimmers blue and yellow in the light.
+
+@CHARLOTTE:<>
+(whispering reverently)<>
+You are the most beautiful creature I have ever seen.
+
+The spider regards her with eight patient eyes.
+
+@CHARLOTTE:<>
+(sitting down cross-legged)<>
+Do you know how incredible your silk is? It's stronger than steel by weight. And your web — the geometry is perfect. A golden orb weaver masterpiece.
+
+The spider lifts one delicate leg, as if waving.
+
+@CHARLOTTE:<>
+(tearing up a little)<>
+I could stay here forever.
+
+Time passes. Charlotte names the spider Empress Goldenthread. She sketches the web in an imaginary notebook. She identifies seventeen different insects caught in the silk and classifies them by phylum.
+
+Eventually, the golden door reappears behind her.
+
+But then she notices something — a tiny spiderling, no bigger than a pencil eraser, dangling from a single silk thread near her shoulder.
+
+@CHARLOTTE:<>
+(gasping)<>
+A baby! Empress, is this one of yours?
+
+The great spider lifts a leg — a gesture that Charlotte interprets as blessing.
+
+@CHARLOTTE:<>
+(cupping the spiderling gently in her hands)<>
+I'll name you Anansi. I'll take such good care of you. I'll build you a terrarium with real plants and a misting system and—
+
+~ has_baby_joro = true
+
+She steps back through the door, eyes shining, with Anansi perched on her crown.
+
+{ charlotte_quest_done and elijah_quest_done and noah_quest_done and violet_quest_done:
+  -> side_quests.regroup
+}
+
+The golden door fades. Other doors still glow in the hallway.
+
+-> side_quests.pick_door
+
+= elijah_quest
+~ elijah_quest_done = true
+Elijah opens the red door and finds himself in a vast hangar. The floor is polished metal. Banks of screens glow along the walls.
+
+And there, on a pedestal, lit from above by a single spotlight — an Iron Man suit.
+
+@ELIJAH:<>
+(jaw dropping)<>
+No. Way.
+
+It's red and gold. It hums with power. The helmet's eyes glow white.
+
+A holographic display flickers on: FLIGHT TIME REMAINING: 1 MINUTE.
+
+@ELIJAH:<>
+One minute? That's — okay. OKAY. That's enough.
+
+He steps into the suit. It assembles around him with a series of satisfying clicks and whirs. The HUD comes alive. Targeting systems. Flight stabilizers. A little icon of a cheeseburger in the corner for some reason.
+
+@ELIJAH:<>
+(in the suit, voice slightly robotic)<>
+This is the greatest moment of my life.
+
+He fires the repulsors and LAUNCHES through the ceiling of the hangar into open sky.
+
+Wind. Clouds. The whole neighbourhood stretched out below like a toy set. He can see the school. The park. The grocery store where Dad always forgets his list.
+
+@ELIJAH:<>
+(laughing, doing a barrel roll)<>
+I'M FLYING! I'M ACTUALLY FLYING!
+
+He zooms over the house. He can see the backyard. Ratchet is a tiny orange dot on the patio.
+
+@ELIJAH:<>
+(pointing a repulsor at the dot)<>
+I could end this quest right now.
+
+The HUD flashes: FLIGHT TIME REMAINING: 10 SECONDS.
+
+@ELIJAH:<>
+Oh no no no no—
+
+The suit powers down mid-air. He plummets — and lands softly on a pile of couch cushions back in the hangar.
+
+The suit disassembles itself and returns to the pedestal.
+
+@ELIJAH:<>
+(lying on the cushions, staring at the ceiling)<>
+Best. Minute. Ever.
+
+He sits up. The HUD flickers one last time: COMPACT MODE AVAILABLE. TAKE ME WITH YOU? Y/N.
+
+@ELIJAH:<>
+(smashing an imaginary Y button)<>
+YES. YES YES YES.
+
+The suit folds in on itself — smaller and smaller — until it's the size of a watch. It clasps onto Elijah's wrist with a satisfying click.
+
+The display reads: FLIGHT TIME RECHARGING. ESTIMATED: 5 MINUTES.
+
+@ELIJAH:<>
+(admiring his wrist)<>
+Totally worth it.
+
+~ has_iron_suit = true
+
+The red door reappears.
+
+{ charlotte_quest_done and elijah_quest_done and noah_quest_done and violet_quest_done:
+  -> side_quests.regroup
+}
+
+The red door fades. Other doors still glow in the hallway.
+
+-> side_quests.pick_door
+
+= noah_quest
+~ noah_quest_done = true
+Noah opens the green door and finds himself in a bank vault. A very, very large bank vault.
+
+The entire floor is covered in money. Stacked bills. Loose coins. Neat little bundles with paper bands around them.
+
+A small sign reads: ONE MILLION DOLLARS. YOURS IF YOU CAN CARRY IT.
+
+@NOAH:<>
+(eyes wide)<>
+A million dollars.
+
+He picks up a stack. Then another. Then another. He fills his pockets. He fills his colander helmet. He tries to carry bundles under both arms.
+
+@NOAH:<>
+(struggling)<>
+This is... heavier than I thought.
+
+He takes one step toward the door. His pockets rip. Money cascades everywhere.
+
+@NOAH:<>
+Okay. Okay. I just need a bag. Or a wheelbarrow. Or —
+
+He looks around. There are no bags. No wheelbarrows. Just money and a very smooth floor.
+
+He tries dragging a pile. It's like pushing a beanbag full of bricks.
+
+@NOAH:<>
+(sitting on the money pile, thinking)<>
+If I had a million dollars, I could buy... a house. No. Two houses. No — I'd invest it. Index funds. Seven percent annual return over thirty years—
+
+He trails off, doing mental math.
+
+@NOAH:<>
+(excited)<>
+That's like twelve million dollars compounded!
+
+He pauses.
+
+@NOAH:<>
+(looking at the pile)<>
+But I can't carry it. And I'm eight.
+
+He carefully puts one single dollar bill in his sock.
+
+@NOAH:<>
+(to himself)<>
+Diversified portfolio. Starting small.
+
+A sound. Something large shifting beneath the money pile.
+
+Noah freezes.
+
+A massive emerald-green snake rises from the coins, bills cascading off its scales like a waterfall of wealth. It's easily ten feet long, with golden eyes and a pattern like stacked dollar signs.
+
+@NOAH:<>
+(very still)<>
+Please don't eat me. I only took one dollar.
+
+The snake lowers its head and bumps Noah's hand gently. Its tongue flicks out. It's... friendly.
+
+@NOAH:<>
+(cautiously petting it)<>
+Oh. You're nice. You're a nice giant snake.
+
+The snake coils loosely around Noah's shoulders like a very heavy scarf. It seems content.
+
+@NOAH:<>
+(adjusting to the weight)<>
+I'll call you Emerald. Because you're green and... shiny. Like treasure.
+
+~ has_snake = true
+
+Emerald the snake nods approvingly. Or maybe he's just looking for mice. Either way, Noah has a friend.
+
+The green door reappears.
+
+{ charlotte_quest_done and elijah_quest_done and noah_quest_done and violet_quest_done:
+  -> side_quests.regroup
+}
+
+The green door fades. Other doors still glow in the hallway.
+
+-> side_quests.pick_door
+
+= violet_quest
+~ violet_quest_done = true
+Violet kicks open the blue door and is immediately hit by a wall of chlorine, pizza smell, and pure chaos.
+
+She's standing in the lobby of Great Wolf Lodge.
+
+@VIOLET:<>
+(screaming with joy)<>
+GREAT WOLF LODGE!!!
+
+The waterslides are ENORMOUS. The wave pool is ROARING. And the lazy river winds through a forest of fake pine trees with actual real-feeling fake snow falling from the ceiling.
+
+@VIOLET:<>
+(sprinting toward the biggest slide)<>
+THE HOWLING TORNADO! IT'S REAL!
+
+She climbs the tower. It takes forever. The stairs spiral up and up into clouds of steam and chlorine mist.
+
+At the top, she looks down. It's a six-story drop into a spinning funnel.
+
+@VIOLET:<>
+(no hesitation)<>
+CANNONBALL!
+
+She goes down the Howling Tornado. Then the Avalanche. Then the Wolf Tail. Then the River Canyon. Then all of them again.
+
+Ride 8. Ride 15. She's figured out the optimal path between slides to minimize wait time.
+
+@VIOLET:<>
+(on ride 22, soaking wet, grinning)<>
+I have achieved MAXIMUM VELOCITY.
+
+Ride 30. Ride 40. The lifeguards are just waving her through now. One of them salutes.
+
+@VIOLET:<>
+(on ride 50, to a lifeguard)<>
+I LIVE HERE NOW.
+
+Ride 60. 70. 80. She does the Howling Tornado backwards. She does the Avalanche with her eyes closed. She invents a new move called the Violet Vortex that the lodge will later name an official technique.
+
+Ride 99. She stands at the top of the tower one more time.
+
+@VIOLET:<>
+(arms raised)<>
+ONE! MORE!
+
+Ride 100. The Howling Tornado. Full speed. Perfect form. She emerges from the splash pool like a tiny, triumphant sea creature.
+
+@VIOLET:<>
+(standing in the shallow end, fists raised)<>
+A HUNDRED RIDES!
+
+The wave pool applauds. Or maybe it's just waves. Either way, she takes a bow.
+
+@VIOLET:<>
+(wringing out her hair, still buzzing with adrenaline)<>
+I have never felt more alive. Let's go fight a dragon.
+
+A howl echoes through the lodge. Not a scary howl — a tiny, squeaky howl.
+
+A wolf puppy tumbles out from behind the towel station. It's grey and fluffy with enormous paws and ears too big for its head. It looks up at Violet and wags its entire body.
+
+@VIOLET:<>
+(scooping it up)<>
+A PUPPY! A WOLF PUPPY! THIS IS THE BEST DAY OF MY ENTIRE LIFE!
+
+The puppy licks her face. Then sneezes. Then licks her face again.
+
+@VIOLET:<>
+(holding the puppy at arm's length, staring into its eyes)<>
+Your name is Frostfang. And you are coming with me.
+
+Frostfang yips in agreement. He is extremely small and not at all frosty, but he has the spirit.
+
+~ has_wolf_puppy = true
+
+The blue door reappears. Violet vibrates through it, clutching Frostfang.
+
+{ charlotte_quest_done and elijah_quest_done and noah_quest_done and violet_quest_done:
+  -> side_quests.regroup
+}
+
+The blue door fades. Other doors still glow in the hallway.
+
+-> side_quests.pick_door
+
+= regroup
+The four adventurers emerge from their doors back into the hallway. The enchanted doorways fade.
+
+They look at each other. Something has changed.
+
+Charlotte has a tiny spider perched on her cardboard crown. Elijah has a strange watch on his wrist. Noah has a ten-foot snake draped around his shoulders. And Violet is vibrating at a frequency that is technically illegal, clutching a wolf puppy.
+
+@CHARLOTTE:<>
+(dreamily, with Anansi riding her crown)<>
+I met the most incredible Joro spider. She had the most perfect orb web I've ever — oh, and I adopted her baby. This is Anansi.
+
+Anansi waves a tiny leg from atop the crown.
+
+@ELIJAH:<>
+(interrupting, tapping his watch)<>
+I FLEW. In an IRON MAN SUIT. For a whole MINUTE. And then it turned into this watch. It says it says five minutes to recharge!
+
+@NOAH:<>
+I found a million dollars but it was too heavy so I took one dollar. Also I befriended a giant snake. His name is Emerald.
+
+Emerald flicks his tongue and adjusts his coils around Noah's shoulders.
+
+@CHARLOTTE:<>
+Noah, that's very fiscally responsible. And the snake thing is... unexpected.
+
+@VIOLET:<>
+(twitching slightly, eyes very wide, Frostfang squirming in her arms)<>
+I went down a HUNDRED waterslides at Great Wolf Lodge AND I GOT A WOLF PUPPY. His name is FROSTFANG.
+
+Frostfang yips. Everyone stares at Violet.
+
+@ELIJAH:<>
+Are you... okay?
+
+@VIOLET:<>
+(speaking very fast)<>
+I have never been more okay. I did the Howling Tornado BACKWARDS. Frostfang and I are going to DESTROY that dragon. LET'S GO RIGHT NOW IMMEDIATELY.
+
+@NOAH:<>
+(to Charlotte, while Emerald eyes Frostfang nervously)<>
+She's going to crash so hard after this.
+
+@CHARLOTTE:<>
+(nodding, while Anansi spins a tiny web between her crown's points)<>
+We should use her while she's still vibrating. And... we have pets now. That's probably helpful?
+
+* [Onward to the dragon's lair!]
+  -> adventure_start
+
+=== adventure_start ===
+The party gathers at the edge of the kitchen tile — the border of the dragon's domain.
+
+{not pep_talk_done:
+  @CHARLOTTE:<>
+  (whispering)<>
+  Okay. Everyone stay quiet. We don't know where he is.
+}
+{pep_talk_done:
+  @CHARLOTTE:<>
+  (whispering, despite the speech she just yelled)<>
+  Quiet now. Element of surprise.
+  @NOAH:<>
+  You were literally shouting thirty seconds ago.
+}
+
+{sword:
+  Elijah grips his tinfoil-wrapped sword. It crinkles loudly.
+  @ELIJAH:<>
+  (looking at the sword)<>
+  That's... the enchantment activating.
+}
+
+{shield:
+  Noah holds the pot lid shield in front of his face.
+  @NOAH:<>
+  I can't see anything.
+  @VIOLET:<>
+  Turn it sideways.
+}
+
+The kitchen is dark. A shadow moves near the food bowl.
+
+* [Sneak in carefully]
+  -> approach.stealth
+* [Charge in boldly]
+  -> approach.charge
+
+=== approach ===
+
+= stealth
+The party tiptoes across the cold tile. Charlotte leads, stepping over a cat toy.
+
+@CHARLOTTE:<>
+(barely audible)<>
+Easy... easy...
+
+A floorboard creaks under Noah's colander.
+
+@NOAH:<>
+(mouthing)<>
+Sorry.
+
+Two golden eyes open in the darkness.
+
+A low rumble fills the kitchen. Not thunder. Not the dishwasher.
+
+Purring.
+
+@VIOLET:<>
+(gripping her rain boots)<>
+He knows we're here.
+
+-> dragon_encounter
+
+= charge
+@VIOLET:<>
+(screaming{side_quests_done:, still dripping from a hundred waterslides})<>
+CHAAAAARGE!
+
+The party stampedes into the kitchen. Elijah trips on a cat toy. Noah's colander falls over his eyes.
+
+@ELIJAH:<>
+(from the floor)<>
+I'm okay! The enchantment cushioned my fall!
+
+@CHARLOTTE:<>
+(sighing)<>
+So much for the element of surprise.
+
+Two golden eyes open. The rumbling starts.
+
+@NOAH:<>
+(fixing his colander)<>
+He looks annoyed.
+
+~ ratchet_hp = ratchet_hp + 1
+
+-> dragon_encounter
+
+=== dragon_encounter ===
+There he is. Ratchet the Terrible. Twenty pounds of orange tabby, sitting on the kitchen mat like a furry boulder. His tail flicks once. Twice.
+
+@CHARLOTTE:<>
+(heroically)<>
+Dragon! We have come to—
+
+Ratchet yawns. An enormous, unconcerned yawn.
+
+@NOAH:<>
+I don't think he cares.
+
+@VIOLET:<>
+He WILL care.
+
+-> battle
+
+=== battle ===
+{ ratchet_hp <= 0:
+  -> victory
+}
+
+{ratchet_hp > 2: Ratchet sits there, looking supremely unbothered.}
+{ratchet_hp == 2: Ratchet sits there, watching you with one eye open.}
+{ratchet_hp < 2 and ratchet_hp > 0: Ratchet sits there, starting to look mildly inconvenienced.}
+His tail swishes like a furry metronome.
+
+Your health: {health}. {potion > 0:Potions: {potion}.}
+
+* {sword} [Strike with the Enchanted Sword!]
+  -> battle_attack
+* {catnip_bomb} [Deploy the Catnip Bomb!]
+  -> battle_catnip
+* {shield} [Defend with the Pot Lid!]
+  -> battle_defend
+* {potion > 0} [Drink a Juice Box Potion]
+  -> battle_heal
+* {has_wolf_puppy} [Sic Frostfang on him!]
+  -> battle_thunderfang
+* {has_snake} [Send in Emerald!]
+  -> battle_compound
+* {has_baby_joro} [Deploy Anansi's web trap!]
+  -> battle_anansi
+* {has_iron_suit} [Activate the watch's laser pointer!]
+  -> battle_laser
++ [Poke him with your finger]
+  -> battle_poke
++ [Try to reason with the dragon]
+  -> battle_diplomacy
+
+= battle_attack
+~ ratchet_hp = ratchet_hp - 1
+Elijah swings the cardboard sword! It bonks Ratchet on the nose with a hollow thwack.
+
+@ELIJAH:<>
+(triumphantly)<>
+A critical hit!
+
+Ratchet blinks. He swats at the sword with one paw. It bends.
+
+@ELIJAH:<>
+(less triumphantly)<>
+The enchantment is... wearing off.
+
+{ratchet_hp > 0:
+  Ratchet retaliates! He bats at Noah's shoelace.
+  @NOAH:<>
+  Ow! He got me!
+  @CHARLOTTE:<>
+  He didn't touch you.
+  @NOAH:<>
+  Emotional damage counts!
+  ~ health = health - 2
+}
+
+-> battle
+
+= battle_catnip
+~ catnip_bomb = false
+~ ratchet_hp = ratchet_hp - 2
+
+@CHARLOTTE:<>
+(shouting)<>
+Violet! The secret weapon! NOW!
+
+Violet hurls a small pouch of catnip. It lands next to Ratchet.
+
+A pause.
+
+Ratchet's eyes go WIDE. His pupils become dinner plates.
+
+@NOAH:<>
+(backing away)<>
+What's happening to him?
+
+Ratchet rolls onto his back and starts wiggling. His paws paddle the air. He is GONE. Lost to the catnip dimension.
+
+@VIOLET:<>
+(pumping her fist)<>
+MASSIVE DAMAGE!
+
+@ELIJAH:<>
+He looks so happy though.
+
+@CHARLOTTE:<>
+Stay focused! He could snap out of it!
+
+-> battle
+
+= battle_defend
+@NOAH:<>
+(holding up the pot lid)<>
+Everyone get behind me!
+
+Ratchet stares at the shiny surface of the pot lid. He sees his own reflection.
+
+He hisses at it.
+
+@VIOLET:<>
+(laughing)<>
+He's fighting himself!
+
+@CHARLOTTE:<>
+The shield reflects his own darkness back at him!
+
+~ ratchet_hp = ratchet_hp - 1
+
+Ratchet, offended, turns away from the pot lid with great dignity.
+
+-> battle
+
+= battle_heal
+~ potion = potion - 1
+~ health = health + 5
+
+Noah carefully opens a juice box and passes it around.
+
+@NOAH:<>
+Drink up. We need our strength.
+
+@VIOLET:<>
+(slurping loudly)<>
+Apple is the best flavour for dragon slaying.
+
+@ELIJAH:<>
+Is there evidence for that?
+
+@VIOLET:<>
+I just said it. That's evidence.
+
+Health restored! You now have {health} HP.
+
+-> battle
+
+= battle_poke
+Charlotte reaches out and pokes Ratchet on the forehead.
+
+Ratchet's eyes cross.
+
+@CHARLOTTE:<>
+Boop.
+
+Ratchet sneezes violently. Everyone scrambles backward.
+
+@NOAH:<>
+(from behind the chair)<>
+Was that a breath attack?!
+
+@ELIJAH:<>
+I think he just has allergies.
+
+~ health = health - 1
+~ ratchet_hp = ratchet_hp - 1
+
+-> battle
+
+= battle_thunderfang
+~ has_wolf_puppy = false
+~ ratchet_hp = ratchet_hp - 1
+
+@VIOLET:<>
+(pointing dramatically)<>
+THUNDERFANG! ATTACK!
+
+Frostfang charges at Ratchet. His tiny legs are a blur. His war cry is a high-pitched yip.
+
+He bites Ratchet's tail.
+
+Ratchet's eyes go WIDE. He leaps straight up and lands on the counter.
+
+@RATCHET:<>
+(hissing from the counter)<>
+MRRROWWW!
+
+@VIOLET:<>
+(pumping her fist)<>
+GOOD BOY, THUNDERFANG!
+
+Frostfang wags his tail, very pleased with himself. He trots back to Violet and sits on her foot.
+
+@NOAH:<>
+Did the puppy just deal more damage than the sword?
+
+@ELIJAH:<>
+(looking at his bent cardboard tube)<>
+I don't want to talk about it.
+
+-> battle
+
+= battle_compound
+~ has_snake = false
+~ ratchet_hp = ratchet_hp - 1
+
+@NOAH:<>
+(whispering to his shoulder)<>
+Emerald. Do the thing.
+
+Emerald uncoils from Noah's shoulders and slithers across the kitchen floor. Ratchet watches, transfixed. His pupils dilate. His tail goes rigid.
+
+The snake loops once around Ratchet's food bowl and raises his head, tongue flicking.
+
+Ratchet has never seen a snake before. He does not know what to do. He freezes completely.
+
+@CHARLOTTE:<>
+(whispering)<>
+He's paralyzed with confusion!
+
+@ELIJAH:<>
+Is the snake... guarding his food bowl?
+
+@NOAH:<>
+(proudly)<>
+Emerald understands leverage.
+
+Ratchet backs away slowly, deeply offended that something longer than him exists in his kitchen.
+
+-> battle
+
+= battle_anansi
+~ has_baby_joro = false
+~ ratchet_hp = ratchet_hp - 1
+
+@CHARLOTTE:<>
+(holding up her palm)<>
+Anansi. It's time.
+
+The tiny spiderling leaps from Charlotte's crown. She's barely visible — a golden speck trailing a thread of silk.
+
+She lands on Ratchet's whiskers.
+
+Ratchet goes cross-eyed trying to look at her.
+
+Anansi begins to spin. Fast. A web materialises between Ratchet's ears, across his nose, over his eyes. In seconds, the dragon is wearing a silk blindfold.
+
+@VIOLET:<>
+(amazed)<>
+That spider is a LEGEND.
+
+Ratchet paws at his face, stumbling sideways. He walks into a chair leg.
+
+@NOAH:<>
+That's the most effective attack we've had.
+
+@CHARLOTTE:<>
+(tearing up with pride)<>
+That's my girl.
+
+Anansi rappels back to Charlotte's crown, mission accomplished.
+
+-> battle
+
+= battle_laser
+~ has_iron_suit = false
+~ ratchet_hp = ratchet_hp - 1
+
+@ELIJAH:<>
+(tapping his watch excitedly)<>
+Wait — there's a mode I haven't tried. JARVIS, activate Laser Pointer Protocol!
+
+The watch emits a tiny, brilliant red dot on the kitchen floor.
+
+Ratchet's head snaps toward it. Every muscle in his body locks.
+
+The dot moves. Slowly. Left. Right. In a little circle.
+
+Ratchet's butt wiggles.
+
+@NOAH:<>
+(whispering)<>
+He's locked on.
+
+The dot zips across the tile. Ratchet LAUNCHES after it, skidding on the smooth floor, crashing into a chair leg. The dot bounces to the wall. Ratchet leaps at the wall. The dot goes under the fridge. Ratchet tries to fit under the fridge. He does not fit under the fridge.
+
+@VIOLET:<>
+(crying laughing)<>
+HE'S LOSING HIS MIND.
+
+@ELIJAH:<>
+(steering the dot in figure eights)<>
+I am a GENIUS.
+
+Ratchet chases the dot into a cabinet and bonks his head. He sits down, dazed, and begins furiously grooming as if nothing happened.
+
+@CHARLOTTE:<>
+The shame damage is devastating.
+
+The watch beeps: LASER POINTER PROTOCOL COMPLETE. RECHARGING.
+
+@ELIJAH:<>
+(patting the watch)<>
+Worth every second.
+
+-> battle
+
+= battle_diplomacy
+@CHARLOTTE:<>
+(kneeling down)<>
+Ratchet. Dragon. We don't have to fight. What if we just... gave you a treat?
+
+Ratchet's ears perk up.
+
+@NOAH:<>
+Wait, do we actually have treats?
+
+@VIOLET:<>
+I have a goldfish cracker in my pocket.
+
+@CHARLOTTE:<>
+Close enough.
+
+Violet produces a slightly linty goldfish cracker. She places it on the ground.
+
+Ratchet sniffs it.
+
+Ratchet eats it.
+
+Ratchet looks at you expectantly for more.
+
+@ELIJAH:<>
+I think that just made him stronger.
+
+~ ratchet_hp = ratchet_hp + 1
+
+Ratchet meows. It sounds like a threat.
+
+@VIOLET:<>
+Diplomacy has failed.
+
+-> battle
+
+=== victory ===
+Ratchet, overwhelmed by the combined might of four determined children{has_wolf_puppy:, one wolf puppy,}{has_snake: one giant snake,}{has_baby_joro: and one very small spider}, flops onto his side. His paws twitch. His eyes close halfway.
+
+He begins to purr.
+
+{has_wolf_puppy:
+  Frostfang sniffs the sleeping dragon cautiously, then curls up next to him. They are roughly the same size.
+}
+
+{has_snake:
+  Emerald uncoils from Noah's shoulders and loops once around Ratchet, forming a gentle snake-fence. The dragon doesn't notice.
+}
+
+{has_baby_joro:
+  Anansi descends from Charlotte's crown on a silk line and begins spinning a tiny victory web between Ratchet's ears. It is exquisite.
+}
+
+@CHARLOTTE:<>
+(raising her fist)<>
+The dragon... has fallen!
+
+@ELIJAH:<>
+(poking him gently)<>
+I think he's just napping.
+
+{has_iron_suit:
+  Elijah's watch beeps. The display reads: BATTLE ANALYSIS COMPLETE. THREAT LEVEL: ORANGE TABBY. RECOMMENDED ACTION: BELLY RUBS.
+
+  @ELIJAH:<>
+  (tapping his watch)<>
+  Even the suit thinks he's not that scary.
+}
+
+@VIOLET:<>
+That counts! If you fall asleep during a battle, you lose. Those are the rules.
+
+@NOAH:<>
+Whose rules?
+
+@VIOLET:<>
+My rules. I made them just now.{has_wolf_puppy: Frostfang agrees. Look — he's wagging.}
+
+The party cheers! Well, three of them cheer. Noah checks if the pot lid is scratched.{has_snake: Emerald checks if his scales are scratched.}
+
+@CHARLOTTE:<>
+(solemnly{has_baby_joro:, as Anansi waves a tiny leg from her crown})<>
+Let it be known across the land — from the front hall to the back porch — that on this day, the brave adventurers Charlotte, Elijah, Noah, and Violet{has_wolf_puppy: and Frostfang}{has_snake: and Emerald}{has_baby_joro: and Anansi} defeated the terrible dragon Ratchet.
+
+@ELIJAH:<>
+{catnip_bomb: Mostly because of the catnip, but still.|With nothing but courage and a slightly bent cardboard sword.}
+{has_iron_suit:
+  @ELIJAH:<>
+  (checking his watch)<>
+  The watch says it's almost recharged. Just a few more minutes...
+}
+
+@NOAH:<>
+Can we have dinner now?
+
+A voice calls from the other room.
+
+Mom says dinner is ready. It's mac and cheese.
+
+@VIOLET:<>
+(gasping)<>
+THE GREATEST TREASURE OF ALL!
+
+The adventurers drop their weapons and sprint for the dining room, stepping carefully over the sleeping dragon.
+
+Ratchet opens one eye. Watches them go. Stretches.
+
+He knocks over Violet's juice box on the way to his food bowl.
+
+Some dragons never change.
+
+-> END
+`;
+
+// ── Root component ─────────────────────────────────────────────
+
+interface RootProps {
+  store: StudioStore;
+  project: ProjectSession;
+  studioOptions: BrinkStudioOptions;
+}
+
+function Root({ store, project, studioOptions }: RootProps) {
+  const editorRef = useRef<InkEditorHandle>(null);
+  const managerRef = useRef<EditorStateManager | null>(null);
+
+  // Callbacks for InkEditor → Store
+  const onCursorChange = useCallback((line: number, col: number) => {
+    store.getState().setCursor(line, col);
+  }, [store]);
+
+  const onLineInfoChange = useCallback((info: LineInfo | null, hints: KeyHint[]) => {
+    store.getState().setLineInfo(info, hints);
+  }, [store]);
+
+  const onCompileResult = useCallback((result: CompileResult) => {
+    const state = store.getState();
+    const session = project.getSession();
+    const outline: FileOutline[] = session.getProjectOutline();
+
+    let errors = 0;
+    let warnings = 0;
+    if (result.warnings) {
+      for (const w of result.warnings) {
+        if (w.severity === "Error") errors++;
+        else warnings++;
+      }
+    }
+    if (result.error) errors++;
+
+    const storyBytes = result.ok && result.story_bytes
+      ? new Uint8Array(result.story_bytes)
+      : null;
+
+    state.setCompileResult(outline, { errors, warnings }, storyBytes);
+
+    if (storyBytes) {
+      state.loadStory(storyBytes);
+    }
+  }, [store, project]);
+
+  const onDocEdited = useCallback(() => {
+    store.getState().pinActiveTab();
+  }, [store]);
+
+  // Build full studio options with navigation wired to the store
+  const fullOptions = useRef<BrinkStudioOptions | null>(null);
+  if (!fullOptions.current) {
+    fullOptions.current = {
+      ...studioOptions,
+      onCompile(result: CompileResult) {
+        // onCompileResult reads from refs, so it's fine to close over it indirectly
+        const state = store.getState();
+        const session = project.getSession();
+        const outline: FileOutline[] = session.getProjectOutline();
+
+        let errors = 0;
+        let warnings = 0;
+        if (result.warnings) {
+          for (const w of result.warnings) {
+            if (w.severity === "Error") errors++;
+            else warnings++;
+          }
+        }
+        if (result.error) errors++;
+
+        const storyBytes = result.ok && result.story_bytes
+          ? new Uint8Array(result.story_bytes)
+          : null;
+
+        state.setCompileResult(outline, { errors, warnings }, storyBytes);
+        if (storyBytes) {
+          state.loadStory(storyBytes);
+        }
+      },
+      onNavigateToFile(location: Location) {
+        const manager = managerRef.current;
+        if (!manager) return;
+        void manager.openTab({ kind: "file" as const, path: location.file }, true).then(() => {
+          const tabs = [...manager.getTabs()];
+          const activeTab = manager.getActiveTab();
+          store.setState({ tabs, activeTabId: activeTab.id });
+          const view = manager.getView();
+          view.dispatch({
+            selection: { anchor: location.start },
+            effects: EditorView.scrollIntoView(location.start, { y: "center" }),
+          });
+        });
+      },
+    };
+  }
+
+  // Create manager once
+  if (!managerRef.current) {
+    managerRef.current = new EditorStateManager(project, fullOptions.current);
+  }
+
+  const manager = managerRef.current;
+  const initialState = manager.getState(project.getActiveFile());
+
+  // Initialize store with refs after first render
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (editor && manager) {
+      store.getState().initialize(project, manager, editor);
+      manager.setView(editor.getView());
+      // Expose for e2e tests
+      (window as any).__brinkView = editor.getView();
+    }
+  }, [store, project, manager]);
+
+  return (
+    <StoreProvider store={store}>
+      <App
+        editorSlot={
+          <InkEditor
+            ref={editorRef}
+            studioOptions={fullOptions.current}
+            initialState={initialState}
+            onCursorChange={onCursorChange}
+            onLineInfoChange={onLineInfoChange}
+            onCompileResult={onCompileResult}
+            onDocEdited={onDocEdited}
+          />
+        }
+      />
+    </StoreProvider>
+  );
+}
+
+// ── Bootstrap ──────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  await initWasm();
+
+  const loading = document.getElementById("loading");
+  if (loading) loading.remove();
+
+  // Initialize project BEFORE rendering so the wasm session has files loaded
+  const provider = new InMemoryFileProvider({ "main.ink": DEFAULT_INK });
+  const project = new ProjectSession({ provider, entryFile: "main.ink" });
+  await project.initialize();
+
+  const studioOptions = project.createStudioOptions();
+  const store = createStudioStore();
+
+  const appRoot = document.getElementById("app");
+  if (!appRoot) throw new Error("Missing #app container");
+
+  const root = createRoot(appRoot);
+  root.render(<Root store={store} project={project} studioOptions={studioOptions} />);
+}
+
+main();

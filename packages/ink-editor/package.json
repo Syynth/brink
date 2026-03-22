@@ -1,0 +1,25 @@
+{
+  "name": "@brink/ink-editor",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@brink/wasm-types": "workspace:*",
+    "@brink/wasm": "workspace:*",
+    "@brink/ink-operations": "workspace:*",
+    "@codemirror/autocomplete": "^6.18.6",
+    "@codemirror/commands": "^6.8.0",
+    "@codemirror/language": "^6.10.8",
+    "@codemirror/lint": "^6.8.5",
+    "@codemirror/search": "^6.5.10",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.36.5",
+    "@lezer/highlight": "^1.2.1",
+    "codemirror": "^6.0.1"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "paths": {
+      "brink-web": ["../../crates/brink-web/www/pkg/brink_web.js"],
+      "@brink/wasm-types": ["../wasm-types/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}

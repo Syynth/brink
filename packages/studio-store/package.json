@@ -1,0 +1,18 @@
+{
+  "name": "@brink/studio-store",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@brink/wasm-types": "workspace:*",
+    "@brink/wasm": "workspace:*",
+    "@brink/ink-editor": "workspace:*",
+    "@brink/ink-operations": "workspace:*",
+    "zustand": "^5.0.0"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}

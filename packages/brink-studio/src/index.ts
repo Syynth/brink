@@ -1,19 +1,4 @@
-export { createBrinkEditor } from "./editor/index.js";
-export type { BrinkEditorOptions, BrinkEditorHandle, BrinkStudioOptions } from "./editor/index.js";
-
-export { brinkStudio } from "./editor/extensions.js";
-
-export { createBrinkPlayer } from "./player/index.js";
-export type { BrinkPlayerHandle } from "./player/index.js";
-
-export {
-  initWasm,
-  compile,
-  getTokenTypeNames,
-  getTokenModifierNames,
-  EditorSessionHandle,
-  StoryRunnerHandle,
-} from "./wasm.js";
+// ── Types (from @brink/wasm-types) ─────────────────────────────
 export type {
   CompileResult,
   Diagnostic,
@@ -36,24 +21,63 @@ export type {
   ProjectFile,
   FileOutline,
   IncludeInfo,
-} from "./wasm.js";
+} from "@brink/wasm-types";
 
-export { InMemoryFileProvider } from "./provider.js";
-export type { FileProvider } from "./provider.js";
+// ── Wasm bindings (from @brink/wasm) ───────────────────────────
+export {
+  initWasm,
+  compile,
+  getTokenTypeNames,
+  getTokenModifierNames,
+  EditorSessionHandle,
+  StoryRunnerHandle,
+} from "@brink/wasm";
 
-export { ProjectSession } from "./project-session.js";
-export type { ProjectSessionOptions } from "./project-session.js";
+// ── Pure operations (from @brink/ink-operations) ────────────────
+export {
+  CONVERTIBLE_TYPES,
+  extractLineContent,
+  getLineSigilRange,
+} from "@brink/ink-operations";
 
-export { EditorStateManager } from "./editor/state-manager.js";
-export type { TabTarget, TabInfo } from "./editor/state-manager.js";
+// ── Editor (from @brink/ink-editor) ─────────────────────────────
+export {
+  InkEditor,
+  brinkStudio,
+  elementTypeField,
+  ElementType,
+  setEditorSession,
+  EditorStateManager,
+  ProjectSession,
+  InMemoryFileProvider,
+  brinkTheme,
+  convertLineToType,
+} from "@brink/ink-editor";
+export type {
+  InkEditorProps,
+  InkEditorHandle,
+  KeyHint,
+  BrinkStudioOptions,
+  LineInfo,
+  TabTarget,
+  TabInfo,
+  ProjectSessionOptions,
+  FileProvider,
+} from "@brink/ink-editor";
 
-export { createFileTabBar } from "./editor/file-tabs.js";
-export type { FileTabBarOptions, FileTabBarHandle } from "./editor/file-tabs.js";
+// ── Store (from @brink/studio-store) ────────────────────────────
+export { createStudioStore } from "@brink/studio-store";
+export type { StudioState, StudioStore } from "@brink/studio-store";
 
-export { createBinder } from "./binder/index.js";
-export type { BinderOptions, BinderHandle } from "./binder/index.js";
-
-export { elementTypeField, ElementType, setEditorSession } from "./editor/element-type.js";
-export type { LineInfo } from "./editor/element-type.js";
-
-export { brinkTheme } from "./editor/theme.js";
+// ── UI (from @brink/studio-ui) ─────────────────────────────────
+export {
+  StoreProvider,
+  useStudioStore,
+  App,
+  Binder,
+  FileTabBar,
+  StatusBar,
+  PlayerPane,
+  EditorPane,
+  ElementDropdown,
+} from "@brink/studio-ui";

@@ -8,17 +8,12 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "react-jsx",
     "paths": {
-      "brink-web": ["../../crates/brink-web/www/pkg/brink_web.js"],
-      "@brink/wasm-types": ["../wasm-types/src/index.ts"],
-      "@brink/wasm": ["../wasm/src/index.ts"],
       "@brink/ink-operations": ["../ink-operations/src/index.ts"],
-      "@brink/ink-editor": ["../ink-editor/src/index.ts"],
-      "@brink/studio-store": ["../studio-store/src/index.ts"],
-      "@brink/studio-ui": ["../studio-ui/src/index.ts"]
+      "@brink/wasm-types": ["../wasm-types/src/index.ts"],
+      "@brink/studio-store": ["../studio-store/src/index.ts"]
     }
   },
   "include": ["src"]
