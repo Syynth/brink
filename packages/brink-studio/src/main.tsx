@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { useRef, useEffect, useCallback } from "react";
-import { initWasm, StoryRunnerHandle } from "@brink/wasm";
+import { initWasm } from "@brink/wasm";
 import type { CompileResult, FileOutline, Location } from "@brink/wasm-types";
 import {
   InkEditor,
@@ -14,7 +14,13 @@ import {
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
 import { App, StoreProvider } from "@brink/studio-ui";
 import { EditorView } from "@codemirror/view";
-import { forwardRef, useImperativeHandle } from "react";
+import type { Extension } from "@codemirror/state";
+import {
+  elementTypeField,
+  getHintsForElement,
+  lineHasContent,
+  buildContext,
+} from "@brink/ink-editor";
 import type { BrinkStudioOptions } from "@brink/ink-editor";
 import ratchetsLair from "./stories/ratchets-lair.ink.txt?raw";
 import candlelitDaughters from "./stories/candlelit-daughters.ink.txt?raw";
@@ -30,17 +36,16 @@ Which story would you like to play?
   -> introduction
 `;
 
-// The old inline story has been moved to stories/ratchets-lair.ink.txt
-
 // ── Root component ─────────────────────────────────────────────
 
 interface RootProps {
   store: StudioStore;
   project: ProjectSession;
   studioOptions: BrinkStudioOptions;
+  updateListener: Extension;
 }
 
-function Root({ store, project, studioOptions }: RootProps) {
+function Root({ store, project, studioOptions, updateListener }: RootProps) {
   const editorRef = useRef<InkEditorHandle>(null);
   const managerRef = useRef<EditorStateManager | null>(null);
 
@@ -89,7 +94,6 @@ function Root({ store, project, studioOptions }: RootProps) {
     fullOptions.current = {
       ...studioOptions,
       onCompile(result: CompileResult) {
-        // onCompileResult reads from refs, so it's fine to close over it indirectly
         const state = store.getState();
         const session = project.getSession();
         const outline: FileOutline[] = session.getProjectOutline();
@@ -130,9 +134,14 @@ function Root({ store, project, studioOptions }: RootProps) {
     };
   }
 
-  // Create manager once
+  // Create manager once — pass the updateListener so every state
+  // it creates (including for tab switches) has the React callbacks.
   if (!managerRef.current) {
-    managerRef.current = new EditorStateManager(project, fullOptions.current);
+    managerRef.current = new EditorStateManager(
+      project,
+      fullOptions.current,
+      [updateListener],
+    );
   }
 
   const manager = managerRef.current;
@@ -144,7 +153,6 @@ function Root({ store, project, studioOptions }: RootProps) {
     if (editor && manager) {
       store.getState().initialize(project, manager, editor);
       manager.setView(editor.getView());
-      // Expose for e2e tests
       (window as any).__brinkView = editor.getView();
     }
   }, [store, project, manager]);
@@ -188,11 +196,51 @@ async function main(): Promise<void> {
   const studioOptions = project.createStudioOptions();
   const store = createStudioStore();
 
+  // Create the updateListener eagerly so it can be shared between
+  // InkEditor (for the initial state) and EditorStateManager (for
+  // tab-switch states). It reads callbacks from the store, so it
+  // doesn't need to be recreated when callbacks change.
+  const updateListener = EditorView.updateListener.of((update) => {
+    const state = store.getState();
+
+    if (update.docChanged) {
+      state.pinActiveTab();
+    }
+
+    if (update.docChanged || update.selectionSet) {
+      const { state: editorState } = update.view;
+      const pos = editorState.selection.main.head;
+      const line = editorState.doc.lineAt(pos);
+      const col = pos - line.from;
+
+      state.setCursor(line.number, col + 1);
+
+      const infos = editorState.field(elementTypeField);
+      const info = infos[line.number - 1] ?? null;
+
+      let hints: { key: string; hint: string }[] = [];
+      if (info) {
+        const hasContent = lineHasContent(line.text, info);
+        const lineCtx = buildContext(infos, line.number - 1);
+        hints = getHintsForElement(info, hasContent, lineCtx);
+      }
+
+      state.setLineInfo(info, hints);
+    }
+  });
+
   const appRoot = document.getElementById("app");
   if (!appRoot) throw new Error("Missing #app container");
 
   const root = createRoot(appRoot);
-  root.render(<Root store={store} project={project} studioOptions={studioOptions} />);
+  root.render(
+    <Root
+      store={store}
+      project={project}
+      studioOptions={studioOptions}
+      updateListener={updateListener}
+    />,
+  );
 }
 
 main();

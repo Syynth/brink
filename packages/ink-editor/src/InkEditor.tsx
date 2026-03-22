@@ -1,9 +1,8 @@
 import { useRef, useEffect, useImperativeHandle, forwardRef, memo } from "react";
 import { EditorView, keymap } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
+import { EditorState, type Extension } from "@codemirror/state";
 import { basicSetup } from "codemirror";
 import { defaultKeymap } from "@codemirror/commands";
-import { forEachDiagnostic } from "@codemirror/lint";
 import { brinkStudio, type BrinkStudioOptions } from "./extensions.js";
 import { elementTypeField, type LineInfo } from "./element-type.js";
 import { getHintsForElement, lineHasContent, buildContext } from "./transitions.js";
@@ -36,19 +35,70 @@ export interface InkEditorHandle {
   setContent(content: string): void;
   scrollTo(pos: number): void;
   convertLineToType(sigil: string): void;
+  /**
+   * Returns the updateListener extension used by this component.
+   * Pass this to EditorStateManager's extraExtensions so that
+   * states created for tab switching include the React callbacks.
+   */
+  getUpdateListener(): Extension;
 }
 
 // ── Component ──────────────────────────────────────────────────────
+
+/**
+ * Build the updateListener extension that pushes editor status data
+ * (cursor, line info, key hints) through React callbacks.
+ */
+function createUpdateListener(
+  callbacksRef: React.RefObject<InkEditorProps>,
+): Extension {
+  return EditorView.updateListener.of((update) => {
+    const cbs = callbacksRef.current;
+    if (!cbs) return;
+
+    if (update.docChanged) {
+      const content = update.state.doc.toString();
+      cbs.onContentChange?.(content);
+      cbs.onDocEdited?.();
+    }
+
+    if (update.docChanged || update.selectionSet) {
+      const { state } = update.view;
+      const pos = state.selection.main.head;
+      const line = state.doc.lineAt(pos);
+      const col = pos - line.from;
+
+      cbs.onCursorChange?.(line.number, col + 1);
+
+      const infos = state.field(elementTypeField);
+      const info = infos[line.number - 1] ?? null;
+
+      let hints: KeyHint[] = [];
+      if (info) {
+        const hasContent = lineHasContent(line.text, info);
+        const lineCtx = buildContext(infos, line.number - 1);
+        hints = getHintsForElement(info, hasContent, lineCtx);
+      }
+
+      cbs.onLineInfoChange?.(info, hints);
+    }
+  });
+}
 
 export const InkEditor = memo(forwardRef<InkEditorHandle, InkEditorProps>(
   function InkEditor(props, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
 
-    // Keep latest callbacks in refs so the CM6 listener always sees them
-    // without requiring editor remounts.
     const callbacksRef = useRef(props);
     callbacksRef.current = props;
+
+    // Create the listener once — it reads from callbacksRef so it
+    // always sees the latest props.
+    const listenerRef = useRef<Extension | null>(null);
+    if (!listenerRef.current) {
+      listenerRef.current = createUpdateListener(callbacksRef);
+    }
 
     useImperativeHandle(ref, () => ({
       setState(state: EditorState) {
@@ -90,46 +140,20 @@ export const InkEditor = memo(forwardRef<InkEditorHandle, InkEditorProps>(
         if (!view) return;
         cmConvertLineToType(view, sigil);
       },
+      getUpdateListener(): Extension {
+        return listenerRef.current!;
+      },
     }), []);
 
     useEffect(() => {
       const container = containerRef.current;
       if (!container) return;
 
-      // Build the update listener that pushes status data through callbacks
-      const updateListener = EditorView.updateListener.of((update) => {
-        const cbs = callbacksRef.current;
+      const updateListener = listenerRef.current!;
 
-        if (update.docChanged) {
-          const content = update.state.doc.toString();
-          cbs.onContentChange?.(content);
-          cbs.onDocEdited?.();
-        }
-
-        if (update.docChanged || update.selectionSet) {
-          const { state } = update.view;
-          const pos = state.selection.main.head;
-          const line = state.doc.lineAt(pos);
-          const col = pos - line.from;
-
-          cbs.onCursorChange?.(line.number, col + 1);
-
-          // Extract line info and key hints
-          const infos = state.field(elementTypeField);
-          const info = infos[line.number - 1] ?? null;
-
-          let hints: KeyHint[] = [];
-          if (info) {
-            const hasContent = lineHasContent(line.text, info);
-            const lineCtx = buildContext(infos, line.number - 1);
-            hints = getHintsForElement(info, hasContent, lineCtx);
-          }
-
-          cbs.onLineInfoChange?.(info, hints);
-        }
-      });
-
-      // Create the initial state
+      // If an initialState was provided (from EditorStateManager), use it.
+      // The manager should already include the updateListener in its
+      // extensions via extraExtensions. If not, we create a fresh state.
       const state = props.initialState ?? EditorState.create({
         doc: "",
         extensions: [
@@ -152,7 +176,6 @@ export const InkEditor = memo(forwardRef<InkEditorHandle, InkEditorProps>(
         viewRef.current = null;
         delete (window as any).__brinkView;
       };
-      // Mount once — never remount. Props changes are handled via refs.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 

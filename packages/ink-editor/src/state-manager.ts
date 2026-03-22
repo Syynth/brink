@@ -56,14 +56,16 @@ export class EditorStateManager {
   private studioOptions: BrinkStudioOptions;
   private project: ProjectSession;
   private view: EditorView | null = null;
+  private extraExtensions: Extension[] = [];
 
   /** Ordered list of open tabs. */
   private _tabs: TabInfo[] = [];
   private activeTabId: string;
 
-  constructor(project: ProjectSession, studioOptions: BrinkStudioOptions) {
+  constructor(project: ProjectSession, studioOptions: BrinkStudioOptions, extraExtensions: Extension[] = []) {
     this.project = project;
     this.studioOptions = studioOptions;
+    this.extraExtensions = extraExtensions;
 
     // Start with a single pinned file tab for the entry file
     const entryPath = project.getActiveFile();
@@ -319,6 +321,7 @@ export class EditorStateManager {
       keymap.of(defaultKeymap),
       EditorView.lineWrapping,
       this.autoPinExtension(),
+      ...this.extraExtensions,
     ];
   }
 }

@@ -27,3 +27,6 @@ export { brinkTheme } from "./theme.js";
 
 // Convert (CM6 dispatch version)
 export { convertLineToType, CONVERTIBLE_TYPES, extractLineContent, getLineSigilRange } from "./convert.js";
+
+// Transition helpers (for external update listeners)
+export { getHintsForElement, lineHasContent, buildContext } from "./transitions.js";
