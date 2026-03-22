@@ -33,15 +33,13 @@ html, body {
 }
 
 #app {
-  display: flex;
   height: 100%;
 }
 
-/* Binder placeholder */
+/* Binder pane */
 #binder-pane {
-  width: 220px;
+  height: 100%;
   background: var(--brink-bg-surface);
-  border-right: 1px solid var(--brink-border);
   display: flex;
   flex-direction: column;
 }
@@ -54,6 +52,9 @@ html, body {
   border-bottom: 1px solid var(--brink-border);
   letter-spacing: 0.5px;
   text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 /* Binder tree */
@@ -181,10 +182,9 @@ html, body {
 
 /* Editor pane */
 #editor-pane {
-  flex: 2;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--brink-border);
   min-width: 0;
 }
 
@@ -638,7 +638,7 @@ html, body {
 
 /* Player pane */
 #player-pane {
-  flex: 2;
+  height: 100%;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -744,6 +744,50 @@ html, body {
   height: 100%;
   color: var(--brink-fg-dim);
   font-size: 14px;
+}
+
+/* Resize handle (react-resizable-panels) */
+.brink-resize-handle {
+  width: 5px;
+  background: transparent;
+  position: relative;
+  z-index: 10;
+  transition: background 0.15s;
+}
+
+.brink-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--brink-border);
+  transition: background 0.15s, width 0.15s;
+}
+
+.brink-resize-handle:hover::after,
+.brink-resize-handle[data-resize-handle-active]::after {
+  background: var(--brink-accent);
+  width: 2px;
+  left: 1px;
+}
+
+/* Panel toggle button */
+.brink-panel-toggle {
+  background: none;
+  border: none;
+  color: var(--brink-fg-dim);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.brink-panel-toggle:hover {
+  color: var(--brink-fg);
+  background: var(--brink-bg-panel);
 }
 
 /* Binder: multi-select highlight */

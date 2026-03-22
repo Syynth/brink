@@ -7,8 +7,9 @@
   "types": "src/index.ts",
   "dependencies": {
     "@brink/ink-operations": "workspace:*",
-    "@brink/wasm-types": "workspace:*",
     "@brink/studio-store": "workspace:*",
+    "@brink/wasm-types": "workspace:*",
+    "react-resizable-panels": "^4.7.4",
     "zustand": "^5.0.0"
   },
   "peerDependencies": {
