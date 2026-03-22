@@ -6,11 +6,25 @@ import { useStudioStore } from "./StoreContext.js";
 const RAINBOW = ["#f38ba8", "#fab387", "#f9e2af", "#a6e3a1", "#89b4fa", "#cba6f7"];
 
 const CHARACTER_COLORS: Record<string, string | "rainbow"> = {
+  // Ratchet's Lair cast
   CHARLOTTE: "rainbow",
   ELIJAH: "#fab387",   // orange/peach
   NOAH: "#f38ba8",     // red
   VIOLET: "#89dceb",   // cyan
   RATCHET: "#c4a882",  // cinnamon
+  // Codetta cast
+  MINNIE: "#f5c2e7",   // pink
+  PARENTS: "#6c7086",  // dim
+  CODETTA: "#cba6f7",  // mauve
+  JACKIE: "#a6e3a1",   // green
+  IRENE: "#f9e2af",    // yellow
+  OSCAR: "#fab387",    // peach
+  TILDE: "#89dceb",    // teal
+  PATTY: "#f38ba8",    // red
+  DORIAN: "#94e2d5",   // teal
+  SOLSTICE: "#f5c2e7", // pink
+  BIJOU: "#cba6f7",    // mauve
+  LALA: "#a6e3a1",     // green
 };
 
 /** Render a name with each letter in a cycling rainbow. */
