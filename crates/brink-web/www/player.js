@@ -21,10 +21,10 @@ export function createPlayer(container) {
 
     choicesDiv.innerHTML = '';
 
-    let result;
+    let lines;
     try {
       const json = runner.continue_story();
-      result = JSON.parse(json);
+      lines = JSON.parse(json);
     } catch (e) {
       const err = document.createElement('div');
       err.className = 'error';
@@ -33,52 +33,47 @@ export function createPlayer(container) {
       return;
     }
 
-    // Render text lines
-    if (result.text) {
-      const lines = result.text.split('\n');
-      for (const line of lines) {
-        if (line.trim() === '') continue;
-        const p = document.createElement('p');
-        p.textContent = line;
-        storyDiv.appendChild(p);
-      }
-    }
-
-    if (result.status === 'continue') {
-      // More text available, keep reading
-      advance();
-      return;
-    }
-
-    if (result.status === 'choices' && result.choices.length > 0) {
-      for (const choice of result.choices) {
-        const btn = document.createElement('button');
-        btn.textContent = choice.text;
-        btn.addEventListener('click', () => {
-          // Show chosen text
+    for (const line of lines) {
+      const text = line.text.replace(/\n$/, '');
+      if (text) {
+        const textLines = text.split('\n');
+        for (const tl of textLines) {
+          if (tl.trim() === '') continue;
           const p = document.createElement('p');
-          p.textContent = '> ' + choice.text;
-          p.style.color = 'var(--accent)';
+          p.textContent = tl;
           storyDiv.appendChild(p);
-
-          try {
-            runner.choose(choice.index);
-          } catch (e) {
-            const err = document.createElement('div');
-            err.className = 'error';
-            err.textContent = 'Choose error: ' + e.message;
-            storyDiv.appendChild(err);
-            return;
-          }
-          advance();
-        });
-        choicesDiv.appendChild(btn);
+        }
       }
-    } else if (result.status === 'ended') {
-      const end = document.createElement('div');
-      end.className = 'end-marker';
-      end.textContent = '— End —';
-      storyDiv.appendChild(end);
+
+      if (line.type === 'choices' && line.choices && line.choices.length > 0) {
+        for (const choice of line.choices) {
+          const btn = document.createElement('button');
+          btn.textContent = choice.text;
+          btn.addEventListener('click', () => {
+            const p = document.createElement('p');
+            p.textContent = '> ' + choice.text;
+            p.style.color = 'var(--accent)';
+            storyDiv.appendChild(p);
+
+            try {
+              runner.choose(choice.index);
+            } catch (e) {
+              const err = document.createElement('div');
+              err.className = 'error';
+              err.textContent = 'Choose error: ' + e.message;
+              storyDiv.appendChild(err);
+              return;
+            }
+            advance();
+          });
+          choicesDiv.appendChild(btn);
+        }
+      } else if (line.type === 'end') {
+        const end = document.createElement('div');
+        end.className = 'end-marker';
+        end.textContent = '— End —';
+        storyDiv.appendChild(end);
+      }
     }
 
     // Auto-scroll to bottom

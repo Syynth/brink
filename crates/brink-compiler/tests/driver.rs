@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use brink_runtime::{DotNetRng, StepResult, Story};
+use brink_runtime::{DotNetRng, Line, Story};
 
 /// Helper: compile from an in-memory file system (`HashMap` of path to source).
 fn compile_mem(
@@ -180,13 +180,19 @@ fn compile_and_run(source: &str, inputs: &[usize]) -> String {
     let mut input_idx = 0;
 
     loop {
-        match story.continue_maximally().unwrap() {
-            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
-                output.push_str(&text);
+        let lines = story.continue_maximally().unwrap();
+        let last = lines.last().unwrap();
+        match last {
+            Line::Text { .. } | Line::Done { .. } | Line::End { .. } => {
+                for line in &lines {
+                    output.push_str(line.text());
+                }
                 break;
             }
-            StepResult::Choices { text, choices, .. } => {
-                output.push_str(&text);
+            Line::Choices { choices, .. } => {
+                for line in &lines {
+                    output.push_str(line.text());
+                }
                 let idx = if input_idx < inputs.len() {
                     let c = inputs[input_idx];
                     input_idx += 1;
@@ -393,11 +399,8 @@ fn include_content_appears_before_main() {
     let data = compile_mem("main.ink", &files).unwrap();
     let program = brink_runtime::link(&data).unwrap();
     let mut story = Story::<DotNetRng>::new(&program);
-    let result = match story.continue_maximally().unwrap() {
-        StepResult::Done { text, .. }
-        | StepResult::Ended { text, .. }
-        | StepResult::Choices { text, .. } => text,
-    };
+    let lines = story.continue_maximally().unwrap();
+    let result: String = lines.iter().map(Line::text).collect();
     assert_eq!(
         result, "This is A.\nThis is B.\nThis is main.\n",
         "included file content must appear before main file content"
@@ -1352,14 +1355,17 @@ fn compile_and_run_steps(source: &str, inputs: &[usize]) -> Vec<(String, Option<
     loop {
         guard += 1;
         assert!(guard < 100, "infinite loop detected");
-        match story.continue_maximally().unwrap() {
-            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
-                steps.push((text, None));
+        let lines = story.continue_maximally().unwrap();
+        let combined_text: String = lines.iter().map(Line::text).collect();
+        let last = lines.last().unwrap();
+        match last {
+            Line::Text { .. } | Line::Done { .. } | Line::End { .. } => {
+                steps.push((combined_text, None));
                 break;
             }
-            StepResult::Choices { text, choices, .. } => {
+            Line::Choices { choices, .. } => {
                 let count = choices.len();
-                steps.push((text.clone(), Some(count)));
+                steps.push((combined_text.clone(), Some(count)));
                 let idx = if input_idx < inputs.len() {
                     let c = inputs[input_idx];
                     input_idx += 1;
@@ -1369,7 +1375,7 @@ fn compile_and_run_steps(source: &str, inputs: &[usize]) -> Vec<(String, Option<
                 };
                 assert!(
                     idx < count,
-                    "choice index {idx} out of range (only {count} choices), text so far: {text:?}"
+                    "choice index {idx} out of range (only {count} choices), text so far: {combined_text:?}"
                 );
                 story.choose(idx).unwrap();
             }

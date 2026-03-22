@@ -1,7 +1,7 @@
 //! Episode recording and simple text-output helpers.
 
 use brink_format::{DefinitionId, Value};
-use brink_runtime::{DotNetRng, Program, StepResult, Story, WriteObserver};
+use brink_runtime::{DotNetRng, Line, Program, Story, WriteObserver};
 
 use crate::episode::{
     ChoiceRecord, Episode, Outcome, StateSnapshot, StateWrite, StepOutcome, StepRecord,
@@ -93,94 +93,112 @@ pub fn record(program: &Program, config: &RunConfig) -> Episode {
         let writes = recorder.drain();
 
         match result {
-            Ok(StepResult::Choices {
-                text,
-                choices,
-                tags,
-            }) => {
-                let presented: Vec<ChoiceRecord> = choices
-                    .iter()
-                    .map(|c| ChoiceRecord {
-                        text: c.text.clone(),
-                        index: c.index,
-                        tags: c.tags.clone(),
-                    })
-                    .collect();
-
-                if input_idx >= config.inputs.len() {
-                    steps.push(StepRecord {
-                        text,
-                        tags,
-                        outcome: StepOutcome::Choices {
-                            presented: presented.clone(),
-                            selected: 0,
-                        },
-                        external_calls: Vec::new(),
-                        writes,
-                    });
-                    return Episode {
-                        steps,
-                        outcome: Outcome::InputsExhausted {
-                            remaining_choices: presented,
-                        },
-                        choice_path,
-                        initial_state,
-                    };
+            Ok(lines) => {
+                // Collect text and build per-text-line tags.
+                let mut text = String::new();
+                let line_parts: Vec<(&str, &[String])> =
+                    lines.iter().map(|l| (l.text(), l.tags())).collect();
+                for &(lt, _) in &line_parts {
+                    text.push_str(lt);
                 }
+                let tags = build_per_line_tags(&line_parts);
 
-                let selected = config.inputs[input_idx];
-                input_idx += 1;
-                choice_path.push(selected);
+                let last = lines.last();
+                match last {
+                    Some(Line::Choices { choices, .. }) => {
+                        let presented: Vec<ChoiceRecord> = choices
+                            .iter()
+                            .map(|c| ChoiceRecord {
+                                text: c.text.clone(),
+                                index: c.index,
+                                tags: c.tags.clone(),
+                            })
+                            .collect();
 
-                steps.push(StepRecord {
-                    text,
-                    tags,
-                    outcome: StepOutcome::Choices {
-                        presented,
-                        selected,
-                    },
-                    external_calls: Vec::new(),
-                    writes,
-                });
+                        if input_idx >= config.inputs.len() {
+                            steps.push(StepRecord {
+                                text,
+                                tags,
+                                outcome: StepOutcome::Choices {
+                                    presented: presented.clone(),
+                                    selected: 0,
+                                },
+                                external_calls: Vec::new(),
+                                writes,
+                            });
+                            return Episode {
+                                steps,
+                                outcome: Outcome::InputsExhausted {
+                                    remaining_choices: presented,
+                                },
+                                choice_path,
+                                initial_state,
+                            };
+                        }
 
-                if let Err(e) = story.choose(selected) {
-                    return Episode {
-                        steps,
-                        outcome: Outcome::Error(e.to_string()),
-                        choice_path,
-                        initial_state,
-                    };
+                        let selected = config.inputs[input_idx];
+                        input_idx += 1;
+                        choice_path.push(selected);
+
+                        steps.push(StepRecord {
+                            text,
+                            tags,
+                            outcome: StepOutcome::Choices {
+                                presented,
+                                selected,
+                            },
+                            external_calls: Vec::new(),
+                            writes,
+                        });
+
+                        if let Err(e) = story.choose(selected) {
+                            return Episode {
+                                steps,
+                                outcome: Outcome::Error(e.to_string()),
+                                choice_path,
+                                initial_state,
+                            };
+                        }
+                    }
+                    Some(Line::Done { .. } | Line::Text { .. }) => {
+                        steps.push(StepRecord {
+                            text,
+                            tags,
+                            outcome: StepOutcome::Done,
+                            external_calls: Vec::new(),
+                            writes,
+                        });
+                        return Episode {
+                            steps,
+                            outcome: Outcome::Done,
+                            choice_path,
+                            initial_state,
+                        };
+                    }
+                    Some(Line::End { .. }) => {
+                        steps.push(StepRecord {
+                            text,
+                            tags,
+                            outcome: StepOutcome::Ended,
+                            external_calls: Vec::new(),
+                            writes,
+                        });
+                        return Episode {
+                            steps,
+                            outcome: Outcome::Ended,
+                            choice_path,
+                            initial_state,
+                        };
+                    }
+                    None => {
+                        return Episode {
+                            steps,
+                            outcome: Outcome::Done,
+                            choice_path,
+                            initial_state,
+                        };
+                    }
                 }
-            }
-            Ok(StepResult::Done { text, tags }) => {
-                steps.push(StepRecord {
-                    text,
-                    tags,
-                    outcome: StepOutcome::Done,
-                    external_calls: Vec::new(),
-                    writes,
-                });
-                return Episode {
-                    steps,
-                    outcome: Outcome::Done,
-                    choice_path,
-                    initial_state,
-                };
-            }
-            Ok(StepResult::Ended { text, tags }) => {
-                steps.push(StepRecord {
-                    text,
-                    tags,
-                    outcome: StepOutcome::Ended,
-                    external_calls: Vec::new(),
-                    writes,
-                });
-                return Episode {
-                    steps,
-                    outcome: Outcome::Ended,
-                    choice_path,
-                    initial_state,
-                };
             }
             Err(e) => {
                 return Episode {
@@ -261,16 +279,18 @@ pub fn run_text(program: &Program, inputs: &[usize]) -> Result<String, String> {
     let mut input_idx = 0;
 
     for _ in 0..10_000 {
-        match story
+        let lines = story
             .continue_maximally()
-            .map_err(|e| format!("runtime error: {e}"))?
-        {
-            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
-                output.push_str(&text);
+            .map_err(|e| format!("runtime error: {e}"))?;
+        for line in &lines {
+            output.push_str(line.text());
+        }
+        let last = lines.last();
+        match last {
+            Some(Line::Done { .. } | Line::Text { .. } | Line::End { .. }) | None => {
                 return Ok(output);
             }
-            StepResult::Choices { text, choices, .. } => {
-                output.push_str(&text);
+            Some(Line::Choices { choices, .. }) => {
                 if input_idx >= inputs.len() {
                     return Ok(output);
                 }
@@ -290,6 +310,37 @@ pub fn run_text(program: &Program, inputs: &[usize]) -> Result<String, String> {
     }
 
     Err("exceeded 10000 steps".into())
+}
+
+/// Build per-text-line tags from per-Line texts and tags.
+///
+/// The episode format stores `tags: Vec<Vec<String>>` where each entry
+/// corresponds to one text line (split on `\n` on the bulk text). The
+/// `Line` API returns tags per-Line. This function walks each Line's
+/// text, counts newline-delimited segments, and places that Line's tags
+/// on the first segment it contributes. Intermediate trailing empties
+/// (from each Line ending with `\n`) are then truncated to match the
+/// segment count of the full concatenated text.
+pub(crate) fn build_per_line_tags(lines: &[(&str, &[String])]) -> Vec<Vec<String>> {
+    let mut tags: Vec<Vec<String>> = Vec::new();
+    let non_empty: Vec<_> = lines.iter().filter(|(lt, _)| !lt.is_empty()).collect();
+    for (i, &&(lt, line_tags)) in non_empty.iter().enumerate() {
+        let is_last = i == non_empty.len() - 1;
+        // Count newlines in this Line's text. Each \n represents a line
+        // boundary. For non-final Lines, the trailing \n is consumed by
+        // the next Line's text (it doesn't create a separate segment).
+        let newline_count = lt.matches('\n').count();
+        let extra_segments = if is_last {
+            newline_count
+        } else {
+            newline_count.saturating_sub(1)
+        };
+        tags.push(line_tags.to_vec());
+        for _ in 0..extra_segments {
+            tags.push(Vec::new());
+        }
+    }
+    tags
 }
 
 /// Convenience: parse ink.json, convert, link, and run for text output.

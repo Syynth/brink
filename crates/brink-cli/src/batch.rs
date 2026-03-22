@@ -8,20 +8,20 @@ pub fn play_loop<B: BufRead>(
     let mut stdout = std::io::stdout().lock();
 
     loop {
-        match story.continue_maximally()? {
-            brink_runtime::StepResult::Done { text, .. }
-            | brink_runtime::StepResult::Ended { text, .. } => {
+        match story.continue_single()? {
+            brink_runtime::Line::Text { text, .. } => {
+                write!(stdout, "{text}")?;
+            }
+            brink_runtime::Line::Done { text, .. } | brink_runtime::Line::End { text, .. } => {
                 write!(stdout, "{text}")?;
                 stdout.flush()?;
                 break;
             }
-            brink_runtime::StepResult::Choices { text, choices, .. } => {
+            brink_runtime::Line::Choices { text, choices, .. } => {
                 write!(stdout, "{text}")?;
-
                 for choice in &choices {
                     writeln!(stdout, "{}: {}", choice.index + 1, choice.text)?;
                 }
-
                 let idx = read_choice(&mut lines, choices.len(), interactive)?;
                 story.choose(choices[idx].index)?;
             }

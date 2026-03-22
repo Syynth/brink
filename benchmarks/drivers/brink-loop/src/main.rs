@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use brink_converter::convert;
 use brink_json::InkJson;
-use brink_runtime::{DotNetRng, StepResult, Story};
+use brink_runtime::{DotNetRng, Line, Story};
 
 fn run_once(
     program: &brink_runtime::Program,
@@ -20,9 +20,14 @@ fn run_once(
     let mut input_idx = 0;
 
     loop {
-        match story.continue_maximally() {
-            Ok(StepResult::Done { .. } | StepResult::Ended { .. }) => break,
-            Ok(StepResult::Choices { choices, .. }) => {
+        let lines = match story.continue_maximally() {
+            Ok(l) => l,
+            Err(e) => panic!("runtime error: {e}"),
+        };
+        let last = lines.last();
+        match last {
+            Some(Line::Text { .. }) | Some(Line::End { .. }) | None => break,
+            Some(Line::Choices { choices, .. }) => {
                 if input_idx >= inputs.len() {
                     break;
                 }
@@ -31,7 +36,6 @@ fn run_once(
                 assert!(idx < choices.len());
                 story.choose(idx).unwrap_or_else(|e| panic!("choose failed: {e}"));
             }
-            Err(e) => panic!("runtime error: {e}"),
         }
     }
 }

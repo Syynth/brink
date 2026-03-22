@@ -1,0 +1,2640 @@
+// Candlelit Daughters — Ink Screenplay Adaptation
+
+=== introduction ===
+
+// OVERLAY
+Minnie Shy narrates a letter sent by her Parents.
+Narration supported by animated sketches.
+@PARENTS:<>
+Dearest Minnie...
+Minnie appears.
+@MINNIE:<>
+That's me!
+@PARENTS:<>
+We know you've been eagerly waiting for us to come home...
+Minnie nods eagerly.
+
+But unfortunately, we've been called away for unexpected business.
+@MINNIE:<>
+(Disappointed)<>
+...Oh. Again?
+@PARENTS:<>
+And as luck would have it, your usual babysitters appear to be unavailable.
+@MINNIE:<>
+Aww, but I love the troupe...
+@PARENTS:<>
+We understand the news will come as a disappointment to you.
+But don't worry dear; we're leaving you in the moderately capable hands of your aunt, Codetta!
+Codetta cheerfully appears. Confetti explodes.
+@MINNIE:<>
+I have an aunt!?
+Codetta is disheartened.
+@PARENTS:<>
+We know this may be hard for you, to suddenly be asked to stay with a stranger.
+But rest assured, Aunt Codetta is relatively harmless.
+As far as we know, she may only be responsible for two acts of arson.
+Codetta panics.
+@MINNIE:<>
+That's less than three, at least! But, what's she really like?
+Codetta cheers up a little.
+@PARENTS:<>
+According to certain... sensational news outlets, she's the world's first real psychic. Rather befittingly, she's dedicated her life's work to entertaining children your age with... supernatural video games, whatever that entails.
+@MINNIE:<>
+Wow! I've never even played a natural video game! She sounds really cool!
+Codetta is proud.
+@PARENTS:<>
+On the subject of your age, it's no secret that we're fast approaching the annual celebration of your life and birth.
+@MINNIE:<>
+In other words, my birthday!
+@PARENTS:<>
+Sadly, we were unable to send you a gift because the postal service here does not share our appreciation for you.
+@MINNIE:<>
+That's okay, getting the chance to visit an aunt I didn't know I had is the best gift I've gotten in years!
+@PARENTS:<>
+On the bright side, your aunt is throwing you a surprise party tomorrow night! Isn't that lovely?
+@MINNIE:<>
+Wow! F-For me!? That's so unexpected. How thoughtful of her!
+But wait, where is the party taking place? I should memorize the address!
+@PARENTS:<>
+The downside however, is that your aunt lives in the Moonshy archipelago.
+The other members of the Shy family appear. More confetti.
+@PARENTS:<>
+It's an unremarkable tourist trap, and sadly, our family's legacy.
+Irene, Oscar, Patty, Dorian look proud. The rest are less enthused. Tilde looks miserable.
+@MINNIE:<>
+(Lighting up)<>
+Our family?
+@PARENTS:<>
+Your relatives like to proudly prattle on about Moonshy's Southern charm, or its whimsical history of pirates and ghosts, or about its infamous unexplored sea that beckons fools to their doom.
+The usual small town cliches, in other words.
+@MINNIE:<>
+What's a southern charm?
+@PARENTS:<>
+In reality, it's all a corny sham. The piracy is needlessly romanticized, and the sea is only as interesting as the corpses that have been found in it. No, Moonshy is nothing more than a podunk on its last leg.
+@MINNIE:<>
+Is its other leg a peg leg?
+@PARENTS:<>
+If your next thought is, "Is its other leg a peg leg?" the answer is no, Minnie.
+@MINNIE:<>
+(Disappointed)<>
+Awww.
+@PARENTS:<>
+For whatever reason, many of our relatives still live in Moonshy. You can expect them to attend your party.
+Notably, some of them haven't seen you since you were a baby, and some haven't met you at all.
+@MINNIE:<>
+So, I will get to meet more of my folks. This is so exciting!
+@PARENTS:<>
+When possible, avoid them; your neck is already red enough.
+If you start developing a vocal twang, apply soap to your mouth immediately.
+And remember, it's soda, not coke. They're the ones who are wrong.
+@MINNIE:<>
+Thanks Parents! I'll keep all of that in mind.
+// BGM TO DARK AMBIENCE
+The letter begins to burn and wrinkle.
+@PARENTS:<>
+We'll write to you occasionally, and bring you home as soon as possible.
+@MINNIE:<>
+Okay!
+@PARENTS:<>
+And, Minnie...
+@MINNIE:<>
+Yes, Parents?
+@PARENTS:<>
+Don't rain on your family's parade.
+If you do...
+We'll find out...
+Minnie is unnerved.
+// BGM RETURNS
+The letter returns to normal.
+@PARENTS:<>
+From Codetta.
+Minnie returns to normal.
+@MINNIE:<>
+Makes sense to me!
+@PARENTS:<>
+Love and support,
+Your Parents
+P.S. Happy birthday.
+// SLOWLY DISSOLVE
+
++ [Continue]
+  -> introduction_1
+
+=== introduction_1 ===
+
+// EXT. THE LULL - SUNSET
+Eerie mist surrounds a ferry boat.
+On board: the Rugged Crewman, Bugged Crewman, and a family — Gung Ho Father, Miffed Mother, Shoe-Gazing Son and Seashell Obsessed Daughter.
+// SFX: SHIP BELL
+The Rugged Crewman's lantern intimately lights the scene.
+@RUGGED CREWMAN:<>
+Don't be fooled by the congregation of dark clouds, folks...
+The daylight lurking behind this dreadful curtain is peaceful, and picturesque.
+(Beat)<>
+But this peace is a finite flame.
+The family leans in.
+// ZOOM IN ON GROUP
+@RUGGED CREWMAN:<>
+She melts her own column of wax, or cake, protectin' her from the moat of a doomed existence.
+As she sinks, the moat expands into an ocean... inescapable, and churned like butter in a barrel...
+As if'er mother's lullabies are sung not to drown'er inevitable screams...
+But rather, to ease the ceaseless hunger pangs of a gluttonous grave.
+The Rugged Crewman's lantern burns out. The family (spare the son) is caught by surprise.
+@RUGGED CREWMAN:<>
+In the end, her screams are heard echoing throughout the peaks of the archipelago, past the lighthouse, and finally...
+Lost on the ears of the Sightseer, who journeyed far to find her...
+But, as it be the standard of all time worn tragedies—
+The poor lad finds her ...a moment too late.
+The mist begins to clear. A serene sunset is revealed.
+@RUGGED CREWMAN:<>
+In other words, as the mist begins to clear, but paradoxically the storm begins to brew...
+We arrive now, at the formerly wondrous and probably kinda deadly archipelago of...
+Moonshy.
+Historic...
+Scenic...
+Isolated...
+Haunted...
+(Quickly)<>
+Now hiring, with positions earnin' up to minimum wage...
+(Ease)<>
+Welcome, to your destination. Possibly... your last.
+The family (spare the son) cheers.
+// ZOOM OUT, FOCUS: FAMILY
+@GUNG HO FATHER:<>
+Chills! I've got chills!
+My dear, you really weren't overselling it.
+This vacation's gonna be a hoot!
+@MIFFED MOTHER:<>
+Wait til you see the gift shop up ahead. It's an ol'fashion spookfest!
+I remember there bein' some uh, big fishin' hooks or somethin'?
+@SEASHELL OBSESSED DAUGHTER:<>
+Can I look for seashells now, daddy?
+@GUNG HO FATHER:<>
+Now, now, sugarplum...
+You'll have time to fuel your oddly specific obsession soon, but first—
+Our lovely lil'voyage has tuckered your ol'father out...
+Let's settle in!
+
++ [Continue]
+  -> introduction_2
+
+=== introduction_2 ===
+
+// EXT. HIDEAWAY PORT - SUNSET
+The ship docks. The crewmen exit the scene to retrieve a delivery.
+The family step onto the dock. The father takes a breath.
+@YOUNGEST FATHER:<>
+Can you taste it, kids?
+The subtle hint of canned peaches in the thick, wet air...
+The mysterious Spanish moss covering the distant forest trees...
+The peaceful protest songs of the carnivorous cicadas...
+Delightful Southern charm, at its damned finest!
+@OLDEST MOTHER:<>
+Hun, cicadas aren't carnivorous. They're uh... liquivorous?
+@SHOEGAZING SON:<>
+Well, speaking of liquid... all I can taste is my own spit. Which today, unlike most days, tastes like battery acid.
+The crewmen return, wheeling a large shipping crate onto the dock beside the family.
+@RUGGED CREWMAN:<>
+Whaddya taste most days, boy?
+@SHOEGAZING SON:<>
+The blood of my enemies.
+@RUGGED CREWMAN:<>
+(Pleased)<>
+Aye.
+The crewmen drop the crate. The Bugged Crewman wipes his sweaty forehead.
+@BUGGED CREWMAN:<>
+But golly, ain't this place pretty? It don't seem as creepy as everyone says!
+@RUGGED CREWMAN:<>
+A youngin' like you ain't seen nothin' like I 'ave. All the years I've been workin' this route...
+The things I've delivered... Many horrific wonders like you'd never believe.
+@BUGGED CREWMAN:<>
+O-Oh, ya? L-Like what, then?
+@RUGGED CREWMAN:<>
+Crates of live spiders an' worms, unlabeled packages of blood, labeled parcels that'd violently shake an' moan when you poked'em, packs of single-ply toilet paper...
+@BUGGED CREWMAN:<>
+OK, OK— I GET IT, I GET IT!
+The Bugged Crewman shudders.
+@RUGGED CREWMAN:<>
+Aye, but that ain't nothin' compared to the most frightening thing I seen 'ere.
+Everyone leans in.
+@YOUNGEST FATHER:<>
+Yeah? Wanna tell us more? Ya'know... one more tale for the road?
+The father holds out a tip. The Rugged Crewman takes it.
+@RUGGED CREWMAN:<>
+Aye, but brace yerselves... This ain't for the faint o'ye.
+(Beat)<>
+Many years ago, I delivered a filthy lookin' crate...
+Drenched in sea water...
+Boards all peelin' and turnin' green...
+Bound and chained by a rusted anchor...
+I dared to sneak a peek inside...
+Within, lo and behold, I found...
+(Beat)<>
+SOME POOR FOOL'S CORPSE!
+Everyone (spare the son), all gasp in horror.
+@RUGGED CREWMAN:<>
+A corpse! Can ya believe it!? Now, THAT was true terror!
+Hell, that one made it into the ol'mornin' newspaper, it did!
+@BUGGED CREWMAN:<>
+I ain't never seen yer face in no newspaper.
+@OLDEST MOTHER:<>
+Besides that, your crate there don't look nothin' special.
+@RUGGED CREWMAN:<>
+Aye, you might be right, lass.
+This here crate may contain nothin' out of the ordinary.
+Just everyday mail for the folks still livin' in these mysterious floatin' lands.
+Letters from family, loved ones...
+Bills to pay, medical debts to ignore...
+Or...
+This here crate may contain somethin' far more sinister.
+Somethin' so horrific, it's moved beyond the idyllic suburbs of our senses, and'as occupied the rural outer fields of inconceivable terror!
+TERROR... AND DESPAIR!
+Everyone stares at him blankly.
+@SEASHELL OBSESSED DAUGHTER:<>
+OK.
+Now, can I go collect seashells, daddy?
+@YOUNGEST FATHER:<>
+Yes. Let's all go collect sea shells.
+In our hotel room.
+Far away from this guy.
+The family begins to leave.
+// ZOOM IN ON CRATE
+The crate rocks and shakes. Minnie busts free from the shipping crate.
+@MINNIE:<>
+Finally, I've arrived!
+Everyone is shocked. The Bugged Crewman bugs out.
+@BUGGED CREWMAN:<>
+Holy crap, it's a corpse! You were right, man! Oh God oh heck—
+Minnie reads her map.
+@RUGGED CREWMAN:<>
+No lad, this is far, far worse than a mere corpse.
+Look!
+He points at her. Minnie looks up, confused.
+@RUGGED CREWMAN:<>
+She's animated.
+We got a zombie on our hands here, folks!
+@MINNIE:<>
+Pardon my correction, sir, but I'm not a zom—
+@BUGGED CREWMAN:<>
+A ZOMBIE!? OH GOD! PLEASE DON'T EAT MY BRAIN. I REALLY LIKE MY BRAIN— MY REALLY BIG, SMART BRAIN.
+@SEASHELL OBSESSED DAUGHTER:<>
+That's a living, breathing human girl, you idiots.
+@BUGGED CREWMAN:<>
+Y-You can have an arm at least!
+The Bugged Crewman holds out the Rugged Crewman's arm.
+@YOUNGEST FATHER:<>
+Are you sure about that, my sweet little morning muffin?
+Someone fetch me my disinfectant wipes, just to be safe.
+I've heard zombies aren't exactly champions of hygiene.
+Minnie salutes the crewmen.
+@MINNIE:<>
+By the way... Thank you for the safe trip, mister sailors!
+Smooth sailing today!
+They nod uneasily.
+@MINNIE:<>
+Anyway, I'm supposed to be staying here with my aunt, Codetta.
+Have you seen her?
+@BUGGED CREWMAN:<>
+No, wait, hold on!
+What the hell were you doing in our crate, you vile fiend!?
+@MINNIE:<>
+Um... Well, my parents always say that shipping's much cheaper than flying. So, I shipped here!
+@OLDEST MOTHER:<>
+Then, why didn't you just ride on the ferry like the rest of us?
+@MINNIE:<>
+But, I did! Speaking of which, those boxes you all have must have been really cramped to fit all of you inside! How did you make that work?
+@BUGGED CREWMAN:<>
+(Stammering)<>
+Wait, y-you're saying—
+@OLDEST MOTHER:<>
+Oh, sweetie, that is uh... not...
+@YOUNGEST FATHER:<>
+Good lord!
+Everyone is shocked.
+@ENSEMBLE:<>
+THAT'S NOT WHAT SHIPPING MEANS!
+Minnie continues stretching, not noticing the outburst.
+@BUGGED CREWMAN:<>
+S-So, how'd you manage to get out of that crate, anyway?
+@MINNIE:<>
+Oh, uh... I was practicing my golf swing?
+Everyone else is staring at her in complete disbelief.
+@MINNIE:<>
+What's wrong? I-Is that... not convincing?
+They scream and panic.
+@MINNIE:<>
+Oh, I guess it was. Phew!
+@YOUNGEST FATHER:<>
+A-Alright, kids, let's get the hell away from the terror-despair guy, and the freakishly strong zombie child, and go enjoy our vacation!
+Like, now!
+The family runs away, scared.
+@BUGGED CREWMAN:<>
+Look, you monster, we, uh... We done did our due diligence as ferrymen, so...
+W-We— We're gonna go.
+Like, now!
+Everyone rushes off.
+@MINNIE:<>
+Um, before you all go, can someone tell me where my aunt,
+Codetta...
+Minnie looks around.
+@MINNIE:<>
+Is...?
+Everyone is gone.
+@MINNIE:<>
+Huh. Well, that was a bit... surprising, I guess?
+(Beat, Recalling)<>
+(That reminds me!
+I need to practice being surprised for my surprise party.
+I'll chalk that last bit up as a warm-up.)
+Now then, where is aunt Codetta? Maybe I should follow those folks that ran off...
+Minnie updates her notebook.
+
++ [Continue]
+  -> hideaway_port
+
+=== hideaway_port ===
+
+= shore
+
+// EXT. HIDEAWAY PORT - SHORE - SUNSET
+// The player explores Hideaway Falls. Focus on teaching the player how to move Minnie, use basic golf shot skills, and how to examine surroundings and points of interest.
+
+// [SHORE SIGN]
+Minnie approaches a sign on the beach.
+@MINNIE:<>
+(Hideaway Port, landfall of the Moonshy Archipelago.
+So, this trail leads to the Souvenir Shop and Welcome Center...
+Oh hey, that's where my party's taking place!
+So, I should just keep heading... South. Right?
+Right, yes. I should go the right way. So, onward, to the right!)
+
+// [SURPRISE SWING]
+As Minnie approaches a nearby swing set, she notices the sound of children playing.
+The swing on the far right collapses as Minnie passes by, catching her by surprise.
+@MINNIE:<>
+(Flat tone)<>
+Oh! Um...
+Aaaaaah.
+Minnie gently waves her arms, pretending to be surprised, unconvincingly.
+@MINNIE:<>
+(Eh, that wasn't very surprising.)
+
++ [Continue]
+  -> hideaway_port_trail
+
+=== hideaway_port_trail ===
+
+// EXT. HIDEAWAY PORT - TRAIL - SUNSET
+// The player explores the trail. Continue focus on teaching the player how to move Minnie, now with slightly increased complexity.
+
+// [WELCOME SIGN]
+Minnie sees a sign at the trail entrance.
+It reads: "Welcome to the historic Moonshy archipelago, the world's 5th Wonderland."
+The word former has been added in. Below the scratched out line, reads: "the world's 6th Wonderland"
+Below that scratched out line, reads: "A former Wonderland."
+And finally, below that scratched out line, reads: "A wondrous land definitely worth your time and hard earned cash."
+
+// [NEW MAP POST]
+Minnie encounters the family again. They are standing in front of a map post, checking where they are against their current map.
+@OLDEST MOTHER:<>
+Well, ain't this cute. What, they think people are gonna get lost on the way to the welcome center?
+@YOUNGEST FATHER:<>
+What do you mean, dear?
+@OLDEST MOTHER:<>
+Oh, nothin' much. This map post thing is new. Just kinda surprising, I guess— folks used to say ol'Oscar would never spend a dime on this here port. I guess it's cause all the good stuff's just past the entrance.
+@YOUNGEST FATHER:<>
+Seems strange to not want to make a good first impression though, doesn't it?
+@OLDEST MOTHER:<>
+Sure. You figure his reason is probably something like— you bought the tickets and you're already here, so you ain't gonna turnaround.
+@YOUNGEST FATHER:<>
+How bold.
+@OLDEST MOTHER:<>
+That's Oscar for you. The other manager, Irene— his older sister, if I recall...
+She ain't like that. Lady's smart as hell, and'll make you wet yer pants if you make eye contact with'er.
+I betcha she's the one who put this here map up. Her wife's a gardener or somethin'... explains the pretty flower arrangements I reckon.
+@YOUNGEST FATHER:<>
+Well, it's certainly lovely.
+The family moves on. Minnie comes up to the map and reads it.
+@MINNIE:<>
+Head deeper south to the Moonshy Souvenir Shoppe & Welcome Center.
+(Huh. I wonder why they spelled "shop" wrong?)
+(Maybe it's one of those things where they're trying to seem "young and hip"?)
+
+// [SURPRISE BRIDGE]
+Minnie locates an old bridge situated a fair distance above a patch of shallow marshland. While crossing, it begins to wobble. Despite her best efforts to be careful, the bridge collapses, sending her tumbling down into the marsh below.
+Her clothes and hair are rendered a mess.
+@MINNIE:<>
+(Flat tone)<>
+...Aaaaaaaaah.
+She gently waves her arms again, this time with a bit more enthusiasm. She sighs, and gets up.
+@MINNIE:<>
+(That was a little surprising!)
+Minnie must take the longer and more dangerous route now.
+
++ [Continue]
+  -> hideaway_port_forest
+
+=== hideaway_port_forest ===
+
+// EXT. HIDEAWAY PORT - FOREST - SUNSET
+// The player explores the forest. Focus on teaching the player how to move Minnie with increased platforming complexity, and introduce her extended physical mechanics, such as pushing/pulling, climbing, scaling, etc.
+
+// [SURPRISE THORNS]
+Minnie travels through the forest, making her way back up to the trail.
+As she climbs up some vines, she is scratched up a little by thorn bushes, but not enough to make her bleed.
+@MINNIE:<>
+Ow. Unsurprisingly, these thorns kinda suck.
+Just as Minnie begins her final ascent to the trail, the family is seen passing by.
+
+// [SURPRISE NOODLES]
+// PAN TO FAMILY
+The Youngest Father is seen with a bowl of instant noodles. He takes a sip and repels back in disgust.
+@YOUNGEST FATHER:<>
+Dagnabbit!
+@OLDEST MOTHER:<>
+What's the problem, hun?
+@YOUNGEST FATHER:<>
+I bought the spicy noodles again!
+@SEASHELL OBSESSED DAUGHTER:<>
+Just eat it, daddy.
+@YOUNGEST FATHER:<>
+No, no, it's much too hard on my gut.
+@OLDEST MOTHER:<>
+That, and yer already mighty spicy.
+@YOUNGEST FATHER:<>
+(Embarrassed)<>
+Honey, the kids are right here...
+The Youngest Father tosses the bowl off the trail. It plummets below the cliffside and lands on top of Minnie's head, splattering her with red soup, and leaving noodles and pink vegetable chunks in her hair and on her face. She now looks like she's bleeding.
+She opens her surprised eyes and blinks twice, awkwardly.
+@MINNIE:<>
+(Annoyed, confused)<>
+Um... Aaaaaaah?
+(Seriously, what the heck?
+I'm so surprised that guy just littered!)
+The family moves on.
+
++ [Continue]
+  -> hideaway_port_waterfall
+
+=== hideaway_port_waterfall ===
+
+// EXT. HIDEAWAY PORT - WATERFALL - NIGHT
+// The player explores the waterfall. Here, the player is given a brief break from the tutorial.
+
+// [SURPRISE ZOMBIE]
+Minnie arrives at the entrance of the souvenir shop, which is located behind a waterfall.
+// PAN TO FAMILY
+The family is seen just outside of the entrance, and they appear to be very upset and angry (spare the son). The Oldest Mother has her phone on speaker, and is audibly on hold with Moonshy's customer support line.
+// MUSIC: HOLD MUSIC
+@OLDEST MOTHER:<>
+This is just plain silly! They outta be open right now!
+@YOUNGEST FATHER:<>
+Didn't you double check the tickets?
+@OLDEST MOTHER:<>
+Triple checked'em!
+@PHONE:<>
+Thank you for calling Moonshy tourism support. Your call is very important to us. Please stay on the line, and someone will assist you, shortly.
+@SHOEGAZING SON:<>
+I need to pee.
+@SEASHELL OBSESSED DAUGHTER:<>
+Shut up, we all need to pee!
+(Beat)<>
+Daddy, can't we just talk to someone inside?
+@YOUNGEST FATHER:<>
+I'm sorry, sweet potato, but we're locked out.
+The mother knocks on the door. No sound is heard on the other side.
+@OLDEST MOTHER:<>
+Ain't no one in there.
+(Beat)<>
+Hell, at this rate, I'm beginnin' to wonder if anyone's still workin' here at all.
+@YOUNGEST FATHER:<>
+What? They can't honestly be closed.
+@OLDEST MOTHER:<>
+It ain't out of the question. Tickets here been gettin' cheaper, but ain't many folk visitin' these days, from the looks of it.
+@SEASHELL OBSESSED DAUGHTER:<>
+You've been making it out like the place is bustling!
+@OLDEST MOTHER:<>
+It was. Back when I'd visit with yer granpappy. But, you saw it— we were the only folks on the boat.
+...Zombie aside.
+(Beat, sighing)<>
+Hell, the tour guide's missin' too.
+@PHONE:<>
+Thank you for calling Moonshy tourism support. Your call is very important to us. Please stay on the line, and someone will assist you, shortly.
+@YOUNGEST FATHER:<>
+God, you don't think they'd...
+They wouldn't, you know, just take our money and...
+@OLDEST MOTHER:<>
+And, what? Close up shop, and make off with it?
+Hell, they might.
+If ol'Oscar's still runnin' the show, I wouldn't doubt it, not one bit.
+Man's got dollar signs in his damn eyes, but no dollars in his pocket, I hear.
+@YOUNGEST FATHER:<>
+Well, this vacation's off to a great st— Hold on...
+Does something smell like a dead something?
+Minnie steps into the scene.
+@MINNIE:<>
+Hello again! I apologize for accidentally eavesdropping, but...
+I get the impression there's a problem here. Can I help?
+The family turns to face Minnie. They panic.
+@YOUNGEST FATHER:<>
+Oh, spare us Lord on High, the zombie has returned! And now she bares the scent of death!
+@SEASHELL OBSESSED DAUGHTER:<>
+And, look at her clothes!
+@OLDEST MOTHER:<>
+Are those brain chunks in'er hair too!?
+@YOUNGEST FATHER:<>
+S-She must have just claimed...
+A VICTIM!
+Everyone screams, spare the son.
+@SEASHELL OBSESSED DAUGHTER:<>
+Daddy, I don't care about sea shells anymore!
+I j-just want to go home and find a new oddly specific hobby!
+@OLDEST MOTHER:<>
+This place ain't no spooky haven of fun no more.
+No, this lil' podunk's gone straight to hell!
+@SHOEGAZING SON:<>
+I no longer need to pee.
+@PHONE:<>
+Thank you for calling Moonshy tourism support. Your call is very important to us. Please stay on the line, and someone will assist you, shortly.
+Minnie stares at them blankly. The family stares back.
+@MINNIE:<>
+(Flat tone)<>
+Aaaaah.
+She gently waves her arms.
+@ENSEMBLE:<>
+AAAAAH!!!!!
+The family screams, and runs off in a panic. The Oldest Mother drops her phone. Minnie stands there awkwardly, unsure of what to make of the scene.
+@MINNIE:<>
+(Sincere)<>
+I hope they enjoyed their vacation?
+// MUSIC: HOLD MUSIC CONTINUES FOREVER
+Minnie shuffles over to the shop entrance.
+
+// [LOCKED SOUVENIR SHOP]
+@MINNIE:<>
+(They were right, it's locked.
+The door doesn't seem very strong, though.)
+
+// [UNLOCKED SOUVENIR SHOP]
+Minnie breaks the door down with her mad golfing skills.
+@MINNIE:<>
+(I hope no one gets mad about the door...
+But, I'm running late for the party, so I really need to get going!)
+
++ [Continue]
+  -> hideaway_port_waterfall_v2
+
+=== hideaway_port_waterfall_v2 ===
+
+// EXT. HIDEAWAY PORT - WATERFALL - NIGHT (ALTERNATE VERSION)
+// The player explores the waterfall. Here, the player is given a brief break from the tutorial.
+
+// [SURPRISE ZOMBIE]
+Minnie arrives at the entrance of the souvenir shop, which is located behind a waterfall.
+// PAN TO FAMILY
+The family is seen just outside of the entrance, and they appear to be very upset and angry (spare the son). The Oldest Mother has her phone on speaker, and is audibly on hold with Sunshy's customer support line.
+// MUSIC: HOLD MUSIC
+@OLDEST MOTHER:<>
+This is absurd! They outta be open right now!
+@YOUNGEST FATHER:<>
+Didn't you double check the tickets?
+@OLDEST MOTHER:<>
+Triple checked'em!
+@PHONE:<>
+Thank you for calling Moonshy tourism support. Your call is very important to us. Please stay on the line, and someone will assist you shortly.
+@SHOEGAZING SON:<>
+I need to pee.
+@SEASHELL OBSESSED DAUGHTER:<>
+Shut up, we all need to pee!
+(Beat)<>
+Daddy, can't we just talk to someone inside?
+@YOUNGEST FATHER:<>
+I'm sorry, my little sweet potato, but it seems we're locked out.
+@SHOEGAZING SON:<>
+Knock on the door.
+@OLDEST MOTHER:<>
+I already did. Ain't no one in there.
+(Beat)<>
+Hell, at this rate, I'm beginnin' to wonder if anyone's still workin' here at all.
+@YOUNGEST FATHER:<>
+What? They can't honestly be closed.
+@OLDEST MOTHER:<>
+It ain't out of the question. Tickets here been gettin' cheaper, but ain't many folk visitin' these days, from the looks of it.
+@YOUNGEST FATHER:<>
+You've been making it out like the place is bustling!
+@OLDEST MOTHER:<>
+It was. Back when I'd visit with ma an' pop. But, you saw it— we were the only folks on the boat.
+...Aside from the zombie.
+(Beat, sighing)<>
+Hell, the tour guide's missin' too.
+@PHONE:<>
+Thank you for calling Moonshy tourism support. Your call is very important to us. Please stay on the line, and someone will assist you, shortly.
+@YOUNGEST FATHER:<>
+God, you don't think they'd...
+They wouldn't, you know, just take our money and...
+@OLDEST MOTHER:<>
+And, what? Close up shop, and make off?
+Hell, they might.
+If ol'Oscar's still runnin' the show, I wouldn't doubt it, not one bit.
+Man's got dollar signs in his damn eyes, but no dollars in his pocket, I hear.
+@YOUNGEST FATHER:<>
+Well, this vacation's off to a great st—
+Minnie steps into the scene.
+@MINNIE:<>
+Hello again! I apologize for coincidentally eavesdropping, but...
+I get the impression there's a problem here. Can I help?
+The family turns to face Minnie. They panic.
+@YOUNGEST FATHER:<>
+Oh, spare us Lord on High, the zombie has returned!
+Now she bares the scent of death!
+@OLDEST MOTHER:<>
+Look at'er face!
+@SEASHELL OBSESSED DAUGHTER:<>
+And her clothes!
+@YOUNGEST FATHER:<>
+S-She must have just claimed...
+A VICTIM!
+Everyone screams, spare the son.
+@SEASHELL OBSESSED DAUGHTER:<>
+Daddy, I don't care about sea shells anymore!
+I j-just want to go home and find a new oddly specific hobby!
+@OLDEST MOTHER:<>
+This place ain't no spooky haven of fun no more.
+No, these lil'lands have just gone to straight to hell!
+@SHOEGAZING SON:<>
+I no longer need to pee.
+@PHONE:<>
+Thank you for calling Moonshy tourism support. Your call is very important to us. Please stay on the line, and someone will assist you, shortly.
+Minnie stares at them blankly. The family stares back.
+@MINNIE:<>
+(Flat tone)<>
+Aaaaah.
+She gently waves her arms.
+@ENSEMBLE:<>
+AAAAAH!!!!!
+The family screams, and runs off in a panic. The Oldest Mother drops her phone. Minnie stands there awkwardly, unsure of what to make of the scene.
+@MINNIE:<>
+(Sincere)<>
+I hope they enjoyed their vacation.
+// MUSIC: HOLD MUSIC CONTINUES FOREVER
+Minnie shuffles over to the shop entrance.
+
+// [LOCKED SOUVENIR SHOP]
+@MINNIE:<>
+(They were right, it's locked.
+The door doesn't seem very strong, though.)
+
+// [UNLOCKED SOUVENIR SHOP]
+Minnie "punches" the door open real good. Really, she uses telekinesis.
+@MINNIE:<>
+(I hope no one gets mad about the door...
+But, I'm running late for the party, so I really need to get going!)
+
++ [Continue]
+  -> souvenir_shop
+
+=== souvenir_shop ===
+
+// INT. SOUVENIR SHOP - NIGHT
+
+= call_in_the_dark
+
+// [CALL IN THE DARK]
+Minnie peers inside the souvenir shop, allowing a small shaft of light inside. To her surprise, the building is void of life and is pitch black.
+Minnie cautiously enters, leaving the door open. She's unable to make out anything in the dark.
+@MINNIE:<>
+(Uneasy)<>
+Aunt Codetta?
+(Beat)<>
+(This... is the right place, isn't it?)
+Minnie pulls her flashlight out.
+// The player explores the Souvenir Shop. Focus on teaching the player how to explore in the dark using their flashlight. In addition, they should be introduced to discovering hidden locations.
+
+= empty_shop
+
+// [EMPTY SHOP]
+The shop is empty, dusty, and dirty. There are strange pipes, cogs, and machinery hiding amongst the stalagmites in the cavernous ceiling.
+@MINNIE:<>
+(Gosh, it's so... empty, in here.
+Like, even if the shop was supposed to be open, this would still qualify as strange, wouldn't it?)
+
+= fish_hooks
+
+// [FISH HOOKS]
+The most notable quality is that there are also large fish hooks dangling from the ceiling. Some of the hooks reach the ground, and require that Minnie navigate around them to maintain safety.
+@MINNIE:<>
+(Fishing hooks, I guess? Didn't the lady from before mention something about these? I guess that means I'm in the right place, at least.
+Also, I appear to be breathing okay, so I guess I'm not underwater.
+Maybe the hooks were hung to catch land fish? Are those a thing?)
+
+= stuck_restroom
+
+// [STUCK RESTROOM DOOR]
+The restroom door appears to be stuck.
+@MINNIE:<>
+(The door's stuck. Also, yeeeuck... I would say that stench coming from beyond the door is fishy, but it just feels too on the nose.)
+
+= cash_register
+
+// [CASH REGISTER]
+At the center of the shop is a cash register. Beside it, is a sign that reads "Gone Fishin'".
+@MINNIE:<>
+(Gone Fishin'?
+Certainly right at home with the ambiance.
+Beyond that, it looks like the cashier's playing hooky.
+Pun intended.)
+
+= surprise_crash
+
+// [SURPRISE CRASH]
+Suddenly, her flashlight flickers for a brief moment, and the batteries die.
+@MINNIE:<>
+Well, I guess that answers the question I had about whether or not these batteries were new.
+// SFX: CRASH, FOOTSTEPS
+Minnie is surprised by a loud crash, which is heard from the entrance. The sound of footsteps can be heard scampering towards her very quickly. She gasps. But... the footsteps cease, and her flashlight miraculously recovers.
+@MINNIE:<>
+(Uneasy, sighs)<>
+OK. That's enough surprises.
+// Minnie updates her notebook: "I feel sufficiently ready for my party now."
+
+= shelf_blockade
+
+// [SHELF BLOCKADE]
+Heading towards the source of the crash reveals fallen shelves are now blocking Minnie from returning outside. The shaft of light is gone.
+@MINNIE:<>
+Not great, not great.
+
+= footsteps
+
+// [FOOTSTEPS]
+// SFX: FOOTSTEPS
+The sound of scurrying footsteps are heard infrequently.
+@MINNIE:<>
+(Someone is definitely here.) Hello, aunt Codetta?
+Anyone else?
+The footsteps cease.
+@MINNIE:<>
+(Something is definitely here.)
+
+= locked_closet
+
+// [LOCKED CLOSET]
+@MINNIE:<>
+(It's locked. I think I can faintly hear a ringing sound from inside? That or, maybe I'm developing tinnitus.)
+
+= hook_blockade
+
+// [HOOK BLOCKADE]
+Minnie finds that the celebration hall and exit are blocked by fish hooks.
+@MINNIE:<>
+(I think the party's taking place in the celebration hall.
+But, it looks like I need to move these hooks out of the way in order to get there.
+Hm... I wonder if there's something in the shop I can use?)
+// SFX: SHARP HOWL
+Minnie gasps.
+@MINNIE:<>
+(Uh oh. Whatever's in here with me... It's either on the other side of these hooks...
+Or it really doesn't want me going that way.)
+
++ [Continue]
+  -> souvenir_shop_managers_office
+
+=== souvenir_shop_managers_office ===
+
+// INT. SOUVENIR SHOP - MANAGER'S OFFICE
+// The player explores the Manager's Office. Here, they will find their first puzzle prompt, as well as their first key item. Introduce the basic inventory system here, but only focus on access for now, not management.
+
+= managers_note
+
+// [MANAGER'S NOTE]
+There's a note posted on the manager's bulletin board.
+"That stubborn daughter of mine can't seem to keep them damn dogs of hers on a leash. So, for now on, I want y'all leaving the hooks down by the exit hall, when the shop's closed.
+While they're down, set some bait out on'em. The little cursed beasts will come runnin' once they smell the bait, and they'll get their sorry asses stuck on the hooks.
+You can find the bait in the janitor's office, as usual.
+Now don't go freaking out on me, them things ain't gonna let go of the hook once they're stuck. They'll just hold on forever with their freakish grins, I reckon.
+Just keep yer distance, and they ain't gonna bite.
+Anyway, when you clock back in, use the reel in the utility closet to lift the hooks, and leave the damn things hanging.
+Let Tilde come by to get them down. It ain't my problem. I'm gonna saw her in half next time I see her.
+- Oscar"
+@MINNIE:<>
+(Wow, he really seems to care about his staff's safety. Sounds like a great boss!
+Anyway, this also gives me a better idea of what's going on here...
+So, let me get this straight...
+First, I need to locate some bait from the janitor's office... wherever that is.
+Then, I need to bait the hooks near the exit.
+Finally, I need to use the reel in the utility closet to raise the hooks.
+Got it. Seems simple enough. I'd better hurry though. I'm definitely late to my party.)
+
+= closet_key
+
+// [CLOSET KEY]
+Minnie locates a key on the manager's desk.
+@MINNIE:<>
+(You know, leaving a key right here out in the open is a bit irresponsible, I think.
+A thief could easily snatch this up!
+Anyway, I'll keep it safe, so that doesn't happen.)
+// Minnie unassumingly steals the Closet Key.
+
++ [Continue]
+  -> souvenir_shop_hall_closet
+
+=== souvenir_shop_hall_closet ===
+
+// INT. SOUVENIR SHOP - HALL CLOSET - NIGHT
+// The player will locate the reel mechanism, and use it to reel in the hooks, clearing the hallway for Minnie.
+@MINNIE:<>
+I think that'll do the trick.
+Minnie updates her notebook.
+"Reel big hooks. - Complete"
+
++ [Continue]
+  -> souvenir_shop_janitors_office
+
+=== souvenir_shop_janitors_office ===
+
+// INT. SOL LA CAPELLA SOUVENIR SHOP - JANITOR'S OFFICE - NIGHT
+The janitor's office is revealed to be the restroom.
+@MINNIE:<>
+Oh, what a convenient office space!
+Here, the player may locate the bait, which, if you were to ask Minnie, does not smell at all like a swamp.
+@MINNIE:<>
+I think this smells more like a marsh.
+The player may also locate a firm wooden board that has written on it in permanent marker, "UNSTUCKIFIER".
+
++ [Continue]
+  -> souvenir_shop_lobby_2
+
+=== souvenir_shop_lobby_2 ===
+
+// INT. SOUVENIR SHOP - NIGHT
+// The player continues exploring the Souvenir Shop.
+
+// [FINAL SURPRISE]
+The hooks are now out of Minnie's way.
+A golden fish monster is seen clamping on a hook, completely still, with an unsettling grin.
+Minnie approaches. She nervously glances at the monster. She navigates further down the hall, and sighs relief.
+Shortly following, a silver fish monster busts into the hall right behind Minnie. She is surprised.
+@MINNIE:<>
+TOO MANY SURPRISES! TOO MANY SURPRISES!
+She waves her arms frantically, and believably.
+She is chased down the hall. She manages to stall the monster by punching hooks into it. As a result, she outruns the monster and makes it to the celebration hall.
+// Note: Minnie can't die here. Danger is only implied.
+
++ [Continue]
+  -> birthday_party
+
+=== birthday_party ===
+
+= surprise
+
+// INT. CELEBRATION HALL - NIGHT
+Peering into the pitch black reception room, Minnie once again attempts to try and scan the room with her flashlight. After a brief moment, a voice interrupts her.
+@UNKNOWN:<>
+Hey! Turn that thing off, will ya!? ...Sheesh.
+Many unidentifiable voices begin murmuring in a hushed whisper. After a moment, they settle back into silence. Minnie puts her flashlight away and fully enters the room, closing the door behind her.
+A brief moment of silence passes.
+Predictably, the lights are thrown on; the ensemble residents of Sol La Capella spring to life, and with collective energy, they shout...
+The lights reveal the details of the room, which consists of fairly generic birthday party decor: streamers, tables, plastic ware, and a pile of gifts.
+Beneath the party supplies is otherwise a fairly standard reception room. There's a front desk, and what appear to be mail sorting slots behind the desk. The room also contains a few benches, houseplants, and shelves. The walls contain paintings of past residents, photos of past moments, and an award or two for God knows what. In addition, there's a fairly fancy chandelier hanging from the ceiling, providing light, acting also as a point of convergence for the streamers.
+But perhaps the most attention-grabbing element of the room is the lonely draped table that sits against the back wall on a raised stage. The table is lit by an overhead spotlight, which will certainly draw attention to whoever sits here. The table is also home to a delicious-looking birthday cake. Just above the table, is a banner that reads, "Happy 12th Birthday Minnie".
+Lastly, there's a hall extending beyond the room, suggesting a back exit leading outside.
+...Anyway, the ensemble cast collectively shout:
+@ENSEMBLE:<>
+SURPRISE!!!
+In this brief, fleeting moment of saccharine enthusiasm, we're introduced to Dorian "Dori" Curtis Nocturne, Patricia "Patty" Hillary Loom, Matilda "Tilde" Lillian Velvet, Hans Shy, Oscar Chip Velvet, Irene Fern Nocturne, and the kids: Laetitia "Lala" Victoria Loom, Ferris "Wheel" Aurora, and Solstice Orbit.
+Dorian pops up from behind the desk as he shouts with hearty amusement. Patty comes in from off frame, walking casually onto the scene, but with a cheerful expression, and a milkshake in hand. Tilde lifts her head from a book and lends her half-interested voice. Hans waves his tentacles in a ghostly jump scare sort of way, but with extra cheese. Oscar suddenly appears out of thin air in a cloud of sparkling smoke, giving a sly shout. Irene, stands like a tower, offering no voice at all. Lala elegantly lifts her coffee cup to suggest a toast, as she offers her reserved cheer. Farris comes flying into the frame on their roller skates, pizza box in hand, and ready to party like it's their birthday.
+Lastly, Solstice makes a sudden guest appearance at an extreme close up position partially blocking the view of the entire frame. She excitedly throws confetti into the air and offers arguably the most cheer.
+Once each character has finished their cheer (or lack thereof), they freeze in place, motionless with retained expressions as the confetti falls slowly to the ground.
+After a moment Solstice's cheeks go red with embarrassment, and she disappears off frame again.
+As the cast continues to stare at her, the confetti fully settles, and the silence becomes awkward. It would seem, despite their best efforts, Minnie is not surprised.
+Hans lowers his waving tentacles. The collective expressions of the cast slowly dissolve into a variety pack of annoyance, indifference, anger, and disgust. In the case of Solstice, Farris, and Dorian, disappointment.
+@PATTY:<>
+She doesn't seem very surprised.
+@MINNIE:<>
+Oh, I... I'm so sorry. I was practicing being surprised on the way here, but...
+@OSCAR:<>
+You look like you just crawled out of a swamp, kid.
+@MINNIE:<>
+Um... Well, I fell~
+@TILDE:<>
+It's a marsh, dad.
+@OSCAR:<>
+Eh? What's the difference?
+@LALA:<>
+A swamp is generally deeper than a marsh and is characterized by wooded~...
+(Sigh)<>
+It's wetter.
+@MINNIE:<>
+Mhm, I got caught in some hooks back in the shop, and um...
+Tilde begins to boil with anger.
+@HANS:<>
+Whatever kid — jus' lemme get a lil' lick of the stuff, ya?
+Tilde turns to Oscar. She's angry but remains mostly passive-aggressive in tone with occasional elevation.
+@TILDE:<>
+You left the hooks down? AGAIN?
+@OSCAR:<>
+Hey, I wouldn't have to if you'd just keep them damn monsters on a leash!
+@TILDE:<>
+Dogs, dad. They're just dogs!
+@OSCAR:<>
+I don't care watcha call'em. Next time I see one of them swimmin' around my shop, I'm gonna saw yer ass'n half.
+@TILDE:<>
+You can't even pull me out of a hat anymore, you washed up old fart stain.
+@DORIAN:<>
+Uh, guys, where's Remi?
+@IRENE:<>
+Quiet, everyone.
+Everyone settles down. Irene turns to face Minnie.
+@IRENE:<>
+Young lady.
+@MINNIE:<>
+(Growing nervous)<>
+Y-Yes ma'am?
+@IRENE:<>
+We've been waiting here for the past two hours... In the dark... Crouched into position... All so that we could surprise you and commence your birthday party.
+(Angry)<>
+It's well past your expected arrival time!
+(Beat)<>
+Hans has been complaining about leg cramps for the past thirty minutes, and~
+@HANS:<>
+They're achin', man!
+Hans rubs his tentacles. Irene gives him an unamused glance.
+@IRENE:<>
+You don't have legs!
+She stumbles to try and get out another word, but stops herself and turns her attention back to Minnie.
+@IRENE:<>
+You finally decide to grace us with your presence...
+Absolutely filthy, stinking to high heaven, and bleeding on our new carpets no less.
+@PATTY:<>
+How many years new are they again?
+@IRENE:<>
+Newish!
+(Beat)<>
+To top it all off...
+You couldn't be bothered to bring the one we're gathered to meet!
+@MINNIE:<>
+W-Wait, who~
+@IRENE:<>
+REMI!
+@OSCAR:<>
+Yeah! Where's the loony toon?
+@LALA:<>
+We're looking for Remi, not you, grandpa.
+@DORIAN:<>
+I haven't seen her since this morning.
+@MINNIE:<>
+Wait a second!
+@PATTY:<>
+Think she got lost on the way here?
+@DORIAN:<>
+What, at sea? Heh. Yeah, probably.
+@MINNIE:<>
+Wait!
+@PATTY:<>
+Hm, what is it dear?
+@MINNIE:<>
+Remi was supposed to bring me here!
+@DORIAN:<>
+...You might've been expecting just a bit too much from her.
+Tilde turns to Farris.
+@TILDE:<>
+Wheel, did you see her while you were out?
+Farris opens their pizza box, which contains her favorite pizza. On the underside of the box, is a message which reads: "Haven't seen her today."
+@TILDE:<>
+Gotcha, thanks.
+@SOLSTICE:<>
+Omigosh, but like, what if she's hurt or something!? Let's... break out into rescue teams and go search for her!
+@LALA:<>
+Don't be so dramatic, Solstice. She'll turn up.
+@IRENE:<>
+She promised she would this time, yes. For now, let's carry on with the party...
+(Annoyed)<>
+Even if we are behind schedule.
+Irene glares at Minnie. Minnie shrinks.
+The cast begins to mingle, allowing the player the chance to interact with each of them.
+
++ [Continue]
+  -> birthday_party_v2
+
+=== birthday_party_v2 ===
+
+// INT. CELEBRATION HALL - NIGHT (ALTERNATE VERSION)
+Minnie enters the room. It is pitch black inside. Murmuring is heard.
+@UNKNOWN:<>
+Hey! Turn that light off, will ya, kid!? ...Sheesh.
+Minnie turns off her flashlight.
+A brief moment passes. Lights are flipped on. The ensemble are revealed. In unison they shout:
+@ENSEMBLE:<>
+SURPRISE!
+Minnie is not surprised.
+@DORIAN:<>
+She doesn't seem very surprised...
+The monsters return.
+// BGM: SURPRISE
+Minnie holds the door. The monsters beat against the door in rhythm to the BGM.
+@IRENE:<>
+Yes, a bit distracted even.
+@MINNIE:<>
+Oh, I— I'm so sorry. I was practicing being surprised on the way here, but...
+@BIJOU:<>
+Practicing? For a surprise party?
+@PATTY:<>
+Are we really that predictable, sugar?
+@MINNIE:<>
+N-No, that's not what I—
+@OSCAR:<>
+Lil'lady, you look like you just crawled out the marsh!
+@MINNIE:<>
+Yeah, I fell—
+@LALA:<>
+—into the swamp, more specifically.
+@OSCAR:<>
+Ain't no difference!
+@LALA:<>
+The trees beg to differ.
+@BIJOU:<>
+Trees are inanimate, Lala.
+@LALA:<>
+Figure of speech, mother.
+@HANS:<>
+(Delighted)<>
+Hey! The kid's bleedin'.
+@MINNIE:<>
+Mhm, I got caught in some hooks back in the shop, and um...
+Tilde begins boiling.
+@HANS:<>
+Whatever, kid—
+Just lemme get a lil' drop o'the stuff.
+@GORI:<>
+Didn't you say you were full off those pufferfish from earlier?
+@HANS:<>
+Yeah, but their weirdo toxins gave me indigestion or somethin'... Look man, I just want some fresh bloo—
+Tilde turns to Oscar.
+@TILDE:<>
+Dad! You left the hooks down?
+Again!?
+@OSCAR:<>
+I wouldn't have to if you'd just keep them damn monsters on a leash!
+@TILDE:<>
+Dogs, dad. They're just dogs!
+@DORIAN:<>
+And free spirits, right Tilde?
+@TILDE:<>
+Exactly. They can wander where they please!
+@OSCAR:<>
+And what jughead around here allows this nonsense?
+@MINNIE:<>
+U-Uh, are the dogs in question actually... fish thingies, by any chance? Because, I um—
+@PATTY:<>
+The jughead in question is Irene, of course.
+Irene is mildly annoyed.
+@IRENE:<>
+I don't care much for how you worded that, Patty.
+Anyway, Tilde's dogs have a signed contract with us. They're staff.
+@OSCAR:<>
+WHAT IN TARNATI— since when and why!?
+@TILDE:<>
+Since my article got published.
+You know? The one that promoted pet's rights in the workplace?
+The one you definitely read, not JUST because you're a wonderful, supportive father—
+But also because you're an owner here, and it was passed to both YOU and Irene for careful consideration?
+@IRENE:<>
+Which reminds me— Oscar, I went ahead and drafted the contract in question, since you were rather... hard to reach recently.
+@OSCAR:<>
+I— You— I...
+(Sighs)<>
+Fine— whatever sinks yer ships.
+@LALA:<>
+Floats your boats.
+Oscar turns to Tilde.
+@OSCAR:<>
+Now, you listen good missy, it don't matter if them mutts are staff or the goddamn employees of the year...
+Next time I see one of them swimmin' around my shop, I'm gonna saw yer ass right'n half!
+@GORI:<>
+Oh, come on. Can't you do something less cliche for once, old man?
+@TILDE:<>
+To his credit, at least he doesn't try and pull me out of his hat anymore.
+@OSCAR:<>
+I wonder why that is...
+@TILDE:<>
+Whoa, hey! My genetic fate was sealed the moment your fat ass decided to get chummy with another fish in the sea.
+@PATTY:<>
+(Consoling)<>
+Now, sissy...
+@SOLSTICE:<>
+Do you all always have to fight like this?
+@OSCAR:<>
+Yeah, and as the sayin' goes— there's always plenty more o'em. So, I could just whip me up a less bull-headed daughter, if I so pleased.
+@TILDE:<>
+You've got three daughters right here, and each one of us are just as stubborn as you!
+At some point, you outta do the math!
+@PATTY:<>
+Right, and— Pa, I doubt you could even whip a cream with your aching hips, these days.
+@BIJOU:<>
+I keep telling him I'll perform the replacement at a discount, but...
+@SOLSTICE:<>
+Uh... What does whip a whatsit mea—
+@IRENE:<>
+THAT'S ENOUGH!
+// BGM CHANGE: A GOOD FIRST IMPRESSION
+Everyone settles down. Irene turns to face Minnie, who is still holding off the dogs.
+@IRENE:<>
+Young lady.
+@MINNIE:<>
+(Nervous)<>
+Yes, m-ma'am?
+@IRENE:<>
+Do you understand the value of a good first impression?
+@MINNIE:<>
+U-Um...
+Minnie struggles to hold the door.
+@MINNIE:<>
+I... I believe so, ma'am?
+@IRENE:<>
+Good. Then, assuming this is true, can you tell me what sort of impression you're making on your family right now?
+@MINNIE:<>
+Um... To be honest, no? At the moment, I'm more focused on holding this door, you know— so nobody gets eaten by the—
+@IRENE:<>
+Ah, I see.
+@MINNIE:<>
+You do? Oh, thank goodness! So, will you help me with the—
+@IRENE:<>
+Yes, I see that you're a liar.
+@MINNIE:<>
+W-Wait, what?
+@IRENE:<>
+You heard me.
+First you claim to be familiar with the value of making a good first impression, and now you're beginning your follow-up response with "to be honest"...
+Minerva, do you know what sort of people feel the need to begin their statements with something as needless as the phrase "to be honest"?
+@MINNIE:<>
+I... I... Uh... N-No?
+@IRENE:<>
+Rather slow as well, I see, but ...I'll blame your parents for that.
+Anyway, I already said it quite clearly.
+Liars, Minerva.
+Liars are the ones who feel an unrelenting, guilty desire to preface their statements with needless assurances of alleged honesty.
+So, it follows that if you were really an honest girl, you would speak plainly, now wouldn't you?
+@MINNIE:<>
+I, wait— no, ma'am, I— B-But, um... or, yes ma'am? Um...
+@IRENE:<>
+Well demonstrated.
+Case and point— Minerva, you are making a horrible first impression on your family right now.
+@MINNIE:<>
+Oh.
+Oh, geez.
+I... Um... I don't think I can hold this door for much longer.
+@IRENE:<>
+Let's review the facts.
+Your party started hours ago, and you decided to show up hours late— a complete disservice to your aunt Codetta's hard work.
+Secondly, we have been neatly hiding here, crouched into position in the dark for said hours, waiting to surprise you.
+As a result, Hans has been complaining about leg cramps the entire time, and it's your fault that we had to put up with it.
+@HANS:<>
+They're hurtin', lady, come on!
+@IRENE:<>
+YOU DON'T EVEN HAVE ANY LEGS!
+@HANS:<>
+A man can dream, Irene— lay off.
+Irene opens her mouth to quip back, but thinks better of it, and returns attention to Minnie.
+@IRENE:<>
+In addition, you come with shredded clothes, a foul body odor, and wounds that are staining our new carpets.
+@PATTY:<>
+How many years new are they again?
+@IRENE:<>
+Fine... New-ish!
+// Note: at some point Tilde should break down Irene's argument by pointing out that this is not the first time the family has met Minnie, and in fact, she made a lovely first impression when she was born. However, Irene and the others will point out that they believe Minnie has aged poorly in that case, but Irene will be notably embarrassed by her inaccuracy.
+// Note: Also it'd be hilarious if at the end of all of this, they acknowledge Minnie is holding the door by suggesting all she's been doing is being distracted by "playing with the dogs" and that she should just let go of the door
+
++ [Continue]
+  -> birthday_party_v2_1
+
+=== birthday_party_v2_1 ===
+
+// INT. CELEBRATION HALL - NIGHT (ALTERNATE VERSION 2)
+Minnie enters the room. It is pitch black inside. Murmuring is heard.
+@UNKNOWN:<>
+Hey! Turn that light off, will ya, kid!? ...Sheesh.
+Minnie turns off her flashlight.
+A brief moment passes. Lights are flipped on. The ensemble are revealed. In unison they shout:
+@ENSEMBLE:<>
+SURPRISE!
+@SOLSTICE:<>
+SORPRESA!
+Minnie is not surprised.
+@DORIAN:<>
+She doesn't look surprised...
+The monsters return.
+// BGM: SURPRISE
+Minnie holds the door. The monsters beat against the door in rhythm to the BGM.
+@IRENE:<>
+Yes, a bit distracted even.
+@MINNIE:<>
+Oh, I— I'm sorry. I was practicing being surprised on the way here, but...
+@IRENE:<>
+Practicing? For a surprise party? Young lady, is this a joke?
+@BIJOU:<>
+So, what— you just assumed we were going to throw you a party?
+Lala is looking at herself in a hand mirror, brushing her hair.
+@LALA:<>
+How vain, Minnie...
+@MINNIE:<>
+No, that's not what I—
+@OSCAR:<>
+Lil'missie, you look like a monster let loose from the marsh!
+@TILDE:<>
+"Set" loose, dad.
+@OSCAR:<>
+Ain't no difference!
+Lala sets the hand mirror down, and looks at Minnie.
+@MINNIE:<>
+Yeah, I fell—
+@LALA:<>
+(Beat)<>
+—into the swamp, more accurately.
+@OSCAR:<>
+Ain't no difference!
+@TILDE:<>
+Actually dad, I'm sure the trees would beg to differ.
+@GORI:<>
+Criminy, not everything's a dog, Tilde. They're not gonna beg for anything.
+@BIJOU:<>
+Mhm, trees are clearly inanimate.
+@GORI:<>
+That sounds kinda weird coming from you...
+Tilde is annoyed.
+@IRENE:<>
+Young lady...
+@MINNIE:<>
+M-Ma'am?
+@IRENE:<>
+Do you understand the value of a good first impression?
+@MINNIE:<>
+Uh, I believe so, ma'a—
+@SOLSTICE:<>
+She's— she's~! Ugh... What's the word? What's the word?
+@IRENE:<>
+Good. Then, assuming this is true—
+@SOLSTICE:<>
+No, it's not good at all!
+@IRENE:<>
+Solstice, I am speaking to Minerva!
+Solstice shrinks, but remains peppered up— as Patty would call it.
+@IRENE:<>
+Minerva, assuming what you've said is true...
+Can you identify the sort of impression you're making on your family right now?
+@MINNIE:<>
+Um... To be honest, no?
+At the moment, I'm more focused on holding this door, you know— so nobody gets eaten by the—
+@IRENE:<>
+"To be honest", hm?
+A meaningless affirmation.
+Now, if you were really an honest girl, you would speak plainly, would you not?
+@MINNIE:<>
+I, wait— uh... no ma'am, I— B-But, um... or, yes ma'am? Um...
+@IRENE:<>
+Well demonstrated.
+Minerva, you're making a terrible first impression on your family.
+(Beat)<>
+Now, for God's sake— stop playing with Tilde's dogs, and join the ceremony!
+@MINNIE:<>
+D-Dogs!?
+The monsters burst into the room, knocking Minnie over. They are indeed fish monsters, however, they begin excitedly licking Minnie's face. They're friendly.
+@IRENE:<>
+Let's review the facts.
+Your party started hours ago, and you decided to show up hours late— a complete disservice to your aunt Codetta's hard work.
+@MINNIE:<>
+Speaking of aunt Codetta... Do you know where she i—
+@IRENE:<>
+Secondly, we've been hiding here, crouched into position in the dark for the entire duration, waiting to surprise you.
+Hans has been complaining about leg cramps the entire time, and it's your fault that we've had to put up with it.
+@HANS:<>
+They're hurtin', lady, come on!
+@IRENE:<>
+YOU DON'T EVEN HAVE ANY LEGS!
+@HANS:<>
+A man can dream, Irene— lay off.
+Irene opens her mouth to quip back, but thinks better of it, and returns attention to Minnie.
+@IRENE:<>
+In addition, you come with shredded clothes, a foul body odor, and wounds that are staining our new carpets.
+@PATTY:<>
+How many years new are they again?
+@IRENE:<>
+New enough!
+@PATTY:<>
+Dori, what's Solstice all peppered up about?
+@SOLSTICE:<>
+(Panicked)<>
+BLEEDING! THAT'S IT! She's bleeding!
+@DORIAN:<>
+Uh... She's... She's bleeding, apparently!
+Hey, the birthday girl's bleeding!
+@SOLSTICE:<>
+(Panicked)<>
+She's bleeding! She's bleeding!
+Hans scurries over to Minnie and sniffs her.
+@HANS:<>
+(Disappointed)<>
+What? Come on, that ain't blood!
+@MINNIE:<>
+It's just soup.
+I did get caught in some hooks back in the shop, though— but I avoided getting cut, and uh...
+Tilde begins boiling.
+@HANS:<>
+Whatever, listen— you gimme me a glass of your claret, and I'll go rob one ol'Oscar's registers for you.
+@PATTY:<>
+Touch one of daddy's registers, and I'll be servin' yer inky-ass on a plate.
+@GORI:<>
+Calamari does sound good right now.
+Tilde turns to Oscar.
+@MINNIE:<>
+What's clare—
+@TILDE:<>
+Dad! You left the hooks down?
+Again!?
+@OSCAR:<>
+I wouldn't have to if you'd just keep them damn monsters on a leash!
+@TILDE:<>
+Dogs, dad. They're just dogs!
+@DORIAN:<>
+And free spirits, right Tilde?
+@TILDE:<>
+Exactly. They can wander where they please! Also, I'm a monster! Does this really need to be clarified?
+@OSCAR:<>
+Whatever— what jughead around here allows them dogs out anyway?
+@MINNIE:<>
+U-Uh, are the dogs in question actually... fish thingies, by any chance? Because, I um—
+@PATTY:<>
+The jughead in question is Irene, of course.
+Irene is mildly annoyed.
+@IRENE:<>
+I don't care for how you worded that, Patricia.
+Anyway, Matilda's dogs have a signed contract with us.
+They're staff.
+@OSCAR:<>
+WHAT IN TARNATI— since when and why!?
+@BIJOU:<>
+Oh, here we go.
+@TILDE:<>
+Since my article got published, remember?
+You know? The one that promoted pet's rights in the workplace?
+The one you definitely read, not JUST because you're a wonderful, supportive father—
+But also because you're an owner here, and it was passed to both YOU and Irene for careful consideration?
+@IRENE:<>
+Which reminds me— Oscar, I went ahead and drafted the contract in question, since you've been rather... hard to reach as of late.
+@OSCAR:<>
+I— You— I...
+(Sighs)<>
+Fine— whatever sinks yer ships.
+@LALA:<>
+Floats your boats.
+@OSCAR:<>
+Ain't no difference!
+Oscar turns to Tilde.
+@OSCAR:<>
+Now, you listen here missy, it don't matter if them mutts are staff or the goddamn employees of the year...
+Next time I see one of them swimmin' around my shop, I'm gonna saw yer ass right'n half!
+@GORI:<>
+Can't you do something less cliche for once, old man?
+@TILDE:<>
+To his credit, at least he doesn't try and pull me out of his hat anymore.
+@OSCAR:<>
+I wonder why that is...
+@TILDE:<>
+Whoa, hey! My genetic fate was sealed the moment your fat ass decided to get chummy with another fish in the sea.
+@PATTY:<>
+(Consoling)<>
+Now, sissy...
+@SOLSTICE:<>
+Do you all always have to fight?
+@OSCAR:<>
+Yeah, and as the sayin' goes— there's always plenty more o'em. So, I could just whip me up a less bull-headed daughter, if I so pleased.
+@TILDE:<>
+You've got three daughters right here, and each one of us are just as stubborn as you!
+At some point, you outta do the math!
+@PATTY:<>
+Right, and speaking of cliches— Pa, I doubt you could even whip a cream with your aching hips, these days.
+@BIJOU:<>
+I keep telling him I'll perform the replacement with the ol' "family discount," but...
+@SOLSTICE:<>
+Uh... What does whip a whatsit mea—
+@IRENE:<>
+ENOUGH!
+// Note: at some point Tilde should break down Irene's argument by pointing out that this is not the first time the family has met Minnie, and in fact, she made a lovely first impression when she was born. However, Irene and the others will point out that they believe Minnie has aged poorly in that case, but Irene will be notably embarrassed by her inaccuracy.
+// Note: Also it'd be hilarious if at the end of all of this, they acknowledge Minnie is holding the door by suggesting all she's been doing is being distracted by "playing with the dogs" and that she should just let go of the door
+
++ [Continue]
+  -> birthday_party_presents
+
+=== birthday_party_presents ===
+
+// INT. SOL LA CAPELLA RECEPTION HALL - NIGHT
+After some time passes, Patty rings her milkshake glass with her spoon to get everyone's attention.
+@PATTY:<>
+If I could get your attention, party animals... It's time we open presents!
+Dorian and the kids light up.
+@DORIAN:<>
+Alright! This is the best part!
+@SOLSTICE:<>
+Woo! Presents, presents!
+@TILDE:<>
+The presents are for Minnie.
+@DORIAN:<>
+...Yeah, I know.
+@SOLSTICE:<>
+...It's still fun.
+Minnie is surprised.
+@MINNIE:<>
+Y-You got me presents?
+@HANS:<>
+Come on, kid. Don't try and act surprised now.
+@IRENE:<>
+Go sit, Minnie.
+@MINNIE:<>
+O-OK...
+Minnie looks around, unsure of where to sit down.
+@IRENE:<>
+At the table.
+Minnie looks around frantically.
+@IRENE:<>
+The one on the stage!
+@MINNIE:<>
+R-Right, yes ma'am!
+Minnie goes and sits down at the table on the stage, now centered against each of the residents.
+@DORIAN:<>
+Go for mine first! You're gonna love it!
+@MINNIE:<>
+Oh, alright.
+Minnie grabs Dorian's gift out of the pile of gifts surrounding her. Minnie begins to very carefully open the gift.
+@DORIAN:<>
+Come on! Rip into it! Go nuts!
+@HANS:<>
+Yeah, we ain't got all night here kid!
+Minnie nervously begins to unwrap the gift with more effort and less precision.
+@TILDE:<>
+You got somewhere to be, Hans?
+@HANS:<>
+Yeah. Anywhere but here.
+Minnie successfully opens the gift and holds it up in awe. It's a hair dye kit. Which, admittedly seems like a pretty fun gift. Only there's one problem.
+@MINNIE:<>
+Oh, wow! Thank you!
+@DORIAN:<>
+I figure you might have some fun dyeing your hair while you're staying here!
+Minnie places the gift down beside her, looking a bit uncomfortable.
+@OSCAR:<>
+Looks like she already did.
+@TILDE:<>
+Dorian, you got her red hair dye.
+@DORIAN:<>
+Yeah, red's a fun color! It was either that or blue. But ya'know, figured I didn't want everyone to mistaking you for me!
+@MINNIE:<>
+I appreciate your present.
+@HANS:<>
+Next gift!
+// The player can choose to open the gifts in any order past Dorian's gift.
+// Note: Listing linear for now
+
++ [Continue]
+  -> birthday_party_cut_the_cake
+
+=== birthday_party_cut_the_cake ===
+
+// INT. SOL LA CAPELLA RECEPTION HALL - NIGHT
+As Minnie puts the last gift down, Patty comes and lights the twelve candles sitting atop the cake.
+@PATTY:<>
+Now then... It's time for the birthday girl to blow out her candles!
+@SOLSTICE:<>
+Remember to make a wish, Minnie!
+@IRENE:<>
+Remi went to a lot of trouble to bake that cake... Be sure to savor it!
+@TILDE:<>
+It's probably poisonous.
+@MINNIE:<>
+W-Wait, pois~
+@PATTY:<>
+Now, now darlin'... The cake isn't poisoned. Honestly Tilde, are you trying to scare the poor girl?
+@TILDE:<>
+I'm just being honest.
+@DORIAN:<>
+We gotta sing happy birthday!
+Lala, Tilde, Oscar, Hans, Patty, and Irene all collectively groan. Solstice becomes excited at the prospect. Farris remains unfazed.
+@PATTY:<>
+You're joking?
+@DORIAN:<>
+Of course not, we gotta sing it!
+@MINNIE:<>
+Um, that's alright...
+@DORIAN:<>
+Come on everyone! On the count of three... One. Two. Three!
+Some of the cast members get Minnie's name wrong. Oscar says "Mollie," Irene says "Young lady," Tilde says, "one of my nieces," Lala says, "Spoiled brat," and Hans says, "Probably... Type A Negative, if I were to take a guess?" Farris follows along with messages written on the underside of their pizza box.
+@ENSEMBLE:<>
+Happy birthday to you. Happy birthday to you. Happy birthday dearest Minnie. Happy birthday to you.
+The aforementioned cast members unenthusiastically cheer, while Solstice and Dorian cheer heartily and with genuine enthusiasm. Farris reveals a message that plainly states "Woo."
+@DORIAN:<>
+Alright!
+Blow out them candles!
+@SOLSTICE:<>
+Be sure to make a wish!
+@MINNIE:<>
+(Pondering)<>
+A wish...? OK. Here goes... something.
+Minnie blows on her candles. The moment she does, a vicious clap of thunder is heard from outside. The lights go out. Among twelve candles, only one flame is extinguished.
+Eleven remain, flickering anxiously in the dark.
+
++ [Continue]
+  -> birthday_party_the_murder
+
+=== birthday_party_the_murder ===
+
+// INT. SOL LA CAPELLA RECEPTION HALL - NIGHT
+After a brief moment passes, the lights return.
+The ensemble is collectively unfocused, clearly startled by the sudden power outage.
+All but Minnie, however, who is presently stunned.
+For some unexplained reason, there's a lone piece of cake sitting on her plate, cut directly from the cake in front of her. However, both the cake and the piece of cake appear to be oozing a small pool of blood.
+Unfortunately, this is far from the most distressing elephant in the room.
+Minnie appears to also be holding a bloody cake knife, staring directly at it in a state of disbelief.
+@SOLSTICE:<>
+W-What just happened?
+@LALA:<>
+Clearly the power got knocked out, Solstice.
+@SOLSTICE:<>
+(Agitated)<>
+Not that! Look! What happened to Minnie?
+The ensemble turns their attention to Minnie. However, she remains completely paralyzed.
+@OSCAR:<>
+What? You cut the cake before we finished singin' kid?
+@TILDE:<>
+Dad, look at the knife.
+@OSCAR:<>
+What of it?
+The cast stares intensely at Minnie for a moment, unsure of what to say. Minnie finally breaks the silence.
+@MINNIE:<>
+T-There's something under the table.
+@PATTY:<>
+What is it darlin'?
+@MINNIE:<>
+I don't know. But, it wasn't there before. Before the power went out, I mean. Like, it just appeared... on my feet.
+The cast remains unsure of what to do. Oscar tries to break the tension.
+@OSCAR:<>
+Well, it uh... It ain't one o'my bunnies if that's what yer thinkin'. Hehe...
+More awkward silence.
+After a moment passes, Tilde joins Minnie on stage. Casually, she lifts the drape covering Minnie's table. What's beneath the table is unseen by the player due to the drape. The ensemble leans in, as if trying to get a view of Tilde's discovery.
+After a moment, Tilde pulls the drape back down, her expression still stoic and unchanged. She takes a puff on her cigarette before delivering the verdict.
+@TILDE:<>
+It's Codetta.
+The ensemble is highly perplexed by this revelation, with the exception of Minnie, who is still staring at the knife as if she's hypnotized by it. She's not.
+@HANS:<>
+Um. Good?
+@SOLSTICE:<>
+Yeah, tell her to join the party!
+@OSCAR:<>
+We been waitin' here on her all night!
+@TILDE:<>
+She's dead.
+The ensemble's eyes widen in disbelief.
+@IRENE:<>
+S-She's...
+@TILDE:<>
+Dead. Yep.
+@IRENE:<>
+That's a sick joke, Tilde!
+Move!
+Irene takes to the stage and lifts the drape quickly. She stares momentarily before taking a step back, dropping the drape, and revealing a horrified expression.
+@IRENE:<>
+It's really...
+@TILDE:<>
+Yep. Codetta. Dead.
+Solstice begins to sniffle and her eyes well up with tears. The ensemble turns to face her. Like a volcanic eruption, she bursts into a sob.
+@LALA:<>
+This family reunion sucks.
+@TILDE:<>
+They tend to.
+@OSCAR:<>
+(Infuriated)<>
+Erruughhhghhghherrgghh~ This ain't a damn family reunion, it's a~
+@TILDE:<>
+Birthday party for Minnie.
+Oscar interrupts Minnie, paying her no mind.
+@OSCAR:<>
+MEETING! We been wastin' all this time tryin' to make the lil'brat happy— All the while our profit margin's plummetin' by the minute! Ads ain't payin' us nothin'! Our contractors ain't contractin'! And now the new manager ain't even livin'!? You kiddin'!? What a joke!
+We're already short staffed as it is! Who the hell's gonna schedule all the tours?
+@LALA:<>
+What tours, Grandpa? There's hardly any customers lined up this season.
+Irene faces him, enraged.
+@IRENE:<>
+For God's sake, Oscar. Can't you see we have a more important matter to deal with?
+@OSCAR:<>
+Only more important to you cause it's your star employee. If it was one of my daughters under that table... I'd bet you'd carry on with the meetin' like nothin' happened, huh?
+@TILDE:<>
+Jesus, dad.
+@PATTY:<>
+Father, simmer down.
+@LALA:<>
+Pot meet kettle, old man.
+@BIJOU:<>
+Stay out of it, Lala.
+@IRENE:<>
+How dare you! I'd be devastated... Our children's lives are worth more than the value of their work. ...Even if their work's not quite as exceptional as Remi's.
+@TILDE:<>
+There it is.
+@PATTY:<>
+Lord have mercy, Irene!
+@DORIAN:<>
+Come on, mom. That's uncalled for...
+@SOLSTICE:<>
+Stop yelling at each other!
+@GORI:<>
+The only one yelling at the moment is you, Solstice.
+@SOLSTICE:<>
+...Oh. S-Sorry.
+@DORIAN:<>
+Regardless, let's chill out for a moment. We need to figure out what happened here.
+Everyone calm themselves down. Minnie finally breaks her hypnotic trance on the knife and looks up. Solstice attempts to calm herself down, albeit to limited success.
+@MINNIE:<>
+So... What did happen?
+@LALA:<>
+It's quite obvious, isn't it?
+@IRENE:<>
+Indeed.
+The ensemble turns to face Irene. Irene faces Minnie.
+@IRENE:<>
+(Beat)<>
+We've caught the young lady red handed.
+Everyone gasps. Solstice tries to calm herself down.
+@SOLSTICE:<>
+Red headed, too.
+@MINNIE:<>
+What does that have~
+@PATTY:<>
+Solstice, quiet now.
+@TILDE:<>
+The knife's certainly red.
+Not so sure about her hands though. Care to humor us with your riveting theory, Irene?
+@IRENE:<>
+There's nothing humorous about it. I suspect Remi must have been waiting beneath the table to surprise us.
+@TILDE:<>
+Minnie.
+@IRENE:<>
+No, us. Why would she need to surprise Minerva? It's not like the girl even appreciates surprises.
+@TILDE:<>
+Uh huh. We've got a dead body and a dead horse. Continue with the beating.
+@IRENE:<>
+Minerva must have realized Remi was hiding below the table. So, when the power went out... She wielded the cake knife. ...And then—
+@SOLSTICE:<>
+Stabbed poor Remi in cold icing!
+The ensemble gasps.
+@PATTY:<>
+You mean cold blood, sugar.
+@SOLSTICE:<>
+No, she clearly stabbed Remi through the cake.
+(Beat)<>
+Which is cold. ...I assume. Wait, the cake is cold, right?
+Farris holds up a message: "Probably room temperature by now." Tilde takes a puff on her cigarette.
+@TILDE:<>
+Codetta looks like she's already bled out. So warm or cold, she couldn't have just been stabbed.
+@OSCAR:<>
+Maybe the brat killed her before the party...
+@PATTY:<>
+Oh, something like— She killed the poor woman, stashed her body under the table... Then waited for the big reveal?
+@LALA:<>
+I bet she even planned the power outage.
+@DORIAN:<>
+Ah, so she does like surprises!
+@MINNIE:<>
+No. I don't! ...Er, I mean...
+Listen, I didn't hurt Codetta!
+Farris opens their pizza box to reveal a message: "This all sounds like conjecture."
+@TILDE:<>
+I'm with Wheels.
+@MINNIE:<>
+Oh, thank God.
+@LALA:<>
+Feel free to enlighten us, then Sherlock Tomes.
+@TILDE:<>
+I dunno. I'm not a detective.
+@LALA:<>
+Isn't Solstice?
+@SOLSTICE:<>
+Oh. Um. Well. I uh, just started... detectiving... ye-yesterday? So...
+@TILDE:<>
+It's fine, Solstice.
+Frankly, none of us are detectives.
+@DORIAN:<>
+Well, let's hear from Minnie herself?
+Tilde turns to face Minnie.
+@TILDE:<>
+Sure. So, Minnie... What happened?
+Minnie goes pale and becomes nervous.
+@MINNIE:<>
+Um... W-Well... I arrived earlier this evening. Uh, the sun was setting, I think. I-If that was important, I guess...
+@OSCAR:<>
+It's not!
+@PATTY:<>
+Any detail could be, father! Shush.
+@MINNIE:<>
+A-Anyway, my parents told me Codetta was at the souvenir shop. She was supposed to pick me up for the party. But she wasn't there... I didn't want anybody to wait for too long, so...
+@HANS:<>
+Now's not the time to be lying kid!
+@MINNIE:<>
+Uh, OK well— I'm not lying? I came here immediately after leaving the souvenir shop. I swear.
+@LALA:<>
+Soooo - you had plenty of time to kill Codetta then.
+@MINNIE:<>
+W-Wait what!? How!?
+@PATTY:<>
+No one here can corroborate your story, sugar.
+@HANS:<>
+Hell, for all we know, you could have arrived this morning.
+@IRENE:<>
+Remi wouldn't just leave you to wander here all on your own, either.
+Minnie looks to Dorian.
+@MINNIE:<>
+W-Wait, but - didn't you say Codetta could have been lost? None of this makes any sense!
+@LALA:<>
+I suspect Minnie's the killer.
+Solstice's expression shifts from concern to determination.
+@OSCAR:<>
+Me too.
+@PATTY:<>
+It certainly seems plausible.
+@TILDE:<>
+By the way, you're still holding the knife, Minnie.
+Minnie looks to her clasped hand and is horrified to discover this is true. She has no idea why she hasn't put the knife down, but quickly places it on the table.
+@HANS:<>
+Are we eating the cake yet, or what?
+@DORIAN:<>
+Why'd you do it, kid?
+@IRENE:<>
+We've caught the young lady red handed.
+@LALA:<>
+Red headed, too.
+@MINNIE:<>
+What does that even have to do with~
+Solstice has had enough.
+@SOLSTICE:<>
+STOP!
+The ensemble turns to Solstice, and strangely enough, they not only listen to her, but appear somewhat concerned by her outburst.
+@LALA:<>
+...Uh oh. Princess is mad.
+@PATTY:<>
+Hush, Lala.
+@IRENE:<>
+Make it quick, Solstice.
+@SOLSTICE:<>
+You're all acting crazy!
+@OSCAR:<>
+What's your point, kid?
+@SOLSTICE:<>
+Crazier than usual, I mean! Remi meant so much to you all. She really meant a lot to me too. But none of you know if Minnie actually did it. I know most of you are just angry with each other. So, can you please - Please - Like, I don't know, hire a detective or something?
+Everyone begins to murmur amongst themselves. Farris reveals a message: "Good idea."
+@DORIAN:<>
+Makes sense.
+@TILDE:<>
+Yep.
+@OSCAR:<>
+Kinda pointless, since we know the brat did it. But yeah, fine whatever.
+@HANS:<>
+Eh, I don't care either way.
+Farris holds up a message: "Yes. Hire a detective please."
+@PATTY:<>
+Wouldn't cause any harm now would it?
+@LALA:<>
+Just hire Solstice. I'm sure she'll at least be able to deduce it was a murder.
+@SOLSTICE:<>
+I can deduce more than that! ...Probably.
+@PATTY:<>
+Lala, how many times do I have to tell you to be quiet?
+@IRENE:<>
+We actually need some help with this situation anyway, for more pressing matters.
+@HANS:<>
+Best to avoid a press leak, hm?
+@IRENE:<>
+Indeed. I'll contact Noriaki immediately. He can also put us in touch with a good P.I.
+@OSCAR:<>
+Right. We're on our last strike.
+@IRENE:<>
+Precisely.
+Oscar glares at Solstice.
+@SOLSTICE:<>
+I won't tell mom or dad, I promise! I just want to help!
+@IRENE:<>
+No, it's fine, Solstice. I'll deal with them. As long as we can keep this under wraps, we should be fine.
+The ensemble turns to face Minnie, who is very unsure of what to make of the situation at this point.
+@IRENE:<>
+Now, the problem remains...
+@OSCAR:<>
+What do we do with the brat?
+@DORIAN:<>
+I'd offer to take care of her, but, uh...
+@PATTY:<>
+No one wants to house a potential killer, right?
+@IRENE:<>
+Indeed.
+@HANS:<>
+I'll happily take her off your hands.
+@TILDE:<>
+We don't need three murders, Hans.
+@HANS:<>
+Three?
+Farris holds up a sign that reads: "1. Remi, 2. Horse, 3. Minnie"
+@TILDE:<>
+Anyway, this actually is a bit more complicated now than you all might realize.
+@IRENE:<>
+What do you mean?
+@TILDE:<>
+I happen to know that Codetta left the Shivering Timber to Minnie in her will.
+@OSCAR:<>
+W-WHAT IN BLAZES!?
+@IRENE:<>
+You can't be serious!
+@BIJOU:<>
+That little girl... is a home owner now!?
+@MINNIE:<>
+W-What? I don't have any idea what you all are talking about...
+@DORIAN:<>
+What, she owns that massive ship all by herself now?
+@IRENE:<>
+You better prove it, Tilde.
+@TILDE:<>
+Sure, I can show you the document later. But, it's true.
+Codetta told me about it before the party.
+@LALA:<>
+So, Minnie killed Codetta in order to get her hands on the Shivering Timber?
+@MINNIE:<>
+I swear I don't have any idea what that is!
+@IRENE:<>
+Actually, this works out just fine.
+@OSCAR:<>
+How do you figure?
+@IRENE:<>
+If we let this little murderer stay there, she'd effectively have nowhere to run or hide. That ship can't leave the archipelago at the moment.
+Minnie is becoming more visibly anxious.
+@PATTY:<>
+That's convenient.
+@IRENE:<>
+I'll contact the P.I. Everyone, please go home, and stay put. Once the detective arrives, I'll inform them of the situation.
+@MINNIE:<>
+But, w-what am I supposed to do now!?
+@LALA:<>
+You just committed murder. Quit acting like you're still a child, Minnie.
+You're going to simply get what you deserve.
+@IRENE:<>
+I'll escort you to your new home, you wretched child.
+Minnie's anxiety sky rockets.
+@MINNIE:<>
+N-N-Nononono, please, wait~
+@IRENE:<>
+Let's go, little girl.
+// FADE TO BLACK
+
++ [Continue]
+  -> the_shivering_timber
+
+=== the_shivering_timber ===
+
+= south_square
+
+// EXT. CAPELLA CAMPUS - SOUTH SQUARE - NIGHT
+Irene locks the back door of the reception hall, which leads to Capella Campus South Square. Minnie and Irene sit at the top of a fairly large and wide staircase. Similar to the entrance gate, the exterior of the reception hall consists of a mossy stone wall, with street lamps lining the wall. Most of the lamps appear to be unlit, but there is one towering just above Minnie and Irene, to their immediate right, that is flickering in and out infrequently. There's a plaque just beside the door that reads "Sol La Capella Reception Hall."
+@IRENE:<>
+I suppose that's all for now, then. There's a water fountain in the park. I think Patty's diner might be unlocked. She always forgets to lock the place. Not Remi, though. She never forgot to lock anyth—
+Uncharacteristically, Minnie interjects.
+@MINNIE:<>
+Why is no one sad?
+@IRENE:<>
+Hm?
+@MINNIE:<>
+Why is no one sad?
+(Beat)<>
+Everyone seems angry. But not sad. Well, I guess the girl who was crying was sad, but...
+@IRENE:<>
+We're very sad.
+(Beat)<>
+Your aunt was an incredible woman. My star employee!
+@MINNIE:<>
+Mhm... Less than three arsons, right?
+@IRENE:<>
+What? Those were false accusations! The poor girl just had a tendency to be at the wrong place at the wrong time.
+@MINNIE:<>
+...Must run in the family.
+@IRENE:<>
+No, it was just her. We're otherwise a lucky and happy family bouquet. I don't understand why you decided to throw away your good fortune tonight... But I don't really care to know. I just want to see you pay for it, child. Goodbye.
+Irene leaves.
+Minnie sits down on the stairs, collecting her thoughts, allowing her feelings to finally catch up with her. She's overwhelmed to the point of a break down.
+Rain begins to fall.
+@MINNIE:<>
+H-Happy...
+Thunder claps. Minnie is surprised.
+@MINNIE:<>
+Happy birthday... T-To me.
+Rain begins to pick up.
+@MINNIE:<>
+H-Happy birth... day... To me.
+Lightning flashes nearby.
+@MINNIE:<>
+H-Hap... Ha-p... Happy birthday... Deares... Dear...
+Thunder claps. Minnie is no longer surprised.
+@MINNIE:<>
+Minnie.
+Rain pours.
+@MINNIE:<>
+Happy birthday. To you.
+
++ [Continue]
+  -> meeting_jackie
+
+= meeting_jackie
+
+// EXT. CAPELLA CAMPUS - SOUTH SQUARE - NIGHT
+It is storming. Minnie covers her head with her hands, and curls up as close as she can, head to her knees.
+// SLOW PAN IN ON MINNIE
+After a day full of arduous surprises, Minnie finally begins to cry.
+A moment passes, and Minnie lifts her head up just enough to face the player. She is sobbing.
+Her faint voice is broken, and weak.
+@MINNIE:<>
+I'd never hurt anyone. I didn't... I didn't...
+She places her head back down, and continues to cry.
+// STOP PAN AT CU OF MINNIE
+A moment passes. Although it is still pouring rain in the background, as if magic, the rain suddenly appears to no longer to be falling on Minnie. In addition, the once flickering streetlight stops flickering, and fully encompasses Minnie in its light.
+It takes her a moment, but soon enough, Minnie notices this.
+// SLOW PAN OUT
+The pan slowly reveals the presence of another person standing beside Minnie. It is Jacquelyn "Jackie" Lorraine Nocturne. She is holding an umbrella, and is shielding Minnie from the rain.
+Minnie cautiously looks up, locking eyes with Jackie. Jackie looks back at her with genuine, warm concern.
+@JACKIE:<>
+You know, at first I thought you were a little ghost who'd come to visit me.
+But...
+I can feel the weight of those tears from here.
+The moment lasts for as long as it needs, to part the rain, and reveal Minnie's tears.
+@JACKIE:<>
+My name's Jackie Nocturne. What's yours?
+@MINNIE:<>
+Minnie.
+@JACKIE:<>
+Pleasure to meet you... Minnie Shy?
+@MINNIE:<>
+Yes, that's right.
+@JACKIE:<>
+If I'm not mistaken... It's your birthday today, isn't it?
+@MINNIE:<>
+Yes...?
+@JACKIE:<>
+(Genuine)<>
+Happy birthday, Minnie.
+I'm sorry I wasn't able to make it to your party.
+@MINNIE:<>
+Thank you. It's probably better that you missed it.
+@JACKIE:<>
+(Concerned)<>
+I can see tears and mud stains on your clothes...
+And... are those soup stains?
+@MINNIE:<>
+How did you know?
+@JACKIE:<>
+Before that, and most importantly— are you hurt?
+@MINNIE:<>
+I don't think so. Nothing worse than I've dealt with at school, anyway.
+@JACKIE:<>
+Hm. What about your tears?
+@MINNIE:<>
+Oh... Well, I don't have a change of clothes...
+So, yeah— that kinda sucks.
+@JACKIE:<>
+And your other tears?
+Jackie's wordplay catches Minnie's attention, and makes her smile slightly.
+@MINNIE:<>
+Heh... Well, OK. I guess I'm a little hurt, if that's what you're getting at...
+@JACKIE:<>
+I thought that might be the case. Then, is your birthday normally a sad occasion?
+@MINNIE:<>
+No, it's usually fine. This time though, it was... surprising.
+@JACKIE:<>
+I see... So, what led you from the party to sitting out here alone, then?
+@MINNIE:<>
+I'm supposed to be staying here with my aunt, Codetta, for a while.
+@JACKIE:<>
+Ah...
+Well, I'm not sure why she isn't home yet, but...
+Would you like to join me inside? We can wait on her together.
+@MINNIE:<>
+(Oh no...)
+@JACKIE:<>
+I can tell you're a bit weary...
+@MINNIE:<>
+Uh, well— it's just...
+@JACKIE:<>
+It's OK, I get it. I'm a stranger. Here, let me show you this...
+Jackie shows Minnie a photo. It is of Jackie, Codetta, and Bruno at the roller rink, when they were younger.
+@JACKIE:<>
+This is me, and your aunt, Remi.
+We were—
+@MINNIE:<>
+Who's Remi?
+@JACKIE:<>
+Oh. Um. Shoot, sorry. That's what she used to go by...
+Or, well... that was her, uh...
+I meant Codetta. That's me and your aunt, Codetta...
+She was— ...She is a close friend of mine.
+@MINNIE:<>
+(That's definitely Codetta in the photo...)
+@JACKIE:<>
+She's been my close friend for many years.
+Your family knows me...
+Anyway...
+Minnie, will you please stay with me?
+@MINNIE:<>
+Pardon?
+@JACKIE:<>
+Please stay with me.
+Jackie helps Minnie up. They remain hand-in-hand.
+@JACKIE:<>
+It's pouring out here...
+Would you like to join me inside?
+(Beat)<>
+We can wait on Codetta to get home, together.
+@MINNIE:<>
+...Yes, I'd like to come inside.
+@JACKIE:<>
+(Thank God...)
+@MINNIE:<>
+(Thank God...)
+
+= kitchen
+
+// INT. THE SHIVERING TIMBER - KITCHEN - NIGHT
+Jackie and Minnie are together in the kitchen. Minnie has a hot cocoa.
+@JACKIE:<>
+So, let me get this straight— your parents sent you here...
+or, to be more precise, shipped you here—
+—to stay with Remi?
+@MINNIE:<>
+Sorry, I forgot again— is that Codetta's real name?
+@JACKIE:<>
+It is, yes. But, actually I'm the odd one out here.
+Everyone just calls her Codetta now days, so I need to get with the program.
+@JACKIE:<>
+So, you mentioned that a bad thing happened tonight... Do you mind elaborating on that?
+@MINNIE:<>
+OK...
+Well, when I arrived, Codetta wasn't waiting to pick me up.
+@JACKIE:<>
+Where was she supposed to pick you up?
+@MINNIE:<>
+The souvenir shop. It was closed, but I... Uh, managed to get inside. Anyway, I didn't want to keep anyone at the party waiting, so...
+@JACKIE:<>
+Pardon me, Minnie. Are you suggesting you knew about the party beforehand?
+@MINNIE:<>
+Yeah, my parents told me about it. So, I practiced being surprised on the way to the party. Which turned out to be pretty easy... Cause there's a lot of surprises around here!
+Jackie considers Minnie's wording carefully.
+@MINNIE:<>
+But then I forgot to be surprised anyway, and a lot of the people at the party seemed pretty mad about it.
+@JACKIE:<>
+They got mad? That's pretty bad!
+@MINNIE:<>
+Uh, yeah, but never mind that. The actual bad part happened next.
+@JACKIE:<>
+Alright, go on...
+@MINNIE:<>
+Um. Should I...
+(Beat)<>
+Should I call you Miss Jackie?
+@JACKIE:<>
+That's fine by me.
+Minnie takes a long, anxious pause.
+@MINNIE:<>
+(Beat 4sec)<>
+S-She's...
+Codetta isn't...
+She isn't coming home tonight, Miss Jackie.
+Jackie reflects.
+@MINNIE:<>
+Miss Jackie...
+@JACKIE:<>
+Y-Yes, Minnie?
+@MINNIE:<>
+Everyone thinks I did it. Everyone thinks I murdered ...Codetta. My aunt. My aunt who I've never met before.
+W-Why?
+Why would I have any reason? I have nowhere to go. No one believes me. I don't think I have an... um... W-What's it called? An alley-something?
+@JACKIE:<>
+An alibi?
+@MINNIE:<>
+Yeah, that.
+I didn't do it. I'd never hurt anyone, not on purpose— at least.
+@JACKIE:<>
+You're telling the truth?
+@MINNIE:<>
+Yes. I promise. I don't know what to do.
+If my parents find about about this...
+The rain falls more gently outside now.
+@JACKIE:<>
+(Beat)<>
+Stay with me.
+Minnie is perplexed by this, as if she misheard Jackie.
+@MINNIE:<>
+What did you say?
+@JACKIE:<>
+Stay with me, Minnie.
+(Beat)<>
+You were going to stay with Codetta, right?
+@MINNIE:<>
+That's right.
+@JACKIE:<>
+Me too. I just moved in with her today.
+@MINNIE:<>
+Are you serious?
+@JACKIE:<>
+I'm serious.
+@MINNIE:<>
+(Beat)<>
+Do you think I did it?
+@JACKIE:<>
+No.
+Minnie nods. Jackie extends her hand, to help Minnie to her feet. Hesitantly, Minnie reaches for her hand, and Jackie helps lift her up.
+As the scene fades, they remain hand-in-hand.
+// FADE TO BLACK
+
+// Note: for rewrite, have Minnie decline Jackie's offer to come inside so that she can take time to verify that Jackie will trust her first.
+
++ [Continue]
+  -> meeting_jackie_v2
+
+=== meeting_jackie_v2 ===
+
+// EXT. THE SHIVERING TIMBER - FRONT PORCH - NIGHT
+// SLOW PAN IN ON MINNIE
+Minnie begins to cry.
+A moment passes. Minnie lifts her head enough to face the player. She is sobbing.
+@MINNIE:<>
+I... I d-didn't mean to hurt anyone...
+I want to go home.
+// STOP PAN AT CU OF MINNIE
+A moment passes. Rain no longer falls on Minnie, but it is still raining. The porch light stops flickering, and lights the scene.
+// SLOW PAN OUT
+Jackie Nocturne is standing by Minnie, holding an umbrella out to protect her from the rain.
+@JACKIE:<>
+You know... At first, I thought you were a sweet little ghost who'd come to visit me.
+But, I don't suppose a ghost's tears would carry so much weight.
+Minnie does not look up at Jackie.
+@MINNIE:<>
+If I were a ghost... I'd disappear right now.
+@JACKIE:<>
+But, if you did that... I wouldn't get the chance to introduce myself, would I?
+So, perhaps it's a bit selfish of me...
+But, I'm glad you're corporeal.
+Minnie is caught off guard.
+@JACKIE:<>
+My name's Jackie. What's yours, kiddo?
+@MINNIE:<>
+Minnie...
+@JACKIE:<>
+Oh! You're the birthday girl, aren't you?
+@MINNIE:<>
+...That's me.
+@JACKIE:<>
+(Genuine)<>
+Happy birthday, Minnie.
+I'm sorry I didn't make it to your party.
+Minnie begins to calm down.
+@MINNIE:<>
+Thank you...
+It's probably better that you missed it... Miss Jackie.
+@JACKIE:<>
+(Concerned)<>
+Rips in your clothes, mud in your hair... and... No, that's not blood. A kind of broth, perhaps?
+@MINNIE:<>
+(Surprised)<>
+That's right.
+@JACKIE:<>
+(Must have been one hell of a party...)
+(Beat)<>
+Are you hurt, Minnie?
+@MINNIE:<>
+I don't think so.
+@JACKIE:<>
+What about those tears?
+@MINNIE:<>
+Well, I don't have a change of clothes...
+So, yeah— the tears kinda suck.
+@JACKIE:<>
+I mean your other tears.
+Minnie smiles and rubs her eyes.
+@MINNIE:<>
+Oh, these? I misheard you, sorry. Well, in that case... I guess I am a little hurt.
+Or sad, or something. I don't know.
+@JACKIE:<>
+Is your birthday typically a sad occasion?
+@MINNIE:<>
+No, not typically.
+@JACKIE:<>
+Would you like to come inside and tell me more about your evening?
+I wouldn't want you to catch a cold out here.
+Minnie thinks. She continues to not look at Jackie.
+@MINNIE:<>
+So, you don't know what happened tonight?
+@JACKIE:<>
+At your party? No.
+I arrived at Moonshy earlier this evening, but I've been here at the Shivering Timber, ever since.
+(Trailing off)<>
+To be honest, I meant to make it to your party, but I... fell asleep... and... I'm a little embarrassed about that...
+@MINNIE:<>
+Why?
+@JACKIE:<>
+Why as in, why did I fall asleep, or...?
+@MINNIE:<>
+No, as in, why are you here?
+Jackie thinks.
+@JACKIE:<>
+I suppose that depends on what the preacher says, right?
+@MINNIE:<>
+Um... Sorry, what?
+@JACKIE:<>
+I'm kidding.
+Truthfully, I'm here because I'm moving in with Remi...
+Or... It could be that I'm here to hold an umbrella for you tonight.
+Who can say?
+Minnie smiles.
+@MINNIE:<>
+Maybe... the preacher?
+@JACKIE:<>
+Maybe.
+@MINNIE:<>
+So, who's Remi?
+@JACKIE:<>
+Hm? Ah, right... Well, that's the name she used to go by... Codetta, I mean.
+@MINNIE:<>
+Oh...
+So, you... know aunt Codetta?
+@JACKIE:<>
+I know her well.
+@MINNIE:<>
+Are you family?
+@JACKIE:<>
+Mm, sorta kinda.
+Minnie thinks.
+@MINNIE:<>
+Um... Should I call you Miss Jackie?
+@JACKIE:<>
+You already have. And, yes, that's fine by me.
+@MINNIE:<>
+OK... Miss Jackie?
+@JACKIE:<>
+Yes, sweetie?
+@MINNIE:<>
+Are you waiting for Codetta to come home tonight?
+@JACKIE:<>
+I am.
+Long pause. Minnie is anxious.
+@JACKIE:<>
+Truthfully, I'm not sure if she even knew I was coming...
+Long pause. Minnie is nauseous.
+@JACKIE:<>
+But, I hope it's a pleasant surprise... I haven't... seen her in years.
+Long pause. Thunder strikes.
+@JACKIE:<>
+She should have been home by now, as far as I'm aware... So...
+Long pause. Jackie is concerned.
+@JACKIE:<>
+Minnie...
+Do you know where Codetta is?
+Long pause. Jackie braces herself.
+@MINNIE:<>
+Yes.
+(Beat, 3s)<>
+Codetta isn't coming home tonight, Miss Jackie.
+S-She's been...
+Long pause. The weight presses down on Jackie, but she remains firm. Minnie sobs.
+@JACKIE:<>
+I... I understand.
+I'm glad you didn't disappear, little ghost... but I'm sorry you're anchored down by such a heavy weight.
+The rain falls harder.
+@MINNIE:<>
+Miss Jackie...
+Everyone thinks I did it. Everyone thinks I did this to Codetta, my aunt... My aunt who I didn't even know.
+W-Why?
+Why would I...?
+(Beat)<>
+No one believes me. I don't even think I have a... w-what's it called? An alley-something?
+@JACKIE:<>
+An alibi?
+@MINNIE:<>
+Yeah, that!
+But, I didn't do it.
+@JACKIE:<>
+And, you're telling the truth?
+@MINNIE:<>
+Yes. I don't know what to do.
+If my parents find out about this, they'll—
+@JACKIE:<>
+Stay with me.
+Minnie is perplexed.
+@MINNIE:<>
+Hm? Pardon?
+@JACKIE:<>
+Stay with me, Minnie.
+Minnie looks up at Jackie, finally seeing her face for the first time.
+@MINNIE:<>
+Miss Jackie, do you think I did it?
+@JACKIE:<>
+(Confidently, warmly)<>
+No.
+Minnie nods. Jackie extends her hand. Minnie hesitantly reaches for her hand. Jackie lifts her up.
+As the scene fades, they remain hand-in-hand, eyes locked.
+// FADE TO BLACK
+
++ [Continue]
+  -> timber_house_settle_in
+
+=== timber_house_settle_in ===
+
+// EXT. TIMBER HOUSE - FOYER - NIGHT
+// NOTE: There is an extra house key that is supposed to be hung up on the key rack by the front door, but it is missing.
+@MINNIE:<>
+Wow. This place is pretty.
+@JACKIE:<>
+Yeah. Certainly cleaner than I expected.
+@MINNIE:<>
+Why's that?
+@JACKIE:<>
+Your aunt's always been...
+(Disheartened)<>
+Rather, she... was a bit of a mess.
+(Beat)<>
+Can I get you anything? Are you hungry?
+@MINNIE:<>
+Come to think of it, I haven't eaten all day.
+...Aside from a mouthful of soup.
+@JACKIE:<>
+Then, how about this? I'll whip you up something to eat while you go take a bath.
+@MINNIE:<>
+That sounds great to me.
+@JACKIE:<>
+I'm pretty sure I have a pair of pajamas you can borrow.
+They might be a little big on you though.
+I'll see if I can do something about your coat, too.
+@MINNIE:<>
+(Surprised)<>
+Oh! That's very kind...
+@JACKIE:<>
+I think Remi prepped the upstairs suite for you. It has a cute little bathroom.
+@MINNIE:<>
+Upstairs sweet?
+Like... there's chocolate waiting for me upstairs, and it... has a bathroom?
+@JACKIE:<>
+W-What? Pfft.
+No, silly. A suite... it's uh... like a small condo?
+@MINNIE:<>
+Oh.
+(I don't know what that is either.)
+@JACKIE:<>
+I like that your first thought was chocolate though.
+Now I can't help but imagine a room made of chocolate... How very... Wonka.
+Jackie is delighted.
+@JACKIE:<>
+Anyway, I'll go grab those PJs and bring them up to you.
+All things considered, it's a pretty big house for just two. Uh, but, make yourself at home... You know, since it is technically your home now.
+@MINNIE:<>
+Oh, that's right...
+I can't believe this place is really mine. It's... big.
+@JACKIE:<>
+Mhm, it is...
+(You know, now that she mentions it... I suppose I don't really understand much surrounding the legality in play here, but it's probably best if we leave it be for now.)
+Well, I don't mean to hold you up, so go on.
+@MINNIE:<>
+OK!
+
++ [Continue]
+  -> timber_house_minnies_room
+
+=== timber_house_minnies_room ===
+
+// INT. TIMBER HOUSE - MINNIE'S ROOM - NIGHT
+The storm picks up. The room is a mess. A crate blocks a drawn curtain below the loft where Minnie's bed is.
+Jackie knocks on the door.
+@MINNIE:<>
+Y-Yes?
+@JACKIE:<>
+Mind if I come in?
+@MINNIE:<>
+(Confused)<>
+Erm... Yes? Wait, I mean no, please come in?
+Jackie enters the room.
+// PAN TO MS JACKIE
+@JACKIE:<>
+(Startled)<>
+Good lord! This is what I was expecting every other room to look like, not this one!
+She facepalms.
+@JACKIE:<>
+That woman... She was...
+// PAN TO MS OF MINNIE
+Minnie looks back nervously.
+@MINNIE:<>
+Oh, it's fine. I really don't mind.
+// PAN OUT TO LS OF BOTH MINNIE AND JACKIE, WINDOW CENTERED
+@JACKIE:<>
+Are you sure? There's a lot of other rooms you can take.
+@MINNIE:<>
+No, thank you. I like this one.
+Though, could I maybe move some things?
+@JACKIE:<>
+You can move anything you like. It's all yours, if you can believe it! That said, I'll clean the place up for you tomorrow.
+@MINNIE:<>
+Oh, no no. You don't need to do that.
+@JACKIE:<>
+I have to insist, kiddo. I don't want you to hurt yourself on something.
+Jackie glances up and notices the messy bed.
+@JACKIE:<>
+Geez, she didn't even make the bed...
+(Sigh)<>
+Okay, I'm going to at least clear a walkway for you and get this bed made. Gimme a few minutes.
+@MINNIE:<>
+(Anxious)<>
+That's awfully nice of you, Miss Jackie. Thank you.
+Jackie looks at the crate.
+@JACKIE:<>
+Oh, actually... Minnie, can you help me move this crate? My shoulder's a little weak, and this one's pretty heavy.
+Minnie perks up.
+@MINNIE:<>
+Sure!
+Joining Jackie, the player can help her move the crate.
+@JACKIE:<>
+Geez, what's she got in here, a bod—
+She stops. Minnie finishes moving the crate herself.
+@JACKIE:<>
+Sorry about that.
+@MINNIE:<>
+That's OK. Are you alright?
+@JACKIE:<>
+...Yeah.
+(Beat)<>
+You're really strong! How'd you get all that muscle on those cute little arms?
+@MINNIE:<>
+(Proud)<>
+Swim team!
+Minnie pretends to ready a dive.
+@JACKIE:<>
+I see. Not a big fan of water, myself.
+@MINNIE:<>
+Aww...
+(Kinda weird to move to a buncha islands if you don't like water though, Miss Jackie...)
+Moving the crate reveals a mysterious curtain.
+Jackie notices the curtain.
+@JACKIE:<>
+That curtain looks familiar...
+Oh, that's right. Yeah, I remember this. This leads to one of the fire escapes, I think.
+@MINNIE:<>
+That's a fire escape?
+@JACKIE:<>
+Behind the curtain, yeah. There's a few of these in the house; each one leads out through the storage floor.
+Apparently, it used to be pretty easy to catch this place on fire.
+@MINNIE:<>
+Oh...
+@JACKIE:<>
+Now, don't let it spook you. That was a long time ago.
+Irene renovated the place; it's the regular amount of flammable now.
+Minnie stares at the curtain for a moment. The aura it's giving off is creeping her out.
+@MINNIE:<>
+So, did... Did Codetta ever catch the house on fire?
+@JACKIE:<>
+Hah. That's a bit of a pointed question, isn't it? But, no, not to my knowledge.
+@MINNIE:<>
+OK...
+@JACKIE:<>
+By the way, here are your pajamas.
+Jackie gives the PJs to Minnie.
+@MINNIE:<>
+Thank you.
+@JACKIE:<>
+I suspect dinner'll be ready by the time you're out of the bath, so just come on down when you're out. I'll get that bed made before I go back downstairs.
+@MINNIE:<>
+Thanks, Miss Jackie. This is all really kind of you... I greatly appreciate it.
+@JACKIE:<>
+No sweat, kiddo.
+// FADE TO BLACK
+// FADE IN:
+// INT. TIMBER HOUSE - MINNIE'S ROOM - NIGHT
+Minnie exits the bathroom, clean and more relaxed. Surprisingly, the PJs fit just right.
+The player regains control.
+
++ [Continue]
+  -> timber_house_settle_in_2
+
+=== timber_house_settle_in_2 ===
+
+// INT. THE SHIVERING TIMBER - KITCHEN - NIGHT
+Jackie and Minnie are together in the kitchen, eating spaghetti.
+@JACKIE:<>
+So, let me get this straight...
+Your parents sent you here—
+—or, to be more precise, shipped you here—
+—to stay with Remi?
+@MINNIE:<>
+That's right.
+Er, is Remi supposed to be like, Codetta's nickname, or something? You keep saying it.
+@JACKIE:<>
+No, sorry... It's a name she used to go by.
+Everyone just calls her Codetta these days; I need to get with it.
+@MINNIE:<>
+Oh, alright.
+@JACKIE:<>
+So, earlier you mentioned your birthday party was surprising... Given the state you were in when I found you, there must be quite a story behind that.
+Do you mind telling me what happened?
+@MINNIE:<>
+Sure...
+When I first arrived at Moonshy, Codetta wasn't waiting to pick me up like she was supposed to.
+@JACKIE:<>
+Where was she supposed to pick you up?
+@MINNIE:<>
+My parents said she'd be waiting for me at the souvenir shop. It was closed, and I didn't want to keep the party waiting, so I, uh... found a way inside, ehehe...
+@JACKIE:<>
+Pardon me, Minnie.
+Are you suggesting you knew about the party?
+@MINNIE:<>
+Yeah, my parents told me about it.
+@JACKIE:<>
+(Perplexed)<>
+Huh. I see...
+@MINNIE:<>
+Um, well— I made sure to practice being surprised on my way to the party.
+Jackie is a little confused by this.
+Which turned out to be pretty easy cause there's a lot of surprises around here!
+Jackie considers Minnie's wording carefully.
+@MINNIE:<>
+But then I forgot to be surprised anyway, and almost everyone at the party seemed mad about that, among other things.
+@JACKIE:<>
+They got mad?
+@MINNIE:<>
+Uh, yeah, but never mind that. The bad part happened next.
+@JACKIE:<>
+I think you mean it went from bad to worse, but please go on...
+@MINNIE:<>
+Sure. So, later— when I blew out the candles on my cake, all of the lights went out.
+(Beat)<>
+After a moment, they came back on... And, well...
+That's when we found Codetta.
+@JACKIE:<>
+Can you describe how she was found?
+@MINNIE:<>
+Sort of. While the lights were out, I felt something weird push up against my feet.
+@JACKIE:<>
+(So, the body might have moved while the lights were out...
+Not particularly clever on our killer's part.)
+@MINNIE:<>
+By the way, I'm not the killer.
+I-In case you forgot.
+@JACKIE:<>
+Er, y-yes. I haven't forgotten, Minnie. Please continue.
+(The hell was that all the sudden?)
+@MINNIE:<>
+Um, anyway, my table was covered, so I couldn't see what it was, even with the lights on. I don't think anyone else could either.
+The gloomy mermaid lady came over and lifted the drape...
+...And, well...
+There she was.
+@JACKIE:<>
+Back up a sec.
+Minnie physically backs away from Jackie for one second and then returns to position. Jackie notices, but ignores this for now.
+@JACKIE:<>
+Gloomy mermaid... Oh. You're referring to your aunt Tilde, correct?
+@MINNIE:<>
+I dunno. I don't really know anyone here.
+Wait, no, that's not true—
+I met my cousin Laetitia in school a long time ago, but we never had any classes together. So, I don't really know her either.
+She seems kinda mean though.
+@JACKIE:<>
+Mhm, she can be a little prickly. Your aunt Tilde doesn't take too kindly to being called a mermaid, by the way. She's a siren.
+@MINNIE:<>
+Oh, okay!
+(Like that loud sound you hear when there's a tornado? That can be a person!? Or maybe the sound is produced BY the person, and THAT's what a siren is!? WHOA. That's neat! My family seems so cool!)
+@JACKIE:<>
+Incidentally, you mentioned the attendees were mad "among other things"...
+Did you happen to pick up on what those other things were?
+@MINNIE:<>
+Hm... Not really, sorry. Sounded like businessy sorta stuff, but I don't know anything about all that.
+(Beat)<>
+I don't think most of them were very excited to be there, either.
+@JACKIE:<>
+I see...
+(I'll need to learn more about that later.)
+(Beat)<>
+Well, you've had a really long night. I imagine you're pretty worn out.
+@MINNIE:<>
+Yeah. I'd like to go to bed, if that's okay.
+@JACKIE:<>
+Alright. Get some sleep, and we'll continue the convo in the morning.
+@MINNIE:<>
+OK...
+(Beat)<>
+Miss Jackie?
+@JACKIE:<>
+Mm?
+@MINNIE:<>
+What's going to happen to me?
+This all seems really, really bad.
+@JACKIE:<>
+I know.
+But, I'm going to make sure nothing bad happens to you.
+For now, try to relax and get some rest, OK?
+We're gonna tackle this thing one step at a time, and you're going to be alright.
+@MINNIE:<>
+OK. Thanks, Miss Jackie. Goodnight.
+@JACKIE:<>
+Goodnight, Minnie.
+
++ [Continue]
+  -> END

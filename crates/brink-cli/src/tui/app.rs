@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use brink_runtime::{StepResult, Story};
+use brink_runtime::{Line, Story};
 
 use super::event::Input;
 use super::typewriter::TypewriterState;
@@ -90,12 +90,14 @@ impl App {
         self.scroll_offset = 0;
         self.focus = Focus::Story;
 
-        match story.continue_maximally()? {
-            StepResult::Choices { text, choices, .. } => {
+        let lines = story.continue_maximally()?;
+        let text: String = lines.iter().map(Line::text).collect();
+        match lines.last() {
+            Some(Line::Choices { choices, .. }) => {
                 let entries: Vec<ChoiceEntry> = choices
-                    .into_iter()
+                    .iter()
                     .map(|c| ChoiceEntry {
-                        text: c.text,
+                        text: c.text.clone(),
                         index: c.index,
                     })
                     .collect();
@@ -104,18 +106,14 @@ impl App {
                     then: AfterPassage::ShowChoices(entries),
                 };
             }
-            StepResult::Ended { text, .. } => {
+            Some(Line::Done { .. } | Line::End { .. }) => {
                 self.phase = Phase::Typing {
                     typewriter: TypewriterState::new(text, self.char_delay),
                     then: AfterPassage::End,
                 };
             }
-            StepResult::Done { text, .. } => {
-                tracing::warn!("unexpected StepResult::Done during interactive play");
-                self.phase = Phase::Typing {
-                    typewriter: TypewriterState::new(text, self.char_delay),
-                    then: AfterPassage::End,
-                };
+            Some(Line::Text { .. }) | None => {
+                self.phase = Phase::Ended { text };
             }
         }
         Ok(())

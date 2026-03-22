@@ -3,6 +3,7 @@ declare module "brink-web" {
     constructor(story_bytes: Uint8Array);
     choose(index: number): void;
     continue_story(): string;
+    continue_single(): string;
     reset(): void;
     free(): void;
     [Symbol.dispose](): void;

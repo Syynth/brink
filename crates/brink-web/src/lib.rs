@@ -134,48 +134,34 @@ impl StoryRunner {
         })
     }
 
-    /// Continue the story. Returns JSON with text, choices, and status.
+    /// Continue the story maximally. Returns JSON array of `Line` objects.
     pub fn continue_story(&self) -> Result<String, JsError> {
         let mut borrow = self.story.borrow_mut();
         let story = borrow
             .as_mut()
             .ok_or_else(|| JsError::new("story not initialized"))?;
 
-        let result = story
+        let lines = story
             .continue_maximally()
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
 
-        let resp = match result {
-            brink_runtime::StepResult::Done { text, tags } => StepResultJs {
-                status: "continue",
-                text,
-                choices: Vec::new(),
-                tags,
-            },
-            brink_runtime::StepResult::Choices {
-                text,
-                choices,
-                tags,
-            } => StepResultJs {
-                status: "choices",
-                text,
-                choices: choices
-                    .into_iter()
-                    .map(|c| ChoiceJs {
-                        text: c.text,
-                        index: c.index,
-                        tags: c.tags,
-                    })
-                    .collect(),
-                tags,
-            },
-            brink_runtime::StepResult::Ended { text, tags } => StepResultJs {
-                status: "ended",
-                text,
-                choices: Vec::new(),
-                tags,
-            },
-        };
+        let resp: Vec<LineJs> = lines.into_iter().map(line_to_js).collect();
+
+        serde_json::to_string(&resp).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Continue the story by a single line. Returns JSON for one `Line` object.
+    pub fn continue_single(&self) -> Result<String, JsError> {
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+
+        let line = story
+            .continue_single()
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+
+        let resp = line_to_js(line);
 
         serde_json::to_string(&resp).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
@@ -204,12 +190,55 @@ impl StoryRunner {
     }
 }
 
+fn line_to_js(line: brink_runtime::Line) -> LineJs {
+    match line {
+        brink_runtime::Line::Text { text, tags } => LineJs {
+            r#type: "text",
+            text,
+            tags,
+            choices: None,
+        },
+        brink_runtime::Line::Choices {
+            text,
+            tags,
+            choices,
+        } => LineJs {
+            r#type: "choices",
+            text,
+            tags,
+            choices: Some(
+                choices
+                    .into_iter()
+                    .map(|c| ChoiceJs {
+                        text: c.text,
+                        index: c.index,
+                        tags: c.tags,
+                    })
+                    .collect(),
+            ),
+        },
+        brink_runtime::Line::Done { text, tags } => LineJs {
+            r#type: "done",
+            text,
+            tags,
+            choices: None,
+        },
+        brink_runtime::Line::End { text, tags } => LineJs {
+            r#type: "end",
+            text,
+            tags,
+            choices: None,
+        },
+    }
+}
+
 #[derive(Serialize)]
-struct StepResultJs {
-    status: &'static str,
+struct LineJs {
+    r#type: &'static str,
     text: String,
-    choices: Vec<ChoiceJs>,
-    tags: Vec<Vec<String>>,
+    tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    choices: Option<Vec<ChoiceJs>>,
 }
 
 #[derive(Serialize)]

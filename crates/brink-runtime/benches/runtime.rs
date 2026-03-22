@@ -3,7 +3,7 @@ use std::fmt;
 use brink_converter::convert;
 use brink_format::StoryData;
 use brink_json::InkJson;
-use brink_runtime::{DotNetRng, Program, Stats, StepResult, Story};
+use brink_runtime::{DotNetRng, Line, Program, Stats, Story};
 
 // ── Scenarios ────────────────────────────────────────────────────────────────
 
@@ -83,17 +83,27 @@ fn run_to_completion(program: &Program, inputs: &[usize]) -> Stats {
     let mut input_idx = 0;
 
     loop {
-        match story.continue_maximally().unwrap() {
-            StepResult::Done { .. } | StepResult::Ended { .. } => break,
-            StepResult::Choices { choices, .. } => {
-                if input_idx >= inputs.len() {
-                    break;
+        let mut done = false;
+        for line in story.continue_maximally().unwrap() {
+            match line {
+                Line::Text { .. } => {}
+                Line::Done { .. } | Line::End { .. } => {
+                    done = true;
                 }
-                let idx = inputs[input_idx];
-                input_idx += 1;
-                assert!(idx < choices.len());
-                story.choose(idx).unwrap();
+                Line::Choices { choices, .. } => {
+                    if input_idx >= inputs.len() {
+                        done = true;
+                        break;
+                    }
+                    let idx = inputs[input_idx];
+                    input_idx += 1;
+                    assert!(idx < choices.len());
+                    story.choose(idx).unwrap();
+                }
             }
+        }
+        if done {
+            break;
         }
     }
 

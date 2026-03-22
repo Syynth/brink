@@ -7,14 +7,14 @@
 //! let program = brink_runtime::link(&story_data)?;
 //! let mut story = brink_runtime::Story::new(&program);
 //! loop {
-//!     match story.continue_maximally()? {
-//!         StepResult::Done { text, .. } => print!("{text}"),
-//!         StepResult::Choices { text, choices, .. } => {
+//!     match story.continue_single()? {
+//!         Line::Text { text, .. } => print!("{text}"),
+//!         Line::Choices { text, choices, .. } => {
 //!             print!("{text}");
 //!             // pick a choice...
 //!             story.choose(0)?;
 //!         }
-//!         StepResult::Ended { text, .. } => {
+//!         Line::End { text, .. } => {
 //!             print!("{text}");
 //!             break;
 //!         }
@@ -40,7 +40,4 @@ pub use locale::LocaleMode;
 pub use program::Program;
 pub use rng::{DotNetRng, FastRng, StoryRng};
 pub use state::{StoryState, WriteObserver};
-pub use story::{
-    Choice, ExternalFnHandler, ExternalResult, SingleLineResult, Stats, StepResult, Story,
-    StorySnapshot, StoryStatus,
-};
+pub use story::{Choice, ExternalFnHandler, ExternalResult, Line, Stats, Story, StorySnapshot};

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use brink_converter::convert;
 use brink_json::InkJson;
-use brink_runtime::{DotNetRng, StepResult, Story};
+use brink_runtime::{DotNetRng, Line, Story};
 
 /// Format text with per-line tags inserted after each tagged line.
 ///
@@ -60,35 +60,31 @@ fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, Strin
     let mut input_idx = 0;
 
     // Safety limit to prevent infinite loops.
-    let mut steps = 0;
-    let max_steps = 10_000;
+    let max_steps = 100_000;
 
-    loop {
-        steps += 1;
-        if steps > max_steps {
-            return Err(format!("exceeded {max_steps} steps — likely infinite loop"));
-        }
-
+    for _ in 0..max_steps {
         match story
-            .continue_maximally()
+            .continue_single()
             .map_err(|e| format!("runtime error: {e}"))?
         {
-            StepResult::Done { text, tags } | StepResult::Ended { text, tags } => {
-                format_text_with_tags(&text, &tags, &mut output);
+            Line::Text { text, tags } => {
+                format_text_with_tags(&text, &[tags], &mut output);
+            }
+            Line::Done { text, tags } | Line::End { text, tags } => {
+                format_text_with_tags(&text, &[tags], &mut output);
                 break;
             }
-            StepResult::Choices {
+            Line::Choices {
                 text,
                 choices,
                 tags,
             } => {
-                format_text_with_tags(&text, &tags, &mut output);
+                format_text_with_tags(&text, &[tags], &mut output);
                 if choices.is_empty() {
                     return Err("no choices available".into());
                 }
 
-                // No more inputs — stop here (transcript ends before
-                // these choices are displayed/selected).
+                // No more inputs — stop here.
                 if input_idx >= inputs.len() {
                     break;
                 }

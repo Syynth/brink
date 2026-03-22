@@ -1,9 +1,8 @@
 /**
  * Player slice — story playback state with line-at-a-time reveal.
  *
- * The runtime collects all text into `_pendingLines`. The `revealNext`
- * action pops one line from the buffer into `playerText`. Choices and
- * the end marker only appear once the buffer is drained.
+ * Uses the `continueSingle()` API: each call to `revealNext` fetches
+ * one real runtime step. No client-side buffering needed.
  *
  * Choice log: every choice index is recorded in `_choiceLog`. On
  * `loadStory`, if a saved log exists in localStorage, the story is
@@ -53,18 +52,13 @@ export interface PlayerSlice {
   playerEnded: boolean;
   _runner: StoryRunnerHandle | null;
 
-  /** Lines waiting to be revealed, plus deferred choices/ended state. */
-  _pendingLines: string[];
-  _deferredChoices: Choice[];
-  _deferredEnded: boolean;
-
   /** Full choice index log for save/restore. */
   _choiceLog: number[];
 
   loadStory(bytes: Uint8Array): void;
   chooseOption(index: number): void;
   resetStory(): void;
-  /** Reveal the next buffered line (or flush remaining + show choices/end). */
+  /** Reveal the next line from the runtime (or show choices/end). */
   revealNext(): void;
 
   /** Player fullscreen mode — hides the editor pane. */
@@ -81,9 +75,6 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
   playerChoices: [],
   playerEnded: false,
   _runner: null,
-  _pendingLines: [],
-  _deferredChoices: [],
-  _deferredEnded: false,
   _choiceLog: [],
   playerFullscreen: false,
   playerVisible: true,
@@ -109,9 +100,6 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerText: [],
         playerChoices: [],
         playerEnded: false,
-        _pendingLines: [],
-        _deferredChoices: [],
-        _deferredEnded: false,
         _choiceLog: [],
       });
 
@@ -120,7 +108,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
       if (saved && saved.choiceLog.length > 0) {
         replayChoices(set, get, saved.choiceLog);
       } else {
-        advanceStory(set, get);
+        get().revealNext();
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -129,9 +117,6 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerText: [`Load error: ${msg}`],
         playerChoices: [],
         playerEnded: true,
-        _pendingLines: [],
-        _deferredChoices: [],
-        _deferredEnded: false,
         _choiceLog: [],
       });
     }
@@ -151,9 +136,6 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerText: [...state.playerText, `Choose error: ${msg}`],
         playerChoices: [],
         playerEnded: true,
-        _pendingLines: [],
-        _deferredChoices: [],
-        _deferredEnded: false,
       }));
       return;
     }
@@ -163,14 +145,16 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
     set({ _choiceLog: newLog });
     saveToStorage({ choiceLog: newLog });
 
-    // Append the chosen text as a marker, clear choices, then continue
+    // Append the chosen text as a marker, clear choices
     set((state) => ({
       playerText: choiceText
         ? [...state.playerText, `> ${choiceText}`]
         : state.playerText,
       playerChoices: [],
     }));
-    advanceStory(set, get);
+
+    // Reveal first line of next section
+    get().revealNext();
   },
 
   resetStory() {
@@ -182,34 +166,30 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
       playerText: [],
       playerChoices: [],
       playerEnded: false,
-      _pendingLines: [],
-      _deferredChoices: [],
-      _deferredEnded: false,
       _choiceLog: [],
     });
-    advanceStory(set, get);
+    get().revealNext();
   },
 
   revealNext() {
-    const { _pendingLines, _deferredChoices, _deferredEnded } = get();
+    const runner = get()._runner;
+    if (!runner) return;
 
-    if (_pendingLines.length > 0) {
-      // Reveal one line
-      const [next, ...rest] = _pendingLines;
+    try {
+      const line = runner.continueSingle();
+      const text = line.text.replace(/\n$/, "");
       set((state) => ({
-        playerText: [...state.playerText, next],
-        _pendingLines: rest,
+        playerText: text ? [...state.playerText, text] : state.playerText,
+        playerChoices: line.type === "choices" ? (line.choices ?? []) : [],
+        playerEnded: line.type === "end",
       }));
-
-      // If that was the last pending line, show choices/ended
-      if (rest.length === 0) {
-        set({
-          playerChoices: _deferredChoices,
-          playerEnded: _deferredEnded,
-          _deferredChoices: [],
-          _deferredEnded: false,
-        });
-      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      set((state) => ({
+        playerText: [...state.playerText, `Runtime error: ${msg}`],
+        playerChoices: [],
+        playerEnded: true,
+      }));
     }
   },
 });
@@ -223,9 +203,9 @@ type SetFn = {
 type GetFn = () => StudioState;
 
 /**
- * Replay a saved choice log silently — run through the story collecting
- * all text and applying choices without buffering, then show the final
- * state with the current text visible and pending lines buffered.
+ * Replay a saved choice log silently — run through the story using the
+ * bulk `continueStory()` API, collecting all text and applying choices,
+ * then show the final state with text visible.
  */
 function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void {
   const runner = get()._runner;
@@ -236,29 +216,27 @@ function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void {
 
   // Fast-forward through all saved choices
   while (choiceIdx < choiceLog.length) {
-    // Continue until choices or ended
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      let result;
-      try {
-        result = runner.continueStory();
-      } catch {
-        // Replay failed — start fresh
-        clearStorage();
-        runner.reset();
-        set({ _choiceLog: [] });
-        advanceStory(set, get);
-        return;
+    let lines;
+    try {
+      lines = runner.continueStory();
+    } catch {
+      // Replay failed — start fresh
+      clearStorage();
+      runner.reset();
+      set({ _choiceLog: [] });
+      get().revealNext();
+      return;
+    }
+
+    for (const line of lines) {
+      const text = line.text.replace(/\n$/, "");
+      if (text) {
+        allText.push(text);
       }
 
-      if (result.text) {
-        const lines = result.text.split("\n").filter((l) => l.trim() !== "");
-        allText.push(...lines);
-      }
-
-      if (result.status === "choices") {
+      if (line.type === "choices") {
         const savedChoice = choiceLog[choiceIdx];
-        const choiceText = result.choices?.find((c) => c.index === savedChoice)?.text;
+        const choiceText = line.choices?.find((c) => c.index === savedChoice)?.text;
         if (choiceText) {
           allText.push(`> ${choiceText}`);
         }
@@ -270,22 +248,19 @@ function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void {
           clearStorage();
           runner.reset();
           set({ _choiceLog: [] });
-          advanceStory(set, get);
+          get().revealNext();
           return;
         }
         choiceIdx++;
         break;
       }
 
-      if (result.status === "ended") {
+      if (line.type === "end") {
         // Story ended during replay — show everything
         set({
           playerText: allText,
           playerChoices: [],
           playerEnded: true,
-          _pendingLines: [],
-          _deferredChoices: [],
-          _deferredEnded: false,
           _choiceLog: choiceLog.slice(0, choiceIdx),
         });
         return;
@@ -293,72 +268,10 @@ function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void {
     }
   }
 
-  // All choices replayed — now show the accumulated text and advance
-  // to the current position (which will buffer the next batch of lines)
+  // All choices replayed — show accumulated text and reveal next line
   set({
     playerText: allText,
     _choiceLog: choiceLog,
   });
-  advanceStory(set, get);
-}
-
-/**
- * Run the continue loop: call continueStory() until we get choices or ended.
- * Buffers all lines into _pendingLines and reveals the first one immediately.
- */
-function advanceStory(set: SetFn, get: GetFn): void {
-  const runner = get()._runner;
-  if (!runner) return;
-
-  const newLines: string[] = [];
-
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    let result;
-    try {
-      result = runner.continueStory();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      set((state) => ({
-        playerText: [...state.playerText, ...newLines, `Runtime error: ${msg}`],
-        playerChoices: [],
-        playerEnded: true,
-        _pendingLines: [],
-        _deferredChoices: [],
-        _deferredEnded: false,
-      }));
-      return;
-    }
-
-    if (result.text) {
-      const lines = result.text.split("\n").filter((l) => l.trim() !== "");
-      newLines.push(...lines);
-    }
-
-    if (result.status === "continue") {
-      continue;
-    }
-
-    const choices = result.status === "choices" ? (result.choices ?? []) : [];
-    const ended = result.status === "ended";
-
-    if (newLines.length === 0) {
-      // Nothing to buffer — show choices/ended immediately
-      set({ playerChoices: choices, playerEnded: ended });
-    } else {
-      // Reveal first line immediately, buffer the rest
-      const [first, ...rest] = newLines;
-      set((state) => ({
-        playerText: [...state.playerText, first],
-        _pendingLines: rest,
-        _deferredChoices: choices,
-        _deferredEnded: ended,
-        // If only one line, show choices/ended right away
-        ...(rest.length === 0
-          ? { playerChoices: choices, playerEnded: ended, _deferredChoices: [], _deferredEnded: false }
-          : {}),
-      }));
-    }
-    return;
-  }
+  get().revealNext();
 }

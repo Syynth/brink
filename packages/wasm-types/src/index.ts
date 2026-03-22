@@ -33,15 +33,19 @@ export interface SemanticToken {
 
 // ── Runtime ─────────────────────────────────────────────────────
 
-export interface StepResult {
-  status: "continue" | "choices" | "ended";
-  text?: string;
+export type LineType = "text" | "done" | "choices" | "end";
+
+export interface Line {
+  type: LineType;
+  text: string;
+  tags: string[];
   choices?: Choice[];
 }
 
 export interface Choice {
   index: number;
   text: string;
+  tags: string[];
 }
 
 // ── IDE types ───────────────────────────────────────────────────

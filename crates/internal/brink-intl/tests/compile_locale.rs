@@ -165,7 +165,7 @@ fn error_empty_locale_tag() {
 
 #[test]
 fn end_to_end_localize_and_run() {
-    use brink_runtime::{DotNetRng, LocaleMode, StepResult, Story};
+    use brink_runtime::{DotNetRng, Line, LocaleMode, Story};
 
     let inkb = make_base_inkb();
     let data = make_base_data();
@@ -203,11 +203,8 @@ fn end_to_end_localize_and_run() {
 
     // Run the story and verify the localized text appears
     let mut story = Story::<DotNetRng>::new(&program);
-    let text = match story.continue_maximally().unwrap() {
-        StepResult::Done { text, .. }
-        | StepResult::Ended { text, .. }
-        | StepResult::Choices { text, .. } => text,
-    };
+    let lines = story.continue_maximally().unwrap();
+    let text: String = lines.iter().map(Line::text).collect();
     assert!(
         text.contains("[ES]"),
         "expected localized text containing '[ES]', got: {text}"

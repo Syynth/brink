@@ -3,7 +3,7 @@
 use brink_format::{
     DefinitionId, DefinitionTag, LineContent, LocaleData, LocaleLineEntry, LocaleScopeTable,
 };
-use brink_runtime::{DotNetRng, LocaleMode, RuntimeError, StepResult, Story};
+use brink_runtime::{DotNetRng, Line, LocaleMode, RuntimeError, Story};
 
 fn scope_id(hash: u64) -> DefinitionId {
     DefinitionId::new(DefinitionTag::Address, hash)
@@ -94,12 +94,8 @@ fn overlay_replaces_scope() {
     program.apply_locale(&locale, LocaleMode::Overlay).unwrap();
 
     let mut story = Story::<DotNetRng>::new(&program);
-    let result = story.continue_maximally().unwrap();
-    let text = match result {
-        StepResult::Done { text, .. }
-        | StepResult::Ended { text, .. }
-        | StepResult::Choices { text, .. } => text,
-    };
+    let lines = story.continue_maximally().unwrap();
+    let text: String = lines.iter().map(Line::text).collect();
     assert!(
         text.contains("[ES] Hola mundo"),
         "expected localized text, got: {text}"

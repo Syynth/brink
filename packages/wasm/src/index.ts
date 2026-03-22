@@ -31,7 +31,7 @@ import type {
   ConvertTarget,
   TextEdit,
   IncludeInfo,
-  StepResult,
+  Line,
   MoveResult,
 } from "@brink/wasm-types";
 
@@ -268,9 +268,14 @@ export class StoryRunnerHandle {
     this.runner = new StoryRunner(storyBytes);
   }
 
-  continueStory(): StepResult {
+  continueStory(): Line[] {
     const json = this.runner.continue_story();
-    return JSON.parse(json) as StepResult;
+    return JSON.parse(json) as Line[];
+  }
+
+  continueSingle(): Line {
+    const json = this.runner.continue_single();
+    return JSON.parse(json) as Line;
   }
 
   choose(index: number): void {

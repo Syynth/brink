@@ -198,7 +198,8 @@ export function token_modifier_names(): string {
 
 export class StoryRunner {
   constructor(_bytes: Uint8Array) { /* no-op */ }
-  continue_story(): string { return JSON.stringify({ status: "ended" }); }
+  continue_story(): string { return JSON.stringify([{ type: "end", text: "", tags: [] }]); }
+  continue_single(): string { return JSON.stringify({ type: "end", text: "", tags: [] }); }
   choose(_index: number): void { /* no-op */ }
   reset(): void { /* no-op */ }
   free(): void { /* no-op */ }

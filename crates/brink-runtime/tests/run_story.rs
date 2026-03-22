@@ -4,7 +4,7 @@
 
 use brink_converter::convert;
 use brink_json::InkJson;
-use brink_runtime::{DotNetRng, StepResult, Story};
+use brink_runtime::{Choice, DotNetRng, Line, Story};
 
 /// Convert an ink.json string, link, and run to completion with the given choice inputs.
 /// Returns the full text output.
@@ -18,14 +18,15 @@ fn run_story(ink_json: &str, inputs: &[usize]) -> String {
     let mut input_idx = 0;
 
     loop {
-        match story.continue_maximally().unwrap() {
-            StepResult::Done { text, .. } | StepResult::Ended { text, .. } => {
+        match story.continue_single().unwrap() {
+            Line::Text { text, .. } => output.push_str(&text),
+            Line::Done { text, .. } | Line::End { text, .. } => {
                 output.push_str(&text);
-                break;
+                return output;
             }
-            StepResult::Choices { text, choices, .. } => {
+            Line::Choices { text, choices, .. } => {
                 output.push_str(&text);
-                let choice_idx = if input_idx < inputs.len() {
+                let idx = if input_idx < inputs.len() {
                     let c = inputs[input_idx];
                     input_idx += 1;
                     c
@@ -33,16 +34,14 @@ fn run_story(ink_json: &str, inputs: &[usize]) -> String {
                     0
                 };
                 assert!(
-                    choice_idx < choices.len(),
-                    "choice index {choice_idx} out of range (only {} choices)",
+                    idx < choices.len(),
+                    "choice index {idx} out of range (only {} choices)",
                     choices.len()
                 );
-                story.choose(choice_idx).unwrap();
+                story.choose(idx).unwrap();
             }
         }
     }
-
-    output
 }
 
 #[expect(clippy::unwrap_used)]
@@ -63,13 +62,14 @@ fn choices_yielded_on_bytecode_exhaustion() {
     let program = brink_runtime::link(&data).unwrap();
     let mut story = Story::<DotNetRng>::new(&program);
 
-    // First step should produce text AND choices, not Done.
-    let result = story.continue_maximally().unwrap();
+    // First step should produce text AND choices, not just Text/End.
+    let lines = story.continue_maximally().unwrap();
+    let last = lines.last().expect("expected at least one line");
     assert!(
-        matches!(result, StepResult::Choices { .. }),
-        "expected Choices after first step, got {result:?}"
+        matches!(last, Line::Choices { .. }),
+        "expected Choices after first step, got {last:?}"
     );
-    if let StepResult::Choices { choices, .. } = &result {
+    if let Line::Choices { choices, .. } = last {
         assert_eq!(choices.len(), 2, "expected 2 choices (Yes/No)");
     }
 }
@@ -164,14 +164,17 @@ fn fallback_choice_auto_selected() {
     let mut story = Story::<DotNetRng>::new(&program);
 
     // The story should complete in a single step with no Choices yield.
-    let result = story.continue_maximally().unwrap();
+    let lines = story.continue_maximally().unwrap();
+    let last = lines.last().expect("expected at least one line");
     assert!(
-        matches!(result, StepResult::Done { .. } | StepResult::Ended { .. }),
-        "expected Done/Ended (auto-selected fallback), got Choices"
+        matches!(
+            last,
+            Line::Text { .. } | Line::Done { .. } | Line::End { .. }
+        ),
+        "expected Text/Done/End (auto-selected fallback), got {last:?}"
     );
-    if let StepResult::Done { text, .. } | StepResult::Ended { text, .. } = result {
-        assert_eq!(text.trim(), "Should be 1 not 0: 1.");
-    }
+    let full_text: String = lines.iter().map(Line::text).collect();
+    assert_eq!(full_text.trim(), "Should be 1 not 0: 1.");
 }
 
 /// Tunnel onwards: `->-> B` should override the tunnel return address
@@ -762,20 +765,31 @@ fn tags_in_sequence() {
 }
 
 /// Trace the step-by-step behavior of the Tower of Hanoi story to verify
-/// the execution model returns the correct `StepResult` at each point.
+/// the execution model returns the correct `Line` variants at each point.
 ///
 /// Expected flow per cycle:
-/// 1. `step()` → Choices (flavor/intro text, with "Regard the temples")
+/// 1. `continue_maximally()` → lines ending with Choices (flavor/intro text, with "Regard the temples")
 /// 2. `choose(0)` → select Regard
-/// 3. `step()` → Choices (pillar descriptions, with valid moves)
+/// 3. `continue_maximally()` → lines ending with Choices (pillar descriptions, with valid moves)
 /// 4. `choose(move)` → select a move
 /// 5. Back to step 1
 ///
-/// The runtime should NEVER return `StepResult::Done` during normal play —
+/// The runtime should NEVER return `Line::End` during normal play —
 /// every step should yield Choices.
 #[test]
 #[expect(clippy::panic)] // let-else destructuring needs panic for the fallthrough
 fn tower_of_hanoi_step_sequence() {
+    // Helper: collect all text and extract the final Choices line
+    fn extract_choices(lines: &[Line]) -> (&str, &[Choice]) {
+        if let Some(Line::Choices { choices, .. }) = lines.last() {
+            let full_text: String = lines.iter().map(Line::text).collect();
+            let leaked: &str = Box::leak(full_text.into_boxed_str());
+            (leaked, choices)
+        } else {
+            panic!("expected Choices as last line, got {:?}", lines.last());
+        }
+    }
+
     let json = load_ink_json("../../tests/tier3/lists/tower-of-hanoi/story.ink.json");
     let ink: InkJson = serde_json::from_str(&json).unwrap();
     let data = convert(&ink).unwrap();
@@ -783,10 +797,8 @@ fn tower_of_hanoi_step_sequence() {
     let mut story = Story::<brink_runtime::DotNetRng>::new(&program);
 
     // Step 1: intro text + "Regard the temples" choice
-    let result = story.continue_maximally().unwrap();
-    let StepResult::Choices { text, choices, .. } = &result else {
-        panic!("step 1: expected Choices, got {result:?}");
-    };
+    let lines = story.continue_maximally().unwrap();
+    let (text, choices) = extract_choices(&lines);
     assert!(
         text.contains("Staring down from the heavens"),
         "step 1: expected intro text, got: {text:?}"
@@ -802,10 +814,8 @@ fn tower_of_hanoi_step_sequence() {
     story.choose(choices[0].index).unwrap();
 
     // Step 2: pillar descriptions + move choices
-    let result = story.continue_maximally().unwrap();
-    let StepResult::Choices { text, choices, .. } = &result else {
-        panic!("step 2: expected Choices, got {result:?}");
-    };
+    let lines = story.continue_maximally().unwrap();
+    let (text, choices) = extract_choices(&lines);
     assert!(
         text.contains("You regard each of the temples"),
         "step 2: expected regard text, got: {text:?}"
@@ -820,10 +830,8 @@ fn tower_of_hanoi_step_sequence() {
     story.choose(choices[0].index).unwrap();
 
     // Step 3: move flavor text + "Regard the temples" again
-    let result = story.continue_maximally().unwrap();
-    let StepResult::Choices { text, choices, .. } = &result else {
-        panic!("step 3: expected Choices, got {result:?}");
-    };
+    let lines = story.continue_maximally().unwrap();
+    let (text, choices) = extract_choices(&lines);
     assert!(
         text.contains("priests far below"),
         "step 3: expected move flavor text, got: {text:?}"
@@ -839,10 +847,8 @@ fn tower_of_hanoi_step_sequence() {
     story.choose(choices[0].index).unwrap();
 
     // Step 4: updated pillar descriptions + move choices
-    let result = story.continue_maximally().unwrap();
-    let StepResult::Choices { text, choices, .. } = &result else {
-        panic!("step 4: expected Choices, got {result:?}");
-    };
+    let lines = story.continue_maximally().unwrap();
+    let (text, choices) = extract_choices(&lines);
     assert!(
         text.contains("You regard each of the temples"),
         "step 4: expected regard text, got: {text:?}"

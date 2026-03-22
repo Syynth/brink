@@ -59,6 +59,9 @@ pub enum RuntimeError {
     #[error("step limit exceeded ({0} steps)")]
     StepLimitExceeded(u64),
 
+    #[error("line limit exceeded ({0} lines in a single turn)")]
+    LineLimitExceeded(usize),
+
     #[error("locale checksum mismatch: expected {expected:#010x}, got {actual:#010x}")]
     LocaleChecksumMismatch { expected: u32, actual: u32 },
 

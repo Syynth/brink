@@ -1,7 +1,7 @@
 //! Branch exploration via DFS with Story cloning.
 
 use brink_format::Value;
-use brink_runtime::{DotNetRng, Program, StepResult, Story, WriteObserver};
+use brink_runtime::{DotNetRng, Line, Program, Story, WriteObserver};
 
 use crate::episode::{
     ChoiceRecord, Episode, Outcome, StateSnapshot, StateWrite, StepOutcome, StepRecord,
@@ -113,108 +113,126 @@ fn explore_inner(
     let writes = recorder.drain();
 
     match result {
-        Ok(StepResult::Choices {
-            text,
-            choices,
-            tags,
-        }) => {
-            let presented: Vec<ChoiceRecord> = choices
-                .iter()
-                .map(|c| ChoiceRecord {
-                    text: c.text.clone(),
-                    index: c.index,
-                    tags: c.tags.clone(),
-                })
-                .collect();
-
-            if depth >= config.max_depth || episodes.len() >= config.max_episodes {
-                steps.push(StepRecord {
-                    text,
-                    tags,
-                    outcome: StepOutcome::Choices {
-                        presented: presented.clone(),
-                        selected: 0,
-                    },
-                    external_calls: Vec::new(),
-                    writes,
-                });
-                episodes.push(Episode {
-                    steps,
-                    outcome: Outcome::InputsExhausted {
-                        remaining_choices: presented,
-                    },
-                    choice_path,
-                    initial_state: initial_state.clone(),
-                });
-                return;
+        Ok(lines) => {
+            // Collect text and build per-text-line tags.
+            let mut text = String::new();
+            let line_parts: Vec<(&str, &[String])> =
+                lines.iter().map(|l| (l.text(), l.tags())).collect();
+            for &(lt, _) in &line_parts {
+                text.push_str(lt);
             }
+            let tags = super::runner::build_per_line_tags(&line_parts);
 
-            // For each choice, clone and recurse.
-            for (i, _choice) in choices.iter().enumerate() {
-                if episodes.len() >= config.max_episodes {
-                    return;
+            let last = lines.last();
+            match last {
+                Some(Line::Choices { choices, .. }) => {
+                    let presented: Vec<ChoiceRecord> = choices
+                        .iter()
+                        .map(|c| ChoiceRecord {
+                            text: c.text.clone(),
+                            index: c.index,
+                            tags: c.tags.clone(),
+                        })
+                        .collect();
+
+                    if depth >= config.max_depth || episodes.len() >= config.max_episodes {
+                        steps.push(StepRecord {
+                            text,
+                            tags,
+                            outcome: StepOutcome::Choices {
+                                presented: presented.clone(),
+                                selected: 0,
+                            },
+                            external_calls: Vec::new(),
+                            writes,
+                        });
+                        episodes.push(Episode {
+                            steps,
+                            outcome: Outcome::InputsExhausted {
+                                remaining_choices: presented,
+                            },
+                            choice_path,
+                            initial_state: initial_state.clone(),
+                        });
+                        return;
+                    }
+
+                    // For each choice, clone and recurse.
+                    for (i, _choice) in choices.iter().enumerate() {
+                        if episodes.len() >= config.max_episodes {
+                            return;
+                        }
+
+                        let mut branch_steps = steps.clone();
+                        branch_steps.push(StepRecord {
+                            text: text.clone(),
+                            tags: tags.clone(),
+                            outcome: StepOutcome::Choices {
+                                presented: presented.clone(),
+                                selected: i,
+                            },
+                            external_calls: Vec::new(),
+                            writes: writes.clone(),
+                        });
+
+                        let mut branch_path = choice_path.clone();
+                        branch_path.push(i);
+
+                        let mut branch = story.clone();
+                        if branch.choose(choices[i].index).is_err() {
+                            continue;
+                        }
+
+                        explore_inner(
+                            branch,
+                            config,
+                            initial_state,
+                            episodes,
+                            branch_steps,
+                            branch_path,
+                            depth + 1,
+                        );
+                    }
                 }
-
-                let mut branch_steps = steps.clone();
-                branch_steps.push(StepRecord {
-                    text: text.clone(),
-                    tags: tags.clone(),
-                    outcome: StepOutcome::Choices {
-                        presented: presented.clone(),
-                        selected: i,
-                    },
-                    external_calls: Vec::new(),
-                    writes: writes.clone(),
-                });
-
-                let mut branch_path = choice_path.clone();
-                branch_path.push(i);
-
-                let mut branch = story.clone();
-                if branch.choose(choices[i].index).is_err() {
-                    continue;
+                Some(Line::Done { .. } | Line::Text { .. }) => {
+                    steps.push(StepRecord {
+                        text,
+                        tags,
+                        outcome: StepOutcome::Done,
+                        external_calls: Vec::new(),
+                        writes,
+                    });
+                    episodes.push(Episode {
+                        steps,
+                        outcome: Outcome::Done,
+                        choice_path,
+                        initial_state: initial_state.clone(),
+                    });
                 }
-
-                explore_inner(
-                    branch,
-                    config,
-                    initial_state,
-                    episodes,
-                    branch_steps,
-                    branch_path,
-                    depth + 1,
-                );
+                Some(Line::End { .. }) => {
+                    steps.push(StepRecord {
+                        text,
+                        tags,
+                        outcome: StepOutcome::Ended,
+                        external_calls: Vec::new(),
+                        writes,
+                    });
+                    episodes.push(Episode {
+                        steps,
+                        outcome: Outcome::Ended,
+                        choice_path,
+                        initial_state: initial_state.clone(),
+                    });
+                }
+                None => {
+                    episodes.push(Episode {
+                        steps,
+                        outcome: Outcome::Done,
+                        choice_path,
+                        initial_state: initial_state.clone(),
+                    });
+                }
             }
-        }
-        Ok(StepResult::Done { text, tags }) => {
-            steps.push(StepRecord {
-                text,
-                tags,
-                outcome: StepOutcome::Done,
-                external_calls: Vec::new(),
-                writes,
-            });
-            episodes.push(Episode {
-                steps,
-                outcome: Outcome::Done,
-                choice_path,
-                initial_state: initial_state.clone(),
-            });
-        }
-        Ok(StepResult::Ended { text, tags }) => {
-            steps.push(StepRecord {
-                text,
-                tags,
-                outcome: StepOutcome::Ended,
-                external_calls: Vec::new(),
-                writes,
-            });
-            episodes.push(Episode {
-                steps,
-                outcome: Outcome::Ended,
-                choice_path,
-                initial_state: initial_state.clone(),
-            });
         }
         Err(e) => {
             episodes.push(Episode {
