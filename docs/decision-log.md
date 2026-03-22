@@ -517,3 +517,27 @@
   - **Shift+Tab** on any screenplay element: strip sigils, revert to plain narrative
   - The element picker is an inline dropdown (like the existing element type dropdown in the status bar) that converts the empty line to the chosen format.
 - **WHY:** Matches Scrivener's muscle memory for screenwriters. The state machine makes screenplay authoring feel native without requiring mode switches. Element picker on blank Enter avoids the need for a toolbar — the keyboard drives everything.
+
+## Binder multi-select: same-kind siblings only
+- **WHEN:** 2026-03-22
+- **PROJECT:** brink
+- **SYSTEM:** brink-studio
+- **SCOPE:** moderate
+- **WHAT:** Multi-select in the binder is constrained to same-kind siblings — multiple stitches within one knot, or multiple knots within one file. Cannot mix knots and stitches in a single selection.
+- **WHY:** Avoids ambiguous drop-target semantics. If you could select a knot and a stitch from a different knot, the meaning of "drop here" becomes unclear. Same-kind siblings map cleanly to a single batch operation (reorder, move, promote/demote).
+
+## Binder structural moves use store-level undo
+- **WHEN:** 2026-03-22
+- **PROJECT:** brink
+- **SYSTEM:** brink-studio
+- **SCOPE:** architectural
+- **WHAT:** Structural move operations (reorder, move, promote, demote) in the binder use a dedicated undo stack in the Zustand store, separate from the CodeMirror editor undo stack.
+- **WHY:** Structural moves can produce cross-file edits that affect files not currently open in a tab. The CodeMirror undo stack only works for the active editor buffer. A store-level undo system can track the full set of changes (primary file source replacement + cross-file edits) and reverse them regardless of which tab is open.
+
+## Binder multi-select via Ctrl/Cmd + click
+- **WHEN:** 2026-03-22
+- **PROJECT:** brink
+- **SYSTEM:** brink-studio
+- **SCOPE:** minor/local
+- **WHAT:** Multi-select binder rows using Ctrl+click (Cmd+click on macOS) to toggle individual selection without navigating. Plain click continues to open a tab as before.
+- **WHY:** Standard multi-select convention across all platforms. Keeps the existing single-click-to-navigate behavior untouched. Shift+click range selection is not needed for V1 since selections are constrained to siblings (typically small lists).

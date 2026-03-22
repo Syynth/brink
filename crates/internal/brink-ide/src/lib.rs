@@ -13,6 +13,7 @@ pub mod rename;
 pub mod semantic_tokens;
 pub mod session;
 pub mod signature;
+pub mod structural_move;
 mod text;
 
 pub use completion::{

@@ -86,7 +86,7 @@ html, body {
   background: rgba(137, 180, 250, 0.15);
 }
 
-/* Indent guides — vertical lines for each depth level */
+/* Indent guides — spacing for each depth level */
 .brink-binder-guides {
   display: flex;
   flex-shrink: 0;
@@ -96,18 +96,7 @@ html, body {
 .brink-binder-guide {
   width: var(--binder-indent);
   height: 100%;
-  position: relative;
   flex-shrink: 0;
-}
-
-.brink-binder-guide::before {
-  content: "";
-  position: absolute;
-  left: 9px;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--binder-guide-color);
 }
 
 /* Chevron for expand/collapse */
@@ -649,7 +638,7 @@ html, body {
 
 /* Player pane */
 #player-pane {
-  flex: 1;
+  flex: 2;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -755,6 +744,161 @@ html, body {
   height: 100%;
   color: var(--brink-fg-dim);
   font-size: 14px;
+}
+
+/* Binder: multi-select highlight */
+.brink-binder-row.brink-binder-selected {
+  background: rgba(137, 180, 250, 0.15);
+  border-left: 2px solid var(--brink-accent);
+}
+
+/* Binder: keyboard focus indicator */
+.brink-binder-row.brink-binder-focused {
+  outline: 1px solid rgba(137, 180, 250, 0.4);
+  outline-offset: -1px;
+}
+
+/* Binder: drag source opacity */
+.brink-binder-row.brink-binder-dragging {
+  opacity: 0.4;
+}
+
+/* Binder: drop target knot highlight */
+.brink-binder-row.brink-binder-drop-into {
+  background: rgba(137, 180, 250, 0.1);
+  border: 1px dashed var(--brink-accent);
+}
+
+/* Binder: drop insertion line */
+.brink-binder-drop-line {
+  height: 2px;
+  background: var(--brink-accent);
+  margin: 0 8px;
+  border-radius: 1px;
+  box-shadow: 0 0 4px rgba(137, 180, 250, 0.5);
+  pointer-events: none;
+}
+
+/* Binder: post-move flash animation */
+@keyframes brink-binder-flash {
+  0% { background: rgba(137, 180, 250, 0.3); }
+  100% { background: transparent; }
+}
+
+.brink-binder-flash {
+  animation: brink-binder-flash 0.5s ease-out;
+}
+
+/* Binder: focus outline for container */
+.brink-binder:focus {
+  outline: none;
+}
+
+/* Context menu */
+.brink-context-menu {
+  position: fixed;
+  background: var(--brink-bg-panel);
+  border: 1px solid var(--brink-border);
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 300;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  min-width: 160px;
+}
+
+.brink-context-menu-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--brink-fg);
+  cursor: pointer;
+  border-radius: 3px;
+  user-select: none;
+  position: relative;
+}
+
+.brink-context-menu-item:hover {
+  background: var(--brink-bg-surface);
+}
+
+.brink-context-menu-item.disabled {
+  color: var(--brink-fg-dim);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.brink-context-menu-item.disabled:hover {
+  background: none;
+}
+
+.brink-context-menu-separator {
+  height: 1px;
+  background: var(--brink-border);
+  margin: 4px 6px;
+}
+
+.brink-context-menu-arrow {
+  font-size: 8px;
+  color: var(--brink-fg-dim);
+  margin-left: 12px;
+}
+
+.brink-context-submenu {
+  position: absolute;
+  left: 100%;
+  top: 0;
+}
+
+/* Toast notification */
+.brink-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--brink-bg-panel);
+  border: 1px solid var(--brink-border);
+  border-radius: 6px;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--brink-fg);
+  z-index: 400;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.brink-toast-message {
+  flex: 1;
+}
+
+.brink-toast-undo {
+  background: none;
+  border: 1px solid var(--brink-accent);
+  color: var(--brink-accent);
+  border-radius: 3px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.brink-toast-undo:hover {
+  background: rgba(137, 180, 250, 0.15);
+}
+
+.brink-toast-dismiss {
+  background: none;
+  border: none;
+  color: var(--brink-fg-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.brink-toast-dismiss:hover {
+  color: var(--brink-fg);
 }
 </style>
 </head>

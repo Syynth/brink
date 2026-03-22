@@ -1149,7 +1149,7 @@ impl LanguageServer for Backend {
 
         let lsp_actions = domain_actions
             .into_iter()
-            .map(|a| {
+            .filter_map(|a| {
                 let kind = match a.kind {
                     brink_ide::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
                     brink_ide::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
@@ -1183,14 +1183,21 @@ impl LanguageServer for Backend {
                             "stitch": stitch,
                         })
                     }
+                    // Structural move actions are handled by the web UI, not the LSP.
+                    brink_ide::code_actions::CodeActionData::ReorderStitch { .. }
+                    | brink_ide::code_actions::CodeActionData::MoveStitch { .. }
+                    | brink_ide::code_actions::CodeActionData::PromoteStitch { .. }
+                    | brink_ide::code_actions::CodeActionData::DemoteKnot { .. } => return None,
                 };
 
-                tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(CodeAction {
-                    title: a.title,
-                    kind: Some(kind),
-                    data: Some(data),
-                    ..Default::default()
-                })
+                Some(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
+                    CodeAction {
+                        title: a.title,
+                        kind: Some(kind),
+                        data: Some(data),
+                        ..Default::default()
+                    },
+                ))
             })
             .collect();
 

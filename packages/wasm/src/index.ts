@@ -32,6 +32,7 @@ import type {
   TextEdit,
   IncludeInfo,
   StepResult,
+  MoveResult,
 } from "@brink/wasm-types";
 
 // ── Wasm initialization ─────────────────────────────────────────
@@ -221,6 +222,36 @@ export class EditorSessionHandle {
     const json = this.session.convert_element(offset, target);
     const result = JSON.parse(json);
     return result ?? null;
+  }
+
+  /** Reorder a stitch within its knot. direction: 1 = down, -1 = up. */
+  reorderStitch(path: string, knot: string, stitch: string, direction: number): MoveResult {
+    const json = this.session.reorder_stitch(path, knot, stitch, direction);
+    return JSON.parse(json) as MoveResult;
+  }
+
+  /** Reorder a knot within the top-level knot list. direction: 1 = down, -1 = up. */
+  reorderKnot(path: string, knot: string, direction: number): MoveResult {
+    const json = this.session.reorder_knot(path, knot, direction);
+    return JSON.parse(json) as MoveResult;
+  }
+
+  /** Move a stitch from one knot to another. */
+  moveStitch(path: string, srcKnot: string, stitch: string, destKnot: string): MoveResult {
+    const json = this.session.move_stitch(path, srcKnot, stitch, destKnot);
+    return JSON.parse(json) as MoveResult;
+  }
+
+  /** Promote a stitch to a top-level knot. */
+  promoteStitch(path: string, knot: string, stitch: string): MoveResult {
+    const json = this.session.promote_stitch(path, knot, stitch);
+    return JSON.parse(json) as MoveResult;
+  }
+
+  /** Demote a top-level knot to a stitch inside another knot. */
+  demoteKnot(path: string, knot: string, destKnot: string): MoveResult {
+    const json = this.session.demote_knot(path, knot, destKnot);
+    return JSON.parse(json) as MoveResult;
   }
 
   free(): void {

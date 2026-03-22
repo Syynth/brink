@@ -108,6 +108,24 @@ export interface CodeAction {
   kind: string;
 }
 
+// ── Structural move types ───────────────────────────────────────
+
+export interface CrossFileEdit {
+  file: number;
+  start: number;
+  end: number;
+  new_text: string;
+}
+
+export interface MoveResult {
+  ok: boolean;
+  /** The file path this result applies to. */
+  path?: string;
+  new_source?: string;
+  cross_file_edits: CrossFileEdit[];
+  error?: string;
+}
+
 // ── Multi-file project types ────────────────────────────────────
 
 export interface ProjectFile {

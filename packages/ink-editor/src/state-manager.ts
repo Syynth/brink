@@ -221,6 +221,31 @@ export class EditorStateManager {
     return this.closeTab(tab.id);
   }
 
+  /**
+   * Invalidate cached EditorState for all tabs targeting the given file path.
+   * If the active tab targets that file, reloads the view with fresh content.
+   *
+   * Symbol tabs are switched to full-file mode because their byte offsets
+   * are likely stale after a structural move. The outline refresh that
+   * follows will provide correct offsets for subsequent navigation.
+   */
+  invalidateFile(path: string): void {
+    const affectedTabs = this._tabs.filter((t) => t.target.path === path);
+    for (const tab of affectedTabs) {
+      this.states.delete(tab.id);
+    }
+
+    // If active tab targets this file, reload the view
+    const activeTab = this.getActiveTab();
+    if (activeTab.target.path === path && this.view) {
+      // Always clear view context — symbol tab offsets are stale after
+      // structural moves. Full-file view is safe.
+      this.project.getSession().clearViewContext();
+      const state = this.getState(activeTab.id);
+      this.view.setState(state);
+    }
+  }
+
   /** Save current view state back into the map. */
   snapshot(): void {
     if (this.view) {

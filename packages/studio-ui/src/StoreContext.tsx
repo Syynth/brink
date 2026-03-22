@@ -13,3 +13,10 @@ export function useStudioStore<T>(selector: (state: StudioState) => T): T {
   if (!store) throw new Error("useStudioStore must be used within a StoreProvider");
   return useStore(store, selector);
 }
+
+/** Get the raw Zustand store (for imperative getState/setState outside React). */
+export function useStudioStoreApi(): StudioStore {
+  const store = useContext(StoreContext);
+  if (!store) throw new Error("useStudioStoreApi must be used within a StoreProvider");
+  return store;
+}

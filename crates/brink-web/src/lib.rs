@@ -1032,6 +1032,117 @@ impl EditorSession {
         let formatted = brink_ide::sort_knots_in_source(source);
         serde_json::to_string(&formatted).unwrap_or_default()
     }
+
+    /// Reorder a stitch within its parent knot. Returns JSON `MoveResult` or error string.
+    ///
+    /// `path`: file containing the knot.
+    /// `direction`: 1 = down, -1 = up.
+    pub fn reorder_stitch(&self, path: &str, knot: &str, stitch: &str, direction: i32) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return error_json("file not loaded");
+        };
+        let Some(source) = self.session.source(file_id) else {
+            return error_json("no source");
+        };
+
+        let dir = if direction >= 0 {
+            brink_ide::structural_move::Direction::Down
+        } else {
+            brink_ide::structural_move::Direction::Up
+        };
+
+        match brink_ide::structural_move::reorder_stitch(source, knot, stitch, dir) {
+            Ok(new_source) => move_result_json_simple(new_source, path),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    /// Move a stitch from one knot to another. Returns JSON `MoveResult` or error.
+    ///
+    /// `path`: file containing both knots.
+    pub fn move_stitch(&self, path: &str, src_knot: &str, stitch: &str, dest_knot: &str) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return error_json("file not loaded");
+        };
+        let (Some(source), Some(analysis)) =
+            (self.session.source(file_id), self.session.analysis())
+        else {
+            return error_json("no source or analysis");
+        };
+
+        match brink_ide::structural_move::move_stitch(
+            source, analysis, file_id, src_knot, stitch, dest_knot,
+        ) {
+            Ok(result) => move_result_json(result, path),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    /// Promote a stitch to a top-level knot. Returns JSON `MoveResult` or error.
+    ///
+    /// `path`: file containing the knot.
+    pub fn promote_stitch(&self, path: &str, knot: &str, stitch: &str) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return error_json("file not loaded");
+        };
+        let (Some(source), Some(analysis)) =
+            (self.session.source(file_id), self.session.analysis())
+        else {
+            return error_json("no source or analysis");
+        };
+
+        match brink_ide::structural_move::promote_stitch_to_knot(
+            source, analysis, file_id, knot, stitch,
+        ) {
+            Ok(result) => move_result_json(result, path),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    /// Reorder a knot within the top-level knot list. Returns JSON `MoveResult` or error.
+    ///
+    /// `path`: file containing the knot.
+    /// `direction`: 1 = down, -1 = up.
+    pub fn reorder_knot(&self, path: &str, knot: &str, direction: i32) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return error_json("file not loaded");
+        };
+        let Some(source) = self.session.source(file_id) else {
+            return error_json("no source");
+        };
+
+        let dir = if direction >= 0 {
+            brink_ide::structural_move::Direction::Down
+        } else {
+            brink_ide::structural_move::Direction::Up
+        };
+
+        match brink_ide::structural_move::reorder_knot(source, knot, dir) {
+            Ok(new_source) => move_result_json_simple(new_source, path),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    /// Demote a top-level knot to a stitch inside another knot. Returns JSON `MoveResult` or error.
+    ///
+    /// `path`: file containing both knots.
+    pub fn demote_knot(&self, path: &str, knot: &str, dest_knot: &str) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return error_json("file not loaded");
+        };
+        let (Some(source), Some(analysis)) =
+            (self.session.source(file_id), self.session.analysis())
+        else {
+            return error_json("no source or analysis");
+        };
+
+        match brink_ide::structural_move::demote_knot_to_stitch(
+            source, analysis, file_id, knot, dest_knot,
+        ) {
+            Ok(result) => move_result_json(result, path),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
 }
 
 // ── View context helpers (private, not wasm-exported) ───────────────
@@ -1232,6 +1343,72 @@ fn convert_document_symbol(sym: brink_ide::document::DocumentSymbol) -> Document
             .map(convert_document_symbol)
             .collect(),
     }
+}
+
+// ── Structural move helpers ──────────────────────────────────────────
+
+#[derive(Serialize)]
+struct MoveResultJs {
+    ok: bool,
+    /// The file path this result applies to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_source: Option<String>,
+    cross_file_edits: Vec<CrossFileEditJs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CrossFileEditJs {
+    file: u32,
+    start: u32,
+    end: u32,
+    new_text: String,
+}
+
+fn move_result_json(result: brink_ide::structural_move::MoveResult, path: &str) -> String {
+    let edits: Vec<CrossFileEditJs> = result
+        .cross_file_edits
+        .iter()
+        .map(|e| CrossFileEditJs {
+            file: e.file.0,
+            start: e.range.start().into(),
+            end: e.range.end().into(),
+            new_text: e.new_text.clone(),
+        })
+        .collect();
+    let resp = MoveResultJs {
+        ok: true,
+        path: Some(path.to_owned()),
+        new_source: Some(result.new_source),
+        cross_file_edits: edits,
+        error: None,
+    };
+    serde_json::to_string(&resp).unwrap_or_default()
+}
+
+fn move_result_json_simple(new_source: String, path: &str) -> String {
+    let resp = MoveResultJs {
+        ok: true,
+        path: Some(path.to_owned()),
+        new_source: Some(new_source),
+        cross_file_edits: Vec::new(),
+        error: None,
+    };
+    serde_json::to_string(&resp).unwrap_or_default()
+}
+
+fn error_json(msg: &str) -> String {
+    let resp = MoveResultJs {
+        ok: false,
+        path: None,
+        new_source: None,
+        cross_file_edits: Vec::new(),
+        error: Some(msg.to_owned()),
+    };
+    serde_json::to_string(&resp).unwrap_or_default()
 }
 
 // ── Legacy stateless functions (token legend) ───────────────────────

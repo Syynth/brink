@@ -309,6 +309,7 @@ dependencies = [
  "brink-syntax",
  "rowan",
  "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
