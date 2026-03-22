@@ -1147,57 +1147,22 @@ impl LanguageServer for Backend {
 
         let domain_actions = brink_ide::code_actions::code_actions(&source, cursor_offset);
 
+        let uri = params.text_document.uri.as_str();
         let lsp_actions = domain_actions
             .into_iter()
-            .filter_map(|a| {
+            .map(|a| {
                 let kind = match a.kind {
                     brink_ide::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
                     brink_ide::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
                     brink_ide::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
                 };
-
-                let data = match &a.data {
-                    brink_ide::code_actions::CodeActionData::SortKnots => serde_json::json!({
-                        "kind": "sort_knots",
-                        "uri": params.text_document.uri.as_str(),
-                    }),
-                    brink_ide::code_actions::CodeActionData::SortStitches { knot } => {
-                        serde_json::json!({
-                            "kind": "sort_stitches",
-                            "uri": params.text_document.uri.as_str(),
-                            "knot": knot,
-                        })
-                    }
-                    brink_ide::code_actions::CodeActionData::FormatKnot { knot } => {
-                        serde_json::json!({
-                            "kind": "format_knot",
-                            "uri": params.text_document.uri.as_str(),
-                            "knot": knot,
-                        })
-                    }
-                    brink_ide::code_actions::CodeActionData::FormatStitch { knot, stitch } => {
-                        serde_json::json!({
-                            "kind": "format_stitch",
-                            "uri": params.text_document.uri.as_str(),
-                            "knot": knot,
-                            "stitch": stitch,
-                        })
-                    }
-                    // Structural move actions are handled by the web UI, not the LSP.
-                    brink_ide::code_actions::CodeActionData::ReorderStitch { .. }
-                    | brink_ide::code_actions::CodeActionData::MoveStitch { .. }
-                    | brink_ide::code_actions::CodeActionData::PromoteStitch { .. }
-                    | brink_ide::code_actions::CodeActionData::DemoteKnot { .. } => return None,
-                };
-
-                Some(tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(
-                    CodeAction {
-                        title: a.title,
-                        kind: Some(kind),
-                        data: Some(data),
-                        ..Default::default()
-                    },
-                ))
+                let data = code_action_data_to_json(&a.data, uri);
+                tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(CodeAction {
+                    title: a.title,
+                    kind: Some(kind),
+                    data: Some(data),
+                    ..Default::default()
+                })
             })
             .collect();
 
@@ -1840,5 +1805,61 @@ async fn publish_if_changed(
             Err(poisoned) => poisoned.into_inner(),
         };
         published.insert(file_id, lsp_diags);
+    }
+}
+
+/// Convert a `CodeActionData` variant to JSON for LSP code action data.
+fn code_action_data_to_json(
+    data: &brink_ide::code_actions::CodeActionData,
+    uri: &str,
+) -> serde_json::Value {
+    match data {
+        brink_ide::code_actions::CodeActionData::SortKnots => {
+            serde_json::json!({ "kind": "sort_knots", "uri": uri })
+        }
+        brink_ide::code_actions::CodeActionData::SortStitches { knot } => {
+            serde_json::json!({ "kind": "sort_stitches", "uri": uri, "knot": knot })
+        }
+        brink_ide::code_actions::CodeActionData::FormatKnot { knot } => {
+            serde_json::json!({ "kind": "format_knot", "uri": uri, "knot": knot })
+        }
+        brink_ide::code_actions::CodeActionData::FormatStitch { knot, stitch } => {
+            serde_json::json!({ "kind": "format_stitch", "uri": uri, "knot": knot, "stitch": stitch })
+        }
+        // Structural move actions — not yet wired in LSP resolve.
+        // Surfaced as code actions so editors show them; resolve is a no-op
+        // until the LSP gains workspace/applyEdit support for these.
+        brink_ide::code_actions::CodeActionData::ReorderStitch {
+            knot,
+            stitch,
+            direction,
+        } => {
+            let dir = match direction {
+                brink_ide::structural_move::Direction::Up => -1,
+                brink_ide::structural_move::Direction::Down => 1,
+            };
+            serde_json::json!({
+                "kind": "reorder_stitch", "uri": uri,
+                "knot": knot, "stitch": stitch, "direction": dir,
+            })
+        }
+        brink_ide::code_actions::CodeActionData::MoveStitch {
+            src_knot,
+            stitch,
+            dest_knot,
+        } => serde_json::json!({
+            "kind": "move_stitch", "uri": uri,
+            "src_knot": src_knot, "stitch": stitch, "dest_knot": dest_knot,
+        }),
+        brink_ide::code_actions::CodeActionData::PromoteStitch { knot, stitch } => {
+            serde_json::json!({
+                "kind": "promote_stitch", "uri": uri, "knot": knot, "stitch": stitch,
+            })
+        }
+        brink_ide::code_actions::CodeActionData::DemoteKnot { knot, dest_knot } => {
+            serde_json::json!({
+                "kind": "demote_knot", "uri": uri, "knot": knot, "dest_knot": dest_knot,
+            })
+        }
     }
 }
