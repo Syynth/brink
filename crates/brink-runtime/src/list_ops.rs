@@ -6,7 +6,7 @@ use brink_format::{ListValue, Value};
 
 use crate::error::RuntimeError;
 use crate::program::Program;
-use crate::state::StoryState;
+use crate::state::ContextAccess;
 use crate::story::Flow;
 
 /// `ListContains` (`?`): `[lhs, rhs]` → `Bool(rhs ⊆ lhs)`
@@ -239,19 +239,19 @@ pub(crate) fn list_from_int(flow: &mut Flow, program: &Program) -> Result<(), Ru
 }
 
 /// `ListRandom`: `[list]` → `List(random item)` — picks one item using the story RNG.
-pub(crate) fn list_random(
+pub(crate) fn list_random<R: crate::rng::StoryRng>(
     flow: &mut Flow,
-    state: &mut impl StoryState,
+    context: &mut (impl ContextAccess + ?Sized),
 ) -> Result<(), RuntimeError> {
     let lv = pop_list(flow)?;
     let items = if lv.items.is_empty() {
         vec![]
     } else {
-        let result_seed = state.rng_seed().wrapping_add(state.previous_random());
-        let next_random = state.next_random(result_seed);
+        let result_seed = context.rng_seed().wrapping_add(context.previous_random());
+        let next_random = context.next_random::<R>(result_seed);
         #[expect(clippy::cast_sign_loss)]
         let idx = (next_random as usize) % lv.items.len();
-        state.set_previous_random(next_random);
+        context.set_previous_random(next_random);
         vec![lv.items[idx]]
     };
     flow.value_stack.push(Value::List(Rc::new(ListValue {

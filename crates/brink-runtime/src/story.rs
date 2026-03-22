@@ -10,7 +10,7 @@ use crate::error::RuntimeError;
 use crate::output::{OutputBuffer, clean_output_whitespace};
 use crate::program::Program;
 use crate::rng::{FastRng, StoryRng};
-use crate::state::{ObservedState, RuntimeState, StoryState, WriteObserver};
+use crate::state::{ContextAccess, WriteObserver};
 use crate::vm;
 
 /// The current execution status of a story.
@@ -336,6 +336,66 @@ pub(crate) struct Context {
     pub previous_random: i32,
 }
 
+impl Context {
+    pub fn global(&self, idx: u32) -> &Value {
+        &self.globals[idx as usize]
+    }
+
+    pub fn set_global(&mut self, idx: u32, value: Value) {
+        self.globals[idx as usize] = value;
+    }
+
+    pub fn visit_count(&self, id: DefinitionId) -> u32 {
+        self.visit_counts.get(&id).copied().unwrap_or(0)
+    }
+
+    pub fn increment_visit(&mut self, id: DefinitionId) {
+        *self.visit_counts.entry(id).or_insert(0) += 1;
+    }
+
+    pub fn turn_count(&self, id: DefinitionId) -> Option<u32> {
+        self.turn_counts.get(&id).copied()
+    }
+
+    pub fn set_turn_count(&mut self, id: DefinitionId, turn: u32) {
+        self.turn_counts.insert(id, turn);
+    }
+
+    pub fn turn_index(&self) -> u32 {
+        self.turn_index
+    }
+
+    pub fn increment_turn_index(&mut self) {
+        self.turn_index += 1;
+    }
+
+    pub fn rng_seed(&self) -> i32 {
+        self.rng_seed
+    }
+
+    pub fn set_rng_seed(&mut self, seed: i32) {
+        self.rng_seed = seed;
+    }
+
+    pub fn previous_random(&self) -> i32 {
+        self.previous_random
+    }
+
+    pub fn set_previous_random(&mut self, val: i32) {
+        self.previous_random = val;
+    }
+
+    pub fn next_random<R: StoryRng>(seed: i32) -> i32 {
+        let mut rng = R::from_seed(seed);
+        rng.next_int()
+    }
+
+    pub fn random_sequence<R: StoryRng>(seed: i32, count: usize) -> Vec<i32> {
+        let mut rng = R::from_seed(seed);
+        (0..count).map(|_| rng.next_int()).collect()
+    }
+}
+
 impl Flow {
     /// Returns a reference to the current (topmost) thread.
     ///
@@ -513,53 +573,17 @@ impl ExternalFnHandler for FallbackHandler {
 #[derive(Clone)]
 pub(crate) struct FlowInstance {
     pub(crate) flow: Flow,
-    pub(crate) context: Context,
     pub(crate) status: StoryStatus,
     pub(crate) stats: Stats,
 }
 
 impl FlowInstance {
     /// Create a new flow instance starting at the root container.
-    fn new_at_root(program: &Program) -> Self {
-        let globals = program.global_defaults();
-        let initial_frame = CallFrame {
-            return_address: None,
-            temps: Vec::new(),
-            container_stack: vec![ContainerPosition {
-                container_idx: program.root_idx(),
-                offset: 0,
-            }],
-            frame_type: CallFrameType::Root,
-            external_fn_id: None,
-        };
-        let initial_thread = Thread {
-            call_stack: CallStack::new(initial_frame),
-        };
-        Self {
-            flow: Flow {
-                threads: vec![initial_thread],
-                value_stack: Vec::new(),
-                output: OutputBuffer::new(),
-                pending_choices: Vec::new(),
-                current_tags: Vec::new(),
-                in_tag: false,
-                skipping_choice: false,
-            },
-            context: Context {
-                globals,
-                visit_counts: HashMap::new(),
-                turn_counts: HashMap::new(),
-                turn_index: 0,
-                rng_seed: 0,
-                previous_random: 0,
-            },
-            status: StoryStatus::Active,
-            stats: Stats::default(),
-        }
+    fn new_at_root(program: &Program) -> (Self, Context) {
+        Self::new_at(program, program.root_idx())
     }
 
-    /// Create a new flow instance starting at the given container.
-    fn new_at(program: &Program, container_idx: u32) -> Self {
+    fn new_at(program: &Program, container_idx: u32) -> (Self, Context) {
         let globals = program.global_defaults();
         let initial_frame = CallFrame {
             return_address: None,
@@ -574,7 +598,7 @@ impl FlowInstance {
         let initial_thread = Thread {
             call_stack: CallStack::new(initial_frame),
         };
-        Self {
+        let flow_instance = Self {
             flow: Flow {
                 threads: vec![initial_thread],
                 value_stack: Vec::new(),
@@ -584,17 +608,18 @@ impl FlowInstance {
                 in_tag: false,
                 skipping_choice: false,
             },
-            context: Context {
-                globals,
-                visit_counts: HashMap::new(),
-                turn_counts: HashMap::new(),
-                turn_index: 0,
-                rng_seed: 0,
-                previous_random: 0,
-            },
             status: StoryStatus::Active,
             stats: Stats::default(),
-        }
+        };
+        let context = Context {
+            globals,
+            visit_counts: HashMap::new(),
+            turn_counts: HashMap::new(),
+            turn_index: 0,
+            rng_seed: 0,
+            previous_random: 0,
+        };
+        (flow_instance, context)
     }
 
     /// Maximum VM steps per `continue_maximally` call before erroring.
@@ -609,16 +634,12 @@ impl FlowInstance {
     /// - `Line::Done` — this turn is complete, call again for more.
     /// - `Line::Choices` — the story needs a choice selection.
     /// - `Line::End` — the story has permanently ended.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "will be restructured when observer is extracted"
-    )]
     fn step_single_line<R: StoryRng>(
         &mut self,
         program: &Program,
+        context: &mut (impl ContextAccess + ?Sized),
         handler: &dyn ExternalFnHandler,
         resolver: Option<&dyn PluralResolver>,
-        mut observer: Option<&mut dyn WriteObserver>,
     ) -> Result<Line, RuntimeError> {
         // 1. If buffer already has a completed line from a previous step,
         //    take it immediately (no VM stepping needed).
@@ -652,48 +673,11 @@ impl FlowInstance {
         // 5. Step VM loop.
         let Self {
             flow,
-            context,
             status,
             stats,
+            ..
         } = self;
         let step_start = stats.steps;
-
-        // Helper macro: create the appropriate state and step the VM.
-        macro_rules! vm_step {
-            () => {{
-                if let Some(ref mut obs) = observer {
-                    let mut state = ObservedState::<R>::new(program, context, resolver, *obs);
-                    vm::step(flow, &mut state, stats)?
-                } else {
-                    let mut state = RuntimeState::<R>::new(program, context, resolver);
-                    vm::step(flow, &mut state, stats)?
-                }
-            }};
-        }
-
-        macro_rules! increment_turn {
-            () => {
-                if let Some(ref mut obs) = observer {
-                    let mut state = ObservedState::<R>::new(program, context, resolver, *obs);
-                    state.increment_turn_index();
-                } else {
-                    let mut state = RuntimeState::<R>::new(program, context, resolver);
-                    state.increment_turn_index();
-                }
-            };
-        }
-
-        macro_rules! do_select_choice {
-            ($idx:expr) => {{
-                if let Some(ref mut obs) = observer {
-                    let mut state = ObservedState::<R>::new(program, context, resolver, *obs);
-                    select_choice(flow, &mut state, status, stats, $idx)?;
-                } else {
-                    let mut state = RuntimeState::<R>::new(program, context, resolver);
-                    select_choice(flow, &mut state, status, stats, $idx)?;
-                }
-            }};
-        }
 
         loop {
             stats.steps += 1;
@@ -702,7 +686,7 @@ impl FlowInstance {
                 return Err(RuntimeError::StepLimitExceeded(Self::STEP_LIMIT));
             }
 
-            let stepped = vm_step!();
+            let stepped = vm::step::<R>(flow, program, context, stats, resolver)?;
             stats.materializations += flow.drain_materializations();
 
             match stepped {
@@ -724,7 +708,7 @@ impl FlowInstance {
                 }
 
                 vm::Stepped::Done => {
-                    increment_turn!();
+                    context.increment_turn_index();
 
                     // Handle invisible default choices: auto-select and keep running.
                     if !flow.pending_choices.is_empty() {
@@ -733,7 +717,7 @@ impl FlowInstance {
                             .iter()
                             .all(|pc| pc.flags.is_invisible_default);
                         if all_invisible {
-                            do_select_choice!(0);
+                            select_choice(flow, context, status, stats, 0)?;
                             if flow.output.has_completed_line()
                                 && let Some((text, tags)) = flow.output.take_first_line()
                             {
@@ -762,7 +746,7 @@ impl FlowInstance {
                 }
 
                 vm::Stepped::Ended => {
-                    increment_turn!();
+                    context.increment_turn_index();
                     *status = StoryStatus::Ended;
 
                     if flow.output.has_completed_line()
@@ -779,19 +763,17 @@ impl FlowInstance {
     }
 
     /// Select a choice by index. Call [`step_with`] afterward to continue.
-    fn choose<R: StoryRng>(
+    fn choose(
         &mut self,
-        program: &Program,
+        context: &mut (impl ContextAccess + ?Sized),
         index: usize,
-        resolver: Option<&dyn PluralResolver>,
     ) -> Result<(), RuntimeError> {
         if self.status != StoryStatus::WaitingForChoice {
             return Err(RuntimeError::NotWaitingForChoice);
         }
-        let mut state = RuntimeState::<R>::new(program, &mut self.context, resolver);
         select_choice(
             &mut self.flow,
-            &mut state,
+            context,
             &mut self.status,
             &mut self.stats,
             index,
@@ -802,9 +784,11 @@ impl FlowInstance {
 /// Internal: set execution position to the given choice target, clear
 /// pending choices, and set status to Active. No status precondition.
 #[expect(clippy::similar_names)]
+/// Returns the `DefinitionId` of the selected choice target, so the
+/// caller can notify observers if needed.
 fn select_choice(
     flow: &mut Flow,
-    state: &mut impl StoryState,
+    context: &mut (impl ContextAccess + ?Sized),
     status: &mut StoryStatus,
     stats: &mut Stats,
     index: usize,
@@ -815,11 +799,12 @@ fn select_choice(
     }
 
     let choice = flow.pending_choices.swap_remove(index);
+    let target_id = choice.target_id;
 
     // Increment visit count for the choice target container so that
     // once-only choices can be filtered on subsequent passes.
-    state.increment_visit(choice.target_id);
-    state.set_turn_count(choice.target_id, state.turn_index());
+    context.increment_visit(target_id);
+    context.set_turn_count(target_id, context.turn_index());
 
     // Replace the current thread with the fork from choice creation
     // time. By selection time, all spawned threads should have
@@ -951,7 +936,8 @@ fn make_yield_line(status: StoryStatus, text: String, tags: Vec<String>, flow: &
 pub struct Story<'p, R: StoryRng = FastRng> {
     program: &'p Program,
     pub(crate) default: FlowInstance,
-    instances: HashMap<String, FlowInstance>,
+    pub(crate) default_context: Context,
+    instances: HashMap<String, (FlowInstance, Context)>,
     resolver: Option<Box<dyn PluralResolver>>,
     _rng: PhantomData<R>,
 }
@@ -961,6 +947,7 @@ impl<R: StoryRng> Clone for Story<'_, R> {
         Self {
             program: self.program,
             default: self.default.clone(),
+            default_context: self.default_context.clone(),
             instances: self.instances.clone(),
             resolver: None,
             _rng: PhantomData,
@@ -975,16 +962,19 @@ impl<R: StoryRng> Clone for Story<'_, R> {
 /// tables, then reattach.
 pub struct StorySnapshot<R: StoryRng = FastRng> {
     default: FlowInstance,
-    instances: HashMap<String, FlowInstance>,
+    default_context: Context,
+    instances: HashMap<String, (FlowInstance, Context)>,
     _rng: PhantomData<R>,
 }
 
 impl<'p, R: StoryRng> Story<'p, R> {
     /// Create a new story instance from a linked program.
     pub fn new(program: &'p Program) -> Self {
+        let (default, default_context) = FlowInstance::new_at_root(program);
         Self {
             program,
-            default: FlowInstance::new_at_root(program),
+            default,
+            default_context,
             instances: HashMap::new(),
             resolver: None,
             _rng: PhantomData,
@@ -997,13 +987,10 @@ impl<'p, R: StoryRng> Story<'p, R> {
     }
 
     /// Detach story state from the program, consuming the story.
-    ///
-    /// The returned snapshot owns all mutable state and holds no references
-    /// to `Program`, so the program can be freely mutated (e.g. for locale
-    /// swapping) before reattaching via [`from_snapshot`](Self::from_snapshot).
     pub fn into_snapshot(self) -> StorySnapshot<R> {
         StorySnapshot {
             default: self.default,
+            default_context: self.default_context,
             instances: self.instances,
             _rng: PhantomData,
         }
@@ -1014,6 +1001,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         Self {
             program,
             default: snapshot.default,
+            default_context: snapshot.default_context,
             instances: snapshot.instances,
             resolver: None,
             _rng: PhantomData,
@@ -1031,8 +1019,12 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// - [`Line::End`] — the story has permanently ended.
     pub fn continue_single(&mut self) -> Result<Line, RuntimeError> {
         let resolver = self.resolver.as_deref();
-        self.default
-            .step_single_line::<R>(self.program, &FallbackHandler, resolver, None)
+        self.default.step_single_line::<R>(
+            self.program,
+            &mut self.default_context,
+            &FallbackHandler,
+            resolver,
+        )
     }
 
     /// Like [`continue_single`](Self::continue_single) but with a custom
@@ -1042,8 +1034,12 @@ impl<'p, R: StoryRng> Story<'p, R> {
         handler: &dyn ExternalFnHandler,
     ) -> Result<Line, RuntimeError> {
         let resolver = self.resolver.as_deref();
-        self.default
-            .step_single_line::<R>(self.program, handler, resolver, None)
+        self.default.step_single_line::<R>(
+            self.program,
+            &mut self.default_context,
+            handler,
+            resolver,
+        )
     }
 
     /// Execute until the next yield point, collecting all lines.
@@ -1075,9 +1071,12 @@ impl<'p, R: StoryRng> Story<'p, R> {
         let mut lines = Vec::new();
         loop {
             let resolver = self.resolver.as_deref();
-            let line = self
-                .default
-                .step_single_line::<R>(self.program, handler, resolver, None)?;
+            let line = self.default.step_single_line::<R>(
+                self.program,
+                &mut self.default_context,
+                handler,
+                resolver,
+            )?;
             let terminal = line.is_terminal();
             lines.push(line);
             if terminal {
@@ -1091,21 +1090,20 @@ impl<'p, R: StoryRng> Story<'p, R> {
 
     /// Execute until the next yield point with a [`WriteObserver`] that
     /// receives notifications for every state mutation.
-    ///
-    /// Uses the original `run_loop` implementation internally, then
-    /// converts the result to `Vec<Line>`.
     pub fn continue_maximally_observed(
         &mut self,
         observer: &mut dyn WriteObserver,
     ) -> Result<Vec<Line>, RuntimeError> {
+        use crate::state::ObservedContext;
+        let mut obs_ctx = ObservedContext::new(&mut self.default_context, observer);
         let mut lines = Vec::new();
         loop {
             let resolver = self.resolver.as_deref();
             let line = self.default.step_single_line::<R>(
                 self.program,
+                &mut obs_ctx,
                 &FallbackHandler,
                 resolver,
-                Some(observer),
             )?;
             let terminal = line.is_terminal();
             lines.push(line);
@@ -1122,8 +1120,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// [`continue_single`](Self::continue_single) or
     /// [`continue_maximally`](Self::continue_maximally).
     pub fn choose(&mut self, index: usize) -> Result<(), RuntimeError> {
-        let resolver = self.resolver.as_deref();
-        self.default.choose::<R>(self.program, index, resolver)
+        self.default.choose(&mut self.default_context, index)
     }
 
     /// Read-only access to the default flow's VM statistics.
@@ -1192,10 +1189,8 @@ impl<'p, R: StoryRng> Story<'p, R> {
             .resolve_target(entry_point)
             .map(|(idx, _)| idx)
             .ok_or(RuntimeError::UnresolvedDefinition(entry_point))?;
-        self.instances.insert(
-            name.to_owned(),
-            FlowInstance::new_at(self.program, container_idx),
-        );
+        let (flow, ctx) = FlowInstance::new_at(self.program, container_idx);
+        self.instances.insert(name.to_owned(), (flow, ctx));
         Ok(())
     }
 
@@ -1210,14 +1205,14 @@ impl<'p, R: StoryRng> Story<'p, R> {
         name: &str,
         handler: &dyn ExternalFnHandler,
     ) -> Result<Vec<Line>, RuntimeError> {
-        let instance = self
+        let (instance, ctx) = self
             .instances
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
         let mut lines = Vec::new();
         loop {
             let resolver = self.resolver.as_deref();
-            let line = instance.step_single_line::<R>(self.program, handler, resolver, None)?;
+            let line = instance.step_single_line::<R>(self.program, ctx, handler, resolver)?;
             let terminal = line.is_terminal();
             lines.push(line);
             if terminal {
@@ -1231,12 +1226,11 @@ impl<'p, R: StoryRng> Story<'p, R> {
 
     /// Select a choice in a named flow.
     pub fn choose_flow(&mut self, name: &str, index: usize) -> Result<(), RuntimeError> {
-        let resolver = self.resolver.as_deref();
-        let instance = self
+        let (instance, ctx) = self
             .instances
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
-        instance.choose::<R>(self.program, index, resolver)
+        instance.choose(ctx, index)
     }
 
     /// Destroy a named flow instance.
@@ -1295,8 +1289,7 @@ mod tests {
         // Record the target_id of the first pending choice BEFORE selecting.
         let target_id = story.default.flow.pending_choices[0].target_id;
         let visit_before = story
-            .default
-            .context
+            .default_context
             .visit_counts
             .get(&target_id)
             .copied()
@@ -1306,8 +1299,7 @@ mod tests {
 
         // After selection, the visit count for this target must have increased.
         let visit_after = story
-            .default
-            .context
+            .default_context
             .visit_counts
             .get(&target_id)
             .copied()

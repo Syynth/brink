@@ -39,5 +39,5 @@ pub use linker::link;
 pub use locale::LocaleMode;
 pub use program::Program;
 pub use rng::{DotNetRng, FastRng, StoryRng};
-pub use state::{StoryState, WriteObserver};
+pub use state::WriteObserver;
 pub use story::{Choice, ExternalFnHandler, ExternalResult, Line, Stats, Story, StorySnapshot};

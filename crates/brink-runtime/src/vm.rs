@@ -10,7 +10,7 @@ use brink_format::{
 use crate::error::RuntimeError;
 use crate::list_ops;
 use crate::program::Program;
-use crate::state::StoryState;
+use crate::state::ContextAccess;
 use crate::story::{CallFrame, CallFrameType, ContainerPosition, Flow, PendingChoice, Stats};
 use crate::value_ops::{self, BinaryOp};
 
@@ -31,11 +31,13 @@ pub(crate) enum Stepped {
 /// Execute a single instruction (or bookkeeping operation).
 ///
 /// The caller is responsible for looping and for enforcing safety limits.
-#[expect(clippy::too_many_lines, clippy::similar_names)]
-pub(crate) fn step(
+#[expect(clippy::too_many_lines)]
+pub(crate) fn step<R: crate::rng::StoryRng>(
     flow: &mut Flow,
-    state: &mut impl StoryState,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
     stats: &mut Stats,
+    resolver: Option<&dyn PluralResolver>,
 ) -> Result<Stepped, RuntimeError> {
     // ── Preamble: resolve current position ──────────────────────────────
     let thread = flow.current_thread_mut();
@@ -63,7 +65,7 @@ pub(crate) fn step(
         return handle_frame_exhaustion(flow, stats, frame_type);
     };
 
-    let container = state.program().container(pos.container_idx);
+    let container = program.container(pos.container_idx);
 
     // Check if we've reached end of bytecode.
     if pos.offset >= container.bytecode.len() {
@@ -103,30 +105,16 @@ pub(crate) fn step(
     match op {
         // ── Output ──────────────────────────────────────────────────
         Opcode::EmitLine(idx, slot_count) => {
-            let text = resolve_line(
-                state.program(),
-                flow,
-                &pos,
-                idx,
-                slot_count,
-                state.plural_resolver(),
-            )?;
+            let text = resolve_line(program, flow, &pos, idx, slot_count, resolver)?;
             flow.output.push_text(&text);
         }
         Opcode::EvalLine(idx, slot_count) => {
-            let text = resolve_line(
-                state.program(),
-                flow,
-                &pos,
-                idx,
-                slot_count,
-                state.plural_resolver(),
-            )?;
+            let text = resolve_line(program, flow, &pos, idx, slot_count, resolver)?;
             flow.value_stack.push(Value::String(text.into()));
         }
         Opcode::EmitValue => {
             let val = flow.pop_value()?;
-            let text = value_ops::stringify(&val, state.program());
+            let text = value_ops::stringify(&val, program);
             flow.output.push_text(&text);
         }
         Opcode::EmitNewline => {
@@ -154,17 +142,16 @@ pub(crate) fn step(
 
         // ── Container flow ──────────────────────────────────────────
         Opcode::EnterContainer(id) => {
-            let idx = state
-                .program()
+            let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
             // Increment visit count if flags set.
-            let counting_flags = state.program().container(idx).counting_flags;
+            let counting_flags = program.container(idx).counting_flags;
             if counting_flags.contains(CountingFlags::VISITS) {
-                state.increment_visit(id);
-                state.set_turn_count(id, state.turn_index());
+                context.increment_visit(id);
+                context.set_turn_count(id, context.turn_index());
             }
 
             let thread = flow.current_thread_mut();
@@ -189,19 +176,19 @@ pub(crate) fn step(
         // ── Control flow ────────────────────────────────────────────
         Opcode::Goto(id) => {
             if !flow.skipping_choice {
-                goto_target(flow, state, id)?;
+                goto_target(flow, program, context, id)?;
             }
         }
         Opcode::GotoIf(id) => {
             let val = flow.pop_value()?;
             if value_ops::is_truthy(&val) {
-                goto_target(flow, state, id)?;
+                goto_target(flow, program, context, id)?;
             }
         }
         Opcode::GotoVariable => {
             let val = flow.pop_value()?;
             if let Value::DivertTarget(id) = val {
-                goto_target(flow, state, id)?;
+                goto_target(flow, program, context, id)?;
             } else {
                 return Err(RuntimeError::TypeError(
                     "goto_variable requires DivertTarget".into(),
@@ -223,14 +210,14 @@ pub(crate) fn step(
         Opcode::PushFloat(v) => flow.value_stack.push(Value::Float(v)),
         Opcode::PushBool(v) => flow.value_stack.push(Value::Bool(v)),
         Opcode::PushString(idx) => {
-            let s: Rc<str> = state.program().name(brink_format::NameId(idx)).into();
+            let s: Rc<str> = program.name(brink_format::NameId(idx)).into();
             flow.value_stack.push(Value::String(s));
         }
         Opcode::PushNull => {
             flow.value_stack.push(Value::Null);
         }
         Opcode::PushList(idx) => {
-            let lv = state.program().list_literal(idx).clone();
+            let lv = program.list_literal(idx).clone();
             flow.value_stack.push(Value::List(Rc::new(lv)));
         }
         Opcode::PushDivertTarget(id) => {
@@ -248,11 +235,11 @@ pub(crate) fn step(
         }
 
         // ── Arithmetic ──────────────────────────────────────────────
-        Opcode::Add => binary(flow, state.program(), BinaryOp::Add)?,
-        Opcode::Subtract => binary(flow, state.program(), BinaryOp::Subtract)?,
-        Opcode::Multiply => binary(flow, state.program(), BinaryOp::Multiply)?,
-        Opcode::Divide => binary(flow, state.program(), BinaryOp::Divide)?,
-        Opcode::Modulo => binary(flow, state.program(), BinaryOp::Modulo)?,
+        Opcode::Add => binary(flow, program, BinaryOp::Add)?,
+        Opcode::Subtract => binary(flow, program, BinaryOp::Subtract)?,
+        Opcode::Multiply => binary(flow, program, BinaryOp::Multiply)?,
+        Opcode::Divide => binary(flow, program, BinaryOp::Divide)?,
+        Opcode::Modulo => binary(flow, program, BinaryOp::Modulo)?,
         Opcode::Negate => {
             let val = flow.pop_value()?;
             let result = match val {
@@ -266,12 +253,12 @@ pub(crate) fn step(
         }
 
         // ── Comparison ──────────────────────────────────────────────
-        Opcode::Equal => binary(flow, state.program(), BinaryOp::Equal)?,
-        Opcode::NotEqual => binary(flow, state.program(), BinaryOp::NotEqual)?,
-        Opcode::Greater => binary(flow, state.program(), BinaryOp::Greater)?,
-        Opcode::GreaterOrEqual => binary(flow, state.program(), BinaryOp::GreaterOrEqual)?,
-        Opcode::Less => binary(flow, state.program(), BinaryOp::Less)?,
-        Opcode::LessOrEqual => binary(flow, state.program(), BinaryOp::LessOrEqual)?,
+        Opcode::Equal => binary(flow, program, BinaryOp::Equal)?,
+        Opcode::NotEqual => binary(flow, program, BinaryOp::NotEqual)?,
+        Opcode::Greater => binary(flow, program, BinaryOp::Greater)?,
+        Opcode::GreaterOrEqual => binary(flow, program, BinaryOp::GreaterOrEqual)?,
+        Opcode::Less => binary(flow, program, BinaryOp::Less)?,
+        Opcode::LessOrEqual => binary(flow, program, BinaryOp::LessOrEqual)?,
 
         // ── Logic ───────────────────────────────────────────────────
         Opcode::Not => {
@@ -279,21 +266,19 @@ pub(crate) fn step(
             flow.value_stack
                 .push(Value::Bool(!value_ops::is_truthy(&val)));
         }
-        Opcode::And => binary(flow, state.program(), BinaryOp::And)?,
-        Opcode::Or => binary(flow, state.program(), BinaryOp::Or)?,
+        Opcode::And => binary(flow, program, BinaryOp::And)?,
+        Opcode::Or => binary(flow, program, BinaryOp::Or)?,
 
         // ── Global vars ─────────────────────────────────────────────
         Opcode::GetGlobal(id) => {
-            let idx = state
-                .program()
+            let idx = program
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
-            let val = state.global(idx).clone();
+            let val = context.global(idx).clone();
             flow.value_stack.push(val);
         }
         Opcode::SetGlobal(id) => {
-            let idx = state
-                .program()
+            let idx = program
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
             let mut val = flow.pop_value()?;
@@ -303,11 +288,11 @@ pub(crate) fn step(
             if let Value::List(new_lv) = &mut val
                 && new_lv.items.is_empty()
                 && new_lv.origins.is_empty()
-                && let Value::List(old_lv) = state.global(idx)
+                && let Value::List(old_lv) = context.global(idx)
             {
                 Rc::make_mut(new_lv).origins.clone_from(&old_lv.origins);
             }
-            state.set_global(idx, val);
+            context.set_global(idx, val);
         }
 
         // ── Temp vars ───────────────────────────────────────────────
@@ -338,11 +323,10 @@ pub(crate) fn step(
             let current = frame.temps.get(idx).cloned().unwrap_or(Value::Null);
             match current {
                 Value::VariablePointer(target_id) => {
-                    let global_idx = state
-                        .program()
+                    let global_idx = program
                         .resolve_global(target_id)
                         .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
-                    state.set_global(global_idx, val);
+                    context.set_global(global_idx, val);
                 }
                 Value::TempPointer {
                     slot: target_slot,
@@ -387,11 +371,10 @@ pub(crate) fn step(
                 .unwrap_or(Value::Null);
             match val {
                 Value::VariablePointer(target_id) => {
-                    let global_idx = state
-                        .program()
+                    let global_idx = program
                         .resolve_global(target_id)
                         .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
-                    let global_val = state.global(global_idx).clone();
+                    let global_val = context.global(global_idx).clone();
                     flow.value_stack.push(global_val);
                 }
                 Value::TempPointer {
@@ -489,22 +472,21 @@ pub(crate) fn step(
             };
             flow.value_stack.push(result);
         }
-        Opcode::Pow => binary(flow, state.program(), BinaryOp::Pow)?,
-        Opcode::Min => binary(flow, state.program(), BinaryOp::Min)?,
-        Opcode::Max => binary(flow, state.program(), BinaryOp::Max)?,
+        Opcode::Pow => binary(flow, program, BinaryOp::Pow)?,
+        Opcode::Min => binary(flow, program, BinaryOp::Min)?,
+        Opcode::Max => binary(flow, program, BinaryOp::Max)?,
 
         // ── Functions ───────────────────────────────────────────────
         Opcode::Call(id) => {
-            let idx = state
-                .program()
+            let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
-            let counting_flags = state.program().container(idx).counting_flags;
+            let counting_flags = program.container(idx).counting_flags;
             if counting_flags.contains(CountingFlags::VISITS) {
-                state.increment_visit(id);
-                state.set_turn_count(id, state.turn_index());
+                context.increment_visit(id);
+                context.set_turn_count(id, context.turn_index());
             }
 
             // Capture output during function call — text output becomes
@@ -531,16 +513,15 @@ pub(crate) fn step(
             pop_call_frame(flow, stats, true)?;
         }
         Opcode::TunnelCall(id) => {
-            let idx = state
-                .program()
+            let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
-            let counting_flags = state.program().container(idx).counting_flags;
+            let counting_flags = program.container(idx).counting_flags;
             if counting_flags.contains(CountingFlags::VISITS) {
-                state.increment_visit(id);
-                state.set_turn_count(id, state.turn_index());
+                context.increment_visit(id);
+                context.set_turn_count(id, context.turn_index());
             }
 
             let current_pos = current_position(flow)?;
@@ -558,8 +539,7 @@ pub(crate) fn step(
             stats.frames_pushed += 1;
         }
         Opcode::ThreadCall(id) => {
-            let idx = state
-                .program()
+            let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
@@ -597,16 +577,15 @@ pub(crate) fn step(
                     "tunnel_call_variable requires DivertTarget".into(),
                 ));
             };
-            let idx = state
-                .program()
+            let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
-            let counting_flags = state.program().container(idx).counting_flags;
+            let counting_flags = program.container(idx).counting_flags;
             if counting_flags.contains(CountingFlags::VISITS) {
-                state.increment_visit(id);
-                state.set_turn_count(id, state.turn_index());
+                context.increment_visit(id);
+                context.set_turn_count(id, context.turn_index());
             }
 
             let current_pos = current_position(flow)?;
@@ -630,16 +609,15 @@ pub(crate) fn step(
                     "call_variable requires DivertTarget".into(),
                 ));
             };
-            let idx = state
-                .program()
+            let idx = program
                 .resolve_target(id)
                 .map(|(idx, _)| idx)
                 .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
-            let counting_flags = state.program().container(idx).counting_flags;
+            let counting_flags = program.container(idx).counting_flags;
             if counting_flags.contains(CountingFlags::VISITS) {
-                state.increment_visit(id);
-                state.set_turn_count(id, state.turn_index());
+                context.increment_visit(id);
+                context.set_turn_count(id, context.turn_index());
             }
 
             flow.output.begin_capture();
@@ -680,8 +658,7 @@ pub(crate) fn step(
             // If a DivertTarget, overwrite this frame's return address
             // so we divert there instead of the original caller.
             if let Value::DivertTarget(id) = val {
-                let (idx, offset) = state
-                    .program()
+                let (idx, offset) = program
                     .resolve_target(id)
                     .ok_or(RuntimeError::UnresolvedDefinition(id))?;
                 let thread = flow.current_thread_mut();
@@ -709,14 +686,14 @@ pub(crate) fn step(
             flow.value_stack.push(Value::String(text.into()));
         }
         Opcode::BeginChoice(flags, target_id) => {
-            handle_begin_choice(flow, state, stats, flags, target_id)?;
+            handle_begin_choice(flow, program, context, stats, flags, target_id)?;
         }
 
         // ── Intrinsics ──────────────────────────────────────────────
         Opcode::VisitCount => {
             let val = flow.pop_value()?;
             if let Value::DivertTarget(id) = val {
-                let count = state.visit_count(id);
+                let count = context.visit_count(id);
                 flow.value_stack.push(Value::Int(count.cast_signed()));
             } else {
                 flow.value_stack.push(Value::Int(0));
@@ -727,17 +704,17 @@ pub(crate) fn step(
             // by EnterContainer, so subtract 1 to get the 0-based count
             // that ink sequences expect (0 on first visit).
             let pos = current_position(flow)?;
-            let id = state.program().container(pos.container_idx).id;
-            let count = state.visit_count(id);
+            let id = program.container(pos.container_idx).id;
+            let count = context.visit_count(id);
             let zero_based = count.saturating_sub(1);
             flow.value_stack.push(Value::Int(zero_based.cast_signed()));
         }
         Opcode::TurnsSince => {
             let val = flow.pop_value()?;
             let result = if let Value::DivertTarget(id) = val {
-                if let Some(last_turn) = state.turn_count(id) {
+                if let Some(last_turn) = context.turn_count(id) {
                     #[expect(clippy::cast_possible_wrap)]
-                    let delta = (state.turn_index() - last_turn) as i32;
+                    let delta = (context.turn_index() - last_turn) as i32;
                     delta
                 } else {
                     -1
@@ -749,7 +726,7 @@ pub(crate) fn step(
         }
         Opcode::TurnIndex => {
             flow.value_stack
-                .push(Value::Int(state.turn_index().cast_signed()));
+                .push(Value::Int(context.turn_index().cast_signed()));
         }
         #[expect(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         Opcode::ChoiceCount => {
@@ -785,9 +762,9 @@ pub(crate) fn step(
             let result = if range <= 0 {
                 min_i
             } else {
-                let result_seed = state.rng_seed().wrapping_add(state.previous_random());
-                let next_random = state.next_random(result_seed);
-                state.set_previous_random(next_random);
+                let result_seed = context.rng_seed().wrapping_add(context.previous_random());
+                let next_random = context.next_random::<R>(result_seed);
+                context.set_previous_random(next_random);
                 (next_random % range) + min_i
             };
             flow.value_stack.push(Value::Int(result));
@@ -798,14 +775,14 @@ pub(crate) fn step(
                 Value::Int(n) => n,
                 _ => 0,
             };
-            state.set_rng_seed(seed);
-            state.set_previous_random(0);
+            context.set_rng_seed(seed);
+            context.set_previous_random(0);
             flow.value_stack.push(Value::Null);
         }
 
         // ── Sequences ───────────────────────────────────────────────
         Opcode::Sequence(kind, count) => {
-            handle_sequence(flow, state, kind, count)?;
+            handle_sequence::<R>(flow, program, context, kind, count)?;
         }
 
         // ── Tags ────────────────────────────────────────────────────
@@ -836,15 +813,15 @@ pub(crate) fn step(
         Opcode::ListContains => list_ops::list_contains(flow)?,
         Opcode::ListNotContains => list_ops::list_not_contains(flow)?,
         Opcode::ListIntersect => list_ops::list_intersect(flow)?,
-        Opcode::ListAll => list_ops::list_all(flow, state.program())?,
-        Opcode::ListInvert => list_ops::list_invert(flow, state.program())?,
+        Opcode::ListAll => list_ops::list_all(flow, program)?,
+        Opcode::ListInvert => list_ops::list_invert(flow, program)?,
         Opcode::ListCount => list_ops::list_count(flow)?,
-        Opcode::ListMin => list_ops::list_min(flow, state.program())?,
-        Opcode::ListMax => list_ops::list_max(flow, state.program())?,
-        Opcode::ListValue => list_ops::list_value(flow, state.program())?,
-        Opcode::ListRange => list_ops::list_range(flow, state.program())?,
-        Opcode::ListFromInt => list_ops::list_from_int(flow, state.program())?,
-        Opcode::ListRandom => list_ops::list_random(flow, state)?,
+        Opcode::ListMin => list_ops::list_min(flow, program)?,
+        Opcode::ListMax => list_ops::list_max(flow, program)?,
+        Opcode::ListValue => list_ops::list_value(flow, program)?,
+        Opcode::ListRange => list_ops::list_range(flow, program)?,
+        Opcode::ListFromInt => list_ops::list_from_int(flow, program)?,
+        Opcode::ListRandom => list_ops::list_random::<R>(flow, context)?,
 
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {
@@ -1115,11 +1092,11 @@ fn resume_at(flow: &mut Flow, pos: ContainerPosition) {
 
 fn goto_target(
     flow: &mut Flow,
-    state: &mut impl StoryState,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
     id: DefinitionId,
 ) -> Result<(), RuntimeError> {
-    let (container_idx, byte_offset) = state
-        .program()
+    let (container_idx, byte_offset) = program
         .resolve_target(id)
         .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
@@ -1162,7 +1139,7 @@ fn goto_target(
     // - Already on stack + COUNT_START_ONLY at offset 0: count (gather loops).
     // - Already on stack without COUNT_START_ONLY: don't count (self-loops
     //   in VISITS-only knots shouldn't inflate the visit counter).
-    let counting_flags = state.program().container(container_idx).counting_flags;
+    let counting_flags = program.container(container_idx).counting_flags;
     if counting_flags.contains(CountingFlags::VISITS) {
         let should_count = if already_on_stack {
             counting_flags.contains(CountingFlags::COUNT_START_ONLY) && byte_offset == 0
@@ -1170,8 +1147,8 @@ fn goto_target(
             true
         };
         if should_count {
-            state.increment_visit(id);
-            state.set_turn_count(id, state.turn_index());
+            context.increment_visit(id);
+            context.set_turn_count(id, context.turn_index());
         }
     }
 
@@ -1215,10 +1192,10 @@ fn current_position(flow: &Flow) -> Result<ContainerPosition, RuntimeError> {
     Ok(pos)
 }
 
-#[expect(clippy::similar_names)]
 fn handle_begin_choice(
     flow: &mut Flow,
-    state: &mut impl StoryState,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
     stats: &mut Stats,
     flags: ChoiceFlags,
     target_id: DefinitionId,
@@ -1242,7 +1219,7 @@ fn handle_begin_choice(
 
     // 1b. Once-only check: skip if the target container was already visited.
     if flags.once_only {
-        let visit_count = state.visit_count(target_id);
+        let visit_count = context.visit_count(target_id);
         if visit_count > 0 {
             if has_display {
                 let _ = flow.value_stack.pop();
@@ -1256,15 +1233,14 @@ fn handle_begin_choice(
     let display_text = if has_display {
         match flow.value_stack.pop() {
             Some(Value::String(s)) => (*s).to_owned(),
-            Some(other) => value_ops::stringify(&other, state.program()),
+            Some(other) => value_ops::stringify(&other, program),
             None => String::new(),
         }
     } else {
         String::new()
     };
 
-    let (target_idx, target_offset) = state
-        .program()
+    let (target_idx, target_offset) = program
         .resolve_target(target_id)
         .ok_or(RuntimeError::UnresolvedDefinition(target_id))?;
 
@@ -1291,20 +1267,21 @@ fn handle_begin_choice(
     Ok(())
 }
 
-fn handle_sequence(
+fn handle_sequence<R: crate::rng::StoryRng>(
     flow: &mut Flow,
-    state: &mut impl StoryState,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
     kind: brink_format::SequenceKind,
     count: u8,
 ) -> Result<(), RuntimeError> {
     if kind == brink_format::SequenceKind::Shuffle {
-        return handle_shuffle_sequence(flow, state);
+        return handle_shuffle_sequence::<R>(flow, program, context);
     }
 
     // Non-shuffle sequences: pop divert target, use visit count.
     let val = flow.pop_value()?;
     let visit_count = if let Value::DivertTarget(id) = val {
-        state.visit_count(id)
+        context.visit_count(id)
     } else {
         0
     };
@@ -1337,9 +1314,10 @@ fn handle_sequence(
 /// Pops `numElements` (Int) and `seqCount` (Int) from the value stack.
 /// Uses a partial Fisher-Yates shuffle seeded with `path_hash + loopIndex + story_seed`.
 #[expect(clippy::cast_sign_loss)]
-fn handle_shuffle_sequence(
+fn handle_shuffle_sequence<R: crate::rng::StoryRng>(
     flow: &mut Flow,
-    state: &mut impl StoryState,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
 ) -> Result<(), RuntimeError> {
     let num_elements = match flow.pop_value()? {
         Value::Int(n) => n,
@@ -1368,15 +1346,15 @@ fn handle_shuffle_sequence(
 
     // Get path_hash from the current container.
     let pos = current_position(flow)?;
-    let path_hash = state.program().container(pos.container_idx).path_hash;
+    let path_hash = program.container(pos.container_idx).path_hash;
 
     // Seed RNG with path_hash + loopIndex + story_seed (matching reference).
     let seed = path_hash
         .wrapping_add(loop_index)
-        .wrapping_add(state.rng_seed());
+        .wrapping_add(context.rng_seed());
 
     // Pre-generate all needed random values from a single seeded RNG instance.
-    let random_values = state.random_sequence(seed, (iteration_index + 1) as usize);
+    let random_values = context.random_sequence::<R>(seed, (iteration_index + 1) as usize);
 
     // Partial Fisher-Yates: maintain unpicked list, pick iterationIndex+1 elements.
     let mut unpicked: Vec<i32> = (0..num_elements).collect();
