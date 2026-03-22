@@ -109,13 +109,13 @@ fn dump_explore_once_only() {
     );
     let ink: brink_json::InkJson = serde_json::from_str(&json).unwrap();
     let data = brink_converter::convert(&ink).unwrap();
-    let program = brink_runtime::link(&data).unwrap();
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
 
     let config = ExploreConfig {
         max_depth: 5,
         max_episodes: 20,
     };
-    let episodes = explore(&program, &config);
+    let episodes = explore(&program, line_tables, &config);
 
     eprintln!("\n══════════════════════════════════════════════════");
     eprintln!("Explore I079: {} episodes found", episodes.len());

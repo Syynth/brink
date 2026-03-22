@@ -3,8 +3,8 @@
 use std::rc::Rc;
 
 use brink_format::{
-    ChoiceFlags, CountingFlags, DefinitionId, LineContent, LinePart, Opcode, PluralCategory,
-    PluralResolver, SelectKey, Value,
+    ChoiceFlags, CountingFlags, DefinitionId, LineContent, LineEntry, LinePart, Opcode,
+    PluralCategory, PluralResolver, SelectKey, Value,
 };
 
 use crate::error::RuntimeError;
@@ -35,6 +35,7 @@ pub(crate) enum Stepped {
 pub(crate) fn step<R: crate::rng::StoryRng>(
     flow: &mut Flow,
     program: &Program,
+    line_tables: &[Vec<LineEntry>],
     context: &mut (impl ContextAccess + ?Sized),
     stats: &mut Stats,
     resolver: Option<&dyn PluralResolver>,
@@ -105,11 +106,11 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
     match op {
         // ── Output ──────────────────────────────────────────────────
         Opcode::EmitLine(idx, slot_count) => {
-            let text = resolve_line(program, flow, &pos, idx, slot_count, resolver)?;
+            let text = resolve_line(program, line_tables, flow, &pos, idx, slot_count, resolver)?;
             flow.output.push_text(&text);
         }
         Opcode::EvalLine(idx, slot_count) => {
-            let text = resolve_line(program, flow, &pos, idx, slot_count, resolver)?;
+            let text = resolve_line(program, line_tables, flow, &pos, idx, slot_count, resolver)?;
             flow.value_stack.push(Value::String(text.into()));
         }
         Opcode::EmitValue => {
@@ -851,6 +852,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
 
 fn resolve_line(
     program: &Program,
+    line_tables: &[Vec<LineEntry>],
     flow: &mut Flow,
     pos: &ContainerPosition,
     idx: u16,
@@ -864,7 +866,8 @@ fn resolve_line(
     }
     slots.reverse();
 
-    let lines = program.line_table(pos.container_idx);
+    let scope_idx = program.scope_table_idx(pos.container_idx) as usize;
+    let lines = &line_tables[scope_idx];
     let Some(entry) = lines.get(idx as usize) else {
         return Ok(String::new());
     };

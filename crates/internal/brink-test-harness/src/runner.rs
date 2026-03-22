@@ -80,8 +80,12 @@ fn snapshot_initial(story: &Story<DotNetRng>, program: &Program) -> StateSnapsho
 
 /// Record a full episode from a program with pre-supplied choice inputs.
 #[expect(clippy::too_many_lines)]
-pub fn record(program: &Program, config: &RunConfig) -> Episode {
-    let mut story = Story::<DotNetRng>::new(program);
+pub fn record(
+    program: &Program,
+    line_tables: Vec<Vec<brink_format::LineEntry>>,
+    config: &RunConfig,
+) -> Episode {
+    let mut story = Story::<DotNetRng>::new(program, line_tables);
     let initial_state = snapshot_initial(&story, program);
     let mut recorder = EpisodeRecorder::new();
     let mut steps = Vec::new();
@@ -251,7 +255,7 @@ pub fn record_from_ink_json(json_str: &str, inputs: &[usize]) -> Episode {
         }
     };
 
-    let program = match brink_runtime::link(&data) {
+    let (program, line_tables) = match brink_runtime::link(&data) {
         Ok(p) => p,
         Err(e) => {
             return Episode {
@@ -269,12 +273,16 @@ pub fn record_from_ink_json(json_str: &str, inputs: &[usize]) -> Episode {
         inputs: inputs.to_vec(),
         max_steps: 10_000,
     };
-    record(&program, &config)
+    record(&program, line_tables, &config)
 }
 
 /// Quick text-only output from a program with pre-supplied choice inputs.
-pub fn run_text(program: &Program, inputs: &[usize]) -> Result<String, String> {
-    let mut story = Story::<DotNetRng>::new(program);
+pub fn run_text(
+    program: &Program,
+    line_tables: Vec<Vec<brink_format::LineEntry>>,
+    inputs: &[usize],
+) -> Result<String, String> {
+    let mut story = Story::<DotNetRng>::new(program, line_tables);
     let mut output = String::new();
     let mut input_idx = 0;
 
@@ -348,6 +356,7 @@ pub fn run_text_from_ink_json(json_str: &str, inputs: &[usize]) -> Result<String
     let ink: brink_json::InkJson =
         serde_json::from_str(json_str).map_err(|e| format!("json parse error: {e}"))?;
     let data = brink_converter::convert(&ink).map_err(|e| format!("convert error: {e}"))?;
-    let program = brink_runtime::link(&data).map_err(|e| format!("link error: {e}"))?;
-    run_text(&program, inputs)
+    let (program, line_tables) =
+        brink_runtime::link(&data).map_err(|e| format!("link error: {e}"))?;
+    run_text(&program, line_tables, inputs)
 }

@@ -12,8 +12,8 @@ use brink_runtime::{Choice, DotNetRng, Line, Story};
 fn run_story(ink_json: &str, inputs: &[usize]) -> String {
     let ink: InkJson = serde_json::from_str(ink_json).unwrap();
     let data = convert(&ink).unwrap();
-    let program = brink_runtime::link(&data).unwrap();
-    let mut story = Story::<DotNetRng>::new(&program);
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(&program, line_tables);
     let mut output = String::new();
     let mut input_idx = 0;
 
@@ -59,8 +59,8 @@ fn choices_yielded_on_bytecode_exhaustion() {
     let json = load_ink_json("../../tests/tier1/basics/I003-tunnel-to-death/story.ink.json");
     let ink: InkJson = serde_json::from_str(&json).unwrap();
     let data = convert(&ink).unwrap();
-    let program = brink_runtime::link(&data).unwrap();
-    let mut story = Story::<DotNetRng>::new(&program);
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(&program, line_tables);
 
     // First step should produce text AND choices, not just Text/End.
     let lines = story.continue_maximally().unwrap();
@@ -160,8 +160,8 @@ fn fallback_choice_auto_selected() {
         load_ink_json("../../tests/tier1/choices/I077-fallback-choice-on-thread/story.ink.json");
     let ink: InkJson = serde_json::from_str(&json).unwrap();
     let data = convert(&ink).unwrap();
-    let program = brink_runtime::link(&data).unwrap();
-    let mut story = Story::<DotNetRng>::new(&program);
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(&program, line_tables);
 
     // The story should complete in a single step with no Choices yield.
     let lines = story.continue_maximally().unwrap();
@@ -793,8 +793,8 @@ fn tower_of_hanoi_step_sequence() {
     let json = load_ink_json("../../tests/tier3/lists/tower-of-hanoi/story.ink.json");
     let ink: InkJson = serde_json::from_str(&json).unwrap();
     let data = convert(&ink).unwrap();
-    let program = brink_runtime::link(&data).unwrap();
-    let mut story = Story::<brink_runtime::DotNetRng>::new(&program);
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
 
     // Step 1: intro text + "Regard the temples" choice
     let lines = story.continue_maximally().unwrap();

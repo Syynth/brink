@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use brink_format::{CountingFlags, DefinitionId, LineEntry, ListValue, NameId, Value};
+use brink_format::{CountingFlags, DefinitionId, ListValue, NameId, Value};
 
 /// A linked, ready-to-execute program.
 ///
@@ -13,8 +13,8 @@ pub struct Program {
     /// Unified address map: `id → (container_idx, byte_offset)`.
     /// Contains both container IDs (offset 0) and intra-container addresses.
     pub(crate) address_map: HashMap<DefinitionId, (u32, usize)>,
-    pub(crate) line_tables: Vec<Vec<LineEntry>>,
-    /// Scope `DefinitionId` for each entry in `line_tables` (parallel vec).
+    /// Scope `DefinitionId` for each entry in the line tables (parallel vec).
+    /// Structural metadata — does not change with locale.
     pub(crate) scope_ids: Vec<DefinitionId>,
     /// CRC-32 checksum from the source `.inkb`, used for locale validation.
     pub(crate) source_checksum: u32,
@@ -82,10 +82,9 @@ impl Program {
         &self.containers[idx as usize]
     }
 
-    /// Get the scope line table for a container by its container index.
-    pub(crate) fn line_table(&self, container_idx: u32) -> &[LineEntry] {
-        let scope_idx = self.containers[container_idx as usize].scope_table_idx;
-        &self.line_tables[scope_idx as usize]
+    /// Get the scope line table index for a container.
+    pub(crate) fn scope_table_idx(&self, container_idx: u32) -> u32 {
+        self.containers[container_idx as usize].scope_table_idx
     }
 
     /// Look up a name by id.
@@ -106,16 +105,6 @@ impl Program {
     /// Build the initial globals vector from slot defaults.
     pub fn global_defaults(&self) -> Vec<Value> {
         self.globals.iter().map(|s| s.default.clone()).collect()
-    }
-
-    /// Clone the current line tables for later restoration.
-    pub fn save_line_tables(&self) -> Vec<Vec<LineEntry>> {
-        self.line_tables.clone()
-    }
-
-    /// Replace line tables (e.g. to revert to base after a locale swap).
-    pub fn restore_line_tables(&mut self, tables: Vec<Vec<LineEntry>>) {
-        self.line_tables = tables;
     }
 
     /// Get a list literal by index.

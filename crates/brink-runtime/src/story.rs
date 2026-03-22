@@ -637,6 +637,7 @@ impl FlowInstance {
     fn step_single_line<R: StoryRng>(
         &mut self,
         program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
         context: &mut (impl ContextAccess + ?Sized),
         handler: &dyn ExternalFnHandler,
         resolver: Option<&dyn PluralResolver>,
@@ -686,7 +687,7 @@ impl FlowInstance {
                 return Err(RuntimeError::StepLimitExceeded(Self::STEP_LIMIT));
             }
 
-            let stepped = vm::step::<R>(flow, program, context, stats, resolver)?;
+            let stepped = vm::step::<R>(flow, program, line_tables, context, stats, resolver)?;
             stats.materializations += flow.drain_materializations();
 
             match stepped {
@@ -937,6 +938,7 @@ pub struct Story<'p, R: StoryRng = FastRng> {
     program: &'p Program,
     pub(crate) default: FlowInstance,
     pub(crate) default_context: Context,
+    line_tables: Vec<Vec<brink_format::LineEntry>>,
     instances: HashMap<String, (FlowInstance, Context)>,
     resolver: Option<Box<dyn PluralResolver>>,
     _rng: PhantomData<R>,
@@ -948,6 +950,7 @@ impl<R: StoryRng> Clone for Story<'_, R> {
             program: self.program,
             default: self.default.clone(),
             default_context: self.default_context.clone(),
+            line_tables: self.line_tables.clone(),
             instances: self.instances.clone(),
             resolver: None,
             _rng: PhantomData,
@@ -968,13 +971,14 @@ pub struct StorySnapshot<R: StoryRng = FastRng> {
 }
 
 impl<'p, R: StoryRng> Story<'p, R> {
-    /// Create a new story instance from a linked program.
-    pub fn new(program: &'p Program) -> Self {
+    /// Create a new story instance from a linked program and its line tables.
+    pub fn new(program: &'p Program, line_tables: Vec<Vec<brink_format::LineEntry>>) -> Self {
         let (default, default_context) = FlowInstance::new_at_root(program);
         Self {
             program,
             default,
             default_context,
+            line_tables,
             instances: HashMap::new(),
             resolver: None,
             _rng: PhantomData,
@@ -986,22 +990,38 @@ impl<'p, R: StoryRng> Story<'p, R> {
         self.resolver = Some(resolver);
     }
 
+    /// Replace the active line tables (e.g. for locale swapping).
+    pub fn set_line_tables(&mut self, tables: Vec<Vec<brink_format::LineEntry>>) {
+        self.line_tables = tables;
+    }
+
+    /// Read-only access to the current line tables.
+    pub fn line_tables(&self) -> &[Vec<brink_format::LineEntry>] {
+        &self.line_tables
+    }
+
     /// Detach story state from the program, consuming the story.
-    pub fn into_snapshot(self) -> StorySnapshot<R> {
-        StorySnapshot {
+    pub fn into_snapshot(self) -> (StorySnapshot<R>, Vec<Vec<brink_format::LineEntry>>) {
+        let snapshot = StorySnapshot {
             default: self.default,
             default_context: self.default_context,
             instances: self.instances,
             _rng: PhantomData,
-        }
+        };
+        (snapshot, self.line_tables)
     }
 
-    /// Reattach a snapshot to a (possibly mutated) program.
-    pub fn from_snapshot(program: &'p Program, snapshot: StorySnapshot<R>) -> Self {
+    /// Reattach a snapshot to a program with line tables.
+    pub fn from_snapshot(
+        program: &'p Program,
+        snapshot: StorySnapshot<R>,
+        line_tables: Vec<Vec<brink_format::LineEntry>>,
+    ) -> Self {
         Self {
             program,
             default: snapshot.default,
             default_context: snapshot.default_context,
+            line_tables,
             instances: snapshot.instances,
             resolver: None,
             _rng: PhantomData,
@@ -1021,6 +1041,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         let resolver = self.resolver.as_deref();
         self.default.step_single_line::<R>(
             self.program,
+            &self.line_tables,
             &mut self.default_context,
             &FallbackHandler,
             resolver,
@@ -1036,6 +1057,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         let resolver = self.resolver.as_deref();
         self.default.step_single_line::<R>(
             self.program,
+            &self.line_tables,
             &mut self.default_context,
             handler,
             resolver,
@@ -1073,6 +1095,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
             let resolver = self.resolver.as_deref();
             let line = self.default.step_single_line::<R>(
                 self.program,
+                &self.line_tables,
                 &mut self.default_context,
                 handler,
                 resolver,
@@ -1101,6 +1124,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
             let resolver = self.resolver.as_deref();
             let line = self.default.step_single_line::<R>(
                 self.program,
+                &self.line_tables,
                 &mut obs_ctx,
                 &FallbackHandler,
                 resolver,
@@ -1212,7 +1236,13 @@ impl<'p, R: StoryRng> Story<'p, R> {
         let mut lines = Vec::new();
         loop {
             let resolver = self.resolver.as_deref();
-            let line = instance.step_single_line::<R>(self.program, ctx, handler, resolver)?;
+            let line = instance.step_single_line::<R>(
+                self.program,
+                &self.line_tables,
+                ctx,
+                handler,
+                resolver,
+            )?;
             let terminal = line.is_terminal();
             lines.push(line);
             if terminal {
@@ -1253,7 +1283,7 @@ mod tests {
     use super::*;
     use crate::link;
 
-    fn load_i079_program() -> crate::Program {
+    fn load_i079_program() -> (crate::Program, Vec<Vec<brink_format::LineEntry>>) {
         let json_str = std::fs::read_to_string(
             "../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink.json",
         )
@@ -1280,8 +1310,8 @@ mod tests {
     /// `handle_begin_choice` can never fire.
     #[test]
     fn select_choice_increments_visit_count_for_target() {
-        let program = load_i079_program();
-        let mut story = Story::new(&program);
+        let (program, line_tables) = load_i079_program();
+        let mut story = Story::new(&program, line_tables);
         let choices = step_until_choices(&mut story);
 
         assert!(!choices.is_empty(), "expected at least one choice");
@@ -1316,8 +1346,8 @@ mod tests {
     /// in `pending_choices`.
     #[test]
     fn once_only_choice_excluded_on_second_pass() {
-        let program = load_i079_program();
-        let mut story = Story::new(&program);
+        let (program, line_tables) = load_i079_program();
+        let mut story = Story::new(&program, line_tables);
 
         let first_choices = step_until_choices(&mut story);
         assert!(
@@ -1341,7 +1371,7 @@ mod tests {
 
     // ── Choice thread forking ──────────────────────────────────────────
 
-    fn load_i083_program() -> crate::Program {
+    fn load_i083_program() -> (crate::Program, Vec<Vec<brink_format::LineEntry>>) {
         let json_str = std::fs::read_to_string(
             "../../tests/tier1/choices/I083-choice-thread-forking/story.ink.json",
         )
@@ -1357,8 +1387,8 @@ mod tests {
     /// should still reflect the tunnel-era call stack depth (>= 2 frames).
     #[test]
     fn pending_choice_captures_tunnel_call_stack() {
-        let program = load_i083_program();
-        let mut story = Story::new(&program);
+        let (program, line_tables) = load_i083_program();
+        let mut story = Story::new(&program, line_tables);
         let _choices = step_until_choices(&mut story);
 
         // At this point the tunnel has returned, so the live call_stack
@@ -1386,8 +1416,8 @@ mod tests {
     /// temp variables from the tunnel scope are accessible.
     #[test]
     fn select_choice_restores_tunnel_frame_with_temps() {
-        let program = load_i083_program();
-        let mut story = Story::new(&program);
+        let (program, line_tables) = load_i083_program();
+        let mut story = Story::new(&program, line_tables);
         let _choices = step_until_choices(&mut story);
 
         // Before choosing: only root frame, no tunnel temps.
@@ -1420,7 +1450,7 @@ mod tests {
 
     // ── Tags ──────────────────────────────────────────────────────────
 
-    fn load_tags_program() -> crate::Program {
+    fn load_tags_program() -> (crate::Program, Vec<Vec<brink_format::LineEntry>>) {
         let json_str =
             std::fs::read_to_string("../../tests/tier3/tags/tags/story.ink.json").unwrap();
         let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
@@ -1428,7 +1458,7 @@ mod tests {
         link(&data).unwrap()
     }
 
-    fn load_tags_in_choice_program() -> crate::Program {
+    fn load_tags_in_choice_program() -> (crate::Program, Vec<Vec<brink_format::LineEntry>>) {
         let json_str =
             std::fs::read_to_string("../../tests/tier3/tags/tagsInChoice/story.ink.json").unwrap();
         let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
@@ -1438,8 +1468,8 @@ mod tests {
 
     #[test]
     fn line_exposes_tags() {
-        let program = load_tags_program();
-        let mut story = Story::<crate::FastRng>::new(&program);
+        let (program, line_tables) = load_tags_program();
+        let mut story = Story::<crate::FastRng>::new(&program, line_tables);
         let lines = story.continue_maximally().unwrap();
         // The first line should have both tags.
         let first = lines.first().expect("expected at least one line");
@@ -1452,8 +1482,8 @@ mod tests {
 
     #[test]
     fn choice_exposes_tags() {
-        let program = load_tags_in_choice_program();
-        let mut story = Story::new(&program);
+        let (program, line_tables) = load_tags_in_choice_program();
+        let mut story = Story::new(&program, line_tables);
         let choices = step_until_choices(&mut story);
         assert!(!choices.is_empty());
         // The choice in tagsInChoice has tags "one" and "two"
@@ -1465,7 +1495,7 @@ mod tests {
 
     // ── Thread support ──────────────────────────────────────────────────
 
-    fn load_i091_program() -> crate::Program {
+    fn load_i091_program() -> (crate::Program, Vec<Vec<brink_format::LineEntry>>) {
         let json_str =
             std::fs::read_to_string("../../tests/tier1/choices/I091-choice-count/story.ink.json")
                 .unwrap();
@@ -1481,8 +1511,8 @@ mod tests {
     /// back to their caller, even when pending choices exist.
     #[test]
     fn thread_call_returns_to_main_flow() {
-        let program = load_i091_program();
-        let mut story = Story::<crate::FastRng>::new(&program);
+        let (program, line_tables) = load_i091_program();
+        let mut story = Story::<crate::FastRng>::new(&program, line_tables);
 
         let lines = story.continue_maximally().unwrap();
         // I091 should output "2\n" (CHOICE_COUNT) then present 2 choices.

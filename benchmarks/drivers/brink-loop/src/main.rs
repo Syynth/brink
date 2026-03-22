@@ -14,9 +14,10 @@ use brink_runtime::{DotNetRng, Line, Story};
 
 fn run_once(
     program: &brink_runtime::Program,
+    line_tables: Vec<Vec<brink_format::LineEntry>>,
     inputs: &[usize],
 ) {
-    let mut story = Story::<DotNetRng>::new(program);
+    let mut story = Story::<DotNetRng>::new(program, line_tables);
     let mut input_idx = 0;
 
     loop {
@@ -71,12 +72,12 @@ fn main() {
         .unwrap_or_else(|e| panic!("failed to parse JSON: {e}"));
     let data = convert(&ink)
         .unwrap_or_else(|e| panic!("failed to convert: {e}"));
-    let program = brink_runtime::link(&data)
+    let (program, line_tables) = brink_runtime::link(&data)
         .unwrap_or_else(|e| panic!("failed to link: {e}"));
 
     let start = Instant::now();
     for _ in 0..iterations {
-        run_once(&program, &inputs);
+        run_once(&program, line_tables.clone(), &inputs);
     }
     let elapsed = start.elapsed();
 

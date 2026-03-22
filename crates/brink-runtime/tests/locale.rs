@@ -3,18 +3,24 @@
 use brink_format::{
     DefinitionId, DefinitionTag, LineContent, LocaleData, LocaleLineEntry, LocaleScopeTable,
 };
-use brink_runtime::{DotNetRng, Line, LocaleMode, RuntimeError, Story};
+use brink_runtime::{DotNetRng, Line, LocaleMode, RuntimeError, Story, apply_locale};
 
 fn scope_id(hash: u64) -> DefinitionId {
     DefinitionId::new(DefinitionTag::Address, hash)
 }
 
-fn convert_and_link(json_text: &str) -> (brink_format::StoryData, brink_runtime::Program) {
+fn convert_and_link(
+    json_text: &str,
+) -> (
+    brink_format::StoryData,
+    brink_runtime::Program,
+    Vec<Vec<brink_format::LineEntry>>,
+) {
     let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(json_text);
     let story: brink_json::InkJson = serde_json::from_str(json_text).unwrap();
     let data = brink_converter::convert(&story).unwrap();
-    let program = brink_runtime::link(&data).unwrap();
-    (data, program)
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    (data, program, line_tables)
 }
 
 fn i001_json() -> &'static str {
@@ -89,11 +95,11 @@ fn build_identity_locale(data: &brink_format::StoryData) -> LocaleData {
 
 #[test]
 fn overlay_replaces_scope() {
-    let (data, mut program) = convert_and_link(i001_json());
+    let (data, program, base_tables) = convert_and_link(i001_json());
     let locale = build_locale_replacing_first_line(&data, "[ES] Hola mundo\n");
-    program.apply_locale(&locale, LocaleMode::Overlay).unwrap();
+    let line_tables = apply_locale(&program, &locale, &base_tables, LocaleMode::Overlay).unwrap();
 
-    let mut story = Story::<DotNetRng>::new(&program);
+    let mut story = Story::<DotNetRng>::new(&program, line_tables);
     let lines = story.continue_maximally().unwrap();
     let text: String = lines.iter().map(Line::text).collect();
     assert!(
@@ -104,7 +110,7 @@ fn overlay_replaces_scope() {
 
 #[test]
 fn overlay_preserves_untouched() {
-    let (data, mut program) = convert_and_link(i001_json());
+    let (data, program, base_tables) = convert_and_link(i001_json());
 
     // Only cover the first scope, leave others untouched
     assert!(
@@ -128,7 +134,7 @@ fn overlay_preserves_untouched() {
         }],
     };
 
-    program.apply_locale(&locale, LocaleMode::Overlay).unwrap();
+    apply_locale(&program, &locale, &base_tables, LocaleMode::Overlay).unwrap();
 
     // If there are additional scopes, they should still have their original content.
     // For I001 there may only be one scope — the test still validates the overlay path.
@@ -136,15 +142,15 @@ fn overlay_preserves_untouched() {
 
 #[test]
 fn strict_all_covered() {
-    let (data, mut program) = convert_and_link(i001_json());
+    let (data, program, base_tables) = convert_and_link(i001_json());
     let locale = build_identity_locale(&data);
     // Strict mode should succeed when all scopes are covered.
-    program.apply_locale(&locale, LocaleMode::Strict).unwrap();
+    apply_locale(&program, &locale, &base_tables, LocaleMode::Strict).unwrap();
 }
 
 #[test]
 fn strict_missing_scope() {
-    let (data, mut program) = convert_and_link(i001_json());
+    let (data, program, base_tables) = convert_and_link(i001_json());
 
     // Build locale with an empty set of scopes — strict mode should fail
     // if the base has any scopes.
@@ -158,9 +164,7 @@ fn strict_missing_scope() {
         line_tables: vec![], // no scopes covered
     };
 
-    let err = program
-        .apply_locale(&locale, LocaleMode::Strict)
-        .unwrap_err();
+    let err = apply_locale(&program, &locale, &base_tables, LocaleMode::Strict).unwrap_err();
     assert!(
         matches!(err, RuntimeError::LocaleScopeMissing(..)),
         "expected LocaleScopeMissing, got {err:?}"
@@ -169,7 +173,7 @@ fn strict_missing_scope() {
 
 #[test]
 fn checksum_mismatch() {
-    let (_data, mut program) = convert_and_link(i001_json());
+    let (_data, program, base_tables) = convert_and_link(i001_json());
 
     // Program has source_checksum=0 (from link), locale has a different checksum.
     let locale = LocaleData {
@@ -178,9 +182,7 @@ fn checksum_mismatch() {
         line_tables: vec![],
     };
 
-    let err = program
-        .apply_locale(&locale, LocaleMode::Overlay)
-        .unwrap_err();
+    let err = apply_locale(&program, &locale, &base_tables, LocaleMode::Overlay).unwrap_err();
     assert!(
         matches!(
             err,
@@ -195,7 +197,7 @@ fn checksum_mismatch() {
 
 #[test]
 fn scope_not_in_base() {
-    let (_data, mut program) = convert_and_link(i001_json());
+    let (_data, program, base_tables) = convert_and_link(i001_json());
 
     // Use a scope_id that doesn't exist in the linked program
     let fake_scope = scope_id(0xFFFF_FFFF_FFFF);
@@ -208,9 +210,7 @@ fn scope_not_in_base() {
         }],
     };
 
-    let err = program
-        .apply_locale(&locale, LocaleMode::Overlay)
-        .unwrap_err();
+    let err = apply_locale(&program, &locale, &base_tables, LocaleMode::Overlay).unwrap_err();
     assert!(
         matches!(err, RuntimeError::LocaleScopeNotInBase(id) if id == fake_scope),
         "expected LocaleScopeNotInBase, got {err:?}"

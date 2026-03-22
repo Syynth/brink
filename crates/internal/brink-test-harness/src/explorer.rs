@@ -28,8 +28,12 @@ impl Default for ExploreConfig {
 ///
 /// Requires `Story: Clone` — each branch point clones the story state
 /// and recurses. Returns one [`Episode`] per terminal path.
-pub fn explore(program: &Program, config: &ExploreConfig) -> Vec<Episode> {
-    let story = Story::<DotNetRng>::new(program);
+pub fn explore(
+    program: &Program,
+    line_tables: Vec<Vec<brink_format::LineEntry>>,
+    config: &ExploreConfig,
+) -> Vec<Episode> {
+    let story = Story::<DotNetRng>::new(program, line_tables);
     let initial_state = StateSnapshot {
         globals: program.global_defaults(),
     };

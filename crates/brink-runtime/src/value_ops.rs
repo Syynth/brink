@@ -449,7 +449,6 @@ mod tests {
                 m.insert(DefinitionId::new(DefinitionTag::Address, 0), (0u32, 0usize));
                 m
             },
-            line_tables: vec![vec![]],
             scope_ids: vec![DefinitionId::new(DefinitionTag::Address, 0)],
             source_checksum: 0,
             globals: vec![],

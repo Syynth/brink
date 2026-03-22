@@ -97,6 +97,7 @@ pub struct StoryRunner {
     // borrows from it. We use raw pointer + RefCell to work around the
     // self-referential borrow.
     program: Box<brink_runtime::Program>,
+    base_line_tables: Vec<Vec<brink_format::LineEntry>>,
     // Safety: story borrows from program which is heap-pinned and never moved.
     // We only access story through &mut self methods (single-threaded wasm).
     story: RefCell<Option<brink_runtime::Story<'static, FastRng>>>,
@@ -109,9 +110,9 @@ impl StoryRunner {
     pub fn new(story_bytes: &[u8]) -> Result<StoryRunner, JsError> {
         let data = brink_format::read_inkb(story_bytes)
             .map_err(|e| JsError::new(&format!("decode error: {e}")))?;
-        let program = Box::new(
-            brink_runtime::link(&data).map_err(|e| JsError::new(&format!("link error: {e}")))?,
-        );
+        let (prog, line_tables) =
+            brink_runtime::link(&data).map_err(|e| JsError::new(&format!("link error: {e}")))?;
+        let program = Box::new(prog);
 
         // Safety: we pin the Program in a Box and keep it alive for the
         // lifetime of StoryRunner. The Story borrows it, but we transmute
@@ -126,10 +127,11 @@ impl StoryRunner {
         #[expect(unsafe_code)]
         let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
 
-        let story = brink_runtime::Story::<FastRng>::new(program_ref);
+        let story = brink_runtime::Story::<FastRng>::new(program_ref, line_tables.clone());
 
         Ok(StoryRunner {
             program,
+            base_line_tables: line_tables,
             story: RefCell::new(Some(story)),
         })
     }
@@ -185,7 +187,8 @@ impl StoryRunner {
         #[expect(unsafe_code)]
         let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
 
-        let story = brink_runtime::Story::<FastRng>::new(program_ref);
+        let story =
+            brink_runtime::Story::<FastRng>::new(program_ref, self.base_line_tables.clone());
         *self.story.borrow_mut() = Some(story);
     }
 }

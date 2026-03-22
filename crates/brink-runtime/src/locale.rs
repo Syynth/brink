@@ -1,4 +1,4 @@
-//! Locale overlay loading for linked programs.
+//! Locale overlay loading.
 
 use std::collections::HashMap;
 
@@ -17,61 +17,65 @@ pub enum LocaleMode {
     Overlay,
 }
 
-impl Program {
-    /// Apply a locale overlay, replacing line table content for matching scopes.
-    pub fn apply_locale(
-        &mut self,
-        locale: &LocaleData,
-        mode: LocaleMode,
-    ) -> Result<(), RuntimeError> {
-        if locale.base_checksum != self.source_checksum {
-            return Err(RuntimeError::LocaleChecksumMismatch {
-                expected: self.source_checksum,
-                actual: locale.base_checksum,
-            });
-        }
+/// Apply a locale overlay to a set of base line tables.
+///
+/// Returns a new set of line tables with locale content replacing matching
+/// scopes. The `Program` is used only for structural metadata (scope IDs,
+/// checksum) — it is not mutated.
+pub fn apply_locale(
+    program: &Program,
+    locale: &LocaleData,
+    base: &[Vec<LineEntry>],
+    mode: LocaleMode,
+) -> Result<Vec<Vec<LineEntry>>, RuntimeError> {
+    if locale.base_checksum != program.source_checksum {
+        return Err(RuntimeError::LocaleChecksumMismatch {
+            expected: program.source_checksum,
+            actual: locale.base_checksum,
+        });
+    }
 
-        // Build scope_id → line_tables index.
-        let scope_idx_map: HashMap<DefinitionId, usize> = self
-            .scope_ids
+    // Build scope_id → line_tables index.
+    let scope_idx_map: HashMap<DefinitionId, usize> = program
+        .scope_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    // Start with a clone of the base tables.
+    let mut result = base.to_vec();
+    let mut covered = vec![false; program.scope_ids.len()];
+
+    for locale_scope in &locale.line_tables {
+        let Some(&idx) = scope_idx_map.get(&locale_scope.scope_id) else {
+            return Err(RuntimeError::LocaleScopeNotInBase(locale_scope.scope_id));
+        };
+
+        // Convert LocaleLineEntry → LineEntry (source_hash=0 for locale entries).
+        let entries: Vec<LineEntry> = locale_scope
+            .lines
             .iter()
-            .enumerate()
-            .map(|(i, &id)| (id, i))
+            .map(|le| LineEntry {
+                content: le.content.clone(),
+                source_hash: 0,
+                audio_ref: le.audio_ref.clone(),
+                slot_info: Vec::new(),
+                source_location: None,
+            })
             .collect();
 
-        // Track which base scopes were covered (for strict mode).
-        let mut covered = vec![false; self.scope_ids.len()];
+        result[idx] = entries;
+        covered[idx] = true;
+    }
 
-        for locale_scope in &locale.line_tables {
-            let Some(&idx) = scope_idx_map.get(&locale_scope.scope_id) else {
-                return Err(RuntimeError::LocaleScopeNotInBase(locale_scope.scope_id));
-            };
-
-            // Convert LocaleLineEntry → LineEntry (source_hash=0 for locale entries).
-            let entries: Vec<LineEntry> = locale_scope
-                .lines
-                .iter()
-                .map(|le| LineEntry {
-                    content: le.content.clone(),
-                    source_hash: 0,
-                    audio_ref: le.audio_ref.clone(),
-                    slot_info: Vec::new(),
-                    source_location: None,
-                })
-                .collect();
-
-            self.line_tables[idx] = entries;
-            covered[idx] = true;
-        }
-
-        if matches!(mode, LocaleMode::Strict) {
-            for (i, was_covered) in covered.iter().enumerate() {
-                if !was_covered {
-                    return Err(RuntimeError::LocaleScopeMissing(self.scope_ids[i]));
-                }
+    if matches!(mode, LocaleMode::Strict) {
+        for (i, was_covered) in covered.iter().enumerate() {
+            if !was_covered {
+                return Err(RuntimeError::LocaleScopeMissing(program.scope_ids[i]));
             }
         }
-
-        Ok(())
     }
+
+    Ok(result)
 }

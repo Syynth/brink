@@ -15,7 +15,9 @@ use crate::program::{
 /// The root container is `containers[0]` by convention — both the converter
 /// and the brink compiler emit the root first.
 #[expect(clippy::cast_possible_truncation, clippy::too_many_lines)]
-pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
+pub fn link(
+    data: &StoryData,
+) -> Result<(Program, Vec<Vec<brink_format::LineEntry>>), RuntimeError> {
     let mut container_map = HashMap::with_capacity(data.containers.len());
 
     for (i, cdef) in data.containers.iter().enumerate() {
@@ -134,10 +136,9 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
         );
     }
 
-    Ok(Program {
+    let program = Program {
         containers,
         address_map,
-        line_tables,
         scope_ids,
         source_checksum: data.source_checksum,
         globals,
@@ -149,5 +150,6 @@ pub fn link(data: &StoryData) -> Result<Program, RuntimeError> {
         list_defs,
         list_def_map,
         external_fns,
-    })
+    };
+    Ok((program, line_tables))
 }

@@ -189,7 +189,7 @@ fn end_to_end_localize_and_run() {
     let locale = read_inkl(&inkl_bytes).unwrap();
 
     // Link and apply locale
-    let mut program = brink_runtime::link(&data).unwrap();
+    let (program, base_tables) = brink_runtime::link(&data).unwrap();
     // Program's source_checksum defaults to 0, and locale's base_checksum comes from inkb.
     // Override the program's checksum to match.
     // Since we can't set source_checksum directly (pub(crate)), we build locale with matching checksum.
@@ -197,12 +197,16 @@ fn end_to_end_localize_and_run() {
     // We'll create a locale manually with base_checksum=0 to match the program.
     let mut adjusted_locale = locale;
     adjusted_locale.base_checksum = 0;
-    program
-        .apply_locale(&adjusted_locale, LocaleMode::Overlay)
-        .unwrap();
+    let line_tables = brink_runtime::apply_locale(
+        &program,
+        &adjusted_locale,
+        &base_tables,
+        LocaleMode::Overlay,
+    )
+    .unwrap();
 
     // Run the story and verify the localized text appears
-    let mut story = Story::<DotNetRng>::new(&program);
+    let mut story = Story::<DotNetRng>::new(&program, line_tables);
     let lines = story.continue_maximally().unwrap();
     let text: String = lines.iter().map(Line::text).collect();
     assert!(

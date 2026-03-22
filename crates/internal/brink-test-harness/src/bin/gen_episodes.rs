@@ -82,9 +82,10 @@ fn generate_episodes(case_dir: &Path, config: &ExploreConfig) -> Result<usize, G
     let data =
         brink_converter::convert(&ink).map_err(|e| GenError::Failed(format!("convert: {e}")))?;
 
-    let program = brink_runtime::link(&data).map_err(|e| GenError::Failed(format!("link: {e}")))?;
+    let (program, line_tables) =
+        brink_runtime::link(&data).map_err(|e| GenError::Failed(format!("link: {e}")))?;
 
-    let episodes = explore(&program, config);
+    let episodes = explore(&program, line_tables, config);
     if episodes.is_empty() {
         return Err(GenError::Failed("explore produced 0 episodes".into()));
     }

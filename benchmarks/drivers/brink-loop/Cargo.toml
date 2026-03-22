@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+brink-format = { path = "../../../crates/internal/brink-format" }
 brink-runtime = { path = "../../../crates/brink-runtime" }
 brink-converter = { path = "../../../crates/internal/brink-converter" }
 brink-json = { path = "../../../crates/internal/brink-json" }

@@ -17,9 +17,9 @@ fn main() {
         .unwrap_or_else(|e| panic!("failed to parse JSON: {e}"));
     let data = convert(&ink)
         .unwrap_or_else(|e| panic!("failed to convert: {e}"));
-    let program = brink_runtime::link(&data)
+    let (program, line_tables) = brink_runtime::link(&data)
         .unwrap_or_else(|e| panic!("failed to link: {e}"));
-    let mut story = Story::<DotNetRng>::new(&program);
+    let mut story = Story::<DotNetRng>::new(&program, line_tables);
     let mut rng = StdRng::seed_from_u64(SEED);
     let mut choice_count = 0;
 

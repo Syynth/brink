@@ -54,8 +54,9 @@ fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, Strin
     let ink: InkJson =
         serde_json::from_str(json_str).map_err(|e| format!("json parse error: {e}"))?;
     let data = convert(&ink).map_err(|e| format!("convert error: {e}"))?;
-    let program = brink_runtime::link(&data).map_err(|e| format!("link error: {e}"))?;
-    let mut story = Story::<DotNetRng>::new(&program);
+    let (program, line_tables) =
+        brink_runtime::link(&data).map_err(|e| format!("link error: {e}"))?;
+    let mut story = Story::<DotNetRng>::new(&program, line_tables);
     let mut output = String::new();
     let mut input_idx = 0;
 

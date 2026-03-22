@@ -4,8 +4,8 @@
 //! links it into an immutable [`Program`], and executes it via [`Story`].
 //!
 //! ```ignore
-//! let program = brink_runtime::link(&story_data)?;
-//! let mut story = brink_runtime::Story::new(&program);
+//! let (program, line_tables) = brink_runtime::link(&story_data)?;
+//! let mut story = brink_runtime::Story::new(&program, line_tables);
 //! loop {
 //!     match story.continue_single()? {
 //!         Line::Text { text, .. } => print!("{text}"),
@@ -36,7 +36,7 @@ mod vm;
 
 pub use error::RuntimeError;
 pub use linker::link;
-pub use locale::LocaleMode;
+pub use locale::{LocaleMode, apply_locale};
 pub use program::Program;
 pub use rng::{DotNetRng, FastRng, StoryRng};
 pub use state::WriteObserver;

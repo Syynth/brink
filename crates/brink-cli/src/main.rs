@@ -401,11 +401,11 @@ fn run_play(
     locale_paths: &[&std::path::Path],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data = load_story_data(file)?;
-    let mut program = brink_runtime::link(&data)?;
+    let (program, line_tables) = brink_runtime::link(&data)?;
 
     if let Some(input_path) = input {
         // Batch mode: read choices from a file
-        let mut story = brink_runtime::Story::new(&program);
+        let mut story = brink_runtime::Story::new(&program, line_tables);
         let file = std::fs::File::open(input_path)?;
         let reader = std::io::BufReader::new(file);
         batch::play_loop(&mut story, reader.lines(), false)?;
@@ -423,16 +423,16 @@ fn run_play(
         };
 
         let locales = tui::load_locales(&effective_locale_paths)?;
-        let base_tables = program.save_line_tables();
+        let base_tables = line_tables;
         tui::run(
-            &mut program,
+            &program,
             &base_tables,
             &locales,
             &tui::TuiConfig { char_delay_ms },
         )?;
     } else {
         // Batch mode: stdin is piped
-        let mut story = brink_runtime::Story::new(&program);
+        let mut story = brink_runtime::Story::new(&program, line_tables);
         let stdin = std::io::stdin();
         batch::play_loop(&mut story, stdin.lock().lines(), false)?;
     }

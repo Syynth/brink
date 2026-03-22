@@ -80,8 +80,8 @@ pub fn explore_from_ink_json(
     let ink: brink_json::InkJson =
         serde_json::from_str(&json_str).map_err(|e| format!("json: {e}"))?;
     let data = brink_converter::convert(&ink).map_err(|e| format!("convert: {e}"))?;
-    let program = brink_runtime::link(&data).map_err(|e| format!("link: {e}"))?;
-    Ok(crate::explore(&program, config))
+    let (program, line_tables) = brink_runtime::link(&data).map_err(|e| format!("link: {e}"))?;
+    Ok(crate::explore(&program, line_tables, config))
 }
 
 /// Convert a `.ink.json` file and return the [`StoryData`].
@@ -97,8 +97,9 @@ pub fn convert_ink_json(json_path: &Path) -> Result<brink_format::StoryData, Str
 /// Returns `Err` if compilation or linking fails.
 pub fn explore_from_ink(ink_path: &Path, config: &ExploreConfig) -> Result<Vec<Episode>, String> {
     let output = brink_compiler::compile_path(ink_path).map_err(|e| format!("compile: {e}"))?;
-    let program = brink_runtime::link(&output.data).map_err(|e| format!("link: {e}"))?;
-    Ok(crate::explore(&program, config))
+    let (program, line_tables) =
+        brink_runtime::link(&output.data).map_err(|e| format!("link: {e}"))?;
+    Ok(crate::explore(&program, line_tables, config))
 }
 
 /// Compile a `.ink` file, link, explore, and also return the [`StoryData`].
@@ -109,8 +110,9 @@ pub fn compile_and_explore_from_ink(
     config: &ExploreConfig,
 ) -> Result<(brink_format::StoryData, Vec<Episode>), String> {
     let output = brink_compiler::compile_path(ink_path).map_err(|e| format!("compile: {e}"))?;
-    let program = brink_runtime::link(&output.data).map_err(|e| format!("link: {e}"))?;
-    let episodes = crate::explore(&program, config);
+    let (program, line_tables) =
+        brink_runtime::link(&output.data).map_err(|e| format!("link: {e}"))?;
+    let episodes = crate::explore(&program, line_tables, config);
     Ok((output.data, episodes))
 }
 
@@ -150,8 +152,9 @@ pub fn compile_json_roundtrip_and_explore(
     // Convert → link → explore
     let story_data =
         brink_converter::convert(&roundtripped).map_err(|e| format!("convert: {e}"))?;
-    let program = brink_runtime::link(&story_data).map_err(|e| format!("link: {e}"))?;
-    let episodes = crate::explore(&program, config);
+    let (program, line_tables) =
+        brink_runtime::link(&story_data).map_err(|e| format!("link: {e}"))?;
+    let episodes = crate::explore(&program, line_tables, config);
 
     Ok(JsonRoundtripResult {
         json_output,

@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use brink_format::{LineEntry, LocaleData};
-use brink_runtime::{LocaleMode, Program, Story};
+use brink_runtime::{LocaleMode, Program, Story, apply_locale};
 
 /// Configuration for the TUI.
 #[derive(Clone)]
@@ -24,7 +24,7 @@ pub struct LoadedLocale {
 
 /// Run the interactive TUI for playing a story.
 pub fn run(
-    program: &mut Program,
+    program: &Program,
     base_line_tables: &[Vec<LineEntry>],
     locales: &[LoadedLocale],
     config: &TuiConfig,
@@ -37,7 +37,7 @@ pub fn run(
 
 fn run_inner(
     terminal: &mut ratatui::DefaultTerminal,
-    program: &mut Program,
+    program: &Program,
     base_line_tables: &[Vec<LineEntry>],
     locales: &[LoadedLocale],
     config: &TuiConfig,
@@ -49,7 +49,7 @@ fn run_inner(
     locale_labels.extend(locales.iter().map(|l| l.label.clone()));
 
     let mut app = app::App::new(char_delay, locale_labels);
-    let mut story = Story::new(program);
+    let mut story = Story::new(program, base_line_tables.to_vec());
     app.advance_story(&mut story)?;
 
     while !app.should_quit {
@@ -60,14 +60,18 @@ fn run_inner(
         // Check if the app wants a locale switch before normal input handling.
         if let Some(locale_idx) = app.handle_input(input, &mut story)? {
             // Snapshot story state, swap locale, restore.
-            let snapshot = story.into_snapshot();
-            // Reset to base line tables first.
-            program.restore_line_tables(base_line_tables.to_vec());
-            if locale_idx > 0 {
-                // Apply the selected locale overlay.
-                program.apply_locale(&locales[locale_idx - 1].data, LocaleMode::Overlay)?;
-            }
-            story = Story::from_snapshot(program, snapshot);
+            let (snapshot, _old_tables) = story.into_snapshot();
+            let new_tables = if locale_idx > 0 {
+                apply_locale(
+                    program,
+                    &locales[locale_idx - 1].data,
+                    base_line_tables,
+                    LocaleMode::Overlay,
+                )?
+            } else {
+                base_line_tables.to_vec()
+            };
+            story = Story::from_snapshot(program, snapshot, new_tables);
         }
 
         app.tick();
