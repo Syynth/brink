@@ -56,12 +56,16 @@ pub fn apply_locale(
         let entries: Vec<LineEntry> = locale_scope
             .lines
             .iter()
-            .map(|le| LineEntry {
-                content: le.content.clone(),
-                source_hash: 0,
-                audio_ref: le.audio_ref.clone(),
-                slot_info: Vec::new(),
-                source_location: None,
+            .map(|le| {
+                let flags = brink_format::LineFlags::from_content(&le.content);
+                LineEntry {
+                    content: le.content.clone(),
+                    flags,
+                    source_hash: 0,
+                    audio_ref: le.audio_ref.clone(),
+                    slot_info: Vec::new(),
+                    source_location: None,
+                }
             })
             .collect();
 

@@ -115,8 +115,11 @@ impl<'a> ContainerEmitter<'a> {
         source_location: Option<brink_format::SourceLocation>,
     ) -> u16 {
         let idx = self.scope_line_table.len() as u16;
+        let content = LineContent::Plain(text.to_string());
+        let flags = brink_format::LineFlags::from_content(&content);
         self.scope_line_table.push(LineEntry {
-            content: LineContent::Plain(text.to_string()),
+            content,
+            flags,
             source_hash,
             audio_ref: None,
             slot_info,
@@ -134,8 +137,11 @@ impl<'a> ContainerEmitter<'a> {
         source_location: Option<brink_format::SourceLocation>,
     ) -> u16 {
         let idx = self.scope_line_table.len() as u16;
+        let content = LineContent::Template(parts);
+        let flags = brink_format::LineFlags::from_content(&content);
         self.scope_line_table.push(LineEntry {
-            content: LineContent::Template(parts),
+            content,
+            flags,
             source_hash,
             audio_ref: None,
             slot_info,

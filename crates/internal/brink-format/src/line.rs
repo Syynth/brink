@@ -6,6 +6,91 @@ pub enum LineContent {
     Template(LineTemplate),
 }
 
+bitflags::bitflags! {
+    /// Whitespace characteristics of a line, precomputed at compile time.
+    ///
+    /// Used by the output buffer to make filtering decisions (suppress leading
+    /// whitespace, collapse adjacent whitespace) without eagerly resolving
+    /// deferred `LineRef` parts.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct LineFlags: u8 {
+        /// The resolved content starts with whitespace.
+        const STARTS_WITH_WS = 0b0001;
+        /// The resolved content ends with whitespace.
+        const ENDS_WITH_WS   = 0b0010;
+        /// The resolved content is entirely whitespace (but not empty).
+        const ALL_WS         = 0b0100;
+        /// The resolved content is empty.
+        const EMPTY          = 0b1000;
+    }
+}
+
+impl LineFlags {
+    /// Compute flags from a `LineContent`.
+    ///
+    /// For `Plain` content, flags are exact. For `Template` content, flags
+    /// are conservative: `Slot`/`Select` parts are assumed to produce
+    /// non-whitespace content.
+    pub fn from_content(content: &LineContent) -> Self {
+        match content {
+            LineContent::Plain(s) => Self::from_plain(s),
+            LineContent::Template(parts) => Self::from_template(parts),
+        }
+    }
+
+    /// Compute flags from a plain string.
+    pub fn from_plain(s: &str) -> Self {
+        if s.is_empty() {
+            return Self::EMPTY;
+        }
+        let mut flags = Self::empty();
+        if s.starts_with(char::is_whitespace) {
+            flags |= Self::STARTS_WITH_WS;
+        }
+        if s.ends_with(char::is_whitespace) {
+            flags |= Self::ENDS_WITH_WS;
+        }
+        if s.trim().is_empty() {
+            flags |= Self::ALL_WS;
+        }
+        flags
+    }
+
+    fn from_template(parts: &[LinePart]) -> Self {
+        if parts.is_empty() {
+            return Self::EMPTY;
+        }
+        let mut flags = Self::empty();
+
+        // Check first part for leading whitespace.
+        if let Some(LinePart::Literal(s)) = parts.first()
+            && s.starts_with(char::is_whitespace)
+        {
+            flags |= Self::STARTS_WITH_WS;
+        }
+
+        // Check last part for trailing whitespace.
+        match parts.last() {
+            Some(LinePart::Literal(s)) if s.ends_with(char::is_whitespace) => {
+                flags |= Self::ENDS_WITH_WS;
+            }
+            _ => {}
+        }
+
+        // ALL_WS: only true if every part is whitespace-only literals.
+        // Any Slot/Select means we can't guarantee all-whitespace.
+        let all_ws = parts.iter().all(|p| match p {
+            LinePart::Literal(s) => s.trim().is_empty(),
+            _ => false,
+        });
+        if all_ws {
+            flags |= Self::ALL_WS;
+        }
+
+        flags
+    }
+}
+
 /// A sequence of literal and dynamic parts that compose an output line.
 pub type LineTemplate = Vec<LinePart>;
 

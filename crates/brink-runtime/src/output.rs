@@ -1,15 +1,192 @@
-//! Output buffer with glue handling.
+//! Output buffer with glue handling and deferred line resolution.
+
+use brink_format::{
+    LineContent, LineEntry, LinePart, PluralCategory, PluralResolver, SelectKey, Value,
+};
+
+use crate::program::Program;
+use crate::value_ops;
 
 /// A part of accumulated output.
 #[derive(Debug, Clone)]
 pub(crate) enum OutputPart {
+    /// Eagerly-resolved text. Not produced by the VM in production —
+    /// constructed in tests, matched in resolution functions.
+    #[cfg_attr(not(test), expect(dead_code))]
     Text(String),
+    /// Deferred line reference — resolved at read time against the
+    /// current line tables and plural resolver.
+    LineRef {
+        container_idx: u32,
+        line_idx: u16,
+        slots: Vec<Value>,
+        flags: brink_format::LineFlags,
+    },
+    /// Deferred value — stringified at read time.
+    ValueRef(Value),
     Newline,
     Glue,
     /// Marks the start of a captured region (string eval, tag, or function call).
     Checkpoint,
     /// A tag associated with the current line of output.
     Tag(String),
+}
+
+impl OutputPart {
+    /// Returns true if this part represents non-whitespace text content.
+    fn is_content(&self) -> bool {
+        match self {
+            Self::Text(s) => !s.trim().is_empty(),
+            Self::LineRef { flags, .. } => {
+                !flags.contains(brink_format::LineFlags::ALL_WS)
+                    && !flags.contains(brink_format::LineFlags::EMPTY)
+            }
+            Self::ValueRef(_) => true,
+            _ => false,
+        }
+    }
+}
+
+/// Resolve a single output part to its text representation.
+///
+/// `Text` parts pass through. `LineRef` and `ValueRef` are resolved
+/// using the provided program, line tables, and plural resolver.
+fn resolve_part(
+    part: &OutputPart,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    resolver: Option<&dyn PluralResolver>,
+) -> String {
+    match part {
+        OutputPart::Text(s) => s.clone(),
+        OutputPart::LineRef {
+            container_idx,
+            line_idx,
+            slots,
+            ..
+        } => resolve_line_ref(
+            program,
+            line_tables,
+            *container_idx,
+            *line_idx,
+            slots,
+            resolver,
+        ),
+        OutputPart::ValueRef(val) => value_ops::stringify(val, program),
+        OutputPart::Newline | OutputPart::Glue | OutputPart::Checkpoint | OutputPart::Tag(_) => {
+            String::new()
+        }
+    }
+}
+
+/// Resolve a `LineRef` to its text content.
+fn resolve_line_ref(
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    container_idx: u32,
+    line_idx: u16,
+    slots: &[Value],
+    resolver: Option<&dyn PluralResolver>,
+) -> String {
+    let scope_idx = program.scope_table_idx(container_idx) as usize;
+    let lines = &line_tables[scope_idx];
+    let Some(entry) = lines.get(line_idx as usize) else {
+        return String::new();
+    };
+
+    match &entry.content {
+        LineContent::Plain(s) => s.clone(),
+        LineContent::Template(parts) => {
+            let mut result = String::new();
+            for part in parts {
+                match part {
+                    LinePart::Literal(s) => result.push_str(s),
+                    LinePart::Slot(n) => {
+                        if let Some(val) = slots.get(*n as usize) {
+                            result.push_str(&value_ops::stringify(val, program));
+                        }
+                    }
+                    LinePart::Select {
+                        slot,
+                        variants,
+                        default,
+                    } => {
+                        let text = resolve_select(*slot, variants, default, slots, resolver);
+                        result.push_str(text);
+                    }
+                }
+            }
+            result
+        }
+    }
+}
+
+/// Resolve a Select part against its slot value.
+///
+/// Cascade: Exact → Keyword → Cardinal/Ordinal → default.
+fn resolve_select<'a>(
+    slot: u8,
+    variants: &'a [(SelectKey, String)],
+    default: &'a str,
+    slots: &[Value],
+    resolver: Option<&dyn PluralResolver>,
+) -> &'a str {
+    let Some(val) = slots.get(slot as usize) else {
+        return default;
+    };
+
+    #[expect(clippy::cast_possible_truncation)]
+    let n: Option<i64> = match val {
+        Value::Int(i) => Some(i64::from(*i)),
+        Value::Float(f) => Some(*f as i64),
+        _ => None,
+    };
+
+    // Exact match.
+    if let Some(n) = n {
+        #[expect(clippy::cast_possible_truncation)]
+        let n32 = n as i32;
+        for (key, text) in variants {
+            if let SelectKey::Exact(e) = key
+                && *e == n32
+            {
+                return text;
+            }
+        }
+    }
+
+    // Keyword match.
+    if let Value::String(s) = val {
+        for (key, text) in variants {
+            if let SelectKey::Keyword(k) = key
+                && k == s.as_ref()
+            {
+                return text;
+            }
+        }
+    }
+
+    // Plural resolution.
+    if let (Some(n), Some(r)) = (n, resolver) {
+        let cardinal: PluralCategory = r.cardinal(n, None);
+        for (key, text) in variants {
+            if let SelectKey::Cardinal(cat) = key
+                && *cat == cardinal
+            {
+                return text;
+            }
+        }
+        let ordinal: PluralCategory = r.ordinal(n);
+        for (key, text) in variants {
+            if let SelectKey::Ordinal(cat) = key
+                && *cat == ordinal
+            {
+                return text;
+            }
+        }
+    }
+
+    default
 }
 
 /// Accumulates output text with glue resolution.
@@ -23,6 +200,8 @@ impl OutputBuffer {
         Self { parts: Vec::new() }
     }
 
+    /// No longer called by the VM — candidate for removal.
+    #[cfg(test)]
     pub fn push_text(&mut self, text: &str) {
         if text.is_empty() {
             return;
@@ -62,7 +241,7 @@ impl OutputBuffer {
             .iter()
             .rev()
             .take_while(|p| !matches!(p, OutputPart::Checkpoint))
-            .any(|p| matches!(p, OutputPart::Text(_)))
+            .any(OutputPart::is_content)
     }
 
     /// Returns true if the last part in the buffer is a newline.
@@ -73,15 +252,48 @@ impl OutputBuffer {
     /// Returns true if the last part is text ending with whitespace.
     /// Only checks the immediately preceding part — intervening Glue or
     /// Newline parts mean the glue system handles the join instead.
+    #[cfg(test)]
     fn ends_in_whitespace(&self) -> bool {
-        matches!(
-            self.parts.last(),
-            Some(OutputPart::Text(s)) if s.ends_with(char::is_whitespace)
-        )
+        match self.parts.last() {
+            Some(OutputPart::Text(s)) => s.ends_with(char::is_whitespace),
+            Some(OutputPart::LineRef { flags, .. }) => {
+                flags.contains(brink_format::LineFlags::ENDS_WITH_WS)
+            }
+            _ => false,
+        }
     }
 
     pub fn push_glue(&mut self) {
         self.parts.push(OutputPart::Glue);
+    }
+
+    /// Push a deferred line reference. Resolved at read time.
+    /// Applies the same filtering as `push_text` using precomputed flags.
+    pub fn push_line_ref(
+        &mut self,
+        container_idx: u32,
+        line_idx: u16,
+        slots: Vec<Value>,
+        flags: brink_format::LineFlags,
+    ) {
+        // Suppress whitespace-only/empty content when there's no content yet.
+        if !self.has_content()
+            && (flags.contains(brink_format::LineFlags::ALL_WS)
+                || flags.contains(brink_format::LineFlags::EMPTY))
+        {
+            return;
+        }
+        self.parts.push(OutputPart::LineRef {
+            container_idx,
+            line_idx,
+            slots,
+            flags,
+        });
+    }
+
+    /// Push a deferred value. Stringified at read time.
+    pub fn push_value_ref(&mut self, value: Value) {
+        self.parts.push(OutputPart::ValueRef(value));
     }
 
     /// Push a tag associated with the current output line.
@@ -106,7 +318,12 @@ impl OutputBuffer {
     /// resolve glue on the captured slice, and return the result as a string.
     ///
     /// Returns `None` if there is no checkpoint on the buffer.
-    pub fn end_capture(&mut self) -> Option<String> {
+    pub fn end_capture(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<LineEntry>],
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Option<String> {
         let cp_idx = self
             .parts
             .iter()
@@ -116,7 +333,7 @@ impl OutputBuffer {
         // Skip the checkpoint itself (first element).
         let captured = &captured[1..];
 
-        Some(resolve_parts(captured))
+        Some(resolve_parts(captured, program, line_tables, resolver))
     }
 
     /// Remove the most recent checkpoint without capturing its content.
@@ -164,20 +381,21 @@ impl OutputBuffer {
                 }
                 continue;
             }
-            match part {
-                OutputPart::Text(s) if !s.trim().is_empty() => {
-                    if found_newline {
-                        return true;
+            if part.is_content() {
+                if found_newline {
+                    return true;
+                }
+                after_glue = false;
+            } else {
+                match part {
+                    OutputPart::Newline if !after_glue => {
+                        found_newline = true;
                     }
-                    after_glue = false;
+                    OutputPart::Glue | OutputPart::Checkpoint => {
+                        after_glue = true;
+                    }
+                    _ => {}
                 }
-                OutputPart::Newline if !after_glue => {
-                    found_newline = true;
-                }
-                OutputPart::Glue | OutputPart::Checkpoint => {
-                    after_glue = true;
-                }
-                _ => {}
             }
         }
 
@@ -194,7 +412,12 @@ impl OutputBuffer {
     /// output as the original `flush_lines` + `finalize_lines`.
     ///
     /// Returns `None` if there is no completed line.
-    pub(crate) fn take_first_line(&mut self) -> Option<(String, Vec<String>)> {
+    pub(crate) fn take_first_line(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<LineEntry>],
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Option<(String, Vec<String>)> {
         if self.has_checkpoint() || self.parts.is_empty() {
             return None;
         }
@@ -214,21 +437,21 @@ impl OutputBuffer {
                 }
                 continue;
             }
-            match part {
-                OutputPart::Text(s) if !s.trim().is_empty() => {
-                    if candidate_newline.is_some() {
-                        // Content after the newline confirms it's committed.
-                        break;
+            if part.is_content() {
+                if candidate_newline.is_some() {
+                    break;
+                }
+                after_glue = false;
+            } else {
+                match part {
+                    OutputPart::Newline if !after_glue => {
+                        candidate_newline = Some(i);
                     }
-                    after_glue = false;
+                    OutputPart::Glue | OutputPart::Checkpoint => {
+                        after_glue = true;
+                    }
+                    _ => {}
                 }
-                OutputPart::Newline if !after_glue => {
-                    candidate_newline = Some(i);
-                }
-                OutputPart::Glue | OutputPart::Checkpoint => {
-                    after_glue = true;
-                }
-                _ => {}
             }
         }
 
@@ -238,7 +461,7 @@ impl OutputBuffer {
         let drained: Vec<OutputPart> = self.parts.drain(0..=split_at).collect();
 
         // Resolve the drained parts into a single line with tags.
-        let mut lines = resolve_lines(&drained);
+        let mut lines = resolve_lines(&drained, program, line_tables, resolver);
         if lines.is_empty() {
             return None;
         }
@@ -252,6 +475,8 @@ impl OutputBuffer {
     ///
     /// Glue removes the newline immediately before it and any leading
     /// whitespace on the text immediately after it, stitching text together.
+    /// Resolve glue and flush to a string. Test-only — only works with
+    /// `Text`/`Newline`/`Glue` parts (no `LineRef`/`ValueRef`).
     #[cfg(test)]
     pub fn flush(&mut self) -> String {
         debug_assert!(
@@ -262,14 +487,22 @@ impl OutputBuffer {
             "flush() called with active checkpoints"
         );
         let parts = core::mem::take(&mut self.parts);
-        resolve_parts(&parts)
+        // Tests using flush() only use Text/Newline/Glue — no resolution needed.
+        // Pass a minimal Program that won't be accessed.
+        let program = test_dummy_program();
+        resolve_parts(&parts, &program, &[], None)
     }
 
     /// Resolve glue and flush to structured per-line output.
     ///
     /// Each returned element is `(line_text, line_tags)`. Tags are associated
     /// with the line they appear on in the output stream.
-    pub fn flush_lines(&mut self) -> Vec<(String, Vec<String>)> {
+    pub fn flush_lines(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<LineEntry>],
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Vec<(String, Vec<String>)> {
         debug_assert!(
             !self
                 .parts
@@ -278,7 +511,7 @@ impl OutputBuffer {
             "flush_lines() called with active checkpoints"
         );
         let parts = core::mem::take(&mut self.parts);
-        resolve_lines(&parts)
+        resolve_lines(&parts, program, line_tables, resolver)
     }
 }
 
@@ -301,7 +534,10 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
                     }
                     OutputPart::Glue | OutputPart::Checkpoint | OutputPart::Tag(_) => {}
                     OutputPart::Text(s) if s.trim().is_empty() => {}
-                    OutputPart::Text(_) => break,
+                    // Content (Text, LineRef, ValueRef) blocks glue scan.
+                    OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
+                        break;
+                    }
                 }
             }
             remove[i] = true;
@@ -310,7 +546,12 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
 }
 
 /// Resolve glue in a slice of output parts and return the flattened string.
-fn resolve_parts(parts: &[OutputPart]) -> String {
+fn resolve_parts(
+    parts: &[OutputPart],
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    resolver: Option<&dyn PluralResolver>,
+) -> String {
     // First pass: mark newlines that should be removed by glue.
     let mut remove = vec![false; parts.len()];
     mark_glue_removals(parts, &mut remove);
@@ -326,23 +567,19 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
             continue;
         }
         match part {
-            OutputPart::Text(s) => {
-                out.push_str(s);
-                // Only clear after_glue for non-whitespace text; whitespace-only
-                // text should not prevent glue from eating a following newline.
+            OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
+                let s = resolve_part(part, program, line_tables, resolver);
+                out.push_str(&s);
                 if !s.trim().is_empty() {
                     after_glue = false;
                 }
             }
             OutputPart::Newline => {
                 if !after_glue {
-                    // Trim trailing whitespace before the newline, matching
-                    // the C# ink runtime's output cleanup.
                     let trimmed_len = out.trim_end().len();
                     out.truncate(trimmed_len);
                     out.push('\n');
                 }
-                // When after_glue, skip the newline (glue eats following newlines too).
             }
             OutputPart::Glue | OutputPart::Checkpoint | OutputPart::Tag(_) => {
                 after_glue = true;
@@ -358,7 +595,12 @@ fn resolve_parts(parts: &[OutputPart]) -> String {
 /// Each returned element is `(line_text, line_tags)`. Tags that appear
 /// in the stream associate with the current line (the line being built
 /// when the tag is encountered).
-fn resolve_lines(parts: &[OutputPart]) -> Vec<(String, Vec<String>)> {
+fn resolve_lines(
+    parts: &[OutputPart],
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    resolver: Option<&dyn PluralResolver>,
+) -> Vec<(String, Vec<String>)> {
     if parts.is_empty() {
         return Vec::new();
     }
@@ -380,15 +622,15 @@ fn resolve_lines(parts: &[OutputPart]) -> Vec<(String, Vec<String>)> {
             continue;
         }
         match part {
-            OutputPart::Text(s) => {
-                current_text.push_str(s);
+            OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
+                let s = resolve_part(part, program, line_tables, resolver);
+                current_text.push_str(&s);
                 if !s.trim().is_empty() {
                     after_glue = false;
                 }
             }
             OutputPart::Newline => {
                 if !after_glue {
-                    // Trim trailing whitespace before the newline.
                     let trimmed = current_text.trim_end().to_string();
                     lines.push((trimmed, std::mem::take(&mut current_tags)));
                     current_text = String::new();
@@ -409,6 +651,27 @@ fn resolve_lines(parts: &[OutputPart]) -> Vec<(String, Vec<String>)> {
     lines.push((trimmed, current_tags));
 
     lines
+}
+
+/// Create a minimal `Program` for tests that only use `Text`/`Newline`/`Glue`.
+#[cfg(test)]
+fn test_dummy_program() -> Program {
+    use std::collections::HashMap;
+    Program {
+        containers: vec![],
+        address_map: HashMap::new(),
+        scope_ids: vec![],
+        source_checksum: 0,
+        globals: vec![],
+        global_map: HashMap::new(),
+        name_table: vec![],
+        root_idx: 0,
+        list_literals: vec![],
+        list_item_map: HashMap::new(),
+        list_defs: vec![],
+        list_def_map: HashMap::new(),
+        external_fns: HashMap::new(),
+    }
 }
 
 /// Clean inline whitespace in the output text, matching the reference ink
@@ -458,6 +721,25 @@ pub(crate) fn clean_output_whitespace(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test helpers — `OutputBuffer` methods that need resolution context.
+    /// Tests only use Text/Newline/Glue, so we pass an empty program.
+    impl OutputBuffer {
+        fn test_flush_lines(&mut self) -> Vec<(String, Vec<String>)> {
+            let p = test_dummy_program();
+            self.flush_lines(&p, &[], None)
+        }
+
+        fn test_take_first_line(&mut self) -> Option<(String, Vec<String>)> {
+            let p = test_dummy_program();
+            self.take_first_line(&p, &[], None)
+        }
+
+        fn test_end_capture(&mut self) -> Option<String> {
+            let p = test_dummy_program();
+            self.end_capture(&p, &[], None)
+        }
+    }
 
     #[test]
     fn simple_text() {
@@ -570,7 +852,7 @@ mod tests {
         buf.push_text("before");
         buf.begin_capture();
         buf.push_text("captured");
-        let result = buf.end_capture();
+        let result = buf.test_end_capture();
         assert_eq!(result, Some("captured".to_owned()));
         assert_eq!(buf.flush(), "before");
     }
@@ -583,9 +865,9 @@ mod tests {
         buf.push_text("middle");
         buf.begin_capture();
         buf.push_text("inner");
-        let inner = buf.end_capture();
+        let inner = buf.test_end_capture();
         assert_eq!(inner, Some("inner".to_owned()));
-        let middle = buf.end_capture();
+        let middle = buf.test_end_capture();
         assert_eq!(middle, Some("middle".to_owned()));
         assert_eq!(buf.flush(), "outer");
     }
@@ -598,7 +880,7 @@ mod tests {
         buf.push_newline();
         buf.push_glue();
         buf.push_text(" world");
-        let result = buf.end_capture();
+        let result = buf.test_end_capture();
         assert_eq!(result, Some("hello world".to_owned()));
     }
 
@@ -606,7 +888,7 @@ mod tests {
     fn end_capture_no_checkpoint_returns_none() {
         let mut buf = OutputBuffer::new();
         buf.push_text("hello");
-        assert_eq!(buf.end_capture(), None);
+        assert_eq!(buf.test_end_capture(), None);
     }
 
     #[test]
@@ -640,7 +922,7 @@ mod tests {
         buf.push_text("inner");
         // Discard inner capture; then end outer capture gets only "outer".
         buf.discard_capture();
-        let result = buf.end_capture();
+        let result = buf.test_end_capture();
         assert_eq!(result, Some("outerinner".to_owned()));
     }
 
@@ -749,7 +1031,7 @@ mod tests {
         buf.push_tag("my_tag".to_string());
         buf.push_newline();
         buf.push_text("line three");
-        let lines = buf.flush_lines();
+        let lines = buf.test_flush_lines();
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].0, "line one");
         assert!(lines[0].1.is_empty());
@@ -765,7 +1047,7 @@ mod tests {
         let mut buf = OutputBuffer::new();
         buf.push_text("only line");
         buf.push_tag("t".to_string());
-        let lines = buf.flush_lines();
+        let lines = buf.test_flush_lines();
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].0, "only line");
         assert_eq!(lines[0].1, vec!["t"]);
@@ -779,7 +1061,7 @@ mod tests {
         buf.push_newline();
         buf.push_glue();
         buf.push_text(" world");
-        let lines = buf.flush_lines();
+        let lines = buf.test_flush_lines();
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].0, "hello world");
     }
@@ -791,7 +1073,7 @@ mod tests {
     #[test]
     fn flush_lines_empty_buffer_returns_no_lines() {
         let mut buf = OutputBuffer::new();
-        let lines = buf.flush_lines();
+        let lines = buf.test_flush_lines();
         assert!(
             lines.is_empty(),
             "empty buffer should produce no lines, got: {lines:?}"
@@ -860,7 +1142,7 @@ mod tests {
         buf.push_newline();
         buf.push_text("world");
 
-        let result = buf.take_first_line();
+        let result = buf.test_take_first_line();
         assert!(result.is_some());
         let (text, tags) = result.unwrap();
         assert_eq!(text, "hello\n");
@@ -878,7 +1160,7 @@ mod tests {
         buf.push_newline();
         buf.push_text("next line");
 
-        let (text, tags) = buf.take_first_line().unwrap();
+        let (text, tags) = buf.test_take_first_line().unwrap();
         assert_eq!(text, "tagged line\n");
         assert_eq!(tags, vec!["my_tag"]);
 
@@ -894,10 +1176,10 @@ mod tests {
         buf.push_newline();
         buf.push_text("line three");
 
-        let (text1, _) = buf.take_first_line().unwrap();
+        let (text1, _) = buf.test_take_first_line().unwrap();
         assert_eq!(text1, "line one\n");
 
-        let (text2, _) = buf.take_first_line().unwrap();
+        let (text2, _) = buf.test_take_first_line().unwrap();
         assert_eq!(text2, "line two\n");
 
         // Only "line three" remains, no newline after it → no completed line.
@@ -919,12 +1201,12 @@ mod tests {
 
         let mut buf1 = OutputBuffer::new();
         parts(&mut buf1);
-        let all_lines = buf1.flush_lines();
+        let all_lines = buf1.test_flush_lines();
         let first_from_flush = clean_output_whitespace(&all_lines[0].0);
 
         let mut buf2 = OutputBuffer::new();
         parts(&mut buf2);
-        let (first_from_take, tags) = buf2.take_first_line().unwrap();
+        let (first_from_take, tags) = buf2.test_take_first_line().unwrap();
         // take_first_line appends \n; strip it for comparison.
         let first_trimmed = first_from_take.trim_end_matches('\n');
 
@@ -943,7 +1225,7 @@ mod tests {
         buf.push_newline();
         buf.push_text("next");
 
-        let (text, _) = buf.take_first_line().unwrap();
+        let (text, _) = buf.test_take_first_line().unwrap();
         assert_eq!(text, "hello world\n");
         assert_eq!(buf.flush(), "next");
     }
@@ -951,13 +1233,13 @@ mod tests {
     #[test]
     fn take_first_line_none_when_empty() {
         let mut buf = OutputBuffer::new();
-        assert!(buf.take_first_line().is_none());
+        assert!(buf.test_take_first_line().is_none());
     }
 
     #[test]
     fn take_first_line_none_when_no_newline() {
         let mut buf = OutputBuffer::new();
         buf.push_text("no newline");
-        assert!(buf.take_first_line().is_none());
+        assert!(buf.test_take_first_line().is_none());
     }
 }

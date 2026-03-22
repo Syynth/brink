@@ -704,8 +704,10 @@ fn parse_line_entry(pair: P<'_>) -> Result<LineEntry, InktParseError> {
         }
     }
 
+    let flags = crate::LineFlags::from_content(&content);
     Ok(LineEntry {
         content,
+        flags,
         source_hash,
         audio_ref,
         slot_info,

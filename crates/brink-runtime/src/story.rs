@@ -645,7 +645,10 @@ impl FlowInstance {
         // 1. If buffer already has a completed line from a previous step,
         //    take it immediately (no VM stepping needed).
         if self.flow.output.has_completed_line()
-            && let Some((text, tags)) = self.flow.output.take_first_line()
+            && let Some((text, tags)) =
+                self.flow
+                    .output
+                    .take_first_line(program, line_tables, resolver)
         {
             return Ok(Line::Text { text, tags });
         }
@@ -654,7 +657,7 @@ impl FlowInstance {
         //    (any non-Active state), flush it. At a yield point, no more
         //    output is coming, so trailing Newlines are committed.
         if !self.flow.output.parts.is_empty() && self.status != StoryStatus::Active {
-            let (text, tags) = flush_remaining(&mut self.flow);
+            let (text, tags) = flush_remaining(&mut self.flow, program, line_tables, resolver);
             return Ok(make_yield_line(self.status, text, tags, &self.flow));
         }
 
@@ -693,7 +696,8 @@ impl FlowInstance {
             match stepped {
                 vm::Stepped::Continue | vm::Stepped::ThreadCompleted => {
                     if flow.output.has_completed_line()
-                        && let Some((text, tags)) = flow.output.take_first_line()
+                        && let Some((text, tags)) =
+                            flow.output.take_first_line(program, line_tables, resolver)
                     {
                         return Ok(Line::Text { text, tags });
                     }
@@ -702,7 +706,8 @@ impl FlowInstance {
                 vm::Stepped::ExternalCall => {
                     resolve_external_call(flow, program, handler)?;
                     if flow.output.has_completed_line()
-                        && let Some((text, tags)) = flow.output.take_first_line()
+                        && let Some((text, tags)) =
+                            flow.output.take_first_line(program, line_tables, resolver)
                     {
                         return Ok(Line::Text { text, tags });
                     }
@@ -720,7 +725,8 @@ impl FlowInstance {
                         if all_invisible {
                             select_choice(flow, context, status, stats, 0)?;
                             if flow.output.has_completed_line()
-                                && let Some((text, tags)) = flow.output.take_first_line()
+                                && let Some((text, tags)) =
+                                    flow.output.take_first_line(program, line_tables, resolver)
                             {
                                 return Ok(Line::Text { text, tags });
                             }
@@ -737,12 +743,13 @@ impl FlowInstance {
                     }
 
                     if flow.output.has_completed_line()
-                        && let Some((text, tags)) = flow.output.take_first_line()
+                        && let Some((text, tags)) =
+                            flow.output.take_first_line(program, line_tables, resolver)
                     {
                         return Ok(Line::Text { text, tags });
                     }
 
-                    let (text, tags) = flush_remaining(flow);
+                    let (text, tags) = flush_remaining(flow, program, line_tables, resolver);
                     return Ok(make_yield_line(*status, text, tags, flow));
                 }
 
@@ -751,12 +758,13 @@ impl FlowInstance {
                     *status = StoryStatus::Ended;
 
                     if flow.output.has_completed_line()
-                        && let Some((text, tags)) = flow.output.take_first_line()
+                        && let Some((text, tags)) =
+                            flow.output.take_first_line(program, line_tables, resolver)
                     {
                         return Ok(Line::Text { text, tags });
                     }
 
-                    let (text, tags) = flush_remaining(flow);
+                    let (text, tags) = flush_remaining(flow, program, line_tables, resolver);
                     return Ok(Line::End { text, tags });
                 }
             }
@@ -882,8 +890,13 @@ fn resolve_external_call(
 /// At a yield point (Done/Choices/Ended), no more output is coming, so
 /// trailing newlines are committed. Lines are joined with `\n` and tags
 /// are flattened into a single vec.
-fn flush_remaining(flow: &mut Flow) -> (String, Vec<String>) {
-    let lines = flow.output.flush_lines();
+fn flush_remaining(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<brink_format::LineEntry>],
+    resolver: Option<&dyn brink_format::PluralResolver>,
+) -> (String, Vec<String>) {
+    let lines = flow.output.flush_lines(program, line_tables, resolver);
     let mut text = String::new();
     let mut tags = Vec::new();
     for (i, (line_text, line_tags)) in lines.iter().enumerate() {

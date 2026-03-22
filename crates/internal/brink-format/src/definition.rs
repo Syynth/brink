@@ -41,6 +41,7 @@ pub struct SourceLocation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineEntry {
     pub content: LineContent,
+    pub flags: crate::LineFlags,
     pub source_hash: u64,
     pub audio_ref: Option<String>,
     pub slot_info: Vec<SlotInfo>,

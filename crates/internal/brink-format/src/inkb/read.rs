@@ -503,8 +503,10 @@ fn decode_line_entry(buf: &[u8], off: &mut usize) -> Result<LineEntry, DecodeErr
         None
     };
 
+    let flags = crate::LineFlags::from_content(&content);
     Ok(LineEntry {
         content,
+        flags,
         source_hash,
         audio_ref,
         slot_info,

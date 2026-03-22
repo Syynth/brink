@@ -37,7 +37,9 @@ pub use inkb::{
     write_section_list_literals, write_section_name_table, write_section_variables,
 };
 pub use inkl::{read_inkl, write_inkl};
-pub use line::{LineContent, LinePart, LineTemplate, PluralCategory, PluralResolver, SelectKey};
+pub use line::{
+    LineContent, LineFlags, LinePart, LineTemplate, PluralCategory, PluralResolver, SelectKey,
+};
 pub use opcode::{ChoiceFlags, DecodeError, Opcode, SequenceKind};
 pub use story::StoryData;
 pub use value::{ListValue, Value, ValueType};

@@ -95,12 +95,16 @@ fn arb_line_entry() -> impl Strategy<Value = LineEntry> {
         prop::option::of(arb_source_location()),
     )
         .prop_map(
-            |(content, source_hash, audio_ref, slot_info, source_location)| LineEntry {
-                content,
-                source_hash,
-                audio_ref,
-                slot_info,
-                source_location,
+            |(content, source_hash, audio_ref, slot_info, source_location)| {
+                let flags = brink_format::LineFlags::from_content(&content);
+                LineEntry {
+                    content,
+                    flags,
+                    source_hash,
+                    audio_ref,
+                    slot_info,
+                    source_location,
+                }
             },
         )
 }

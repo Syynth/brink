@@ -63,7 +63,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
     let Some(pos) = frame.container_stack.last().copied() else {
         // Container stack empty — the frame has no more containers to execute.
         let frame_type = frame.frame_type;
-        return handle_frame_exhaustion(flow, stats, frame_type);
+        return handle_frame_exhaustion(flow, program, line_tables, resolver, stats, frame_type);
     };
 
     let container = program.container(pos.container_idx);
@@ -78,7 +78,14 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         frame.container_stack.pop();
         if frame.container_stack.is_empty() {
             let frame_type = frame.frame_type;
-            return handle_frame_exhaustion(flow, stats, frame_type);
+            return handle_frame_exhaustion(
+                flow,
+                program,
+                line_tables,
+                resolver,
+                stats,
+                frame_type,
+            );
         }
         return Ok(Stepped::Continue);
     }
@@ -106,17 +113,29 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
     match op {
         // ── Output ──────────────────────────────────────────────────
         Opcode::EmitLine(idx, slot_count) => {
-            let text = resolve_line(program, line_tables, flow, &pos, idx, slot_count, resolver)?;
-            flow.output.push_text(&text);
+            // Capture slot values from the stack, push a deferred LineRef.
+            let mut slots = Vec::with_capacity(slot_count as usize);
+            for _ in 0..slot_count {
+                slots.push(flow.pop_value()?);
+            }
+            slots.reverse();
+            // Look up precomputed flags for filtering.
+            let scope_idx = program.scope_table_idx(pos.container_idx) as usize;
+            let flags = line_tables
+                .get(scope_idx)
+                .and_then(|lines| lines.get(idx as usize))
+                .map_or(brink_format::LineFlags::EMPTY, |entry| entry.flags);
+            flow.output
+                .push_line_ref(pos.container_idx, idx, slots, flags);
         }
         Opcode::EvalLine(idx, slot_count) => {
+            // EvalLine resolves eagerly — result goes on the value stack.
             let text = resolve_line(program, line_tables, flow, &pos, idx, slot_count, resolver)?;
             flow.value_stack.push(Value::String(text.into()));
         }
         Opcode::EmitValue => {
             let val = flow.pop_value()?;
-            let text = value_ops::stringify(&val, program);
-            flow.output.push_text(&text);
+            flow.output.push_value_ref(val);
         }
         Opcode::EmitNewline => {
             flow.output.push_newline();
@@ -511,7 +530,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::Return => {
             // The function already pushed its return value via `ev, <value>, /ev`.
             // It stays on the value stack; pop_call_frame just cleans up the checkpoint.
-            pop_call_frame(flow, stats, true)?;
+            pop_call_frame(flow, program, line_tables, resolver, stats, true)?;
         }
         Opcode::TunnelCall(id) => {
             let idx = program
@@ -672,7 +691,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                     offset,
                 });
             }
-            pop_call_frame(flow, stats, true)?;
+            pop_call_frame(flow, program, line_tables, resolver, stats, true)?;
         }
 
         // ── Choices ─────────────────────────────────────────────────
@@ -682,7 +701,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::EndStringEval => {
             let text = flow
                 .output
-                .end_capture()
+                .end_capture(program, line_tables, resolver)
                 .ok_or(RuntimeError::CaptureUnderflow)?;
             flow.value_stack.push(Value::String(text.into()));
         }
@@ -796,7 +815,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             // This happens in sequences: non-first branches start with `/#`
             // to close the *previous* branch's tag, but on a fresh visit
             // there's nothing to close. Silently skip in that case.
-            if let Some(tag_text) = flow.output.end_capture() {
+            if let Some(tag_text) = flow.output.end_capture(program, line_tables, resolver) {
                 let tag = tag_text.trim().to_string();
                 flow.in_tag = false;
                 if flow.output.has_checkpoint() {
@@ -990,6 +1009,9 @@ fn resolve_select<'a>(
 /// - **Otherwise**: pop the call frame normally (implicit return).
 fn handle_frame_exhaustion(
     flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    resolver: Option<&dyn PluralResolver>,
     stats: &mut Stats,
     frame_type: CallFrameType,
 ) -> Result<Stepped, RuntimeError> {
@@ -1016,7 +1038,7 @@ fn handle_frame_exhaustion(
         return Ok(Stepped::Done);
     }
 
-    pop_call_frame(flow, stats, false)?;
+    pop_call_frame(flow, program, line_tables, resolver, stats, false)?;
     if flow.current_thread().call_stack.is_empty() {
         if flow.can_pop_thread() {
             flow.pop_thread();
@@ -1040,6 +1062,9 @@ fn handle_frame_exhaustion(
 ///   it as a `Value::String`.
 fn pop_call_frame(
     flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    resolver: Option<&dyn PluralResolver>,
     stats: &mut Stats,
     is_explicit_return: bool,
 ) -> Result<(), RuntimeError> {
@@ -1061,7 +1086,7 @@ fn pop_call_frame(
             // inline callers (`{f()}`) expect clean text without trailing breaks.
             let text = flow
                 .output
-                .end_capture()
+                .end_capture(program, line_tables, resolver)
                 .ok_or(RuntimeError::CaptureUnderflow)?;
             let text: Rc<str> = text.trim_end_matches('\n').into();
             flow.value_stack.push(Value::String(text));

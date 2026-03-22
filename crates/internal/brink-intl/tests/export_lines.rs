@@ -66,6 +66,7 @@ fn audio_ref_exported() {
             scope_id,
             lines: vec![brink_format::LineEntry {
                 content: brink_format::LineContent::Plain("hello\n".to_string()),
+                flags: brink_format::LineFlags::from_plain("hello\n"),
                 source_hash: 0,
                 audio_ref: Some("sfx/line1.ogg".to_string()),
                 slot_info: Vec::new(),

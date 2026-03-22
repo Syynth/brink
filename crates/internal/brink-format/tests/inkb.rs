@@ -385,6 +385,7 @@ fn roundtrip_line_entry_with_audio_ref() {
             scope_id,
             lines: vec![LineEntry {
                 content: LineContent::Plain("Hello world\n".to_string()),
+                flags: brink_format::LineFlags::from_plain("Hello world\n"),
                 source_hash: 0xABCD,
                 audio_ref: Some("audio/hello.wav".to_string()),
                 slot_info: Vec::new(),

@@ -110,8 +110,11 @@ impl<'a> ContainerEmitter<'a> {
     fn add_line(&mut self, text: &str) -> Result<u16, ConvertError> {
         let local_idx =
             u16::try_from(self.line_table.len()).map_err(|_| ConvertError::LineTableOverflow)?;
+        let content = LineContent::Plain(text.to_string());
+        let flags = brink_format::LineFlags::from_content(&content);
         self.line_table.push(LineEntry {
-            content: LineContent::Plain(text.to_string()),
+            content,
+            flags,
             source_hash: brink_format::content_hash(text),
             audio_ref: None,
             slot_info: Vec::new(),
