@@ -1891,9 +1891,16 @@ impl LowerCtx {
             .filter_map(|c| c.expr().and_then(|e| self.lower_expr(&e)))
             .reduce(|a, b| Expr::Infix(Box::new(a), InfixOp::And, Box::new(b)));
 
+        let has_bracket = choice.bracket_content().is_some();
+
         let mut start_content = choice.start_content().map(|sc| {
             let mut parts = self.lower_content_node_children(sc.syntax());
-            Self::trim_trailing_whitespace(&mut parts);
+            // Only trim trailing whitespace when there's no bracket content
+            // following — otherwise the space is a word boundary between
+            // start_content and bracket_content (e.g. `Hello [back!]`).
+            if !has_bracket {
+                Self::trim_trailing_whitespace(&mut parts);
+            }
             Content {
                 ptr: None,
                 parts,
