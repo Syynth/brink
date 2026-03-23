@@ -1,0 +1,48 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Set variable from code to 15",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "x": 10
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "KO\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "variables": {
+      "x": 0
+    },
+    "turn_index": 0
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "steps": [
+    {
+      "text": "The value of a variable in test file 2 is 5.\nThis is the main file\nThe value when accessed from knot_in_2 is 5.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "t2": 5
+    },
+    "turn_index": 0
+  }
+}

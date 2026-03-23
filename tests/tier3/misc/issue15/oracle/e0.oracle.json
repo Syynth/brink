@@ -1,0 +1,25 @@
+{
+  "steps": [
+    {
+      "text": "This is a test\nSET_X:\nX is not set!\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "x": ""
+    },
+    "turn_index": 0
+  }
+}

@@ -13,6 +13,9 @@ description = "Runtime/VM for executing compiled ink stories"
 brink-format = { path = "../internal/brink-format" }
 thiserror.workspace = true
 
+[features]
+testing = []
+
 [dev-dependencies]
 brink-converter = { path = "../internal/brink-converter" }
 brink-json = { path = "../internal/brink-json" }

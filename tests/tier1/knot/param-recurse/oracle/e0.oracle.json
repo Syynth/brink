@@ -1,0 +1,22 @@
+{
+  "steps": [
+    {
+      "text": "\"The result is 120!\" you announce.\nGauss stares at you in horror.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

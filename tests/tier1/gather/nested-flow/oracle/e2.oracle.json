@@ -1,0 +1,85 @@
+{
+  "steps": [
+    {
+      "text": "Well, Poirot? Murder or suicide?\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"Murder!\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"Suicide!\"",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "\"Murder!\"\n\"And who did it?\"\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"Detective-Inspector Japp!\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"Captain Hastings!\"",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "\"Myself!\"",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\"Myself!\"\nMrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0,
+    2
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

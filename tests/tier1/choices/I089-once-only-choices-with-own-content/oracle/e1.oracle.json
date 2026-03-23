@@ -1,0 +1,119 @@
+{
+  "steps": [
+    {
+      "text": "This is the first time.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Eat ice-cream",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Drink coke",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Munch cookies",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "times": 2
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Eat ice-cream\nThis is the second time.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Drink coke",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Munch cookies",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {
+        "times": 1
+      },
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "Munch cookies\nThis is the third time.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Drink coke",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "times": 0
+      },
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "Drink coke\nI've finished eating now.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {
+        "times": -1
+      },
+      "visit_changes": {},
+      "turn_index": 3
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0,
+    1,
+    0
+  ],
+  "initial_state": {
+    "variables": {
+      "times": 3
+    },
+    "turn_index": 0
+  }
+}

@@ -1,0 +1,787 @@
+{
+  "steps": [
+    {
+      "text": "They are keeping me waiting.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Hut 14",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Hut 14. The door was locked after I sat down.\nI don't even have a pen to do any work. There's a copy of the morning's intercept in my pocket, but staring at the jumbled letters will only drive me mad.\nI am not a machine, whatever they say about me.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Think",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Plan",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Wait",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\nThey suspect me to be a traitor. They think I stole the component from the calculating machine. They will be searching my bunk and cases.\nWhen they don't find it, they'll come back and demand I talk.\nI rattle my fingers on the field table.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Plan",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Wait",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "I am a problem—solver. Good with figures, quick with crosswords, excellent at chess.\nBut in this scenario — in this trap — what is the winning play?\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Co—operate",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Dissemble",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Divert",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "\nI must co—operate. My credibility is my main asset. To contradict myself, or another source, would be fatal.\nI must simply hope they do not ask the questions I do not want to answer.\nHalf an hour goes by before Commander Harris returns. He closes the door behind him quickly, as though afraid a loose word might slip inside.\n\"Well, then,\" he begins, awkwardly. This is an unseemly situation.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"Commander.\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"Tell me what this is about.\"",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Wait",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "forceful": -1
+      },
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "\"Commander.\"\nHe nods. He has brought two cups of tea in metal mugs: he sets them down on the tabletop between us.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Take one",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"What's going on?\"",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Wait",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 5
+    },
+    {
+      "text": "I take a mug and warm my hands. It's a small gesture of friendship.\nEnough to give me hope?\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Drink",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Wait",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "teacup": true
+      },
+      "visit_changes": {},
+      "turn_index": 6
+    },
+    {
+      "text": "\nI raise the cup to my mouth but it's too hot to drink.\n\"Quite a difficult situation,\" Harris begins, sternly. I've seen him adopt this stiff tone of voice before, but only when talking to the brass. \"I'm sure you agree.\"\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Agree",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Disagree",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Lie",
+              "index": 2,
+              "tags": []
+            },
+            {
+              "text": "Evade",
+              "index": 3,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 7
+    },
+    {
+      "text": "\n\"Awkward,\" I reply, sipping at my tea as though we were old friends.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Watch him",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Wait",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Smile",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "drugged": true
+      },
+      "visit_changes": {},
+      "turn_index": 8
+    },
+    {
+      "text": "His face is telling me nothing. I've seen Harris broad and full of laughter. Today he is tight, as much part of the military machine as the device in Hut 5.\n\"We need that component,\" he says.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "The stolen component...",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Shrug",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {
+        "missing_reel": 1
+      },
+      "turn_index": 9
+    },
+    {
+      "text": "The reel went missing from the Bombe this afternoon. The four of us were in the Hut, working on the latest German intercept. The results were garbage. It was Russell who found the gap in the plugboard.\nAny of us could have taken it; and no one else would have known its worth.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Panic",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Calculate",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Deny",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 10
+    },
+    {
+      "text": "They will pin it on me. They need a scapegoat so that the work can continue. I'm a likely target. Weaker than the rest.\n\"So. Do you have it?\" Harris is wasting no time: Bletchley is his watch. \"Do you know where it is?\"\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Yes",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "No",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Lie",
+              "index": 2,
+              "tags": []
+            },
+            {
+              "text": "Evade",
+              "index": 3,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {
+        "forceful": -2
+      },
+      "visit_changes": {},
+      "turn_index": 11
+    },
+    {
+      "text": "\"I have no idea.\"\nThere's an icy silence.\n\"Now drink your tea and talk.\"\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Drink",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Put the cup down",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 12
+    },
+    {
+      "text": "\nI set the cup carefully down on the table once more.\n\"Why?\" I ask coldly. \"What's in it?\"\n\"Lapsang Souchong,\" he replies, placing his own cup back on the table untouched. \"Such a curious flavour. It might almost not be tea at all. You might say it hides a multitude of sins. As do you. Isn't that right?\"\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Agree",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Disagree",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Lie",
+              "index": 2,
+              "tags": []
+            },
+            {
+              "text": "Evade",
+              "index": 3,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "teacup": false,
+        "forceful": -1
+      },
+      "visit_changes": {},
+      "turn_index": 13
+    },
+    {
+      "text": "\n\"I suppose so,\" I reply. \"I've done things I shouldn't have done.\"\n\"You mean you've left yourself open,\" Harris answers. \"To pressure. Is that what you're saying?\"\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Yes",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "No",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Evade",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "forceful": -2
+      },
+      "visit_changes": {},
+      "turn_index": 14
+    },
+    {
+      "text": "\"That's it,\" I reply. \"There are some things... which a man shouldn't do.\"\nHarris doesn't stiffen. Doesn't lean away, as though my condition might be infectious. I had thought they trained them in the army to shoot my kind on sight.\nHe offers no sympathy either. He nods, once. His understanding of me is a mere turning cog in his calculations, with no meaning to it.\n\"I've seen it before. A young man like you — clever, removed. The kind that doesn't go to parties. Who takes himself too seriously. Who takes things too far.\"\nHe slides his thumb between two fingers.\n\"Now they own you.\"\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Agree",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Disagree",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Apologise",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "admitblackmail": true
+      },
+      "visit_changes": {},
+      "turn_index": 15
+    },
+    {
+      "text": "\n\"What could I do?\" I'm shaking now. The night is cold and the heat—lamp in the Hut has been removed. \"I don't want to go to prison.\"\n\"Smart man,\" he replies. \"You wouldn't last. So why don't you tell me, right now. Where is it?\"\nHis eyes bear down like carbonised drill—bits.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Confess",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Dissemble",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 16
+    },
+    {
+      "text": "\n\"All right. I'll tell you what happened.\" And never mind my shame.\n\"I can imagine how it starts,\" he replies.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Talk",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {
+        "i_met_a_young_man": 1
+      },
+      "turn_index": 17
+    },
+    {
+      "text": "\"There was a young man. I met him in the town. A few months ago now. We got to talking. Not about work. And I used my cover story, but he seemed to know it wasn't true. That got me wondering if he might be one of us.\"\nHarris is not letting me off any more.\n\"You seriously entertained that possibility?\"\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Yes",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "No",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Lie",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 18
+    },
+    {
+      "text": "\"Yes, I considered it. He seemed to know all about me. He... he was quite enchanted by my achievements.\"\nThe way Harris is staring I expect him to strike me, but he does not. He replies, \"I can see how that must have been attractive to you,\" with such plain—spokeness that I think I must have misheard.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Yes",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "No",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 19
+    },
+    {
+      "text": "\n\"It wasn't,\" I reply. \"But I doubt you'd understand.\"\nHe simply nods.\n\"Go on with your confession.\"\nThat gives me pause. I hadn't thought of it as such. But I suppose he's right. I am about to admit what I did.\n\"There's not much else to say. I took the part from Bombe computing device. You seem to know that already. I had to. He was going to expose me if I didn't.\"\n\"This young man was blackmailing you over your affair?\"\nAs Harris speaks I find myself suddenly sharply aware, as if waking from a long sleep. The table, the corrugated walls of the hut, everything seems suddenly more tangible than a moment before.\nWhatever it was they put in my drink is wearing off.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Yes",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "No",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Tell the truth",
+              "index": 2,
+              "tags": []
+            },
+            {
+              "text": "Lie",
+              "index": 3,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "drugged": false
+      },
+      "visit_changes": {},
+      "turn_index": 20
+    }
+  ],
+  "outcome": {
+    "InputsExhausted": {
+      "remaining_choices": [
+        {
+          "text": "Yes",
+          "index": 0,
+          "tags": []
+        },
+        {
+          "text": "No",
+          "index": 1,
+          "tags": []
+        },
+        {
+          "text": "Tell the truth",
+          "index": 2,
+          "tags": []
+        },
+        {
+          "text": "Lie",
+          "index": 3,
+          "tags": []
+        }
+      ]
+    }
+  },
+  "choice_path": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1
+  ],
+  "initial_state": {
+    "variables": {
+      "forceful": 0,
+      "evasive": 0,
+      "teacup": false,
+      "gotcomponent": false,
+      "drugged": false,
+      "hooper_mentioned": false,
+      "losttemper": false,
+      "admitblackmail": false,
+      "hooperClueType": 0,
+      "hooperConfessed": false,
+      "smashingWindowItem": 0,
+      "notraitor": false,
+      "revealedhooperasculprit": false,
+      "smashedglass": false,
+      "muddyshoes": false,
+      "framedhooper": false,
+      "putcomponentintent": false,
+      "throwncomponentaway": false,
+      "piecereturned": false,
+      "longgrasshooperframe": false,
+      "DEBUG": false
+    },
+    "turn_index": 0
+  }
+}

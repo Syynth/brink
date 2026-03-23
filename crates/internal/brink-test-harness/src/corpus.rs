@@ -8,30 +8,49 @@ use crate::explorer::ExploreConfig;
 /// Recursively find directories containing `story.ink.json`.
 pub fn collect_test_cases(root: &Path) -> Vec<PathBuf> {
     let mut result = Vec::new();
-    collect_recursive(root, &mut result);
+    collect_recursive(root, &mut result, |dir| dir.join("story.ink.json").exists());
     result.sort();
     result
 }
 
-fn collect_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Recursively find directories containing an `oracle/` subdirectory with `.oracle.json` files.
+pub fn collect_oracle_cases(root: &Path) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    collect_recursive(root, &mut result, |dir| {
+        let oracle_dir = dir.join("oracle");
+        oracle_dir.is_dir()
+            && std::fs::read_dir(&oracle_dir).is_ok_and(|entries| {
+                entries
+                    .flatten()
+                    .any(|e| e.path().to_string_lossy().contains(".oracle.json"))
+            })
+    });
+    result.sort();
+    result
+}
+
+fn collect_recursive(dir: &Path, out: &mut Vec<PathBuf>, predicate: impl Fn(&Path) -> bool + Copy) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
 
-    if dir.join("story.ink.json").exists() {
+    if predicate(dir) {
         out.push(dir.to_path_buf());
     }
 
     let mut subdirs: Vec<PathBuf> = entries
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
-        .filter(|e| e.file_name() != "episodes")
+        .filter(|e| {
+            let name = e.file_name();
+            name != "episodes" && name != "oracle"
+        })
         .map(|e| e.path())
         .collect();
     subdirs.sort();
 
     for sub in subdirs {
-        collect_recursive(&sub, out);
+        collect_recursive(&sub, out, predicate);
     }
 }
 

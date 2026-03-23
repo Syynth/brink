@@ -8,9 +8,11 @@ pub mod corpus;
 pub mod diff;
 pub mod episode;
 pub mod explorer;
+pub mod oracle;
 pub mod runner;
 
 pub use diff::{EpisodeDiff, StepDiff, diff};
 pub use episode::*;
 pub use explorer::{ExploreConfig, explore};
+pub use oracle::{OracleDiff, OracleEpisode, diff_oracle, load_oracle_episodes};
 pub use runner::{RunConfig, record, record_from_ink_json, run_text, run_text_from_ink_json};

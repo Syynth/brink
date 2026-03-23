@@ -8,7 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-brink-runtime = { path = "../../brink-runtime" }
+brink-runtime = { path = "../../brink-runtime", features = ["testing"] }
 brink-format = { path = "../brink-format", features = ["inkt"] }
 brink-converter = { path = "../brink-converter" }
 brink-json = { path = "../brink-json" }

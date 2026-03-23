@@ -1,0 +1,51 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "inc",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "v": "a"
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "inc\nab.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {
+        "v": "ab"
+      },
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "variables": {
+      "v": ""
+    },
+    "turn_index": 0
+  }
+}

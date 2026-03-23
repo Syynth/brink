@@ -1,0 +1,35 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "opt",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": {
+    "Error": "Ink had 1 error. It is strongly suggested that you assign an error handler to story.onError. The first issue was: RUNTIME ERROR: '/Users/syynth/code/rs/brink/tests/tier1/choices/I092-should-not-gather-due-to-choice/story.ink' line 2: ran out of content. Do you need a '-> DONE' or '-> END'?"
+  },
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

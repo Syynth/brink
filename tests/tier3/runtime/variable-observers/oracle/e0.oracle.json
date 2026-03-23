@@ -1,0 +1,50 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Sets x = 10",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "x": 5
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Sets x = 10\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {
+        "x": 10
+      },
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "variables": {
+      "x": 0
+    },
+    "turn_index": 0
+  }
+}

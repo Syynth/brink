@@ -1,0 +1,75 @@
+{
+  "steps": [
+    {
+      "text": "I looked...\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "at the door",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "outside",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "at the door. It was open.\nI stood up and...\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "I strode out of the compartment",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {
+        "door_open": 1
+      },
+      "turn_index": 1
+    },
+    {
+      "text": "I strode out of the compartment and I fancied I heard my master quietly tutting to himself.",
+      "tags": [
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0,
+    0
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

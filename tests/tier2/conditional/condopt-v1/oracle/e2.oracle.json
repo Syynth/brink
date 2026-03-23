@@ -1,0 +1,77 @@
+{
+  "steps": [
+    {
+      "text": "I looked...\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "at the door",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "outside",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "I stood up and...\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "I asked permission to leave",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "I stood and went to open the door",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "I stood and went to open the door. Monsieur Fogg seemed untroubled by this small rebellion.",
+      "tags": [
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    1,
+    1
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Choice",
+              "index": 0,
+              "tags": [
+                "tag Name"
+              ]
+            },
+            {
+              "text": "Choice2",
+              "index": 1,
+              "tags": [
+                "tag 1 Name 2 3 4"
+              ]
+            },
+            {
+              "text": "Choice",
+              "index": 2,
+              "tags": [
+                "Name tag 1 2 3 4"
+              ]
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "",
+      "tags": [
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "variables": {
+      "name": "Name"
+    },
+    "turn_index": 0
+  }
+}

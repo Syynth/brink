@@ -1,0 +1,23 @@
+{
+  "steps": [
+    {
+      "text": "The value is 3.",
+      "tags": [
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "x": 0,
+      "y": 3
+    },
+    "turn_index": 0
+  }
+}

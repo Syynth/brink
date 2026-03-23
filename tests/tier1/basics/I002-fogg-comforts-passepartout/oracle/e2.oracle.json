@@ -1,0 +1,56 @@
+{
+  "steps": [
+    {
+      "text": "\"What's that?\" my master asked.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"I am somewhat tired.\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"Nothing, Monsieur!\"",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "\"I said, this journey is appalling.\"",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "\"I said, this journey is appalling and I want no more of it.\"\n\"Ah,\" he replied, not unkindly. \"I see you are feeling frustrated. Tomorrow, things will improve.\"\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    2
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

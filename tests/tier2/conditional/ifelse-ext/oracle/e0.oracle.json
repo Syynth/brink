@@ -1,0 +1,25 @@
+{
+  "steps": [
+    {
+      "text": "The value is -1.",
+      "tags": [
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {
+        "y": -1
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "x": -2,
+      "y": 3
+    },
+    "turn_index": 0
+  }
+}

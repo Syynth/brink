@@ -1,0 +1,621 @@
+{
+  "steps": [
+    {
+      "text": "Staring down from the heavens you see your followers finishing construction of the last of the great temples, ready to begin the work.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Regard the temples",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "post1": "one, two, three"
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered one, two, three. The second temple is empty. The third temple is empty.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Move a ring from the first temple to the second temple",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the first temple to the third temple",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "The priests far below construct a great harness, and after many years of work, the great stone ring is lifted up into the air, and swung over to the next of the temples.\nThe ropes are slashed, and in the blink of an eye it falls once more.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Regard the temples",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "post1": "two, three",
+        "post2": "one"
+      },
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered two, three. The one ring lies on the second temple. The third temple is empty.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Move a ring from the second temple to the first temple",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the first temple to the third temple",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the second temple to the third temple",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "Your next decree is met with a great feast and many sacrifices. After the funeary smoke has cleared, work to shift the great stone ring begins in earnest. A generation grows and falls, and the ring falls into its ordained place.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Regard the temples",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "post2": "",
+        "post1": "one, two, three"
+      },
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered one, two, three. The second temple is empty. The third temple is empty.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Move a ring from the first temple to the second temple",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the first temple to the third temple",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 5
+    },
+    {
+      "text": "Years pass as the ring is slowly moved.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Regard the temples",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "post1": "two, three",
+        "post2": "one"
+      },
+      "visit_changes": {},
+      "turn_index": 6
+    },
+    {
+      "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered two, three. The one ring lies on the second temple. The third temple is empty.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Move a ring from the second temple to the first temple",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the first temple to the third temple",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the second temple to the third temple",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 7
+    },
+    {
+      "text": "The priests below fight a war over what colour robes to wear, but while they fall and die, the work is still completed.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Regard the temples",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "post2": "",
+        "post1": "one, two, three"
+      },
+      "visit_changes": {},
+      "turn_index": 8
+    },
+    {
+      "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered one, two, three. The second temple is empty. The third temple is empty.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Move a ring from the first temple to the second temple",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the first temple to the third temple",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 9
+    },
+    {
+      "text": "Years pass as the ring is slowly moved.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Regard the temples",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "post1": "two, three",
+        "post3": "one"
+      },
+      "visit_changes": {},
+      "turn_index": 10
+    },
+    {
+      "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered two, three. The second temple is empty. The one ring lies on the third temple.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Move a ring from the first temple to the second temple",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the third temple to the first temple",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the third temple to the second temple",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 11
+    },
+    {
+      "text": "The priests below fight a war over what colour robes to wear, but while they fall and die, the work is still completed.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Regard the temples",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "post3": "",
+        "post1": "one, two, three"
+      },
+      "visit_changes": {},
+      "turn_index": 12
+    },
+    {
+      "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered one, two, three. The second temple is empty. The third temple is empty.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Move a ring from the first temple to the second temple",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the first temple to the third temple",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 13
+    },
+    {
+      "text": "Years pass as the ring is slowly moved.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Regard the temples",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "post1": "two, three",
+        "post3": "one"
+      },
+      "visit_changes": {},
+      "turn_index": 14
+    },
+    {
+      "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered two, three. The second temple is empty. The one ring lies on the third temple.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Move a ring from the first temple to the second temple",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the third temple to the first temple",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the third temple to the second temple",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 15
+    },
+    {
+      "text": "The priests below fight a war over what colour robes to wear, but while they fall and die, the work is still completed.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Regard the temples",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "post3": "",
+        "post2": "one"
+      },
+      "visit_changes": {},
+      "turn_index": 16
+    },
+    {
+      "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered two, three. The one ring lies on the second temple. The third temple is empty.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Move a ring from the second temple to the first temple",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the first temple to the third temple",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the second temple to the third temple",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 17
+    },
+    {
+      "text": "Years pass as the ring is slowly moved.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Regard the temples",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "post1": "three",
+        "post3": "two"
+      },
+      "visit_changes": {},
+      "turn_index": 18
+    },
+    {
+      "text": "You regard each of the temples in turn. On each is stacked the rings of stone. The three ring lies on the first temple. The one ring lies on the second temple. The two ring lies on the third temple.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Move a ring from the second temple to the first temple",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the third temple to the first temple",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Move a ring from the second temple to the third temple",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 19
+    },
+    {
+      "text": "The priests below fight a war over what colour robes to wear, but while they fall and die, the work is still completed.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Regard the temples",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "post2": "",
+        "post3": "one, two"
+      },
+      "visit_changes": {},
+      "turn_index": 20
+    }
+  ],
+  "outcome": {
+    "InputsExhausted": {
+      "remaining_choices": [
+        {
+          "text": "Regard the temples",
+          "index": 0,
+          "tags": []
+        }
+      ]
+    }
+  },
+  "choice_path": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    1,
+    0,
+    1,
+    0,
+    2,
+    0,
+    1,
+    0,
+    2
+  ],
+  "initial_state": {
+    "variables": {
+      "Discs": "",
+      "post1": "",
+      "post2": "",
+      "post3": ""
+    },
+    "turn_index": 0
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "steps": [
+    {
+      "text": "Should you cross the river?\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Yes",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "No",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "You enter the river but the stream is stronger than you thought.\nSadly you've drown in the water.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "variables": {
+      "hp": 2,
+      "deaths": ""
+    },
+    "turn_index": 0
+  }
+}

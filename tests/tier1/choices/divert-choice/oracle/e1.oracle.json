@@ -1,0 +1,41 @@
+{
+  "steps": [
+    {
+      "text": "You see a soldier.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Pull a face",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Shove the guard aside",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": {
+    "Error": "RUNTIME ERROR: '/Users/syynth/code/rs/brink/tests/tier1/choices/divert-choice/story.ink' line 3: ran out of content. Do you need a '-> DONE' or '-> END'?"
+  },
+  "choice_path": [
+    1
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

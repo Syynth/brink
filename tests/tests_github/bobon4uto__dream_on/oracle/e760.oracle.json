@@ -1,0 +1,664 @@
+{
+  "steps": [
+    {
+      "text": "It's night-time.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Go to bed.",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Go to the kitchen.",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Go to bed.\nYou go to bed and start sleeping.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "--Zzz--",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "--zzZ--\nIt's daytime.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "or is it?",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "It's very bright.",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "or is it?\nThe sun shatters. Darkness falls.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "It's not that bad.",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {
+        "nightmare": 1
+      },
+      "turn_index": 3
+    },
+    {
+      "text": "It's not that bad.\nWolves howl.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "could be worse?",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "could be worse?\nYour home crumbles.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "now this is bad.",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 5
+    },
+    {
+      "text": "now this is bad.\nTwe wolves are coming.\n5 minutes before beasts appear.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "find shelter",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "run",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "dream",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "variable_changes": {
+        "wolf_counter": 5
+      },
+      "visit_changes": {},
+      "turn_index": 6
+    },
+    {
+      "text": "dream on...\n4 minutes before hungry wolves will be here.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "find shelter",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "run",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "dream",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "variable_changes": {
+        "wolf_counter": 4
+      },
+      "visit_changes": {},
+      "turn_index": 7
+    },
+    {
+      "text": "dream on...\n3 minutes before wolves arrive.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "find shelter",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "run",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "dream",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "variable_changes": {
+        "wolf_counter": 3
+      },
+      "visit_changes": {},
+      "turn_index": 8
+    },
+    {
+      "text": "dream on...\n2 minutes before wolves eat you.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "find shelter",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "run",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "dream",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "wolf_counter": 2
+      },
+      "visit_changes": {},
+      "turn_index": 9
+    },
+    {
+      "text": "find shelter\nnowhere to hide.\n1 minutes before wolves eat you.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "run",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "dream",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "wolf_counter": 1
+      },
+      "visit_changes": {},
+      "turn_index": 10
+    },
+    {
+      "text": "run\nnowhere to run\nThey are here.\n",
+      "tags": [
+        [],
+        [],
+        [
+          "CLEAR",
+          "CLASS: end",
+          "CLASS: danger"
+        ],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "WAKE UP",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "wolf_counter": 0
+      },
+      "visit_changes": {},
+      "turn_index": 11
+    },
+    {
+      "text": "WAKE UP\nYou wake up in cold sweat, the time is 3 AM. It wasn't a dream... it was a nightmare.\nYou found 1/4 endings.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Restart",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Finish playing",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "wolf_counter": 6,
+        "ENDINGS_FOUND": 1
+      },
+      "visit_changes": {},
+      "turn_index": 12
+    },
+    {
+      "text": "Restart\nIt's night-time.\n",
+      "tags": [
+        [],
+        [
+          "CLEAR"
+        ],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Go to bed.",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Go to the kitchen.",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 13
+    },
+    {
+      "text": "Go to bed.\nYou go to bed and start sleeping.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "--zZz--",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 14
+    },
+    {
+      "text": "--Zzz--\nIt's daytime.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "or is it?",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "It's very bright.",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 15
+    },
+    {
+      "text": "It's very bright.\nBrighter than any star shines the sphere. it is held by Collossus - the only one who can hold its weight. truly, remarkable sight.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Isn't it the job of Atlas to hold the sky?",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Help him.",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "sus?",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 16
+    },
+    {
+      "text": "Help him.\nThere is no helping him.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "get closer",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "observe from here",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 17
+    },
+    {
+      "text": "get closer\nYou approach the collossus. You realize he is way further than you anticipated. Are you sure you want to approach him?\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "yes.",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "no.",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 18
+    },
+    {
+      "text": "yes.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "run",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "walk",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "give up",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 19
+    },
+    {
+      "text": "give up\nYou stop.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "get closer",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "observe from here",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 20
+    }
+  ],
+  "outcome": {
+    "InputsExhausted": {
+      "remaining_choices": [
+        {
+          "text": "get closer",
+          "index": 0,
+          "tags": []
+        },
+        {
+          "text": "observe from here",
+          "index": 1,
+          "tags": []
+        }
+      ]
+    }
+  },
+  "choice_path": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    2,
+    2,
+    2,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    0,
+    0,
+    2
+  ],
+  "initial_state": {
+    "variables": {
+      "ENDINGS_FOUND": 0,
+      "ALL_ENDINGS": 4,
+      "hpan": 0,
+      "wolf_counter": 6
+    },
+    "turn_index": 0
+  }
+}

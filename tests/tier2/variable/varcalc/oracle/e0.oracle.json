@@ -1,0 +1,32 @@
+{
+  "steps": [
+    {
+      "text": "The values are true and -1 and -6 and aa.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {
+        "knows": true,
+        "x": -1,
+        "y": -6,
+        "str": "aa"
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "knows": false,
+      "x": 2,
+      "y": 3,
+      "c": 4,
+      "str": ""
+    },
+    "turn_index": 0
+  }
+}

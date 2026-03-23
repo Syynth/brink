@@ -1,0 +1,21 @@
+{
+  "steps": [
+    {
+      "text": "Should be 1 not 0: 1.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

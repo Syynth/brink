@@ -1,0 +1,114 @@
+{
+  "steps": [
+    {
+      "text": "Well, Poirot? Murder or suicide?\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"Murder!\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"Suicide!\"",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "\"Murder!\"\n\"And who did it?\"\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"Detective-Inspector Japp!\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"Captain Hastings!\"",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "\"Myself!\"",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\"Myself!\"\n\"You must be joking!\"\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"Mon ami, I am deadly serious.\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"If only...\"",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "\"Mon ami, I am deadly serious.\"\nMrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0,
+    2,
+    0
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

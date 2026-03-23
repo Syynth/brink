@@ -1,0 +1,26 @@
+{
+  "steps": [
+    {
+      "text": "1\n0\n0\n1\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "a_divert_variable": "a_divert"
+    },
+    "turn_index": 0
+  }
+}

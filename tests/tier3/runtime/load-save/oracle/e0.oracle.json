@@ -1,0 +1,56 @@
+{
+  "steps": [
+    {
+      "text": "We arrived into London at 9.45pm exactly.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"There is not a moment to lose!\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"Monsieur, let us savour this moment!\"",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "We hurried home",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "\"There is not a moment to lose!\" I declared.\nWe hurried home to Savile Row as fast as we could.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

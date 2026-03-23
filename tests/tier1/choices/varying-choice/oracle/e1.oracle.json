@@ -1,0 +1,41 @@
+{
+  "steps": [
+    {
+      "text": "You search desperately for a friendly face in the crowd.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "The woman in the hat?",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "The man with the briefcase?",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": {
+    "Error": "RUNTIME ERROR: '/Users/syynth/code/rs/brink/tests/tier1/choices/varying-choice/story.ink' line 5: ran out of content. Do you need a '-> DONE' or '-> END'?"
+  },
+  "choice_path": [
+    1
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

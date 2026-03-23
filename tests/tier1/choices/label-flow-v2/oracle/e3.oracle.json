@@ -1,0 +1,79 @@
+{
+  "steps": [
+    {
+      "text": "The guard frowns at you.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Greet him",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "'Get out of my way.'",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "'Get out of my way,' you tell the guard.\n'Hmm,' replies the guard.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "'Hmm?'",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Shove him aside",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "You shove him sharply. He stares in reply, and draws his sword!\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    1,
+    1
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

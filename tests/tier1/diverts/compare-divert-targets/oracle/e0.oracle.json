@@ -1,0 +1,29 @@
+{
+  "steps": [
+    {
+      "text": "different knot\nsame knot\nsame knot\ndifferent knot\nsame knot\nsame knot\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "to_one": "one",
+      "to_two": "two"
+    },
+    "turn_index": 0
+  }
+}

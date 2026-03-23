@@ -1,0 +1,749 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 5
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 6
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 7
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 8
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 9
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 10
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 11
+    },
+    {
+      "text": "OK\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 12
+    },
+    {
+      "text": "OK\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 13
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 14
+    },
+    {
+      "text": "OK\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 15
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 16
+    },
+    {
+      "text": "OK\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 17
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 18
+    },
+    {
+      "text": "a\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {
+        "gameState": "KNOW_ALIEN_REPORT"
+      },
+      "visit_changes": {},
+      "turn_index": 19
+    },
+    {
+      "text": "OK\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "a",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "OK",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "FAIL",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 20
+    }
+  ],
+  "outcome": {
+    "InputsExhausted": {
+      "remaining_choices": [
+        {
+          "text": "a",
+          "index": 0,
+          "tags": []
+        },
+        {
+          "text": "OK",
+          "index": 1,
+          "tags": []
+        },
+        {
+          "text": "FAIL",
+          "index": 2,
+          "tags": []
+        }
+      ]
+    }
+  },
+  "choice_path": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    0,
+    1,
+    0,
+    1,
+    0,
+    0,
+    1
+  ],
+  "initial_state": {
+    "variables": {
+      "gameState": ""
+    },
+    "turn_index": 0
+  }
+}

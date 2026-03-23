@@ -1,0 +1,27 @@
+{
+  "steps": [
+    {
+      "text": "-1\nfalse\ntrue\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "negativeLiteral": -1,
+      "negativeLiteral2": false,
+      "negativeLiteral3": true
+    },
+    "turn_index": 0
+  }
+}

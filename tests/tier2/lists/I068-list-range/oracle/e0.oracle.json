@@ -1,0 +1,31 @@
+{
+  "steps": [
+    {
+      "text": "Pound, Pizza, Euro, Pasta, Dollar, Curry, Paella\nEuro, Pasta, Dollar, Curry\nTwo, Three, Four, Five, Six\nPizza, Pasta\n",
+      "tags": [
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {
+        "all": "Pound, Pizza, Euro, Pasta, Dollar, Curry, Paella"
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "Food": "",
+      "Currency": "",
+      "Numbers": "",
+      "all": ""
+    },
+    "turn_index": 0
+  }
+}

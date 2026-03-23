@@ -1,0 +1,25 @@
+{
+  "steps": [
+    {
+      "text": "áéíóú ñ\n你好\n你好世界\n",
+      "tags": [
+        [],
+        [
+          "áé"
+        ],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "steps": [
+    {
+      "text": "I looked at Monsieur Fogg\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "... and I could contain myself no longer.",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "... but I said nothing",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "... and I could contain myself no longer.\n'What is the purpose of our journey, Monsieur?'\n'A wager,' he replied.\n",
+      "tags": [
+        [],
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "'A wager!'",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "'Ah.'",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "'Ah,' I replied, uncertain what I thought.\nAfter that, we passed the day in silence.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0,
+    1
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

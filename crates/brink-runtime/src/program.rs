@@ -46,7 +46,10 @@ pub(crate) struct LinkedContainer {
 pub(crate) struct GlobalSlot {
     #[expect(dead_code, reason = "needed for save/load serialization and debugging")]
     pub id: DefinitionId,
-    #[expect(dead_code, reason = "needed for save/load serialization and debugging")]
+    #[cfg_attr(
+        not(feature = "testing"),
+        expect(dead_code, reason = "needed for save/load serialization and debugging")
+    )]
     pub name: NameId,
     pub default: Value,
 }
@@ -137,5 +140,20 @@ impl Program {
     /// Look up an external function by its `DefinitionId`.
     pub(crate) fn external_fn(&self, id: DefinitionId) -> Option<&ExternalFnEntry> {
         self.external_fns.get(&id)
+    }
+
+    /// Resolve a global slot index to its variable name.
+    #[cfg(feature = "testing")]
+    pub fn global_name(&self, idx: u32) -> Option<&str> {
+        self.globals
+            .get(idx as usize)
+            .map(|slot| self.name(slot.name))
+    }
+
+    /// Number of global variable slots.
+    #[cfg(feature = "testing")]
+    #[expect(clippy::cast_possible_truncation, reason = "global count fits in u32")]
+    pub fn global_count(&self) -> u32 {
+        self.globals.len() as u32
     }
 }

@@ -1,0 +1,84 @@
+{
+  "steps": [
+    {
+      "text": "Should you cross the river?\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Yes",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "No",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "You follow the path along the river for some time and finally encounter a huge man with a wooden stick.\nAs you start talking to him, he beats you with his weapon.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Fight back",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Flee",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {
+        "hp": 1
+      },
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "You desperately run for your life and never look back.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    1,
+    1
+  ],
+  "initial_state": {
+    "variables": {
+      "hp": 2,
+      "deaths": ""
+    },
+    "turn_index": 0
+  }
+}

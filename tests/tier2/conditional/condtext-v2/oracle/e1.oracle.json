@@ -1,0 +1,51 @@
+{
+  "steps": [
+    {
+      "text": "\"We are going on a trip,\" said Monsieur Fogg.\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "The wager.",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "I was surprised.",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "I stared at Monsieur Fogg. \"But there must be a reason for this trip,\" I observed.\nHe said nothing in reply, merely considering his newspaper with as much thoroughness as entomologist considering his latest pinned addition.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    1
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

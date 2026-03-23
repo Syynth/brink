@@ -1,0 +1,55 @@
+{
+  "steps": [
+    {
+      "text": "Hello world!\nHello world 2!\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "choice",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {
+        "testVar": 15,
+        "testVar2": 100
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "choice\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {
+        "testVar": 25,
+        "testVar2": 200
+      },
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "variables": {
+      "testVar": 5,
+      "testVar2": 10
+    },
+    "turn_index": 0
+  }
+}

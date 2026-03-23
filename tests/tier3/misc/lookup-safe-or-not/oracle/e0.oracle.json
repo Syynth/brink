@@ -1,0 +1,11 @@
+{
+  "steps": [],
+  "outcome": {
+    "Error": "ERROR: Missing function binding for external: 'myAction'  (ink fallbacks disabled)"
+  },
+  "choice_path": [],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

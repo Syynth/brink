@@ -1,0 +1,51 @@
+{
+  "steps": [
+    {
+      "text": "Tell us a tale, Captain!\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "\"Very well, you sea-dogs. Here's a tale...\"",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "\"No, it's past your bed-time.\"",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "\"No, it's past your bed-time.\"\nTo a man, the crew began to yawn.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    1
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

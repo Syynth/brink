@@ -1,0 +1,33 @@
+{
+  "steps": [
+    {
+      "text": "\"I will pay you 120 reales if you get the goods to their destination. The goods will take up 20 cargo spaces.\"\n",
+      "tags": [
+        [],
+        []
+      ],
+      "outcome": "Ended",
+      "variable_changes": {
+        "mult": 2,
+        "roll": 1,
+        "deadline": 5,
+        "fee": 120
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "weight": 20,
+      "roll": 0,
+      "mult": 1,
+      "dst": 5,
+      "deadline": 0,
+      "fee": 0
+    },
+    "turn_index": 0
+  }
+}
