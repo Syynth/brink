@@ -104,6 +104,11 @@ class Program
             return 1;
         }
 
+        // Enable ink fallbacks for external functions so the oracle
+        // produces output matching what brink does (brink always runs
+        // ink fallbacks when no external handler is registered).
+        story.allowExternalFunctionFallbacks = true;
+
         // Explore all branches.
         List<OracleEpisode> episodes;
         try

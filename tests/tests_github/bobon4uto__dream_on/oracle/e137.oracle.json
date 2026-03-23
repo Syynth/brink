@@ -39,7 +39,7 @@
         "Choices": {
           "presented": [
             {
-              "text": "--Zzz--",
+              "text": "--zZz--",
               "index": 0,
               "tags": []
             }
@@ -52,7 +52,7 @@
       "turn_index": 1
     },
     {
-      "text": "--zZz--\n",
+      "text": "--Zzz--\n",
       "tags": [],
       "outcome": "Continue",
       "variable_changes": {},
@@ -183,7 +183,7 @@
       "turn_index": 6
     },
     {
-      "text": "5 minutes before wolves eat you.\n",
+      "text": "5 minutes before wolves arrive.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -230,7 +230,7 @@
       "turn_index": 7
     },
     {
-      "text": "4 minutes before hungry wolves will be here.\n",
+      "text": "4 minutes before beasts appear.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -264,7 +264,7 @@
       "turn_index": 8
     },
     {
-      "text": "3 minutes before beasts appear.\n",
+      "text": "3 minutes before wolves eat you.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -298,7 +298,7 @@
       "turn_index": 9
     },
     {
-      "text": "2 minutes before wolves arrive.\n",
+      "text": "2 minutes before hungry wolves will be here.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -332,7 +332,7 @@
       "turn_index": 10
     },
     {
-      "text": "1 minutes before hungry wolves will be here.\n",
+      "text": "1 minutes before beasts appear.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -496,7 +496,7 @@
       "turn_index": 14
     },
     {
-      "text": "--Zzz--\n",
+      "text": "--zZz--\n",
       "tags": [],
       "outcome": "Continue",
       "variable_changes": {},

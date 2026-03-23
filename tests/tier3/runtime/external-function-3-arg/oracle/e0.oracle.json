@@ -1,8 +1,15 @@
 {
-  "steps": [],
-  "outcome": {
-    "Error": "ERROR: Missing function binding for external: 'externalFunction'  (ink fallbacks disabled)"
-  },
+  "steps": [
+    {
+      "text": "The value is 0.\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": "Ended",
   "choice_path": [],
   "initial_state": {
     "variables": {},

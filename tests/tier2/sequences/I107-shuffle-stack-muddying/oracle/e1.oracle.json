@@ -7,12 +7,12 @@
         "Choices": {
           "presented": [
             {
-              "text": "choice 1",
+              "text": "choice 3",
               "index": 0,
               "tags": []
             },
             {
-              "text": "choice 3",
+              "text": "choice 4",
               "index": 1,
               "tags": []
             }

@@ -39,7 +39,7 @@
         "Choices": {
           "presented": [
             {
-              "text": "--Zzz--",
+              "text": "--zZz--",
               "index": 0,
               "tags": []
             }
@@ -52,7 +52,7 @@
       "turn_index": 1
     },
     {
-      "text": "--zZz--\n",
+      "text": "--Zzz--\n",
       "tags": [],
       "outcome": "Continue",
       "variable_changes": {},

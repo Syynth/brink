@@ -1,7 +1,7 @@
 {
   "steps": [
     {
-      "text": "two\n",
+      "text": "one\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -28,7 +28,7 @@
       "turn_index": 1
     },
     {
-      "text": "one\n",
+      "text": "two\n",
       "tags": [],
       "outcome": {
         "Choices": {

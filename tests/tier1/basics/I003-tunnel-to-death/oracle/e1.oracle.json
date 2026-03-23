@@ -71,7 +71,7 @@
       "tags": [],
       "outcome": "Ended",
       "variable_changes": {
-        "hp": -1
+        "hp": 0
       },
       "visit_changes": {},
       "turn_index": 2

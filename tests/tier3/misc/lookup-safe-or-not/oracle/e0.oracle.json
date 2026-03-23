@@ -1,7 +1,7 @@
 {
   "steps": [],
   "outcome": {
-    "Error": "ERROR: Missing function binding for external: 'myAction'  (ink fallbacks disabled)"
+    "Error": "ERROR: Missing function binding for external: 'myAction' , and no fallback ink function found."
   },
   "choice_path": [],
   "initial_state": {
