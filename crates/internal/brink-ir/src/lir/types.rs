@@ -484,7 +484,7 @@ pub enum Expr {
     Postfix(Box<Expr>, PostfixOp),
 
     // ── Calls ───────────────────────────────────────────────────
-    /// Call a knot/stitch as a function.
+    /// Call a knot/stitch as a function (ink `== function`).
     Call {
         target: DefinitionId,
         args: Vec<CallArg>,
@@ -511,6 +511,22 @@ pub enum Expr {
         builtin: BuiltinFn,
         args: Vec<Expr>,
     },
+}
+
+impl Expr {
+    /// Returns true if this expression is a function call that may produce
+    /// localized text output (`Call`, `CallVariable`, `CallVariableTemp`, `CallExternal`).
+    /// Builtins (`TURNS_SINCE`, `LIST_COUNT`, etc.) are not included — they
+    /// produce numeric/list values, not localized text.
+    pub fn is_function_call(&self) -> bool {
+        matches!(
+            self,
+            Self::Call { .. }
+                | Self::CallVariable { .. }
+                | Self::CallVariableTemp { .. }
+                | Self::CallExternal { .. }
+        )
+    }
 }
 
 /// A string literal, possibly with interpolation.

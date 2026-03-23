@@ -1081,11 +1081,13 @@ impl<'p, R: StoryRng> Story<'p, R> {
         let end = range.end.min(transcript.len());
         let start = range.start.min(end);
         let slice = &transcript[start..end];
+        let fragments = self.default.flow.output.fragments();
         crate::output::resolve_lines(
             slice,
             self.program,
             &self.line_tables,
             self.resolver.as_deref(),
+            fragments,
         )
     }
 

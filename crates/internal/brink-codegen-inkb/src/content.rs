@@ -170,7 +170,15 @@ impl ContainerEmitter<'_> {
                     self.emit(Opcode::Glue);
                 }
                 lir::ContentPart::Interpolation(expr) => {
-                    self.emit_expr(expr);
+                    if expr.is_function_call() {
+                        // Function call in display context — wrap in fragment
+                        // so the function's output is captured structurally.
+                        self.emit(Opcode::BeginFragment);
+                        self.emit_expr(expr);
+                        self.emit(Opcode::EndFragment);
+                    } else {
+                        self.emit_expr(expr);
+                    }
                     self.emit(Opcode::EmitValue);
                 }
                 lir::ContentPart::InlineConditional(cond) => {

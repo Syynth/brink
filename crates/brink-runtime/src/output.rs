@@ -51,7 +51,7 @@ impl OutputPart {
         line_tables: &[Vec<LineEntry>],
         resolver: Option<&dyn PluralResolver>,
     ) -> String {
-        resolve_part(self, program, line_tables, resolver)
+        resolve_part(self, program, line_tables, resolver, &[])
     }
 
     /// Returns true if this part represents non-whitespace text content.
@@ -77,6 +77,7 @@ fn resolve_part(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
+    fragments: &[Vec<OutputPart>],
 ) -> String {
     match part {
         OutputPart::Text(s) => s.clone(),
@@ -92,7 +93,17 @@ fn resolve_part(
             *line_idx,
             slots,
             resolver,
+            fragments,
         ),
+        OutputPart::ValueRef(Value::FragmentRef(idx)) => {
+            // Resolve the fragment's parts against current line tables.
+            let idx = *idx as usize;
+            if let Some(parts) = fragments.get(idx) {
+                resolve_parts(parts, program, line_tables, resolver, fragments)
+            } else {
+                String::new()
+            }
+        }
         OutputPart::ValueRef(val) => value_ops::stringify(val, program),
         OutputPart::Newline
         | OutputPart::Spring
@@ -110,6 +121,7 @@ fn resolve_line_ref(
     line_idx: u16,
     slots: &[Value],
     resolver: Option<&dyn PluralResolver>,
+    fragments: &[Vec<OutputPart>],
 ) -> String {
     let scope_idx = program.scope_table_idx(container_idx) as usize;
     let lines = &line_tables[scope_idx];
@@ -128,7 +140,21 @@ fn resolve_line_ref(
                     LinePart::Slot(n) => {
                         owned = slots
                             .get(*n as usize)
-                            .map(|v| value_ops::stringify(v, program))
+                            .map(|v| match v {
+                                Value::FragmentRef(idx) => {
+                                    let idx = *idx as usize;
+                                    fragments.get(idx).map_or_else(String::new, |parts| {
+                                        resolve_parts(
+                                            parts,
+                                            program,
+                                            line_tables,
+                                            resolver,
+                                            fragments,
+                                        )
+                                    })
+                                }
+                                other => value_ops::stringify(other, program),
+                            })
                             .unwrap_or_default();
                         owned.as_str()
                     }
@@ -448,7 +474,13 @@ impl OutputBuffer {
 
         self.capture_depth = self.capture_depth.saturating_sub(1);
 
-        Some(resolve_parts(captured, program, line_tables, resolver))
+        Some(resolve_parts(
+            captured,
+            program,
+            line_tables,
+            resolver,
+            &self.fragments,
+        ))
     }
 
     /// Remove the most recent checkpoint without capturing its content.
@@ -498,6 +530,11 @@ impl OutputBuffer {
         Some(idx)
     }
 
+    /// Read access to all finalized fragments.
+    pub fn fragments(&self) -> &[Vec<OutputPart>] {
+        &self.fragments
+    }
+
     /// Read access to a finalized fragment's parts.
     pub fn fragment(&self, idx: u32) -> Option<&[OutputPart]> {
         self.fragments.get(idx as usize).map(Vec::as_slice)
@@ -512,7 +549,7 @@ impl OutputBuffer {
         resolver: Option<&dyn PluralResolver>,
     ) -> String {
         match self.fragment(idx) {
-            Some(parts) => resolve_parts(parts, program, line_tables, resolver),
+            Some(parts) => resolve_parts(parts, program, line_tables, resolver, &self.fragments),
             None => String::new(),
         }
     }
@@ -641,7 +678,7 @@ impl OutputBuffer {
 
         // Resolve the slice through the newline (inclusive). No drain.
         let slice = &self.transcript[self.cursor..=self.cursor + split_at];
-        let mut lines = resolve_lines(slice, program, line_tables, resolver);
+        let mut lines = resolve_lines(slice, program, line_tables, resolver, &self.fragments);
         if lines.is_empty() {
             return None;
         }
@@ -668,7 +705,7 @@ impl OutputBuffer {
         );
         let unread = &self.transcript[self.cursor..];
         let program = test_dummy_program();
-        let result = resolve_parts(unread, &program, &[], None);
+        let result = resolve_parts(unread, &program, &[], None, &self.fragments);
         self.cursor = self.transcript.len();
         result
     }
@@ -688,7 +725,7 @@ impl OutputBuffer {
             "flush_lines() called with active checkpoints"
         );
         let unread = &self.transcript[self.cursor..];
-        let result = resolve_lines(unread, program, line_tables, resolver);
+        let result = resolve_lines(unread, program, line_tables, resolver, &self.fragments);
         self.cursor = self.transcript.len();
         result
     }
@@ -753,6 +790,7 @@ fn resolve_parts(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
+    fragments: &[Vec<OutputPart>],
 ) -> String {
     // First pass: mark newlines that should be removed by glue.
     let mut remove = vec![false; parts.len()];
@@ -770,7 +808,7 @@ fn resolve_parts(
         }
         match part {
             OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
-                let s = resolve_part(part, program, line_tables, resolver);
+                let s = resolve_part(part, program, line_tables, resolver, fragments);
                 // Collapse adjacent whitespace at part boundaries.
                 let s = if s.starts_with(char::is_whitespace) && out.ends_with(char::is_whitespace)
                 {
@@ -815,6 +853,7 @@ pub(crate) fn resolve_lines(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
+    fragments: &[Vec<OutputPart>],
 ) -> Vec<(String, Vec<String>)> {
     if parts.is_empty() {
         return Vec::new();
@@ -838,7 +877,7 @@ pub(crate) fn resolve_lines(
         }
         match part {
             OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
-                let s = resolve_part(part, program, line_tables, resolver);
+                let s = resolve_part(part, program, line_tables, resolver, fragments);
                 // Collapse adjacent whitespace at part boundaries.
                 let s = if s.starts_with(char::is_whitespace)
                     && current_text.ends_with(char::is_whitespace)
@@ -1435,7 +1474,7 @@ mod tests {
             source_location: None,
         }]];
 
-        resolve_line_ref(&program, &line_tables, 0, 0, slots, None)
+        resolve_line_ref(&program, &line_tables, 0, 0, slots, None, &[])
     }
 
     #[test]

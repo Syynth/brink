@@ -223,7 +223,7 @@ pub fn render_transcript(
     line_tables: &[Vec<brink_format::LineEntry>],
     resolver: Option<&dyn brink_format::PluralResolver>,
 ) -> Vec<(String, Vec<String>)> {
-    resolve_lines(parts, program, line_tables, resolver)
+    resolve_lines(parts, program, line_tables, resolver, &[])
 }
 
 // ── Codec helpers (self-contained, no dependency on brink-format internals) ──
