@@ -514,7 +514,11 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
 
             // Capture output during function call — text output becomes
             // the return value when the frame is popped.
-            flow.output.begin_capture();
+            // Skip capture when inside a fragment: output flows structurally
+            // to the fragment instead of being captured and resolved to a string.
+            if flow.output.fragment_depth() == 0 {
+                flow.output.begin_capture();
+            }
 
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
@@ -643,7 +647,9 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 context.set_turn_count(id, context.turn_index());
             }
 
-            flow.output.begin_capture();
+            if flow.output.fragment_depth() == 0 {
+                flow.output.begin_capture();
+            }
 
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
@@ -1089,7 +1095,11 @@ fn pop_call_frame(
     stats.frames_popped += 1;
 
     if popped.frame_type == CallFrameType::Function {
-        if is_explicit_return {
+        if flow.output.fragment_depth() > 0 {
+            // Inside a fragment: no capture was started. Function output
+            // flowed directly to the fragment as structural parts.
+            // Nothing to resolve or discard.
+        } else if is_explicit_return {
             // Explicit `~ret`: return value is already on the value stack.
             // Discard the capture checkpoint; text stays in the output.
             flow.output.discard_capture();

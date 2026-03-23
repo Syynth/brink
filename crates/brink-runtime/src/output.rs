@@ -519,7 +519,6 @@ impl OutputBuffer {
     }
 
     /// Current fragment capture nesting depth.
-    #[expect(dead_code, reason = "used by commit 3 of step 9")]
     pub fn fragment_depth(&self) -> usize {
         self.fragment_depth
     }
