@@ -1209,6 +1209,24 @@ impl<'p, R: StoryRng> Story<'p, R> {
         )
     }
 
+    /// Like [`continue_single`](Self::continue_single) but with a
+    /// [`WriteObserver`] that receives notifications for every state mutation.
+    pub fn continue_single_observed(
+        &mut self,
+        observer: &mut dyn WriteObserver,
+    ) -> Result<Line, RuntimeError> {
+        use crate::state::ObservedContext;
+        let mut obs_ctx = ObservedContext::new(&mut self.default_context, observer);
+        let resolver = self.resolver.as_deref();
+        self.default.step_single_line::<R>(
+            self.program,
+            &self.line_tables,
+            &mut obs_ctx,
+            &FallbackHandler,
+            resolver,
+        )
+    }
+
     /// Like [`continue_single`](Self::continue_single) but with a custom
     /// external function handler.
     pub fn continue_single_with(

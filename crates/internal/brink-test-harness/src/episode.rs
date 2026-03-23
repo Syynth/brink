@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// A complete recorded execution of a story from start to termination.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Episode {
-    /// Per-step records in execution order.
+    /// Per-step records in execution order. Each step is one `continue_single` call.
     pub steps: Vec<StepRecord>,
     /// How the episode ended.
     pub outcome: Outcome,
@@ -16,13 +16,13 @@ pub struct Episode {
     pub initial_state: StateSnapshot,
 }
 
-/// A single `continue_maximally` call's output and side effects.
+/// A single `continue_single` call's output and side effects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepRecord {
-    /// Text output from this step.
+    /// Text output from this step (one `continue_single` call).
     pub text: String,
-    /// Per-line tags.
-    pub tags: Vec<Vec<String>>,
+    /// Tags from this step.
+    pub tags: Vec<String>,
     /// What happened at the end of this step.
     pub outcome: StepOutcome,
     /// External function calls made during this step.
@@ -34,7 +34,9 @@ pub struct StepRecord {
 /// The outcome of a single step.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StepOutcome {
-    /// Story paused — more content may follow.
+    /// More output may follow — keep calling `continue_single`.
+    Continue,
+    /// Story paused — no more content, no choices.
     Done,
     /// Choices were presented and one was selected.
     Choices {

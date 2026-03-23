@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
+use crate::episode::{Episode, Outcome, StepOutcome, StepRecord};
+
 // ---------------------------------------------------------------------------
 // Oracle episode types (deserialized from .oracle.json)
 // ---------------------------------------------------------------------------
@@ -185,20 +187,15 @@ impl fmt::Display for OracleDiff {
 
 /// Compare an oracle episode against a brink episode.
 ///
-/// Oracle steps are per-`Continue()` call. Brink steps are per-`continue_single()`.
-/// We compare them in lockstep: text and tags per step, plus choice outcomes.
+/// Both use per-`Continue()`/`continue_single()` steps — direct comparison.
 /// Done/Ended distinction is normalized.
-pub fn diff_oracle(oracle: &OracleEpisode, brink: &crate::episode::Episode) -> OracleDiff {
-    // Flatten brink's steps into per-line entries for comparison.
-    // Each brink Line maps to one oracle Continue() step.
-    let brink_lines = flatten_brink_episode(brink);
-
-    let max_len = oracle.steps.len().max(brink_lines.len());
+pub fn diff_oracle(oracle: &OracleEpisode, brink: &Episode) -> OracleDiff {
+    let max_len = oracle.steps.len().max(brink.steps.len());
     let mut step_diffs = Vec::with_capacity(max_len);
     let mut all_match = true;
 
     for i in 0..max_len {
-        match (oracle.steps.get(i), brink_lines.get(i)) {
+        match (oracle.steps.get(i), brink.steps.get(i)) {
             (Some(o), Some(b)) => {
                 let d = compare_step(o, b);
                 if !matches!(d, OracleStepDiff::Match) {
@@ -234,131 +231,7 @@ pub fn diff_oracle(oracle: &OracleEpisode, brink: &crate::episode::Episode) -> O
     }
 }
 
-/// A flattened brink line for comparison against oracle steps.
-struct BrinkLine {
-    text: String,
-    tags: Vec<String>,
-    outcome: BrinkLineOutcome,
-}
-
-enum BrinkLineOutcome {
-    Continue,
-    Done,
-    Ended,
-    Choices {
-        presented: Vec<crate::episode::ChoiceRecord>,
-        selected: usize,
-    },
-}
-
-/// Flatten a brink episode into per-line entries.
-///
-/// Each brink `StepRecord` (from `continue_maximally`) contains potentially
-/// multiple lines. We split on the `Line` boundaries: each line in the text
-/// (delimited by `\n`) corresponds to one `Continue()` call.
-///
-/// However, brink's episode format stores accumulated text per
-/// `continue_maximally` call, not per line. We need to split it back.
-fn flatten_brink_episode(episode: &crate::episode::Episode) -> Vec<BrinkLine> {
-    use crate::episode::StepOutcome;
-
-    let mut lines = Vec::new();
-
-    for (step_idx, step) in episode.steps.iter().enumerate() {
-        let is_last_step = step_idx == episode.steps.len() - 1;
-
-        // Split accumulated text into per-Continue() lines.
-        // Each Continue() call produces text ending with \n (usually).
-        let text_lines = split_into_continue_lines(&step.text);
-
-        for (line_idx, line_text) in text_lines.iter().enumerate() {
-            let is_last_line = line_idx == text_lines.len() - 1;
-
-            // Tags: step.tags is per-text-line. Map to per-Continue() line.
-            let tags = if line_idx < step.tags.len() {
-                step.tags[line_idx].clone()
-            } else {
-                Vec::new()
-            };
-
-            let outcome = if is_last_line {
-                match &step.outcome {
-                    StepOutcome::Done => {
-                        if is_last_step {
-                            BrinkLineOutcome::Done
-                        } else {
-                            BrinkLineOutcome::Continue
-                        }
-                    }
-                    StepOutcome::Ended => BrinkLineOutcome::Ended,
-                    StepOutcome::Choices {
-                        presented,
-                        selected,
-                    } => BrinkLineOutcome::Choices {
-                        presented: presented.clone(),
-                        selected: *selected,
-                    },
-                }
-            } else {
-                BrinkLineOutcome::Continue
-            };
-
-            lines.push(BrinkLine {
-                text: line_text.clone(),
-                tags,
-                outcome,
-            });
-        }
-
-        // If text was empty (e.g. choices with no preceding content),
-        // still emit a line for the outcome.
-        if text_lines.is_empty() {
-            let outcome = match &step.outcome {
-                StepOutcome::Done => BrinkLineOutcome::Done,
-                StepOutcome::Ended => BrinkLineOutcome::Ended,
-                StepOutcome::Choices {
-                    presented,
-                    selected,
-                } => BrinkLineOutcome::Choices {
-                    presented: presented.clone(),
-                    selected: *selected,
-                },
-            };
-            lines.push(BrinkLine {
-                text: String::new(),
-                tags: Vec::new(),
-                outcome,
-            });
-        }
-    }
-
-    lines
-}
-
-/// Split accumulated text into per-`Continue()` call chunks.
-/// Each `Continue()` typically produces text ending with `\n`.
-fn split_into_continue_lines(text: &str) -> Vec<String> {
-    if text.is_empty() {
-        return Vec::new();
-    }
-
-    let mut result = Vec::new();
-    let mut remaining = text;
-
-    while let Some(newline_pos) = remaining.find('\n') {
-        result.push(remaining[..=newline_pos].to_string());
-        remaining = &remaining[newline_pos + 1..];
-    }
-
-    // If there's remaining text without a trailing newline, include it.
-    if !remaining.is_empty() {
-        result.push(remaining.to_string());
-    }
-
-    result
-}
-
-fn compare_step(oracle: &OracleStep, brink: &BrinkLine) -> OracleStepDiff {
+fn compare_step(oracle: &OracleStep, brink: &StepRecord) -> OracleStepDiff {
     if oracle.text != brink.text {
         return OracleStepDiff::TextMismatch {
             expected: oracle.text.clone(),
@@ -376,25 +249,25 @@ fn compare_step(oracle: &OracleStep, brink: &BrinkLine) -> OracleStepDiff {
     if !step_outcome_eq(&oracle.outcome, &brink.outcome) {
         return OracleStepDiff::OutcomeMismatch {
             expected: format!("{:?}", oracle.outcome),
-            actual: format_brink_outcome(&brink.outcome),
+            actual: format!("{:?}", brink.outcome),
         };
     }
 
     OracleStepDiff::Match
 }
 
-fn step_outcome_eq(oracle: &OracleStepOutcome, brink: &BrinkLineOutcome) -> bool {
+fn step_outcome_eq(oracle: &OracleStepOutcome, brink: &StepOutcome) -> bool {
     match (oracle, brink) {
-        (OracleStepOutcome::Terminal(s), BrinkLineOutcome::Continue) if s == "Continue" => true,
+        (OracleStepOutcome::Terminal(s), StepOutcome::Continue) if s == "Continue" => true,
         // Normalize Done/Ended — both are terminal, C# doesn't reliably distinguish.
-        (OracleStepOutcome::Terminal(s), BrinkLineOutcome::Done | BrinkLineOutcome::Ended)
+        (OracleStepOutcome::Terminal(s), StepOutcome::Done | StepOutcome::Ended)
             if s == "Done" || s == "Ended" =>
         {
             true
         }
         (
             OracleStepOutcome::Choices { choices: oc },
-            BrinkLineOutcome::Choices {
+            StepOutcome::Choices {
                 presented: bp,
                 selected: bs,
             },
@@ -411,20 +284,7 @@ fn step_outcome_eq(oracle: &OracleStepOutcome, brink: &BrinkLineOutcome) -> bool
     }
 }
 
-fn format_brink_outcome(outcome: &BrinkLineOutcome) -> String {
-    match outcome {
-        BrinkLineOutcome::Continue => "Continue".to_string(),
-        BrinkLineOutcome::Done => "Done".to_string(),
-        BrinkLineOutcome::Ended => "Ended".to_string(),
-        BrinkLineOutcome::Choices {
-            presented,
-            selected,
-        } => format!("Choices(selected={selected}, count={})", presented.len()),
-    }
-}
-
-fn oracle_outcome_eq(oracle: &OracleOutcome, brink: &crate::episode::Outcome) -> bool {
-    use crate::episode::Outcome;
+fn oracle_outcome_eq(oracle: &OracleOutcome, brink: &Outcome) -> bool {
     match (oracle, brink) {
         (OracleOutcome::Terminal(s), Outcome::Done | Outcome::Ended)
             if s == "Done" || s == "Ended" =>

@@ -24,8 +24,8 @@ pub enum StepDiff {
     TextMismatch { expected: String, actual: String },
     /// Tags differ.
     TagsMismatch {
-        expected: Vec<Vec<String>>,
-        actual: Vec<Vec<String>>,
+        expected: Vec<String>,
+        actual: Vec<String>,
     },
     /// Step outcome differs (Done vs Choices vs Ended).
     OutcomeMismatch {

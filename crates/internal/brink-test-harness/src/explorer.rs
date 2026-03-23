@@ -1,4 +1,7 @@
 //! Branch exploration via DFS with Story cloning.
+//!
+//! Each step corresponds to one `continue_single_observed` call, matching
+//! the oracle's per-`Continue()` granularity.
 
 use brink_format::Value;
 use brink_runtime::{DotNetRng, Line, Program, Story, WriteObserver};
@@ -98,6 +101,9 @@ impl WriteObserver for ExploreRecorder {
     }
 }
 
+/// Maximum `continue_single` calls per episode before aborting.
+const STEP_LIMIT: usize = 10_000;
+
 #[expect(clippy::too_many_lines)]
 fn explore_inner(
     mut story: Story<'_, DotNetRng>,
@@ -113,138 +119,157 @@ fn explore_inner(
     }
 
     let mut recorder = ExploreRecorder::new();
-    let result = story.continue_maximally_observed(&mut recorder);
-    let writes = recorder.drain();
+    let mut step_count = 0;
 
-    match result {
-        Ok(lines) => {
-            // Collect text and build per-text-line tags.
-            let mut text = String::new();
-            let line_parts: Vec<(&str, &[String])> =
-                lines.iter().map(|l| (l.text(), l.tags())).collect();
-            for &(lt, _) in &line_parts {
-                text.push_str(lt);
-            }
-            let tags = super::runner::build_per_line_tags(&line_parts);
-
-            let last = lines.last();
-            match last {
-                Some(Line::Choices { choices, .. }) => {
-                    let presented: Vec<ChoiceRecord> = choices
-                        .iter()
-                        .map(|c| ChoiceRecord {
-                            text: c.text.clone(),
-                            index: c.index,
-                            tags: c.tags.clone(),
-                        })
-                        .collect();
-
-                    if depth >= config.max_depth || episodes.len() >= config.max_episodes {
-                        steps.push(StepRecord {
-                            text,
-                            tags,
-                            outcome: StepOutcome::Choices {
-                                presented: presented.clone(),
-                                selected: 0,
-                            },
-                            external_calls: Vec::new(),
-                            writes,
-                        });
-                        episodes.push(Episode {
-                            steps,
-                            outcome: Outcome::InputsExhausted {
-                                remaining_choices: presented,
-                            },
-                            choice_path,
-                            initial_state: initial_state.clone(),
-                        });
-                        return;
-                    }
-
-                    // For each choice, clone and recurse.
-                    for (i, _choice) in choices.iter().enumerate() {
-                        if episodes.len() >= config.max_episodes {
-                            return;
-                        }
-
-                        let mut branch_steps = steps.clone();
-                        branch_steps.push(StepRecord {
-                            text: text.clone(),
-                            tags: tags.clone(),
-                            outcome: StepOutcome::Choices {
-                                presented: presented.clone(),
-                                selected: i,
-                            },
-                            external_calls: Vec::new(),
-                            writes: writes.clone(),
-                        });
-
-                        let mut branch_path = choice_path.clone();
-                        branch_path.push(i);
-
-                        let mut branch = story.clone();
-                        if branch.choose(choices[i].index).is_err() {
-                            continue;
-                        }
-
-                        explore_inner(
-                            branch,
-                            config,
-                            initial_state,
-                            episodes,
-                            branch_steps,
-                            branch_path,
-                            depth + 1,
-                        );
-                    }
-                }
-                Some(Line::Done { .. } | Line::Text { .. }) => {
-                    steps.push(StepRecord {
-                        text,
-                        tags,
-                        outcome: StepOutcome::Done,
-                        external_calls: Vec::new(),
-                        writes,
-                    });
-                    episodes.push(Episode {
-                        steps,
-                        outcome: Outcome::Done,
-                        choice_path,
-                        initial_state: initial_state.clone(),
-                    });
-                }
-                Some(Line::End { .. }) => {
-                    steps.push(StepRecord {
-                        text,
-                        tags,
-                        outcome: StepOutcome::Ended,
-                        external_calls: Vec::new(),
-                        writes,
-                    });
-                    episodes.push(Episode {
-                        steps,
-                        outcome: Outcome::Ended,
-                        choice_path,
-                        initial_state: initial_state.clone(),
-                    });
-                }
-                None => {
-                    episodes.push(Episode {
-                        steps,
-                        outcome: Outcome::Done,
-                        choice_path,
-                        initial_state: initial_state.clone(),
-                    });
-                }
-            }
-        }
-        Err(e) => {
+    // Step one line at a time with continue_single_observed.
+    loop {
+        step_count += 1;
+        if step_count > STEP_LIMIT {
             episodes.push(Episode {
                 steps,
-                outcome: Outcome::Error(e.to_string()),
+                outcome: Outcome::StepLimit { limit: STEP_LIMIT },
                 choice_path,
                 initial_state: initial_state.clone(),
             });
+            return;
+        }
+
+        let line = match story.continue_single_observed(&mut recorder) {
+            Ok(line) => line,
+            Err(e) => {
+                episodes.push(Episode {
+                    steps,
+                    outcome: Outcome::Error(e.to_string()),
+                    choice_path,
+                    initial_state: initial_state.clone(),
+                });
+                return;
+            }
+        };
+
+        let writes = recorder.drain();
+
+        match line {
+            Line::Text { text, tags } => {
+                steps.push(StepRecord {
+                    text,
+                    tags,
+                    outcome: StepOutcome::Continue,
+                    external_calls: Vec::new(),
+                    writes,
+                });
+                // Keep stepping.
+            }
+
+            Line::Done { text, tags } => {
+                steps.push(StepRecord {
+                    text,
+                    tags,
+                    outcome: StepOutcome::Done,
+                    external_calls: Vec::new(),
+                    writes,
+                });
+                episodes.push(Episode {
+                    steps,
+                    outcome: Outcome::Done,
+                    choice_path,
+                    initial_state: initial_state.clone(),
+                });
+                return;
+            }
+
+            Line::End { text, tags } => {
+                steps.push(StepRecord {
+                    text,
+                    tags,
+                    outcome: StepOutcome::Ended,
+                    external_calls: Vec::new(),
+                    writes,
+                });
+                episodes.push(Episode {
+                    steps,
+                    outcome: Outcome::Ended,
+                    choice_path,
+                    initial_state: initial_state.clone(),
+                });
+                return;
+            }
+
+            Line::Choices {
+                text,
+                tags,
+                choices,
+            } => {
+                let presented: Vec<ChoiceRecord> = choices
+                    .iter()
+                    .map(|c| ChoiceRecord {
+                        text: c.text.clone(),
+                        index: c.index,
+                        tags: c.tags.clone(),
+                    })
+                    .collect();
+
+                if depth >= config.max_depth || episodes.len() >= config.max_episodes {
+                    steps.push(StepRecord {
+                        text,
+                        tags,
+                        outcome: StepOutcome::Choices {
+                            presented: presented.clone(),
+                            selected: 0,
+                        },
+                        external_calls: Vec::new(),
+                        writes,
+                    });
+                    episodes.push(Episode {
+                        steps,
+                        outcome: Outcome::InputsExhausted {
+                            remaining_choices: presented,
+                        },
+                        choice_path,
+                        initial_state: initial_state.clone(),
+                    });
+                    return;
+                }
+
+                // For each choice, clone and recurse.
+                for (i, choice) in choices.iter().enumerate() {
+                    if episodes.len() >= config.max_episodes {
+                        return;
+                    }
+
+                    let mut branch_steps = steps.clone();
+                    branch_steps.push(StepRecord {
+                        text: text.clone(),
+                        tags: tags.clone(),
+                        outcome: StepOutcome::Choices {
+                            presented: presented.clone(),
+                            selected: i,
+                        },
+                        external_calls: Vec::new(),
+                        writes: writes.clone(),
+                    });
+
+                    let mut branch_path = choice_path.clone();
+                    branch_path.push(i);
+
+                    let mut branch = story.clone();
+                    if branch.choose(choice.index).is_err() {
+                        continue;
+                    }
+
+                    explore_inner(
+                        branch,
+                        config,
+                        initial_state,
+                        episodes,
+                        branch_steps,
+                        branch_path,
+                        depth + 1,
+                    );
+                }
+
+                return;
+            }
         }
     }
 }
