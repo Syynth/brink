@@ -512,13 +512,10 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 context.set_turn_count(id, context.turn_index());
             }
 
-            // Capture output during function call — text output becomes
-            // the return value when the frame is popped.
-            // Skip capture when inside a fragment: output flows structurally
-            // to the fragment instead of being captured and resolved to a string.
-            if flow.output.fragment_depth() == 0 {
-                flow.output.begin_capture();
-            }
+            // Function output goes to a fragment. On return,
+            // trim_and_collapse_fragment trims trailing whitespace and
+            // flushes the trimmed output to the outer context.
+            flow.output.begin_fragment();
 
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
@@ -647,9 +644,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 context.set_turn_count(id, context.turn_index());
             }
 
-            if flow.output.fragment_depth() == 0 {
-                flow.output.begin_capture();
-            }
+            flow.output.begin_fragment();
 
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
@@ -1081,9 +1076,9 @@ fn handle_frame_exhaustion(
 ///   it as a `Value::String`.
 fn pop_call_frame(
     flow: &mut Flow,
-    program: &Program,
-    line_tables: &[Vec<LineEntry>],
-    resolver: Option<&dyn PluralResolver>,
+    _program: &Program,
+    _line_tables: &[Vec<LineEntry>],
+    _resolver: Option<&dyn PluralResolver>,
     stats: &mut Stats,
     is_explicit_return: bool,
 ) -> Result<(), RuntimeError> {
@@ -1095,25 +1090,16 @@ fn pop_call_frame(
     stats.frames_popped += 1;
 
     if popped.frame_type == CallFrameType::Function {
-        if flow.output.fragment_depth() > 0 {
-            // Inside a fragment: no capture was started. Function output
-            // flowed directly to the fragment as structural parts.
-            // Nothing to resolve or discard.
-        } else if is_explicit_return {
-            // Explicit `~ret`: return value is already on the value stack.
-            // Discard the capture checkpoint; text stays in the output.
-            flow.output.discard_capture();
-        } else {
-            // Implicit return: capture text output as the return value.
-            // Trim trailing newlines — function bodies end with `\n` but
-            // inline callers (`{f()}`) expect clean text without trailing breaks.
-            let text = flow
-                .output
-                .end_capture(program, line_tables, resolver)
-                .ok_or(RuntimeError::CaptureUnderflow)?;
-            let text: Rc<str> = text.trim_end_matches('\n').into();
-            flow.value_stack.push(Value::String(text));
+        // Trim trailing whitespace from the function's output and collapse
+        // into the outer context (transcript or enclosing fragment).
+        flow.output.trim_and_collapse_fragment();
+
+        if !is_explicit_return {
+            // Implicit return: function returns void. Text output is
+            // already in the stream via trim_and_collapse_fragment.
+            flow.value_stack.push(Value::Null);
         }
+        // Explicit return: value is already on the stack.
     }
 
     if let Some(ret) = popped.return_address {

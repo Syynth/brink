@@ -6,7 +6,10 @@ use brink_ir::lir;
 use crate::ContainerEmitter;
 
 impl ContainerEmitter<'_> {
-    pub(super) fn emit_expr(&mut self, expr: &lir::Expr) {
+    /// Emit an expression. When `display` is true, function calls are
+    /// wrapped in `BeginFragment`/`EndFragment` so their output is captured
+    /// structurally for locale re-rendering.
+    pub(super) fn emit_expr(&mut self, expr: &lir::Expr, display: bool) {
         match expr {
             lir::Expr::Int(n) => self.emit(Opcode::PushInt(*n)),
             lir::Expr::Float(f) => self.emit(Opcode::PushFloat(*f)),
@@ -37,7 +40,7 @@ impl ContainerEmitter<'_> {
             }
 
             lir::Expr::Prefix(op, inner) => {
-                self.emit_expr(inner);
+                self.emit_expr(inner, false);
                 match op {
                     brink_ir::PrefixOp::Negate => self.emit(Opcode::Negate),
                     brink_ir::PrefixOp::Not => self.emit(Opcode::Not),
@@ -45,13 +48,13 @@ impl ContainerEmitter<'_> {
             }
 
             lir::Expr::Infix(lhs, op, rhs) => {
-                self.emit_expr(lhs);
-                self.emit_expr(rhs);
+                self.emit_expr(lhs, false);
+                self.emit_expr(rhs, false);
                 self.emit(infix_op_to_opcode(*op));
             }
 
             lir::Expr::Postfix(inner, op) => {
-                self.emit_expr(inner);
+                self.emit_expr(inner, false);
                 match op {
                     brink_ir::PostfixOp::Increment => {
                         self.emit(Opcode::PushInt(1));
@@ -68,7 +71,7 @@ impl ContainerEmitter<'_> {
                 for arg in args {
                     self.emit_call_arg(arg);
                 }
-                self.emit(Opcode::Call(*target));
+                self.emit_fragment_wrapped(display, Opcode::Call(*target));
             }
 
             lir::Expr::CallExternal {
@@ -79,7 +82,7 @@ impl ContainerEmitter<'_> {
                 for arg in args {
                     self.emit_call_arg(arg);
                 }
-                self.emit(Opcode::CallExternal(*target, *arg_count));
+                self.emit_fragment_wrapped(display, Opcode::CallExternal(*target, *arg_count));
             }
 
             lir::Expr::CallVariable { target, args } => {
@@ -87,7 +90,7 @@ impl ContainerEmitter<'_> {
                     self.emit_call_arg(arg);
                 }
                 self.emit(Opcode::GetGlobal(*target));
-                self.emit(Opcode::CallVariable);
+                self.emit_fragment_wrapped(display, Opcode::CallVariable);
             }
 
             lir::Expr::CallVariableTemp { slot, args, .. } => {
@@ -95,7 +98,7 @@ impl ContainerEmitter<'_> {
                     self.emit_call_arg(arg);
                 }
                 self.emit(Opcode::GetTemp(*slot));
-                self.emit(Opcode::CallVariable);
+                self.emit_fragment_wrapped(display, Opcode::CallVariable);
             }
 
             lir::Expr::CallBuiltin { builtin, args } => {
@@ -104,9 +107,21 @@ impl ContainerEmitter<'_> {
         }
     }
 
+    /// Emit a call opcode, wrapping in BeginFragment/EndFragment when in
+    /// display context so function output is captured structurally.
+    fn emit_fragment_wrapped(&mut self, display: bool, op: Opcode) {
+        if display {
+            self.emit(Opcode::BeginFragment);
+        }
+        self.emit(op);
+        if display {
+            self.emit(Opcode::EndFragment);
+        }
+    }
+
     pub(super) fn emit_call_arg(&mut self, arg: &lir::CallArg) {
         match arg {
-            lir::CallArg::Value(expr) => self.emit_expr(expr),
+            lir::CallArg::Value(expr) => self.emit_expr(expr, false),
             lir::CallArg::RefGlobal(id) => self.emit(Opcode::PushVarPointer(*id)),
             lir::CallArg::RefTemp(slot, _) => self.emit(Opcode::PushTempPointer(*slot)),
         }
@@ -131,7 +146,7 @@ impl ContainerEmitter<'_> {
                     self.emit(Opcode::EmitLine(idx, 0));
                 }
                 lir::StringPart::Interpolation(expr) => {
-                    self.emit_expr(expr);
+                    self.emit_expr(expr, false);
                     self.emit(Opcode::EmitValue);
                 }
             }
@@ -145,19 +160,19 @@ impl ContainerEmitter<'_> {
             lir::BuiltinFn::Turns => self.emit(Opcode::TurnIndex),
             lir::BuiltinFn::TurnsSince => {
                 for arg in args {
-                    self.emit_expr(arg);
+                    self.emit_expr(arg, false);
                 }
                 self.emit(Opcode::TurnsSince);
             }
             lir::BuiltinFn::ReadCount => {
                 for arg in args {
-                    self.emit_expr(arg);
+                    self.emit_expr(arg, false);
                 }
                 self.emit(Opcode::VisitCount);
             }
             _ => {
                 for arg in args {
-                    self.emit_expr(arg);
+                    self.emit_expr(arg, false);
                 }
                 self.emit(builtin_to_opcode(builtin));
             }

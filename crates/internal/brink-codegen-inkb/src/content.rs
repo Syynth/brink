@@ -25,7 +25,7 @@ impl ContainerEmitter<'_> {
             } => {
                 // Evaluate slot expressions first — they push values onto the stack.
                 for expr in slot_exprs {
-                    self.emit_expr(expr);
+                    self.emit_expr(expr, true);
                 }
                 let idx = self.add_template_line(
                     template_parts.clone(),
@@ -68,8 +68,9 @@ impl ContainerEmitter<'_> {
                 slot_exprs,
             } => {
                 // Evaluate slot expressions BEFORE the fragment.
+                // display=true ensures function calls get fragment-wrapped.
                 for expr in slot_exprs {
-                    self.emit_expr(expr);
+                    self.emit_expr(expr, true);
                 }
                 let idx = self.add_template_line(
                     template_parts.clone(),
@@ -113,7 +114,7 @@ impl ContainerEmitter<'_> {
                 slot_exprs,
             } => {
                 for expr in slot_exprs {
-                    self.emit_expr(expr);
+                    self.emit_expr(expr, true);
                 }
                 let idx = self.add_template_line(
                     template_parts.clone(),
@@ -170,15 +171,7 @@ impl ContainerEmitter<'_> {
                     self.emit(Opcode::Glue);
                 }
                 lir::ContentPart::Interpolation(expr) => {
-                    if expr.is_function_call() {
-                        // Function call in display context — wrap in fragment
-                        // so the function's output is captured structurally.
-                        self.emit(Opcode::BeginFragment);
-                        self.emit_expr(expr);
-                        self.emit(Opcode::EndFragment);
-                    } else {
-                        self.emit_expr(expr);
-                    }
+                    self.emit_expr(expr, true);
                     self.emit(Opcode::EmitValue);
                 }
                 lir::ContentPart::InlineConditional(cond) => {

@@ -864,3 +864,12 @@ fn tower_of_hanoi_step_sequence() {
         choices.len()
     );
 }
+
+/// External function with 0 args — fallback body should resolve correctly
+/// with the function-level fragment model.
+#[test]
+fn external_function_fallback_0_arg() {
+    let json = load_ink_json("../../tests/tier3/runtime/external-function-0-arg/story.ink.json");
+    let result = run_story(&json, &[]);
+    assert_eq!(result, "The value is .\n");
+}

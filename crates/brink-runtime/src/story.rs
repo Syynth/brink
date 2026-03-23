@@ -520,6 +520,10 @@ impl Flow {
                 offset: 0,
             }];
             frame.external_fn_id = None;
+            // Begin a fragment for the fallback body — matches what Call
+            // does for normal function calls. trim_and_collapse_fragment
+            // will clean up on return.
+            self.output.begin_fragment();
             // Push args back onto the value stack — the fallback body
             // starts with `temp=` instructions that pop them.
             self.value_stack.extend(args);
@@ -894,9 +898,6 @@ fn resolve_external_call(
                     .map(|(idx, _)| idx)
                     .ok_or(RuntimeError::UnresolvedDefinition(fb_id))?;
 
-                // Begin output capture — fallback is a function call whose
-                // text output becomes the return value.
-                flow.output.begin_capture();
                 flow.invoke_fallback(container_idx);
             } else {
                 return Err(RuntimeError::UnresolvedExternalCall(fn_id));

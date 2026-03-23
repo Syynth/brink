@@ -77,7 +77,7 @@ impl ContainerEmitter<'_> {
 
             lir::Stmt::DeclareTemp { slot, value, .. } => {
                 if let Some(expr) = value {
-                    self.emit_expr(expr);
+                    self.emit_expr(expr, false);
                 } else {
                     self.emit(Opcode::PushNull);
                 }
@@ -97,7 +97,7 @@ impl ContainerEmitter<'_> {
                     self.emit_call_arg(arg);
                 }
                 if let Some(e) = value {
-                    self.emit_expr(e);
+                    self.emit_expr(e, false);
                 } else {
                     self.emit(Opcode::PushNull);
                 }
@@ -119,7 +119,7 @@ impl ContainerEmitter<'_> {
             }
 
             lir::Stmt::ExprStmt(expr) => {
-                self.emit_expr(expr);
+                self.emit_expr(expr, false);
                 self.emit(Opcode::Pop);
             }
 
@@ -168,14 +168,14 @@ impl ContainerEmitter<'_> {
     ) {
         match op {
             brink_ir::AssignOp::Set => {
-                self.emit_expr(value);
+                self.emit_expr(value, false);
             }
             brink_ir::AssignOp::Add => {
                 match target {
                     lir::AssignTarget::Global(id) => self.emit(Opcode::GetGlobal(*id)),
                     lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::GetTemp(*slot)),
                 }
-                self.emit_expr(value);
+                self.emit_expr(value, false);
                 self.emit(Opcode::Add);
             }
             brink_ir::AssignOp::Sub => {
@@ -183,7 +183,7 @@ impl ContainerEmitter<'_> {
                     lir::AssignTarget::Global(id) => self.emit(Opcode::GetGlobal(*id)),
                     lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::GetTemp(*slot)),
                 }
-                self.emit_expr(value);
+                self.emit_expr(value, false);
                 self.emit(Opcode::Subtract);
             }
         }
@@ -248,7 +248,7 @@ impl ContainerEmitter<'_> {
 
         // 2. Condition — pushed second (on top for runtime to pop first)
         if let Some(ref cond) = choice.condition {
-            self.emit_expr(cond);
+            self.emit_expr(cond, false);
         }
 
         // 3. BeginChoice pops condition + display from stack
@@ -269,7 +269,7 @@ impl ContainerEmitter<'_> {
         // For switch: push the switch expression once; each branch will
         // Duplicate + Equal against it.
         if let lir::CondKind::Switch(ref expr) = cond.kind {
-            self.emit_expr(expr);
+            self.emit_expr(expr, false);
         }
 
         // Collect jump-to-end patch sites for each branch.
@@ -282,10 +282,10 @@ impl ContainerEmitter<'_> {
                 if is_switch {
                     // Switch: duplicate switch value, push case value, compare.
                     self.emit(Opcode::Duplicate);
-                    self.emit_expr(condition);
+                    self.emit_expr(condition, false);
                     self.emit(Opcode::Equal);
                 } else {
-                    self.emit_expr(condition);
+                    self.emit_expr(condition, false);
                 }
                 // Placeholder JumpIfFalse — will be patched to skip this branch body.
                 let patch_site = self.emit_jump_placeholder(Opcode::JumpIfFalse(0));

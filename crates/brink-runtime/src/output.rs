@@ -483,25 +483,6 @@ impl OutputBuffer {
         ))
     }
 
-    /// Remove the most recent checkpoint without capturing its content.
-    /// Content after the checkpoint flows outward: to the transcript if
-    /// this was the outermost capture, or stays in the capture vec if
-    /// an outer capture is still active.
-    pub fn discard_capture(&mut self) {
-        if let Some(cp_idx) = self
-            .capture
-            .iter()
-            .rposition(|p| matches!(p, OutputPart::Checkpoint))
-        {
-            self.capture.remove(cp_idx);
-        }
-        self.capture_depth = self.capture_depth.saturating_sub(1);
-        // If no captures remain, flush scratch content to the transcript.
-        if self.capture_depth == 0 && !self.capture.is_empty() {
-            self.transcript.append(&mut self.capture);
-        }
-    }
-
     // ── Fragment capture ───────────────────────────────────────────────
 
     /// Begin capturing output into a new fragment.
@@ -554,9 +535,48 @@ impl OutputBuffer {
         }
     }
 
-    /// Current fragment capture nesting depth.
-    pub fn fragment_depth(&self) -> usize {
-        self.fragment_depth
+    /// Trim trailing whitespace from the most recent function's fragment output,
+    /// remove its checkpoint, and collapse parts into the outer context.
+    ///
+    /// Implements the C# runtime's `TrimWhitespaceFromFunctionEnd`: walk
+    /// backward from the end of the fragment capture and remove trailing
+    /// `Newline`, `Spring`, and whitespace-only content. Then remove the
+    /// checkpoint. If outermost, flush trimmed parts to transcript.
+    pub fn trim_and_collapse_fragment(&mut self) {
+        let Some(cp_idx) = self
+            .fragment_capture
+            .iter()
+            .rposition(|p| matches!(p, OutputPart::Checkpoint))
+        else {
+            return;
+        };
+
+        // Trim trailing whitespace/newline parts from the function's region.
+        while self.fragment_capture.len() > cp_idx + 1 {
+            match self.fragment_capture.last() {
+                Some(OutputPart::Newline | OutputPart::Spring) => {
+                    self.fragment_capture.pop();
+                }
+                Some(OutputPart::Text(s)) if s.trim().is_empty() => {
+                    self.fragment_capture.pop();
+                }
+                Some(OutputPart::LineRef { flags, .. })
+                    if flags.contains(brink_format::LineFlags::ALL_WS) =>
+                {
+                    self.fragment_capture.pop();
+                }
+                _ => break,
+            }
+        }
+
+        // Remove the checkpoint marker.
+        self.fragment_capture.remove(cp_idx);
+        self.fragment_depth = self.fragment_depth.saturating_sub(1);
+
+        // If outermost, flush to transcript.
+        if self.fragment_depth == 0 && !self.fragment_capture.is_empty() {
+            self.transcript.append(&mut self.fragment_capture);
+        }
     }
 
     /// Returns true if the buffer contains at least one complete line
@@ -1129,27 +1149,29 @@ mod tests {
     }
 
     #[test]
-    fn discard_capture_leaves_text() {
+    fn trim_and_collapse_trims_trailing_newline() {
         let mut buf = OutputBuffer::new();
-        buf.push_text("before");
-        buf.begin_capture();
-        buf.push_text("during");
-        buf.discard_capture();
-        // Text from the captured region stays in the buffer.
-        assert_eq!(buf.flush(), "beforeduring");
+        buf.begin_fragment();
+        buf.push_text("Hello");
+        buf.push_newline();
+        buf.trim_and_collapse_fragment();
+        assert_eq!(buf.flush(), "Hello");
     }
 
     #[test]
-    fn discard_nested_capture() {
+    fn trim_and_collapse_nested() {
         let mut buf = OutputBuffer::new();
-        buf.begin_capture();
+        buf.begin_fragment(); // outer
         buf.push_text("outer");
-        buf.begin_capture();
+        buf.begin_fragment(); // inner
         buf.push_text("inner");
-        // Discard inner capture; then end outer capture gets only "outer".
-        buf.discard_capture();
-        let result = buf.test_end_capture();
-        assert_eq!(result, Some("outerinner".to_owned()));
+        buf.push_newline();
+        buf.trim_and_collapse_fragment(); // collapse inner
+        let idx = buf.end_fragment();
+        assert!(idx.is_some());
+        let p = test_dummy_program();
+        let resolved = buf.resolve_fragment(idx.unwrap(), &p, &[], None);
+        assert_eq!(resolved, "outerinner");
     }
 
     /// Glue should eat the following newline, not just the preceding one.
