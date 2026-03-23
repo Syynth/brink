@@ -56,7 +56,7 @@ impl LineFlags {
         flags
     }
 
-    pub fn from_template(parts: &[LinePart]) -> Self {
+    fn from_template(parts: &[LinePart]) -> Self {
         if parts.is_empty() {
             return Self::EMPTY;
         }
