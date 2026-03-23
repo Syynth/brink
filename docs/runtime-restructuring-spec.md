@@ -207,6 +207,90 @@ for part in story.transcript() {
 
 Same execution, different language. If this works, the restructuring is sound.
 
+**Current status**: Basic transcript re-rendering works for main output (LineRef parts resolve at read time). Transcript serialization (`.brkt`), CLI replay (`brink replay`), and TUI re-render on locale switch are implemented. However, slot values that cross a value boundary (function returns, inline expressions) are eagerly resolved to strings and lose structural data. The fragment model (below) addresses this.
+
+### Fragment model for locale-safe slot values
+
+**Problem**: When text crosses a value boundary — function return, inline expression like `{func()}` — the VM resolves structural `LineRef` parts to a plain string via `end_capture`. The resolved `Value::String` goes into a template slot. On locale switch, the template text re-renders but the slot value doesn't. Example: `Result: {greeting(x)}` where `greeting` returns localized text — the slot bakes in `"Dear hello"` and locale switch can't change it.
+
+**Solution**: A fragment store in the output buffer, referenced by a new `Value::FragmentRef(u32)` variant, populated by new `BeginFragment`/`EndFragment` opcodes.
+
+#### Data model
+
+```rust
+struct OutputBuffer {
+    transcript: Vec<OutputPart>,       // main output stream
+    cursor: usize,
+    capture: Vec<OutputPart>,          // transient (string eval, tags)
+    capture_depth: usize,
+    fragments: Vec<Vec<OutputPart>>,   // structural pieces for slot values
+}
+```
+
+`Value` gains a variant:
+```rust
+Value::FragmentRef(u32)  // index into OutputBuffer.fragments
+```
+
+#### Opcodes
+
+- `BeginFragment` — start capturing output to a new fragment (not the transcript, not the capture vec)
+- `EndFragment` — finalize the fragment, push `Value::FragmentRef(fragment_index)` onto the value stack
+
+#### Codegen rules
+
+The compiler decides at emit time whether an expression needs structural preservation:
+
+- **Fragment** (display context): function calls in output content (`{func()}`), choice display text. Codegen emits `BeginFragment`/`EndFragment` around these.
+- **String eval** (computation context): expressions in conditionals, assignments, comparisons. Codegen emits `BeginStringEval`/`EndStringEval` as today.
+- **Tags**: continue using `BeginTag`/`EndTag` (tags don't need localization).
+
+The distinction is: will this text be displayed to the user, or consumed by the VM for computation? Display → fragment. Computation → string eval.
+
+#### Resolution
+
+When `resolve_line_ref` encounters a `Value::FragmentRef(idx)` in a template slot:
+1. Look up `fragments[idx]` in the output buffer
+2. Resolve the fragment's parts against current line tables (via `resolve_parts`)
+3. Use the resulting string as the slot value
+
+This is recursive: a fragment can contain `LineRef` parts whose templates have slots with `FragmentRef` values. Resolution depth is bounded by function call nesting depth.
+
+#### Interaction with function capture model
+
+Fragments interact cleanly with the function capture model:
+- Inside a `BeginFragment`/`EndFragment`, function output flows to the fragment's capture space as structural `LineRef` parts.
+- The function does NOT need `begin_capture` (the C# model) — its output goes to whatever the current target is (fragment or transcript).
+- The fragment capture replaces function-level capture for display contexts.
+
+This means the function capture model redesign (removing `begin_capture` from `Call`) and the fragment model are complementary. Fragments provide the "where does the output go?" mechanism; removing function capture provides the "don't resolve at the function boundary" mechanism.
+
+#### Choice display text
+
+Choice display text is currently built via `EndStringEval` → resolved to string → stored in `PendingChoice.display_text`. With fragments:
+1. Codegen wraps choice text composition in `BeginFragment`/`EndFragment`
+2. `PendingChoice` stores `FragmentRef(u32)` instead of `String`
+3. `Choice` (public API) still exposes `text: String` — resolved on demand from the fragment
+4. After locale switch, `story.pending_choices()` re-resolves against new line tables
+5. On `story.choose(idx)`, the selected choice's fragment parts are pushed to the transcript for replay
+
+#### Serialization
+
+`Value::FragmentRef(u32)` serializes as a tag byte + `u32` index. Fragment contents serialize as part of the `.brkt` transcript format (new section after the main parts). On deserialization, fragment indices are preserved.
+
+#### Staging
+
+9. **TODO: Fragment model** — implementation order:
+   - a. Add `Value::FragmentRef(u32)` to `brink-format`'s `Value` enum (encoding, decoding, display).
+   - b. Add `BeginFragment`/`EndFragment` opcodes to `brink-format`.
+   - c. Add `fragments: Vec<Vec<OutputPart>>` to `OutputBuffer`. VM handles `BeginFragment` (start fragment capture) and `EndFragment` (finalize, push `FragmentRef`).
+   - d. Update `resolve_line_ref` / `value_ops::stringify` to resolve `FragmentRef` slots.
+   - e. Codegen: emit `BeginFragment`/`EndFragment` around function calls in display context (inline expressions in output content).
+   - f. Codegen: emit `BeginFragment`/`EndFragment` for choice display text composition.
+   - g. `PendingChoice` stores `FragmentRef` instead of `String`. `Choice` resolves on demand.
+   - h. Update `.brkt` transcript format to include fragment store.
+   - i. Verify episode corpus + locale re-rendering.
+
 ## Staging
 
 Each step is independently testable against the episode corpus:
@@ -226,6 +310,7 @@ Each step is independently testable against the episode corpus:
    - g. ✅ Episode corpus verified: 847/950 — same as pre-restructuring baseline. The 103 mismatches are from 4 pre-existing cases (function capture model, see investigation notes below), NOT regressions.
 7. ~~**Append-only buffer with cursor**~~ — ✅ Done. Transcript is append-only (`Vec<OutputPart>`) with a read cursor. Captures use separate scratch space. `transcript()`, `reset_cursor()`, `resolve_transcript_slice()` exposed on Story.
 8. ~~**Transcript serialization + locale re-render**~~ — ✅ Done. Binary `.brkt` format for transcript persistence. CLI: `--save-transcript` on play, `replay` subcommand with optional `--locale`. TUI: history re-renders on locale switch via transcript ranges.
+9. **TODO: Fragment model for locale-safe slot values** — see design section above. `Value::FragmentRef(u32)`, `BeginFragment`/`EndFragment` opcodes, fragment store in output buffer. Enables full locale re-rendering of slot values (function returns, inline expressions, choice display text).
 
 ## Open investigations
 
@@ -244,11 +329,12 @@ Each step is independently testable against the episode corpus:
 
 **What we tried**: Removed `begin_capture` from `Call`/`CallVariable`, added `trim_trailing_whitespace` to `OutputBuffer`, changed `pop_call_frame` to trim instead of capture/discard. Result: 8 run_story test failures (`StackUnderflow`) and 35 additional episode regressions. The failures were from inline `{func()}` calls where our hand-written test JSON uses `ev, f(), out, /ev` without `BeginStringEval`/`EndStringEval`. Real inklecate output may use different bytecode.
 
+**Relationship to fragments**: The fragment model (step 9) provides a cleaner path than the reverted fix. Instead of removing function capture and relying on `BeginStringEval`/`EndStringEval`, fragments introduce `BeginFragment`/`EndFragment` as a display-specific capture mechanism. Inside a fragment, function output flows structurally (no resolution at the function boundary). This addresses both the whitespace issue (function output goes directly to the fragment, no `discard_capture` to leak newlines) and the locale re-rendering issue (structural data preserved in the fragment). The function capture model redesign may still be needed for correctness, but fragments reduce the blast radius by providing a controlled capture context for display-bound output.
+
 **Next steps**:
-1. Investigate what bytecode inklecate actually emits for `{func()}` where func outputs text — does it wrap in `BeginString`/`EndString`?
-2. Check if our brink compiler emits `BeginStringEval`/`EndStringEval` around function calls in inline expressions.
-3. If both compilers do emit the string eval wrappers, the fix is correct but the hand-written tests need updating.
-4. If inklecate does NOT use string eval wrappers, we need to understand the alternative mechanism.
+1. Implement the fragment model (step 9) — this may resolve the function capture issues for display contexts without needing the full C# model redesign.
+2. After fragments are working, evaluate whether the remaining function capture issues (statement calls like `~ func()`) still need the `TrimWhitespaceFromFunctionEnd` approach.
+3. Update hand-written tests that have incorrect bytecode (missing string eval wrappers) regardless of approach.
 
 **Key C# reference locations**:
 - `Story.cs` lines 1301-1440: `BeginString`/`EndString` handling
