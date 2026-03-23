@@ -220,9 +220,9 @@ Each step is independently testable against the episode corpus:
    - a. ✅ `Opcode::Spring` added to `brink-format` (encoding, decoding, inkt read/write).
    - b. ✅ `OutputPart::Spring` added with push-time dedup and resolve-time rule.
    - c. ✅ Converter codegen strips boundary whitespace and emits `Spring`.
-   - d. **TODO**: Compiler codegen (`brink-codegen-inkb`) — same changes as converter.
-   - e. **TODO**: Remove `CleanOutputWhitespace` (blocked by 6d — needs Springs from both pipelines).
-   - f. **TODO**: Template empty-slot whitespace collapsing in `resolve_line_ref`.
+   - d. ✅ Compiler codegen (`brink-codegen-inkb`) — `emit_content_parts` strips boundary whitespace from `Text` parts and emits `Spring`.
+   - e. **TODO**: Remove `CleanOutputWhitespace` — blocked on parser-level indentation stripping. Recognition-level `trim_start` was attempted but can't distinguish source indentation from content leading space (e.g., space after `<>` glue). The parser (`brink-syntax`) needs to strip indentation at parse time, matching inklecate's `InkParser_Content.cs` which consumes leading whitespace before parsing content text.
+   - f. ✅ Template empty-slot whitespace collapsing in `resolve_line_ref`. When a slot/select resolves to empty and the join produces adjacent spaces, collapses to one.
    - g. **TODO**: Verify episode corpus. Currently 847/950 — the 103 mismatches are from 4 pre-existing cases (see investigation notes below), NOT regressions from the restructuring.
 7. **TODO: Append-only buffer with cursor** — requires rethinking the capture mechanism (`begin_capture`/`end_capture` currently drains from the buffer; needs separate scratch space for captures vs append-only main log).
 8. **TODO: Acceptance test** — locale swap + transcript re-render. Depends on step 7.
