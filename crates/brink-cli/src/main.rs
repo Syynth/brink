@@ -101,6 +101,20 @@ enum Commands {
         /// Locale overlay files (.inkl) — switchable at runtime via [l] key
         #[arg(long)]
         locale: Vec<PathBuf>,
+        /// Save the execution transcript to a .brkt file after playing
+        #[arg(long)]
+        save_transcript: Option<PathBuf>,
+    },
+    /// Re-render a saved transcript against a story (optionally with a locale)
+    Replay {
+        /// Transcript file (.brkt)
+        transcript: PathBuf,
+        /// Story file (.ink.json, .inkb, or .inkt)
+        #[arg(short, long)]
+        story: PathBuf,
+        /// Locale overlay file (.inkl) to apply before rendering
+        #[arg(long)]
+        locale: Option<PathBuf>,
     },
 }
 
@@ -176,10 +190,27 @@ fn main() -> ExitCode {
                 input,
                 speed,
                 locale,
+                save_transcript,
             } => {
                 let locale_refs: Vec<&std::path::Path> =
                     locale.iter().map(PathBuf::as_path).collect();
-                if let Err(e) = run_play(&file, input.as_deref(), speed, &locale_refs) {
+                if let Err(e) = run_play(
+                    &file,
+                    input.as_deref(),
+                    speed,
+                    &locale_refs,
+                    save_transcript.as_deref(),
+                ) {
+                    tracing::error!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            Commands::Replay {
+                transcript,
+                story,
+                locale,
+            } => {
+                if let Err(e) = run_replay(&transcript, &story, locale.as_deref()) {
                     tracing::error!("{e}");
                     return ExitCode::FAILURE;
                 }
@@ -399,6 +430,7 @@ fn run_play(
     input: Option<&std::path::Path>,
     speed: u64,
     locale_paths: &[&std::path::Path],
+    save_transcript: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data = load_story_data(file)?;
     let (program, line_tables) = brink_runtime::link(&data)?;
@@ -409,6 +441,9 @@ fn run_play(
         let file = std::fs::File::open(input_path)?;
         let reader = std::io::BufReader::new(file);
         batch::play_loop(&mut story, reader.lines(), false)?;
+        if let Some(path) = save_transcript {
+            save_transcript_file(&story, &program, path)?;
+        }
     } else if std::io::stdin().is_terminal() {
         // Interactive TUI mode
         let char_delay_ms = if speed == 0 { 0 } else { 1000 / speed };
@@ -435,7 +470,73 @@ fn run_play(
         let mut story = brink_runtime::Story::new(&program, line_tables);
         let stdin = std::io::stdin();
         batch::play_loop(&mut story, stdin.lock().lines(), false)?;
+        if let Some(path) = save_transcript {
+            save_transcript_file(&story, &program, path)?;
+        }
     }
+
+    Ok(())
+}
+
+fn save_transcript_file(
+    story: &brink_runtime::Story,
+    program: &brink_runtime::Program,
+    path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes =
+        brink_runtime::transcript::write_transcript(story.transcript(), program.source_checksum());
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+fn run_replay(
+    transcript_path: &std::path::Path,
+    story_path: &std::path::Path,
+    locale_path: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let data = load_story_data(story_path)?;
+    let (program, base_tables) = brink_runtime::link(&data)?;
+
+    // Load and validate transcript
+    let transcript_bytes = std::fs::read(transcript_path)?;
+    let (parts, source_checksum) = brink_runtime::transcript::read_transcript(&transcript_bytes)?;
+
+    if source_checksum != program.source_checksum() {
+        return Err(
+            brink_runtime::transcript::TranscriptError::ChecksumMismatch {
+                transcript: source_checksum,
+                program: program.source_checksum(),
+            }
+            .into(),
+        );
+    }
+
+    // Optionally apply locale
+    let line_tables = if let Some(locale_file) = locale_path {
+        let locale_bytes = std::fs::read(locale_file)?;
+        let locale_data = brink_format::read_inkl(&locale_bytes)?;
+        brink_runtime::apply_locale(
+            &program,
+            &locale_data,
+            &base_tables,
+            brink_runtime::LocaleMode::Overlay,
+        )?
+    } else {
+        base_tables
+    };
+
+    // Re-render transcript
+    let lines = brink_runtime::transcript::render_transcript(&parts, &program, &line_tables, None);
+
+    let mut stdout = std::io::stdout().lock();
+    for (i, (text, _tags)) in lines.iter().enumerate() {
+        if i > 0 {
+            writeln!(stdout)?;
+        }
+        write!(stdout, "{text}")?;
+    }
+    writeln!(stdout)?;
+    stdout.flush()?;
 
     Ok(())
 }
