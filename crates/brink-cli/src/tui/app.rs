@@ -372,24 +372,43 @@ impl App {
         }
     }
 
-    /// Re-render all history passages against the story's current line tables.
-    /// Called after a locale switch to update past output text.
+    /// Re-render all history passages and the current passage against the
+    /// story's current line tables. Called after a locale switch.
     pub fn rerender_history(&mut self, story: &Story) {
         let mut prev_end = 0;
         for passage in &mut self.history {
             let lines = story.resolve_transcript_slice(prev_end..passage.transcript_end);
-            let mut text = String::new();
-            for (i, (line_text, _tags)) in lines.iter().enumerate() {
-                if i > 0 {
-                    text.push('\n');
-                }
-                text.push_str(line_text);
-            }
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            passage.text = text;
+            passage.text = Self::join_resolved_lines(&lines);
             prev_end = passage.transcript_end;
         }
+
+        // Also re-render the current passage (in phase).
+        let current_text = {
+            let lines = story.resolve_transcript_slice(prev_end..self.current_transcript_end);
+            Self::join_resolved_lines(&lines)
+        };
+        match &mut self.phase {
+            Phase::Typing { typewriter, .. } => {
+                *typewriter = TypewriterState::new(current_text, self.char_delay);
+                typewriter.skip(); // show immediately after locale switch
+            }
+            Phase::Choosing { text, .. } | Phase::Ended { text } => {
+                *text = current_text;
+            }
+        }
+    }
+
+    fn join_resolved_lines(lines: &[(String, Vec<String>)]) -> String {
+        let mut text = String::new();
+        for (i, (line_text, _tags)) in lines.iter().enumerate() {
+            if i > 0 {
+                text.push('\n');
+            }
+            text.push_str(line_text);
+        }
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text
     }
 }
