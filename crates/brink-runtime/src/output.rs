@@ -331,7 +331,19 @@ impl OutputBuffer {
     pub fn push_newline(&mut self) {
         // Suppress leading newlines (no content yet) and duplicate newlines,
         // matching the C# ink runtime's output stream filtering.
-        if !self.has_content() || self.ends_in_newline() {
+        //
+        // Inside a capture, use scope-local has_content().  Outside, check
+        // the unread transcript for content **or Spring** — Spring is brink's
+        // equivalent of the C# `"^ "` (space) that inklecate emits in choice
+        // targets.  In C#, that space is a StringValue which makes
+        // `outputStreamContainsContent` true, allowing the subsequent newline
+        // through.  Without counting Spring, post-choice newlines are lost.
+        let has_content = if self.capture_depth > 0 {
+            self.has_content()
+        } else {
+            self.unread_has_content_or_spring()
+        };
+        if !has_content || self.ends_in_newline() {
             return;
         }
         self.target().push(OutputPart::Newline);
@@ -353,6 +365,22 @@ impl OutputBuffer {
                 .rev()
                 .any(OutputPart::is_content)
         }
+    }
+
+    /// Returns true if the unread transcript contains content or a Spring.
+    ///
+    /// This mirrors the C# runtime's `outputStreamContainsContent` check,
+    /// which returns true for ANY `StringValue` in the output stream.  In C#,
+    /// the choice target's `"^ "` (a space) is a `StringValue` — its brink
+    /// equivalent is `Spring`.  After `ResetOutput()` clears the stream at the
+    /// start of each `Continue()`, the choice target's space is the first thing
+    /// pushed, making `outputStreamContainsContent` true.  In brink, the
+    /// cursor advance at yield points has the same effect as `ResetOutput()`,
+    /// so checking unread parts mirrors the per-`Continue()` scope.
+    fn unread_has_content_or_spring(&self) -> bool {
+        self.transcript[self.cursor..]
+            .iter()
+            .any(|p| p.is_content() || matches!(p, OutputPart::Spring))
     }
 
     /// Returns true if the last part in the active target is a newline.
