@@ -1280,15 +1280,16 @@ fn handle_begin_choice(
         }
     }
 
-    // 2. Pop the single display string.
-    let display_text = if has_display {
+    // 2. Pop the display value.
+    let display = if has_display {
         match flow.value_stack.pop() {
-            Some(Value::String(s)) => (*s).to_owned(),
-            Some(other) => value_ops::stringify(&other, program),
-            None => String::new(),
+            Some(Value::FragmentRef(idx)) => crate::story::ChoiceDisplay::Fragment(idx),
+            Some(Value::String(s)) => crate::story::ChoiceDisplay::Text((*s).to_owned()),
+            Some(other) => crate::story::ChoiceDisplay::Text(value_ops::stringify(&other, program)),
+            None => crate::story::ChoiceDisplay::Text(String::new()),
         }
     } else {
-        String::new()
+        crate::story::ChoiceDisplay::Text(String::new())
     };
 
     let (target_idx, target_offset) = program
@@ -1305,7 +1306,7 @@ fn handle_begin_choice(
     }
     let tags = std::mem::take(&mut flow.current_tags);
     flow.pending_choices.push(PendingChoice {
-        display_text,
+        display,
         target_id,
         target_idx,
         target_offset,

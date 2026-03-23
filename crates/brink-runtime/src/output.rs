@@ -504,7 +504,6 @@ impl OutputBuffer {
     }
 
     /// Resolve a fragment's parts against the current line tables.
-    #[expect(dead_code, reason = "used by commit 4+ of step 9")]
     pub fn resolve_fragment(
         &self,
         idx: u32,

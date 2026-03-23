@@ -290,9 +290,18 @@ pub(crate) struct Thread {
     pub call_stack: CallStack,
 }
 
+/// How the choice display text is stored internally.
+#[derive(Debug, Clone)]
+pub(crate) enum ChoiceDisplay {
+    /// Eagerly resolved text (legacy path, converter, or non-fragment codegen).
+    Text(String),
+    /// Index into the output buffer's fragment store — resolved on demand.
+    Fragment(u32),
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PendingChoice {
-    pub display_text: String,
+    pub display: ChoiceDisplay,
     pub target_id: DefinitionId,
     pub target_idx: u32,
     pub target_offset: usize,
@@ -634,6 +643,7 @@ impl FlowInstance {
     /// - `Line::Done` — this turn is complete, call again for more.
     /// - `Line::Choices` — the story needs a choice selection.
     /// - `Line::End` — the story has permanently ended.
+    #[expect(clippy::too_many_lines)]
     fn step_single_line<R: StoryRng>(
         &mut self,
         program: &Program,
@@ -658,7 +668,15 @@ impl FlowInstance {
         //    output is coming, so trailing Newlines are committed.
         if self.flow.output.has_unread() && self.status != StoryStatus::Active {
             let (text, tags) = flush_remaining(&mut self.flow, program, line_tables, resolver);
-            return Ok(make_yield_line(self.status, text, tags, &self.flow));
+            return Ok(make_yield_line(
+                self.status,
+                text,
+                tags,
+                &self.flow,
+                program,
+                line_tables,
+                resolver,
+            ));
         }
 
         // 3. Status checks.
@@ -750,7 +768,15 @@ impl FlowInstance {
                     }
 
                     let (text, tags) = flush_remaining(flow, program, line_tables, resolver);
-                    return Ok(make_yield_line(*status, text, tags, flow));
+                    return Ok(make_yield_line(
+                        *status,
+                        text,
+                        tags,
+                        flow,
+                        program,
+                        line_tables,
+                        resolver,
+                    ));
                 }
 
                 vm::Stepped::Ended => {
@@ -911,7 +937,15 @@ fn flush_remaining(
 
 /// Build the appropriate [`Line`] variant for a yield point based on
 /// the current story status.
-fn make_yield_line(status: StoryStatus, text: String, tags: Vec<String>, flow: &Flow) -> Line {
+fn make_yield_line(
+    status: StoryStatus,
+    text: String,
+    tags: Vec<String>,
+    flow: &Flow,
+    program: &Program,
+    line_tables: &[Vec<brink_format::LineEntry>],
+    resolver: Option<&dyn brink_format::PluralResolver>,
+) -> Line {
     match status {
         StoryStatus::WaitingForChoice => {
             let choices = flow
@@ -919,10 +953,19 @@ fn make_yield_line(status: StoryStatus, text: String, tags: Vec<String>, flow: &
                 .iter()
                 .enumerate()
                 .filter(|(_, pc)| !pc.flags.is_invisible_default)
-                .map(|(i, pc)| Choice {
-                    text: pc.display_text.clone(),
-                    index: i,
-                    tags: pc.tags.clone(),
+                .map(|(i, pc)| {
+                    let display_text = match &pc.display {
+                        ChoiceDisplay::Text(s) => s.clone(),
+                        ChoiceDisplay::Fragment(idx) => {
+                            flow.output
+                                .resolve_fragment(*idx, program, line_tables, resolver)
+                        }
+                    };
+                    Choice {
+                        text: display_text,
+                        index: i,
+                        tags: pc.tags.clone(),
+                    }
                 })
                 .collect();
             Line::Choices {
