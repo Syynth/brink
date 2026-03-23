@@ -326,10 +326,8 @@ public class Explorer
             }
         }
 
-        if (nonEmpty.Count == 0)
-        {
-            perLineTags.Add(new List<string>());
-        }
+        // When there are no non-empty parts, brink returns an empty tags vec.
+        // Do not add a placeholder — match brink's behavior.
 
         return (fullText, perLineTags);
     }

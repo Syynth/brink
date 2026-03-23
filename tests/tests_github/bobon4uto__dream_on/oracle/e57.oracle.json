@@ -38,7 +38,7 @@
         "Choices": {
           "presented": [
             {
-              "text": "--Zzz--",
+              "text": "--zZz--",
               "index": 0,
               "tags": []
             }
@@ -51,7 +51,7 @@
       "turn_index": 1
     },
     {
-      "text": "--zzZ--\nIt's daytime.\n",
+      "text": "--Zzz--\nIt's daytime.\n",
       "tags": [
         [],
         [],
@@ -186,7 +186,7 @@
       "turn_index": 6
     },
     {
-      "text": "find shelter\nnowhere to hide.\n4 minutes before hungry wolves will be here.\n",
+      "text": "find shelter\nnowhere to hide.\n4 minutes before wolves eat you.\n",
       "tags": [
         [],
         [],
@@ -247,7 +247,7 @@
       "turn_index": 8
     },
     {
-      "text": "run\nnowhere to run\n2 minutes before wolves eat you.\n",
+      "text": "run\nnowhere to run\n2 minutes before hungry wolves will be here.\n",
       "tags": [
         [],
         [],
@@ -457,7 +457,7 @@
         "Choices": {
           "presented": [
             {
-              "text": "--zZz--",
+              "text": "--zzZ--",
               "index": 0,
               "tags": []
             }
@@ -470,7 +470,7 @@
       "turn_index": 16
     },
     {
-      "text": "--Zzz--\nIt's daytime.\n",
+      "text": "--zZz--\nIt's daytime.\n",
       "tags": [
         [],
         [],

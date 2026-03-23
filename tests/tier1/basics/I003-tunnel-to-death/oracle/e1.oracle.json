@@ -58,15 +58,16 @@
       "turn_index": 1
     },
     {
-      "text": "You can hit the man once before he throws you a punch.\nYou've been beaten to death.\n",
+      "text": "You can hit the man once before he throws you a punch.\nYou manage to block his fist and finally push him into the river.\nAfter this legendary fight, you continue your journey and never look back.\n",
       "tags": [
+        [],
         [],
         [],
         []
       ],
       "outcome": "Ended",
       "variable_changes": {
-        "hp": 0
+        "hp": 1
       },
       "visit_changes": {},
       "turn_index": 2

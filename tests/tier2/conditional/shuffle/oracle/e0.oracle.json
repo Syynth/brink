@@ -1,7 +1,7 @@
 {
   "steps": [
     {
-      "text": "Ace of Hearts.\n",
+      "text": "King of Spades.\n",
       "tags": [
         [],
         []
@@ -21,52 +21,6 @@
       "variable_changes": {},
       "visit_changes": {},
       "turn_index": 0
-    },
-    {
-      "text": "\n2 of Diamonds.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
-      "outcome": {
-        "Choices": {
-          "presented": [
-            {
-              "text": "Try again",
-              "index": 0,
-              "tags": []
-            }
-          ],
-          "selected": 0
-        }
-      },
-      "variable_changes": {},
-      "visit_changes": {},
-      "turn_index": 1
-    },
-    {
-      "text": "\nKing of Spades.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
-      "outcome": {
-        "Choices": {
-          "presented": [
-            {
-              "text": "Try again",
-              "index": 0,
-              "tags": []
-            }
-          ],
-          "selected": 0
-        }
-      },
-      "variable_changes": {},
-      "visit_changes": {},
-      "turn_index": 2
     },
     {
       "text": "\nAce of Hearts.\n",
@@ -89,10 +43,56 @@
       },
       "variable_changes": {},
       "visit_changes": {},
-      "turn_index": 3
+      "turn_index": 1
     },
     {
       "text": "\n2 of Diamonds.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Try again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "\n2 of Diamonds.\n",
+      "tags": [
+        [],
+        [],
+        []
+      ],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Try again",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "\nAce of Hearts.\n",
       "tags": [
         [],
         [],
@@ -138,7 +138,7 @@
       "turn_index": 5
     },
     {
-      "text": "\nKing of Spades.\n",
+      "text": "\n2 of Diamonds.\n",
       "tags": [
         [],
         [],
@@ -161,7 +161,7 @@
       "turn_index": 6
     },
     {
-      "text": "\nAce of Hearts.\n",
+      "text": "\nKing of Spades.\n",
       "tags": [
         [],
         [],
@@ -184,7 +184,7 @@
       "turn_index": 7
     },
     {
-      "text": "\n2 of Diamonds.\n",
+      "text": "\nAce of Hearts.\n",
       "tags": [
         [],
         [],
@@ -207,7 +207,7 @@
       "turn_index": 8
     },
     {
-      "text": "\nKing of Spades.\n",
+      "text": "\nAce of Hearts.\n",
       "tags": [
         [],
         [],
@@ -230,7 +230,7 @@
       "turn_index": 9
     },
     {
-      "text": "\n2 of Diamonds.\n",
+      "text": "\nKing of Spades.\n",
       "tags": [
         [],
         [],
@@ -253,7 +253,7 @@
       "turn_index": 10
     },
     {
-      "text": "\nAce of Hearts.\n",
+      "text": "\n2 of Diamonds.\n",
       "tags": [
         [],
         [],
@@ -276,7 +276,7 @@
       "turn_index": 11
     },
     {
-      "text": "\n2 of Diamonds.\n",
+      "text": "\nAce of Hearts.\n",
       "tags": [
         [],
         [],
@@ -299,7 +299,7 @@
       "turn_index": 12
     },
     {
-      "text": "\nKing of Spades.\n",
+      "text": "\n2 of Diamonds.\n",
       "tags": [
         [],
         [],
@@ -322,7 +322,7 @@
       "turn_index": 13
     },
     {
-      "text": "\nAce of Hearts.\n",
+      "text": "\nKing of Spades.\n",
       "tags": [
         [],
         [],
@@ -345,7 +345,7 @@
       "turn_index": 14
     },
     {
-      "text": "\n2 of Diamonds.\n",
+      "text": "\nKing of Spades.\n",
       "tags": [
         [],
         [],
@@ -368,7 +368,7 @@
       "turn_index": 15
     },
     {
-      "text": "\nAce of Hearts.\n",
+      "text": "\n2 of Diamonds.\n",
       "tags": [
         [],
         [],
@@ -391,7 +391,7 @@
       "turn_index": 16
     },
     {
-      "text": "\nKing of Spades.\n",
+      "text": "\nAce of Hearts.\n",
       "tags": [
         [],
         [],
@@ -414,7 +414,7 @@
       "turn_index": 17
     },
     {
-      "text": "\nAce of Hearts.\n",
+      "text": "\nKing of Spades.\n",
       "tags": [
         [],
         [],
@@ -437,7 +437,7 @@
       "turn_index": 18
     },
     {
-      "text": "\n2 of Diamonds.\n",
+      "text": "\nAce of Hearts.\n",
       "tags": [
         [],
         [],
@@ -460,7 +460,7 @@
       "turn_index": 19
     },
     {
-      "text": "\nKing of Spades.\n",
+      "text": "\n2 of Diamonds.\n",
       "tags": [
         [],
         [],

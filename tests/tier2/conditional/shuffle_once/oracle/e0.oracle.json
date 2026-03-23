@@ -1,7 +1,7 @@
 {
   "steps": [
     {
-      "text": "one\n",
+      "text": "two\n",
       "tags": [
         [],
         []
@@ -23,7 +23,7 @@
       "turn_index": 0
     },
     {
-      "text": "\ntwo\n",
+      "text": "\none\n",
       "tags": [
         [],
         [],

@@ -2,9 +2,7 @@
   "steps": [
     {
       "text": "",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -23,9 +21,7 @@
     },
     {
       "text": "",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -44,9 +40,7 @@
     },
     {
       "text": "",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

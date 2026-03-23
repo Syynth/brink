@@ -38,7 +38,7 @@
         "Choices": {
           "presented": [
             {
-              "text": "--Zzz--",
+              "text": "--zZz--",
               "index": 0,
               "tags": []
             }
@@ -51,7 +51,7 @@
       "turn_index": 1
     },
     {
-      "text": "--zzZ--\nIt's daytime.\n",
+      "text": "--Zzz--\nIt's daytime.\n",
       "tags": [
         [],
         [],
@@ -186,7 +186,7 @@
       "turn_index": 6
     },
     {
-      "text": "run\nnowhere to run\n4 minutes before hungry wolves will be here.\n",
+      "text": "run\nnowhere to run\n4 minutes before wolves eat you.\n",
       "tags": [
         [],
         [],
@@ -247,7 +247,7 @@
       "turn_index": 8
     },
     {
-      "text": "dream on...\n2 minutes before wolves eat you.\n",
+      "text": "dream on...\n2 minutes before hungry wolves will be here.\n",
       "tags": [
         [],
         [],
@@ -408,7 +408,7 @@
         "Choices": {
           "presented": [
             {
-              "text": "--zZz--",
+              "text": "--zzZ--",
               "index": 0,
               "tags": []
             }
@@ -421,7 +421,7 @@
       "turn_index": 14
     },
     {
-      "text": "--Zzz--\nIt's daytime.\n",
+      "text": "--zZz--\nIt's daytime.\n",
       "tags": [
         [],
         [],
@@ -520,7 +520,7 @@
       "turn_index": 18
     },
     {
-      "text": "now this is bad.\nTwe wolves are coming.\n5 minutes before beasts appear.\n",
+      "text": "now this is bad.\nTwe wolves are coming.\n5 minutes before hungry wolves will be here.\n",
       "tags": [
         [],
         [],

@@ -2,19 +2,17 @@
   "steps": [
     {
       "text": "",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
             {
-              "text": "choice 1",
+              "text": "choice 2",
               "index": 0,
               "tags": []
             },
             {
-              "text": "choice 2",
+              "text": "choice 4",
               "index": 1,
               "tags": []
             }
@@ -28,9 +26,7 @@
     },
     {
       "text": "",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

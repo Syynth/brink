@@ -2,9 +2,7 @@
   "steps": [
     {
       "text": "",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {
         "roll": 2
