@@ -7,7 +7,7 @@ use std::rc::Rc;
 use brink_format::{ChoiceFlags, DefinitionId, PluralResolver, Value};
 
 use crate::error::RuntimeError;
-use crate::output::{OutputBuffer, clean_output_whitespace};
+use crate::output::OutputBuffer;
 use crate::program::Program;
 use crate::rng::{FastRng, StoryRng};
 use crate::state::{ContextAccess, WriteObserver};
@@ -903,7 +903,7 @@ fn flush_remaining(
         if i > 0 {
             text.push('\n');
         }
-        text.push_str(&clean_output_whitespace(line_text));
+        text.push_str(line_text);
         tags.extend_from_slice(line_tags);
     }
     (text, tags)

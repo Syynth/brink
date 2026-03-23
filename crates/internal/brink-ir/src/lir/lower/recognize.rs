@@ -15,11 +15,17 @@ use super::lir;
 pub fn compose_hir_content(a: &hir::Content, b: &hir::Content) -> hir::Content {
     let mut parts = a.parts.clone();
 
-    // Merge adjacent text parts at the boundary.
+    // Merge adjacent text parts at the boundary, collapsing double
+    // whitespace at the join point (e.g., "Hello " + " world" → "Hello world").
     if let (Some(hir::ContentPart::Text(last)), Some(hir::ContentPart::Text(first))) =
         (parts.last(), b.parts.first())
     {
-        let merged = format!("{last}{first}");
+        let merged =
+            if last.ends_with(char::is_whitespace) && first.starts_with(char::is_whitespace) {
+                format!("{last}{}", first.trim_start())
+            } else {
+                format!("{last}{first}")
+            };
         let len = parts.len();
         parts[len - 1] = hir::ContentPart::Text(merged);
         parts.extend(b.parts.iter().skip(1).cloned());
