@@ -1013,6 +1013,44 @@ impl<'p, R: StoryRng> Story<'p, R> {
         &self.line_tables
     }
 
+    /// The full append-only transcript of all output parts produced so far.
+    pub fn transcript(&self) -> &[crate::output::OutputPart] {
+        self.default.flow.output.transcript()
+    }
+
+    /// Number of parts in the transcript.
+    pub fn transcript_len(&self) -> usize {
+        self.default.flow.output.transcript_len()
+    }
+
+    /// Reset the transcript read cursor to the beginning (for re-rendering).
+    pub fn reset_cursor(&mut self) {
+        self.default.flow.output.reset_cursor();
+    }
+
+    /// Resolve a slice of the transcript against the current line tables.
+    /// Returns `(text, tags)` tuples — one per line in the resolved output.
+    pub fn resolve_transcript_slice(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> Vec<(String, Vec<String>)> {
+        let transcript = self.default.flow.output.transcript();
+        let end = range.end.min(transcript.len());
+        let start = range.start.min(end);
+        let slice = &transcript[start..end];
+        crate::output::resolve_lines(
+            slice,
+            self.program,
+            &self.line_tables,
+            self.resolver.as_deref(),
+        )
+    }
+
+    /// Read-only access to the program.
+    pub fn program(&self) -> &Program {
+        self.program
+    }
+
     /// Detach story state from the program, consuming the story.
     pub fn into_snapshot(self) -> (StorySnapshot<R>, Vec<Vec<brink_format::LineEntry>>) {
         let snapshot = StorySnapshot {

@@ -82,6 +82,11 @@ impl Program {
         &self.containers[idx as usize]
     }
 
+    /// CRC-32 checksum from the source `.inkb`, used for transcript validation.
+    pub fn source_checksum(&self) -> u32 {
+        self.source_checksum
+    }
+
     /// Get the scope line table index for a container.
     pub(crate) fn scope_table_idx(&self, container_idx: u32) -> u32 {
         self.containers[container_idx as usize].scope_table_idx

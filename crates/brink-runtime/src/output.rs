@@ -8,11 +8,15 @@ use crate::program::Program;
 use crate::value_ops;
 
 /// A part of accumulated output.
+///
+/// Output parts are structural references that resolve at read time against
+/// the current line tables and plural resolver. This enables locale-hot-swap:
+/// the same transcript can be re-rendered in different languages without
+/// re-executing the story.
 #[derive(Debug, Clone)]
-pub(crate) enum OutputPart {
+pub enum OutputPart {
     /// Eagerly-resolved text. Not produced by the VM in production —
-    /// constructed in tests, matched in resolution functions.
-    #[cfg_attr(not(test), expect(dead_code))]
+    /// used in tests and available for external transcript construction.
     Text(String),
     /// Deferred line reference — resolved at read time against the
     /// current line tables and plural resolver.
@@ -35,6 +39,21 @@ pub(crate) enum OutputPart {
 }
 
 impl OutputPart {
+    /// Resolve this output part to its text representation.
+    ///
+    /// `Text` parts pass through. `LineRef` and `ValueRef` are resolved
+    /// using the provided program, line tables, and plural resolver.
+    /// Structural parts (`Newline`, `Spring`, `Glue`, `Checkpoint`, `Tag`)
+    /// resolve to empty string — they are handled by the resolution pipeline.
+    pub fn resolve(
+        &self,
+        program: &Program,
+        line_tables: &[Vec<LineEntry>],
+        resolver: Option<&dyn PluralResolver>,
+    ) -> String {
+        resolve_part(self, program, line_tables, resolver)
+    }
+
     /// Returns true if this part represents non-whitespace text content.
     fn is_content(&self) -> bool {
         match self {
@@ -617,15 +636,18 @@ impl OutputBuffer {
     }
 
     /// Returns the full append-only transcript.
-    #[expect(dead_code, reason = "used by step 8 acceptance test")]
-    pub(crate) fn transcript(&self) -> &[OutputPart] {
+    pub fn transcript(&self) -> &[OutputPart] {
         &self.transcript
     }
 
     /// Reset the read cursor to the beginning for re-rendering.
-    #[expect(dead_code, reason = "used by step 8 acceptance test")]
-    pub(crate) fn reset_cursor(&mut self) {
+    pub fn reset_cursor(&mut self) {
         self.cursor = 0;
+    }
+
+    /// Returns the number of parts in the transcript.
+    pub fn transcript_len(&self) -> usize {
+        self.transcript.len()
     }
 }
 
@@ -725,7 +747,7 @@ fn resolve_parts(
 /// Each returned element is `(line_text, line_tags)`. Tags that appear
 /// in the stream associate with the current line (the line being built
 /// when the tag is encountered).
-fn resolve_lines(
+pub(crate) fn resolve_lines(
     parts: &[OutputPart],
     program: &Program,
     line_tables: &[Vec<LineEntry>],
