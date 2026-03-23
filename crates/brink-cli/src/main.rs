@@ -483,8 +483,11 @@ fn save_transcript_file(
     program: &brink_runtime::Program,
     path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let bytes =
-        brink_runtime::transcript::write_transcript(story.transcript(), program.source_checksum());
+    let bytes = brink_runtime::transcript::write_transcript(
+        story.transcript(),
+        program.source_checksum(),
+        story.fragments(),
+    );
     std::fs::write(path, bytes)?;
     Ok(())
 }
@@ -499,7 +502,8 @@ fn run_replay(
 
     // Load and validate transcript
     let transcript_bytes = std::fs::read(transcript_path)?;
-    let (parts, source_checksum) = brink_runtime::transcript::read_transcript(&transcript_bytes)?;
+    let (parts, source_checksum, fragments) =
+        brink_runtime::transcript::read_transcript(&transcript_bytes)?;
 
     if source_checksum != program.source_checksum() {
         return Err(
@@ -526,7 +530,13 @@ fn run_replay(
     };
 
     // Re-render transcript
-    let lines = brink_runtime::transcript::render_transcript(&parts, &program, &line_tables, None);
+    let lines = brink_runtime::transcript::render_transcript(
+        &parts,
+        &program,
+        &line_tables,
+        None,
+        &fragments,
+    );
 
     let mut stdout = std::io::stdout().lock();
     for (i, (text, _tags)) in lines.iter().enumerate() {

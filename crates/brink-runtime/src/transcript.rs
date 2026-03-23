@@ -84,7 +84,11 @@ pub enum TranscriptError {
 /// Checkpoint parts are filtered out (they are transient capture markers
 /// that should never appear in a persisted transcript).
 #[expect(clippy::cast_possible_truncation)]
-pub fn write_transcript(parts: &[OutputPart], source_checksum: u32) -> Vec<u8> {
+pub fn write_transcript(
+    parts: &[OutputPart],
+    source_checksum: u32,
+    fragments: &[Vec<OutputPart>],
+) -> Vec<u8> {
     let mut body = Vec::new();
 
     // Count non-Checkpoint parts
@@ -130,6 +134,51 @@ pub fn write_transcript(parts: &[OutputPart], source_checksum: u32) -> Vec<u8> {
         }
     }
 
+    // Serialize fragments
+    write_u32(&mut body, fragments.len() as u32);
+    for fragment in fragments {
+        let filtered_count = fragment
+            .iter()
+            .filter(|p| !matches!(p, OutputPart::Checkpoint))
+            .count() as u32;
+        write_u32(&mut body, filtered_count);
+        for part in fragment {
+            match part {
+                OutputPart::Text(s) => {
+                    write_u8(&mut body, TAG_TEXT);
+                    write_str(&mut body, s);
+                }
+                OutputPart::LineRef {
+                    container_idx,
+                    line_idx,
+                    slots,
+                    flags,
+                } => {
+                    write_u8(&mut body, TAG_LINE_REF);
+                    write_u32(&mut body, *container_idx);
+                    write_u16(&mut body, *line_idx);
+                    write_u8(&mut body, flags.bits());
+                    write_u16(&mut body, slots.len() as u16);
+                    for val in slots {
+                        encode_value(val, &mut body);
+                    }
+                }
+                OutputPart::ValueRef(val) => {
+                    write_u8(&mut body, TAG_VALUE_REF);
+                    encode_value(val, &mut body);
+                }
+                OutputPart::Newline => write_u8(&mut body, TAG_NEWLINE),
+                OutputPart::Spring => write_u8(&mut body, TAG_SPRING),
+                OutputPart::Glue => write_u8(&mut body, TAG_GLUE),
+                OutputPart::Tag(s) => {
+                    write_u8(&mut body, TAG_TAG);
+                    write_str(&mut body, s);
+                }
+                OutputPart::Checkpoint => {}
+            }
+        }
+    }
+
     // Build header
     let content_crc = crc32(&body);
     let mut buf = Vec::with_capacity(HEADER_SIZE + body.len());
@@ -148,7 +197,10 @@ pub fn write_transcript(parts: &[OutputPart], source_checksum: u32) -> Vec<u8> {
 ///
 /// Returns `(parts, source_checksum)`. The caller should validate the
 /// source checksum against the program's checksum before using the parts.
-pub fn read_transcript(bytes: &[u8]) -> Result<(Vec<OutputPart>, u32), TranscriptError> {
+/// Result of reading a transcript: (parts, `source_checksum`, fragments).
+pub type TranscriptData = (Vec<OutputPart>, u32, Vec<Vec<OutputPart>>);
+
+pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> {
     if bytes.len() < HEADER_SIZE {
         return Err(TranscriptError::UnexpectedEof);
     }
@@ -208,7 +260,50 @@ pub fn read_transcript(bytes: &[u8]) -> Result<(Vec<OutputPart>, u32), Transcrip
         parts.push(part);
     }
 
-    Ok((parts, source_checksum))
+    // Deserialize fragments
+    let fragment_count = if off < bytes.len() {
+        read_u32(bytes, &mut off)? as usize
+    } else {
+        0 // backward compat: old transcripts without fragments
+    };
+    let mut fragments = Vec::with_capacity(fragment_count);
+    for _ in 0..fragment_count {
+        let frag_part_count = read_u32(bytes, &mut off)? as usize;
+        let mut frag_parts = Vec::with_capacity(frag_part_count);
+        for _ in 0..frag_part_count {
+            let tag = read_u8(bytes, &mut off)?;
+            let part = match tag {
+                TAG_TEXT => OutputPart::Text(read_str(bytes, &mut off)?),
+                TAG_LINE_REF => {
+                    let container_idx = read_u32(bytes, &mut off)?;
+                    let line_idx = read_u16(bytes, &mut off)?;
+                    let flags_bits = read_u8(bytes, &mut off)?;
+                    let flags = LineFlags::from_bits_truncate(flags_bits);
+                    let slot_count = read_u16(bytes, &mut off)? as usize;
+                    let mut slots = Vec::with_capacity(slot_count);
+                    for _ in 0..slot_count {
+                        slots.push(decode_value(bytes, &mut off)?);
+                    }
+                    OutputPart::LineRef {
+                        container_idx,
+                        line_idx,
+                        slots,
+                        flags,
+                    }
+                }
+                TAG_VALUE_REF => OutputPart::ValueRef(decode_value(bytes, &mut off)?),
+                TAG_NEWLINE => OutputPart::Newline,
+                TAG_SPRING => OutputPart::Spring,
+                TAG_GLUE => OutputPart::Glue,
+                TAG_TAG => OutputPart::Tag(read_str(bytes, &mut off)?),
+                _ => return Err(TranscriptError::InvalidPartTag(tag)),
+            };
+            frag_parts.push(part);
+        }
+        fragments.push(frag_parts);
+    }
+
+    Ok((parts, source_checksum, fragments))
 }
 
 // ── Render ────────────────────────────────────────────────────────────────
@@ -222,8 +317,9 @@ pub fn render_transcript(
     program: &Program,
     line_tables: &[Vec<brink_format::LineEntry>],
     resolver: Option<&dyn brink_format::PluralResolver>,
+    fragments: &[Vec<OutputPart>],
 ) -> Vec<(String, Vec<String>)> {
-    resolve_lines(parts, program, line_tables, resolver, &[])
+    resolve_lines(parts, program, line_tables, resolver, fragments)
 }
 
 // ── Codec helpers (self-contained, no dependency on brink-format internals) ──
@@ -461,7 +557,7 @@ mod tests {
     use super::*;
     use brink_format::LineFlags;
 
-    fn unwrap_transcript(bytes: &[u8]) -> (Vec<OutputPart>, u32) {
+    fn unwrap_transcript(bytes: &[u8]) -> (Vec<OutputPart>, u32, Vec<Vec<OutputPart>>) {
         read_transcript(bytes).unwrap()
     }
 
@@ -474,8 +570,8 @@ mod tests {
             OutputPart::Tag("tag1".to_string()),
             OutputPart::Glue,
         ];
-        let bytes = write_transcript(&parts, 0xDEAD_BEEF);
-        let (decoded, checksum) = unwrap_transcript(&bytes);
+        let bytes = write_transcript(&parts, 0xDEAD_BEEF, &[]);
+        let (decoded, checksum, _fragments) = unwrap_transcript(&bytes);
         assert_eq!(checksum, 0xDEAD_BEEF);
         assert_eq!(decoded.len(), 5);
         assert!(matches!(&decoded[0], OutputPart::Text(s) if s == "Hello"));
@@ -493,8 +589,8 @@ mod tests {
             slots: vec![Value::Int(123), Value::String(Rc::from("hello"))],
             flags: LineFlags::STARTS_WITH_WS | LineFlags::ENDS_WITH_WS,
         }];
-        let bytes = write_transcript(&parts, 1234);
-        let (decoded, _) = unwrap_transcript(&bytes);
+        let bytes = write_transcript(&parts, 1234, &[]);
+        let (decoded, _, _fragments) = unwrap_transcript(&bytes);
         assert_eq!(decoded.len(), 1);
         match &decoded[0] {
             OutputPart::LineRef {
@@ -521,8 +617,8 @@ mod tests {
             OutputPart::Checkpoint,
             OutputPart::Newline,
         ];
-        let bytes = write_transcript(&parts, 0);
-        let (decoded, _) = unwrap_transcript(&bytes);
+        let bytes = write_transcript(&parts, 0, &[]);
+        let (decoded, _, _fragments) = unwrap_transcript(&bytes);
         assert_eq!(decoded.len(), 2); // Checkpoint filtered
         assert!(matches!(&decoded[0], OutputPart::Text(_)));
         assert!(matches!(&decoded[1], OutputPart::Newline));
@@ -530,7 +626,7 @@ mod tests {
 
     #[test]
     fn invalid_magic_errors() {
-        let mut bytes = write_transcript(&[], 0);
+        let mut bytes = write_transcript(&[], 0, &[]);
         bytes[0] = b'X';
         assert!(matches!(
             read_transcript(&bytes),
@@ -540,7 +636,7 @@ mod tests {
 
     #[test]
     fn integrity_check_errors() {
-        let mut bytes = write_transcript(&[OutputPart::Newline], 0);
+        let mut bytes = write_transcript(&[OutputPart::Newline], 0, &[]);
         // Corrupt a body byte
         if let Some(last) = bytes.last_mut() {
             *last ^= 0xFF;
