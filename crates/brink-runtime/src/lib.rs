@@ -31,6 +31,7 @@ mod program;
 pub mod rng;
 mod state;
 mod story;
+pub mod transcript;
 mod value_ops;
 mod vm;
 
