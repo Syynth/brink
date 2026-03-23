@@ -224,8 +224,8 @@ Each step is independently testable against the episode corpus:
    - e. ✅ `CleanOutputWhitespace` removed. Replaced by: parser `skip_ws()` for indentation in multiline bodies, `resolve_lines` `trim()` for output-line boundary whitespace, template empty-slot collapsing for leading empty slots, and `compose_hir_content` boundary-whitespace collapsing for choice text composition.
    - f. ✅ Template empty-slot whitespace collapsing in `resolve_line_ref`. When a slot/select resolves to empty and the join produces adjacent spaces or leading whitespace, collapses it.
    - g. ✅ Episode corpus verified: 847/950 — same as pre-restructuring baseline. The 103 mismatches are from 4 pre-existing cases (function capture model, see investigation notes below), NOT regressions.
-7. **TODO: Append-only buffer with cursor** — requires rethinking the capture mechanism (`begin_capture`/`end_capture` currently drains from the buffer; needs separate scratch space for captures vs append-only main log).
-8. **TODO: Acceptance test** — locale swap + transcript re-render. Depends on step 7.
+7. ~~**Append-only buffer with cursor**~~ — ✅ Done. Transcript is append-only (`Vec<OutputPart>`) with a read cursor. Captures use separate scratch space. `transcript()`, `reset_cursor()`, `resolve_transcript_slice()` exposed on Story.
+8. ~~**Transcript serialization + locale re-render**~~ — ✅ Done. Binary `.brkt` format for transcript persistence. CLI: `--save-transcript` on play, `replay` subcommand with optional `--locale`. TUI: history re-renders on locale switch via transcript ranges.
 
 ## Open investigations
 
