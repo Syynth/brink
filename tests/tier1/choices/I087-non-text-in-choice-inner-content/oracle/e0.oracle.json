@@ -21,10 +21,7 @@
     },
     {
       "text": "option text. Conditional bit. Next.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

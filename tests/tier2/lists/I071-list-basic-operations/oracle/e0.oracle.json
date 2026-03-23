@@ -1,16 +1,48 @@
 {
   "steps": [
     {
-      "text": "b, d\na, b, c, e\nb, c\n0\n1\n1\n",
-      "tags": [
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "b, d\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "a, b, c, e\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "b, c\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "0\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "1\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

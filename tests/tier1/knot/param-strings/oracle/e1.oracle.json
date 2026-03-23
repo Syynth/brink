@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "Who do you accuse?\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -34,10 +31,7 @@
     },
     {
       "text": "\"I accuse Claudia!\" Poirot declared.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

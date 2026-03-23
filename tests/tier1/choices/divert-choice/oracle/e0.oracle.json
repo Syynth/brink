@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "You see a soldier.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,12 +25,16 @@
       "turn_index": 0
     },
     {
-      "text": "You pull a face, and the soldier comes at you! You shove the guard to one side, but he comes back swinging.\nYou see a soldier.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "You pull a face, and the soldier comes at you! You shove the guard to one side, but he comes back swinging.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "You see a soldier.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [

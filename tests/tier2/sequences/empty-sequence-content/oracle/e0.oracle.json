@@ -1,13 +1,24 @@
 {
   "steps": [
     {
-      "text": "Wait for it....\nSurprise!\nDone.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Wait for it....\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Surprise!\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Done.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

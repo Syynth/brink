@@ -1,35 +1,161 @@
 {
   "steps": [
     {
-      "text": "1 1\n2 2\n3 3\n1 1\n2 1\n3 1\n1 2\n2 2\n3 2\n1 1\n2 1\n3 1\n1 2\n2 2\n3 2\n",
-      "tags": [
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        []
-      ],
-      "outcome": "Ended",
+      "text": "1 1\n",
+      "tags": [],
+      "outcome": "Continue",
       "variable_changes": {
-        "gatherCount": 3,
-        "knotCount": 3,
-        "stitchCount": 3
+        "gatherCount": 1
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "2 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "gatherCount": 2
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "3 3\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "gatherCount": 3
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "1 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "knotCount": 1
       },
       "visit_changes": {
-        "knot_count_test": 2,
+        "knot_count_test": 1
+      },
+      "turn_index": 0
+    },
+    {
+      "text": "2 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "knotCount": 2
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "3 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "knotCount": 3
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "1 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "knotCount": 1
+      },
+      "visit_changes": {
+        "knot_count_test": 2
+      },
+      "turn_index": 0
+    },
+    {
+      "text": "2 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "knotCount": 2
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "3 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "knotCount": 3
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "1 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "stitchCount": 1
+      },
+      "visit_changes": {
+        "stitch_count_test.stitch": 1
+      },
+      "turn_index": 0
+    },
+    {
+      "text": "2 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "stitchCount": 2
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "3 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "stitchCount": 3
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "1 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "stitchCount": 1
+      },
+      "visit_changes": {
         "stitch_count_test.stitch": 2
       },
+      "turn_index": 0
+    },
+    {
+      "text": "2 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "stitchCount": 2
+      },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "3 2\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {
+        "stitchCount": 3
+      },
+      "visit_changes": {},
       "turn_index": 0
     }
   ],

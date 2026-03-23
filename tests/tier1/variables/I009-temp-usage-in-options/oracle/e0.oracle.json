@@ -20,13 +20,24 @@
       "turn_index": 0
     },
     {
-      "text": "1\nEnd of choice\nthis another\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "End of choice\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "this another\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

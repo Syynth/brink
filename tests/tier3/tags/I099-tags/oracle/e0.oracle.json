@@ -3,11 +3,8 @@
     {
       "text": "This is the content\n",
       "tags": [
-        [
-          "author: Joe",
-          "title: My Great Story"
-        ],
-        []
+        "author: Joe",
+        "title: My Great Story"
       ],
       "outcome": "Ended",
       "variable_changes": {},

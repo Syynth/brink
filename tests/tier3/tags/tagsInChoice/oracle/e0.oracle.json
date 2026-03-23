@@ -25,10 +25,8 @@
     {
       "text": "one three",
       "tags": [
-        [
-          "one",
-          "three"
-        ]
+        "one",
+        "three"
       ],
       "outcome": "Ended",
       "variable_changes": {},

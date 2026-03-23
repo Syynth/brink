@@ -25,13 +25,24 @@
       "turn_index": 0
     },
     {
-      "text": "B\nFinished tunnel.\nStarting thread.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "B\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "Finished tunnel.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "Starting thread.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -59,12 +70,16 @@
       "turn_index": 1
     },
     {
-      "text": "E\nDone.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "E\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "Done.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

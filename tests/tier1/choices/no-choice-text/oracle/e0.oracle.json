@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "Hello world!\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [

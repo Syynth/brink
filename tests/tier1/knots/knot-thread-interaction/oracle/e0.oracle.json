@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "blah blah\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,12 +25,16 @@
       "turn_index": 0
     },
     {
-      "text": "option\nsomething\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "option\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "something\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -1,12 +1,16 @@
 {
   "steps": [
     {
-      "text": "512x2 = 1024\n512x2p2 = 1026\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "512x2 = 1024\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "512x2p2 = 1026\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

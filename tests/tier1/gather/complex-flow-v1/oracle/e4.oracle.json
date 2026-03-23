@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "I looked at Monsieur Fogg\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,13 +25,24 @@
       "turn_index": 0
     },
     {
-      "text": "... and I could contain myself no longer.\n'What is the purpose of our journey, Monsieur?'\n'A wager,' he replied.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "... and I could contain myself no longer.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "'What is the purpose of our journey, Monsieur?'\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "'A wager,' he replied.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -57,12 +65,16 @@
       "turn_index": 1
     },
     {
-      "text": "'A wager!' I returned.\nHe nodded.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "'A wager!' I returned.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "He nodded.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -85,12 +97,16 @@
       "turn_index": 2
     },
     {
-      "text": "'A most serious matter then!'\nHe nodded again.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "'A most serious matter then!'\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "He nodded again.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -118,13 +134,24 @@
       "turn_index": 3
     },
     {
-      "text": "'A modest wager, I trust?'\n'Twenty thousand pounds,' he replied, quite flatly.\nAfter that, we passed the day in silence.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "'A modest wager, I trust?'\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "'Twenty thousand pounds,' he replied, quite flatly.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "After that, we passed the day in silence.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

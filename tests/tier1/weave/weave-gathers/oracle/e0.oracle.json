@@ -26,10 +26,7 @@
     },
     {
       "text": "one\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -47,13 +44,24 @@
       "turn_index": 1
     },
     {
-      "text": "two\nthree\nsix\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "two\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "three\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "six\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -18,6 +18,14 @@
       "variable_changes": {},
       "visit_changes": {},
       "turn_index": 0
+    },
+    {
+      "text": "opt\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
     }
   ],
   "outcome": {

@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "The guard frowns at you.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,12 +25,16 @@
       "turn_index": 0
     },
     {
-      "text": "'Greetings.'\n'Hmm,' replies the guard.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "'Greetings.'\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "'Hmm,' replies the guard.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -56,12 +57,16 @@
       "turn_index": 1
     },
     {
-      "text": "'Hmm?' you reply.\n'Mff,' the guard replies, and then offers you a paper bag. 'Toffee?'\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "'Hmm?' you reply.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "'Mff,' the guard replies, and then offers you a paper bag. 'Toffee?'\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

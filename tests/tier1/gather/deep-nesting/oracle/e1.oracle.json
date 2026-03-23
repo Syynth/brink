@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "Tell us a tale, Captain!\"\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,12 +25,16 @@
       "turn_index": 0
     },
     {
-      "text": "\"No, it's past your bed-time.\"\nTo a man, the crew began to yawn.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\"No, it's past your bed-time.\"\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "To a man, the crew began to yawn.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

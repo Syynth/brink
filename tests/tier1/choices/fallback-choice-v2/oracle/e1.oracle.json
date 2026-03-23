@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "You search desperately for a friendly face in the crowd.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -29,10 +26,7 @@
     },
     {
       "text": "The man with the briefcase looks disgusted as you stumble past him. You search desperately for a friendly face in the crowd.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -50,12 +44,16 @@
       "turn_index": 1
     },
     {
-      "text": "The woman in the hat pushes you roughly aside. You search desperately for a friendly face in the crowd.\nBut it is too late: you collapse onto the station platform. This is the end.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "The woman in the hat pushes you roughly aside. You search desperately for a friendly face in the crowd.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "But it is too late: you collapse onto the station platform. This is the end.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

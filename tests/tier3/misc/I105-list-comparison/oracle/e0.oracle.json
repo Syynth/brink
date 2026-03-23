@@ -1,13 +1,32 @@
 {
   "steps": [
     {
-      "text": "Hey, my name is Philippe. What about yours?\nI am Andre and I need my rheumatism pills!\nWould you like me, Philippe, to get some more for you?\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Hey, my name is Philippe. What about yours?\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "currentActor": "Philippe"
+      },
+      "visit_changes": {
+        "set_actor": 1
+      },
+      "turn_index": 0
+    },
+    {
+      "text": "I am Andre and I need my rheumatism pills!\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "currentActor": "Andre"
+      },
+      "visit_changes": {
+        "set_actor": 2
+      },
+      "turn_index": 0
+    },
+    {
+      "text": "Would you like me, Philippe, to get some more for you?\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {
         "currentActor": "Philippe"

@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "You search desperately for a friendly face in the crowd.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -29,10 +26,7 @@
     },
     {
       "text": "The woman in the hat pushes you roughly aside. You search desperately for a friendly face in the crowd.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [

@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "What's that?\" my master asked.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -33,13 +30,24 @@
       "turn_index": 0
     },
     {
-      "text": "\"Nothing, Monsieur!\" I replied.\n\"Very good, then.\"\nWith that Monsieur Fogg left the room.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "\"Nothing, Monsieur!\" I replied.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\"Very good, then.\"\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "With that Monsieur Fogg left the room.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

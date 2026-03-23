@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "a line after an empty line\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

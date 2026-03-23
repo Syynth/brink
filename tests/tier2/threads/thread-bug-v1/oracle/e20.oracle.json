@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "Here is some gold. Do you want it?\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,12 +25,16 @@
       "turn_index": 0
     },
     {
-      "text": "Yes\nYou win!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "Yes\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "You win!\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

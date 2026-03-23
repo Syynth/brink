@@ -21,10 +21,7 @@
     },
     {
       "text": "First\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -42,12 +39,16 @@
       "turn_index": 1
     },
     {
-      "text": "Very indented\nEnd\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "Very indented\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "End\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

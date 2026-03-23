@@ -3,10 +3,7 @@
     {
       "text": "tag\n",
       "tags": [
-        [
-          "pic8red.jpg"
-        ],
-        []
+        "pic8red.jpg"
       ],
       "outcome": "Ended",
       "variable_changes": {},

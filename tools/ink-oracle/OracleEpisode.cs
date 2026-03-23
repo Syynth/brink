@@ -6,7 +6,7 @@ namespace InkOracle;
 
 /// <summary>
 /// A complete recorded execution of a story from start to termination.
-/// Uses string names for all identifiers (variables, container paths).
+/// Each step corresponds to one Continue() call.
 /// </summary>
 public class OracleEpisode
 {
@@ -24,8 +24,7 @@ public class OracleEpisode
 }
 
 /// <summary>
-/// A single step: one ContinueMaximally()-equivalent call's output.
-/// We accumulate Continue() calls until choices or termination.
+/// A single step: one Continue() call's output and state changes.
 /// </summary>
 public class OracleStep
 {
@@ -33,11 +32,11 @@ public class OracleStep
     public string Text { get; set; } = "";
 
     [JsonPropertyName("tags")]
-    public List<List<string>> Tags { get; set; } = new();
+    public List<string> Tags { get; set; } = new();
 
     [JsonPropertyName("outcome")]
     [JsonConverter(typeof(StepOutcomeConverter))]
-    public OracleStepOutcome Outcome { get; set; } = new OracleStepOutcomeDone();
+    public OracleStepOutcome Outcome { get; set; } = new OracleStepOutcomeContinue();
 
     [JsonPropertyName("variable_changes")]
     public Dictionary<string, JsonNode?> VariableChanges { get; set; } = new();
@@ -51,9 +50,16 @@ public class OracleStep
 
 public abstract class OracleStepOutcome { }
 
+/// <summary>More Continue() calls available.</summary>
+public class OracleStepOutcomeContinue : OracleStepOutcome { }
+
+/// <summary>Story paused — no more content, no choices.</summary>
 public class OracleStepOutcomeDone : OracleStepOutcome { }
+
+/// <summary>Story permanently ended.</summary>
 public class OracleStepOutcomeEnded : OracleStepOutcome { }
 
+/// <summary>Choices presented.</summary>
 public class OracleStepOutcomeChoices : OracleStepOutcome
 {
     public List<OracleChoiceRecord> Presented { get; set; } = new();
@@ -83,16 +89,6 @@ public class OracleInitialState
 
 // --- Outcome types for the episode level ---
 
-public class OracleOutcomeDone
-{
-    public string Type => "Done";
-}
-
-public class OracleOutcomeEnded
-{
-    public string Type => "Ended";
-}
-
 public class OracleOutcomeInputsExhausted
 {
     [JsonPropertyName("remaining_choices")]
@@ -107,10 +103,6 @@ public class OracleOutcomeError
 
 // --- JSON converters ---
 
-/// <summary>
-/// Serializes step outcomes to match brink's serde format:
-///   "Done", "Ended", or { "Choices": { "presented": [...], "selected": N } }
-/// </summary>
 public class StepOutcomeConverter : JsonConverter<OracleStepOutcome>
 {
     public override OracleStepOutcome Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
@@ -122,6 +114,9 @@ public class StepOutcomeConverter : JsonConverter<OracleStepOutcome>
     {
         switch (value)
         {
+            case OracleStepOutcomeContinue:
+                writer.WriteStringValue("Continue");
+                break;
             case OracleStepOutcomeDone:
                 writer.WriteStringValue("Done");
                 break;
@@ -142,9 +137,6 @@ public class StepOutcomeConverter : JsonConverter<OracleStepOutcome>
     }
 }
 
-/// <summary>
-/// Serializes episode-level outcomes to match brink's serde format.
-/// </summary>
 public class EpisodeOutcomeConverter : JsonConverter<object>
 {
     public override object Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)

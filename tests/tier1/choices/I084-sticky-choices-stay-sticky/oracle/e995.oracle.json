@@ -1,12 +1,16 @@
 {
   "steps": [
     {
-      "text": "First line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -34,13 +38,24 @@
       "turn_index": 0
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -68,13 +83,24 @@
       "turn_index": 1
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -102,13 +128,24 @@
       "turn_index": 2
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -136,13 +173,24 @@
       "turn_index": 3
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -170,13 +218,24 @@
       "turn_index": 4
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 5
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 5
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -204,13 +263,24 @@
       "turn_index": 5
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 6
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 6
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -238,13 +308,24 @@
       "turn_index": 6
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 7
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 7
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -272,13 +353,24 @@
       "turn_index": 7
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 8
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 8
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -306,13 +398,24 @@
       "turn_index": 8
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 9
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 9
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -340,13 +443,24 @@
       "turn_index": 9
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 10
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 10
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -374,13 +488,24 @@
       "turn_index": 10
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 11
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 11
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -408,13 +533,24 @@
       "turn_index": 11
     },
     {
-      "text": "Choice 2\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 12
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 12
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -442,13 +578,24 @@
       "turn_index": 12
     },
     {
-      "text": "Choice 2\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 13
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 13
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -476,13 +623,24 @@
       "turn_index": 13
     },
     {
-      "text": "Choice 2\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 14
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 14
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -510,13 +668,24 @@
       "turn_index": 14
     },
     {
-      "text": "Choice 2\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 15
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 15
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -544,13 +713,24 @@
       "turn_index": 15
     },
     {
-      "text": "Choice 2\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 16
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 16
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -578,13 +758,24 @@
       "turn_index": 16
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 17
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 17
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -612,13 +803,24 @@
       "turn_index": 17
     },
     {
-      "text": "Choice 2\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 18
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 18
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -646,13 +848,24 @@
       "turn_index": 18
     },
     {
-      "text": "Choice 1\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 19
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 19
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -680,13 +893,24 @@
       "turn_index": 19
     },
     {
-      "text": "Choice 2\nFirst line.\nSecond line.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Choice 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 20
+    },
+    {
+      "text": "First line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 20
+    },
+    {
+      "text": "Second line.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [

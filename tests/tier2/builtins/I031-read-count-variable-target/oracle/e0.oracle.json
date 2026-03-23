@@ -1,20 +1,49 @@
 {
   "steps": [
     {
-      "text": "Count start: 0 0 0\n1\n2\n3\nCount end: 3 3 3\n",
-      "tags": [
-        [],
-        [],
-        [],
-        [],
-        [],
-        []
-      ],
-      "outcome": "Ended",
+      "text": "Count start: 0 0 0\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "1\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {
+        "knot": 1
+      },
+      "turn_index": 0
+    },
+    {
+      "text": "2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {
+        "knot": 2
+      },
+      "turn_index": 0
+    },
+    {
+      "text": "3\n",
+      "tags": [],
+      "outcome": "Continue",
       "variable_changes": {},
       "visit_changes": {
         "knot": 3
       },
+      "turn_index": 0
+    },
+    {
+      "text": "Count end: 3 3 3\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
       "turn_index": 0
     }
   ],

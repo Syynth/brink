@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "At the table, I drew a card. Ace of Hearts.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -23,12 +20,16 @@
       "turn_index": 0
     },
     {
-      "text": "I drew a card. 2 of Diamonds.\n\"Should I hit you again,\" the croupier asks.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "I drew a card. 2 of Diamonds.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\"Should I hit you again,\" the croupier asks.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -46,12 +47,16 @@
       "turn_index": 1
     },
     {
-      "text": "I drew a card. King of Spades.\n\"You lose,\" he crowed.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "I drew a card. King of Spades.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "\"You lose,\" he crowed.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -1,13 +1,24 @@
 {
   "steps": [
     {
-      "text": "Start\nIn tunnel.\nEnd\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Start\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "In tunnel.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "End\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

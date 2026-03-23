@@ -26,10 +26,7 @@
     },
     {
       "text": "You struggle up off the couch to go and compose epic poetry.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

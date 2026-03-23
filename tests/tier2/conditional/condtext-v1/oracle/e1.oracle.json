@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "\"We are going on a trip,\" said Monsieur Fogg.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,12 +25,16 @@
       "turn_index": 0
     },
     {
-      "text": "I stared at Monsieur Fogg. \"But there must be a reason for this trip,\" I observed.\nHe said nothing in reply, merely considering his newspaper with as much thoroughness as entomologist considering his latest pinned addition.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "I stared at Monsieur Fogg. \"But there must be a reason for this trip,\" I observed.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "He said nothing in reply, merely considering his newspaper with as much thoroughness as entomologist considering his latest pinned addition.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

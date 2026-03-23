@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "Should you cross the river?\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,12 +25,16 @@
       "turn_index": 0
     },
     {
-      "text": "You enter the river but the stream is stronger than you thought.\nSadly you've drown in the water.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "You enter the river but the stream is stronger than you thought.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "Sadly you've drown in the water.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

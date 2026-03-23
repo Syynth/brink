@@ -1,19 +1,41 @@
 {
   "steps": [
     {
-      "text": "hi\nhi\nhi\n3\n",
-      "tags": [
-        [],
-        [],
-        [],
-        [],
-        []
-      ],
-      "outcome": "Ended",
+      "text": "hi\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {
+        "hi.stitch_to_count": 1
+      },
+      "turn_index": 0
+    },
+    {
+      "text": "hi\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {
+        "hi.stitch_to_count": 2
+      },
+      "turn_index": 0
+    },
+    {
+      "text": "hi\n",
+      "tags": [],
+      "outcome": "Continue",
       "variable_changes": {},
       "visit_changes": {
         "hi.stitch_to_count": 3
       },
+      "turn_index": 0
+    },
+    {
+      "text": "3\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
       "turn_index": 0
     }
   ],

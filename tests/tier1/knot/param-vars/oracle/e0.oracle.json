@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "How much do you give?\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -34,10 +31,7 @@
     },
     {
       "text": "You give 1 dollars.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

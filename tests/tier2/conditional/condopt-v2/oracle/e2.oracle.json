@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "I looked...\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -29,10 +26,7 @@
     },
     {
       "text": "I stood up and...\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -56,9 +50,7 @@
     },
     {
       "text": "I stood and went to open the door. Monsieur Fogg seemed untroubled by this small rebellion.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

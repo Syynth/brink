@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "Staring down from the heavens you see your followers finishing construction of the last of the great temples, ready to begin the work.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -26,10 +23,7 @@
     },
     {
       "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered one, two, three. The second temple is empty. The third temple is empty.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -52,12 +46,19 @@
       "turn_index": 1
     },
     {
-      "text": "The priests far below construct a great harness, and after many years of work, the great stone ring is lifted up into the air, and swung over to the next of the temples.\nThe ropes are slashed, and in the blink of an eye it falls once more.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "The priests far below construct a great harness, and after many years of work, the great stone ring is lifted up into the air, and swung over to the next of the temples.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "post1": "two, three",
+        "post2": "one"
+      },
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "The ropes are slashed, and in the blink of an eye it falls once more.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -70,19 +71,13 @@
           "selected": 0
         }
       },
-      "variable_changes": {
-        "post1": "two, three",
-        "post2": "one"
-      },
+      "variable_changes": {},
       "visit_changes": {},
       "turn_index": 2
     },
     {
       "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered two, three. The one ring lies on the second temple. The third temple is empty.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -111,10 +106,7 @@
     },
     {
       "text": "Your next decree is met with a great feast and many sacrifices. After the funeary smoke has cleared, work to shift the great stone ring begins in earnest. A generation grows and falls, and the ring falls into its ordained place.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -136,10 +128,7 @@
     },
     {
       "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered one, two, three. The second temple is empty. The third temple is empty.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -163,10 +152,7 @@
     },
     {
       "text": "Years pass as the ring is slowly moved.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -188,10 +174,7 @@
     },
     {
       "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered two, three. The one ring lies on the second temple. The third temple is empty.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -220,10 +203,7 @@
     },
     {
       "text": "The priests below fight a war over what colour robes to wear, but while they fall and die, the work is still completed.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -245,10 +225,7 @@
     },
     {
       "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered one, two, three. The second temple is empty. The third temple is empty.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -272,10 +249,7 @@
     },
     {
       "text": "Years pass as the ring is slowly moved.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -297,10 +271,7 @@
     },
     {
       "text": "You regard each of the temples in turn. On each is stacked the rings of stone. On the first temple, are the discs numbered two, three. The second temple is empty. The one ring lies on the third temple.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -329,10 +300,7 @@
     },
     {
       "text": "The priests below fight a war over what colour robes to wear, but while they fall and die, the work is still completed.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -354,10 +322,7 @@
     },
     {
       "text": "You regard each of the temples in turn. On each is stacked the rings of stone. The three ring lies on the first temple. The two ring lies on the second temple. The one ring lies on the third temple.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -386,10 +351,7 @@
     },
     {
       "text": "Years pass as the ring is slowly moved.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -411,10 +373,7 @@
     },
     {
       "text": "You regard each of the temples in turn. On each is stacked the rings of stone. The three ring lies on the first temple. On the second temple, are the discs numbered one, two. The third temple is empty.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -443,10 +402,7 @@
     },
     {
       "text": "The priests below fight a war over what colour robes to wear, but while they fall and die, the work is still completed.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -468,10 +424,7 @@
     },
     {
       "text": "You regard each of the temples in turn. On each is stacked the rings of stone. The first temple is empty. On the second temple, are the discs numbered one, two. The three ring lies on the third temple.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -500,10 +453,7 @@
     },
     {
       "text": "Years pass as the ring is slowly moved.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -525,10 +475,7 @@
     },
     {
       "text": "You regard each of the temples in turn. On each is stacked the rings of stone. The three ring lies on the first temple. On the second temple, are the discs numbered one, two. The third temple is empty.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -557,10 +504,7 @@
     },
     {
       "text": "The priests below fight a war over what colour robes to wear, but while they fall and die, the work is still completed.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [

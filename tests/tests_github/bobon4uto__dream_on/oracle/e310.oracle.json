@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "It's night-time.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,17 +25,21 @@
       "turn_index": 0
     },
     {
-      "text": "Go to bed.\nYou go to bed and start sleeping.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "Go to bed.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "You go to bed and start sleeping.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
             {
-              "text": "--zZz--",
+              "text": "--Zzz--",
               "index": 0,
               "tags": []
             }
@@ -51,12 +52,16 @@
       "turn_index": 1
     },
     {
-      "text": "--Zzz--\nIt's daytime.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "--zZz--\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "It's daytime.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -79,12 +84,16 @@
       "turn_index": 2
     },
     {
-      "text": "or is it?\nThe sun shatters. Darkness falls.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "or is it?\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "The sun shatters. Darkness falls.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -104,12 +113,16 @@
       "turn_index": 3
     },
     {
-      "text": "It's not that bad.\nWolves howl.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "It's not that bad.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "Wolves howl.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -127,12 +140,16 @@
       "turn_index": 4
     },
     {
-      "text": "could be worse?\nYour home crumbles.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "could be worse?\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 5
+    },
+    {
+      "text": "Your home crumbles.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -150,13 +167,24 @@
       "turn_index": 5
     },
     {
-      "text": "now this is bad.\nTwe wolves are coming.\n5 minutes before beasts appear.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "now this is bad.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 6
+    },
+    {
+      "text": "Twe wolves are coming.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 6
+    },
+    {
+      "text": "5 minutes before wolves eat you.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -186,13 +214,24 @@
       "turn_index": 6
     },
     {
-      "text": "run\nnowhere to run\n4 minutes before wolves eat you.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "run\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 7
+    },
+    {
+      "text": "nowhere to run\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 7
+    },
+    {
+      "text": "4 minutes before hungry wolves will be here.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -217,12 +256,16 @@
       "turn_index": 7
     },
     {
-      "text": "dream on...\n3 minutes before wolves arrive.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "dream on...\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 8
+    },
+    {
+      "text": "3 minutes before beasts appear.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -247,12 +290,16 @@
       "turn_index": 8
     },
     {
-      "text": "dream on...\n2 minutes before hungry wolves will be here.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "dream on...\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 9
+    },
+    {
+      "text": "2 minutes before wolves arrive.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -277,12 +324,16 @@
       "turn_index": 9
     },
     {
-      "text": "dream on...\n1 minutes before wolves eat you.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "dream on...\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 10
+    },
+    {
+      "text": "1 minutes before hungry wolves will be here.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -307,15 +358,19 @@
       "turn_index": 10
     },
     {
-      "text": "dream on...\nThey are here.\n",
+      "text": "dream on...\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 11
+    },
+    {
+      "text": "They are here.\n",
       "tags": [
-        [],
-        [
-          "CLEAR",
-          "CLASS: end",
-          "CLASS: danger"
-        ],
-        []
+        "CLEAR",
+        "CLASS: end",
+        "CLASS: danger"
       ],
       "outcome": {
         "Choices": {
@@ -336,13 +391,26 @@
       "turn_index": 11
     },
     {
-      "text": "WAKE UP\nYou wake up in cold sweat, the time is 3 AM. It wasn't a dream... it was a nightmare.\nYou found 1/4 endings.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "WAKE UP\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 12
+    },
+    {
+      "text": "You wake up in cold sweat, the time is 3 AM. It wasn't a dream... it was a nightmare.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "wolf_counter": 6
+      },
+      "visit_changes": {},
+      "turn_index": 12
+    },
+    {
+      "text": "You found 1/4 endings.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -361,20 +429,23 @@
         }
       },
       "variable_changes": {
-        "wolf_counter": 6,
         "ENDINGS_FOUND": 1
       },
       "visit_changes": {},
       "turn_index": 12
     },
     {
-      "text": "Restart\nIt's night-time.\n",
+      "text": "Restart\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 13
+    },
+    {
+      "text": "It's night-time.\n",
       "tags": [
-        [],
-        [
-          "CLEAR"
-        ],
-        []
+        "CLEAR"
       ],
       "outcome": {
         "Choices": {
@@ -398,13 +469,26 @@
       "turn_index": 13
     },
     {
-      "text": "Go to the kitchen.\nYou spend the whole night in the kitchen, and didn't get any sleep, let alone any dreams.\nYou found 2/4 endings.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Go to the kitchen.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 14
+    },
+    {
+      "text": "You spend the whole night in the kitchen, and didn't get any sleep, let alone any dreams.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {
+        "kitchen": 1
+      },
+      "turn_index": 14
+    },
+    {
+      "text": "You found 2/4 endings.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -425,18 +509,13 @@
       "variable_changes": {
         "ENDINGS_FOUND": 2
       },
-      "visit_changes": {
-        "kitchen": 1
-      },
+      "visit_changes": {},
       "turn_index": 14
     },
     {
       "text": "THE END\n",
       "tags": [
-        [
-          "CLASS end"
-        ],
-        []
+        "CLASS end"
       ],
       "outcome": "Ended",
       "variable_changes": {},

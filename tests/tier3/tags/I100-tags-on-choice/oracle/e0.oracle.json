@@ -25,11 +25,8 @@
     {
       "text": "Start of choice text This is after the choice is taken\n",
       "tags": [
-        [
-          "tag both",
-          "post choice tag"
-        ],
-        []
+        "tag both",
+        "post choice tag"
       ],
       "outcome": "Ended",
       "variable_changes": {},

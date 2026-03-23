@@ -1,12 +1,16 @@
 {
   "steps": [
     {
-      "text": "Line.\nOther line.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "Line.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Other line.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

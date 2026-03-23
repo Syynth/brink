@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "I ran through the forest, the dogs snapping at my heels.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -34,10 +31,7 @@
     },
     {
       "text": "I cheered with joy. The road could not be much further! Mackie would have the engine running, and then I'd be safe.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -60,12 +54,16 @@
       "turn_index": 1
     },
     {
-      "text": "I reached the road and looked about. And would you believe it?\nThe road was empty. Mackie was nowhere to be seen.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "I reached the road and looked about. And would you believe it?\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "The road was empty. Mackie was nowhere to be seen.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

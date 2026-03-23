@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "You stand by the wall of Analand, sword in hand.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -24,9 +21,7 @@
     },
     {
       "text": "You open the gate, and step out onto the path.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

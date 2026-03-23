@@ -1,13 +1,24 @@
 {
   "steps": [
     {
-      "text": "Hello, world!\nHello?\nHello, are you there?\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Hello, world!\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Hello?\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Hello, are you there?\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -1,12 +1,16 @@
 {
   "steps": [
     {
-      "text": "This is place 1.\nThis is place 2.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "This is place 1.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "This is place 2.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -29,12 +33,16 @@
       "turn_index": 0
     },
     {
-      "text": "choice in place 2\nThe end\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "choice in place 2\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "The end\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -2,9 +2,7 @@
   "steps": [
     {
       "text": "The value is -1.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {
         "y": -1

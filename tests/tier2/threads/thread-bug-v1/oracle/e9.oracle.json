@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "Here is some gold. Do you want it?\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,12 +25,16 @@
       "turn_index": 0
     },
     {
-      "text": "No\nTry again!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "No\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "Try again!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -56,12 +57,16 @@
       "turn_index": 1
     },
     {
-      "text": "No\nTry again!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "No\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "Try again!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -84,12 +89,16 @@
       "turn_index": 2
     },
     {
-      "text": "No\nTry again!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "No\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "Try again!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -112,12 +121,16 @@
       "turn_index": 3
     },
     {
-      "text": "No\nTry again!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "No\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "Try again!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -140,12 +153,16 @@
       "turn_index": 4
     },
     {
-      "text": "No\nTry again!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "No\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 5
+    },
+    {
+      "text": "Try again!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -168,12 +185,16 @@
       "turn_index": 5
     },
     {
-      "text": "No\nTry again!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "No\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 6
+    },
+    {
+      "text": "Try again!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -196,12 +217,16 @@
       "turn_index": 6
     },
     {
-      "text": "No\nTry again!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "No\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 7
+    },
+    {
+      "text": "Try again!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -224,12 +249,16 @@
       "turn_index": 7
     },
     {
-      "text": "No\nTry again!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "No\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 8
+    },
+    {
+      "text": "Try again!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -252,12 +281,16 @@
       "turn_index": 8
     },
     {
-      "text": "No\nTry again!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "No\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 9
+    },
+    {
+      "text": "Try again!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -280,12 +313,16 @@
       "turn_index": 9
     },
     {
-      "text": "No\nTry again!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "No\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 10
+    },
+    {
+      "text": "Try again!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -308,12 +345,16 @@
       "turn_index": 10
     },
     {
-      "text": "No\nTry again!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "No\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 11
+    },
+    {
+      "text": "Try again!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -336,12 +377,16 @@
       "turn_index": 11
     },
     {
-      "text": "Yes\nYou win!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "Yes\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 12
+    },
+    {
+      "text": "You win!\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "-1 = -1\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -23,12 +20,16 @@
       "turn_index": 0
     },
     {
-      "text": "stuff\n0 = 0\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "stuff\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "0 = 0\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -46,12 +47,16 @@
       "turn_index": 1
     },
     {
-      "text": "more stuff\n1 = 1\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "more stuff\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "1 = 1\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

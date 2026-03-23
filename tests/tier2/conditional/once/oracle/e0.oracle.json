@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "Would my luck hold?\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -23,12 +20,16 @@
       "turn_index": 0
     },
     {
-      "text": "\nCould I win the hand?\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "Could I win the hand?\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -47,10 +48,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -69,10 +67,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -91,10 +86,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -113,10 +105,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -135,10 +124,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -157,10 +143,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -179,10 +162,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -201,10 +181,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -223,10 +200,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -245,10 +219,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -267,10 +238,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -289,10 +257,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -311,10 +276,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -333,10 +295,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -355,10 +314,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -377,10 +333,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -399,10 +352,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -421,10 +371,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -443,10 +390,7 @@
     },
     {
       "text": "\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [

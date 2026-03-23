@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "This is the first time.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -35,12 +32,16 @@
       "turn_index": 0
     },
     {
-      "text": "Munch cookies\nThis is the second time.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "Munch cookies\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "This is the second time.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -65,12 +66,16 @@
       "turn_index": 1
     },
     {
-      "text": "Eat ice-cream\nThis is the third time.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "Eat ice-cream\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "This is the third time.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -90,12 +95,16 @@
       "turn_index": 2
     },
     {
-      "text": "Drink coke\nI've finished eating now.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "Drink coke\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "I've finished eating now.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {
         "times": -1

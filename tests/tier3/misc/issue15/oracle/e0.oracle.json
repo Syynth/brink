@@ -1,13 +1,24 @@
 {
   "steps": [
     {
-      "text": "This is a test\nSET_X:\nX is not set!\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "This is a test\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "SET_X:\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "X is not set!\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "I looked at Monsieur Fogg\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -29,10 +26,7 @@
     },
     {
       "text": "... but I said nothing and we passed the day in silence.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

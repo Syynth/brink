@@ -47,14 +47,16 @@ public class Explorer
         if (_episodes.Count >= _config.MaxEpisodes)
             return;
 
-        // Run one "step" — accumulate Continue() calls until choices or termination.
-        var stepResult = RunStep();
+        // Run Continue() calls one at a time, emitting a step for each.
+        var (newSteps, terminal) = RunUntilTerminal();
+        var allSteps = new List<OracleStep>(steps);
+        allSteps.AddRange(newSteps);
 
-        switch (stepResult)
+        switch (terminal)
         {
-            case StepResultChoices choicesResult:
+            case TerminalChoices tc:
             {
-                var presented = choicesResult.Choices.Select(c => new OracleChoiceRecord
+                var presented = tc.Choices.Select(c => new OracleChoiceRecord
                 {
                     Text = c.text,
                     Index = c.index,
@@ -63,16 +65,15 @@ public class Explorer
 
                 if (depth >= _config.MaxDepth || _episodes.Count >= _config.MaxEpisodes)
                 {
-                    var truncatedSteps = new List<OracleStep>(steps);
-                    truncatedSteps.Add(StepWithOutcome(choicesResult.Step,
-                        new OracleStepOutcomeChoices
-                        {
-                            Presented = presented,
-                            Selected = 0
-                        }));
+                    // Mark the last step's outcome as choices.
+                    SetLastStepOutcome(allSteps, new OracleStepOutcomeChoices
+                    {
+                        Presented = presented,
+                        Selected = 0
+                    });
                     _episodes.Add(new OracleEpisode
                     {
-                        Steps = truncatedSteps,
+                        Steps = allSteps,
                         Outcome = new OracleOutcomeInputsExhausted
                         {
                             RemainingChoices = presented
@@ -83,27 +84,23 @@ public class Explorer
                     return;
                 }
 
-                // Save state for branching.
                 var savedState = _story.state.ToJson();
 
-                for (int i = 0; i < choicesResult.Choices.Count; i++)
+                for (int i = 0; i < tc.Choices.Count; i++)
                 {
                     if (_episodes.Count >= _config.MaxEpisodes)
                         return;
 
-                    // Restore state before each branch.
                     _story.state.LoadJson(savedState);
 
-                    var branchSteps = new List<OracleStep>(steps);
-                    branchSteps.Add(StepWithOutcome(choicesResult.Step,
-                        new OracleStepOutcomeChoices
-                        {
-                            Presented = presented,
-                            Selected = i
-                        }));
+                    var branchSteps = new List<OracleStep>(allSteps);
+                    SetLastStepOutcome(branchSteps, new OracleStepOutcomeChoices
+                    {
+                        Presented = presented,
+                        Selected = i
+                    });
 
                     var branchPath = new List<int>(choicePath) { i };
-
                     _story.ChooseChoiceIndex(i);
 
                     ExploreInner(initialState, branchSteps, branchPath, depth + 1);
@@ -112,25 +109,12 @@ public class Explorer
                 break;
             }
 
-            case StepResultDone doneResult:
+            case TerminalEnded:
             {
-                var finalSteps = new List<OracleStep>(steps) { doneResult.Step };
+                SetLastStepOutcome(allSteps, new OracleStepOutcomeEnded());
                 _episodes.Add(new OracleEpisode
                 {
-                    Steps = finalSteps,
-                    Outcome = "Done",
-                    ChoicePath = new List<int>(choicePath),
-                    InitialState = initialState
-                });
-                break;
-            }
-
-            case StepResultEnded endedResult:
-            {
-                var finalSteps = new List<OracleStep>(steps) { endedResult.Step };
-                _episodes.Add(new OracleEpisode
-                {
-                    Steps = finalSteps,
+                    Steps = allSteps,
                     Outcome = "Ended",
                     ChoicePath = new List<int>(choicePath),
                     InitialState = initialState
@@ -138,12 +122,25 @@ public class Explorer
                 break;
             }
 
-            case StepResultError errorResult:
+            case TerminalDone:
+            {
+                SetLastStepOutcome(allSteps, new OracleStepOutcomeDone());
+                _episodes.Add(new OracleEpisode
+                {
+                    Steps = allSteps,
+                    Outcome = "Done",
+                    ChoicePath = new List<int>(choicePath),
+                    InitialState = initialState
+                });
+                break;
+            }
+
+            case TerminalError te:
             {
                 _episodes.Add(new OracleEpisode
                 {
-                    Steps = new List<OracleStep>(steps),
-                    Outcome = new OracleOutcomeError { Error = errorResult.Error },
+                    Steps = allSteps,
+                    Outcome = new OracleOutcomeError { Error = te.Error },
                     ChoicePath = new List<int>(choicePath),
                     InitialState = initialState
                 });
@@ -153,14 +150,47 @@ public class Explorer
     }
 
     /// <summary>
-    /// Runs Continue() in a loop until choices or termination.
-    /// Tracks variable changes, visit count diffs, and turn index.
+    /// Replace the last step with a copy that has the given outcome.
+    /// If there are no steps (choices appeared immediately), insert a
+    /// synthetic empty step. Creates a new object to avoid aliasing
+    /// between branches.
     /// </summary>
-    private StepResult RunStep()
+    private void SetLastStepOutcome(List<OracleStep> steps, OracleStepOutcome outcome)
     {
+        if (steps.Count == 0)
+        {
+            steps.Add(new OracleStep
+            {
+                Text = "",
+                Tags = new List<string>(),
+                Outcome = outcome,
+                TurnIndex = _story.state.currentTurnIndex + 1
+            });
+        }
+        else
+        {
+            var last = steps[^1];
+            steps[^1] = new OracleStep
+            {
+                Text = last.Text,
+                Tags = last.Tags,
+                Outcome = outcome,
+                VariableChanges = last.VariableChanges,
+                VisitChanges = last.VisitChanges,
+                TurnIndex = last.TurnIndex
+            };
+        }
+    }
+
+    /// <summary>
+    /// Run Continue() calls one at a time until choices or termination.
+    /// Returns one OracleStep per Continue() call, plus the terminal condition.
+    /// </summary>
+    private (List<OracleStep> steps, Terminal terminal) RunUntilTerminal()
+    {
+        var steps = new List<OracleStep>();
         var variableChanges = new Dictionary<string, JsonNode?>();
-        var visitsBefore = SnapshotVisitCounts();
-        int turnBefore = _story.state.currentTurnIndex;
+        int stepCount = 0;
 
         // Track variable changes via observer.
         void OnVariableChanged(string name, object newValue)
@@ -168,14 +198,10 @@ public class Explorer
             variableChanges[name] = ToJsonNode(newValue);
         }
 
-        // Register observer for all variables.
         foreach (var varName in _story.variablesState)
         {
             _story.ObserveVariable(varName, OnVariableChanged);
         }
-
-        var textParts = new List<(string text, List<string> tags)>();
-        int stepCount = 0;
 
         try
         {
@@ -184,64 +210,62 @@ public class Explorer
                 if (stepCount++ > _config.MaxStepsPerEpisode)
                 {
                     RemoveAllObservers(OnVariableChanged);
-                    return new StepResultError($"Step limit exceeded ({_config.MaxStepsPerEpisode})");
+                    return (steps, new TerminalError($"Step limit exceeded ({_config.MaxStepsPerEpisode})"));
                 }
 
-                _story.Continue();
-                textParts.Add((_story.currentText, new List<string>(_story.currentTags)));
-            }
+                // Snapshot state before this Continue().
+                var visitsBefore = SnapshotVisitCounts();
+                variableChanges.Clear();
 
-            // Check for errors after continuing.
-            if (_story.hasError)
-            {
-                RemoveAllObservers(OnVariableChanged);
-                var errors = string.Join("; ", _story.currentErrors);
-                return new StepResultError(errors);
+                _story.Continue();
+
+                // Check for errors after Continue().
+                if (_story.hasError)
+                {
+                    RemoveAllObservers(OnVariableChanged);
+                    var errors = string.Join("; ", _story.currentErrors);
+                    return (steps, new TerminalError(errors));
+                }
+
+                // Diff state.
+                var visitsAfter = SnapshotVisitCounts();
+                var visitChanges = DiffVisitCounts(visitsBefore, visitsAfter);
+                int turnIndex = _story.state.currentTurnIndex + 1;
+
+                // Determine step outcome: if canContinue, more output coming.
+                // Terminal outcomes (choices/ended/done) are set by the caller.
+                var outcome = _story.canContinue
+                    ? (OracleStepOutcome)new OracleStepOutcomeContinue()
+                    : new OracleStepOutcomeContinue(); // placeholder, overwritten by caller
+
+                steps.Add(new OracleStep
+                {
+                    Text = _story.currentText,
+                    Tags = new List<string>(_story.currentTags),
+                    Outcome = outcome,
+                    VariableChanges = new Dictionary<string, JsonNode?>(variableChanges),
+                    VisitChanges = visitChanges,
+                    TurnIndex = turnIndex
+                });
             }
         }
         catch (Exception ex)
         {
             RemoveAllObservers(OnVariableChanged);
-            return new StepResultError(ex.Message);
+            return (steps, new TerminalError(ex.Message));
         }
 
         RemoveAllObservers(OnVariableChanged);
 
-        // Build text and per-line tags.
-        var (text, tags) = BuildTextAndTags(textParts);
-
-        // Diff visit counts.
-        var visitsAfter = SnapshotVisitCounts();
-        var visitChanges = DiffVisitCounts(visitsBefore, visitsAfter);
-        // C# ink runtime starts turnIndex at -1; brink starts at 0. Normalize by adding 1.
-        int turnAfter = _story.state.currentTurnIndex + 1;
-
-        var step = new OracleStep
-        {
-            Text = text,
-            Tags = tags,
-            VariableChanges = variableChanges,
-            VisitChanges = visitChanges,
-            TurnIndex = turnAfter
-        };
-
-        // Determine outcome.
+        // Determine terminal condition.
         var choices = _story.currentChoices;
         if (choices.Count > 0)
         {
-            return new StepResultChoices(step, choices);
+            return (steps, new TerminalChoices(choices));
         }
 
-        // No choices — check if story has ended or just paused.
-        // If we can't continue and there are no choices, the story is done.
-        // The ink runtime doesn't distinguish "done" vs "ended" explicitly in its API,
-        // but if the story has no more content and no choices, it's ended.
-        // We check if we got any output at all — if we did, it ended; if not, it's done.
-        // Actually, ink uses the concept: if the flow reaches the end of all content, it's "ended".
-        // canContinue == false && choices.Count == 0 means the story is over.
-        // We'll mark it as "Ended" since the C# runtime has reached end of content.
-        step.Outcome = new OracleStepOutcomeEnded();
-        return new StepResultEnded(step);
+        // No choices, no more content.
+        return (steps, new TerminalEnded());
     }
 
     private void RemoveAllObservers(Story.VariableObserver observer)
@@ -294,48 +318,6 @@ public class Explorer
         return diff;
     }
 
-    /// <summary>
-    /// Build concatenated text and per-text-line tags from accumulated Continue() outputs.
-    /// Matches brink's build_per_line_tags logic:
-    /// - Filter out empty-text parts
-    /// - For each part, count newlines. The first segment gets the part's tags.
-    /// - For non-final parts, trailing \n is consumed by the next part (no extra segment).
-    /// - For the final part, trailing \n does create an extra empty-tag segment.
-    /// </summary>
-    private static (string text, List<List<string>> tags) BuildTextAndTags(
-        List<(string text, List<string> tags)> parts)
-    {
-        var fullText = string.Join("", parts.Select(p => p.text));
-        var perLineTags = new List<List<string>>();
-
-        // Filter out empty-text parts (matches brink's non_empty filter).
-        var nonEmpty = parts.Where(p => !string.IsNullOrEmpty(p.text)).ToList();
-
-        for (int i = 0; i < nonEmpty.Count; i++)
-        {
-            var (partText, partTags) = nonEmpty[i];
-            bool isLast = i == nonEmpty.Count - 1;
-
-            int newlineCount = partText.Count(c => c == '\n');
-            int extraSegments = isLast ? newlineCount : Math.Max(0, newlineCount - 1);
-
-            perLineTags.Add(new List<string>(partTags));
-            for (int j = 0; j < extraSegments; j++)
-            {
-                perLineTags.Add(new List<string>());
-            }
-        }
-
-        // When there are no non-empty parts, brink returns an empty tags vec.
-        // Do not add a placeholder — match brink's behavior.
-
-        return (fullText, perLineTags);
-    }
-
-    /// <summary>
-    /// Walk the story's container tree to collect all named container paths.
-    /// These are used for visit count tracking.
-    /// </summary>
     private static List<string> CollectContainerPaths(Container container, string parentPath)
     {
         var paths = new List<string>();
@@ -355,24 +337,6 @@ public class Explorer
         return paths;
     }
 
-    private static OracleStep StepWithOutcome(OracleStep source, OracleStepOutcome outcome)
-    {
-        return new OracleStep
-        {
-            Text = source.Text,
-            Tags = source.Tags,
-            Outcome = outcome,
-            VariableChanges = source.VariableChanges,
-            VisitChanges = source.VisitChanges,
-            TurnIndex = source.TurnIndex
-        };
-    }
-
-    /// <summary>
-    /// Convert ink runtime values to JsonNode for correct serialization.
-    /// The C# ink runtime returns boxed primitives from variablesState[name],
-    /// but ObserveVariable callbacks receive the raw .NET value.
-    /// </summary>
     private static JsonNode? ToJsonNode(object? value)
     {
         return value switch
@@ -390,10 +354,10 @@ public class Explorer
     }
 }
 
-// --- Step result types ---
+// --- Terminal types ---
 
-abstract record StepResult;
-record StepResultChoices(OracleStep Step, List<Choice> Choices) : StepResult;
-record StepResultDone(OracleStep Step) : StepResult;
-record StepResultEnded(OracleStep Step) : StepResult;
-record StepResultError(string Error) : StepResult;
+abstract record Terminal;
+record TerminalChoices(List<Choice> Choices) : Terminal;
+record TerminalDone : Terminal;
+record TerminalEnded : Terminal;
+record TerminalError(string Error) : Terminal;

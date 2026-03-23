@@ -1,12 +1,16 @@
 {
   "steps": [
     {
-      "text": "This is A\nNow in B.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "This is A\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Now in B.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -1,13 +1,24 @@
 {
   "steps": [
     {
-      "text": "One\nTwo\nThree\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "One\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Two\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Three\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

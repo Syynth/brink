@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "Well, Poirot? Murder or suicide?\"\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,12 +25,16 @@
       "turn_index": 0
     },
     {
-      "text": "\"Murder!\"\n\"And who did it?\"\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\"Murder!\"\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\"And who did it?\"\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -61,12 +62,16 @@
       "turn_index": 1
     },
     {
-      "text": "\"Captain Hastings!\"\n\"You must be joking!\"\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\"Captain Hastings!\"\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "\"You must be joking!\"\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -89,12 +94,16 @@
       "turn_index": 2
     },
     {
-      "text": "\"Mon ami, I am deadly serious.\"\nMrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\"Mon ami, I am deadly serious.\"\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -1,12 +1,16 @@
 {
   "steps": [
     {
-      "text": "Hello world!\nHello world 2!\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "Hello world!\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Hello world 2!\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,10 +32,7 @@
     },
     {
       "text": "choice\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {
         "testVar": 25,

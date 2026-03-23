@@ -1,12 +1,16 @@
 {
   "steps": [
     {
-      "text": "\"The result is 120!\" you announce.\nGauss stares at you in horror.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\"The result is 120!\" you announce.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Gauss stares at you in horror.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "The guard frowns at you.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,12 +25,16 @@
       "turn_index": 0
     },
     {
-      "text": "'Get out of my way,' you tell the guard.\n'Hmm,' replies the guard.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "'Get out of my way,' you tell the guard.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "'Hmm,' replies the guard.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -57,10 +58,7 @@
     },
     {
       "text": "You shove him sharply. He stares in reply, and draws his sword!\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

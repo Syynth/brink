@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "I settled my master.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -29,10 +26,7 @@
     },
     {
       "text": "I settled my master.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -51,10 +45,7 @@
     },
     {
       "text": "I put myself in third.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

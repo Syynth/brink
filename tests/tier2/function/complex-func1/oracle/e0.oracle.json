@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "The values are 6 and 10.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {
         "x": 6,

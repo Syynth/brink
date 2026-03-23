@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "I looked at Monsieur Fogg\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,13 +25,24 @@
       "turn_index": 0
     },
     {
-      "text": "... and I could contain myself no longer.\n'What is the purpose of our journey, Monsieur?'\n'A wager,' he replied.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "... and I could contain myself no longer.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "'What is the purpose of our journey, Monsieur?'\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "'A wager,' he replied.\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -57,12 +65,16 @@
       "turn_index": 1
     },
     {
-      "text": "'Ah,' I replied, uncertain what I thought.\nAfter that, we passed the day in silence.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "'Ah,' I replied, uncertain what I thought.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "After that, we passed the day in silence.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

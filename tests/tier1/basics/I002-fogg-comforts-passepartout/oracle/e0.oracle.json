@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "\"What's that?\" my master asked.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -33,12 +30,16 @@
       "turn_index": 0
     },
     {
-      "text": "\"I am somewhat tired,\" I repeated.\n\"Really,\" he responded. \"How deleterious.\"\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\"I am somewhat tired,\" I repeated.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\"Really,\" he responded. \"How deleterious.\"\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

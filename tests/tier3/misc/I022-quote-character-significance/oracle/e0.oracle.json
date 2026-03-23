@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "My name is \"Joe\"\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

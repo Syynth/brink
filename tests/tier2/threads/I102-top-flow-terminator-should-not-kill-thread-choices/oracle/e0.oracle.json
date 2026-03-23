@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "Limes\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -24,10 +21,7 @@
     },
     {
       "text": "boop\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

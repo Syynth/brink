@@ -1,12 +1,16 @@
 {
   "steps": [
     {
-      "text": "Hello!\nWorld.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "Hello!\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "World.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

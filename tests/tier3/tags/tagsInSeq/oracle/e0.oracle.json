@@ -1,15 +1,19 @@
 {
   "steps": [
     {
-      "text": "A red sequence.\nA white sequence.\n",
+      "text": "A red sequence.\n",
       "tags": [
-        [
-          "red"
-        ],
-        [
-          "white"
-        ],
-        []
+        "red"
+      ],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "A white sequence.\n",
+      "tags": [
+        "white"
       ],
       "outcome": "Ended",
       "variable_changes": {},

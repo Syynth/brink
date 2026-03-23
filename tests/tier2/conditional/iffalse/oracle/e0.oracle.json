@@ -2,9 +2,7 @@
   "steps": [
     {
       "text": "The value is 3.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

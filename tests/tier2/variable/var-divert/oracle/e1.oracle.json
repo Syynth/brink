@@ -1,12 +1,16 @@
 {
   "steps": [
     {
-      "text": "Divert as variable example\nGive up now, or keep trying to save your Kingdom?\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "Divert as variable example\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Give up now, or keep trying to save your Kingdom?\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -30,10 +34,7 @@
     },
     {
       "text": "Everybody dies.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {

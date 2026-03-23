@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "The value of x is 4.4.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

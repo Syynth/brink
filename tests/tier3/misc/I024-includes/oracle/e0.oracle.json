@@ -1,13 +1,24 @@
 {
   "steps": [
     {
-      "text": "This is include 1.\nThis is include 2.\nThis is the main file.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "This is include 1.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "This is include 2.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "This is the main file.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "this is a '|' character\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

@@ -21,10 +21,7 @@
     },
     {
       "text": "test1 test4\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

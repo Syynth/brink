@@ -1,18 +1,36 @@
 {
   "steps": [
     {
-      "text": "Pound, Pizza, Euro, Pasta, Dollar, Curry, Paella\nEuro, Pasta, Dollar, Curry\nTwo, Three, Four, Five, Six\nPizza, Pasta\n",
-      "tags": [
-        [],
-        [],
-        [],
-        [],
-        []
-      ],
-      "outcome": "Ended",
+      "text": "Pound, Pizza, Euro, Pasta, Dollar, Curry, Paella\n",
+      "tags": [],
+      "outcome": "Continue",
       "variable_changes": {
         "all": "Pound, Pizza, Euro, Pasta, Dollar, Curry, Paella"
       },
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Euro, Pasta, Dollar, Curry\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Two, Three, Four, Five, Six\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Pizza, Pasta\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {},
       "visit_changes": {},
       "turn_index": 0
     }

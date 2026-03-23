@@ -1,11 +1,8 @@
 {
   "steps": [
     {
-      "text": "one\n",
-      "tags": [
-        [],
-        []
-      ],
+      "text": "two\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -23,12 +20,16 @@
       "turn_index": 0
     },
     {
-      "text": "\ntwo\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "one\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -46,12 +47,16 @@
       "turn_index": 1
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -69,12 +74,16 @@
       "turn_index": 2
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 3
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -92,12 +101,16 @@
       "turn_index": 3
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 4
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -115,12 +128,16 @@
       "turn_index": 4
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 5
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -138,12 +155,16 @@
       "turn_index": 5
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 6
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -161,12 +182,16 @@
       "turn_index": 6
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 7
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -184,12 +209,16 @@
       "turn_index": 7
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 8
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -207,12 +236,16 @@
       "turn_index": 8
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 9
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -230,12 +263,16 @@
       "turn_index": 9
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 10
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -253,12 +290,16 @@
       "turn_index": 10
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 11
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -276,12 +317,16 @@
       "turn_index": 11
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 12
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -299,12 +344,16 @@
       "turn_index": 12
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 13
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -322,12 +371,16 @@
       "turn_index": 13
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 14
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -345,12 +398,16 @@
       "turn_index": 14
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 15
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -368,12 +425,16 @@
       "turn_index": 15
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 16
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -391,12 +452,16 @@
       "turn_index": 16
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 17
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -414,12 +479,16 @@
       "turn_index": 17
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 18
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -437,12 +506,16 @@
       "turn_index": 18
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 19
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -460,12 +533,16 @@
       "turn_index": 19
     },
     {
-      "text": "\nfinal\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 20
+    },
+    {
+      "text": "final\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [

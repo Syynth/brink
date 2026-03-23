@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "I have five eggs.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

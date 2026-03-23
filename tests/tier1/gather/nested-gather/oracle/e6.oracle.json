@@ -2,10 +2,7 @@
   "steps": [
     {
       "text": "Well, Poirot? Murder or suicide?\"\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -28,12 +25,16 @@
       "turn_index": 0
     },
     {
-      "text": "\"Suicide!\"\n\"Really, Poirot? Are you quite sure?\"\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\"Suicide!\"\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\"Really, Poirot? Are you quite sure?\"\n",
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -56,12 +57,16 @@
       "turn_index": 1
     },
     {
-      "text": "\"Quite sure.\"\nMrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "\"Quite sure.\"\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

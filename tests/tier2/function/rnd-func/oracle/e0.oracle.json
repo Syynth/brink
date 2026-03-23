@@ -1,14 +1,32 @@
 {
   "steps": [
     {
-      "text": "Rolling dice 1: 6.\nRolling dice 2: 6.\nRolling dice 3: 4.\nRolling dice 4: 2.\n",
-      "tags": [
-        [],
-        [],
-        [],
-        [],
-        []
-      ],
+      "text": "Rolling dice 1: 6.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Rolling dice 2: 6.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Rolling dice 3: 4.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "Rolling dice 4: 2.\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

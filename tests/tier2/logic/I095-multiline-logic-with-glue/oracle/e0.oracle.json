@@ -1,12 +1,16 @@
 {
   "steps": [
     {
-      "text": "a b\na b\n",
-      "tags": [
-        [],
-        [],
-        []
-      ],
+      "text": "a b\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "a b\n",
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},

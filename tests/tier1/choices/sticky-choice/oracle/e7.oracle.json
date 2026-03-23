@@ -26,9 +26,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -52,9 +50,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -78,9 +74,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -104,9 +98,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -130,9 +122,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -156,9 +146,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -182,9 +170,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -208,9 +194,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -234,9 +218,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -260,9 +242,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -286,9 +266,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -312,9 +290,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -338,9 +314,7 @@
     },
     {
       "text": "You eat another donut.",
-      "tags": [
-        []
-      ],
+      "tags": [],
       "outcome": {
         "Choices": {
           "presented": [
@@ -364,10 +338,7 @@
     },
     {
       "text": "You struggle up off the couch to go and compose epic poetry.\n",
-      "tags": [
-        [],
-        []
-      ],
+      "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},
