@@ -82,6 +82,7 @@ const THREAD_DONE: u8 = 0x59;
 const EMIT_LINE: u8 = 0x60;
 const EMIT_VALUE: u8 = 0x61;
 const EMIT_NEWLINE: u8 = 0x62;
+const SPRING: u8 = 0x67;
 const GLUE: u8 = 0x63;
 const BEGIN_TAG: u8 = 0x64;
 const END_TAG: u8 = 0x65;
@@ -393,6 +394,8 @@ pub enum Opcode {
     EmitLine(u16, u8),
     EmitValue,
     EmitNewline,
+    /// Word break — renders as a single space between content parts.
+    Spring,
     Glue,
     BeginTag,
     EndTag,
@@ -607,6 +610,7 @@ impl Opcode {
             }
             Self::EmitValue => write_u8(buf, EMIT_VALUE),
             Self::EmitNewline => write_u8(buf, EMIT_NEWLINE),
+            Self::Spring => write_u8(buf, SPRING),
             Self::Glue => write_u8(buf, GLUE),
             Self::BeginTag => write_u8(buf, BEGIN_TAG),
             Self::EndTag => write_u8(buf, END_TAG),
@@ -778,6 +782,7 @@ impl Opcode {
             }
             EMIT_VALUE => Self::EmitValue,
             EMIT_NEWLINE => Self::EmitNewline,
+            SPRING => Self::Spring,
             GLUE => Self::Glue,
             BEGIN_TAG => Self::BeginTag,
             END_TAG => Self::EndTag,
@@ -1006,6 +1011,7 @@ mod tests {
         roundtrip(&Opcode::EmitLine(999, 3));
         roundtrip(&Opcode::EmitValue);
         roundtrip(&Opcode::EmitNewline);
+        roundtrip(&Opcode::Spring);
         roundtrip(&Opcode::Glue);
         roundtrip(&Opcode::BeginTag);
         roundtrip(&Opcode::EndTag);

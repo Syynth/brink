@@ -25,6 +25,8 @@ pub(crate) enum OutputPart {
     /// Deferred value — stringified at read time.
     ValueRef(Value),
     Newline,
+    /// Word break — renders as a single space between content parts.
+    Spring,
     Glue,
     /// Marks the start of a captured region (string eval, tag, or function call).
     Checkpoint,
@@ -73,9 +75,11 @@ fn resolve_part(
             resolver,
         ),
         OutputPart::ValueRef(val) => value_ops::stringify(val, program),
-        OutputPart::Newline | OutputPart::Glue | OutputPart::Checkpoint | OutputPart::Tag(_) => {
-            String::new()
-        }
+        OutputPart::Newline
+        | OutputPart::Spring
+        | OutputPart::Glue
+        | OutputPart::Checkpoint
+        | OutputPart::Tag(_) => String::new(),
     }
 }
 
@@ -265,6 +269,13 @@ impl OutputBuffer {
 
     pub fn push_glue(&mut self) {
         self.parts.push(OutputPart::Glue);
+    }
+
+    /// Push a word break. Deduplicated: no consecutive Springs.
+    pub fn push_spring(&mut self) {
+        if !matches!(self.parts.last(), Some(OutputPart::Spring)) {
+            self.parts.push(OutputPart::Spring);
+        }
     }
 
     /// Push a deferred line reference. Resolved at read time.
@@ -543,7 +554,10 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
                         remove[j] = true;
                         break;
                     }
-                    OutputPart::Glue | OutputPart::Checkpoint | OutputPart::Tag(_) => {}
+                    OutputPart::Glue
+                    | OutputPart::Checkpoint
+                    | OutputPart::Tag(_)
+                    | OutputPart::Spring => {}
                     OutputPart::Text(s) if s.trim().is_empty() => {}
                     // Content (Text, LineRef, ValueRef) blocks glue scan.
                     OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
@@ -590,6 +604,12 @@ fn resolve_parts(
                 out.push_str(s);
                 if !s.trim().is_empty() {
                     after_glue = false;
+                }
+            }
+            OutputPart::Spring => {
+                // Emit " " unless output is empty, ends in space, or ends in newline.
+                if !out.is_empty() && !out.ends_with(' ') && !out.ends_with('\n') {
+                    out.push(' ');
                 }
             }
             OutputPart::Newline => {
@@ -653,6 +673,14 @@ fn resolve_lines(
                 current_text.push_str(s);
                 if !s.trim().is_empty() {
                     after_glue = false;
+                }
+            }
+            OutputPart::Spring => {
+                if !current_text.is_empty()
+                    && !current_text.ends_with(' ')
+                    && !current_text.ends_with('\n')
+                {
+                    current_text.push(' ');
                 }
             }
             OutputPart::Newline => {

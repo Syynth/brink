@@ -1028,6 +1028,7 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         }
         "emit_value" => Ok(Opcode::EmitValue),
         "emit_newline" => Ok(Opcode::EmitNewline),
+        "spring" => Ok(Opcode::Spring),
         "glue" => Ok(Opcode::Glue),
         "begin_tag" => Ok(Opcode::BeginTag),
         "end_tag" => Ok(Opcode::EndTag),

@@ -140,6 +140,9 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::EmitNewline => {
             flow.output.push_newline();
         }
+        Opcode::Spring => {
+            flow.output.push_spring();
+        }
         Opcode::Glue => {
             flow.output.push_glue();
         }
