@@ -151,7 +151,7 @@ fn build_story_lines<'a>(
         }
         if let Some(chosen) = &passage.chosen {
             lines.push(Line::from(Span::styled(
-                format!("  >> {chosen}"),
+                format!("  >>  {}", chosen.text),
                 dim_choice,
             )));
         }
@@ -189,7 +189,7 @@ fn max_content_width(history: &[Passage], full_text: &str) -> u16 {
         .iter()
         .flat_map(|p| {
             let text_widths = p.text.lines().map(str::len);
-            let choice_width = p.chosen.as_ref().map(|c| c.len() + 5);
+            let choice_width = p.chosen.as_ref().map(|c| c.text.len() + 5);
             text_widths.chain(choice_width)
         })
         .max()

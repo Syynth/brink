@@ -8,10 +8,18 @@ use super::typewriter::TypewriterState;
 /// A passage of text that has been fully revealed (history entry).
 pub struct Passage {
     pub text: String,
-    pub chosen: Option<String>,
+    pub chosen: Option<ChosenEntry>,
     /// Index into the story transcript where this passage ends.
     /// Used for re-rendering on locale switch.
     pub transcript_end: usize,
+}
+
+/// A choice that was selected — stores the display text and an optional
+/// fragment reference for re-rendering on locale switch.
+pub struct ChosenEntry {
+    pub text: String,
+    /// If the choice was backed by a fragment, its index for re-resolution.
+    pub fragment_idx: Option<u32>,
 }
 
 /// A choice the player can select.
@@ -250,10 +258,14 @@ impl App {
                 .map(|c| c.text.clone())
                 .unwrap_or_default();
             let choice_index = choices.get(selected).map(|c| c.index).unwrap_or_default();
+            let fragment_idx = story.choice_fragment_idx(choice_index);
 
             self.history.push(Passage {
                 text,
-                chosen: Some(chosen_text),
+                chosen: Some(ChosenEntry {
+                    text: chosen_text,
+                    fragment_idx,
+                }),
                 transcript_end: self.current_transcript_end,
             });
 
@@ -379,6 +391,14 @@ impl App {
         for passage in &mut self.history {
             let lines = story.resolve_transcript_slice(prev_end..passage.transcript_end);
             passage.text = Self::join_resolved_lines(&lines);
+            // Re-resolve chosen entry if it has a fragment reference.
+            if let Some(ChosenEntry {
+                text: chosen_text,
+                fragment_idx: Some(idx),
+            }) = &mut passage.chosen
+            {
+                *chosen_text = story.resolve_fragment(*idx);
+            }
             prev_end = passage.transcript_end;
         }
 

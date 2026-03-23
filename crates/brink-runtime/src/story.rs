@@ -1120,6 +1120,28 @@ impl<'p, R: StoryRng> Story<'p, R> {
             .collect()
     }
 
+    /// Resolve a fragment against the current line tables.
+    pub fn resolve_fragment(&self, idx: u32) -> String {
+        self.default.flow.output.resolve_fragment(
+            idx,
+            self.program,
+            &self.line_tables,
+            self.resolver.as_deref(),
+        )
+    }
+
+    /// Get the fragment index for a pending choice's display text, if any.
+    pub fn choice_fragment_idx(&self, choice_index: usize) -> Option<u32> {
+        self.default
+            .flow
+            .pending_choices
+            .get(choice_index)
+            .and_then(|pc| match &pc.display {
+                ChoiceDisplay::Fragment(idx) => Some(*idx),
+                ChoiceDisplay::Text(_) => None,
+            })
+    }
+
     /// Read-only access to the fragment store (for transcript serialization).
     pub fn fragments(&self) -> &[Vec<crate::output::OutputPart>] {
         self.default.flow.output.fragments()
