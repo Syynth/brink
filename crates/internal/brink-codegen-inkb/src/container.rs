@@ -232,11 +232,15 @@ impl ContainerEmitter<'_> {
         // Push order: display first, condition second. The runtime pops
         // condition first (from top), then display.
 
-        // 1. Display text (combined start + choice_only) — pushed first
+        // 1. Display text (combined start + choice_only) — pushed first.
         if let Some(ref emission) = choice.display_emission {
-            // Recognized display — use EvalLine to push onto value stack.
-            self.emit_eval_line(emission);
+            // Recognized display — wrap EmitLine in fragment for structural preservation.
+            // Slot expressions are evaluated BEFORE the fragment so function calls
+            // still produce values on the stack normally.
+            self.emit_fragment_recognized_line(emission);
         } else if let Some(ref display) = display {
+            // Unrecognized display — may contain function calls that use the value stack.
+            // Keep string eval until per-call fragment wrapping is implemented (commit 6).
             self.emit(Opcode::BeginStringEval);
             self.emit_choice_content(display);
             self.emit(Opcode::EndStringEval);

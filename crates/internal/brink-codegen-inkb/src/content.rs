@@ -45,6 +45,54 @@ impl ContainerEmitter<'_> {
         }
     }
 
+    /// Emit a recognized line wrapped in `BeginFragment`/`EndFragment`.
+    /// Slot expressions are evaluated BEFORE the fragment starts so function
+    /// calls produce values normally. Only the `EmitLine` is inside the fragment.
+    pub(super) fn emit_fragment_recognized_line(&mut self, emission: &lir::ContentEmission) {
+        let slot_info = emission.metadata.slot_info.clone();
+        let source_location = emission.metadata.source_location.clone();
+        match &emission.line {
+            lir::RecognizedLine::Plain(text) => {
+                let idx = self.add_line_with_hash(
+                    text,
+                    emission.metadata.source_hash,
+                    slot_info,
+                    source_location,
+                );
+                self.emit(Opcode::BeginFragment);
+                self.emit(Opcode::EmitLine(idx, 0));
+                self.emit(Opcode::EndFragment);
+            }
+            lir::RecognizedLine::Template {
+                parts: template_parts,
+                slot_exprs,
+            } => {
+                // Evaluate slot expressions BEFORE the fragment.
+                for expr in slot_exprs {
+                    self.emit_expr(expr);
+                }
+                let idx = self.add_template_line(
+                    template_parts.clone(),
+                    emission.metadata.source_hash,
+                    slot_info,
+                    source_location,
+                );
+                // Only the EmitLine is inside the fragment.
+                self.emit(Opcode::BeginFragment);
+                #[expect(clippy::cast_possible_truncation)]
+                self.emit(Opcode::EmitLine(idx, slot_exprs.len() as u8));
+                self.emit(Opcode::EndFragment);
+            }
+        }
+
+        // Tags after the fragment (not inside it).
+        for tag in &emission.tags {
+            self.emit(Opcode::BeginTag);
+            self.emit_content_parts(tag);
+            self.emit(Opcode::EndTag);
+        }
+    }
+
     /// Emit a recognized line as an `EvalLine` opcode (pushes result onto value stack).
     /// Used for choice display text promoted to a line table entry.
     pub(super) fn emit_eval_line(&mut self, emission: &lir::ContentEmission) {
