@@ -398,6 +398,9 @@ pub struct LineMetadata {
     pub source_hash: u64,
     pub slot_info: Vec<brink_format::SlotInfo>,
     pub source_location: Option<brink_format::SourceLocation>,
+    /// Whitespace flags of the *original* (untrimmed) content.
+    /// Used by codegen to emit Springs for stripped trailing whitespace.
+    pub source_flags: brink_format::LineFlags,
 }
 
 /// A recognized line pattern from content analysis.

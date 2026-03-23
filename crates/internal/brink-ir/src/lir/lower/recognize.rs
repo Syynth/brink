@@ -1,4 +1,4 @@
-use brink_format::{LinePart, SlotInfo, SourceLocation};
+use brink_format::{LineFlags, LinePart, SlotInfo, SourceLocation};
 
 use crate::hir;
 use crate::hir::display_expr;
@@ -80,6 +80,7 @@ pub fn try_recognize(
     if content.parts.len() == 1
         && let hir::ContentPart::Text(s) = &content.parts[0]
     {
+        let source_flags = LineFlags::from_plain(s);
         let source_hash = brink_format::content_hash(s);
         let source_location = build_source_location(content, ctx);
         let tags = content
@@ -88,11 +89,12 @@ pub fn try_recognize(
             .map(|t| lower_content_parts_pub(&t.parts, ctx))
             .collect();
         return Some(lir::ContentEmission {
-            line: lir::RecognizedLine::Plain(s.clone()),
+            line: lir::RecognizedLine::Plain(s.trim().to_string()),
             metadata: lir::LineMetadata {
                 source_hash,
                 slot_info: Vec::new(),
                 source_location,
+                source_flags,
             },
             tags,
         });
@@ -127,6 +129,23 @@ pub fn try_recognize(
             }
         }
 
+        // Compute flags from the untrimmed template, then strip boundary
+        // whitespace.  Codegen uses source_flags to emit Springs for the
+        // stripped trailing whitespace.
+        let source_flags = LineFlags::from_template(&template_parts);
+        if let Some(LinePart::Literal(s)) = template_parts.first_mut() {
+            let trimmed = s.trim_start();
+            if trimmed.len() != s.len() {
+                *s = trimmed.to_string();
+            }
+        }
+        if let Some(LinePart::Literal(s)) = template_parts.last_mut() {
+            let trimmed = s.trim_end();
+            if trimmed.len() != s.len() {
+                *s = trimmed.to_string();
+            }
+        }
+
         let source_hash = brink_format::content_hash(&hash_source);
         let source_location = build_source_location(content, ctx);
         let tags = content
@@ -144,6 +163,7 @@ pub fn try_recognize(
                 source_hash,
                 slot_info,
                 source_location,
+                source_flags,
             },
             tags,
         });
