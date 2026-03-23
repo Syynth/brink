@@ -849,7 +849,7 @@ fn resolve_parts(
             }
             OutputPart::Newline => {
                 if !after_glue {
-                    let trimmed_len = out.trim_end().len();
+                    let trimmed_len = out.trim_end_matches([' ', '\t']).len();
                     out.truncate(trimmed_len);
                     out.push('\n');
                 }
