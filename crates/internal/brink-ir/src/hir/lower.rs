@@ -1217,6 +1217,11 @@ impl LowerCtx {
         // Track whitespace between content-producing nodes (e.g. `{x} {y}`).
         let mut pending_ws: Option<String> = None;
         let mut seen_content = false;
+        // Set when a block-level construct that produces content (conditional,
+        // sequence) has been emitted. The next NEWLINE should still produce an
+        // EndOfLine even though `parts` is empty — the newline separates the
+        // block's output from subsequent content.
+        let mut after_content_block = false;
 
         for child in body.children_with_tokens() {
             // Capture whitespace tokens between content nodes.
@@ -1229,10 +1234,16 @@ impl LowerCtx {
                         if !ends_glue {
                             stmts.push(Stmt::EndOfLine);
                         }
+                    } else if after_content_block {
+                        // A newline after a content-producing block (sequence,
+                        // conditional) is meaningful — it separates the block's
+                        // output from subsequent content.
+                        stmts.push(Stmt::EndOfLine);
                     }
                     // Reset: whitespace after newline is indentation, not content.
                     seen_content = false;
                     pending_ws = None;
+                    after_content_block = false;
                 } else if seen_content && token.kind() == SyntaxKind::WHITESPACE {
                     let text = token.text().to_string();
                     if let Some(ref mut ws) = pending_ws {
@@ -1319,6 +1330,7 @@ impl LowerCtx {
                             pending_ws = None;
                             flush_content_parts(&mut parts, &mut stmts);
                             stmts.push(stmt);
+                            after_content_block = true;
                         } else {
                             // Content-level inline logic — flush whitespace first.
                             if let Some(ws) = pending_ws.take() {
@@ -2133,6 +2145,11 @@ impl LowerCtx {
                 && let Some(s) = self.lower_divert_node(&dn)
             {
                 push(s);
+            } else {
+                // No trailing content and no divert — the promoted block is
+                // the entire content line. Emit EndOfLine so the newline
+                // between this block and the next line is preserved.
+                push(Stmt::EndOfLine);
             }
 
             return true;
