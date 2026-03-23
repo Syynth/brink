@@ -37,6 +37,7 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
     match part {
         hir::ContentPart::Text(t) => lir::ContentPart::Text(t.clone()),
         hir::ContentPart::Glue => lir::ContentPart::Glue,
+        hir::ContentPart::Spring => lir::ContentPart::Spring,
         hir::ContentPart::Interpolation(expr) => {
             lir::ContentPart::Interpolation(lower_expr(expr, ctx))
         }

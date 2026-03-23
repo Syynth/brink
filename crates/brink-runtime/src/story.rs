@@ -962,6 +962,11 @@ fn make_yield_line(
                                 .resolve_fragment(*idx, program, line_tables, resolver)
                         }
                     };
+                    // Trim spaces/tabs from choice display text, matching C#:
+                    // choice.text = (startText + choiceOnlyText).Trim(' ', '\t');
+                    let display_text = display_text
+                        .trim_matches(|c: char| c == ' ' || c == '\t')
+                        .to_string();
                     Choice {
                         text: display_text,
                         index: i,
@@ -1112,6 +1117,9 @@ impl<'p, R: StoryRng> Story<'p, R> {
                         self.resolver.as_deref(),
                     ),
                 };
+                let display_text = display_text
+                    .trim_matches(|c: char| c == ' ' || c == '\t')
+                    .to_string();
                 Choice {
                     text: display_text,
                     index: i,

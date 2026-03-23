@@ -438,6 +438,8 @@ pub enum ContentPart {
     Text(String),
     /// `<>` — glue (suppresses line break).
     Glue,
+    /// Word-break spring — conditional space resolved by the runtime.
+    Spring,
     /// `{expr}` — interpolated expression, resolved.
     Interpolation(Expr),
     /// `{cond: a | b}` — inline conditional with resolved conditions.

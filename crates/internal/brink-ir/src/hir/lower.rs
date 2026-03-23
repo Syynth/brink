@@ -1845,17 +1845,26 @@ impl LowerCtx {
 // ─── Phase 6: Choice and gather lowering ────────────────────────────
 
 impl LowerCtx {
-    /// Trim trailing whitespace from the last `Text` part in a content part list.
-    /// The parser captures whitespace before diverts (e.g. `choice -> DONE`
-    /// yields `"choice "`); the C# ink runtime strips this, so we must too.
-    fn trim_trailing_whitespace(parts: &mut Vec<ContentPart>) {
-        if let Some(ContentPart::Text(t)) = parts.last_mut() {
+    /// Replace trailing whitespace on the last `Text` part with a `Spring`.
+    ///
+    /// The parser captures whitespace before diverts and brackets as literal
+    /// text (e.g. `* choice -> DONE` yields `"choice "`). Converting the
+    /// trailing whitespace to a Spring lets the runtime's spring collapsing
+    /// handle all cases:
+    /// - `* choice -> DONE` — spring at end of display text, collapses to nothing
+    /// - `* Hello [back!]` — spring between parts, collapses to a word break
+    /// - `* joy. <>` — spring before glue, runtime handles appropriately
+    fn replace_trailing_ws_with_spring(parts: &mut Vec<ContentPart>) {
+        if let Some(ContentPart::Text(t)) = parts.last_mut()
+            && t.ends_with(char::is_whitespace)
+        {
             let trimmed = t.trim_end().to_string();
             if trimmed.is_empty() {
                 parts.pop();
             } else {
                 *t = trimmed;
             }
+            parts.push(ContentPart::Spring);
         }
     }
 
@@ -1891,16 +1900,9 @@ impl LowerCtx {
             .filter_map(|c| c.expr().and_then(|e| self.lower_expr(&e)))
             .reduce(|a, b| Expr::Infix(Box::new(a), InfixOp::And, Box::new(b)));
 
-        let has_bracket = choice.bracket_content().is_some();
-
         let mut start_content = choice.start_content().map(|sc| {
             let mut parts = self.lower_content_node_children(sc.syntax());
-            // Only trim trailing whitespace when there's no bracket content
-            // following — otherwise the space is a word boundary between
-            // start_content and bracket_content (e.g. `Hello [back!]`).
-            if !has_bracket {
-                Self::trim_trailing_whitespace(&mut parts);
-            }
+            Self::replace_trailing_ws_with_spring(&mut parts);
             Content {
                 ptr: None,
                 parts,

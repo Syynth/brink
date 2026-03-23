@@ -170,6 +170,9 @@ impl ContainerEmitter<'_> {
                 lir::ContentPart::Glue => {
                     self.emit(Opcode::Glue);
                 }
+                lir::ContentPart::Spring => {
+                    self.emit(Opcode::Spring);
+                }
                 lir::ContentPart::Interpolation(expr) => {
                     self.emit_expr(expr, true);
                     self.emit(Opcode::EmitValue);

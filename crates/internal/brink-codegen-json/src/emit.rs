@@ -279,6 +279,9 @@ fn emit_content(
             lir::ContentPart::Glue => {
                 out.push(Element::ControlCommand(ControlCommand::Glue));
             }
+            lir::ContentPart::Spring => {
+                out.push(Element::Value(InkValue::String(" ".to_string())));
+            }
             lir::ContentPart::Interpolation(expr) => {
                 out.push(ev());
                 emit_expr(expr, lookups, cctx, out);
@@ -320,6 +323,9 @@ fn emit_content_tag_parts(
             }
             lir::ContentPart::Glue => {
                 out.push(Element::ControlCommand(ControlCommand::Glue));
+            }
+            lir::ContentPart::Spring => {
+                out.push(Element::Value(InkValue::String(" ".to_string())));
             }
             lir::ContentPart::Interpolation(expr) => {
                 out.push(ev());
@@ -1284,6 +1290,9 @@ fn emit_content_parts_inline(
             }
             lir::ContentPart::Glue => {
                 out.push(Element::ControlCommand(ControlCommand::Glue));
+            }
+            lir::ContentPart::Spring => {
+                out.push(Element::Value(InkValue::String(" ".to_string())));
             }
             lir::ContentPart::Interpolation(expr) => {
                 out.push(ev());
