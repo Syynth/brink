@@ -387,12 +387,37 @@ impl App {
             let lines = story.resolve_transcript_slice(prev_end..self.current_transcript_end);
             Self::join_resolved_lines(&lines)
         };
+        // Re-resolve choice entries if we're in the choosing phase.
+        let refreshed_choices = story.pending_choices();
         match &mut self.phase {
             Phase::Typing { typewriter, .. } => {
                 *typewriter = TypewriterState::new(current_text, self.char_delay);
                 typewriter.skip(); // show immediately after locale switch
             }
-            Phase::Choosing { text, .. } | Phase::Ended { text } => {
+            Phase::Choosing {
+                text,
+                choices,
+                typewriter,
+                ..
+            } => {
+                *text = current_text;
+                // Update choice text from re-resolved choices.
+                for choice in choices.iter_mut() {
+                    if let Some(fresh) = refreshed_choices.iter().find(|c| c.index == choice.index)
+                    {
+                        choice.text = fresh.text.clone();
+                    }
+                }
+                // Rebuild choice typewriter with updated text.
+                let mut choice_text = String::new();
+                for c in choices.iter() {
+                    choice_text.push_str(&c.text);
+                    choice_text.push('\n');
+                }
+                *typewriter = TypewriterState::new(choice_text, self.char_delay);
+                typewriter.skip();
+            }
+            Phase::Ended { text } => {
                 *text = current_text;
             }
         }

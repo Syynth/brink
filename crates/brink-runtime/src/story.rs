@@ -1091,6 +1091,35 @@ impl<'p, R: StoryRng> Story<'p, R> {
         )
     }
 
+    /// Re-resolve all pending choices against the current line tables.
+    /// Returns the same choices that would appear in `Line::Choices`,
+    /// but freshly resolved (useful after locale switch).
+    pub fn pending_choices(&self) -> Vec<Choice> {
+        self.default
+            .flow
+            .pending_choices
+            .iter()
+            .enumerate()
+            .filter(|(_, pc)| !pc.flags.is_invisible_default)
+            .map(|(i, pc)| {
+                let display_text = match &pc.display {
+                    ChoiceDisplay::Text(s) => s.clone(),
+                    ChoiceDisplay::Fragment(idx) => self.default.flow.output.resolve_fragment(
+                        *idx,
+                        self.program,
+                        &self.line_tables,
+                        self.resolver.as_deref(),
+                    ),
+                };
+                Choice {
+                    text: display_text,
+                    index: i,
+                    tags: pc.tags.clone(),
+                }
+            })
+            .collect()
+    }
+
     /// Read-only access to the fragment store (for transcript serialization).
     pub fn fragments(&self) -> &[Vec<crate::output::OutputPart>] {
         self.default.flow.output.fragments()
