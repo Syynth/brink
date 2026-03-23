@@ -215,14 +215,53 @@ Each step is independently testable against the episode corpus:
 2. ~~**Pull `Context` out of `FlowInstance`**~~ — ✅ Done. `Story` owns `(FlowInstance, Context)` pairs.
 3. ~~**Remove observer from production path**~~ — ✅ Done. `ObservedContext` wraps `Context`, no observer param in `step_single_line`.
 4. ~~**Split `Program` and line tables**~~ — ✅ Done. `link()` returns `(Program, Vec<Vec<LineEntry>>)`. `Program` is truly immutable.
-5. **Defer line/value resolution** — ✅ Partial. `LineRef`/`ValueRef` in output buffer, resolution at read time. 847/950 episodes due to whitespace filtering interactions. Requires Spring implementation to complete.
-6. **Add `Spring` opcode and output part** — format, compiler, converter, runtime.
-   - a. Add `Opcode::Spring` to `brink-format`.
-   - b. Add `OutputPart::Spring` to the output buffer with push-time dedup and resolve-time rule.
-   - c. Update converter codegen to strip boundary whitespace from `EmitLine` content and emit `Spring` between consecutive emissions.
-   - d. Update compiler codegen (`brink-codegen-inkb`) — same changes.
-   - e. Remove `CleanOutputWhitespace` and push-time whitespace filtering (`push_text`, `ends_in_whitespace`, adjacent whitespace collapsing).
-   - f. Add empty-slot whitespace collapsing to template resolution.
-   - g. Verify episode corpus at 950/950.
-7. **Append-only buffer with cursor** — `take_first_line` advances cursor, doesn't drain. Transcript API.
-8. **Acceptance test** — locale swap + transcript re-render.
+5. ~~**Defer line/value resolution**~~ — ✅ Done. `LineRef`/`ValueRef` in output buffer, resolution at read time. `LineFlags` on `LineEntry` for push-time filtering decisions.
+6. **Add `Spring` opcode and output part** — partially done.
+   - a. ✅ `Opcode::Spring` added to `brink-format` (encoding, decoding, inkt read/write).
+   - b. ✅ `OutputPart::Spring` added with push-time dedup and resolve-time rule.
+   - c. ✅ Converter codegen strips boundary whitespace and emits `Spring`.
+   - d. **TODO**: Compiler codegen (`brink-codegen-inkb`) — same changes as converter.
+   - e. **TODO**: Remove `CleanOutputWhitespace` (blocked by 6d — needs Springs from both pipelines).
+   - f. **TODO**: Template empty-slot whitespace collapsing in `resolve_line_ref`.
+   - g. **TODO**: Verify episode corpus. Currently 847/950 — the 103 mismatches are from 4 pre-existing cases (see investigation notes below), NOT regressions from the restructuring.
+7. **TODO: Append-only buffer with cursor** — requires rethinking the capture mechanism (`begin_capture`/`end_capture` currently drains from the buffer; needs separate scratch space for captures vs append-only main log).
+8. **TODO: Acceptance test** — locale swap + transcript re-render. Depends on step 7.
+
+## Open investigations
+
+### Function capture model mismatch
+
+**Status**: Identified, not fixed. Reverted an attempt.
+
+**The problem**: Our VM calls `begin_capture()` on every `Call`/`CallVariable` opcode, capturing function output to use as a return value. The C# reference runtime does NOT capture at the function level — function output goes directly into the output stream. The C# runtime only captures during string evaluation (`BeginString`/`EndString`, our `BeginStringEval`/`EndStringEval`).
+
+**Impact**: For statement calls (`~ func()`), leaked content from `discard_capture` (which removes the checkpoint but leaves content) causes spurious whitespace/newlines. This is the root cause of the I096, tower-of-hanoi, and nested-pass-by-reference failures.
+
+**What the C# runtime does instead**:
+- Function output goes directly to the output stream (no capture).
+- On function pop, `TrimWhitespaceFromFunctionEnd` walks backward and removes trailing whitespace/newlines from the function's output region.
+- For inline `{func()}`, `BeginString`/`EndString` handles the capture — it collects text from the output stream, removes it, and pushes the concatenated string as a value.
+
+**What we tried**: Removed `begin_capture` from `Call`/`CallVariable`, added `trim_trailing_whitespace` to `OutputBuffer`, changed `pop_call_frame` to trim instead of capture/discard. Result: 8 run_story test failures (`StackUnderflow`) and 35 additional episode regressions. The failures were from inline `{func()}` calls where our hand-written test JSON uses `ev, f(), out, /ev` without `BeginStringEval`/`EndStringEval`. Real inklecate output may use different bytecode.
+
+**Next steps**:
+1. Investigate what bytecode inklecate actually emits for `{func()}` where func outputs text — does it wrap in `BeginString`/`EndString`?
+2. Check if our brink compiler emits `BeginStringEval`/`EndStringEval` around function calls in inline expressions.
+3. If both compilers do emit the string eval wrappers, the fix is correct but the hand-written tests need updating.
+4. If inklecate does NOT use string eval wrappers, we need to understand the alternative mechanism.
+
+**Key C# reference locations**:
+- `Story.cs` lines 1301-1440: `BeginString`/`EndString` handling
+- `StoryState.cs` lines 1201-1228: `TrimWhitespaceFromFunctionEnd`
+- `StoryState.cs` lines 1230-1237: `PopCallstack` calls `TrimWhitespaceFromFunctionEnd`
+- `StoryState.cs` lines 920-1024: `PushToOutputStreamIndividual` (function trimming state)
+
+### Pre-existing episode failures (4 cases, 103 episodes)
+
+1. **`tower-of-hanoi`** (100 episodes): Leading `\n` in text output from function body content leaking after `discard_capture`. Root cause: function capture model mismatch (see above).
+
+2. **`I096-nested-pass-by-reference`** (1 episode): Extra `\n` from `squaresquare` function body's `Spring` + `Newline` leaking. Same root cause.
+
+3. **`nested-pass-by-reference`** (tier3, 1 episode): Same issue as I096.
+
+4. **`I075-clean-callstack-reset-on-path-choice`** (1 episode): Tag count mismatch. Pre-existing from the Line enum refactor — likely related to how `build_per_line_tags` reconstructs per-text-line tags from per-Line tags in the test harness.
