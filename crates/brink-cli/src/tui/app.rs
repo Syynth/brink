@@ -410,9 +410,21 @@ impl App {
         // Re-resolve choice entries if we're in the choosing phase.
         let refreshed_choices = story.pending_choices();
         match &mut self.phase {
-            Phase::Typing { typewriter, .. } => {
+            Phase::Typing {
+                typewriter, then, ..
+            } => {
                 *typewriter = TypewriterState::new(current_text, self.char_delay);
                 typewriter.skip(); // show immediately after locale switch
+                // Also refresh pending choice entries in AfterPassage.
+                if let AfterPassage::ShowChoices(entries) = then {
+                    for entry in entries.iter_mut() {
+                        if let Some(fresh) =
+                            refreshed_choices.iter().find(|c| c.index == entry.index)
+                        {
+                            entry.text = fresh.text.clone();
+                        }
+                    }
+                }
             }
             Phase::Choosing {
                 text,
