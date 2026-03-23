@@ -216,14 +216,14 @@ Each step is independently testable against the episode corpus:
 3. ~~**Remove observer from production path**~~ — ✅ Done. `ObservedContext` wraps `Context`, no observer param in `step_single_line`.
 4. ~~**Split `Program` and line tables**~~ — ✅ Done. `link()` returns `(Program, Vec<Vec<LineEntry>>)`. `Program` is truly immutable.
 5. ~~**Defer line/value resolution**~~ — ✅ Done. `LineRef`/`ValueRef` in output buffer, resolution at read time. `LineFlags` on `LineEntry` for push-time filtering decisions.
-6. **Add `Spring` opcode and output part** — partially done.
+6. ~~**Add `Spring` opcode and output part**~~ — ✅ Done.
    - a. ✅ `Opcode::Spring` added to `brink-format` (encoding, decoding, inkt read/write).
    - b. ✅ `OutputPart::Spring` added with push-time dedup and resolve-time rule.
    - c. ✅ Converter codegen strips boundary whitespace and emits `Spring`.
    - d. ✅ Compiler codegen (`brink-codegen-inkb`) — `emit_content_parts` strips boundary whitespace from `Text` parts and emits `Spring`.
-   - e. **TODO**: Remove `CleanOutputWhitespace` — blocked on parser-level indentation stripping. Recognition-level `trim_start` was attempted but can't distinguish source indentation from content leading space (e.g., space after `<>` glue). The parser (`brink-syntax`) needs to strip indentation at parse time, matching inklecate's `InkParser_Content.cs` which consumes leading whitespace before parsing content text.
-   - f. ✅ Template empty-slot whitespace collapsing in `resolve_line_ref`. When a slot/select resolves to empty and the join produces adjacent spaces, collapses to one.
-   - g. **TODO**: Verify episode corpus. Currently 847/950 — the 103 mismatches are from 4 pre-existing cases (see investigation notes below), NOT regressions from the restructuring.
+   - e. ✅ `CleanOutputWhitespace` removed. Replaced by: parser `skip_ws()` for indentation in multiline bodies, `resolve_lines` `trim()` for output-line boundary whitespace, template empty-slot collapsing for leading empty slots, and `compose_hir_content` boundary-whitespace collapsing for choice text composition.
+   - f. ✅ Template empty-slot whitespace collapsing in `resolve_line_ref`. When a slot/select resolves to empty and the join produces adjacent spaces or leading whitespace, collapses it.
+   - g. ✅ Episode corpus verified: 847/950 — same as pre-restructuring baseline. The 103 mismatches are from 4 pre-existing cases (function capture model, see investigation notes below), NOT regressions.
 7. **TODO: Append-only buffer with cursor** — requires rethinking the capture mechanism (`begin_capture`/`end_capture` currently drains from the buffer; needs separate scratch space for captures vs append-only main log).
 8. **TODO: Acceptance test** — locale swap + transcript re-render. Depends on step 7.
 
