@@ -103,21 +103,36 @@ fn resolve_line_ref(
         LineContent::Template(parts) => {
             let mut result = String::new();
             for part in parts {
-                match part {
-                    LinePart::Literal(s) => result.push_str(s),
+                let owned;
+                let fragment: &str = match part {
+                    LinePart::Literal(s) => s.as_str(),
                     LinePart::Slot(n) => {
-                        if let Some(val) = slots.get(*n as usize) {
-                            result.push_str(&value_ops::stringify(val, program));
-                        }
+                        owned = slots
+                            .get(*n as usize)
+                            .map(|v| value_ops::stringify(v, program))
+                            .unwrap_or_default();
+                        owned.as_str()
                     }
                     LinePart::Select {
                         slot,
                         variants,
                         default,
                     } => {
-                        let text = resolve_select(*slot, variants, default, slots, resolver);
-                        result.push_str(text);
+                        owned =
+                            resolve_select(*slot, variants, default, slots, resolver).to_string();
+                        owned.as_str()
                     }
+                };
+                // Skip empty fragments (null/empty slots) and collapse
+                // double spaces at the join point when an empty slot sits
+                // between two literals that both have boundary space.
+                if fragment.is_empty() {
+                    continue;
+                }
+                if result.ends_with(' ') && fragment.starts_with(' ') {
+                    result.push_str(&fragment[1..]);
+                } else {
+                    result.push_str(fragment);
                 }
             }
             result
@@ -1295,5 +1310,103 @@ mod tests {
         let mut buf = OutputBuffer::new();
         buf.push_text("no newline");
         assert!(buf.test_take_first_line().is_none());
+    }
+
+    // ── resolve_line_ref template collapsing tests ────────────────────
+
+    /// Build a minimal `Program` with one container (`scope_table_idx` = 0)
+    /// and a line table with a single template entry, then resolve it.
+    fn resolve_template(parts: Vec<LinePart>, slots: &[Value]) -> String {
+        use crate::program::LinkedContainer;
+        use brink_format::{CountingFlags, DefinitionId, DefinitionTag, LineEntry, LineFlags};
+        use std::collections::HashMap;
+
+        let id = DefinitionId::new(DefinitionTag::Address, 0);
+        let program = Program {
+            containers: vec![LinkedContainer {
+                id,
+                bytecode: vec![],
+                counting_flags: CountingFlags::empty(),
+                path_hash: 0,
+                scope_table_idx: 0,
+            }],
+            address_map: HashMap::new(),
+            scope_ids: vec![id],
+            source_checksum: 0,
+            globals: vec![],
+            global_map: HashMap::new(),
+            name_table: vec![],
+            root_idx: 0,
+            list_literals: vec![],
+            list_item_map: HashMap::new(),
+            list_defs: vec![],
+            list_def_map: HashMap::new(),
+            external_fns: HashMap::new(),
+        };
+
+        let line_tables = vec![vec![LineEntry {
+            content: LineContent::Template(parts),
+            source_hash: 0,
+            flags: LineFlags::empty(),
+            audio_ref: None,
+            slot_info: vec![],
+            source_location: None,
+        }]];
+
+        resolve_line_ref(&program, &line_tables, 0, 0, slots, None)
+    }
+
+    #[test]
+    fn template_collapses_double_space_from_empty_slot() {
+        let result = resolve_template(
+            vec![
+                LinePart::Literal("Hello ".into()),
+                LinePart::Slot(0),
+                LinePart::Literal(" world".into()),
+            ],
+            &[Value::Null],
+        );
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn template_preserves_spaces_with_nonempty_slot() {
+        let result = resolve_template(
+            vec![
+                LinePart::Literal("Hello ".into()),
+                LinePart::Slot(0),
+                LinePart::Literal(" world".into()),
+            ],
+            &[Value::String("dear".into())],
+        );
+        assert_eq!(result, "Hello dear world");
+    }
+
+    #[test]
+    fn template_multiple_empty_slots_collapse() {
+        let result = resolve_template(
+            vec![
+                LinePart::Literal("a ".into()),
+                LinePart::Slot(0),
+                LinePart::Literal(" ".into()),
+                LinePart::Slot(1),
+                LinePart::Literal(" b".into()),
+            ],
+            &[Value::Null, Value::Null],
+        );
+        assert_eq!(result, "a b");
+    }
+
+    #[test]
+    fn template_empty_string_slot_same_as_null() {
+        let result = resolve_template(
+            vec![
+                LinePart::Literal("Hello ".into()),
+                LinePart::Slot(0),
+                LinePart::Literal(" world".into()),
+            ],
+            &[Value::String("".into())],
+        );
+        assert_eq!(result, "Hello world");
     }
 }
