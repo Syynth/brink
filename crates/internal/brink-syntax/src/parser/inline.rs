@@ -457,14 +457,16 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
             STAR | PLUS => {
                 super::choice::choice(p);
                 // choice() always consumes its trailing newline, leaving
-                // us at the start of the next line.
+                // us at the start of the next line — strip indentation.
+                p.skip_ws();
                 at_line_start = true;
             }
             TILDE => {
                 p.skip_ws();
                 super::logic::logic_line(p);
                 // Logic lines may consume their trailing newline, leaving
-                // us at the start of the next line.
+                // us at the start of the next line — strip indentation.
+                p.skip_ws();
                 at_line_start = true;
             }
             L_BRACE => {
@@ -546,17 +548,20 @@ fn at_multiline_branch_start(p: &Parser<'_, '_>) -> bool {
 fn multiline_branch_body(p: &mut Parser<'_, '_>) {
     p.start_node(MULTILINE_BRANCH_BODY);
     loop {
+        // Strip leading indentation at the start of each line so it doesn't
+        // leak into text content (inklecate strips it at parse time too).
+        // This runs on every iteration because sub-parsers (choice, logic_line)
+        // may consume their trailing NEWLINE, leaving us at the start of a
+        // new indented line without the NEWLINE handler below firing.
+        p.skip_ws();
         match p.current() {
-            EOF | R_BRACE | MINUS => break, // MINUS = branch separator; gathers forbidden in inner blocks
+            EOF | R_BRACE | MINUS => break,
             NEWLINE => {
                 // body_newline: NEWLINE not followed by branch start
                 if next_line_is_branch(p) {
                     break;
                 }
                 p.bump();
-                // Strip leading indentation on the next line so it doesn't
-                // leak into text content (inklecate strips it too).
-                p.skip_ws();
             }
             STAR | PLUS => {
                 // Choices participate in the outer weave structure.

@@ -920,6 +920,40 @@ fn indented_template_strips_leading_whitespace() {
     assert_eq!(text_nodes[1], " world", "space before 'world' preserved");
 }
 
+/// Content inside a multiline conditional in a choice body —
+/// indentation should be stripped from TEXT nodes.
+/// Reproduces the I083-choice-thread-forking failure.
+#[test]
+fn indented_content_in_multiline_conditional_choice() {
+    let src = "=== test ===\n{true:\n    + A choice\n        Vaue of local var is: {x}\n        -> END\n}\n->->\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+
+    // Collect all TEXT node contents
+    let text_nodes: Vec<String> = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::TEXT)
+        .map(|n| n.text().to_string())
+        .collect();
+
+    // The indented content line should NOT have leading whitespace
+    let has_indented_text = text_nodes
+        .iter()
+        .any(|t| t.starts_with("        Vaue") || t.starts_with("    Vaue"));
+    assert!(
+        !has_indented_text,
+        "TEXT nodes should not contain leading indentation, found: {text_nodes:?}"
+    );
+
+    // The content text should be present without indentation
+    let has_clean_text = text_nodes.iter().any(|t| t.starts_with("Vaue"));
+    assert!(
+        has_clean_text,
+        "expected TEXT node starting with 'Vaue', found: {text_nodes:?}"
+    );
+}
+
 /// Bare tunnel onwards.
 #[test]
 fn tunnel_onwards_only() {
