@@ -9,6 +9,9 @@ use super::typewriter::TypewriterState;
 pub struct Passage {
     pub text: String,
     pub chosen: Option<String>,
+    /// Index into the story transcript where this passage ends.
+    /// Used for re-rendering on locale switch.
+    pub transcript_end: usize,
 }
 
 /// A choice the player can select.
@@ -66,6 +69,8 @@ pub struct App {
     pub active_locale: usize,
     locale_labels: Vec<String>,
     char_delay: Duration,
+    /// Transcript end index for the current (in-progress) passage.
+    current_transcript_end: usize,
 }
 
 impl App {
@@ -82,6 +87,7 @@ impl App {
             active_locale: 0,
             locale_labels,
             char_delay,
+            current_transcript_end: 0,
         }
     }
 
@@ -92,6 +98,7 @@ impl App {
 
         let lines = story.continue_maximally()?;
         let text: String = lines.iter().map(Line::text).collect();
+        self.current_transcript_end = story.transcript_len();
         match lines.last() {
             Some(Line::Choices { choices, .. }) => {
                 let entries: Vec<ChoiceEntry> = choices
@@ -247,6 +254,7 @@ impl App {
             self.history.push(Passage {
                 text,
                 chosen: Some(chosen_text),
+                transcript_end: self.current_transcript_end,
             });
 
             story.choose(choice_index)?;
@@ -304,6 +312,7 @@ impl App {
                     self.history.push(Passage {
                         text: text.clone(),
                         chosen: None,
+                        transcript_end: self.current_transcript_end,
                     });
                     self.phase = Phase::Ended { text };
                 }
@@ -360,6 +369,27 @@ impl App {
                 Some((typewriter.full_text(), typewriter.visible_text().len()))
             }
             _ => None,
+        }
+    }
+
+    /// Re-render all history passages against the story's current line tables.
+    /// Called after a locale switch to update past output text.
+    pub fn rerender_history(&mut self, story: &Story) {
+        let mut prev_end = 0;
+        for passage in &mut self.history {
+            let lines = story.resolve_transcript_slice(prev_end..passage.transcript_end);
+            let mut text = String::new();
+            for (i, (line_text, _tags)) in lines.iter().enumerate() {
+                if i > 0 {
+                    text.push('\n');
+                }
+                text.push_str(line_text);
+            }
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            passage.text = text;
+            prev_end = passage.transcript_end;
         }
     }
 }

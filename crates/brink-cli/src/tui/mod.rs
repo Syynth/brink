@@ -72,6 +72,8 @@ fn run_inner(
                 base_line_tables.to_vec()
             };
             story = Story::from_snapshot(program, snapshot, new_tables);
+            // Re-render all past passages with the new locale's line tables.
+            app.rerender_history(&story);
         }
 
         app.tick();
