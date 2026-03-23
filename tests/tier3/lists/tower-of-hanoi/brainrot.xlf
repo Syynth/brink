@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en" trgLang="brainrot" xmlns:brink="urn:brink:xliff:extensions:1.0" brink:checksum="0xa762608b" brink:version="1">
+<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en" trgLang="brainrot" xmlns:brink="urn:brink:xliff:extensions:1.0" brink:checksum="0x6312c34d" brink:version="1">
   <file id="name" brink:scope-id="0x0113282cf7cf5f72">
     <unit id="name:0" brink:hash="fb4240631a159c13">
       <segment state="translated">
@@ -96,7 +96,7 @@
     <unit id="gameloop.move_post:4" brink:hash="83f2791fca8d8256">
       <segment state="translated">
         <source>Your next decree is met with a great feast and many sacrifices. After the funeary smoke has cleared, work to shift the great stone ring begins in earnest. A generation grows and falls, and the ring falls into its ordained place.</source>
-        <target>Your next decree goes absolutely skibidi and they throw a massive fanum feast with hella sacrifices. After the funeral smoke clears (they got rizzless'd), the grind to move the big rock donut begins for real. A whole generation of NPCs spawns and despawns, and the ring finally lands in its designated ohio zone.</target>
+        <target>Your next decree goes absolutely skibidi and they throw a massive fanum feast with hella sacrifices. After the funeral smoke clears (they got rizzless&apos;d), the grind to move the big rock donut begins for real. A whole generation of NPCs spawns and despawns, and the ring finally lands in its designated ohio zone.</target>
       </segment>
     </unit>
     <unit id="gameloop.move_post:5" brink:hash="b48966b9be8ba820">

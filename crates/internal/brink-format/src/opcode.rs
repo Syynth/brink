@@ -87,6 +87,8 @@ const GLUE: u8 = 0x63;
 const BEGIN_TAG: u8 = 0x64;
 const END_TAG: u8 = 0x65;
 const EVAL_LINE: u8 = 0x66;
+const BEGIN_FRAGMENT: u8 = 0x68;
+const END_FRAGMENT: u8 = 0x69;
 
 // Choices
 const BEGIN_CHOICE: u8 = 0x72;
@@ -400,6 +402,10 @@ pub enum Opcode {
     BeginTag,
     EndTag,
     EvalLine(u16, u8),
+    /// Begin capturing output into a fragment (structural preservation).
+    BeginFragment,
+    /// End fragment capture — store parts and push `Value::FragmentRef`.
+    EndFragment,
 
     // ── Choices ─────────────────────────────────────────────────────────
     BeginChoice(ChoiceFlags, DefinitionId),
@@ -619,6 +625,8 @@ impl Opcode {
                 write_u16(buf, idx);
                 write_u8(buf, slot_count);
             }
+            Self::BeginFragment => write_u8(buf, BEGIN_FRAGMENT),
+            Self::EndFragment => write_u8(buf, END_FRAGMENT),
 
             // Choices
             Self::BeginChoice(flags, target) => {
@@ -791,6 +799,8 @@ impl Opcode {
                 let slot_count = read_u8(buf, offset)?;
                 Self::EvalLine(idx, slot_count)
             }
+            BEGIN_FRAGMENT => Self::BeginFragment,
+            END_FRAGMENT => Self::EndFragment,
 
             // Choices
             BEGIN_CHOICE => {

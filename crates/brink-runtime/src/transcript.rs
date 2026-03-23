@@ -50,6 +50,7 @@ const VAL_STRING: u8 = 0x03;
 const VAL_LIST: u8 = 0x04;
 const VAL_DIVERT_TARGET: u8 = 0x05;
 const VAL_NULL: u8 = 0x06;
+const VAL_FRAGMENT_REF: u8 = 0x08;
 
 // ── Error type ────────────────────────────────────────────────────────────
 
@@ -375,6 +376,10 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u8(buf, VAL_DIVERT_TARGET); // serialize same as divert target
             write_def_id(buf, *id);
         }
+        Value::FragmentRef(idx) => {
+            write_u8(buf, VAL_FRAGMENT_REF);
+            write_u32(buf, *idx);
+        }
         Value::TempPointer { .. } | Value::Null => {
             write_u8(buf, VAL_NULL);
         }
@@ -414,6 +419,7 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, TranscriptError> {
             let id = read_def_id(buf, off)?;
             Ok(Value::DivertTarget(id))
         }
+        VAL_FRAGMENT_REF => Ok(Value::FragmentRef(read_u32(buf, off)?)),
         VAL_NULL => Ok(Value::Null),
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }

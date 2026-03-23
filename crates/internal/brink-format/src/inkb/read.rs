@@ -16,8 +16,8 @@ use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, InkbIndex,
     KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC,
     PART_LITERAL, PART_SELECT, PART_SLOT, SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_BOOL,
-    VAL_DIVERT_TARGET, VAL_FLOAT, VAL_INT, VAL_LIST, VAL_NULL, VAL_STRING, VAL_VAR_POINTER,
-    VERSION, safe_capacity,
+    VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FRAGMENT_REF, VAL_INT, VAL_LIST, VAL_NULL, VAL_STRING,
+    VAL_VAR_POINTER, VERSION, safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -300,6 +300,7 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_LIST => Ok(ValueType::List),
         VAL_DIVERT_TARGET => Ok(ValueType::DivertTarget),
         VAL_VAR_POINTER => Ok(ValueType::VariablePointer),
+        VAL_FRAGMENT_REF => Ok(ValueType::FragmentRef),
         VAL_NULL => Ok(ValueType::Null),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
@@ -334,6 +335,7 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, DecodeError> {
         }
         VAL_DIVERT_TARGET => Ok(Value::DivertTarget(read_def_id(buf, off)?)),
         VAL_VAR_POINTER => Ok(Value::VariablePointer(read_def_id(buf, off)?)),
+        VAL_FRAGMENT_REF => Ok(Value::FragmentRef(read_u32(buf, off)?)),
         VAL_NULL => Ok(Value::Null),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }

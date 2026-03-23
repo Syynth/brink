@@ -64,6 +64,7 @@ pub(crate) const VAL_LIST: u8 = 0x04;
 pub(crate) const VAL_DIVERT_TARGET: u8 = 0x05;
 pub(crate) const VAL_NULL: u8 = 0x06;
 pub(crate) const VAL_VAR_POINTER: u8 = 0x07;
+pub(crate) const VAL_FRAGMENT_REF: u8 = 0x08;
 
 // LineContent tags
 pub(crate) const LINE_PLAIN: u8 = 0x00;

@@ -16,6 +16,7 @@ pub enum ValueType {
     VariablePointer,
     TempPointer,
     Null,
+    FragmentRef,
 }
 
 /// A runtime value in the ink VM.
@@ -41,6 +42,9 @@ pub enum Value {
         frame_depth: u16,
     },
     Null,
+    /// A reference to a fragment in the output buffer's fragment store.
+    /// Fragments preserve structural output parts for locale re-rendering.
+    FragmentRef(u32),
 }
 
 impl Value {
@@ -56,6 +60,7 @@ impl Value {
             Self::VariablePointer(_) => ValueType::VariablePointer,
             Self::TempPointer { .. } => ValueType::TempPointer,
             Self::Null => ValueType::Null,
+            Self::FragmentRef(_) => ValueType::FragmentRef,
         }
     }
 }

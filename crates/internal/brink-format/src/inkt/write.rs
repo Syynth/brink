@@ -322,6 +322,7 @@ fn write_bytecode(w: &mut dyn fmt::Write, bytecode: &[u8]) -> fmt::Result {
     Ok(())
 }
 
+#[expect(clippy::too_many_lines)]
 fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
     match op {
         // Stack & literals
@@ -403,6 +404,8 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::BeginTag => write!(w, "begin_tag"),
         Opcode::EndTag => write!(w, "end_tag"),
         Opcode::EvalLine(idx, slots) => write!(w, "eval_line {idx} {slots}"),
+        Opcode::BeginFragment => write!(w, "begin_fragment"),
+        Opcode::EndFragment => write!(w, "end_fragment"),
 
         // Choices
         Opcode::BeginChoice(flags, target) => {
@@ -513,6 +516,7 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::VariablePointer => "var_pointer",
         ValueType::TempPointer => "temp_pointer",
         ValueType::Null => "null",
+        ValueType::FragmentRef => "fragment_ref",
     }
 }
 
@@ -547,6 +551,7 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
             write!(w, "(temp_pointer {slot} {frame_depth})")
         }
         Value::Null => write!(w, "null"),
+        Value::FragmentRef(idx) => write!(w, "(fragment_ref {idx})"),
     }
 }
 

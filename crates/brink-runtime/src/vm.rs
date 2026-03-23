@@ -708,6 +708,16 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 .ok_or(RuntimeError::CaptureUnderflow)?;
             flow.value_stack.push(Value::String(text.into()));
         }
+        Opcode::BeginFragment => {
+            flow.output.begin_fragment();
+        }
+        Opcode::EndFragment => {
+            let idx = flow
+                .output
+                .end_fragment()
+                .ok_or(RuntimeError::CaptureUnderflow)?;
+            flow.value_stack.push(Value::FragmentRef(idx));
+        }
         Opcode::BeginChoice(flags, target_id) => {
             handle_begin_choice(flow, program, context, stats, flags, target_id)?;
         }

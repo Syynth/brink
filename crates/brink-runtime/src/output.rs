@@ -244,6 +244,12 @@ pub(crate) struct OutputBuffer {
     capture: Vec<OutputPart>,
     /// Nesting depth of active captures. When > 0, pushes route to `capture`.
     capture_depth: usize,
+    /// Finalized fragments — structural output parts for locale re-rendering.
+    fragments: Vec<Vec<OutputPart>>,
+    /// Current fragment being captured.
+    fragment_capture: Vec<OutputPart>,
+    /// Fragment capture nesting depth. When > 0, pushes route to `fragment_capture`.
+    fragment_depth: usize,
 }
 
 impl OutputBuffer {
@@ -253,14 +259,19 @@ impl OutputBuffer {
             cursor: 0,
             capture: Vec::new(),
             capture_depth: 0,
+            fragments: Vec::new(),
+            fragment_capture: Vec::new(),
+            fragment_depth: 0,
         }
     }
 
-    /// Returns the active push target: capture vec if inside a capture,
-    /// transcript otherwise.
+    /// Returns the active push target.
+    /// Priority: capture (eagerly resolves) > fragment (structural) > transcript.
     fn target(&mut self) -> &mut Vec<OutputPart> {
         if self.capture_depth > 0 {
             &mut self.capture
+        } else if self.fragment_depth > 0 {
+            &mut self.fragment_capture
         } else {
             &mut self.transcript
         }
@@ -457,6 +468,60 @@ impl OutputBuffer {
         if self.capture_depth == 0 && !self.capture.is_empty() {
             self.transcript.append(&mut self.capture);
         }
+    }
+
+    // ── Fragment capture ───────────────────────────────────────────────
+
+    /// Begin capturing output into a new fragment.
+    pub fn begin_fragment(&mut self) {
+        self.fragment_depth += 1;
+        self.fragment_capture.push(OutputPart::Checkpoint);
+    }
+
+    /// End the current fragment capture: drain from the last checkpoint,
+    /// store the parts in the fragment store, return the fragment index.
+    #[expect(clippy::cast_possible_truncation)]
+    pub fn end_fragment(&mut self) -> Option<u32> {
+        let cp_idx = self
+            .fragment_capture
+            .iter()
+            .rposition(|p| matches!(p, OutputPart::Checkpoint))?;
+
+        let captured: Vec<OutputPart> = self.fragment_capture.drain(cp_idx..).collect();
+        // Skip the checkpoint itself (first element).
+        let parts: Vec<OutputPart> = captured.into_iter().skip(1).collect();
+        let idx = self.fragments.len() as u32;
+        self.fragments.push(parts);
+
+        self.fragment_depth = self.fragment_depth.saturating_sub(1);
+
+        Some(idx)
+    }
+
+    /// Read access to a finalized fragment's parts.
+    pub fn fragment(&self, idx: u32) -> Option<&[OutputPart]> {
+        self.fragments.get(idx as usize).map(Vec::as_slice)
+    }
+
+    /// Resolve a fragment's parts against the current line tables.
+    #[expect(dead_code, reason = "used by commit 4+ of step 9")]
+    pub fn resolve_fragment(
+        &self,
+        idx: u32,
+        program: &Program,
+        line_tables: &[Vec<LineEntry>],
+        resolver: Option<&dyn PluralResolver>,
+    ) -> String {
+        match self.fragment(idx) {
+            Some(parts) => resolve_parts(parts, program, line_tables, resolver),
+            None => String::new(),
+        }
+    }
+
+    /// Current fragment capture nesting depth.
+    #[expect(dead_code, reason = "used by commit 3 of step 9")]
+    pub fn fragment_depth(&self) -> usize {
+        self.fragment_depth
     }
 
     /// Returns true if the buffer contains at least one complete line

@@ -15,7 +15,10 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         Value::Float(n) => *n != 0.0,
         Value::String(s) => !s.is_empty(),
         Value::Null => false,
-        Value::DivertTarget(_) | Value::VariablePointer(_) | Value::TempPointer { .. } => true,
+        Value::DivertTarget(_)
+        | Value::VariablePointer(_)
+        | Value::TempPointer { .. }
+        | Value::FragmentRef(_) => true,
         Value::List(lv) => !lv.items.is_empty(),
     }
 }
@@ -33,6 +36,9 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
         Value::TempPointer { slot, frame_depth } => {
             format!("TempPointer({slot}@{frame_depth})")
         }
+        // FragmentRef resolution happens in resolve_part, not stringify.
+        // This fallback is for computation contexts where FragmentRef shouldn't appear.
+        Value::FragmentRef(idx) => format!("<fragment:{idx}>"),
     }
 }
 
