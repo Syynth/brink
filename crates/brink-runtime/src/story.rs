@@ -656,7 +656,7 @@ impl FlowInstance {
         // 2. If buffer has partial content but VM has already yielded
         //    (any non-Active state), flush it. At a yield point, no more
         //    output is coming, so trailing Newlines are committed.
-        if !self.flow.output.parts.is_empty() && self.status != StoryStatus::Active {
+        if self.flow.output.has_unread() && self.status != StoryStatus::Active {
             let (text, tags) = flush_remaining(&mut self.flow, program, line_tables, resolver);
             return Ok(make_yield_line(self.status, text, tags, &self.flow));
         }

@@ -209,14 +209,42 @@ fn resolve_select<'a>(
 }
 
 /// Accumulates output text with glue resolution.
+///
+/// The buffer is split into two storage areas:
+/// - **transcript**: append-only log of all output parts. Never drained.
+///   A read cursor advances on `take_first_line`/`flush_lines`.
+/// - **capture**: transient scratch space for string eval, tag collection,
+///   and function return value capture. Drained by `end_capture`.
 #[derive(Debug, Clone)]
 pub(crate) struct OutputBuffer {
-    pub parts: Vec<OutputPart>,
+    /// Append-only output log. Parts are never removed.
+    pub(crate) transcript: Vec<OutputPart>,
+    /// Read cursor into transcript. Advances on take/flush.
+    cursor: usize,
+    /// Transient capture scratch space.
+    capture: Vec<OutputPart>,
+    /// Nesting depth of active captures. When > 0, pushes route to `capture`.
+    capture_depth: usize,
 }
 
 impl OutputBuffer {
     pub fn new() -> Self {
-        Self { parts: Vec::new() }
+        Self {
+            transcript: Vec::new(),
+            cursor: 0,
+            capture: Vec::new(),
+            capture_depth: 0,
+        }
+    }
+
+    /// Returns the active push target: capture vec if inside a capture,
+    /// transcript otherwise.
+    fn target(&mut self) -> &mut Vec<OutputPart> {
+        if self.capture_depth > 0 {
+            &mut self.capture
+        } else {
+            &mut self.transcript
+        }
     }
 
     /// No longer called by the VM — candidate for removal.
@@ -240,7 +268,7 @@ impl OutputBuffer {
             text
         };
         if !text.is_empty() {
-            self.parts.push(OutputPart::Text(text.to_owned()));
+            self.target().push(OutputPart::Text(text.to_owned()));
         }
     }
 
@@ -250,22 +278,35 @@ impl OutputBuffer {
         if !self.has_content() || self.ends_in_newline() {
             return;
         }
-        self.parts.push(OutputPart::Newline);
+        self.target().push(OutputPart::Newline);
     }
 
-    /// Returns true if the buffer contains any text after the last checkpoint
-    /// (or from the start if no checkpoint exists).
+    /// Returns true if the active target contains any text content.
+    /// When inside a capture, scans the capture vec (stopping at checkpoint).
+    /// When outside, scans the transcript from cursor position.
     fn has_content(&self) -> bool {
-        self.parts
-            .iter()
-            .rev()
-            .take_while(|p| !matches!(p, OutputPart::Checkpoint))
-            .any(OutputPart::is_content)
+        if self.capture_depth > 0 {
+            self.capture
+                .iter()
+                .rev()
+                .take_while(|p| !matches!(p, OutputPart::Checkpoint))
+                .any(OutputPart::is_content)
+        } else {
+            self.transcript[self.cursor..]
+                .iter()
+                .rev()
+                .any(OutputPart::is_content)
+        }
     }
 
-    /// Returns true if the last part in the buffer is a newline.
+    /// Returns true if the last part in the active target is a newline.
     fn ends_in_newline(&self) -> bool {
-        matches!(self.parts.last(), Some(OutputPart::Newline))
+        let target = if self.capture_depth > 0 {
+            &self.capture
+        } else {
+            &self.transcript
+        };
+        matches!(target.last(), Some(OutputPart::Newline))
     }
 
     /// Returns true if the last part is text ending with whitespace.
@@ -273,7 +314,12 @@ impl OutputBuffer {
     /// Newline parts mean the glue system handles the join instead.
     #[cfg(test)]
     fn ends_in_whitespace(&self) -> bool {
-        match self.parts.last() {
+        let target = if self.capture_depth > 0 {
+            &self.capture
+        } else {
+            &self.transcript
+        };
+        match target.last() {
             Some(OutputPart::Text(s)) => s.ends_with(char::is_whitespace),
             Some(OutputPart::LineRef { flags, .. }) => {
                 flags.contains(brink_format::LineFlags::ENDS_WITH_WS)
@@ -283,13 +329,14 @@ impl OutputBuffer {
     }
 
     pub fn push_glue(&mut self) {
-        self.parts.push(OutputPart::Glue);
+        self.target().push(OutputPart::Glue);
     }
 
     /// Push a word break. Deduplicated: no consecutive Springs.
     pub fn push_spring(&mut self) {
-        if !matches!(self.parts.last(), Some(OutputPart::Spring)) {
-            self.parts.push(OutputPart::Spring);
+        let target = self.target();
+        if !matches!(target.last(), Some(OutputPart::Spring)) {
+            target.push(OutputPart::Spring);
         }
     }
 
@@ -309,7 +356,7 @@ impl OutputBuffer {
         {
             return;
         }
-        self.parts.push(OutputPart::LineRef {
+        self.target().push(OutputPart::LineRef {
             container_idx,
             line_idx,
             slots,
@@ -330,31 +377,30 @@ impl OutputBuffer {
         {
             return;
         }
-        self.parts.push(OutputPart::ValueRef(value));
+        self.target().push(OutputPart::ValueRef(value));
     }
 
     /// Push a tag associated with the current output line.
     pub fn push_tag(&mut self, tag: String) {
-        self.parts.push(OutputPart::Tag(tag));
+        self.target().push(OutputPart::Tag(tag));
     }
 
-    /// Returns true if the buffer contains any checkpoint markers.
+    /// Returns true if a capture is currently active.
     pub fn has_checkpoint(&self) -> bool {
-        self.parts
-            .iter()
-            .any(|p| matches!(p, OutputPart::Checkpoint))
+        self.capture_depth > 0
     }
 
-    /// Push a checkpoint marker. Everything after it will be captured by
-    /// [`end_capture`](Self::end_capture).
+    /// Begin a capture. Pushes a checkpoint to the capture scratch space.
+    /// While a capture is active, all pushes route to the capture vec.
     pub fn begin_capture(&mut self) {
-        self.parts.push(OutputPart::Checkpoint);
+        self.capture_depth += 1;
+        self.capture.push(OutputPart::Checkpoint);
     }
 
-    /// Pop everything back to (and including) the most recent checkpoint,
-    /// resolve glue on the captured slice, and return the result as a string.
+    /// End the most recent capture: drain from the last checkpoint in the
+    /// capture vec, resolve glue, and return the result as a string.
     ///
-    /// Returns `None` if there is no checkpoint on the buffer.
+    /// Returns `None` if there is no checkpoint.
     pub fn end_capture(
         &mut self,
         program: &Program,
@@ -362,26 +408,35 @@ impl OutputBuffer {
         resolver: Option<&dyn PluralResolver>,
     ) -> Option<String> {
         let cp_idx = self
-            .parts
+            .capture
             .iter()
             .rposition(|p| matches!(p, OutputPart::Checkpoint))?;
 
-        let captured: Vec<OutputPart> = self.parts.drain(cp_idx..).collect();
+        let captured: Vec<OutputPart> = self.capture.drain(cp_idx..).collect();
         // Skip the checkpoint itself (first element).
         let captured = &captured[1..];
+
+        self.capture_depth = self.capture_depth.saturating_sub(1);
 
         Some(resolve_parts(captured, program, line_tables, resolver))
     }
 
     /// Remove the most recent checkpoint without capturing its content.
-    /// Text after the checkpoint remains in the buffer.
+    /// Content after the checkpoint flows outward: to the transcript if
+    /// this was the outermost capture, or stays in the capture vec if
+    /// an outer capture is still active.
     pub fn discard_capture(&mut self) {
         if let Some(cp_idx) = self
-            .parts
+            .capture
             .iter()
             .rposition(|p| matches!(p, OutputPart::Checkpoint))
         {
-            self.parts.remove(cp_idx);
+            self.capture.remove(cp_idx);
+        }
+        self.capture_depth = self.capture_depth.saturating_sub(1);
+        // If no captures remain, flush scratch content to the transcript.
+        if self.capture_depth == 0 && !self.capture.is_empty() {
+            self.transcript.append(&mut self.capture);
         }
     }
 
@@ -393,25 +448,29 @@ impl OutputBuffer {
     /// in the buffer — at that point, no future Glue can reach past the
     /// text to eat the Newline.
     pub(crate) fn has_completed_line(&self) -> bool {
-        if self.has_checkpoint() || self.parts.is_empty() {
+        if self.has_checkpoint() {
+            return false;
+        }
+        let unread = &self.transcript[self.cursor..];
+        if unread.is_empty() {
             return false;
         }
 
         // Quick check: any newline at all?
-        if !self.parts.iter().any(|p| matches!(p, OutputPart::Newline)) {
+        if !unread.iter().any(|p| matches!(p, OutputPart::Newline)) {
             return false;
         }
 
         // Run glue marking pass to determine which newlines survive.
-        let mut remove = vec![false; self.parts.len()];
-        mark_glue_removals(&self.parts, &mut remove);
+        let mut remove = vec![false; unread.len()];
+        mark_glue_removals(unread, &mut remove);
 
         // Walk and find a committed newline: a surviving Newline (not removed,
         // not in after_glue state) followed by non-whitespace-only text.
         let mut after_glue = false;
         let mut found_newline = false;
 
-        for (i, part) in self.parts.iter().enumerate() {
+        for (i, part) in unread.iter().enumerate() {
             if remove[i] {
                 if matches!(part, OutputPart::Glue) {
                     after_glue = true;
@@ -428,7 +487,7 @@ impl OutputBuffer {
                     OutputPart::Newline if !after_glue => {
                         found_newline = true;
                     }
-                    OutputPart::Glue | OutputPart::Checkpoint => {
+                    OutputPart::Glue => {
                         after_glue = true;
                     }
                     _ => {}
@@ -455,19 +514,23 @@ impl OutputBuffer {
         line_tables: &[Vec<LineEntry>],
         resolver: Option<&dyn PluralResolver>,
     ) -> Option<(String, Vec<String>)> {
-        if self.has_checkpoint() || self.parts.is_empty() {
+        if self.has_checkpoint() {
+            return None;
+        }
+        let unread = &self.transcript[self.cursor..];
+        if unread.is_empty() {
             return None;
         }
 
-        let mut remove = vec![false; self.parts.len()];
-        mark_glue_removals(&self.parts, &mut remove);
+        let mut remove = vec![false; unread.len()];
+        mark_glue_removals(unread, &mut remove);
 
         // Find the split point: the first surviving Newline (not removed,
         // not in after_glue state) that has non-whitespace text after it.
         let mut after_glue = false;
         let mut candidate_newline: Option<usize> = None;
 
-        for (i, part) in self.parts.iter().enumerate() {
+        for (i, part) in unread.iter().enumerate() {
             if remove[i] {
                 if matches!(part, OutputPart::Glue) {
                     after_glue = true;
@@ -484,7 +547,7 @@ impl OutputBuffer {
                     OutputPart::Newline if !after_glue => {
                         candidate_newline = Some(i);
                     }
-                    OutputPart::Glue | OutputPart::Checkpoint => {
+                    OutputPart::Glue => {
                         after_glue = true;
                     }
                     _ => {}
@@ -494,14 +557,16 @@ impl OutputBuffer {
 
         let split_at = candidate_newline?;
 
-        // Drain through the newline (inclusive).
-        let drained: Vec<OutputPart> = self.parts.drain(0..=split_at).collect();
-
-        // Resolve the drained parts into a single line with tags.
-        let mut lines = resolve_lines(&drained, program, line_tables, resolver);
+        // Resolve the slice through the newline (inclusive). No drain.
+        let slice = &self.transcript[self.cursor..=self.cursor + split_at];
+        let mut lines = resolve_lines(slice, program, line_tables, resolver);
         if lines.is_empty() {
             return None;
         }
+
+        // Advance cursor past the consumed newline.
+        self.cursor += split_at + 1;
+
         let (mut text, tags) = lines.swap_remove(0);
         text.push('\n');
         Some((text, tags))
@@ -516,17 +581,14 @@ impl OutputBuffer {
     #[cfg(test)]
     pub fn flush(&mut self) -> String {
         debug_assert!(
-            !self
-                .parts
-                .iter()
-                .any(|p| matches!(p, OutputPart::Checkpoint)),
+            !self.has_checkpoint(),
             "flush() called with active checkpoints"
         );
-        let parts = core::mem::take(&mut self.parts);
-        // Tests using flush() only use Text/Newline/Glue — no resolution needed.
-        // Pass a minimal Program that won't be accessed.
+        let unread = &self.transcript[self.cursor..];
         let program = test_dummy_program();
-        resolve_parts(&parts, &program, &[], None)
+        let result = resolve_parts(unread, &program, &[], None);
+        self.cursor = self.transcript.len();
+        result
     }
 
     /// Resolve glue and flush to structured per-line output.
@@ -540,14 +602,30 @@ impl OutputBuffer {
         resolver: Option<&dyn PluralResolver>,
     ) -> Vec<(String, Vec<String>)> {
         debug_assert!(
-            !self
-                .parts
-                .iter()
-                .any(|p| matches!(p, OutputPart::Checkpoint)),
+            !self.has_checkpoint(),
             "flush_lines() called with active checkpoints"
         );
-        let parts = core::mem::take(&mut self.parts);
-        resolve_lines(&parts, program, line_tables, resolver)
+        let unread = &self.transcript[self.cursor..];
+        let result = resolve_lines(unread, program, line_tables, resolver);
+        self.cursor = self.transcript.len();
+        result
+    }
+
+    /// Returns true if there are unread parts in the transcript.
+    pub(crate) fn has_unread(&self) -> bool {
+        self.cursor < self.transcript.len()
+    }
+
+    /// Returns the full append-only transcript.
+    #[expect(dead_code, reason = "used by step 8 acceptance test")]
+    pub(crate) fn transcript(&self) -> &[OutputPart] {
+        &self.transcript
+    }
+
+    /// Reset the read cursor to the beginning for re-rendering.
+    #[expect(dead_code, reason = "used by step 8 acceptance test")]
+    pub(crate) fn reset_cursor(&mut self) {
+        self.cursor = 0;
     }
 }
 
