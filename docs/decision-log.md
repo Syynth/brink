@@ -549,3 +549,11 @@
 - **SCOPE:** architectural
 - **WHAT:** Introduce a "fragment" model for preserving structural references across value boundaries. `OutputBuffer` gains a `fragments: Vec<Vec<OutputPart>>` store. `Value` gains a `FragmentRef(u32)` variant (index into fragments). New `BeginFragment`/`EndFragment` opcodes capture output structurally without resolving to a string. Codegen emits fragments around display-context function calls (inline expressions in output content, choice display text). Resolving a `FragmentRef` re-resolves the fragment's structural parts against the current line tables, enabling locale hot-swap without re-execution.
 - **WHY:** The runtime restructuring's append-only transcript enables locale re-rendering for main output (LineRef parts resolve at read time). But slot values in templates cross a value boundary — `end_capture` resolves LineRef → String, losing structural data. Function calls that produce localized text (e.g., `{greeting(name)}`) have their output baked into slot values as resolved strings. Fragments solve this by storing the structural parts separately and letting slots reference them by index. On locale switch, fragments re-resolve against new line tables. This avoids daisy-chaining Value types (which would create recursive resolution) and keeps the transcript clean (fragments aren't narration — they're intermediate computed text).
+
+## Replace converter pipeline with C# ink oracle as correctness source of truth
+- **WHEN:** 2026-03-23
+- **PROJECT:** brink
+- **SYSTEM:** cross-system
+- **SCOPE:** architectural
+- **WHAT:** Remove converter-generated golden episodes (`episodes/*.episode.json`) and converter episode tests. The oracle (`oracle/*.oracle.json`) from the C# ink runtime becomes the sole golden reference for behavioral correctness. A separate converter-vs-oracle test can be added later if needed.
+- **WHY:** Confidence in the brink compiler now exceeds the converter pipeline. The converter was originally built as a known-good reference (ink.json → StoryData), but it has its own bugs (e.g., trailing whitespace in choice text). The C# ink runtime is the canonical source of truth for ink semantics — testing directly against it via the oracle harness eliminates the converter as a middleman and catches bugs in both the compiler and the converter.

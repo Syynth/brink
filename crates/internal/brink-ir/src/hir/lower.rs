@@ -1845,6 +1845,20 @@ impl LowerCtx {
 // ─── Phase 6: Choice and gather lowering ────────────────────────────
 
 impl LowerCtx {
+    /// Trim trailing whitespace from the last `Text` part in a content part list.
+    /// The parser captures whitespace before diverts (e.g. `choice -> DONE`
+    /// yields `"choice "`); the C# ink runtime strips this, so we must too.
+    fn trim_trailing_whitespace(parts: &mut Vec<ContentPart>) {
+        if let Some(ContentPart::Text(t)) = parts.last_mut() {
+            let trimmed = t.trim_end().to_string();
+            if trimmed.is_empty() {
+                parts.pop();
+            } else {
+                *t = trimmed;
+            }
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "choice lowering has many CST regions"
@@ -1877,10 +1891,14 @@ impl LowerCtx {
             .filter_map(|c| c.expr().and_then(|e| self.lower_expr(&e)))
             .reduce(|a, b| Expr::Infix(Box::new(a), InfixOp::And, Box::new(b)));
 
-        let mut start_content = choice.start_content().map(|sc| Content {
-            ptr: None,
-            parts: self.lower_content_node_children(sc.syntax()),
-            tags: Vec::new(),
+        let mut start_content = choice.start_content().map(|sc| {
+            let mut parts = self.lower_content_node_children(sc.syntax());
+            Self::trim_trailing_whitespace(&mut parts);
+            Content {
+                ptr: None,
+                parts,
+                tags: Vec::new(),
+            }
         });
 
         let bracket_content = choice.bracket_content().map(|bc| {

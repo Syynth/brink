@@ -46,6 +46,10 @@ fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
         .collect()
 }
 
+/// Ratchet: minimum number of oracle episodes that must pass.
+/// Bump this as compiler coverage improves.
+const RATCHET_EPISODE_COUNT: usize = 3500;
+
 #[test]
 #[expect(clippy::too_many_lines)]
 fn oracle_comparison() {
@@ -214,6 +218,10 @@ fn oracle_comparison() {
             episodes_mismatch == 0 && episodes_missing == 0,
             "{episodes_mismatch} episode(s) mismatched, {episodes_missing} missing"
         );
+    } else {
+        assert!(
+            episodes_pass >= RATCHET_EPISODE_COUNT,
+            "ratchet regression: {episodes_pass} episodes < {RATCHET_EPISODE_COUNT}"
+        );
     }
-    // No ratchet yet — this is the initial run to establish a baseline.
 }
