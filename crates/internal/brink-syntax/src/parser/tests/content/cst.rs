@@ -865,6 +865,61 @@ fn divert_tunnel_call_onwards() {
     );
 }
 
+/// Indented content — leading whitespace is indentation, not content.
+/// After the fix, the TEXT node should contain only "Hello world",
+/// not "        Hello world".
+#[test]
+fn indented_content_strips_leading_whitespace() {
+    let p = parse("        Hello world\n");
+    let text_nodes: Vec<String> = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::TEXT)
+        .map(|n| n.text().to_string())
+        .collect();
+    assert_eq!(text_nodes.len(), 1);
+    assert_eq!(
+        text_nodes[0], "Hello world",
+        "leading indentation should be stripped from TEXT node"
+    );
+}
+
+/// After glue, leading space is content (word separator), not indentation.
+#[test]
+fn space_after_glue_preserved_in_text() {
+    let p = parse("<> world\n");
+    let text_nodes: Vec<String> = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::TEXT)
+        .map(|n| n.text().to_string())
+        .collect();
+    assert_eq!(text_nodes.len(), 1);
+    assert_eq!(
+        text_nodes[0], " world",
+        "space after glue is content, not indentation"
+    );
+}
+
+/// Indented content with interpolation — leading whitespace stripped,
+/// but internal whitespace preserved.
+#[test]
+fn indented_template_strips_leading_whitespace() {
+    let p = parse("        Hello {name} world\n");
+    let text_nodes: Vec<String> = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::TEXT)
+        .map(|n| n.text().to_string())
+        .collect();
+    assert_eq!(text_nodes.len(), 2);
+    assert_eq!(
+        text_nodes[0], "Hello ",
+        "leading indentation stripped, trailing space preserved"
+    );
+    assert_eq!(text_nodes[1], " world", "space before 'world' preserved");
+}
+
 /// Bare tunnel onwards.
 #[test]
 fn tunnel_onwards_only() {
