@@ -100,8 +100,23 @@ impl ContainerEmitter<'_> {
         for part in parts {
             match part {
                 lir::ContentPart::Text(s) => {
-                    let idx = self.add_line(s);
-                    self.emit(Opcode::EmitLine(idx, 0));
+                    // Strip boundary whitespace, emit Springs for word breaks.
+                    let has_leading_ws = s.starts_with(char::is_whitespace);
+                    let has_trailing_ws = s.ends_with(char::is_whitespace);
+                    let trimmed = s.trim();
+
+                    if has_leading_ws {
+                        self.emit(Opcode::Spring);
+                    }
+                    if !trimmed.is_empty() {
+                        let idx = self.add_line(trimmed);
+                        self.emit(Opcode::EmitLine(idx, 0));
+                    }
+                    if has_trailing_ws && !trimmed.is_empty() {
+                        self.emit(Opcode::Spring);
+                    }
+                    // If the string was entirely whitespace (trimmed is empty),
+                    // the leading Spring covers it — no trailing Spring needed.
                 }
                 lir::ContentPart::Glue => {
                     self.emit(Opcode::Glue);
