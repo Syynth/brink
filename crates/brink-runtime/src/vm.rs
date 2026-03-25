@@ -512,11 +512,10 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 context.set_turn_count(id, context.turn_index());
             }
 
-            // Function output goes to a fragment. On return,
-            // trim_and_collapse_fragment trims trailing whitespace and
-            // flushes the trimmed output to the outer context.
-            flow.output.begin_fragment();
-
+            // Function output goes directly to the active output target.
+            // Record the target length so trailing whitespace can be
+            // trimmed on return (matching C#'s TrimWhitespaceFromFunctionEnd).
+            let output_start = flow.output.target_len();
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
             thread.call_stack.push(CallFrame {
@@ -528,12 +527,13 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 }],
                 frame_type: CallFrameType::Function,
                 external_fn_id: None,
+                function_output_start: Some(output_start),
             });
             stats.frames_pushed += 1;
         }
         Opcode::Return => {
             // The function already pushed its return value via `ev, <value>, /ev`.
-            // It stays on the value stack; pop_call_frame just cleans up the checkpoint.
+            // It stays on the value stack; pop_call_frame just cleans up the frame.
             pop_call_frame(flow, program, line_tables, resolver, stats, true)?;
         }
         Opcode::TunnelCall(id) => {
@@ -559,6 +559,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 }],
                 frame_type: CallFrameType::Tunnel,
                 external_fn_id: None,
+                function_output_start: None,
             });
             stats.frames_pushed += 1;
         }
@@ -584,6 +585,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 }],
                 frame_type: CallFrameType::Thread,
                 external_fn_id: None,
+                function_output_start: None,
             });
             flow.threads.push(forked);
             stats.threads_created += 1;
@@ -623,6 +625,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 }],
                 frame_type: CallFrameType::Tunnel,
                 external_fn_id: None,
+                function_output_start: None,
             });
             stats.frames_pushed += 1;
         }
@@ -644,8 +647,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 context.set_turn_count(id, context.turn_index());
             }
 
-            flow.output.begin_fragment();
-
+            let output_start = flow.output.target_len();
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
             thread.call_stack.push(CallFrame {
@@ -657,6 +659,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 }],
                 frame_type: CallFrameType::Function,
                 external_fn_id: None,
+                function_output_start: Some(output_start),
             });
             stats.frames_pushed += 1;
         }
@@ -874,6 +877,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 container_stack: Vec::new(),
                 frame_type: CallFrameType::External,
                 external_fn_id: Some(fn_id),
+                function_output_start: None,
             });
             stats.frames_pushed += 1;
             return Ok(Stepped::ExternalCall);
@@ -1090,16 +1094,15 @@ fn pop_call_frame(
     stats.frames_popped += 1;
 
     if popped.frame_type == CallFrameType::Function {
-        // Trim trailing whitespace from the function's output and collapse
-        // into the outer context (transcript or enclosing fragment).
-        flow.output.trim_and_collapse_fragment();
-
+        // Trim trailing whitespace from the function's output region,
+        // matching the C# runtime's TrimWhitespaceFromFunctionEnd.
+        if let Some(start) = popped.function_output_start {
+            flow.output.trim_function_end(start);
+        }
         if !is_explicit_return {
-            // Implicit return: function returns void. Text output is
-            // already in the stream via trim_and_collapse_fragment.
+            // Implicit return: function returns void.
             flow.value_stack.push(Value::Null);
         }
-        // Explicit return: value is already on the stack.
     }
 
     if let Some(ret) = popped.return_address {

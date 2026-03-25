@@ -107,16 +107,12 @@ impl ContainerEmitter<'_> {
         }
     }
 
-    /// Emit a call opcode, wrapping in BeginFragment/EndFragment when in
-    /// display context so function output is captured structurally.
-    fn emit_fragment_wrapped(&mut self, display: bool, op: Opcode) {
-        if display {
-            self.emit(Opcode::BeginFragment);
-        }
+    /// Emit a call opcode. The runtime no longer implicitly captures
+    /// function output — the compiler emits explicit `BeginFragment`/
+    /// `EndFragment` around calls when capture is needed (e.g. template
+    /// slot composition in `emit_recognized_line`).
+    fn emit_fragment_wrapped(&mut self, _display: bool, op: Opcode) {
         self.emit(op);
-        if display {
-            self.emit(Opcode::EndFragment);
-        }
     }
 
     pub(super) fn emit_call_arg(&mut self, arg: &lir::CallArg) {

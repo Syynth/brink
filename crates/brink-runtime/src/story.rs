@@ -160,6 +160,10 @@ pub(crate) struct CallFrame {
     /// For `External` frames: the `DefinitionId` of the external function,
     /// used to look up the fallback container if no binding is registered.
     pub external_fn_id: Option<DefinitionId>,
+    /// For `Function` frames: the length of the active output target at
+    /// call time.  On return, trailing whitespace is trimmed back to this
+    /// point — matching the C# runtime's `TrimWhitespaceFromFunctionEnd`.
+    pub function_output_start: Option<usize>,
 }
 
 /// Two-part call stack: shared read-only prefix + owned mutable frames.
@@ -509,6 +513,7 @@ impl Flow {
     /// fallback container. Args are pushed back onto the value stack so
     /// the fallback body's `temp=` opcodes can pop them.
     pub fn invoke_fallback(&mut self, container_idx: u32) {
+        let output_start = self.output.target_len();
         let thread = self.current_thread_mut();
         if let Some(frame) = thread.call_stack.last_mut()
             && frame.frame_type == CallFrameType::External
@@ -520,10 +525,7 @@ impl Flow {
                 offset: 0,
             }];
             frame.external_fn_id = None;
-            // Begin a fragment for the fallback body — matches what Call
-            // does for normal function calls. trim_and_collapse_fragment
-            // will clean up on return.
-            self.output.begin_fragment();
+            frame.function_output_start = Some(output_start);
             // Push args back onto the value stack — the fallback body
             // starts with `temp=` instructions that pop them.
             self.value_stack.extend(args);
@@ -607,6 +609,7 @@ impl FlowInstance {
             }],
             frame_type: CallFrameType::Root,
             external_fn_id: None,
+            function_output_start: None,
         };
         let initial_thread = Thread {
             call_stack: CallStack::new(initial_frame),

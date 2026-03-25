@@ -23,9 +23,12 @@ impl ContainerEmitter<'_> {
                 parts: template_parts,
                 slot_exprs,
             } => {
-                // Evaluate slot expressions first — they push values onto the stack.
+                // Evaluate slot expressions — each pushes one value onto the stack.
+                // Function calls need composition: side-effect output + return value
+                // are composed into a single FragmentRef so the line table entry
+                // stays clean while the output order matches C#.
                 for expr in slot_exprs {
-                    self.emit_expr(expr, true);
+                    self.emit_slot_expr(expr);
                 }
                 let idx = self.add_template_line(
                     template_parts.clone(),
@@ -68,9 +71,8 @@ impl ContainerEmitter<'_> {
                 slot_exprs,
             } => {
                 // Evaluate slot expressions BEFORE the fragment.
-                // display=true ensures function calls get fragment-wrapped.
                 for expr in slot_exprs {
-                    self.emit_expr(expr, true);
+                    self.emit_slot_expr(expr);
                 }
                 let idx = self.add_template_line(
                     template_parts.clone(),
@@ -114,7 +116,7 @@ impl ContainerEmitter<'_> {
                 slot_exprs,
             } => {
                 for expr in slot_exprs {
-                    self.emit_expr(expr, true);
+                    self.emit_slot_expr(expr);
                 }
                 let idx = self.add_template_line(
                     template_parts.clone(),
@@ -187,6 +189,39 @@ impl ContainerEmitter<'_> {
                     self.emit(Opcode::EnterContainer(*id));
                 }
             }
+        }
+    }
+
+    /// Emit a slot expression for a template line.
+    ///
+    /// For function calls, uses the composition pattern: captures side-effect
+    /// output in a fragment, then composes it with the return value into a
+    /// single `FragmentRef`.  This ensures the line table entry stays clean
+    /// (one slot) while side-effect text appears in the correct position
+    /// within the resolved line.
+    ///
+    /// For non-call expressions, evaluates directly — the result goes on the
+    /// value stack with no fragment overhead.
+    fn emit_slot_expr(&mut self, expr: &lir::Expr) {
+        if expr.is_function_call() {
+            // Composition pattern:
+            //   BeginFragment (compose)
+            //     BeginFragment (side effects)
+            //       Call func → side effects captured, return value on stack
+            //     EndFragment  → store side effects → FragmentRef on stack
+            //                    stack: [return_value, FragmentRef(side_effects)]
+            //     EmitValue    → pop FragmentRef → emit side effects into compose
+            //     EmitValue    → pop return_value → emit into compose
+            //   EndFragment    → store composed → FragmentRef on stack
+            self.emit(Opcode::BeginFragment);
+            self.emit(Opcode::BeginFragment);
+            self.emit_expr(expr, false);
+            self.emit(Opcode::EndFragment);
+            self.emit(Opcode::EmitValue);
+            self.emit(Opcode::EmitValue);
+            self.emit(Opcode::EndFragment);
+        } else {
+            self.emit_expr(expr, false);
         }
     }
 }

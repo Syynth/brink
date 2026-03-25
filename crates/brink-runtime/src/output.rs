@@ -303,6 +303,43 @@ impl OutputBuffer {
         }
     }
 
+    /// Length of the active push target. Used to record function output
+    /// start points for trailing whitespace trim on return.
+    pub(crate) fn target_len(&self) -> usize {
+        if self.capture_depth > 0 {
+            self.capture.len()
+        } else if self.fragment_depth > 0 {
+            self.fragment_capture.len()
+        } else {
+            self.transcript.len()
+        }
+    }
+
+    /// Trim trailing whitespace from the active output target, walking
+    /// backward to `start`. Matches the C# runtime's
+    /// `TrimWhitespaceFromFunctionEnd`: on function return, remove
+    /// trailing `Newline`, `Spring`, and whitespace-only text so that
+    /// function output doesn't inject unwanted line breaks.
+    pub(crate) fn trim_function_end(&mut self, start: usize) {
+        let target = self.target();
+        while target.len() > start {
+            match target.last() {
+                Some(OutputPart::Newline | OutputPart::Spring) => {
+                    target.pop();
+                }
+                Some(OutputPart::Text(s)) if s.trim().is_empty() => {
+                    target.pop();
+                }
+                Some(OutputPart::LineRef { flags, .. })
+                    if flags.contains(brink_format::LineFlags::ALL_WS) =>
+                {
+                    target.pop();
+                }
+                _ => break,
+            }
+        }
+    }
+
     /// No longer called by the VM — candidate for removal.
     #[cfg(test)]
     pub fn push_text(&mut self, text: &str) {
@@ -560,50 +597,6 @@ impl OutputBuffer {
         match self.fragment(idx) {
             Some(parts) => resolve_parts(parts, program, line_tables, resolver, &self.fragments),
             None => String::new(),
-        }
-    }
-
-    /// Trim trailing whitespace from the most recent function's fragment output,
-    /// remove its checkpoint, and collapse parts into the outer context.
-    ///
-    /// Implements the C# runtime's `TrimWhitespaceFromFunctionEnd`: walk
-    /// backward from the end of the fragment capture and remove trailing
-    /// `Newline`, `Spring`, and whitespace-only content. Then remove the
-    /// checkpoint. If outermost, flush trimmed parts to transcript.
-    pub fn trim_and_collapse_fragment(&mut self) {
-        let Some(cp_idx) = self
-            .fragment_capture
-            .iter()
-            .rposition(|p| matches!(p, OutputPart::Checkpoint))
-        else {
-            return;
-        };
-
-        // Trim trailing whitespace/newline parts from the function's region.
-        while self.fragment_capture.len() > cp_idx + 1 {
-            match self.fragment_capture.last() {
-                Some(OutputPart::Newline | OutputPart::Spring) => {
-                    self.fragment_capture.pop();
-                }
-                Some(OutputPart::Text(s)) if s.trim().is_empty() => {
-                    self.fragment_capture.pop();
-                }
-                Some(OutputPart::LineRef { flags, .. })
-                    if flags.contains(brink_format::LineFlags::ALL_WS) =>
-                {
-                    self.fragment_capture.pop();
-                }
-                _ => break,
-            }
-        }
-
-        // Remove the checkpoint marker.
-        self.fragment_capture.remove(cp_idx);
-        self.fragment_depth = self.fragment_depth.saturating_sub(1);
-
-        // If outermost, flush to transcript.
-        if self.fragment_depth == 0 && !self.fragment_capture.is_empty() {
-            self.transcript.append(&mut self.fragment_capture);
         }
     }
 
@@ -1174,32 +1167,6 @@ mod tests {
         assert!(!buf.has_content());
         buf.push_text("after");
         assert!(buf.has_content());
-    }
-
-    #[test]
-    fn trim_and_collapse_trims_trailing_newline() {
-        let mut buf = OutputBuffer::new();
-        buf.begin_fragment();
-        buf.push_text("Hello");
-        buf.push_newline();
-        buf.trim_and_collapse_fragment();
-        assert_eq!(buf.flush(), "Hello");
-    }
-
-    #[test]
-    fn trim_and_collapse_nested() {
-        let mut buf = OutputBuffer::new();
-        buf.begin_fragment(); // outer
-        buf.push_text("outer");
-        buf.begin_fragment(); // inner
-        buf.push_text("inner");
-        buf.push_newline();
-        buf.trim_and_collapse_fragment(); // collapse inner
-        let idx = buf.end_fragment();
-        assert!(idx.is_some());
-        let p = test_dummy_program();
-        let resolved = buf.resolve_fragment(idx.unwrap(), &p, &[], None);
-        assert_eq!(resolved, "outerinner");
     }
 
     /// Glue should eat the following newline, not just the preceding one.
