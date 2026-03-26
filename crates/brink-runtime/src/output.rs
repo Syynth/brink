@@ -320,7 +320,13 @@ impl OutputBuffer {
     /// `TrimWhitespaceFromFunctionEnd`: on function return, remove
     /// trailing `Newline`, `Spring`, and whitespace-only text so that
     /// function output doesn't inject unwanted line breaks.
-    pub(crate) fn trim_function_end(&mut self, start: usize) {
+    pub(crate) fn trim_function_end(
+        &mut self,
+        start: usize,
+        program: &Program,
+        line_tables: &[Vec<LineEntry>],
+        resolver: Option<&dyn PluralResolver>,
+    ) {
         let target = self.target();
         while target.len() > start {
             match target.last() {
@@ -332,6 +338,18 @@ impl OutputBuffer {
                 }
                 Some(OutputPart::LineRef { flags, .. })
                     if flags.contains(brink_format::LineFlags::ALL_WS) =>
+                {
+                    target.pop();
+                }
+                // Resolve non-ALL_WS LineRefs: if slots are null/void the
+                // resolved text may still be whitespace-only. This matches
+                // C#'s TrimWhitespaceFromFunctionEnd which operates on
+                // already-resolved StringValues.
+                Some(part @ OutputPart::LineRef { .. })
+                    if part
+                        .resolve(program, line_tables, resolver)
+                        .trim()
+                        .is_empty() =>
                 {
                     target.pop();
                 }
