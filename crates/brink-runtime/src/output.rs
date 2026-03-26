@@ -265,7 +265,7 @@ pub(crate) struct OutputBuffer {
     /// Append-only output log. Parts are never removed.
     pub(crate) transcript: Vec<OutputPart>,
     /// Read cursor into transcript. Advances on take/flush.
-    cursor: usize,
+    pub(crate) cursor: usize,
     /// Transient capture scratch space.
     capture: Vec<OutputPart>,
     /// Nesting depth of active captures. When > 0, pushes route to `capture`.

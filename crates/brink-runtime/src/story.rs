@@ -324,7 +324,7 @@ pub(crate) struct PendingChoice {
 }
 
 /// Per-flow execution context. Owns threads, eval stack, output, choices.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct Flow {
     pub threads: Vec<Thread>,
     pub value_stack: Vec<Value>,
@@ -339,7 +339,7 @@ pub(crate) struct Flow {
 ///
 /// Holds globals, visit/turn tracking, and RNG state. This is the natural
 /// serialization boundary for save/load (deferred).
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct Context {
     pub globals: Vec<Value>,
     pub visit_counts: HashMap<DefinitionId, u32>,
@@ -585,7 +585,7 @@ impl ExternalFnHandler for FallbackHandler {
 /// A paired (Flow, Context, Status) representing one independent execution
 /// thread within a story. The default flow runs from the root container;
 /// named flows can be spawned at arbitrary entry points.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct FlowInstance {
     pub(crate) flow: Flow,
     pub(crate) status: StoryStatus,
@@ -1456,6 +1456,98 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// List active flow names.
     pub fn flow_names(&self) -> Vec<&str> {
         self.instances.keys().map(String::as_str).collect()
+    }
+
+    // ── Testing / instrumentation API ───────────────────────────────
+
+    /// Dump the current execution state for debugging.
+    ///
+    /// Returns a human-readable summary of the call stack, current position,
+    /// value stack, output buffer, globals, and pending choices.
+    #[cfg(feature = "testing")]
+    pub fn debug_state(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        let flow = &self.default.flow;
+        let ctx = &self.default_context;
+
+        let _ = writeln!(out, "=== Story Debug State ===");
+        let _ = writeln!(out, "status: {:?}", self.default.status);
+
+        // Current position
+        let thread = flow.current_thread();
+        if let Some(frame) = thread.call_stack.last()
+            && let Some(cp) = frame.container_stack.last()
+        {
+            let id = self.program.container(cp.container_idx).id;
+            let _ = writeln!(
+                out,
+                "position: container_idx={} id={id:?} offset={}",
+                cp.container_idx, cp.offset,
+            );
+        }
+
+        // Call stack
+        let depth = thread.call_stack.len();
+        let _ = writeln!(out, "\ncall stack ({depth} frames):");
+        for i in 0..depth {
+            if let Some(frame) = thread.call_stack.get(i) {
+                let ret = frame
+                    .return_address
+                    .map(|r| format!("idx={} off={}", r.container_idx, r.offset));
+                let _ = writeln!(
+                    out,
+                    "  [{i}] {:?} ret={} temps={} containers={}",
+                    frame.frame_type,
+                    ret.as_deref().unwrap_or("none"),
+                    frame.temps.len(),
+                    frame.container_stack.len(),
+                );
+                for (j, cp) in frame.container_stack.iter().enumerate() {
+                    let id = self.program.container(cp.container_idx).id;
+                    let _ = writeln!(
+                        out,
+                        "       container_stack[{j}]: idx={} id={id:?} off={}",
+                        cp.container_idx, cp.offset,
+                    );
+                }
+            }
+        }
+
+        // Value stack
+        let _ = writeln!(out, "\nvalue stack ({}):", flow.value_stack.len());
+        for (i, v) in flow.value_stack.iter().enumerate() {
+            let _ = writeln!(out, "  [{i}] {v:?}");
+        }
+
+        // Output buffer (unread transcript)
+        let unread_start = flow.output.cursor;
+        let transcript = &flow.output.transcript[unread_start..];
+        let _ = writeln!(
+            out,
+            "\noutput buffer (cursor={unread_start}, {} unread parts):",
+            transcript.len(),
+        );
+        for (i, part) in transcript.iter().enumerate() {
+            let _ = writeln!(out, "  [{i}] {part:?}");
+        }
+
+        // Globals
+        let _ = writeln!(out, "\nglobals:");
+        for (i, v) in ctx.globals.iter().enumerate() {
+            #[expect(clippy::cast_possible_truncation, reason = "global count fits in u32")]
+            if let Some(name) = self.program.global_name(i as u32) {
+                let _ = writeln!(out, "  {name} = {v:?}");
+            }
+        }
+
+        // Pending choices
+        let _ = writeln!(out, "\npending choices ({}):", flow.pending_choices.len());
+        for (i, c) in flow.pending_choices.iter().enumerate() {
+            let _ = writeln!(out, "  [{i}] {:?} -> {:?}", c.display, c.target_id);
+        }
+
+        out
     }
 }
 

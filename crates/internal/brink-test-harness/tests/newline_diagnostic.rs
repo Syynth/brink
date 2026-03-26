@@ -889,20 +889,36 @@ fn runtime_intercept_step23_glue_not_dropped() {
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
     let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
 
-    // Run e0 path (always pick choice 0) to step 23
+    // Run e0 path (always pick choice 0), dumping state at the critical steps
     let mut last_text = String::new();
-    for _ in 0..24 {
+    for i in 0..24 {
+        // Dump state before the critical region (steps 21-23)
+        if (21..=23).contains(&i) {
+            println!("\n--- BEFORE step {i} ---");
+            println!("{}", story.debug_state());
+        }
         match story.continue_single() {
-            Ok(brink_runtime::Line::Text { text, .. }) => last_text = text,
+            Ok(brink_runtime::Line::Text { text, .. }) => {
+                if i >= 20 {
+                    println!("step {i}: Text {text:?}");
+                }
+                last_text = text;
+            }
             Ok(brink_runtime::Line::Done { text, .. }) => {
+                println!("step {i}: Done {text:?}");
                 last_text = text;
                 break;
             }
             Ok(brink_runtime::Line::Choices { text, choices, .. }) => {
+                if i >= 20 {
+                    let names: Vec<_> = choices.iter().map(|c| c.text.as_str()).collect();
+                    println!("step {i}: Choices {text:?} {names:?}");
+                }
                 last_text = text;
                 story.choose(0).expect("choose");
             }
             Ok(brink_runtime::Line::End { text, .. }) => {
+                println!("step {i}: End {text:?}");
                 last_text = text;
                 break;
             }
