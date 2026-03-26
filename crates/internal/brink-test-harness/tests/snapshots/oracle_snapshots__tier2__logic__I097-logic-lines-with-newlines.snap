@@ -4,14 +4,11 @@ expression: case_snapshot
 ---
 case: tier2/logic/I097-logic-lines-with-newlines
 oracle: 1, brink: 1, matched: 1
-passing: 0/1
+passing: 1/1
 
-=== episode [] === FAIL
+=== episode [] === PASS
 > "text1\n" [Continue]
 > "text 2\n" [Continue]
-> "text1text 2\n" [Done]
+> "text1\n" [Continue]
+> "text 2\n" [Done]
 outcome: Done
-  step 2: text differs
-    oracle: "text1\n"
-    brink:  "text1text 2\n"
-  step 3: missing (oracle: "text 2\n")

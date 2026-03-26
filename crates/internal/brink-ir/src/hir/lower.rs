@@ -12,6 +12,35 @@ use crate::{
     SymbolManifest, Tag, TempDecl, ThreadStart, TunnelCall, UnresolvedRef, VarDecl,
 };
 
+/// Returns true if the expression tree contains a function call.
+/// Used to decide whether a logic line needs an `EndOfLine` — inklecate
+/// emits `\n` after any logic line whose expression contains a call.
+fn expr_contains_call(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call(..) => true,
+        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => expr_contains_call(inner),
+        Expr::Infix(lhs, _, rhs) => expr_contains_call(lhs) || expr_contains_call(rhs),
+        Expr::String(s) => s
+            .parts
+            .iter()
+            .any(|p| matches!(p, StringPart::Interpolation(e) if expr_contains_call(e))),
+        _ => false,
+    }
+}
+
+/// Returns true if the lowered statement contains a function call in any
+/// of its expressions. `ExprStmt` always qualifies (it's a bare expression,
+/// typically a call). `TempDecl` and `Assignment` qualify only if their
+/// value expression contains a call.
+fn stmt_has_call(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::ExprStmt(expr) => expr_contains_call(expr),
+        Stmt::TempDecl(td) => td.value.as_ref().is_some_and(expr_contains_call),
+        Stmt::Assignment(a) => expr_contains_call(&a.value),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -1114,9 +1143,9 @@ impl LowerCtx {
                     if let Some(ll) = child.into_node().and_then(ast::LogicLine::cast)
                         && let Some(stmt) = self.lower_logic_line(&ll)
                     {
-                        let is_expr_stmt = matches!(stmt, Stmt::ExprStmt(_));
+                        let needs_eol = stmt_has_call(&stmt);
                         stmts.push(stmt);
-                        if is_expr_stmt {
+                        if needs_eol {
                             stmts.push(Stmt::EndOfLine);
                         }
                     }
@@ -1316,9 +1345,9 @@ impl LowerCtx {
                     if let Some(ll) = ast::LogicLine::cast(child)
                         && let Some(stmt) = self.lower_logic_line(&ll)
                     {
-                        let is_expr_stmt = matches!(stmt, Stmt::ExprStmt(_));
+                        let needs_eol = stmt_has_call(&stmt);
                         stmts.push(stmt);
-                        if is_expr_stmt {
+                        if needs_eol {
                             stmts.push(Stmt::EndOfLine);
                         }
                     }
@@ -2196,9 +2225,9 @@ impl LowerCtx {
                 if let Some(ll) = ast::LogicLine::cast(child)
                     && let Some(stmt) = self.lower_logic_line(&ll)
                 {
-                    let is_expr_stmt = matches!(stmt, Stmt::ExprStmt(_));
+                    let needs_eol = stmt_has_call(&stmt);
                     out.push(stmt);
-                    if is_expr_stmt {
+                    if needs_eol {
                         out.push(Stmt::EndOfLine);
                     }
                 }
@@ -2316,9 +2345,9 @@ impl LowerCtx {
                     if let Some(ll) = ast::LogicLine::cast(child)
                         && let Some(stmt) = self.lower_logic_line(&ll)
                     {
-                        let is_expr_stmt = matches!(stmt, Stmt::ExprStmt(_));
+                        let needs_eol = stmt_has_call(&stmt);
                         items.push(WeaveItem::Stmt(stmt));
-                        if is_expr_stmt {
+                        if needs_eol {
                             items.push(WeaveItem::Stmt(Stmt::EndOfLine));
                         }
                     }

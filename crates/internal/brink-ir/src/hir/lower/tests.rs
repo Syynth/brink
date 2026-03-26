@@ -2816,3 +2816,41 @@ fn logic_line_return_no_end_of_line() {
         "Return should be the only stmt, got: {stmts:?}",
     );
 }
+
+#[test]
+fn logic_line_temp_decl_with_call_emits_end_of_line() {
+    // `~ temp x = func()` — the expression contains a function call,
+    // so inklecate emits \n after it. This newline provides the line
+    // boundary between the function's output and subsequent content.
+    let (hir, _, diags) = lower_ink("~ temp x = func()\nsome text\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    let stmts = &hir.root_content.stmts;
+    assert!(
+        matches!(&stmts[0], Stmt::TempDecl(_)),
+        "expected TempDecl, got {:?}",
+        stmts[0],
+    );
+    assert!(
+        matches!(&stmts[1], Stmt::EndOfLine),
+        "TempDecl with function call should be followed by EndOfLine, got {:?}",
+        stmts[1],
+    );
+}
+
+#[test]
+fn logic_line_assignment_with_call_emits_end_of_line() {
+    // `~ x = func()` — assignment with a function call expression.
+    // Same rule: inklecate emits \n when the expression has a call.
+    let (hir, _, diags) = lower_ink("VAR x = 0\n~ x = func()\nsome text\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    let stmts = &hir.root_content.stmts;
+    let assign_idx = stmts
+        .iter()
+        .position(|s| matches!(s, Stmt::Assignment(_)))
+        .expect("should have an Assignment stmt");
+    assert!(
+        matches!(&stmts[assign_idx + 1], Stmt::EndOfLine),
+        "Assignment with function call should be followed by EndOfLine, got {:?}",
+        stmts.get(assign_idx + 1),
+    );
+}
