@@ -275,8 +275,10 @@ fn try_recognize_template(content: &hir::Content, _ctx: &LowerCtx<'_>) -> bool {
     let mut has_text = false;
     for part in &content.parts {
         match part {
-            hir::ContentPart::Text(_) => {
-                has_text = true;
+            hir::ContentPart::Text(s) => {
+                if !s.trim().is_empty() {
+                    has_text = true;
+                }
             }
             hir::ContentPart::Interpolation(_) => {
                 has_interpolation = true;
