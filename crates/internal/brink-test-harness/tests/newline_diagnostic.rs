@@ -1156,6 +1156,85 @@ fn intercept_step23_opcode_trace() {
     println!("\n=== Single-stepping from step 23 start ===");
     println!("initial state:\n{}", story.debug_state());
 
+    // Check for DefinitionId collisions in the StoryData
+    println!("\n=== DefinitionId collision check ===");
+    let mut id_to_containers: std::collections::HashMap<brink_format::DefinitionId, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, cdef) in data.containers.iter().enumerate() {
+        id_to_containers.entry(cdef.id).or_default().push(i);
+    }
+    for (id, indices) in &id_to_containers {
+        if indices.len() > 1 {
+            println!("COLLISION: {id:?} maps to containers {indices:?}");
+        }
+    }
+
+    // Check what container the EnterContainer target maps to
+    // The gather container (59) has EnterContainer($15fe6fc9948719)
+    let gather_bytecode = &data.containers[59].bytecode;
+    let mut off = 0;
+    while off < gather_bytecode.len() {
+        let pos = off;
+        match brink_format::Opcode::decode(gather_bytecode, &mut off) {
+            Ok(brink_format::Opcode::EnterContainer(id)) => {
+                // Find which container this ID maps to
+                let container_indices = id_to_containers.get(&id);
+                println!(
+                    "EnterContainer at byte {pos}: id={id:?} -> containers={container_indices:?}"
+                );
+                // Also check address_map
+                if let Some((ci, byte_off)) = program.resolve_address(id) {
+                    let target_id = data.containers[ci as usize].id;
+                    println!(
+                        "  linked: container_idx={ci}, offset={byte_off}, container_id={target_id:?}"
+                    );
+
+                    // Decode first few opcodes of the target to identify it
+                    let target_bc = &data.containers[ci as usize].bytecode;
+                    let mut toff = 0;
+                    let mut first_ops = Vec::new();
+                    for _ in 0..5 {
+                        if toff >= target_bc.len() {
+                            break;
+                        }
+                        match brink_format::Opcode::decode(target_bc, &mut toff) {
+                            Ok(op) => first_ops.push(format!("{op:?}")),
+                            Err(_) => break,
+                        }
+                    }
+                    println!("  first opcodes: {first_ops:?}");
+                }
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+
+    // Find the ACTUAL teacup conditional body — the container with
+    // push_bool true / set_global drugged / glue / emit_line 69
+    println!("\n=== Searching for teacup conditional body ===");
+    for (i, cdef) in data.containers.iter().enumerate() {
+        let mut off2 = 0;
+        let mut has_set_global = false;
+        let mut has_glue = false;
+        let mut has_emit_line_69 = false;
+        while off2 < cdef.bytecode.len() {
+            match brink_format::Opcode::decode(&cdef.bytecode, &mut off2) {
+                Ok(brink_format::Opcode::SetGlobal(_)) => has_set_global = true,
+                Ok(brink_format::Opcode::Glue) => has_glue = true,
+                Ok(brink_format::Opcode::EmitLine(69, _)) => has_emit_line_69 = true,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        if has_emit_line_69 && has_glue {
+            println!(
+                "container {i}: id={:?} has SetGlobal={has_set_global} Glue={has_glue} EmitLine(69)={has_emit_line_69}",
+                cdef.id,
+            );
+        }
+    }
+
     for i in 0..100 {
         match story.step_once() {
             Ok(Some((op, ci, off))) => {
