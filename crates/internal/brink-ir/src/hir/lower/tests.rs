@@ -2678,3 +2678,141 @@ fn consecutive_labeled_gathers_nest() {
         opts_block.stmts,
     );
 }
+
+// ─── Logic line newline emission ────────────────────────────────────
+//
+// Inklecate emits a `\n` after expression-statement logic lines
+// (`~ func()`) but NOT after assignments, temp declarations, or
+// returns. This newline is critical: it provides the line boundary
+// between function output and subsequent content after
+// TrimWhitespaceFromFunctionEnd strips the function's trailing newline.
+
+#[test]
+fn logic_line_expr_stmt_emits_end_of_line_in_root() {
+    // `~ func()` at root level should produce ExprStmt + EndOfLine.
+    let (hir, _, diags) = lower_ink("~ func()\nsome text\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    let stmts = &hir.root_content.stmts;
+    assert!(
+        matches!(&stmts[0], Stmt::ExprStmt(_)),
+        "expected ExprStmt, got {:?}",
+        stmts[0],
+    );
+    assert!(
+        matches!(&stmts[1], Stmt::EndOfLine),
+        "expected EndOfLine after ExprStmt, got {:?}",
+        stmts[1],
+    );
+}
+
+#[test]
+fn logic_line_expr_stmt_emits_end_of_line_in_knot() {
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+~ foo()
+some text
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    let stmts = &hir.knots[0].body.stmts;
+    assert!(
+        matches!(&stmts[0], Stmt::ExprStmt(_)),
+        "expected ExprStmt, got {:?}",
+        stmts[0],
+    );
+    assert!(
+        matches!(&stmts[1], Stmt::EndOfLine),
+        "expected EndOfLine after ExprStmt, got {:?}",
+        stmts[1],
+    );
+}
+
+#[test]
+fn logic_line_expr_stmt_emits_end_of_line_in_function_body() {
+    let (hir, _, diags) = lower_ink(
+        "\
+== function f() ==
+~ foo()
+some text
+~ return
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    let stmts = &hir.knots[0].body.stmts;
+    assert!(
+        matches!(&stmts[0], Stmt::ExprStmt(_)),
+        "expected ExprStmt, got {:?}",
+        stmts[0],
+    );
+    assert!(
+        matches!(&stmts[1], Stmt::EndOfLine),
+        "expected EndOfLine after ExprStmt, got {:?}",
+        stmts[1],
+    );
+}
+
+#[test]
+fn logic_line_temp_decl_no_end_of_line() {
+    // `~ temp x = 0` should NOT produce EndOfLine — matching inklecate.
+    let (hir, _, diags) = lower_ink(
+        "\
+=== knot ===
+~ temp x = 0
+some text
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    let stmts = &hir.knots[0].body.stmts;
+    assert!(
+        matches!(&stmts[0], Stmt::TempDecl(_)),
+        "expected TempDecl, got {:?}",
+        stmts[0],
+    );
+    assert!(
+        !matches!(&stmts[1], Stmt::EndOfLine),
+        "TempDecl should NOT be followed by EndOfLine, got {:?}",
+        stmts[1],
+    );
+}
+
+#[test]
+fn logic_line_assignment_no_end_of_line() {
+    // `~ x = 5` should NOT produce EndOfLine — matching inklecate.
+    let (hir, _, diags) = lower_ink("VAR x = 0\n~ x = 5\nsome text\n");
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    let stmts = &hir.root_content.stmts;
+    let assign_idx = stmts
+        .iter()
+        .position(|s| matches!(s, Stmt::Assignment(_)))
+        .expect("should have an Assignment stmt");
+    assert!(
+        !matches!(&stmts[assign_idx + 1], Stmt::EndOfLine),
+        "Assignment should NOT be followed by EndOfLine, got {:?}",
+        stmts[assign_idx + 1],
+    );
+}
+
+#[test]
+fn logic_line_return_no_end_of_line() {
+    // `~ return` should NOT produce EndOfLine.
+    let (hir, _, diags) = lower_ink(
+        "\
+== function f() ==
+~ return true
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+    let stmts = &hir.knots[0].body.stmts;
+    assert!(
+        matches!(&stmts[0], Stmt::Return(_)),
+        "expected Return, got {:?}",
+        stmts[0],
+    );
+    // Return should be the last stmt, no EndOfLine after it.
+    assert_eq!(
+        stmts.len(),
+        1,
+        "Return should be the only stmt, got: {stmts:?}",
+    );
+}

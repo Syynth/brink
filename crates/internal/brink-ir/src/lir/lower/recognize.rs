@@ -272,14 +272,20 @@ fn build_source_location(content: &hir::Content, ctx: &LowerCtx<'_>) -> Option<S
 /// Check if all content parts are Text or Interpolation, with ≥1 Interpolation.
 fn try_recognize_template(content: &hir::Content, _ctx: &LowerCtx<'_>) -> bool {
     let mut has_interpolation = false;
+    let mut has_text = false;
     for part in &content.parts {
         match part {
-            hir::ContentPart::Text(_) => {}
+            hir::ContentPart::Text(_) => {
+                has_text = true;
+            }
             hir::ContentPart::Interpolation(_) => {
                 has_interpolation = true;
             }
             _ => return false,
         }
     }
-    has_interpolation
+    // Require at least one Text part — a template with only slots has no
+    // translatable source text and should fall through to EmitContent,
+    // which uses EmitValue (correctly suppresses null/void results).
+    has_interpolation && has_text
 }

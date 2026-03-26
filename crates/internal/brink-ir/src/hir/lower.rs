@@ -1114,7 +1114,11 @@ impl LowerCtx {
                     if let Some(ll) = child.into_node().and_then(ast::LogicLine::cast)
                         && let Some(stmt) = self.lower_logic_line(&ll)
                     {
+                        let is_expr_stmt = matches!(stmt, Stmt::ExprStmt(_));
                         stmts.push(stmt);
+                        if is_expr_stmt {
+                            stmts.push(Stmt::EndOfLine);
+                        }
                     }
                 }
                 SyntaxKind::DIVERT_NODE => {
@@ -1312,7 +1316,11 @@ impl LowerCtx {
                     if let Some(ll) = ast::LogicLine::cast(child)
                         && let Some(stmt) = self.lower_logic_line(&ll)
                     {
+                        let is_expr_stmt = matches!(stmt, Stmt::ExprStmt(_));
                         stmts.push(stmt);
+                        if is_expr_stmt {
+                            stmts.push(Stmt::EndOfLine);
+                        }
                     }
                 }
                 SyntaxKind::DIVERT_NODE => {
@@ -2188,7 +2196,11 @@ impl LowerCtx {
                 if let Some(ll) = ast::LogicLine::cast(child)
                     && let Some(stmt) = self.lower_logic_line(&ll)
                 {
+                    let is_expr_stmt = matches!(stmt, Stmt::ExprStmt(_));
                     out.push(stmt);
+                    if is_expr_stmt {
+                        out.push(Stmt::EndOfLine);
+                    }
                 }
             }
             SyntaxKind::DIVERT_NODE => {
@@ -2304,7 +2316,11 @@ impl LowerCtx {
                     if let Some(ll) = ast::LogicLine::cast(child)
                         && let Some(stmt) = self.lower_logic_line(&ll)
                     {
+                        let is_expr_stmt = matches!(stmt, Stmt::ExprStmt(_));
                         items.push(WeaveItem::Stmt(stmt));
+                        if is_expr_stmt {
+                            items.push(WeaveItem::Stmt(Stmt::EndOfLine));
+                        }
                     }
                 }
                 SyntaxKind::TAG_LINE => {

@@ -4,9 +4,14 @@ expression: case_snapshot
 ---
 case: tier3/misc/nested-pass-by-reference
 oracle: 1, brink: 1, matched: 1
-passing: 1/1
+passing: 0/1
 
-=== episode [] === PASS
+=== episode [] === FAIL
 > "5\n" [Continue]
+> "\n" [Continue]
 > "625\n" [Done]
 outcome: Done
+  step 1: text differs
+    oracle: "625\n"
+    brink:  "\n"
+  step 2: extra ("625\n")

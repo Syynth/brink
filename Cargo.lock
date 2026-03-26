@@ -398,11 +398,15 @@ dependencies = [
 name = "brink-test-harness"
 version = "0.0.1"
 dependencies = [
+ "brink-analyzer",
+ "brink-codegen-inkb",
  "brink-compiler",
  "brink-converter",
  "brink-format",
+ "brink-ir",
  "brink-json",
  "brink-runtime",
+ "brink-syntax",
  "insta",
  "serde",
  "serde_json",

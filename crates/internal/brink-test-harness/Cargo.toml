@@ -18,6 +18,10 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+brink-syntax = { path = "../brink-syntax" }
+brink-ir = { path = "../brink-ir" }
+brink-analyzer = { path = "../brink-analyzer" }
+brink-codegen-inkb = { path = "../brink-codegen-inkb" }
 
 [lints]
 workspace = true
