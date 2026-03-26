@@ -70,12 +70,17 @@ impl NameTable {
 /// (root, choice targets, unlabeled gathers).
 pub struct IdAllocator {
     used: HashMap<String, DefinitionId>,
+    /// Global counter for conditionals and sequences. Never resets —
+    /// shared between the plan phase and lowering phase to ensure
+    /// unique container paths across all sub-scopes.
+    seq_counter: usize,
 }
 
 impl IdAllocator {
     pub fn new() -> Self {
         Self {
             used: HashMap::new(),
+            seq_counter: 0,
         }
     }
 
@@ -88,6 +93,23 @@ impl IdAllocator {
         let id = DefinitionId::new(DefinitionTag::Address, hash);
         self.used.insert(path.to_string(), id);
         id
+    }
+
+    /// Allocate the next sequential index for a conditional or sequence scope.
+    /// This counter never resets when entering sub-scopes within a knot/stitch,
+    /// ensuring unique paths like `b-0`, `b-1`, etc. It resets at knot/stitch
+    /// boundaries via [`reset_seq_counter`], since scope paths are qualified
+    /// by knot name (e.g., `"start.b-0"` can't collide with `"waited.b-0"`).
+    pub fn next_seq_index(&mut self) -> usize {
+        let idx = self.seq_counter;
+        self.seq_counter += 1;
+        idx
+    }
+
+    /// Reset the sequential index counter. Called at knot/stitch boundaries
+    /// where the scope path prefix changes.
+    pub fn reset_seq_counter(&mut self) {
+        self.seq_counter = 0;
     }
 }
 

@@ -2223,14 +2223,23 @@ fn multiple_interpolations_recognized() {
 }
 
 #[test]
-fn interpolation_only_recognized() {
+fn interpolation_only_not_recognized_as_template() {
+    // Single interpolation with no surrounding text should NOT be a Template —
+    // it falls through to EmitContent, which uses emit_value (correctly
+    // suppresses null/void results).
     let program = lower_ink("VAR x = 1\n{x}\n");
     let body = &root(&program).body;
-    let (parts, slot_count) =
-        find_template(body).expect("single interpolation should be recognized as Template");
-    assert_eq!(slot_count, 1);
-    assert_eq!(parts.len(), 1);
-    assert!(matches!(&parts[0], brink_format::LinePart::Slot(0)));
+    let has_template = find_template(body).is_some();
+    assert!(
+        !has_template,
+        "slot-only content {{x}} should NOT be recognized as Template"
+    );
+    // Should be EmitContent instead.
+    let has_emit_content = body.iter().any(|s| matches!(s, lir::Stmt::EmitContent(_)));
+    assert!(
+        has_emit_content,
+        "slot-only content should fall through to EmitContent"
+    );
 }
 
 #[test]
@@ -2584,6 +2593,121 @@ fn text_with_interpolation_recognized_as_template() {
     assert!(
         has_template,
         "content with non-whitespace text + interpolation should be Template",
+    );
+}
+
+// ─── Container DefinitionId uniqueness ───────────────────────────────
+//
+// Every container in the LIR must have a unique DefinitionId. Collisions
+// cause the linker to map multiple containers to the same ID, and the
+// last-write-wins HashMap behavior silently resolves to the wrong
+// container at runtime.
+
+/// Collect all container `DefinitionId`s recursively.
+fn collect_ids(container: &lir::Container, out: &mut Vec<(brink_format::DefinitionId, String)>) {
+    let name = container.name.as_deref().unwrap_or("(anon)");
+    out.push((container.id, name.to_string()));
+    for child in &container.children {
+        collect_ids(child, out);
+    }
+}
+
+#[test]
+fn no_definition_id_collisions_in_simple_story() {
+    // Two gathers at the same scope, each containing a conditional.
+    // Each conditional's branches must get unique IDs.
+    let p = lower_ink(
+        "\
+=== start ===
+* [A] -> gather_a
+* [B] -> gather_b
+- (gather_a)
+  { true:
+    branch a1
+  - else:
+    branch a2
+  }
+  -> DONE
+- (gather_b)
+  { true:
+    branch b1
+  - else:
+    branch b2
+  }
+  -> DONE
+",
+    );
+
+    let mut ids = Vec::new();
+    collect_ids(&p.root, &mut ids);
+
+    // Check for duplicates
+    let mut seen: std::collections::HashMap<brink_format::DefinitionId, Vec<&str>> =
+        std::collections::HashMap::new();
+    let mut collisions = Vec::new();
+    for (id, name) in &ids {
+        seen.entry(*id).or_default().push(name.as_str());
+    }
+    for (id, names) in &seen {
+        if names.len() > 1 {
+            collisions.push(format!("{id:?} -> {names:?}"));
+        }
+    }
+    assert!(
+        collisions.is_empty(),
+        "DefinitionId collisions found: {collisions:#?}",
+    );
+}
+
+#[test]
+fn no_definition_id_collisions_in_intercept_pattern() {
+    // The TheIntercept pattern: nested choice sets with conditionals
+    // at multiple gather points.
+    let p = lower_ink(
+        "\
+VAR teacup = false
+=== start ===
+- greeting
+    * [Take cup]
+        ~ teacup = true
+        took cup
+    * [Leave it]
+        left it
+- middle text
+    * [Agree]
+        reply A
+    * [Disagree]
+        reply B
+- { teacup:
+    <>, with teacup
+  }
+  <>.
+-
+    * [Watch]
+        watching
+    * [Wait]
+        waiting
+- done
+",
+    );
+
+    let mut ids = Vec::new();
+    collect_ids(&p.root, &mut ids);
+
+    let mut seen: std::collections::HashMap<brink_format::DefinitionId, Vec<&str>> =
+        std::collections::HashMap::new();
+    let mut collisions = Vec::new();
+    for (id, name) in &ids {
+        seen.entry(*id).or_default().push(name.as_str());
+    }
+    for (id, names) in &seen {
+        if names.len() > 1 {
+            collisions.push(format!("{id:?} -> {names:?}"));
+        }
+    }
+    assert!(
+        collisions.is_empty(),
+        "DefinitionId collisions found: {collisions:#?}",
     );
 }
 

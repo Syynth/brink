@@ -25,14 +25,14 @@ passing: 0/1000
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -55,11 +55,11 @@ passing: 0/1000
 > "Your home crumbles.\n" [Choices: "now this is bad." (0) -> 0]
 > "now this is bad.\n" [Continue]
 > "Twe wolves are coming.\n" [Continue]
-> "5 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "5 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "4 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "3 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
+> "3 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 outcome: InputsExhausted
@@ -74,16 +74,16 @@ outcome: InputsExhausted
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -147,11 +147,11 @@ outcome: InputsExhausted
   step 45: text differs
     oracle: "4 minutes before wolves eat you.\n"
     brink:  "Twe wolves are coming.\n"
-  step 46: extra ("5 minutes before wolves eat you.\n")
+  step 46: extra ("5 minutes before beasts appear.\n")
   step 47: extra ("dream on...\n")
-  step 48: extra ("4 minutes before beasts appear.\n")
+  step 48: extra ("4 minutes before wolves eat you.\n")
   step 49: extra ("dream on...\n")
-  step 50: extra ("3 minutes before wolves arrive.\n")
+  step 50: extra ("3 minutes before hungry wolves will be here.\n")
   step 51: extra ("dream on...\n")
   step 52: extra ("2 minutes before wolves arrive.\n")
 
@@ -172,14 +172,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -202,11 +202,11 @@ outcome: InputsExhausted
 > "Your home crumbles.\n" [Choices: "now this is bad." (0) -> 0]
 > "now this is bad.\n" [Continue]
 > "Twe wolves are coming.\n" [Continue]
-> "5 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "5 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "4 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "3 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
+> "3 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 outcome: InputsExhausted
@@ -227,7 +227,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 17: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -242,10 +242,10 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -309,11 +309,11 @@ outcome: InputsExhausted
   step 45: text differs
     oracle: "4 minutes before wolves eat you.\n"
     brink:  "Twe wolves are coming.\n"
-  step 46: extra ("5 minutes before wolves eat you.\n")
+  step 46: extra ("5 minutes before beasts appear.\n")
   step 47: extra ("dream on...\n")
-  step 48: extra ("4 minutes before beasts appear.\n")
+  step 48: extra ("4 minutes before wolves eat you.\n")
   step 49: extra ("dream on...\n")
-  step 50: extra ("3 minutes before wolves arrive.\n")
+  step 50: extra ("3 minutes before hungry wolves will be here.\n")
   step 51: extra ("dream on...\n")
   step 52: extra ("2 minutes before wolves arrive.\n")
 
@@ -334,14 +334,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -384,7 +384,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 17: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -399,10 +399,10 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -486,14 +486,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -536,7 +536,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 17: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -551,10 +551,10 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -640,14 +640,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -690,7 +690,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 17: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -705,10 +705,10 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -796,14 +796,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -846,7 +846,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 17: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -861,10 +861,10 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -950,14 +950,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -1000,7 +1000,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 17: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -1015,10 +1015,10 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -1106,14 +1106,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -1158,7 +1158,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 17: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -1173,10 +1173,10 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -1264,14 +1264,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -1316,7 +1316,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 17: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -1331,10 +1331,10 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -1424,14 +1424,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -1454,11 +1454,11 @@ outcome: InputsExhausted
 > "Your home crumbles.\n" [Choices: "now this is bad." (0) -> 0]
 > "now this is bad.\n" [Continue]
 > "Twe wolves are coming.\n" [Continue]
-> "5 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "5 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "4 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "3 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
+> "3 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 outcome: InputsExhausted
@@ -1479,7 +1479,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
@@ -1488,7 +1488,7 @@ outcome: InputsExhausted
     brink:  "dream on...\n"
   step 20: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
@@ -1497,7 +1497,7 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -1561,11 +1561,11 @@ outcome: InputsExhausted
   step 45: text differs
     oracle: "4 minutes before wolves eat you.\n"
     brink:  "Twe wolves are coming.\n"
-  step 46: extra ("5 minutes before wolves eat you.\n")
+  step 46: extra ("5 minutes before beasts appear.\n")
   step 47: extra ("dream on...\n")
-  step 48: extra ("4 minutes before beasts appear.\n")
+  step 48: extra ("4 minutes before wolves eat you.\n")
   step 49: extra ("dream on...\n")
-  step 50: extra ("3 minutes before wolves arrive.\n")
+  step 50: extra ("3 minutes before hungry wolves will be here.\n")
   step 51: extra ("dream on...\n")
   step 52: extra ("2 minutes before wolves arrive.\n")
 
@@ -1586,14 +1586,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -1636,7 +1636,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
@@ -1645,7 +1645,7 @@ outcome: InputsExhausted
     brink:  "dream on...\n"
   step 20: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
@@ -1654,7 +1654,7 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -1738,14 +1738,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -1788,7 +1788,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
@@ -1797,7 +1797,7 @@ outcome: InputsExhausted
     brink:  "dream on...\n"
   step 20: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
@@ -1806,7 +1806,7 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -1892,14 +1892,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -1942,7 +1942,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
@@ -1951,7 +1951,7 @@ outcome: InputsExhausted
     brink:  "dream on...\n"
   step 20: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
@@ -1960,7 +1960,7 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -2048,14 +2048,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -2098,7 +2098,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
@@ -2107,7 +2107,7 @@ outcome: InputsExhausted
     brink:  "dream on...\n"
   step 20: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
@@ -2116,7 +2116,7 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -2202,14 +2202,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -2252,7 +2252,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
@@ -2261,7 +2261,7 @@ outcome: InputsExhausted
     brink:  "dream on...\n"
   step 20: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
@@ -2270,7 +2270,7 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -2358,14 +2358,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -2410,7 +2410,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
@@ -2419,7 +2419,7 @@ outcome: InputsExhausted
     brink:  "dream on...\n"
   step 20: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
@@ -2428,7 +2428,7 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -2516,14 +2516,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -2568,7 +2568,7 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
@@ -2577,7 +2577,7 @@ outcome: InputsExhausted
     brink:  "dream on...\n"
   step 20: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
@@ -2586,7 +2586,7 @@ outcome: InputsExhausted
     brink:  "nowhere to run\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -2676,13 +2676,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "# CLEAR\n" [Continue]
@@ -2706,11 +2706,11 @@ outcome: InputsExhausted
 > "Your home crumbles.\n" [Choices: "now this is bad." (0) -> 0]
 > "now this is bad.\n" [Continue]
 > "Twe wolves are coming.\n" [Continue]
-> "5 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "5 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "4 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "3 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
+> "3 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 outcome: InputsExhausted
@@ -2731,19 +2731,19 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
   step 22: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
     brink:  "run\n"
@@ -2813,11 +2813,11 @@ outcome: InputsExhausted
   step 45: text differs
     oracle: "4 minutes before wolves eat you.\n"
     brink:  "Twe wolves are coming.\n"
-  step 46: extra ("5 minutes before wolves eat you.\n")
+  step 46: extra ("5 minutes before beasts appear.\n")
   step 47: extra ("dream on...\n")
-  step 48: extra ("4 minutes before beasts appear.\n")
+  step 48: extra ("4 minutes before wolves eat you.\n")
   step 49: extra ("dream on...\n")
-  step 50: extra ("3 minutes before wolves arrive.\n")
+  step 50: extra ("3 minutes before hungry wolves will be here.\n")
   step 51: extra ("dream on...\n")
   step 52: extra ("2 minutes before wolves arrive.\n")
 
@@ -2838,14 +2838,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -2882,16 +2882,16 @@ outcome: InputsExhausted
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -2975,14 +2975,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -3019,16 +3019,16 @@ outcome: InputsExhausted
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -3114,14 +3114,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -3158,16 +3158,16 @@ outcome: InputsExhausted
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -3255,13 +3255,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "# CLEAR\n" [Continue]
@@ -3305,19 +3305,19 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
   step 22: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
     brink:  "run\n"
@@ -3407,13 +3407,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "# CLEAR\n" [Continue]
@@ -3457,19 +3457,19 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
   step 22: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
     brink:  "run\n"
@@ -3561,13 +3561,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "# CLEAR\n" [Continue]
@@ -3611,19 +3611,19 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
   step 22: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
     brink:  "run\n"
@@ -3717,13 +3717,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "# CLEAR\n" [Continue]
@@ -3767,19 +3767,19 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
   step 22: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
     brink:  "run\n"
@@ -3871,13 +3871,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "# CLEAR\n" [Continue]
@@ -3921,19 +3921,19 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
   step 22: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
     brink:  "run\n"
@@ -4027,13 +4027,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "# CLEAR\n" [Continue]
@@ -4079,19 +4079,19 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
   step 22: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
     brink:  "run\n"
@@ -4185,13 +4185,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "# CLEAR\n" [Continue]
@@ -4237,19 +4237,19 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
   step 22: text differs
     oracle: "nowhere to hide.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
     brink:  "run\n"
@@ -4345,13 +4345,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -4374,12 +4374,12 @@ outcome: InputsExhausted
 > "Your home crumbles.\n" [Choices: "now this is bad." (0) -> 0]
 > "now this is bad.\n" [Continue]
 > "Twe wolves are coming.\n" [Continue]
-> "5 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "5 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
-> "4 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "3 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
+> "3 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 outcome: InputsExhausted
@@ -4400,16 +4400,16 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 22: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -4478,12 +4478,12 @@ outcome: InputsExhausted
     brink:  "Twe wolves are coming.\n"
   step 45: text differs
     oracle: "4 minutes before wolves eat you.\n"
-    brink:  "5 minutes before wolves eat you.\n"
+    brink:  "5 minutes before beasts appear.\n"
   step 46: extra ("run\n")
   step 47: extra ("nowhere to run\n")
-  step 48: extra ("4 minutes before beasts appear.\n")
+  step 48: extra ("4 minutes before wolves eat you.\n")
   step 49: extra ("dream on...\n")
-  step 50: extra ("3 minutes before wolves arrive.\n")
+  step 50: extra ("3 minutes before hungry wolves will be here.\n")
   step 51: extra ("dream on...\n")
   step 52: extra ("2 minutes before wolves arrive.\n")
 
@@ -4504,14 +4504,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -4548,16 +4548,16 @@ outcome: InputsExhausted
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -4643,14 +4643,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -4687,16 +4687,16 @@ outcome: InputsExhausted
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -4784,14 +4784,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -4830,16 +4830,16 @@ outcome: InputsExhausted
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"
@@ -4927,13 +4927,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -4976,16 +4976,16 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 22: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -5074,13 +5074,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -5123,16 +5123,16 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 22: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -5223,13 +5223,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -5272,16 +5272,16 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 22: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -5373,13 +5373,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -5422,16 +5422,16 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 22: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -5522,13 +5522,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -5571,16 +5571,16 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 22: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -5672,13 +5672,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -5723,16 +5723,16 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 22: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -5825,13 +5825,13 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "2 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "run" (0), "dream" (1) -> 1]
+> "1 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 1]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -5876,16 +5876,16 @@ outcome: InputsExhausted
     brink:  "nowhere to hide.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 20: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 22: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -5980,14 +5980,14 @@ outcome: InputsExhausted
 > "5 minutes before hungry wolves will be here.\n" [Choices: "find shelter" (0), "run" (1), "dream" (2) -> 0]
 > "find shelter\n" [Continue]
 > "nowhere to hide.\n" [Continue]
-> "4 minutes before wolves arrive.\n" [Choices: "run" (0), "dream" (1) -> 0]
+> "4 minutes before wolves eat you.\n" [Choices: "run" (0), "dream" (1) -> 0]
 > "run\n" [Continue]
 > "nowhere to run\n" [Continue]
 > "3 minutes before beasts appear.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "2 minutes before wolves eat you.\n" [Choices: "dream" (0) -> 0]
+> "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
-> "1 minutes before hungry wolves will be here.\n" [Choices: "dream" (0) -> 0]
+> "1 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 > "dream on...\n" [Continue]
 > "# CLEAR\n" [Continue]
 > "# CLASS: end\n" [Continue]
@@ -6026,16 +6026,16 @@ outcome: InputsExhausted
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
-    brink:  "4 minutes before wolves arrive.\n"
+    brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
     oracle: "3 minutes before wolves eat you.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 21: text differs
     oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves eat you.\n"
+    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "1 minutes before beasts appear.\n"
-    brink:  "1 minutes before hungry wolves will be here.\n"
+    brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
     brink:  "# CLEAR\n"

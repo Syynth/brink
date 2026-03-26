@@ -56,6 +56,7 @@ pub fn plan_containers(
 
     for &(file_id, hir_file) in files {
         // Root content gets choice/gather containers
+        ids.reset_seq_counter();
         plan_block_choices(&hir_file.root_content, file_id, "", index, ids, &mut plan);
 
         for knot in &hir_file.knots {
@@ -65,6 +66,7 @@ pub fn plan_containers(
 
             plan.knot_ids.insert(knot_path.clone(), knot_id);
 
+            ids.reset_seq_counter();
             plan_block_choices(&knot.body, file_id, knot_path, index, ids, &mut plan);
 
             for stitch in &knot.stitches {
@@ -74,6 +76,7 @@ pub fn plan_containers(
 
                 plan.stitch_ids.insert(stitch_path.clone(), stitch_id);
 
+                ids.reset_seq_counter();
                 plan_block_choices(&stitch.body, file_id, &stitch_path, index, ids, &mut plan);
             }
         }
@@ -92,7 +95,6 @@ fn plan_block_choices(
 ) {
     let mut choice_counter = 0usize;
     let mut gather_counter = 0usize;
-    let mut seq_counter = 0usize;
 
     for stmt in &block.stmts {
         plan_stmt_choices(
@@ -104,7 +106,6 @@ fn plan_block_choices(
             plan,
             &mut choice_counter,
             &mut gather_counter,
-            &mut seq_counter,
         );
     }
 }
@@ -119,7 +120,6 @@ fn plan_stmt_choices(
     plan: &mut ContainerPlan,
     choice_counter: &mut usize,
     gather_counter: &mut usize,
-    seq_counter: &mut usize,
 ) {
     match stmt {
         hir::Stmt::ChoiceSet(choice_set) => {
@@ -169,7 +169,6 @@ fn plan_stmt_choices(
                 // Recursively plan nested choices within choice bodies
                 let mut nested_choice_counter = 0usize;
                 let mut nested_gather_counter = 0usize;
-                let mut nested_seq_counter = 0usize;
                 for body_stmt in &choice.body.stmts {
                     plan_stmt_choices(
                         body_stmt,
@@ -180,7 +179,6 @@ fn plan_stmt_choices(
                         plan,
                         &mut nested_choice_counter,
                         &mut nested_gather_counter,
-                        &mut nested_seq_counter,
                     );
                 }
             }
@@ -196,7 +194,6 @@ fn plan_stmt_choices(
                     plan,
                     choice_counter,
                     gather_counter,
-                    seq_counter,
                 );
             }
         }
@@ -227,15 +224,13 @@ fn plan_stmt_choices(
                     plan,
                     choice_counter,
                     gather_counter,
-                    seq_counter,
                 );
             }
         }
         hir::Stmt::Conditional(cond) => {
             // Push scope path per-branch to match the lowering phase, which
             // uses `b-N.{branch_idx}` sub-scopes for conditional branches.
-            let cond_idx = *seq_counter;
-            *seq_counter += 1;
+            let cond_idx = ids.next_seq_index();
             let cond_scope = format!("b-{cond_idx}");
 
             for (branch_idx, branch) in cond.branches.iter().enumerate() {
@@ -248,7 +243,6 @@ fn plan_stmt_choices(
                 // Pass through parent choice/gather counters — a ChoiceSet
                 // inside a conditional shares the enclosing scope and must
                 // not collide with sibling gathers/choices.
-                let mut sc = 0;
                 for s in &branch.body.stmts {
                     plan_stmt_choices(
                         s,
@@ -259,7 +253,6 @@ fn plan_stmt_choices(
                         plan,
                         choice_counter,
                         gather_counter,
-                        &mut sc,
                     );
                 }
             }
@@ -267,8 +260,8 @@ fn plan_stmt_choices(
         hir::Stmt::Sequence(seq) => {
             // Push scope path to match the lowering phase, which uses
             // `s-N` sub-scopes for sequence branches.
-            let display_name = format!("s-{seq_counter}");
-            *seq_counter += 1;
+            let seq_idx = ids.next_seq_index();
+            let display_name = format!("s-{seq_idx}");
             let child_scope = if scope_path.is_empty() {
                 display_name
             } else {
@@ -277,19 +270,8 @@ fn plan_stmt_choices(
             for branch in &seq.branches {
                 let mut bc = 0;
                 let mut bg = 0;
-                let mut sc = 0;
                 for s in &branch.stmts {
-                    plan_stmt_choices(
-                        s,
-                        file,
-                        &child_scope,
-                        index,
-                        ids,
-                        plan,
-                        &mut bc,
-                        &mut bg,
-                        &mut sc,
-                    );
+                    plan_stmt_choices(s, file, &child_scope, index, ids, plan, &mut bc, &mut bg);
                 }
             }
         }

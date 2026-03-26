@@ -122,15 +122,9 @@ fn lower_root(
         );
         let mut cc = 0;
         let mut gc = 0;
-        let mut sc = 0;
-        let (stmts, mut block_children) = lower_block_with_children(
-            &hir_file.root_content,
-            &mut ctx,
-            plan,
-            &mut cc,
-            &mut gc,
-            &mut sc,
-        );
+        ctx.ids.reset_seq_counter();
+        let (stmts, mut block_children) =
+            lower_block_with_children(&hir_file.root_content, &mut ctx, plan, &mut cc, &mut gc);
         body.extend(stmts);
         children.append(&mut block_children);
 
@@ -218,9 +212,9 @@ fn lower_knot(
     );
     let mut cc = 0;
     let mut gc = 0;
-    let mut sc = 0;
+    ctx.ids.reset_seq_counter();
     let (body, mut children) =
-        lower_block_with_children(&knot.body, &mut ctx, plan, &mut cc, &mut gc, &mut sc);
+        lower_block_with_children(&knot.body, &mut ctx, plan, &mut cc, &mut gc);
 
     // Add stitches as children
     for stitch in &knot.stitches {
@@ -304,9 +298,9 @@ fn lower_stitch(
     );
     let mut cc = 0;
     let mut gc = 0;
-    let mut sc = 0;
+    ctx.ids.reset_seq_counter();
     let (body, children) =
-        lower_block_with_children(&stitch.body, &mut ctx, plan, &mut cc, &mut gc, &mut sc);
+        lower_block_with_children(&stitch.body, &mut ctx, plan, &mut cc, &mut gc);
 
     lir::Container {
         id: stitch_id,
@@ -335,7 +329,6 @@ fn lower_block_with_children(
     plan: &plan::ContainerPlan,
     choice_counter: &mut usize,
     gather_counter: &mut usize,
-    seq_counter: &mut usize,
 ) -> (Vec<lir::Stmt>, Vec<lir::Container>) {
     let mut stmts = Vec::new();
     let mut children = Vec::new();
@@ -410,15 +403,8 @@ fn lower_block_with_children(
                     .is_some_and(|label| ctx.lookup_address_id(&label.text).is_some());
 
                 // Lower the labeled block's contents
-                let mut inner_sc = 0;
-                let (inner_stmts, inner_children) = lower_block_with_children(
-                    labeled,
-                    ctx,
-                    plan,
-                    choice_counter,
-                    gather_counter,
-                    &mut inner_sc,
-                );
+                let (inner_stmts, inner_children) =
+                    lower_block_with_children(labeled, ctx, plan, choice_counter, gather_counter);
 
                 children.push(lir::Container {
                     id: wrapper_id,
@@ -454,8 +440,7 @@ fn lower_block_with_children(
                     }
                 };
 
-                let cond_idx = *seq_counter;
-                *seq_counter += 1;
+                let cond_idx = ctx.ids.next_seq_index();
 
                 // Push a scope prefix for this conditional so nested
                 // conditionals inside branches get unique container paths.
@@ -481,14 +466,12 @@ fn lower_block_with_children(
                         // Pass through parent choice/gather counters — a ChoiceSet
                         // inside a conditional shares the enclosing scope and must
                         // not collide with sibling gathers/choices.
-                        let mut sc2 = 0;
                         let (body, branch_children) = lower_block_with_children(
                             &b.body,
                             ctx,
                             plan,
                             choice_counter,
                             gather_counter,
-                            &mut sc2,
                         );
 
                         // Create a child container for this branch
@@ -530,13 +513,13 @@ fn lower_block_with_children(
             }
             hir::Stmt::Sequence(seq) => {
                 // Allocate a wrapper container for this sequence.
-                let wrapper_id = ctx.alloc_sequence_id(*seq_counter);
-                *seq_counter += 1;
+                let seq_idx = ctx.ids.next_seq_index();
+                let wrapper_id = ctx.alloc_sequence_id(seq_idx);
 
                 // Push the wrapper's name onto the scope path so that nested
                 // sequences inside branches get unique IDs (e.g. `scope.s-0.s-0`
                 // instead of colliding with the parent's `scope.s-0`).
-                let display_name = format!("s-{}", *seq_counter - 1);
+                let display_name = format!("s-{seq_idx}");
                 let old_scope = ctx.scope_path.clone();
                 ctx.scope_path = if old_scope.is_empty() {
                     display_name.clone()
@@ -556,9 +539,8 @@ fn lower_block_with_children(
                     .map(|(branch_idx, b)| {
                         let mut bc = 0;
                         let mut gc = 0;
-                        let mut sc2 = 0;
                         let (body, branch_children) =
-                            lower_block_with_children(b, ctx, plan, &mut bc, &mut gc, &mut sc2);
+                            lower_block_with_children(b, ctx, plan, &mut bc, &mut gc);
 
                         // Allocate a child container for this branch
                         let branch_path = if ctx.scope_path.is_empty() {
@@ -701,15 +683,8 @@ fn build_continuation_container(
     }
 
     // Lower continuation stmts — may contain nested ChoiceSets (gather-choice chains)
-    let mut sc = 0;
-    let (body, children) = lower_block_with_children(
-        continuation,
-        ctx,
-        plan,
-        choice_counter,
-        gather_counter,
-        &mut sc,
-    );
+    let (body, children) =
+        lower_block_with_children(continuation, ctx, plan, choice_counter, gather_counter);
 
     lir::Container {
         id,
@@ -811,9 +786,8 @@ fn lower_choice_with_child(
     ctx.scope_path = format!("{}.c{}", old_scope, *choice_counter - 1);
     let mut cc = 0;
     let mut gc = 0;
-    let mut sc = 0;
     let (body_stmts, mut children) =
-        lower_block_with_children(&choice.body, ctx, plan, &mut cc, &mut gc, &mut sc);
+        lower_block_with_children(&choice.body, ctx, plan, &mut cc, &mut gc);
     ctx.scope_path = old_scope;
 
     // Build the choice target container body. The output after selecting
