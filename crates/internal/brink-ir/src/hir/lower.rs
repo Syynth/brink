@@ -1176,6 +1176,7 @@ impl LowerCtx {
                     }
                 }
                 SyntaxKind::NEWLINE => {
+                    let was_multiline = is_multiline;
                     is_multiline = true;
                     if !parts.is_empty() {
                         let ends_glue = content_ends_with_glue(&parts);
@@ -1186,6 +1187,12 @@ impl LowerCtx {
                     } else if stmts.last().is_some_and(|s| matches!(s, Stmt::Content(_))) {
                         // A CONTENT_LINE already flushed content and cleared
                         // parts. Emit the EndOfLine that the newline represents.
+                        stmts.push(Stmt::EndOfLine);
+                    } else if !was_multiline {
+                        // First newline in a multiline branchless body — emit
+                        // the leading EndOfLine that separates the condition's
+                        // output (e.g. function side effects) from the branch
+                        // content. Matches inklecate's `\n` at branch start.
                         stmts.push(Stmt::EndOfLine);
                     }
                 }

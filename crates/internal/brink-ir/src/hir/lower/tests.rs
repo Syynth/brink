@@ -2838,6 +2838,54 @@ fn logic_line_temp_decl_with_call_emits_end_of_line() {
 }
 
 #[test]
+fn i037_multiline_conditional_branch_has_leading_endofline() {
+    // In inklecate, multiline conditional branches start with \n:
+    //   { "b": ["\n", "^x", "\n", ...] }
+    // The \n separates the condition's function output from the branch content.
+    let (hir, _, diags) = lower_ink(
+        "\
+{isTrue():
+    x
+}
+=== function isTrue()
+    X
+    ~ return true
+",
+    );
+    assert!(diags.is_empty(), "diags: {diags:?}");
+
+    // Find the conditional
+    let cond = hir.root_content.stmts.iter().find_map(|s| {
+        if let Stmt::Conditional(c) = s {
+            Some(c)
+        } else {
+            None
+        }
+    });
+    let cond = cond.expect("should have a conditional in I037");
+
+    // The first branch body should start with EndOfLine (the leading \n)
+    let branch = &cond.branches[0];
+    let names: Vec<_> = branch
+        .body
+        .stmts
+        .iter()
+        .map(|s| match s {
+            Stmt::Content(_) => "Content",
+            Stmt::EndOfLine => "EndOfLine",
+            Stmt::ExprStmt(_) => "ExprStmt",
+            _ => "other",
+        })
+        .collect();
+    println!("I037 branch body stmts: {names:?}");
+
+    assert!(
+        matches!(branch.body.stmts.first(), Some(Stmt::EndOfLine)),
+        "multiline conditional branch should start with EndOfLine, got: {names:?}",
+    );
+}
+
+#[test]
 fn logic_line_assignment_with_call_emits_end_of_line() {
     // `~ x = func()` — assignment with a function call expression.
     // Same rule: inklecate emits \n when the expression has a call.

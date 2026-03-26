@@ -36,6 +36,17 @@ const I008_FIXTURE: &str = "\
 ~x = 3
 ";
 
+/// I037: function call in conditional expression — function output
+/// should be a separate line from the conditional body.
+const I037_FIXTURE: &str = "\
+{isTrue():
+    x
+}
+=== function isTrue()
+    X
+    ~ return true
+";
+
 /// Simple case: expression statement function call that DOES produce
 /// output, followed by content. The EndOfLine after the function call
 /// should create a line boundary.
@@ -443,6 +454,52 @@ VAR globalVal = 5
         "squaresquare's whitespace-only template should not be recognized; \
          second line should be '625\\n', not a spurious newline",
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// I037: function call in conditional expression
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn runtime_i037_function_output_separate_from_conditional_body() {
+    // {isTrue(): x} where isTrue() prints "X" and returns true.
+    // Oracle: step 0 = "X\n", step 1 = "x\n"
+    // Brink bug: produces "Xx\n" (concatenated)
+    let data = compile_to_story_data(I037_FIXTURE);
+    let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+
+    let line1 = story.continue_single().expect("continue_single 1");
+    let text1 = match &line1 {
+        brink_runtime::Line::Text { text, .. } => text.as_str(),
+        other => panic!("expected Text, got {other:?}"),
+    };
+    assert_eq!(
+        text1, "X\n",
+        "function output from conditional expression should be its own line",
+    );
+
+    let line2 = story.continue_single().expect("continue_single 2");
+    let text2 = match &line2 {
+        brink_runtime::Line::Text { text, .. }
+        | brink_runtime::Line::Done { text, .. }
+        | brink_runtime::Line::End { text, .. } => text.as_str(),
+        other => panic!("expected text, got {other:?}"),
+    };
+    assert_eq!(
+        text2, "x\n",
+        "conditional body should be its own line after function output",
+    );
+}
+
+#[test]
+fn inkt_i037_branch_body_starts_with_newline() {
+    // The inklecate output has \n at the START of the branch body.
+    // Brink's compiled bytecode should have EmitNewline at the start
+    // of the conditional branch container.
+    let data = compile_to_story_data(I037_FIXTURE);
+    let inkt = dump_inkt(&data);
+    println!("=== I037 .inkt ===\n{inkt}");
 }
 
 // ═══════════════════════════════════════════════════════════════════════

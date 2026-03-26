@@ -384,6 +384,6 @@ tier3/whitespace/I033-newline-consistency-the-first: PASS (1/1 episodes)
 tier3/whitespace/I034-newline-consistency-the-second: PASS (1/1 episodes)
 tier3/whitespace/I035-newline-consistency-the-third: PASS (1/1 episodes)
 tier3/whitespace/I036-newlines-with-string-eval: PASS (1/1 episodes)
-tier3/whitespace/I037-newline-at-start-of-multiline-conditional: FAIL (0/1 episodes, 1 mismatch)
+tier3/whitespace/I037-newline-at-start-of-multiline-conditional: PASS (1/1 episodes)
 tier3/whitespace/comment-eliminator-mixed-newlines: SKIP
 tier3/whitespace/whitespace: PASS (1/1 episodes)
