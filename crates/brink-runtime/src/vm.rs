@@ -1080,9 +1080,9 @@ fn handle_frame_exhaustion(
 ///   it as a `Value::String`.
 fn pop_call_frame(
     flow: &mut Flow,
-    program: &Program,
-    line_tables: &[Vec<LineEntry>],
-    resolver: Option<&dyn PluralResolver>,
+    _program: &Program,
+    _line_tables: &[Vec<LineEntry>],
+    _resolver: Option<&dyn PluralResolver>,
     stats: &mut Stats,
     is_explicit_return: bool,
 ) -> Result<(), RuntimeError> {
@@ -1097,8 +1097,7 @@ fn pop_call_frame(
         // Trim trailing whitespace from the function's output region,
         // matching the C# runtime's TrimWhitespaceFromFunctionEnd.
         if let Some(start) = popped.function_output_start {
-            flow.output
-                .trim_function_end(start, program, line_tables, resolver);
+            flow.output.trim_function_end(start);
         }
         if !is_explicit_return {
             // Implicit return: function returns void.
