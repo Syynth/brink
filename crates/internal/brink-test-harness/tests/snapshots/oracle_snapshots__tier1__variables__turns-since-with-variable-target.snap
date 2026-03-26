@@ -1,0 +1,13 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/variables/turns-since-with-variable-target
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0] === PASS
+> "0\n" [Continue]
+> "0\n" [Choices: "Choice" (0) -> 0]
+> "1\n" [Ended]
+outcome: Ended

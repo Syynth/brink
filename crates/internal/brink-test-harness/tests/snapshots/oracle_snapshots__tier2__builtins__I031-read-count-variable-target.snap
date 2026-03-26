@@ -1,0 +1,15 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/builtins/I031-read-count-variable-target
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "Count start: 0 0 0\n" [Continue]
+> "1\n" [Continue]
+> "2\n" [Continue]
+> "3\n" [Continue]
+> "Count end: 3 3 3\n" [Ended]
+outcome: Ended

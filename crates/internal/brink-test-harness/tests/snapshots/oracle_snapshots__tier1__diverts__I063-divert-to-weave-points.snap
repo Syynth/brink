@@ -1,0 +1,15 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/diverts/I063-divert-to-weave-points
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "gather\n" [Continue]
+> "test\n" [Continue]
+> "choice content\n" [Continue]
+> "gather\n" [Continue]
+> "second time round\n" [Ended]
+outcome: Ended

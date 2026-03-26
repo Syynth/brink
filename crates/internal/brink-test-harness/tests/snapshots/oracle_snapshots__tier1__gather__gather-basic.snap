@@ -1,0 +1,28 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/gather/gather-basic
+oracle: 3, brink: 3, matched: 3
+passing: 3/3
+
+=== episode [0] === PASS
+> "What's that?\" my master asked.\n" [Choices: "\"I am somewhat tired.\"" (0), "\"Nothing, Monsieur!\"" (1), "\"I said, this journey is appalling.\"" (2) -> 0]
+> "\"I am somewhat tired,\" I repeated.\n" [Continue]
+> "\"Really,\" he responded. \"How deleterious.\"\n" [Continue]
+> "With that Monsieur Fogg left the room.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "What's that?\" my master asked.\n" [Choices: "\"I am somewhat tired.\"" (0), "\"Nothing, Monsieur!\"" (1), "\"I said, this journey is appalling.\"" (2) -> 1]
+> "\"Nothing, Monsieur!\" I replied.\n" [Continue]
+> "\"Very good, then.\"\n" [Continue]
+> "With that Monsieur Fogg left the room.\n" [Ended]
+outcome: Ended
+
+=== episode [2] === PASS
+> "What's that?\" my master asked.\n" [Choices: "\"I am somewhat tired.\"" (0), "\"Nothing, Monsieur!\"" (1), "\"I said, this journey is appalling.\"" (2) -> 2]
+> "\"I said, this journey is appalling and I want no more of it.\"\n" [Continue]
+> "\"Ah,\" he replied, not unkindly. \"I see you are feeling frustrated. Tomorrow, things will improve.\"\n" [Continue]
+> "With that Monsieur Fogg left the room.\n" [Ended]
+outcome: Ended

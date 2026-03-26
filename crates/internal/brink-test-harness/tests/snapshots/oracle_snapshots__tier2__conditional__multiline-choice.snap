@@ -1,0 +1,25 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/conditional/multiline-choice
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0, 0] === PASS
+> "At the table, I drew a card. Ace of Hearts.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card.\n" [Continue]
+> "2 of Diamonds.\n" [Continue]
+> "\"Should I hit you again,\" the croupier asks.\n" [Choices: "No." (0), "Draw a card" (1) -> 0]
+> "I left the table." [Ended]
+outcome: Ended
+
+=== episode [0, 1] === PASS
+> "At the table, I drew a card. Ace of Hearts.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card.\n" [Continue]
+> "2 of Diamonds.\n" [Continue]
+> "\"Should I hit you again,\" the croupier asks.\n" [Choices: "No." (0), "Draw a card" (1) -> 1]
+> "I drew a card.\n" [Continue]
+> "King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Ended]
+outcome: Ended

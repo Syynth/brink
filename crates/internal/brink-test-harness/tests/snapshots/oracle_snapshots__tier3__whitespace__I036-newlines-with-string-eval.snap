@@ -1,0 +1,15 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/whitespace/I036-newlines-with-string-eval
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "A\n" [Continue]
+> "B\n" [Continue]
+> "A\n" [Continue]
+> "3\n" [Continue]
+> "B\n" [Done]
+outcome: Done

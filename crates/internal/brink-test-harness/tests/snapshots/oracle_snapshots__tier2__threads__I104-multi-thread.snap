@@ -1,0 +1,21 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/threads/I104-multi-thread
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0] === PASS
+> "This is place 1.\n" [Continue]
+> "This is place 2.\n" [Choices: "choice in place 1" (0), "choice in place 2" (1) -> 0]
+> "choice in place 1\n" [Continue]
+> "The end\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "This is place 1.\n" [Continue]
+> "This is place 2.\n" [Choices: "choice in place 1" (0), "choice in place 2" (1) -> 1]
+> "choice in place 2\n" [Continue]
+> "The end\n" [Ended]
+outcome: Ended

@@ -1,0 +1,12 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/divert/divert-on-choice
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0] === PASS
+> "You stand by the wall of Analand, sword in hand.\n" [Choices: "Open the gate" (0) -> 0]
+> "You open the gate, and step out onto the path." [Ended]
+outcome: Ended

@@ -1,0 +1,11 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/function/complex-func3
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "\"I will pay you 120 reales if you get the goods to their destination. The goods will take up 20 cargo spaces.\"\n" [Ended]
+outcome: Ended

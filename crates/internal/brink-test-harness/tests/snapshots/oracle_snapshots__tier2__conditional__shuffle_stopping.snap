@@ -1,0 +1,51 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/conditional/shuffle_stopping
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
+> "one\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "two\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "final\n" [Choices: "Try again" (0) -> 0]
+outcome: InputsExhausted

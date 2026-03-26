@@ -1,0 +1,22 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/knot/param-vars
+oracle: 3, brink: 3, matched: 3
+passing: 3/3
+
+=== episode [0] === PASS
+> "How much do you give?\n" [Choices: "$1" (0), "$2" (1), "Nothing" (2) -> 0]
+> "You give 1 dollars.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "How much do you give?\n" [Choices: "$1" (0), "$2" (1), "Nothing" (2) -> 1]
+> "You give 2 dollars.\n" [Ended]
+outcome: Ended
+
+=== episode [2] === PASS
+> "How much do you give?\n" [Choices: "$1" (0), "$2" (1), "Nothing" (2) -> 2]
+> "You give 0 dollars.\n" [Ended]
+outcome: Ended

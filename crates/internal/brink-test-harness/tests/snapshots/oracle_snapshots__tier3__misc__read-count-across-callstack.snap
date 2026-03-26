@@ -1,0 +1,13 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/misc/read-count-across-callstack
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "1) Seen first 1 times.\n" [Continue]
+> "In second.\n" [Continue]
+> "2) Seen first 1 times.\n" [Done]
+outcome: Done

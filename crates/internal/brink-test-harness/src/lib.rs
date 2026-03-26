@@ -10,6 +10,7 @@ pub mod episode;
 pub mod explorer;
 pub mod oracle;
 pub mod runner;
+pub mod snapshot_fmt;
 
 pub use diff::{EpisodeDiff, StepDiff, diff};
 pub use episode::*;

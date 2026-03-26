@@ -1,0 +1,26 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/sequences/blanks-in-inline-sequences
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "1. a\n" [Continue]
+> "2.\n" [Continue]
+> "3. b\n" [Continue]
+> "4. b\n" [Continue]
+> "---\n" [Continue]
+> "1.\n" [Continue]
+> "2. a\n" [Continue]
+> "3. a\n" [Continue]
+> "---\n" [Continue]
+> "1. a\n" [Continue]
+> "2.\n" [Continue]
+> "3.\n" [Continue]
+> "---\n" [Continue]
+> "1.\n" [Continue]
+> "2.\n" [Continue]
+> "3.\n" [Done]
+outcome: Done

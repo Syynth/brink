@@ -1,0 +1,13 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/sequences/I111-empty-sequence-content
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "Wait for it....\n" [Continue]
+> "Surprise!\n" [Continue]
+> "Done.\n" [Done]
+outcome: Done

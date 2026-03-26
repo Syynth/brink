@@ -1,0 +1,22 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/knot/param-strings
+oracle: 3, brink: 3, matched: 3
+passing: 3/3
+
+=== episode [0] === PASS
+> "Who do you accuse?\n" [Choices: "Accuse Hasting" (0), "Accuse Mrs Black" (1), "Accuse myself" (2) -> 0]
+> "\"I accuse Hastings!\" Poirot declared.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "Who do you accuse?\n" [Choices: "Accuse Hasting" (0), "Accuse Mrs Black" (1), "Accuse myself" (2) -> 1]
+> "\"I accuse Claudia!\" Poirot declared.\n" [Ended]
+outcome: Ended
+
+=== episode [2] === PASS
+> "Who do you accuse?\n" [Choices: "Accuse Hasting" (0), "Accuse Mrs Black" (1), "Accuse myself" (2) -> 2]
+> "\"I accuse myself!\" Poirot declared.\n" [Ended]
+outcome: Ended

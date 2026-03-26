@@ -1,0 +1,51 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/conditional/stopping
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
+> "I entered the casino.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I entered the casino again.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Once more, I went inside.\n" [Choices: "Try again" (0) -> 0]
+outcome: InputsExhausted

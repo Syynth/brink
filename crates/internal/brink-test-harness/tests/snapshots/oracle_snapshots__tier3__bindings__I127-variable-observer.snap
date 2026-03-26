@@ -1,0 +1,13 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/bindings/I127-variable-observer
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0] === PASS
+> "Hello world!\n" [Continue]
+> "Hello world 2!\n" [Choices: "choice" (0) -> 0]
+> "choice\n" [Ended]
+outcome: Ended

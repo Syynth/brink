@@ -1,0 +1,12 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/choices/I085-logic-in-choices
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0] === PASS
+> "" [Choices: "'Hello Joe, your name is Joe.'" (0) -> 0]
+> "'Hello Joe,' I said, knowing full well that his name was Joe.\n" [Done]
+outcome: Done

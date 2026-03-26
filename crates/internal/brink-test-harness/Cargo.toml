@@ -16,5 +16,8 @@ brink-compiler = { path = "../../brink-compiler" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+insta = { workspace = true }
+
 [lints]
 workspace = true

@@ -1,0 +1,12 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/logic/I095-multiline-logic-with-glue
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "a b\n" [Continue]
+> "a b\n" [Done]
+outcome: Done

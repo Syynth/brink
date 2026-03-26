@@ -1,0 +1,14 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/knots/I098-knot-thread-interaction-2
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0] === PASS
+> "I’m in a tunnel\n" [Continue]
+> "When should this get printed?\n" [Choices: "I’m an option" (0) -> 0]
+> "I’m an option\n" [Continue]
+> "Finishing thread.\n" [Done]
+outcome: Done

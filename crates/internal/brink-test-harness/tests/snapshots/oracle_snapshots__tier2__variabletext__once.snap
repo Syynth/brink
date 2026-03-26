@@ -1,0 +1,31 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/variabletext/once
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
+> "The radio hissed into life. \"Three!\"\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life. \"Two!\"\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life. \"One!\"\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+> "The radio hissed into life.\n" [Choices: "Again" (0) -> 0]
+outcome: InputsExhausted

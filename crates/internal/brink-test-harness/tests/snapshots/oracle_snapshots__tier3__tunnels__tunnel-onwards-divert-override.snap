@@ -1,0 +1,12 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/tunnels/tunnel-onwards-divert-override
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "This is A\n" [Continue]
+> "Now in B.\n" [Ended]
+outcome: Ended

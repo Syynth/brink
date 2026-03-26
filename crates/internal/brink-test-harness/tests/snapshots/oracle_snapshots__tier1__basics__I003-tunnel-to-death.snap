@@ -1,0 +1,33 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/basics/I003-tunnel-to-death
+oracle: 3, brink: 3, matched: 3
+passing: 2/3
+
+=== episode [0] === PASS
+> "Should you cross the river?\n" [Choices: "Yes" (0), "No" (1) -> 0]
+> "You enter the river but the stream is stronger than you thought.\n" [Continue]
+> "Sadly you've drown in the water.\n" [Ended]
+outcome: Ended
+
+=== episode [1, 0] === FAIL
+> "Should you cross the river?\n" [Choices: "Yes" (0), "No" (1) -> 1]
+> "You follow the path along the river for some time and finally encounter a huge man with a wooden stick.\n" [Continue]
+> "As you start talking to him, he beats you with his weapon.\n" [Choices: "Fight back" (0), "Flee" (1) -> 0]
+> "You can hit the man once before he throws you a punch.\n" [Continue]
+> "You manage to block his fist and finally push him into the river.\n" [Continue]
+> "After this legendary fight, you continue your journey and never look back.\n" [Ended]
+outcome: Ended
+  step 4: text differs
+    oracle: "You've been beaten to death.\n"
+    brink:  "You manage to block his fist and finally push him into the river.\n"
+  step 5: extra ("After this legendary fight, you continue your journey and never look back.\n")
+
+=== episode [1, 1] === PASS
+> "Should you cross the river?\n" [Choices: "Yes" (0), "No" (1) -> 1]
+> "You follow the path along the river for some time and finally encounter a huge man with a wooden stick.\n" [Continue]
+> "As you start talking to him, he beats you with his weapon.\n" [Choices: "Fight back" (0), "Flee" (1) -> 1]
+> "You desperately run for your life and never look back.\n" [Ended]
+outcome: Ended

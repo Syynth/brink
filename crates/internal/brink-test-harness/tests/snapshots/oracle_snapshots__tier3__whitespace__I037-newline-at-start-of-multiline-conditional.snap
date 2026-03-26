@@ -1,0 +1,15 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/whitespace/I037-newline-at-start-of-multiline-conditional
+oracle: 1, brink: 1, matched: 1
+passing: 0/1
+
+=== episode [] === FAIL
+> "Xx\n" [Done]
+outcome: Done
+  step 0: text differs
+    oracle: "X\n"
+    brink:  "Xx\n"
+  step 1: missing (oracle: "x\n")

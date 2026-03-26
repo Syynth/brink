@@ -1,0 +1,17 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/choices/varying-choice
+oracle: 2, brink: 2, matched: 1
+passing: 0/2
+
+=== episode [0, 0] === FAIL
+> "You search desperately for a friendly face in the crowd.\n" [Choices: "The woman in the hat?" (0), "The man with the briefcase?" (1) -> 0]
+> "The woman in the hat pushes you roughly aside. You search desperately for a friendly face in the crowd.\n" [Choices: "The man with the briefcase?" (0) -> 0]
+> "The man with the briefcase looks disgusted as you stumble past him. You search desperately for a friendly face in the crowd.\n" [Done]
+outcome: Done
+  step 2: extra ("The man with the briefcase looks disgusted as you stumble past him. You search desperately for a friendly face in the crowd.\n")
+
+--- missing episodes (1) ---
+[1]

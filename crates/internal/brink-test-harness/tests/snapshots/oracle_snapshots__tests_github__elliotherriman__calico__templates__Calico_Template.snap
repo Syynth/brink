@@ -1,0 +1,19 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tests_github/elliotherriman__calico/templates/Calico_Template
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0] === PASS
+> "Once upon a time...\n" [Choices: "There were two choices." (0), "There were four lines of content." (1) -> 0]
+> "There were two choices.\n" [Continue]
+> "They lived happily ever after.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "Once upon a time...\n" [Choices: "There were two choices." (0), "There were four lines of content." (1) -> 1]
+> "There were four lines of content.\n" [Continue]
+> "They lived happily ever after.\n" [Ended]
+outcome: Ended

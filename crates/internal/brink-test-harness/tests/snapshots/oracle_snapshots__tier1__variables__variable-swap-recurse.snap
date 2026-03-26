@@ -1,0 +1,14 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/variables/variable-swap-recurse
+oracle: 1, brink: 1, matched: 1
+passing: 0/1
+
+=== episode [] === FAIL
+> "1 2" [Done]
+outcome: Done
+  step 0: text differs
+    oracle: "1 2\n"
+    brink:  "1 2"

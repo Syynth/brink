@@ -1,0 +1,67 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/choices/once-only-choices-with-own-content
+oracle: 6, brink: 6, matched: 6
+passing: 6/6
+
+=== episode [0, 0, 0] === PASS
+> "This is the first time.\n" [Choices: "Eat ice-cream" (0), "Drink coke" (1), "Munch cookies" (2) -> 0]
+> "Eat ice-cream\n" [Continue]
+> "This is the second time.\n" [Choices: "Drink coke" (0), "Munch cookies" (1) -> 0]
+> "Drink coke\n" [Continue]
+> "This is the third time.\n" [Choices: "Munch cookies" (0) -> 0]
+> "Munch cookies\n" [Continue]
+> "I've finished eating now.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 1, 0] === PASS
+> "This is the first time.\n" [Choices: "Eat ice-cream" (0), "Drink coke" (1), "Munch cookies" (2) -> 0]
+> "Eat ice-cream\n" [Continue]
+> "This is the second time.\n" [Choices: "Drink coke" (0), "Munch cookies" (1) -> 1]
+> "Munch cookies\n" [Continue]
+> "This is the third time.\n" [Choices: "Drink coke" (0) -> 0]
+> "Drink coke\n" [Continue]
+> "I've finished eating now.\n" [Ended]
+outcome: Ended
+
+=== episode [1, 0, 0] === PASS
+> "This is the first time.\n" [Choices: "Eat ice-cream" (0), "Drink coke" (1), "Munch cookies" (2) -> 1]
+> "Drink coke\n" [Continue]
+> "This is the second time.\n" [Choices: "Eat ice-cream" (0), "Munch cookies" (1) -> 0]
+> "Eat ice-cream\n" [Continue]
+> "This is the third time.\n" [Choices: "Munch cookies" (0) -> 0]
+> "Munch cookies\n" [Continue]
+> "I've finished eating now.\n" [Ended]
+outcome: Ended
+
+=== episode [1, 1, 0] === PASS
+> "This is the first time.\n" [Choices: "Eat ice-cream" (0), "Drink coke" (1), "Munch cookies" (2) -> 1]
+> "Drink coke\n" [Continue]
+> "This is the second time.\n" [Choices: "Eat ice-cream" (0), "Munch cookies" (1) -> 1]
+> "Munch cookies\n" [Continue]
+> "This is the third time.\n" [Choices: "Eat ice-cream" (0) -> 0]
+> "Eat ice-cream\n" [Continue]
+> "I've finished eating now.\n" [Ended]
+outcome: Ended
+
+=== episode [2, 0, 0] === PASS
+> "This is the first time.\n" [Choices: "Eat ice-cream" (0), "Drink coke" (1), "Munch cookies" (2) -> 2]
+> "Munch cookies\n" [Continue]
+> "This is the second time.\n" [Choices: "Eat ice-cream" (0), "Drink coke" (1) -> 0]
+> "Eat ice-cream\n" [Continue]
+> "This is the third time.\n" [Choices: "Drink coke" (0) -> 0]
+> "Drink coke\n" [Continue]
+> "I've finished eating now.\n" [Ended]
+outcome: Ended
+
+=== episode [2, 1, 0] === PASS
+> "This is the first time.\n" [Choices: "Eat ice-cream" (0), "Drink coke" (1), "Munch cookies" (2) -> 2]
+> "Munch cookies\n" [Continue]
+> "This is the second time.\n" [Choices: "Eat ice-cream" (0), "Drink coke" (1) -> 1]
+> "Drink coke\n" [Continue]
+> "This is the third time.\n" [Choices: "Eat ice-cream" (0) -> 0]
+> "Eat ice-cream\n" [Continue]
+> "I've finished eating now.\n" [Ended]
+outcome: Ended

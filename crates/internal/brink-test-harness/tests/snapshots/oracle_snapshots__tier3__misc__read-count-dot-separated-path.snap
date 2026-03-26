@@ -1,0 +1,14 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/misc/read-count-dot-separated-path
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "hi\n" [Continue]
+> "hi\n" [Continue]
+> "hi\n" [Continue]
+> "3\n" [Done]
+outcome: Done

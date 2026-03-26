@@ -1,0 +1,15 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/builtins/I030-nested-turns-since
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0] === PASS
+> "-1 = -1\n" [Choices: "stuff" (0) -> 0]
+> "stuff\n" [Continue]
+> "0 = 0\n" [Choices: "more stuff" (0) -> 0]
+> "more stuff\n" [Continue]
+> "1 = 1\n" [Done]
+outcome: Done

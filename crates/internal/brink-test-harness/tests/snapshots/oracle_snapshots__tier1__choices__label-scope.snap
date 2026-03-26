@@ -1,0 +1,14 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/choices/label-scope
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0] === PASS
+> "" [Choices: "an option" (0) -> 0]
+> "an option\n" [Continue]
+> "Some content.\n" [Choices: "Found gatherpoint" (0) -> 0]
+> "Found gatherpoint\n" [Ended]
+outcome: Ended

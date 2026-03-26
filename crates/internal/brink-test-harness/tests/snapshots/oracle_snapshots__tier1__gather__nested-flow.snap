@@ -1,0 +1,37 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/gather/nested-flow
+oracle: 4, brink: 4, matched: 4
+passing: 4/4
+
+=== episode [0, 0] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 0]
+> "\"Murder!\"\n" [Continue]
+> "\"And who did it?\"\n" [Choices: "\"Detective-Inspector Japp!\"" (0), "\"Captain Hastings!\"" (1), "\"Myself!\"" (2) -> 0]
+> "\"Detective-Inspector Japp!\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 1] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 0]
+> "\"Murder!\"\n" [Continue]
+> "\"And who did it?\"\n" [Choices: "\"Detective-Inspector Japp!\"" (0), "\"Captain Hastings!\"" (1), "\"Myself!\"" (2) -> 1]
+> "\"Captain Hastings!\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 2] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 0]
+> "\"Murder!\"\n" [Continue]
+> "\"And who did it?\"\n" [Choices: "\"Detective-Inspector Japp!\"" (0), "\"Captain Hastings!\"" (1), "\"Myself!\"" (2) -> 2]
+> "\"Myself!\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 1]
+> "\"Suicide!\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Ended]
+outcome: Ended

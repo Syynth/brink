@@ -1,0 +1,20 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/variable/var-divert
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0, 0] === PASS
+> "Divert as variable example\n" [Continue]
+> "Give up now, or keep trying to save your Kingdom?\n" [Choices: "Keep trying!" (0), "Give up" (1) -> 0]
+> "Give up now, or keep trying to save your Kingdom?\n" [Choices: "Give up" (0) -> 0]
+> "Everybody dies.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "Divert as variable example\n" [Continue]
+> "Give up now, or keep trying to save your Kingdom?\n" [Choices: "Keep trying!" (0), "Give up" (1) -> 1]
+> "Everybody dies.\n" [Ended]
+outcome: Ended

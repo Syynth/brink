@@ -1,0 +1,21 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/choices/fallback-choice-v1
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0, 0] === PASS
+> "You search desperately for a friendly face in the crowd.\n" [Choices: "The woman in the hat?" (0), "The man with the briefcase?" (1) -> 0]
+> "The woman in the hat pushes you roughly aside. You search desperately for a friendly face in the crowd.\n" [Choices: "The man with the briefcase?" (0) -> 0]
+> "The man with the briefcase looks disgusted as you stumble past him. You search desperately for a friendly face in the crowd.\n" [Continue]
+> "But it is too late: you collapse onto the station platform. This is the end.\n" [Ended]
+outcome: Ended
+
+=== episode [1, 0] === PASS
+> "You search desperately for a friendly face in the crowd.\n" [Choices: "The woman in the hat?" (0), "The man with the briefcase?" (1) -> 1]
+> "The man with the briefcase looks disgusted as you stumble past him. You search desperately for a friendly face in the crowd.\n" [Choices: "The woman in the hat?" (0) -> 0]
+> "The woman in the hat pushes you roughly aside. You search desperately for a friendly face in the crowd.\n" [Continue]
+> "But it is too late: you collapse onto the station platform. This is the end.\n" [Ended]
+outcome: Ended

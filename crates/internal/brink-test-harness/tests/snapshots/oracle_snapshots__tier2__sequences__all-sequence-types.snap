@@ -1,0 +1,17 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/sequences/all-sequence-types
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "Once: one two\n" [Continue]
+> "Stopping: one two two two\n" [Continue]
+> "Default: one two two two\n" [Continue]
+> "Cycle: one two one two\n" [Continue]
+> "Shuffle: two one two one\n" [Continue]
+> "Shuffle stopping: one two final final\n" [Continue]
+> "Shuffle once: two one\n" [Done]
+outcome: Done

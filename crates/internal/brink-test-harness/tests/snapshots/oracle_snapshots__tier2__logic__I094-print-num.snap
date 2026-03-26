@@ -1,0 +1,16 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/logic/I094-print-num
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> ". four .\n" [Continue]
+> ". fifteen .\n" [Continue]
+> ". thirty-seven .\n" [Continue]
+> ". one hundred and one .\n" [Continue]
+> ". two hundred and twenty-two .\n" [Continue]
+> ". one thousand two hundred and thirty-four .\n" [Done]
+outcome: Done

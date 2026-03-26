@@ -1,0 +1,16 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/lists/I071-list-basic-operations
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "b, d\n" [Continue]
+> "a, b, c, e\n" [Continue]
+> "b, c\n" [Continue]
+> "0\n" [Continue]
+> "1\n" [Continue]
+> "1\n" [Done]
+outcome: Done

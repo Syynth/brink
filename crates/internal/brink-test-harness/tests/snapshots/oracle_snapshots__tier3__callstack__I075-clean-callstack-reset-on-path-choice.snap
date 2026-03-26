@@ -1,0 +1,15 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/callstack/I075-clean-callstack-reset-on-path-choice
+oracle: 1, brink: 1, matched: 1
+passing: 0/1
+
+=== episode [] === FAIL
+> "The first line.The second line.\n" [Done]
+outcome: Done
+  step 0: text differs
+    oracle: "The first line.\n"
+    brink:  "The first line.The second line.\n"
+  step 1: missing (oracle: "The second line.\n")

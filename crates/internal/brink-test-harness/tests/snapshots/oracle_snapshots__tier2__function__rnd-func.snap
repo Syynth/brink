@@ -1,0 +1,14 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/function/rnd-func
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "Rolling dice 1: 6.\n" [Continue]
+> "Rolling dice 2: 6.\n" [Continue]
+> "Rolling dice 3: 4.\n" [Continue]
+> "Rolling dice 4: 2.\n" [Done]
+outcome: Done

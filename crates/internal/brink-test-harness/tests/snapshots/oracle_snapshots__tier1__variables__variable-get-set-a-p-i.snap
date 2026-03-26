@@ -1,0 +1,14 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/variables/variable-get-set-a-p-i
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0, 0] === PASS
+> "5\n" [Choices: "choice" (0) -> 0]
+> "5\n" [Choices: "choice" (0) -> 0]
+> "5\n" [Choices: "choice" (0) -> 0]
+> "5\n" [Done]
+outcome: Done

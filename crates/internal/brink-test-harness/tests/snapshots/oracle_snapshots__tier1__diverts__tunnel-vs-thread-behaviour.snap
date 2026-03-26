@@ -1,0 +1,57 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/diverts/tunnel-vs-thread-behaviour
+oracle: 6, brink: 6, matched: 6
+passing: 6/6
+
+=== episode [0, 0] === PASS
+> "" [Choices: "A" (0), "B" (1) -> 0]
+> "A\n" [Continue]
+> "Finished tunnel.\n" [Continue]
+> "Starting thread.\n" [Choices: "C" (0), "D" (1), "E" (2) -> 0]
+> "C\n" [Done]
+outcome: Done
+
+=== episode [0, 1] === PASS
+> "" [Choices: "A" (0), "B" (1) -> 0]
+> "A\n" [Continue]
+> "Finished tunnel.\n" [Continue]
+> "Starting thread.\n" [Choices: "C" (0), "D" (1), "E" (2) -> 1]
+> "D\n" [Done]
+outcome: Done
+
+=== episode [0, 2] === PASS
+> "" [Choices: "A" (0), "B" (1) -> 0]
+> "A\n" [Continue]
+> "Finished tunnel.\n" [Continue]
+> "Starting thread.\n" [Choices: "C" (0), "D" (1), "E" (2) -> 2]
+> "E\n" [Continue]
+> "Done.\n" [Done]
+outcome: Done
+
+=== episode [1, 0] === PASS
+> "" [Choices: "A" (0), "B" (1) -> 1]
+> "B\n" [Continue]
+> "Finished tunnel.\n" [Continue]
+> "Starting thread.\n" [Choices: "C" (0), "D" (1), "E" (2) -> 0]
+> "C\n" [Done]
+outcome: Done
+
+=== episode [1, 1] === PASS
+> "" [Choices: "A" (0), "B" (1) -> 1]
+> "B\n" [Continue]
+> "Finished tunnel.\n" [Continue]
+> "Starting thread.\n" [Choices: "C" (0), "D" (1), "E" (2) -> 1]
+> "D\n" [Done]
+outcome: Done
+
+=== episode [1, 2] === PASS
+> "" [Choices: "A" (0), "B" (1) -> 1]
+> "B\n" [Continue]
+> "Finished tunnel.\n" [Continue]
+> "Starting thread.\n" [Choices: "C" (0), "D" (1), "E" (2) -> 2]
+> "E\n" [Continue]
+> "Done.\n" [Done]
+outcome: Done

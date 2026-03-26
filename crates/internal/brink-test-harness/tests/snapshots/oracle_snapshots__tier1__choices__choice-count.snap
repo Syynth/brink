@@ -1,0 +1,17 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/choices/choice-count
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0] === PASS
+> "2\n" [Choices: "one" (0), "two" (1) -> 0]
+> "one" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "2\n" [Choices: "one" (0), "two" (1) -> 1]
+> "two" [Ended]
+outcome: Ended

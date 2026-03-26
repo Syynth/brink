@@ -1,0 +1,20 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/conditional/condtext-v2
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0] === PASS
+> "\"We are going on a trip,\" said Monsieur Fogg.\n" [Choices: "The wager." (0), "I was surprised." (1) -> 0]
+> "I had heard about the wager.\n" [Continue]
+> "I stared at Monsieur Fogg. \"But surely you are not serious?\" I demanded.\n" [Continue]
+> "He said nothing in reply, merely considering his newspaper with as much thoroughness as entomologist considering his latest pinned addition.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "\"We are going on a trip,\" said Monsieur Fogg.\n" [Choices: "The wager." (0), "I was surprised." (1) -> 1]
+> "I stared at Monsieur Fogg. \"But there must be a reason for this trip,\" I observed.\n" [Continue]
+> "He said nothing in reply, merely considering his newspaper with as much thoroughness as entomologist considering his latest pinned addition.\n" [Ended]
+outcome: Ended

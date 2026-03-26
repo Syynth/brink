@@ -1,0 +1,19 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/knots/knot-thread-interaction
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0] === PASS
+> "blah blah\n" [Choices: "option" (0), "wigwag" (1) -> 0]
+> "option\n" [Continue]
+> "something\n" [Done]
+outcome: Done
+
+=== episode [1] === PASS
+> "blah blah\n" [Choices: "option" (0), "wigwag" (1) -> 1]
+> "wigwag\n" [Continue]
+> "THE END\n" [Ended]
+outcome: Ended

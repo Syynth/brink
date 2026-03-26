@@ -1,0 +1,101 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/gather/complex-flow-v2
+oracle: 8, brink: 8, matched: 8
+passing: 8/8
+
+=== episode [0, 0, 0, 0] === PASS
+> "I looked at Monsieur Fogg\n" [Choices: "... and I could contain myself no longer." (0), "... but I said nothing" (1) -> 0]
+> "... and I could contain myself no longer.\n" [Continue]
+> "'What is the purpose of our journey, Monsieur?'\n" [Continue]
+> "'A wager,' he replied.\n" [Choices: "'A wager!'" (0), "'Ah.'" (1) -> 0]
+> "'A wager!' I returned.\n" [Continue]
+> "He nodded.\n" [Choices: "'But surely that is foolishness!'" (0), "'A most serious matter then!'" (1) -> 0]
+> "'But surely that is foolishness!'\n" [Continue]
+> "He nodded again.\n" [Choices: "'But can we win?'" (0), "'A modest wager, I trust?'" (1), "I asked nothing further of him then." (2) -> 0]
+> "'But can we win?'\n" [Continue]
+> "'That is what we will endeavour to find out,' he answered.\n" [Continue]
+> "After that, we passed the day in silence.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 1] === PASS
+> "I looked at Monsieur Fogg\n" [Choices: "... and I could contain myself no longer." (0), "... but I said nothing" (1) -> 0]
+> "... and I could contain myself no longer.\n" [Continue]
+> "'What is the purpose of our journey, Monsieur?'\n" [Continue]
+> "'A wager,' he replied.\n" [Choices: "'A wager!'" (0), "'Ah.'" (1) -> 0]
+> "'A wager!' I returned.\n" [Continue]
+> "He nodded.\n" [Choices: "'But surely that is foolishness!'" (0), "'A most serious matter then!'" (1) -> 0]
+> "'But surely that is foolishness!'\n" [Continue]
+> "He nodded again.\n" [Choices: "'But can we win?'" (0), "'A modest wager, I trust?'" (1), "I asked nothing further of him then." (2) -> 1]
+> "'A modest wager, I trust?'\n" [Continue]
+> "'Twenty thousand pounds,' he replied, quite flatly.\n" [Continue]
+> "After that, we passed the day in silence.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 2] === PASS
+> "I looked at Monsieur Fogg\n" [Choices: "... and I could contain myself no longer." (0), "... but I said nothing" (1) -> 0]
+> "... and I could contain myself no longer.\n" [Continue]
+> "'What is the purpose of our journey, Monsieur?'\n" [Continue]
+> "'A wager,' he replied.\n" [Choices: "'A wager!'" (0), "'Ah.'" (1) -> 0]
+> "'A wager!' I returned.\n" [Continue]
+> "He nodded.\n" [Choices: "'But surely that is foolishness!'" (0), "'A most serious matter then!'" (1) -> 0]
+> "'But surely that is foolishness!'\n" [Continue]
+> "He nodded again.\n" [Choices: "'But can we win?'" (0), "'A modest wager, I trust?'" (1), "I asked nothing further of him then." (2) -> 2]
+> "I asked nothing further of him then, and after a final, polite cough, he offered nothing more to me. After that, we passed the day in silence.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 1, 0] === PASS
+> "I looked at Monsieur Fogg\n" [Choices: "... and I could contain myself no longer." (0), "... but I said nothing" (1) -> 0]
+> "... and I could contain myself no longer.\n" [Continue]
+> "'What is the purpose of our journey, Monsieur?'\n" [Continue]
+> "'A wager,' he replied.\n" [Choices: "'A wager!'" (0), "'Ah.'" (1) -> 0]
+> "'A wager!' I returned.\n" [Continue]
+> "He nodded.\n" [Choices: "'But surely that is foolishness!'" (0), "'A most serious matter then!'" (1) -> 1]
+> "'A most serious matter then!'\n" [Continue]
+> "He nodded again.\n" [Choices: "'But can we win?'" (0), "'A modest wager, I trust?'" (1), "I asked nothing further of him then." (2) -> 0]
+> "'But can we win?'\n" [Continue]
+> "'That is what we will endeavour to find out,' he answered.\n" [Continue]
+> "After that, we passed the day in silence.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 1, 1] === PASS
+> "I looked at Monsieur Fogg\n" [Choices: "... and I could contain myself no longer." (0), "... but I said nothing" (1) -> 0]
+> "... and I could contain myself no longer.\n" [Continue]
+> "'What is the purpose of our journey, Monsieur?'\n" [Continue]
+> "'A wager,' he replied.\n" [Choices: "'A wager!'" (0), "'Ah.'" (1) -> 0]
+> "'A wager!' I returned.\n" [Continue]
+> "He nodded.\n" [Choices: "'But surely that is foolishness!'" (0), "'A most serious matter then!'" (1) -> 1]
+> "'A most serious matter then!'\n" [Continue]
+> "He nodded again.\n" [Choices: "'But can we win?'" (0), "'A modest wager, I trust?'" (1), "I asked nothing further of him then." (2) -> 1]
+> "'A modest wager, I trust?'\n" [Continue]
+> "'Twenty thousand pounds,' he replied, quite flatly.\n" [Continue]
+> "After that, we passed the day in silence.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 1, 2] === PASS
+> "I looked at Monsieur Fogg\n" [Choices: "... and I could contain myself no longer." (0), "... but I said nothing" (1) -> 0]
+> "... and I could contain myself no longer.\n" [Continue]
+> "'What is the purpose of our journey, Monsieur?'\n" [Continue]
+> "'A wager,' he replied.\n" [Choices: "'A wager!'" (0), "'Ah.'" (1) -> 0]
+> "'A wager!' I returned.\n" [Continue]
+> "He nodded.\n" [Choices: "'But surely that is foolishness!'" (0), "'A most serious matter then!'" (1) -> 1]
+> "'A most serious matter then!'\n" [Continue]
+> "He nodded again.\n" [Choices: "'But can we win?'" (0), "'A modest wager, I trust?'" (1), "I asked nothing further of him then." (2) -> 2]
+> "I asked nothing further of him then, and after a final, polite cough, he offered nothing more to me. After that, we passed the day in silence.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 1] === PASS
+> "I looked at Monsieur Fogg\n" [Choices: "... and I could contain myself no longer." (0), "... but I said nothing" (1) -> 0]
+> "... and I could contain myself no longer.\n" [Continue]
+> "'What is the purpose of our journey, Monsieur?'\n" [Continue]
+> "'A wager,' he replied.\n" [Choices: "'A wager!'" (0), "'Ah.'" (1) -> 1]
+> "'Ah,' I replied, uncertain what I thought.\n" [Continue]
+> "After that, we passed the day in silence.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "I looked at Monsieur Fogg\n" [Choices: "... and I could contain myself no longer." (0), "... but I said nothing" (1) -> 1]
+> "... but I said nothing and we passed the day in silence.\n" [Ended]
+outcome: Ended

@@ -1,0 +1,26 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/conditional/condopt-v1
+oracle: 3, brink: 3, matched: 3
+passing: 3/3
+
+=== episode [0, 0] === PASS
+> "I looked...\n" [Choices: "at the door" (0), "outside" (1) -> 0]
+> "at the door. It was open.\n" [Continue]
+> "I stood up and...\n" [Choices: "I strode out of the compartment" (0) -> 0]
+> "I strode out of the compartment and I fancied I heard my master quietly tutting to himself." [Ended]
+outcome: Ended
+
+=== episode [1, 0] === PASS
+> "I looked...\n" [Choices: "at the door" (0), "outside" (1) -> 1]
+> "I stood up and...\n" [Choices: "I asked permission to leave" (0), "I stood and went to open the door" (1) -> 0]
+> "I asked permission to leave and Monsieur Fogg looked surprised." [Ended]
+outcome: Ended
+
+=== episode [1, 1] === PASS
+> "I looked...\n" [Choices: "at the door" (0), "outside" (1) -> 1]
+> "I stood up and...\n" [Choices: "I asked permission to leave" (0), "I stood and went to open the door" (1) -> 1]
+> "I stood and went to open the door. Monsieur Fogg seemed untroubled by this small rebellion." [Ended]
+outcome: Ended

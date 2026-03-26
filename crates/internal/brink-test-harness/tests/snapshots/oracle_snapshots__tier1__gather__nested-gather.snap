@@ -1,0 +1,83 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/gather/nested-gather
+oracle: 8, brink: 8, matched: 8
+passing: 8/8
+
+=== episode [0, 0, 0] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 0]
+> "\"Murder!\"\n" [Continue]
+> "\"And who did it?\"\n" [Choices: "\"Detective-Inspector Japp!\"" (0), "\"Captain Hastings!\"" (1), "\"Myself!\"" (2) -> 0]
+> "\"Detective-Inspector Japp!\"\n" [Continue]
+> "\"You must be joking!\"\n" [Choices: "\"Mon ami, I am deadly serious.\"" (0), "\"If only...\"" (1) -> 0]
+> "\"Mon ami, I am deadly serious.\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Done]
+outcome: Done
+
+=== episode [0, 0, 1] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 0]
+> "\"Murder!\"\n" [Continue]
+> "\"And who did it?\"\n" [Choices: "\"Detective-Inspector Japp!\"" (0), "\"Captain Hastings!\"" (1), "\"Myself!\"" (2) -> 0]
+> "\"Detective-Inspector Japp!\"\n" [Continue]
+> "\"You must be joking!\"\n" [Choices: "\"Mon ami, I am deadly serious.\"" (0), "\"If only...\"" (1) -> 1]
+> "\"If only...\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Done]
+outcome: Done
+
+=== episode [0, 1, 0] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 0]
+> "\"Murder!\"\n" [Continue]
+> "\"And who did it?\"\n" [Choices: "\"Detective-Inspector Japp!\"" (0), "\"Captain Hastings!\"" (1), "\"Myself!\"" (2) -> 1]
+> "\"Captain Hastings!\"\n" [Continue]
+> "\"You must be joking!\"\n" [Choices: "\"Mon ami, I am deadly serious.\"" (0), "\"If only...\"" (1) -> 0]
+> "\"Mon ami, I am deadly serious.\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Done]
+outcome: Done
+
+=== episode [0, 1, 1] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 0]
+> "\"Murder!\"\n" [Continue]
+> "\"And who did it?\"\n" [Choices: "\"Detective-Inspector Japp!\"" (0), "\"Captain Hastings!\"" (1), "\"Myself!\"" (2) -> 1]
+> "\"Captain Hastings!\"\n" [Continue]
+> "\"You must be joking!\"\n" [Choices: "\"Mon ami, I am deadly serious.\"" (0), "\"If only...\"" (1) -> 1]
+> "\"If only...\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Done]
+outcome: Done
+
+=== episode [0, 2, 0] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 0]
+> "\"Murder!\"\n" [Continue]
+> "\"And who did it?\"\n" [Choices: "\"Detective-Inspector Japp!\"" (0), "\"Captain Hastings!\"" (1), "\"Myself!\"" (2) -> 2]
+> "\"Myself!\"\n" [Continue]
+> "\"You must be joking!\"\n" [Choices: "\"Mon ami, I am deadly serious.\"" (0), "\"If only...\"" (1) -> 0]
+> "\"Mon ami, I am deadly serious.\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Done]
+outcome: Done
+
+=== episode [0, 2, 1] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 0]
+> "\"Murder!\"\n" [Continue]
+> "\"And who did it?\"\n" [Choices: "\"Detective-Inspector Japp!\"" (0), "\"Captain Hastings!\"" (1), "\"Myself!\"" (2) -> 2]
+> "\"Myself!\"\n" [Continue]
+> "\"You must be joking!\"\n" [Choices: "\"Mon ami, I am deadly serious.\"" (0), "\"If only...\"" (1) -> 1]
+> "\"If only...\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Done]
+outcome: Done
+
+=== episode [1, 0] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 1]
+> "\"Suicide!\"\n" [Continue]
+> "\"Really, Poirot? Are you quite sure?\"\n" [Choices: "\"Quite sure.\"" (0), "\"It is perfectly obvious.\"" (1) -> 0]
+> "\"Quite sure.\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Done]
+outcome: Done
+
+=== episode [1, 1] === PASS
+> "Well, Poirot? Murder or suicide?\"\n" [Choices: "\"Murder!\"" (0), "\"Suicide!\"" (1) -> 1]
+> "\"Suicide!\"\n" [Continue]
+> "\"Really, Poirot? Are you quite sure?\"\n" [Choices: "\"Quite sure.\"" (0), "\"It is perfectly obvious.\"" (1) -> 1]
+> "\"It is perfectly obvious.\"\n" [Continue]
+> "Mrs. Christie lowered her manuscript a moment. The rest of the writing group sat, open-mouthed.\n" [Done]
+outcome: Done

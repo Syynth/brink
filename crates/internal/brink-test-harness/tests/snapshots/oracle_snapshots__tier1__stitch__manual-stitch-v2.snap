@@ -1,0 +1,18 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/stitch/manual-stitch-v2
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0, 0] === PASS
+> "How shall we travel?\n" [Choices: "In first class" (0), "I'll go cheap" (1) -> 0]
+> "I settled my master.\n" [Choices: "Move to third class" (0) -> 0]
+> "I put myself in third.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "How shall we travel?\n" [Choices: "In first class" (0), "I'll go cheap" (1) -> 1]
+> "I put myself in third.\n" [Ended]
+outcome: Ended

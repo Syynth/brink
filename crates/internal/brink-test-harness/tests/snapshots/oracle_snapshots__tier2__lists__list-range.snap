@@ -1,0 +1,14 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/lists/list-range
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "Pound, Pizza, Euro, Pasta, Dollar, Curry, Paella\n" [Continue]
+> "Euro, Pasta, Dollar, Curry\n" [Continue]
+> "Two, Three, Four, Five, Six\n" [Continue]
+> "Pizza, Pasta\n" [Done]
+outcome: Done

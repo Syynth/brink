@@ -1,0 +1,15 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/lists/I069-more-list-operations
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "1\n" [Continue]
+> "l\n" [Continue]
+> "n\n" [Continue]
+> "l, m\n" [Continue]
+> "n\n" [Done]
+outcome: Done

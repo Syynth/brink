@@ -52,7 +52,7 @@ When working on compiler bugs (making failing episodes pass), follow this proces
 - Do not assume existing compiler code is correct. Every layer was written by agents and may contain fundamental misunderstandings.
 - Do not implement before plan mode for compiler fixes.
 
-Ratchet: `RATCHET_EPISODE_COUNT` in `crates/internal/brink-test-harness/tests/oracle_comparison.rs`.
+Ratchet: `RATCHET_EPISODE_COUNT` in `crates/internal/brink-test-harness/tests/oracle_snapshots.rs`.
 
 Test cases: `tests/tier{1,2,3}/` — each has `story.ink`, `story.ink.json`, and `oracle/*.oracle.json` (golden episodes from the C# ink runtime).
 
@@ -99,11 +99,14 @@ cargo fmt --all                                   # format fix
 # Corpus report — triage tool
 cargo test -p brink-test-harness --test corpus_report -- --nocapture
 
-# Oracle comparison — primary correctness test
-cargo test -p brink-test-harness --test oracle_comparison -- --nocapture
+# Oracle snapshots — primary correctness test (insta snapshots)
+cargo test -p brink-test-harness --test oracle_snapshots -- --nocapture
 
 # Single case — filter by substring
-BRINK_CASE=I002 cargo test -p brink-test-harness --test oracle_comparison -- --nocapture
+BRINK_CASE=I002 cargo test -p brink-test-harness --test oracle_snapshots -- --nocapture
+
+# Accept snapshot changes after intentional behavioral changes
+INSTA_UPDATE=always cargo test -p brink-test-harness --test oracle_snapshots
 ```
 
 ## Crate layout

@@ -1,0 +1,27 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/choices/I088-conditional-choices
+oracle: 4, brink: 4, matched: 4
+passing: 4/4
+
+=== episode [0] === PASS
+> "" [Choices: "one" (0), "two" (1), "three" (2), "four" (3) -> 0]
+> "one\n" [Done]
+outcome: Done
+
+=== episode [1] === PASS
+> "" [Choices: "one" (0), "two" (1), "three" (2), "four" (3) -> 1]
+> "two\n" [Done]
+outcome: Done
+
+=== episode [2] === PASS
+> "" [Choices: "one" (0), "two" (1), "three" (2), "four" (3) -> 2]
+> "three\n" [Done]
+outcome: Done
+
+=== episode [3] === PASS
+> "" [Choices: "one" (0), "two" (1), "three" (2), "four" (3) -> 3]
+> "four\n" [Done]
+outcome: Done

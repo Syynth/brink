@@ -1,0 +1,22 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/weave/I041-weave-gathers
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0, 0] === PASS
+> "" [Choices: "one" (0), "four" (1) -> 0]
+> "one\n" [Choices: "two" (0) -> 0]
+> "two\n" [Continue]
+> "three\n" [Continue]
+> "six\n" [Done]
+outcome: Done
+
+=== episode [1] === PASS
+> "" [Choices: "one" (0), "four" (1) -> 1]
+> "four\n" [Continue]
+> "five\n" [Continue]
+> "six\n" [Done]
+outcome: Done

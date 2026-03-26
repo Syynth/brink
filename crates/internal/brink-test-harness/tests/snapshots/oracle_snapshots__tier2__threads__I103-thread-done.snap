@@ -1,0 +1,13 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/threads/I103-thread-done
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "This is a thread example\n" [Continue]
+> "Hello.\n" [Continue]
+> "The example is now complete.\n" [Done]
+outcome: Done

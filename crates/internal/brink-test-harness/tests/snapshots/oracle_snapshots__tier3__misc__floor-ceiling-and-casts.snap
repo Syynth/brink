@@ -1,0 +1,16 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/misc/floor-ceiling-and-casts
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "1\n" [Continue]
+> "1\n" [Continue]
+> "2\n" [Continue]
+> "0.6666667\n" [Continue]
+> "0\n" [Continue]
+> "1\n" [Done]
+outcome: Done

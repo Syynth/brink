@@ -1,0 +1,12 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/choices/suppress-choice
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0] === PASS
+> "Hello world!\n" [Choices: "Hello back!" (0) -> 0]
+> "Nice to hear from you.\n" [Ended]
+outcome: Ended

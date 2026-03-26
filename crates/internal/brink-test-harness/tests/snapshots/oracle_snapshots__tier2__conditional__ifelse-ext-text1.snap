@@ -1,0 +1,12 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/conditional/ifelse-ext-text1
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0] === PASS
+> "This is text 1.\n" [Choices: "The Choice." (0) -> 0]
+> "This is the end." [Ended]
+outcome: Ended

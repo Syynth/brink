@@ -1,0 +1,11 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/sequences/leading-newline-multiline-sequence
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "a line after an empty line\n" [Done]
+outcome: Done

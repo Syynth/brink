@@ -1,0 +1,25 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/runtime/load-save
+oracle: 3, brink: 3, matched: 3
+passing: 3/3
+
+=== episode [0] === PASS
+> "We arrived into London at 9.45pm exactly.\n" [Choices: "\"There is not a moment to lose!\"" (0), "\"Monsieur, let us savour this moment!\"" (1), "We hurried home" (2) -> 0]
+> "\"There is not a moment to lose!\" I declared.\n" [Continue]
+> "We hurried home to Savile Row as fast as we could.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "We arrived into London at 9.45pm exactly.\n" [Choices: "\"There is not a moment to lose!\"" (0), "\"Monsieur, let us savour this moment!\"" (1), "We hurried home" (2) -> 1]
+> "\"Monsieur, let us savour this moment!\" I declared.\n" [Continue]
+> "My master clouted me firmly around the head and dragged me out of the door.\n" [Continue]
+> "He insisted that we hurried home to Savile Row as fast as we could.\n" [Ended]
+outcome: Ended
+
+=== episode [2] === PASS
+> "We arrived into London at 9.45pm exactly.\n" [Choices: "\"There is not a moment to lose!\"" (0), "\"Monsieur, let us savour this moment!\"" (1), "We hurried home" (2) -> 2]
+> "We hurried home to Savile Row as fast as we could.\n" [Ended]
+outcome: Ended

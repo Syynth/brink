@@ -1,0 +1,11 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/misc/I018-end-the-return-of-the-end
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "hello\n" [Ended]
+outcome: Ended

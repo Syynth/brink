@@ -1,0 +1,13 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/choices/I083-choice-thread-forking
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0] === PASS
+> "" [Choices: "A choice" (0) -> 0]
+> "A choice\n" [Continue]
+> "Vaue of local var is: 1\n" [Ended]
+outcome: Ended

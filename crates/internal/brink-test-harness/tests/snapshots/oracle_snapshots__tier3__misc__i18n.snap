@@ -1,0 +1,13 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/misc/i18n
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "áéíóú ñ\n" [Continue]
+> "你好\n" #áé [Continue]
+> "你好世界\n" [Done]
+outcome: Done

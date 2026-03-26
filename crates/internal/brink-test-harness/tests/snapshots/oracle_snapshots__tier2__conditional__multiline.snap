@@ -1,0 +1,51 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/conditional/multiline
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
+> "At the table, I drew a card. Ace of Hearts.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. 2 of Diamonds.\n" [Continue]
+> "\"Should I hit you again,\" the croupier asks.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+> "I drew a card. King of Spades.\n" [Continue]
+> "\"You lose,\" he crowed.\n" [Choices: "Draw a card" (0) -> 0]
+outcome: InputsExhausted

@@ -1,0 +1,32 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/conditional/once
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
+> "Would my luck hold?\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Could I win the hand?\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Choices: "Try again" (0) -> 0]
+outcome: InputsExhausted

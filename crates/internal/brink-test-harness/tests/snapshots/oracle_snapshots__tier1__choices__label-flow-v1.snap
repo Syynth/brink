@@ -1,0 +1,38 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/choices/label-flow-v1
+oracle: 4, brink: 4, matched: 4
+passing: 4/4
+
+=== episode [0, 0] === PASS
+> "The guard frowns at you.\n" [Choices: "Greet him" (0), "'Get out of my way.'" (1) -> 0]
+> "'Greetings.'\n" [Continue]
+> "'Hmm,' replies the guard.\n" [Choices: "'Having a nice day?'" (0), "'Hmm?'" (1) -> 0]
+> "'Having a nice day?'\n" [Continue]
+> "'Mff,' the guard replies, and then offers you a paper bag. 'Toffee?'\n" [Ended]
+outcome: Ended
+
+=== episode [0, 1] === PASS
+> "The guard frowns at you.\n" [Choices: "Greet him" (0), "'Get out of my way.'" (1) -> 0]
+> "'Greetings.'\n" [Continue]
+> "'Hmm,' replies the guard.\n" [Choices: "'Having a nice day?'" (0), "'Hmm?'" (1) -> 1]
+> "'Hmm?' you reply.\n" [Continue]
+> "'Mff,' the guard replies, and then offers you a paper bag. 'Toffee?'\n" [Ended]
+outcome: Ended
+
+=== episode [1, 0] === PASS
+> "The guard frowns at you.\n" [Choices: "Greet him" (0), "'Get out of my way.'" (1) -> 1]
+> "'Get out of my way,' you tell the guard.\n" [Continue]
+> "'Hmm,' replies the guard.\n" [Choices: "'Hmm?'" (0), "Shove him aside" (1) -> 0]
+> "'Hmm?' you reply.\n" [Continue]
+> "'Mff,' the guard replies, and then offers you a paper bag. 'Toffee?'\n" [Ended]
+outcome: Ended
+
+=== episode [1, 1] === PASS
+> "The guard frowns at you.\n" [Choices: "Greet him" (0), "'Get out of my way.'" (1) -> 1]
+> "'Get out of my way,' you tell the guard.\n" [Continue]
+> "'Hmm,' replies the guard.\n" [Choices: "'Hmm?'" (0), "Shove him aside" (1) -> 1]
+> "You shove him sharply. He stares in reply, and draws his sword!\n" [Ended]
+outcome: Ended

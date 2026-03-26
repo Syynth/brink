@@ -1,0 +1,17 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/evaluation/I121-arithmetic
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "36\n" [Continue]
+> "2\n" [Continue]
+> "3\n" [Continue]
+> "2\n" [Continue]
+> "2.5\n" [Continue]
+> "8\n" [Continue]
+> "8\n" [Done]
+outcome: Done

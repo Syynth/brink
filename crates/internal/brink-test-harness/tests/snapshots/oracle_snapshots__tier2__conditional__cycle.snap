@@ -1,0 +1,51 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/conditional/cycle
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
+> "I held my breath.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I waited impatiently.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I paused.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I held my breath.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I waited impatiently.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I paused.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I held my breath.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I waited impatiently.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I paused.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I held my breath.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I waited impatiently.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I paused.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I held my breath.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I waited impatiently.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I paused.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I held my breath.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I waited impatiently.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I paused.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I held my breath.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I waited impatiently.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "I paused.\n" [Choices: "Try again" (0) -> 0]
+outcome: InputsExhausted

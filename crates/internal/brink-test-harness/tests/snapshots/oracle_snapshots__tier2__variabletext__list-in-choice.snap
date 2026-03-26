@@ -1,0 +1,31 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/variabletext/list-in-choice
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
+> "He looked at me oddly.\n" [Choices: "\"Hello, Master!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Monsieur!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, you!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Master!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Monsieur!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, you!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Master!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Monsieur!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, you!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Master!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Monsieur!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, you!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Master!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Monsieur!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, you!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Master!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Monsieur!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, you!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Master!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, Monsieur!\"" (0) -> 0]
+> "He looked at me oddly.\n" [Choices: "\"Hello, you!\"" (0) -> 0]
+outcome: InputsExhausted

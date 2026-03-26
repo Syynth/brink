@@ -403,6 +403,7 @@ dependencies = [
  "brink-format",
  "brink-json",
  "brink-runtime",
+ "insta",
  "serde",
  "serde_json",
 ]

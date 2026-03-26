@@ -1,0 +1,321 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/diverts/I066-path-to-self
+oracle: 21, brink: 21, matched: 21
+passing: 21/21
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+outcome: InputsExhausted
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 0]
+> "A\n" [Choices: "A" (0), "Finish" (1) -> 1]
+> "Finish\n" [Ended]
+outcome: Ended

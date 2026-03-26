@@ -1,0 +1,13 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/misc/I025-nested-includes
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "The value of a variable in test file 2 is 5.\n" [Continue]
+> "This is the main file\n" [Continue]
+> "The value when accessed from knot_in_2 is 5.\n" [Ended]
+outcome: Ended

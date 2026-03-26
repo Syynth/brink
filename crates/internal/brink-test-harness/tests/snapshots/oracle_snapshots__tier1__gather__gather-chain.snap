@@ -1,0 +1,49 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/gather/gather-chain
+oracle: 6, brink: 6, matched: 6
+passing: 6/6
+
+=== episode [0, 0] === PASS
+> "I ran through the forest, the dogs snapping at my heels.\n" [Choices: "I checked the jewels" (0), "I did not pause for breath" (1), "I cheered with joy." (2) -> 0]
+> "I checked the jewels were still in my pocket, and the feel of them brought a spring to my step. The road could not be much further! Mackie would have the engine running, and then I'd be safe.\n" [Choices: "I reached the road and looked about" (0), "I should interrupt to say Mackie is normally very reliable" (1) -> 0]
+> "I reached the road and looked about. And would you believe it?\n" [Continue]
+> "The road was empty. Mackie was nowhere to be seen.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 1] === PASS
+> "I ran through the forest, the dogs snapping at my heels.\n" [Choices: "I checked the jewels" (0), "I did not pause for breath" (1), "I cheered with joy." (2) -> 0]
+> "I checked the jewels were still in my pocket, and the feel of them brought a spring to my step. The road could not be much further! Mackie would have the engine running, and then I'd be safe.\n" [Choices: "I reached the road and looked about" (0), "I should interrupt to say Mackie is normally very reliable" (1) -> 1]
+> "I should interrupt to say Mackie is normally very reliable. He's never once let me down. Or rather, never once, previously to that night.\n" [Continue]
+> "The road was empty. Mackie was nowhere to be seen.\n" [Ended]
+outcome: Ended
+
+=== episode [1, 0] === PASS
+> "I ran through the forest, the dogs snapping at my heels.\n" [Choices: "I checked the jewels" (0), "I did not pause for breath" (1), "I cheered with joy." (2) -> 1]
+> "I did not pause for breath but kept on running. The road could not be much further! Mackie would have the engine running, and then I'd be safe.\n" [Choices: "I reached the road and looked about" (0), "I should interrupt to say Mackie is normally very reliable" (1) -> 0]
+> "I reached the road and looked about. And would you believe it?\n" [Continue]
+> "The road was empty. Mackie was nowhere to be seen.\n" [Ended]
+outcome: Ended
+
+=== episode [1, 1] === PASS
+> "I ran through the forest, the dogs snapping at my heels.\n" [Choices: "I checked the jewels" (0), "I did not pause for breath" (1), "I cheered with joy." (2) -> 1]
+> "I did not pause for breath but kept on running. The road could not be much further! Mackie would have the engine running, and then I'd be safe.\n" [Choices: "I reached the road and looked about" (0), "I should interrupt to say Mackie is normally very reliable" (1) -> 1]
+> "I should interrupt to say Mackie is normally very reliable. He's never once let me down. Or rather, never once, previously to that night.\n" [Continue]
+> "The road was empty. Mackie was nowhere to be seen.\n" [Ended]
+outcome: Ended
+
+=== episode [2, 0] === PASS
+> "I ran through the forest, the dogs snapping at my heels.\n" [Choices: "I checked the jewels" (0), "I did not pause for breath" (1), "I cheered with joy." (2) -> 2]
+> "I cheered with joy. The road could not be much further! Mackie would have the engine running, and then I'd be safe.\n" [Choices: "I reached the road and looked about" (0), "I should interrupt to say Mackie is normally very reliable" (1) -> 0]
+> "I reached the road and looked about. And would you believe it?\n" [Continue]
+> "The road was empty. Mackie was nowhere to be seen.\n" [Ended]
+outcome: Ended
+
+=== episode [2, 1] === PASS
+> "I ran through the forest, the dogs snapping at my heels.\n" [Choices: "I checked the jewels" (0), "I did not pause for breath" (1), "I cheered with joy." (2) -> 2]
+> "I cheered with joy. The road could not be much further! Mackie would have the engine running, and then I'd be safe.\n" [Choices: "I reached the road and looked about" (0), "I should interrupt to say Mackie is normally very reliable" (1) -> 1]
+> "I should interrupt to say Mackie is normally very reliable. He's never once let me down. Or rather, never once, previously to that night.\n" [Continue]
+> "The road was empty. Mackie was nowhere to be seen.\n" [Ended]
+outcome: Ended

@@ -1,0 +1,321 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/choices/sticky-choice
+oracle: 21, brink: 21, matched: 21
+passing: 21/21
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+outcome: InputsExhausted
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] === PASS
+> "" [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 0]
+> "You eat another donut." [Choices: "Eat another donut" (0), "Get off the couch" (1) -> 1]
+> "You struggle up off the couch to go and compose epic poetry.\n" [Ended]
+outcome: Ended

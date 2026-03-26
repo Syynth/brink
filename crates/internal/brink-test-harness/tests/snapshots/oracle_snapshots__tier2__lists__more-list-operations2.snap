@@ -1,0 +1,27 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/lists/more-list-operations2
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "a1, b1, c1\n" [Continue]
+> "a1\n" [Continue]
+> "a1, b2\n" [Continue]
+> "count:2\n" [Continue]
+> "max:c2\n" [Continue]
+> "min:a1\n" [Continue]
+> "true\n" [Continue]
+> "true\n" [Continue]
+> "false\n" [Continue]
+> "empty\n" [Continue]
+> "a2\n" [Continue]
+> "a2, b2, c2\n" [Continue]
+> "range:a1, b2\n" [Continue]
+> "a1\n" [Continue]
+> "subtract:a1, c1\n" [Continue]
+> "random:c2\n" [Continue]
+> "listinc:b1\n" [Done]
+outcome: Done

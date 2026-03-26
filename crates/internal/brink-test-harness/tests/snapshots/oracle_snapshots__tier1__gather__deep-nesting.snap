@@ -1,0 +1,23 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/gather/deep-nesting
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0, 0, 0, 0, 0] === PASS
+> "Tell us a tale, Captain!\"\n" [Choices: "\"Very well, you sea-dogs. Here's a tale...\"" (0), "\"No, it's past your bed-time.\"" (1) -> 0]
+> "\"Very well, you sea-dogs. Here's a tale...\"\n" [Choices: "\"It was a dark and stormy night...\"" (0) -> 0]
+> "\"It was a dark and stormy night...\"\n" [Choices: "\"...and the crew were restless...\"" (0) -> 0]
+> "\"...and the crew were restless...\"\n" [Choices: "\"... and they said to their Captain...\"" (0) -> 0]
+> "\"... and they said to their Captain...\"\n" [Choices: "\"...Tell us a tale Captain!\"" (0) -> 0]
+> "\"...Tell us a tale Captain!\"\n" [Continue]
+> "To a man, the crew began to yawn.\n" [Ended]
+outcome: Ended
+
+=== episode [1] === PASS
+> "Tell us a tale, Captain!\"\n" [Choices: "\"Very well, you sea-dogs. Here's a tale...\"" (0), "\"No, it's past your bed-time.\"" (1) -> 1]
+> "\"No, it's past your bed-time.\"\n" [Continue]
+> "To a man, the crew began to yawn.\n" [Ended]
+outcome: Ended

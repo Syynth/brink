@@ -1,0 +1,12 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/knot/param-recurse
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "\"The result is 120!\" you announce.\n" [Continue]
+> "Gauss stares at you in horror.\n" [Ended]
+outcome: Ended

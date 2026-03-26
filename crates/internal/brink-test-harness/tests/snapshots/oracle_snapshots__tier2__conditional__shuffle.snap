@@ -1,0 +1,78 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/conditional/shuffle
+oracle: 1, brink: 1, matched: 1
+passing: 0/1
+
+=== episode [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] === FAIL
+> "King of Spades.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "2 of Diamonds.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Ace of Hearts.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "King of Spades.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Ace of Hearts.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "2 of Diamonds.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "King of Spades.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Ace of Hearts.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "2 of Diamonds.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "2 of Diamonds.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "King of Spades.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Ace of Hearts.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "2 of Diamonds.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Ace of Hearts.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "King of Spades.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Ace of Hearts.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "King of Spades.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "2 of Diamonds.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "Ace of Hearts.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "King of Spades.\n" [Choices: "Try again" (0) -> 0]
+> "\n" [Continue]
+> "2 of Diamonds.\n" [Choices: "Try again" (0) -> 0]
+outcome: InputsExhausted
+  step 8: text differs
+    oracle: "2 of Diamonds.\n"
+    brink:  "Ace of Hearts.\n"
+  step 10: text differs
+    oracle: "Ace of Hearts.\n"
+    brink:  "2 of Diamonds.\n"
+  step 12: text differs
+    oracle: "2 of Diamonds.\n"
+    brink:  "King of Spades.\n"
+  step 16: text differs
+    oracle: "King of Spades.\n"
+    brink:  "2 of Diamonds.\n"
+  step 24: text differs
+    oracle: "Ace of Hearts.\n"
+    brink:  "2 of Diamonds.\n"
+  step 26: text differs
+    oracle: "2 of Diamonds.\n"
+    brink:  "Ace of Hearts.\n"
+  step 36: text differs
+    oracle: "King of Spades.\n"
+    brink:  "Ace of Hearts.\n"
+  step 38: text differs
+    oracle: "2 of Diamonds.\n"
+    brink:  "King of Spades.\n"
+  step 40: text differs
+    oracle: "Ace of Hearts.\n"
+    brink:  "2 of Diamonds.\n"
