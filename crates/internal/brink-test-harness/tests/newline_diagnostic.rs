@@ -1118,3 +1118,56 @@ fn intercept_agree_body_goto_resolves_to_correct_linked_container() {
         "Gather container should EnterContainer (teacup conditional body). Opcodes: {opcodes_summary:?}",
     );
 }
+
+#[test]
+fn intercept_step23_opcode_trace() {
+    // Run to step 22 (the "\n" after choosing Agree), then single-step
+    // through opcodes to trace exactly what happens when the Goto fires
+    // and where execution goes in the gather container.
+    let data = compile_intercept();
+    let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+
+    // Run to step 22 normally (the "\n" after the Agree choice)
+    let mut step_count = 0;
+    loop {
+        match story.continue_single() {
+            Ok(brink_runtime::Line::Choices { .. }) => {
+                story.choose(0).expect("choose");
+                step_count += 1;
+            }
+            Ok(brink_runtime::Line::Text { text, .. }) => {
+                step_count += 1;
+                // Step 22 is the "\n" — stop AFTER it
+                if step_count >= 23 {
+                    println!("stopped after step {step_count}: {text:?}");
+                    break;
+                }
+            }
+            Ok(_) => {
+                break;
+            }
+            Err(e) => panic!("error at step {step_count}: {e:?}"),
+        }
+    }
+
+    // Now single-step and trace every opcode until the next continue_single
+    // would return. This shows us what happens after the Agree body's Goto.
+    println!("\n=== Single-stepping from step 23 start ===");
+    println!("initial state:\n{}", story.debug_state());
+
+    for i in 0..100 {
+        match story.step_once() {
+            Ok(Some((op, ci, off))) => {
+                println!("  vm[{i}]: container={ci} off={off} {op}");
+            }
+            Ok(None) => {
+                println!("  vm[{i}]: (no opcode — frame/thread event)");
+            }
+            Err(e) => {
+                println!("  vm[{i}]: ERROR {e:?}");
+                break;
+            }
+        }
+    }
+}

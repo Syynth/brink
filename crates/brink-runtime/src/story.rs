@@ -1541,6 +1541,9 @@ impl<'p, R: StoryRng> Story<'p, R> {
             }
         }
 
+        // Flow flags
+        let _ = writeln!(out, "\nskipping_choice: {}", flow.skipping_choice);
+
         // Pending choices
         let _ = writeln!(out, "\npending choices ({}):", flow.pending_choices.len());
         for (i, c) in flow.pending_choices.iter().enumerate() {
@@ -1548,6 +1551,48 @@ impl<'p, R: StoryRng> Story<'p, R> {
         }
 
         out
+    }
+
+    /// Execute a single VM step and return a debug trace of what happened.
+    ///
+    /// Returns `(opcode_description, container_idx, offset_before)` or None
+    /// if the step didn't decode an opcode (frame exhaustion, thread completion, etc).
+    #[cfg(feature = "testing")]
+    pub fn step_once(&mut self) -> Result<Option<(String, u32, usize)>, RuntimeError> {
+        use brink_format::Opcode;
+
+        let flow = &self.default.flow;
+        let thread = flow.current_thread();
+
+        // Capture position before step
+        let pre_info = thread.call_stack.last().and_then(|frame| {
+            frame.container_stack.last().map(|pos| {
+                let container = self.program.container(pos.container_idx);
+                if pos.offset < container.bytecode.len() {
+                    let mut off = pos.offset;
+                    let op = Opcode::decode(&container.bytecode, &mut off).ok();
+                    (pos.container_idx, pos.offset, op)
+                } else {
+                    (pos.container_idx, pos.offset, None)
+                }
+            })
+        });
+
+        // Execute one step
+        let _result = vm::step::<R>(
+            &mut self.default.flow,
+            self.program,
+            &self.line_tables,
+            &mut self.default_context,
+            &mut self.default.stats,
+            self.resolver.as_deref(),
+        )?;
+
+        match pre_info {
+            Some((ci, off, Some(op))) => Ok(Some((format!("{op:?}"), ci, off))),
+            Some((ci, off, None)) => Ok(Some(("(end of container)".to_string(), ci, off))),
+            None => Ok(None),
+        }
     }
 }
 
