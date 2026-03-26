@@ -867,7 +867,7 @@ VAR drugged = false
     );
 }
 
-fn compile_intercept() -> brink_format::StoryData {
+fn intercept_source() -> String {
     use std::path::PathBuf;
     let tests_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -875,8 +875,11 @@ fn compile_intercept() -> brink_format::StoryData {
         .join("..")
         .join("tests");
     let intercept_path = tests_dir.join("tier3/misc/TheIntercept/story.ink");
-    let full_source = std::fs::read_to_string(&intercept_path).expect("read TheIntercept");
-    compile_to_story_data(&full_source)
+    std::fs::read_to_string(&intercept_path).expect("read TheIntercept")
+}
+
+fn compile_intercept() -> brink_format::StoryData {
+    compile_to_story_data(&intercept_source())
 }
 
 #[test]
@@ -1008,5 +1011,110 @@ fn intercept_agree_choice_diverts_to_correct_gather() {
         "Agree choice goto target {target} should contain emit_line 69 (sipping) \
          or enter_container for the teacup conditional, but it doesn't. \
          The gather target is wrong — the choice diverts to the wrong place.",
+    );
+}
+
+#[test]
+fn intercept_agree_body_goto_resolves_to_correct_linked_container() {
+    // Verify at the bytecode/linker level:
+    // 1. Find the container whose line table entry 62 is "Awkward," I reply
+    // 2. Decode its bytecode to find the Goto opcode
+    // 3. Verify the Goto's DefinitionId resolves to a container that
+    //    contains the teacup conditional (enter_container or emit_line 69)
+    let data = compile_intercept();
+    let (program, _line_tables) = brink_runtime::link(&data).expect("link failed");
+
+    // Use the .inkt to find the Agree body's DefinitionId and Goto target's
+    // DefinitionId, then verify the linking at the bytecode level.
+    let inkt = dump_inkt(&data);
+
+    // From the .inkt, the Agree body container ($01_a67b2466500645) ends with
+    // goto $01_cadfa2d17d7ec8. The gather ($01_cadfa2d17d7ec8) should contain
+    // enter_container for the teacup conditional.
+    //
+    // Find the Agree body container by looking for the one with emit_line 62.
+    // Then decode its bytecode to extract the Goto DefinitionId and verify
+    // it resolves to the expected gather.
+
+    // Step 1: Find the Agree body container in StoryData
+    let mut agree_goto_id = None;
+    for cdef in &data.containers {
+        let mut offset = 0;
+        let mut has_emit_line_62 = false;
+        let mut last_goto = None;
+        while offset < cdef.bytecode.len() {
+            match brink_format::Opcode::decode(&cdef.bytecode, &mut offset) {
+                Ok(brink_format::Opcode::EmitLine(62, _)) => has_emit_line_62 = true,
+                Ok(brink_format::Opcode::Goto(id)) => last_goto = Some(id),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        if has_emit_line_62 {
+            agree_goto_id = last_goto;
+            println!(
+                "Agree body: container id={:?}, goto target={last_goto:?}",
+                cdef.id
+            );
+            break;
+        }
+    }
+
+    let goto_def_id =
+        agree_goto_id.expect("Agree choice body should have a Goto after EmitLine(62)");
+
+    // Step 2: Verify the Goto resolves in the linked program
+    let resolved = program.resolve_address(goto_def_id);
+    assert!(
+        resolved.is_some(),
+        "Goto target {goto_def_id:?} should resolve in the linked program",
+    );
+    let (target_ci, target_offset) = resolved.unwrap();
+    println!("Goto resolves to: container_idx={target_ci}, offset={target_offset}");
+    assert_eq!(
+        target_offset, 0,
+        "Goto should target the start of the gather container (offset 0)",
+    );
+
+    // Step 3: Verify the target container has the teacup conditional
+    let target_bytecode = &data.containers[target_ci as usize].bytecode;
+    let mut offset = 0;
+    let mut has_enter_container = false;
+    let mut has_get_global = false;
+    let mut opcodes_summary = Vec::new();
+    while offset < target_bytecode.len() {
+        match brink_format::Opcode::decode(target_bytecode, &mut offset) {
+            Ok(brink_format::Opcode::EnterContainer(_)) => {
+                has_enter_container = true;
+                opcodes_summary.push("EnterContainer".to_string());
+            }
+            Ok(brink_format::Opcode::GetGlobal(_)) => {
+                has_get_global = true;
+                opcodes_summary.push("GetGlobal".to_string());
+            }
+            Ok(brink_format::Opcode::JumpIfFalse(_)) => {
+                opcodes_summary.push("JumpIfFalse".to_string());
+            }
+            Ok(brink_format::Opcode::Glue) => {
+                opcodes_summary.push("Glue".to_string());
+            }
+            Ok(brink_format::Opcode::EmitLine(idx, sc)) => {
+                opcodes_summary.push(format!("EmitLine({idx}, {sc})"));
+            }
+            Ok(op) => {
+                opcodes_summary.push(format!("{op:?}"));
+            }
+            Err(_) => break,
+        }
+    }
+    println!("Target container opcodes: {opcodes_summary:?}");
+
+    assert!(
+        has_get_global,
+        "Gather container should GetGlobal (teacup check). Opcodes: {opcodes_summary:?}",
+    );
+    assert!(
+        has_enter_container,
+        "Gather container should EnterContainer (teacup conditional body). Opcodes: {opcodes_summary:?}",
     );
 }

@@ -80,9 +80,31 @@ impl Program {
         self.address_map.get(&id).copied()
     }
 
+    /// Resolve a definition ID to `(container_idx, byte_offset)`.
+    #[cfg(feature = "testing")]
+    pub fn resolve_address(&self, id: DefinitionId) -> Option<(u32, usize)> {
+        self.resolve_target(id)
+    }
+
     /// Get a container by its index.
     pub(crate) fn container(&self, idx: u32) -> &LinkedContainer {
         &self.containers[idx as usize]
+    }
+
+    /// Get a container's bytecode by index.
+    #[cfg(feature = "testing")]
+    pub fn container_bytecode(&self, idx: u32) -> &[u8] {
+        &self.containers[idx as usize].bytecode
+    }
+
+    /// Number of containers.
+    #[cfg(feature = "testing")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "container count fits in u32"
+    )]
+    pub fn container_count(&self) -> u32 {
+        self.containers.len() as u32
     }
 
     /// CRC-32 checksum from the source `.inkb`, used for transcript validation.
