@@ -134,6 +134,7 @@ const LIST_RANDOM: u8 = 0xBD;
 
 // Lifecycle
 const DONE: u8 = 0xF0;
+const YIELD: u8 = 0xF3;
 const END: u8 = 0xF1;
 const NOP: u8 = 0xF2;
 
@@ -454,6 +455,10 @@ pub enum Opcode {
 
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
+    /// Pause for choice presentation. Like `Done` but does NOT set
+    /// `did_safe_exit` — if no choices are pending, the story ran
+    /// out of content rather than reaching an explicit `-> DONE`.
+    Yield,
     End,
     Nop,
 
@@ -688,6 +693,7 @@ impl Opcode {
 
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
+            Self::Yield => write_u8(buf, YIELD),
             Self::End => write_u8(buf, END),
             Self::Nop => write_u8(buf, NOP),
 
@@ -859,6 +865,7 @@ impl Opcode {
 
             // Lifecycle
             DONE => Self::Done,
+            YIELD => Self::Yield,
             END => Self::End,
             NOP => Self::Nop,
 
@@ -1126,7 +1133,7 @@ mod tests {
 
     #[test]
     fn roundtrip_lifecycle() {
-        for op in [Opcode::Done, Opcode::End, Opcode::Nop] {
+        for op in [Opcode::Done, Opcode::Yield, Opcode::End, Opcode::Nop] {
             roundtrip(&op);
         }
     }

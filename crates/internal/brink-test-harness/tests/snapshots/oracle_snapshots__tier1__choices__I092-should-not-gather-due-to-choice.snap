@@ -4,11 +4,10 @@ expression: case_snapshot
 ---
 case: tier1/choices/I092-should-not-gather-due-to-choice
 oracle: 1, brink: 1, matched: 1
-passing: 0/1
+passing: 1/1
 
-=== episode [0] === FAIL
+=== episode [0] === PASS
 > "" [Choices: "opt" (0) -> 0]
 > "opt\n" [Continue]
 > "text\n" [Done]
-outcome: Done
-  step 2: extra ("text\n")
+outcome: Error

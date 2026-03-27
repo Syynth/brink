@@ -4,15 +4,14 @@ expression: case_snapshot
 ---
 case: tier1/choices/divert-choice
 oracle: 2, brink: 3, matched: 1
-passing: 0/2
+passing: 1/2
 
-=== episode [0, 0] === FAIL
+=== episode [0, 0] === PASS
 > "You see a soldier.\n" [Choices: "Pull a face" (0), "Shove the guard aside" (1) -> 0]
 > "You pull a face, and the soldier comes at you! You shove the guard to one side, but he comes back swinging.\n" [Continue]
 > "You see a soldier.\n" [Choices: "Grapple and fight" (0) -> 0]
 > "You see a soldier.\n" [Done]
-outcome: Done
-  step 3: extra ("You see a soldier.\n")
+outcome: Error
 
 --- missing episodes (1) ---
 [1]

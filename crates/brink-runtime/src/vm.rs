@@ -157,17 +157,23 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 flow.pop_thread();
                 return Ok(Stepped::ThreadCompleted);
             }
-            // Only set safe exit when on the root frame — the
-            // compiler adds `done` to ALL container endings, but
-            // only the root-level `done` represents an intentional
-            // `-> DONE` from the author. Inner containers (choice
-            // bodies, gathers) always have implicit `done` that
-            // shouldn't count as safe exit.
-            let thread = flow.current_thread();
-            if thread.call_stack.len() == 1 {
-                flow.did_safe_exit = true;
-            }
+            flow.did_safe_exit = true;
             return Ok(Stepped::Done);
+        }
+        Opcode::Yield => {
+            // Pause for choice presentation. Like Done but does NOT
+            // set did_safe_exit.
+            if flow.can_pop_thread() {
+                flow.pop_thread();
+                return Ok(Stepped::ThreadCompleted);
+            }
+            // Only yield if there are actually choices to present.
+            // If no choices were created, continue execution — the
+            // choice set was empty but the story may have more content.
+            if !flow.pending_choices.is_empty() {
+                return Ok(Stepped::Done);
+            }
+            flow.did_unsafe_yield = true;
         }
         Opcode::End => {
             return Ok(Stepped::Ended);

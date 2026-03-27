@@ -204,10 +204,13 @@ impl ContainerEmitter<'_> {
         // (e.g., a gather's `goto end`), terminating the story before the
         // VM can present choices.
         //
-        // Inside a conditional branch, the `done` is deferred to the outer
+        // Uses `Yield` (not `Done`) so `did_safe_exit` is NOT set — if
+        // no choices are pending, the story ran out of content.
+        //
+        // Inside a conditional branch, the yield is deferred to the outer
         // gather/container — emitting it here would block flow to the gather.
         if !self.in_conditional_branch {
-            self.emit(Opcode::Done);
+            self.emit(Opcode::Yield);
         }
     }
 

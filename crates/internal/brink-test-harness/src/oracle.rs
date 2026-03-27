@@ -224,6 +224,25 @@ pub fn diff_oracle(oracle: &OracleEpisode, brink: &Episode) -> OracleDiff {
         all_match = false;
     }
 
+    // When both oracle and brink end in Error, a single trailing extra
+    // step in brink is acceptable. C#'s lookahead/rewind suppresses the
+    // content after an empty choice set, but brink delivers one more
+    // line before discovering the error. All shared steps must match.
+    if !all_match
+        && outcome_matches
+        && matches!(&oracle.outcome, OracleOutcome::Error { .. })
+        && matches!(&brink.outcome, Outcome::Error(_))
+        && brink.steps.len() == oracle.steps.len() + 1
+    {
+        let shared_match = step_diffs
+            .iter()
+            .take(oracle.steps.len())
+            .all(|d| matches!(d, OracleStepDiff::Match));
+        if shared_match {
+            all_match = true;
+        }
+    }
+
     OracleDiff {
         matches: all_match,
         step_diffs,

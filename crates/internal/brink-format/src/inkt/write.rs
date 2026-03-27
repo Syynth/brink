@@ -455,6 +455,7 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
 
         // Lifecycle
         Opcode::Done => write!(w, "done"),
+        Opcode::Yield => write!(w, "yield"),
         Opcode::End => write!(w, "end"),
         Opcode::Nop => write!(w, "nop"),
 

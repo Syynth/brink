@@ -1124,6 +1124,7 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
 
         // Lifecycle
         "done" => Ok(Opcode::Done),
+        "yield" => Ok(Opcode::Yield),
         "end" => Ok(Opcode::End),
         "nop" => Ok(Opcode::Nop),
 

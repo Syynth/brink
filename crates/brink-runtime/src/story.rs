@@ -325,6 +325,10 @@ pub(crate) struct PendingChoice {
 
 /// Per-flow execution context. Owns threads, eval stack, output, choices.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "VM flags are inherently boolean"
+)]
 pub(crate) struct Flow {
     pub threads: Vec<Thread>,
     pub value_stack: Vec<Value>,
@@ -334,10 +338,12 @@ pub(crate) struct Flow {
     pub in_tag: bool,
     pub skipping_choice: bool,
     /// Set to `true` when a `Done` opcode fires (explicit `-> DONE`).
-    /// Cleared at the start of each `continue_single` call. If execution
-    /// reaches a terminal state without this flag, the story ran out of
-    /// content — matching C#'s `didSafeExit` check.
+    /// Cleared at the start of each `continue_single` call.
     pub did_safe_exit: bool,
+    /// Set to `true` when a `Yield` opcode falls through with no
+    /// pending choices — the story passed through an empty choice set.
+    /// Cleared at the start of each `continue_single` call.
+    pub did_unsafe_yield: bool,
 }
 
 /// Shared game state that lives above individual flows.
@@ -629,6 +635,7 @@ impl FlowInstance {
                 in_tag: false,
                 skipping_choice: false,
                 did_safe_exit: false,
+                did_unsafe_yield: false,
             },
             status: StoryStatus::Active,
             stats: Stats::default(),
@@ -701,12 +708,19 @@ impl FlowInstance {
         }
 
         // 4. Reset Done → Active (resuming after output).
+        //    If the previous cycle ended without a safe exit (no explicit
+        //    -> DONE opcode), the story ran out of content. The previous
+        //    call delivered the text — error now.
         if self.status == StoryStatus::Done {
+            if !self.flow.did_safe_exit {
+                return Err(RuntimeError::RanOutOfContent);
+            }
             self.status = StoryStatus::Active;
         }
 
-        // Clear safe-exit flag — will be set if a Done opcode fires.
+        // Clear flags — will be set during this cycle if relevant.
         self.flow.did_safe_exit = false;
+        self.flow.did_unsafe_yield = false;
 
         // 5. Step VM loop.
         let Self {
@@ -770,9 +784,6 @@ impl FlowInstance {
 
                     // Set status based on remaining choices.
                     if flow.pending_choices.is_empty() {
-                        if !flow.did_safe_exit {
-                            return Err(RuntimeError::RanOutOfContent);
-                        }
                         *status = StoryStatus::Done;
                     } else {
                         *status = StoryStatus::WaitingForChoice;
@@ -1563,6 +1574,21 @@ impl<'p, R: StoryRng> Story<'p, R> {
         }
 
         out
+    }
+
+    /// Returns whether the last execution cycle ended with a safe exit
+    /// (explicit `-> DONE` opcode). If false after a `Done` line, the
+    /// story ran out of content.
+    #[cfg(feature = "testing")]
+    pub fn did_safe_exit(&self) -> bool {
+        self.default.flow.did_safe_exit
+    }
+
+    /// Returns whether the last execution cycle passed through an empty
+    /// choice set (a `Yield` opcode with no pending choices).
+    #[cfg(feature = "testing")]
+    pub fn did_unsafe_yield(&self) -> bool {
+        self.default.flow.did_unsafe_yield
     }
 
     /// Execute a single VM step and return a debug trace of what happened.
