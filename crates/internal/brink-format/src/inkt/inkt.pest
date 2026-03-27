@@ -90,8 +90,9 @@ source_loc = @{ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ }
 
 // ── Values ──────────────────────────────────────────────────────────────────
 
-value = { list_value | var_pointer_value | string | float | integer | def_id | null_value | bool_value }
+value = { list_value | var_pointer_value | fragment_ref_value | string | float | integer | def_id | null_value | bool_value }
 var_pointer_value = { "(" ~ "var_pointer" ~ def_id ~ ")" }
+fragment_ref_value = { "(" ~ "fragment_ref" ~ integer ~ ")" }
 list_value = { "(" ~ "list" ~ list_value_items ~ list_value_origins ~ ")" }
 list_value_items = { "(" ~ "items" ~ def_id* ~ ")" }
 list_value_origins = { "(" ~ "origins" ~ def_id* ~ ")" }

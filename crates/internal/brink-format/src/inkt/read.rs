@@ -213,6 +213,7 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "divert_target" => Ok(ValueType::DivertTarget),
         "var_pointer" => Ok(ValueType::VariablePointer),
         "temp_pointer" => Ok(ValueType::TempPointer),
+        "fragment_ref" => Ok(ValueType::FragmentRef),
         "null" => Ok(ValueType::Null),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
@@ -272,6 +273,19 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
                 col: 0,
             })?;
             Ok(Value::VariablePointer(parse_def_id(id_pair)?))
+        }
+        Rule::fragment_ref_value => {
+            let idx_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
+                message: "expected integer in fragment_ref".into(),
+                line: 0,
+                col: 0,
+            })?;
+            let idx: u32 = idx_pair.as_str().parse().map_err(|_| InktParseError {
+                message: "invalid fragment_ref index".into(),
+                line: 0,
+                col: 0,
+            })?;
+            Ok(Value::FragmentRef(idx))
         }
         _ => Err(err(
             &inner,
@@ -1131,6 +1145,10 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         // String eval
         "begin_string_eval" => Ok(Opcode::BeginStringEval),
         "end_string_eval" => Ok(Opcode::EndStringEval),
+
+        // Fragment capture
+        "begin_fragment" => Ok(Opcode::BeginFragment),
+        "end_fragment" => Ok(Opcode::EndFragment),
 
         // Debug
         "source_location" => {
