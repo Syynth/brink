@@ -48,10 +48,15 @@ impl ContainerEmitter<'_> {
         }
     }
 
-    /// Emit a recognized line wrapped in `BeginFragment`/`EndFragment`.
-    /// Slot expressions are evaluated BEFORE the fragment starts so function
-    /// calls produce values normally. Only the `EmitLine` is inside the fragment.
-    pub(super) fn emit_fragment_recognized_line(&mut self, emission: &lir::ContentEmission) {
+    /// Emit a recognized line wrapped in `BeginFragment`/`EndFragment` with
+    /// tags **inside** the fragment. Tags captured inside the fragment are
+    /// stored on the `Fragment` struct so the runtime can route them to the
+    /// consumer (e.g. `BeginChoice` pulls them onto the choice).
+    pub(super) fn emit_fragment_recognized_line_with_tags(
+        &mut self,
+        emission: &lir::ContentEmission,
+        extra_tags: &[Vec<lir::ContentPart>],
+    ) {
         let slot_info = emission.metadata.slot_info.clone();
         let source_location = emission.metadata.source_location.clone();
         match &emission.line {
@@ -64,13 +69,14 @@ impl ContainerEmitter<'_> {
                 );
                 self.emit(Opcode::BeginFragment);
                 self.emit(Opcode::EmitLine(idx, 0));
+                self.emit_tags(&emission.tags);
+                self.emit_tags(extra_tags);
                 self.emit(Opcode::EndFragment);
             }
             lir::RecognizedLine::Template {
                 parts: template_parts,
                 slot_exprs,
             } => {
-                // Evaluate slot expressions BEFORE the fragment.
                 for expr in slot_exprs {
                     self.emit_slot_expr(expr);
                 }
@@ -80,16 +86,19 @@ impl ContainerEmitter<'_> {
                     slot_info,
                     source_location,
                 );
-                // Only the EmitLine is inside the fragment.
                 self.emit(Opcode::BeginFragment);
                 #[expect(clippy::cast_possible_truncation)]
                 self.emit(Opcode::EmitLine(idx, slot_exprs.len() as u8));
+                self.emit_tags(&emission.tags);
+                self.emit_tags(extra_tags);
                 self.emit(Opcode::EndFragment);
             }
         }
+    }
 
-        // Tags after the fragment (not inside it).
-        for tag in &emission.tags {
+    /// Emit `BeginTag`/content/`EndTag` for each tag.
+    pub(super) fn emit_tags(&mut self, tags: &[Vec<lir::ContentPart>]) {
+        for tag in tags {
             self.emit(Opcode::BeginTag);
             self.emit_content_parts(tag);
             self.emit(Opcode::EndTag);

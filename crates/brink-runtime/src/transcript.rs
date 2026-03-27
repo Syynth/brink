@@ -87,7 +87,7 @@ pub enum TranscriptError {
 pub fn write_transcript(
     parts: &[OutputPart],
     source_checksum: u32,
-    fragments: &[Vec<OutputPart>],
+    fragments: &[crate::output::Fragment],
 ) -> Vec<u8> {
     let mut body = Vec::new();
 
@@ -138,11 +138,12 @@ pub fn write_transcript(
     write_u32(&mut body, fragments.len() as u32);
     for fragment in fragments {
         let filtered_count = fragment
+            .parts
             .iter()
             .filter(|p| !matches!(p, OutputPart::Checkpoint))
             .count() as u32;
         write_u32(&mut body, filtered_count);
-        for part in fragment {
+        for part in &fragment.parts {
             match part {
                 OutputPart::Text(s) => {
                     write_u8(&mut body, TAG_TEXT);
@@ -198,7 +199,7 @@ pub fn write_transcript(
 /// Returns `(parts, source_checksum)`. The caller should validate the
 /// source checksum against the program's checksum before using the parts.
 /// Result of reading a transcript: (parts, `source_checksum`, fragments).
-pub type TranscriptData = (Vec<OutputPart>, u32, Vec<Vec<OutputPart>>);
+pub type TranscriptData = (Vec<OutputPart>, u32, Vec<crate::output::Fragment>);
 
 pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> {
     if bytes.len() < HEADER_SIZE {
@@ -300,7 +301,10 @@ pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> 
             };
             frag_parts.push(part);
         }
-        fragments.push(frag_parts);
+        fragments.push(crate::output::Fragment {
+            parts: frag_parts,
+            tags: Vec::new(),
+        });
     }
 
     Ok((parts, source_checksum, fragments))
@@ -317,7 +321,7 @@ pub fn render_transcript(
     program: &Program,
     line_tables: &[Vec<brink_format::LineEntry>],
     resolver: Option<&dyn brink_format::PluralResolver>,
-    fragments: &[Vec<OutputPart>],
+    fragments: &[crate::output::Fragment],
 ) -> Vec<(String, Vec<String>)> {
     resolve_lines(parts, program, line_tables, resolver, fragments)
 }
@@ -557,7 +561,7 @@ mod tests {
     use super::*;
     use brink_format::LineFlags;
 
-    fn unwrap_transcript(bytes: &[u8]) -> (Vec<OutputPart>, u32, Vec<Vec<OutputPart>>) {
+    fn unwrap_transcript(bytes: &[u8]) -> (Vec<OutputPart>, u32, Vec<crate::output::Fragment>) {
         read_transcript(bytes).unwrap()
     }
 

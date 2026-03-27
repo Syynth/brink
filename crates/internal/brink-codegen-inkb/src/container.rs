@@ -236,16 +236,24 @@ impl ContainerEmitter<'_> {
         // condition first (from top), then display.
 
         // 1. Display text (combined start + choice_only) — pushed first.
+        //    Tags must be emitted INSIDE the display eval so the runtime
+        //    routes them to the choice (via fragment tags or current_tags),
+        //    not to the output line.
         if let Some(ref emission) = choice.display_emission {
-            // Recognized display — wrap EmitLine in fragment for structural preservation.
-            // Slot expressions are evaluated BEFORE the fragment so function calls
-            // still produce values on the stack normally.
-            self.emit_fragment_recognized_line(emission);
+            // Recognized display — fragment with tags inside.
+            self.emit_fragment_recognized_line_with_tags(emission, &choice.tags);
         } else if let Some(ref display) = display {
-            // Unrecognized display — may contain function calls that use the value stack.
-            // Keep string eval until per-call fragment wrapping is implemented (commit 6).
+            // Unrecognized display — string eval with tags inside the capture.
             self.emit(Opcode::BeginStringEval);
             self.emit_choice_content(display);
+            self.emit_tags(&display.tags);
+            self.emit_tags(&choice.tags);
+            self.emit(Opcode::EndStringEval);
+        } else if !choice.tags.is_empty() {
+            // No display content but tags exist — wrap in string eval so
+            // the capture context routes them to current_tags.
+            self.emit(Opcode::BeginStringEval);
+            self.emit_tags(&choice.tags);
             self.emit(Opcode::EndStringEval);
         }
 
@@ -257,13 +265,6 @@ impl ContainerEmitter<'_> {
         // 3. BeginChoice pops condition + display from stack
         self.emit(Opcode::BeginChoice(flags, choice.target));
         self.emit(Opcode::EndChoice);
-
-        // Tags after EndChoice
-        for tag in &choice.tags {
-            self.emit(Opcode::BeginTag);
-            self.emit_content_parts(tag);
-            self.emit(Opcode::EndTag);
-        }
     }
 
     pub(super) fn emit_conditional(&mut self, cond: &lir::Conditional) {

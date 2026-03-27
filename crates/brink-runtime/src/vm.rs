@@ -855,6 +855,10 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                     // Inside a capture (choice text, function call) — store
                     // for the choice/function to consume.
                     flow.current_tags.push(tag);
+                } else if flow.output.in_fragment_capture() {
+                    // Inside a fragment — associate with the fragment so the
+                    // consumer (e.g. BeginChoice) can pull them out.
+                    flow.output.push_fragment_tag(tag);
                 } else {
                     // Top-level output — associate with the current line.
                     flow.output.push_tag(tag);
@@ -1288,7 +1292,14 @@ fn handle_begin_choice(
     // 2. Pop the display value.
     let display = if has_display {
         match flow.value_stack.pop() {
-            Some(Value::FragmentRef(idx)) => crate::story::ChoiceDisplay::Fragment(idx),
+            Some(Value::FragmentRef(idx)) => {
+                // Pull any tags stored on the fragment into current_tags
+                // so they end up on the PendingChoice.
+                if let Some(frag_tags) = flow.output.fragment_tags(idx) {
+                    flow.current_tags.extend(frag_tags.iter().cloned());
+                }
+                crate::story::ChoiceDisplay::Fragment(idx)
+            }
             Some(Value::String(s)) => crate::story::ChoiceDisplay::Text((*s).to_owned()),
             Some(other) => crate::story::ChoiceDisplay::Text(value_ops::stringify(&other, program)),
             None => crate::story::ChoiceDisplay::Text(String::new()),

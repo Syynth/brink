@@ -1178,7 +1178,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
     }
 
     /// Read-only access to the fragment store (for transcript serialization).
-    pub fn fragments(&self) -> &[Vec<crate::output::OutputPart>] {
+    pub fn fragments(&self) -> &[crate::output::Fragment] {
         self.default.flow.output.fragments()
     }
 

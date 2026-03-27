@@ -77,7 +77,7 @@ fn resolve_part(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Vec<OutputPart>],
+    fragments: &[Fragment],
 ) -> String {
     match part {
         OutputPart::Text(s) => s.clone(),
@@ -98,8 +98,8 @@ fn resolve_part(
         OutputPart::ValueRef(Value::FragmentRef(idx)) => {
             // Resolve the fragment's parts against current line tables.
             let idx = *idx as usize;
-            if let Some(parts) = fragments.get(idx) {
-                resolve_parts(parts, program, line_tables, resolver, fragments)
+            if let Some(frag) = fragments.get(idx) {
+                resolve_parts(&frag.parts, program, line_tables, resolver, fragments)
             } else {
                 String::new()
             }
@@ -121,7 +121,7 @@ fn resolve_line_ref(
     line_idx: u16,
     slots: &[Value],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Vec<OutputPart>],
+    fragments: &[Fragment],
 ) -> String {
     let scope_idx = program.scope_table_idx(container_idx) as usize;
     let lines = &line_tables[scope_idx];
@@ -143,9 +143,9 @@ fn resolve_line_ref(
                             .map(|v| match v {
                                 Value::FragmentRef(idx) => {
                                     let idx = *idx as usize;
-                                    fragments.get(idx).map_or_else(String::new, |parts| {
+                                    fragments.get(idx).map_or_else(String::new, |frag| {
                                         resolve_parts(
-                                            parts,
+                                            &frag.parts,
                                             program,
                                             line_tables,
                                             resolver,
@@ -253,6 +253,13 @@ fn resolve_select<'a>(
     default
 }
 
+/// A finalized fragment — structural output parts plus any associated tags.
+#[derive(Debug, Clone)]
+pub struct Fragment {
+    pub parts: Vec<OutputPart>,
+    pub tags: Vec<String>,
+}
+
 /// Accumulates output text with glue resolution.
 ///
 /// The buffer is split into two storage areas:
@@ -271,11 +278,13 @@ pub(crate) struct OutputBuffer {
     /// Nesting depth of active captures. When > 0, pushes route to `capture`.
     capture_depth: usize,
     /// Finalized fragments — structural output parts for locale re-rendering.
-    fragments: Vec<Vec<OutputPart>>,
+    fragments: Vec<Fragment>,
     /// Current fragment being captured.
     fragment_capture: Vec<OutputPart>,
     /// Fragment capture nesting depth. When > 0, pushes route to `fragment_capture`.
     fragment_depth: usize,
+    /// Tags accumulated during each nested fragment capture level.
+    fragment_pending_tags: Vec<Vec<String>>,
 }
 
 impl OutputBuffer {
@@ -288,6 +297,7 @@ impl OutputBuffer {
             fragments: Vec::new(),
             fragment_capture: Vec::new(),
             fragment_depth: 0,
+            fragment_pending_tags: Vec::new(),
         }
     }
 
@@ -554,6 +564,7 @@ impl OutputBuffer {
     pub fn begin_fragment(&mut self) {
         self.fragment_depth += 1;
         self.fragment_capture.push(OutputPart::Checkpoint);
+        self.fragment_pending_tags.push(Vec::new());
     }
 
     /// End the current fragment capture: drain from the last checkpoint,
@@ -568,22 +579,40 @@ impl OutputBuffer {
         let captured: Vec<OutputPart> = self.fragment_capture.drain(cp_idx..).collect();
         // Skip the checkpoint itself (first element).
         let parts: Vec<OutputPart> = captured.into_iter().skip(1).collect();
+        let tags = self.fragment_pending_tags.pop().unwrap_or_default();
         let idx = self.fragments.len() as u32;
-        self.fragments.push(parts);
+        self.fragments.push(Fragment { parts, tags });
 
         self.fragment_depth = self.fragment_depth.saturating_sub(1);
 
         Some(idx)
     }
 
+    /// Returns true if currently inside a fragment capture.
+    pub fn in_fragment_capture(&self) -> bool {
+        self.fragment_depth > 0
+    }
+
+    /// Push a tag onto the current fragment being captured.
+    pub fn push_fragment_tag(&mut self, tag: String) {
+        if let Some(pending) = self.fragment_pending_tags.last_mut() {
+            pending.push(tag);
+        }
+    }
+
+    /// Read access to a finalized fragment's tags.
+    pub fn fragment_tags(&self, idx: u32) -> Option<&[String]> {
+        self.fragments.get(idx as usize).map(|f| f.tags.as_slice())
+    }
+
     /// Read access to all finalized fragments.
-    pub fn fragments(&self) -> &[Vec<OutputPart>] {
+    pub fn fragments(&self) -> &[Fragment] {
         &self.fragments
     }
 
     /// Read access to a finalized fragment's parts.
     pub fn fragment(&self, idx: u32) -> Option<&[OutputPart]> {
-        self.fragments.get(idx as usize).map(Vec::as_slice)
+        self.fragments.get(idx as usize).map(|f| f.parts.as_slice())
     }
 
     /// Resolve a fragment's parts against the current line tables.
@@ -831,7 +860,7 @@ fn resolve_parts(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Vec<OutputPart>],
+    fragments: &[Fragment],
 ) -> String {
     // First pass: mark newlines that should be removed by glue.
     let mut remove = vec![false; parts.len()];
@@ -894,7 +923,7 @@ pub(crate) fn resolve_lines(
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
-    fragments: &[Vec<OutputPart>],
+    fragments: &[Fragment],
 ) -> Vec<(String, Vec<String>)> {
     if parts.is_empty() {
         return Vec::new();

@@ -4,28 +4,19 @@ expression: case_snapshot
 ---
 case: tier3/tags/tagsInChoiceDynamic
 oracle: 3, brink: 3, matched: 3
-passing: 0/3
+passing: 3/3
 
-=== episode [0] === FAIL
-> "" #tag Name #tag 1 Name 2 3 4 #Name tag 1 2 3 4 [Choices: "Choice" (0), "Choice2" (1), "Choice" (2) -> 0]
+=== episode [0] === PASS
+> "" [Choices: "Choice" (0), "Choice2" (1), "Choice" (2) -> 0]
 > "" [Done]
 outcome: Done
-  step 0: tags differ
-    oracle: []
-    brink:  ["tag Name", "tag 1 Name 2 3 4", "Name tag 1 2 3 4"]
 
-=== episode [1] === FAIL
-> "" #tag Name #tag 1 Name 2 3 4 #Name tag 1 2 3 4 [Choices: "Choice" (0), "Choice2" (1), "Choice" (2) -> 1]
+=== episode [1] === PASS
+> "" [Choices: "Choice" (0), "Choice2" (1), "Choice" (2) -> 1]
 > "" [Done]
 outcome: Done
-  step 0: tags differ
-    oracle: []
-    brink:  ["tag Name", "tag 1 Name 2 3 4", "Name tag 1 2 3 4"]
 
-=== episode [2] === FAIL
-> "" #tag Name #tag 1 Name 2 3 4 #Name tag 1 2 3 4 [Choices: "Choice" (0), "Choice2" (1), "Choice" (2) -> 2]
+=== episode [2] === PASS
+> "" [Choices: "Choice" (0), "Choice2" (1), "Choice" (2) -> 2]
 > "" [Ended]
 outcome: Ended
-  step 0: tags differ
-    oracle: []
-    brink:  ["tag Name", "tag 1 Name 2 3 4", "Name tag 1 2 3 4"]

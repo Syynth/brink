@@ -38,7 +38,7 @@ mod vm;
 pub use error::RuntimeError;
 pub use linker::link;
 pub use locale::{LocaleMode, apply_locale};
-pub use output::OutputPart;
+pub use output::{Fragment, OutputPart};
 pub use program::Program;
 pub use rng::{DotNetRng, FastRng, StoryRng};
 pub use state::WriteObserver;
