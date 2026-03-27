@@ -108,6 +108,15 @@ impl<'src> Lexer<'src> {
             return;
         }
 
+        // Glue `<>` — recognized even in string mode because in ink `"` in
+        // content text is a literal character (dialogue quotes), not a string
+        // delimiter. Glue must break out of STRING_TEXT so the parser sees it.
+        if b == b'<' && self.pos + 1 < self.bytes.len() && self.bytes[self.pos + 1] == b'>' {
+            self.pos += 2;
+            self.emit(SyntaxKind::GLUE, start);
+            return;
+        }
+
         // Newline terminates an unterminated string
         if b == b'\n' || b == b'\r' {
             self.pos += 1;
@@ -124,6 +133,10 @@ impl<'src> Lexer<'src> {
         while self.pos < self.bytes.len() {
             match self.bytes[self.pos] {
                 b'"' | b'\\' | b'{' | b'\n' | b'\r' | b'[' | b']' => break,
+                // Break on `<>` (glue)
+                b'<' if self.pos + 1 < self.bytes.len() && self.bytes[self.pos + 1] == b'>' => {
+                    break;
+                }
                 _ => self.pos += 1,
             }
         }

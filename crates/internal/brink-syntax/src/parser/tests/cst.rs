@@ -400,3 +400,30 @@ fn function_knot() {
         }),
     );
 }
+
+#[test]
+fn glue_in_tab_indented_choice_body() {
+    fn has_glue_node(node: &SyntaxNode) -> bool {
+        if node.kind() == SyntaxKind::GLUE_NODE {
+            return true;
+        }
+        node.children().any(|c| has_glue_node(&c))
+    }
+
+    // Parse the pattern: tab-indented choice body with trailing <>
+    // This is the TheIntercept pattern where <> ends up as literal text.
+    let source = " \t* [Yes]\n \t\t\"Yes, I considered it. <>\n";
+    let parsed = parse(source);
+    let tree = format_tree(&parsed.syntax(), 0);
+    eprintln!("{tree}");
+
+    // Also check lexer tokens
+    let tokens = crate::lex(source);
+    let has_glue_token = tokens.iter().any(|(k, _)| *k == SyntaxKind::GLUE);
+    assert!(has_glue_token, "lexer should produce GLUE token for '<>'");
+
+    assert!(
+        has_glue_node(&parsed.syntax()),
+        "parse tree should contain GLUE_NODE for '<>', but doesn't. Tree:\n{tree}"
+    );
+}

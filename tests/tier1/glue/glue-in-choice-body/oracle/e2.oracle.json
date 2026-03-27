@@ -1,0 +1,85 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Talk",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "\"There was a young man.\"\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "Harris is not letting me off.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\"You seriously entertained that possibility?\"\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Yes",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "No",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "Lie",
+              "index": 2,
+              "tags": []
+            }
+          ],
+          "selected": 2
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\"I was quite certain, after a while. He seemed to know all about me.\"\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0,
+    2
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

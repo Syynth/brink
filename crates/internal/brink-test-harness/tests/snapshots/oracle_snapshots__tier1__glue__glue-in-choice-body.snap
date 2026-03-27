@@ -1,0 +1,32 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/glue/glue-in-choice-body
+oracle: 3, brink: 3, matched: 3
+passing: 3/3
+
+=== episode [0, 0] === PASS
+> "" [Choices: "Talk" (0) -> 0]
+> "\"There was a young man.\"\n" [Continue]
+> "Harris is not letting me off.\n" [Continue]
+> "\"You seriously entertained that possibility?\"\n" [Choices: "Yes" (0), "No" (1), "Lie" (2) -> 0]
+> "\"Yes, I considered it. He seemed to know all about me.\"\n" [Ended]
+outcome: Ended
+
+=== episode [0, 1] === PASS
+> "" [Choices: "Talk" (0) -> 0]
+> "\"There was a young man.\"\n" [Continue]
+> "Harris is not letting me off.\n" [Continue]
+> "\"You seriously entertained that possibility?\"\n" [Choices: "Yes" (0), "No" (1), "Lie" (2) -> 1]
+> "\"No. Not for a moment.\"\n" [Continue]
+> "I nod. \"He seemed to know all about me.\"\n" [Ended]
+outcome: Ended
+
+=== episode [0, 2] === PASS
+> "" [Choices: "Talk" (0) -> 0]
+> "\"There was a young man.\"\n" [Continue]
+> "Harris is not letting me off.\n" [Continue]
+> "\"You seriously entertained that possibility?\"\n" [Choices: "Yes" (0), "No" (1), "Lie" (2) -> 2]
+> "\"I was quite certain, after a while. He seemed to know all about me.\"\n" [Ended]
+outcome: Ended

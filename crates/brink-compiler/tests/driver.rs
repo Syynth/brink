@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::print_stderr,
+    clippy::wildcard_enum_match_arm,
+    clippy::match_same_arms
+)]
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -1803,5 +1809,72 @@ fn clean_compilation_has_no_warnings() {
             .iter()
             .map(|w| format!("[{}] {}", w.code.as_str(), w.message))
             .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn glue_in_choice_body_emits_glue_opcode() {
+    let source = "\
+-> knot
+
+=== knot
+* [Yes]
+    Yes considered. <>
+* [No]
+    No way. <>
+- He seemed to know.
+-> END
+";
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    let data = compile_mem("main.ink", &files).unwrap();
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    eprintln!("{buf}");
+    assert!(
+        buf.contains("glue"),
+        "expected glue opcode in bytecode, got:\n{buf}"
+    );
+}
+
+#[test]
+fn glue_in_choice_body_runtime_joins_text() {
+    let source = "\
+-> knot
+
+=== knot
+* [Yes]
+    Yes considered. <>
+* [No]
+    No way. <>
+- He seemed to know.
+-> END
+";
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    let data = compile_mem("main.ink", &files).unwrap();
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(&program, line_tables);
+
+    // First continue: should get choices
+    let line = story.continue_single().unwrap();
+    match &line {
+        Line::Choices { choices, .. } => {
+            assert_eq!(choices.len(), 2);
+            story.choose(0).unwrap(); // pick "Yes"
+        }
+        other => panic!("expected Choices, got: {other:?}"),
+    }
+
+    // Second continue: should get the glued text
+    let line = story.continue_single().unwrap();
+    let text = match &line {
+        Line::Text { text, .. } => text.clone(),
+        Line::End { text, .. } => text.clone(),
+        Line::Done { text, .. } => text.clone(),
+        Line::Choices { .. } => panic!("expected text output, got choices"),
+    };
+    eprintln!("got text: {text:?}");
+    assert!(
+        text.contains("Yes considered. He seemed to know."),
+        "expected glue to join choice text with gather text, got: {text:?}"
     );
 }

@@ -7,7 +7,10 @@
     clippy::match_same_arms,
     clippy::too_many_lines,
     clippy::doc_markdown,
-    unused_variables
+    unused_variables,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::items_after_statements
 )]
 //! Layer-by-layer diagnostic tests for logic line newline emission.
 //!

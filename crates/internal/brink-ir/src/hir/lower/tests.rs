@@ -2902,3 +2902,43 @@ fn logic_line_assignment_with_call_emits_end_of_line() {
         stmts.get(assign_idx + 1),
     );
 }
+
+fn check_stmts_for_literal_glue(stmts: &[Stmt], path: &str) {
+    for (i, stmt) in stmts.iter().enumerate() {
+        match stmt {
+            Stmt::Content(c) => {
+                for part in &c.parts {
+                    if let ContentPart::Text(t) = part {
+                        assert!(
+                            !t.contains("<>"),
+                            "{path} stmt[{i}]: literal '<>' found in text: {t:?} — should be ContentPart::Glue"
+                        );
+                    }
+                }
+            }
+            Stmt::ChoiceSet(cs) => {
+                for (ci, choice) in cs.choices.iter().enumerate() {
+                    check_stmts_for_literal_glue(
+                        &choice.body.stmts,
+                        &format!("{path}/choice[{ci}].body"),
+                    );
+                }
+                check_stmts_for_literal_glue(
+                    &cs.continuation.stmts,
+                    &format!("{path}/continuation"),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn glue_in_choice_body_with_tab_indent() {
+    // Reproduce TheIntercept pattern: tab-indented choice body with trailing <>
+    let source = "-> knot\n\n=== knot\n \t* [Yes]\n \t\t\"Yes, I considered it. <>\n \t* [No]\n\t\"No. <>\n- \tHe seemed to know.\n-> END\n";
+    let (hir, _, diags) = lower_ink(source);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    check_stmts_for_literal_glue(&hir.knots[0].body.stmts, "knot");
+}

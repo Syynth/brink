@@ -166,3 +166,41 @@ fn closing_brace_outside_string() {
     // `}` in normal code (string_depth == 0) should be R_BRACE via punctuation
     assert_eq!(kinds("}"), vec![R_BRACE]);
 }
+
+// ── Content-mode tokens inside strings ────────────────────────────────
+//
+// In ink, `"` in content text is a literal character (dialogue quotes),
+// not a string delimiter. The lexer enters string mode on `"` regardless
+// of context, so content-significant tokens must be recognized even in
+// string mode. This matches how `[` and `]` are already handled.
+
+#[test]
+fn glue_inside_string_mode() {
+    // `"Yes, I considered it. <>` — glue should be a separate GLUE token
+    let toks = tokens("\"Yes, I considered it. <>\n");
+    assert_eq!(
+        toks,
+        vec![
+            (QUOTE, "\""),
+            (STRING_TEXT, "Yes, I considered it. "),
+            (GLUE, "<>"),
+            (NEWLINE, "\n"),
+        ]
+    );
+}
+
+#[test]
+fn glue_mid_string() {
+    // `"Hello <>world"` — glue between text in a closed string
+    let toks = tokens("\"Hello <>world\"");
+    assert_eq!(
+        toks,
+        vec![
+            (QUOTE, "\""),
+            (STRING_TEXT, "Hello "),
+            (GLUE, "<>"),
+            (STRING_TEXT, "world"),
+            (QUOTE, "\""),
+        ]
+    );
+}
