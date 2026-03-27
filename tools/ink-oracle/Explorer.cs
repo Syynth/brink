@@ -26,6 +26,9 @@ public class Explorer
 
     public List<OracleEpisode> Explore()
     {
+        // Use a deterministic seed so regeneration produces identical output.
+        _story.state.storySeed = 0;
+
         var initialState = SnapshotInitialState();
 
         ExploreInner(
@@ -92,6 +95,7 @@ public class Explorer
                         return;
 
                     _story.state.LoadJson(savedState);
+                    _story.state.ResetErrors();
 
                     var branchSteps = new List<OracleStep>(allSteps);
                     SetLastStepOutcome(branchSteps, new OracleStepOutcomeChoices

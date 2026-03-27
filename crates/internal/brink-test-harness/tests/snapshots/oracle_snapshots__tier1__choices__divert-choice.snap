@@ -3,8 +3,8 @@ source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
 expression: case_snapshot
 ---
 case: tier1/choices/divert-choice
-oracle: 2, brink: 3, matched: 1
-passing: 1/2
+oracle: 3, brink: 3, matched: 3
+passing: 3/3
 
 === episode [0, 0] === PASS
 > "You see a soldier.\n" [Choices: "Pull a face" (0), "Shove the guard aside" (1) -> 0]
@@ -13,5 +13,20 @@ passing: 1/2
 > "You see a soldier.\n" [Done]
 outcome: Error
 
---- missing episodes (1) ---
-[1]
+=== episode [1, 0, 0] === PASS
+> "You see a soldier.\n" [Choices: "Pull a face" (0), "Shove the guard aside" (1) -> 1]
+> "You shove the guard to one side, but he comes back swinging.\n" [Continue]
+> "You see a soldier.\n" [Choices: "Pull a face" (0), "Grapple and fight" (1) -> 0]
+> "You pull a face, and the soldier comes at you! You shove the guard to one side, but he comes back swinging.\n" [Continue]
+> "You see a soldier.\n" [Choices: "Grapple and fight" (0) -> 0]
+> "You see a soldier.\n" [Done]
+outcome: Error
+
+=== episode [1, 1, 0] === PASS
+> "You see a soldier.\n" [Choices: "Pull a face" (0), "Shove the guard aside" (1) -> 1]
+> "You shove the guard to one side, but he comes back swinging.\n" [Continue]
+> "You see a soldier.\n" [Choices: "Pull a face" (0), "Grapple and fight" (1) -> 1]
+> "You see a soldier.\n" [Choices: "Pull a face" (0) -> 0]
+> "You pull a face, and the soldier comes at you! You shove the guard to one side, but he comes back swinging.\n" [Continue]
+> "You see a soldier.\n" [Done]
+outcome: Error

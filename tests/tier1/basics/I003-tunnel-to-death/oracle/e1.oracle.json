@@ -67,12 +67,20 @@
       "turn_index": 2
     },
     {
-      "text": "You've been beaten to death.\n",
+      "text": "You manage to block his fist and finally push him into the river.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {
+        "hp": 1
+      },
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "After this legendary fight, you continue your journey and never look back.\n",
       "tags": [],
       "outcome": "Ended",
-      "variable_changes": {
-        "hp": 0
-      },
+      "variable_changes": {},
       "visit_changes": {},
       "turn_index": 2
     }

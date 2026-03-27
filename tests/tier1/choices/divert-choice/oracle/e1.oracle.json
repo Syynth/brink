@@ -3,15 +3,94 @@
     {
       "text": "You see a soldier.\n",
       "tags": [],
-      "outcome": "Ended",
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Pull a face",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Shove the guard aside",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
       "variable_changes": {},
       "visit_changes": {},
       "turn_index": 0
+    },
+    {
+      "text": "You shove the guard to one side, but he comes back swinging.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "You see a soldier.\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Pull a face",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "Grapple and fight",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "You pull a face, and the soldier comes at you! You shove the guard to one side, but he comes back swinging.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "You see a soldier.\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Grapple and fight",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
     }
   ],
-  "outcome": "Ended",
+  "outcome": {
+    "Error": "Ink had 1 error. It is strongly suggested that you assign an error handler to story.onError. The first issue was: RUNTIME ERROR: '/Users/syynth/code/rs/brink/tests/tier1/choices/divert-choice/story.ink' line 3: ran out of content. Do you need a '-> DONE' or '-> END'?"
+  },
   "choice_path": [
-    1
+    1,
+    0,
+    0
   ],
   "initial_state": {
     "variables": {},

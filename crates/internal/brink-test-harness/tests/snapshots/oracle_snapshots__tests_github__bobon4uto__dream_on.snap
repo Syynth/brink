@@ -64,25 +64,22 @@ passing: 0/1000
 > "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -109,7 +106,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "Restart\n"
   step 33: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's night-time.\n"
   step 34: text differs
     oracle: "It's daytime.\n"
@@ -139,13 +136,13 @@ outcome: InputsExhausted
     oracle: "Twe wolves are coming.\n"
     brink:  "could be worse?\n"
   step 43: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "Your home crumbles.\n"
   step 44: text differs
     oracle: "dream on...\n"
     brink:  "now this is bad.\n"
   step 45: text differs
-    oracle: "4 minutes before wolves eat you.\n"
+    oracle: "4 minutes before wolves arrive.\n"
     brink:  "Twe wolves are coming.\n"
   step 46: extra ("5 minutes before beasts appear.\n")
   step 47: extra ("dream on...\n")
@@ -211,13 +208,13 @@ outcome: InputsExhausted
 > "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -235,16 +232,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 20: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -271,7 +265,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "Restart\n"
   step 33: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's night-time.\n"
   step 34: text differs
     oracle: "It's daytime.\n"
@@ -301,13 +295,13 @@ outcome: InputsExhausted
     oracle: "Twe wolves are coming.\n"
     brink:  "could be worse?\n"
   step 43: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "Your home crumbles.\n"
   step 44: text differs
     oracle: "dream on...\n"
     brink:  "now this is bad.\n"
   step 45: text differs
-    oracle: "4 minutes before wolves eat you.\n"
+    oracle: "4 minutes before wolves arrive.\n"
     brink:  "Twe wolves are coming.\n"
   step 46: extra ("5 minutes before beasts appear.\n")
   step 47: extra ("dream on...\n")
@@ -368,13 +362,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -392,16 +386,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 20: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -443,7 +434,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -520,13 +511,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -544,16 +535,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 20: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -595,7 +583,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -674,13 +662,13 @@ outcome: InputsExhausted
 > "You walk. Again?\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -698,16 +686,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 20: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -749,7 +734,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -830,13 +815,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -854,16 +839,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 20: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -905,7 +887,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -984,13 +966,13 @@ outcome: InputsExhausted
 > "You walk. That doesn't seem to help though.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -1008,16 +990,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 20: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -1059,7 +1038,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -1142,13 +1121,13 @@ outcome: InputsExhausted
 > "You approach the collossus. You realize he is way further than you anticipated. Are you sure you want to approach him?\n" [Choices: "yes." (0), "no." (1) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -1166,16 +1145,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 20: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -1217,7 +1193,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -1300,13 +1276,13 @@ outcome: InputsExhausted
 > "You watch as the collossal is getting rusty from the rain that comes his way.\n\n" #IMAGE: assets/collossus_far_rain.png [Choices: "RUST mentioned????" (0), "Will he withstand that?" (1) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -1324,16 +1300,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 20: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -1375,7 +1348,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -1463,13 +1436,13 @@ outcome: InputsExhausted
 > "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -1481,7 +1454,7 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
     oracle: "find shelter\n"
@@ -1490,13 +1463,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
+    oracle: "2 minutes before wolves arrive.\n"
     brink:  "run\n"
   step 22: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -1523,7 +1496,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "Restart\n"
   step 33: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's night-time.\n"
   step 34: text differs
     oracle: "It's daytime.\n"
@@ -1553,13 +1526,13 @@ outcome: InputsExhausted
     oracle: "Twe wolves are coming.\n"
     brink:  "could be worse?\n"
   step 43: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "Your home crumbles.\n"
   step 44: text differs
     oracle: "dream on...\n"
     brink:  "now this is bad.\n"
   step 45: text differs
-    oracle: "4 minutes before wolves eat you.\n"
+    oracle: "4 minutes before wolves arrive.\n"
     brink:  "Twe wolves are coming.\n"
   step 46: extra ("5 minutes before beasts appear.\n")
   step 47: extra ("dream on...\n")
@@ -1620,13 +1593,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -1638,7 +1611,7 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
     oracle: "find shelter\n"
@@ -1647,13 +1620,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
+    oracle: "2 minutes before wolves arrive.\n"
     brink:  "run\n"
   step 22: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -1695,7 +1668,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -1772,13 +1745,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -1790,7 +1763,7 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
     oracle: "find shelter\n"
@@ -1799,13 +1772,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
+    oracle: "2 minutes before wolves arrive.\n"
     brink:  "run\n"
   step 22: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -1847,7 +1820,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -1926,13 +1899,13 @@ outcome: InputsExhausted
 > "You walk. Again?\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -1944,7 +1917,7 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
     oracle: "find shelter\n"
@@ -1953,13 +1926,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
+    oracle: "2 minutes before wolves arrive.\n"
     brink:  "run\n"
   step 22: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -2001,7 +1974,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -2082,13 +2055,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -2100,7 +2073,7 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
     oracle: "find shelter\n"
@@ -2109,13 +2082,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
+    oracle: "2 minutes before wolves arrive.\n"
     brink:  "run\n"
   step 22: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -2157,7 +2130,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -2236,13 +2209,13 @@ outcome: InputsExhausted
 > "You walk. That doesn't seem to help though.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -2254,7 +2227,7 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
     oracle: "find shelter\n"
@@ -2263,13 +2236,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
+    oracle: "2 minutes before wolves arrive.\n"
     brink:  "run\n"
   step 22: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -2311,7 +2284,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -2394,13 +2367,13 @@ outcome: InputsExhausted
 > "You approach the collossus. You realize he is way further than you anticipated. Are you sure you want to approach him?\n" [Choices: "yes." (0), "no." (1) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -2412,7 +2385,7 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
     oracle: "find shelter\n"
@@ -2421,13 +2394,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
+    oracle: "2 minutes before wolves arrive.\n"
     brink:  "run\n"
   step 22: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -2469,7 +2442,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -2552,13 +2525,13 @@ outcome: InputsExhausted
 > "You watch as the collossal is getting rusty from the rain that comes his way.\n\n" #IMAGE: assets/collossus_far_rain.png [Choices: "RUST mentioned????" (0), "Will he withstand that?" (1) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -2570,7 +2543,7 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
   step 19: text differs
     oracle: "find shelter\n"
@@ -2579,13 +2552,13 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "2 minutes before wolves arrive.\n"
   step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
+    oracle: "2 minutes before wolves arrive.\n"
     brink:  "run\n"
   step 22: text differs
     oracle: "dream on...\n"
     brink:  "nowhere to run\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -2627,7 +2600,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -2715,13 +2688,13 @@ outcome: InputsExhausted
 > "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -2733,11 +2706,11 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 0 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -2745,7 +2718,7 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 24: text differs
     oracle: "dream on...\n"
@@ -2775,7 +2748,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "Restart\n"
   step 33: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's night-time.\n"
   step 34: text differs
     oracle: "It's daytime.\n"
@@ -2805,13 +2778,13 @@ outcome: InputsExhausted
     oracle: "Twe wolves are coming.\n"
     brink:  "could be worse?\n"
   step 43: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "Your home crumbles.\n"
   step 44: text differs
     oracle: "dream on...\n"
     brink:  "now this is bad.\n"
   step 45: text differs
-    oracle: "4 minutes before wolves eat you.\n"
+    oracle: "4 minutes before wolves arrive.\n"
     brink:  "Twe wolves are coming.\n"
   step 46: extra ("5 minutes before beasts appear.\n")
   step 47: extra ("dream on...\n")
@@ -2872,25 +2845,22 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -2932,7 +2902,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -3009,25 +2979,22 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -3069,7 +3036,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -3148,25 +3115,22 @@ outcome: InputsExhausted
 > "You walk. Again?\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -3208,7 +3172,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -3289,13 +3253,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -3307,11 +3271,11 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 0 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -3319,7 +3283,7 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 24: text differs
     oracle: "dream on...\n"
@@ -3364,7 +3328,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -3441,13 +3405,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -3459,11 +3423,11 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 0 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -3471,7 +3435,7 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 24: text differs
     oracle: "dream on...\n"
@@ -3516,7 +3480,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -3595,13 +3559,13 @@ outcome: InputsExhausted
 > "You walk. Again?\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -3613,11 +3577,11 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 0 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -3625,7 +3589,7 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 24: text differs
     oracle: "dream on...\n"
@@ -3670,7 +3634,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -3751,13 +3715,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -3769,11 +3733,11 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 0 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -3781,7 +3745,7 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 24: text differs
     oracle: "dream on...\n"
@@ -3826,7 +3790,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -3905,13 +3869,13 @@ outcome: InputsExhausted
 > "You walk. That doesn't seem to help though.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -3923,11 +3887,11 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 0 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -3935,7 +3899,7 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 24: text differs
     oracle: "dream on...\n"
@@ -3980,7 +3944,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -4063,13 +4027,13 @@ outcome: InputsExhausted
 > "You approach the collossus. You realize he is way further than you anticipated. Are you sure you want to approach him?\n" [Choices: "yes." (0), "no." (1) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -4081,11 +4045,11 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 0 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -4093,7 +4057,7 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 24: text differs
     oracle: "dream on...\n"
@@ -4138,7 +4102,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -4221,13 +4185,13 @@ outcome: InputsExhausted
 > "You watch as the collossal is getting rusty from the rain that comes his way.\n\n" #IMAGE: assets/collossus_far_rain.png [Choices: "RUST mentioned????" (0), "Will he withstand that?" (1) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -4239,11 +4203,11 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 0 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 21: text differs
     oracle: "find shelter\n"
     brink:  "dream on...\n"
@@ -4251,7 +4215,7 @@ outcome: InputsExhausted
     oracle: "nowhere to hide.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "run\n"
   step 24: text differs
     oracle: "dream on...\n"
@@ -4296,7 +4260,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -4384,13 +4348,13 @@ outcome: InputsExhausted
 > "2 minutes before wolves arrive.\n" [Choices: "dream" (0) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -4402,13 +4366,13 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 22: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
@@ -4441,7 +4405,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's night-time.\n"
   step 33: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "Go to bed.\n"
   step 34: text differs
     oracle: "It's daytime.\n"
@@ -4471,13 +4435,13 @@ outcome: InputsExhausted
     oracle: "Twe wolves are coming.\n"
     brink:  "Your home crumbles.\n"
   step 43: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "now this is bad.\n"
   step 44: text differs
     oracle: "dream on...\n"
     brink:  "Twe wolves are coming.\n"
   step 45: text differs
-    oracle: "4 minutes before wolves eat you.\n"
+    oracle: "4 minutes before wolves arrive.\n"
     brink:  "5 minutes before beasts appear.\n"
   step 46: extra ("run\n")
   step 47: extra ("nowhere to run\n")
@@ -4538,25 +4502,22 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -4598,7 +4559,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -4677,25 +4638,22 @@ outcome: InputsExhausted
 > "You walk. That doesn't seem to help though.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -4737,7 +4695,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -4820,25 +4778,22 @@ outcome: InputsExhausted
 > "You approach the collossus. You realize he is way further than you anticipated. Are you sure you want to approach him?\n" [Choices: "yes." (0), "no." (1) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -4880,7 +4835,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -4960,13 +4915,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -4978,13 +4933,13 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 22: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
@@ -5032,7 +4987,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's very bright.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "Brighter than any star shines the sphere. it is held by Collossus - the only one who can hold its weight. truly, remarkable sight.\n\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -5107,13 +5062,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -5125,13 +5080,13 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 22: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
@@ -5179,7 +5134,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's very bright.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "Brighter than any star shines the sphere. it is held by Collossus - the only one who can hold its weight. truly, remarkable sight.\n\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -5256,13 +5211,13 @@ outcome: InputsExhausted
 > "You walk. Again?\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -5274,13 +5229,13 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 22: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
@@ -5328,7 +5283,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's very bright.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "Brighter than any star shines the sphere. it is held by Collossus - the only one who can hold its weight. truly, remarkable sight.\n\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -5406,13 +5361,13 @@ outcome: InputsExhausted
 > "You run. Collossus isn't even remotely close.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -5424,13 +5379,13 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 22: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
@@ -5478,7 +5433,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's very bright.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "Brighter than any star shines the sphere. it is held by Collossus - the only one who can hold its weight. truly, remarkable sight.\n\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -5555,13 +5510,13 @@ outcome: InputsExhausted
 > "You walk. That doesn't seem to help though.\n" [Choices: "run" (0), "walk" (1), "give up" (2) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -5573,13 +5528,13 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 22: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
@@ -5627,7 +5582,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's very bright.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "Brighter than any star shines the sphere. it is held by Collossus - the only one who can hold its weight. truly, remarkable sight.\n\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -5707,13 +5662,13 @@ outcome: InputsExhausted
 > "You approach the collossus. You realize he is way further than you anticipated. Are you sure you want to approach him?\n" [Choices: "yes." (0), "no." (1) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -5725,13 +5680,13 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 22: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
@@ -5779,7 +5734,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's very bright.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "Brighter than any star shines the sphere. it is held by Collossus - the only one who can hold its weight. truly, remarkable sight.\n\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -5860,13 +5815,13 @@ outcome: InputsExhausted
 > "You watch as the collossal is getting rusty from the rain that comes his way.\n\n" #IMAGE: assets/collossus_far_rain.png [Choices: "RUST mentioned????" (0), "Will he withstand that?" (1) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 14: text differs
     oracle: "run\n"
@@ -5878,13 +5833,13 @@ outcome: InputsExhausted
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 18: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 20: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
+  step 20: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "find shelter", index: 0, tags: [] }, OracleChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "run", index: 0, tags: [] }, ChoiceRecord { text: "dream", index: 1, tags: [] }], selected: 1 }
   step 22: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 23: text differs
     oracle: "find shelter\n"
@@ -5932,7 +5887,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's very bright.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "Brighter than any star shines the sphere. it is held by Collossus - the only one who can hold its weight. truly, remarkable sight.\n\n"
   step 39: text differs
     oracle: "It's daytime.\n"
@@ -6016,25 +5971,22 @@ outcome: InputsExhausted
 > "You watch as the collossal is getting rusty from the rain that comes his way.\n\n" #IMAGE: assets/collossus_far_rain.png [Choices: "RUST mentioned????" (0), "Will he withstand that?" (1) -> 0]
 outcome: InputsExhausted
   step 2: outcome differs
-    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zZz--", index: 0, tags: [] }], selected: 0 } }
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "--zzZ--", index: 0, tags: [] }], selected: 0 } }
     brink:  Continue
   step 3: text differs
     oracle: "--Zzz--\n"
     brink:  "zZz--\n"
   step 13: text differs
-    oracle: "5 minutes before wolves arrive.\n"
+    oracle: "5 minutes before wolves eat you.\n"
     brink:  "5 minutes before hungry wolves will be here.\n"
   step 16: text differs
     oracle: "4 minutes before beasts appear.\n"
     brink:  "4 minutes before wolves eat you.\n"
   step 19: text differs
-    oracle: "3 minutes before wolves eat you.\n"
+    oracle: "3 minutes before hungry wolves will be here.\n"
     brink:  "3 minutes before beasts appear.\n"
-  step 21: text differs
-    oracle: "2 minutes before hungry wolves will be here.\n"
-    brink:  "2 minutes before wolves arrive.\n"
   step 23: text differs
-    oracle: "1 minutes before beasts appear.\n"
+    oracle: "1 minutes before hungry wolves will be here.\n"
     brink:  "1 minutes before wolves arrive.\n"
   step 25: text differs
     oracle: "They are here.\n"
@@ -6076,7 +6028,7 @@ outcome: InputsExhausted
     oracle: "You go to bed and start sleeping.\n"
     brink:  "It's daytime.\n"
   step 38: text differs
-    oracle: "--zZz--\n"
+    oracle: "--zzZ--\n"
     brink:  "It's very bright.\n"
   step 39: text differs
     oracle: "It's daytime.\n"

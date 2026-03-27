@@ -49,30 +49,15 @@ passing: 0/1
 > "\n" [Continue]
 > "2 of Diamonds.\n" [Choices: "Try again" (0) -> 0]
 outcome: InputsExhausted
-  step 8: text differs
-    oracle: "2 of Diamonds.\n"
-    brink:  "Ace of Hearts.\n"
-  step 10: text differs
-    oracle: "Ace of Hearts.\n"
-    brink:  "2 of Diamonds.\n"
-  step 12: text differs
+  step 32: text differs
     oracle: "2 of Diamonds.\n"
     brink:  "King of Spades.\n"
-  step 16: text differs
+  step 34: text differs
     oracle: "King of Spades.\n"
     brink:  "2 of Diamonds.\n"
-  step 24: text differs
-    oracle: "Ace of Hearts.\n"
-    brink:  "2 of Diamonds.\n"
-  step 26: text differs
-    oracle: "2 of Diamonds.\n"
-    brink:  "Ace of Hearts.\n"
-  step 36: text differs
-    oracle: "King of Spades.\n"
-    brink:  "Ace of Hearts.\n"
   step 38: text differs
     oracle: "2 of Diamonds.\n"
     brink:  "King of Spades.\n"
   step 40: text differs
-    oracle: "Ace of Hearts.\n"
+    oracle: "King of Spades.\n"
     brink:  "2 of Diamonds.\n"

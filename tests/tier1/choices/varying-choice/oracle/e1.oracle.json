@@ -3,15 +3,53 @@
     {
       "text": "You search desperately for a friendly face in the crowd.\n",
       "tags": [],
-      "outcome": "Ended",
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "The woman in the hat?",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "The man with the briefcase?",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
       "variable_changes": {},
       "visit_changes": {},
       "turn_index": 0
+    },
+    {
+      "text": "The man with the briefcase looks disgusted as you stumble past him. You search desperately for a friendly face in the crowd.\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "The woman in the hat?",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
     }
   ],
-  "outcome": "Ended",
+  "outcome": {
+    "Error": "Ink had 1 error. It is strongly suggested that you assign an error handler to story.onError. The first issue was: RUNTIME ERROR: '/Users/syynth/code/rs/brink/tests/tier1/choices/varying-choice/story.ink' line 5: ran out of content. Do you need a '-> DONE' or '-> END'?"
+  },
   "choice_path": [
-    1
+    1,
+    0
   ],
   "initial_state": {
     "variables": {},

@@ -4,14 +4,20 @@ expression: case_snapshot
 ---
 case: tier2/sequences/I107-shuffle-stack-muddying
 oracle: 2, brink: 2, matched: 2
-passing: 2/2
+passing: 0/2
 
-=== episode [0] === PASS
+=== episode [0] === FAIL
 > "" [Choices: "choice 3" (0), "choice 4" (1) -> 0]
 > "" [Done]
 outcome: Done
+  step 0: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "choice 2", index: 0, tags: [] }, OracleChoiceRecord { text: "choice 3", index: 1, tags: [] }], selected: 0 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "choice 3", index: 0, tags: [] }, ChoiceRecord { text: "choice 4", index: 1, tags: [] }], selected: 0 }
 
-=== episode [1] === PASS
+=== episode [1] === FAIL
 > "" [Choices: "choice 3" (0), "choice 4" (1) -> 1]
 > "" [Done]
 outcome: Done
+  step 0: outcome differs
+    oracle: Choices { choices: OracleChoicesData { presented: [OracleChoiceRecord { text: "choice 2", index: 0, tags: [] }, OracleChoiceRecord { text: "choice 3", index: 1, tags: [] }], selected: 1 } }
+    brink:  Choices { presented: [ChoiceRecord { text: "choice 3", index: 0, tags: [] }, ChoiceRecord { text: "choice 4", index: 1, tags: [] }], selected: 1 }

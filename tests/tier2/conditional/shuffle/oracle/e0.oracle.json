@@ -109,7 +109,7 @@
       "turn_index": 4
     },
     {
-      "text": "2 of Diamonds.\n",
+      "text": "Ace of Hearts.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -136,7 +136,7 @@
       "turn_index": 5
     },
     {
-      "text": "Ace of Hearts.\n",
+      "text": "2 of Diamonds.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -163,7 +163,7 @@
       "turn_index": 6
     },
     {
-      "text": "2 of Diamonds.\n",
+      "text": "King of Spades.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -217,7 +217,7 @@
       "turn_index": 8
     },
     {
-      "text": "King of Spades.\n",
+      "text": "2 of Diamonds.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -325,7 +325,7 @@
       "turn_index": 12
     },
     {
-      "text": "Ace of Hearts.\n",
+      "text": "2 of Diamonds.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -352,7 +352,7 @@
       "turn_index": 13
     },
     {
-      "text": "2 of Diamonds.\n",
+      "text": "Ace of Hearts.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -433,7 +433,7 @@
       "turn_index": 16
     },
     {
-      "text": "King of Spades.\n",
+      "text": "2 of Diamonds.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -460,7 +460,7 @@
       "turn_index": 17
     },
     {
-      "text": "2 of Diamonds.\n",
+      "text": "King of Spades.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -487,7 +487,7 @@
       "turn_index": 18
     },
     {
-      "text": "King of Spades.\n",
+      "text": "Ace of Hearts.\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -541,7 +541,7 @@
       "turn_index": 20
     },
     {
-      "text": "Ace of Hearts.\n",
+      "text": "King of Spades.\n",
       "tags": [],
       "outcome": {
         "Choices": {

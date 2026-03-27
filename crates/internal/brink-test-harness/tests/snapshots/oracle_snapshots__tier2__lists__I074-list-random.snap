@@ -4,9 +4,9 @@ expression: case_snapshot
 ---
 case: tier2/lists/I074-list-random
 oracle: 1, brink: 1, matched: 1
-passing: 0/1
+passing: 1/1
 
-=== episode [] === FAIL
+=== episode [] === PASS
 > "B\n" [Continue]
 > "B\n" [Continue]
 > "B\n" [Continue]
@@ -18,21 +18,3 @@ passing: 0/1
 > "B\n" [Continue]
 > "C\n" [Done]
 outcome: Done
-  step 1: text differs
-    oracle: "D\n"
-    brink:  "B\n"
-  step 3: text differs
-    oracle: "D\n"
-    brink:  "C\n"
-  step 4: text differs
-    oracle: "C\n"
-    brink:  "D\n"
-  step 5: text differs
-    oracle: "D\n"
-    brink:  "C\n"
-  step 6: text differs
-    oracle: "D\n"
-    brink:  "B\n"
-  step 7: text differs
-    oracle: "D\n"
-    brink:  "C\n"
