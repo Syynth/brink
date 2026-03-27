@@ -12,6 +12,24 @@ use brink_format::{
 };
 use brink_ir::lir;
 
+/// Collapse runs of consecutive spaces/tabs within `s` to a single space.
+fn collapse_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_ws = false;
+    for c in s.chars() {
+        if c == ' ' || c == '\t' {
+            if !prev_ws {
+                out.push(' ');
+            }
+            prev_ws = true;
+        } else {
+            prev_ws = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Compile a resolved LIR `Program` into `StoryData` for the runtime.
 pub fn emit(program: &lir::Program) -> StoryData {
     let mut state = EmitState {
@@ -115,7 +133,7 @@ impl<'a> ContainerEmitter<'a> {
         source_location: Option<brink_format::SourceLocation>,
     ) -> u16 {
         let idx = self.scope_line_table.len() as u16;
-        let content = LineContent::Plain(text.to_string());
+        let content = LineContent::Plain(collapse_whitespace(text));
         let flags = brink_format::LineFlags::from_content(&content);
         self.scope_line_table.push(LineEntry {
             content,
@@ -137,6 +155,15 @@ impl<'a> ContainerEmitter<'a> {
         source_location: Option<brink_format::SourceLocation>,
     ) -> u16 {
         let idx = self.scope_line_table.len() as u16;
+        let parts = parts
+            .into_iter()
+            .map(|part| match part {
+                brink_format::LinePart::Literal(s) => {
+                    brink_format::LinePart::Literal(collapse_whitespace(&s))
+                }
+                other => other,
+            })
+            .collect();
         let content = LineContent::Template(parts);
         let flags = brink_format::LineFlags::from_content(&content);
         self.scope_line_table.push(LineEntry {
