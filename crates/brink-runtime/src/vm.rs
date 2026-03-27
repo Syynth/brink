@@ -157,6 +157,16 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 flow.pop_thread();
                 return Ok(Stepped::ThreadCompleted);
             }
+            // Only set safe exit when on the root frame — the
+            // compiler adds `done` to ALL container endings, but
+            // only the root-level `done` represents an intentional
+            // `-> DONE` from the author. Inner containers (choice
+            // bodies, gathers) always have implicit `done` that
+            // shouldn't count as safe exit.
+            let thread = flow.current_thread();
+            if thread.call_stack.len() == 1 {
+                flow.did_safe_exit = true;
+            }
             return Ok(Stepped::Done);
         }
         Opcode::End => {

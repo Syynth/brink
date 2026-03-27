@@ -56,6 +56,9 @@ pub enum RuntimeError {
     #[error("flow already exists: {0}")]
     FlowAlreadyExists(String),
 
+    #[error("ran out of content. Do you need a '-> DONE' or '-> END'?")]
+    RanOutOfContent,
+
     #[error("step limit exceeded ({0} steps)")]
     StepLimitExceeded(u64),
 

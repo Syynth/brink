@@ -333,6 +333,11 @@ pub(crate) struct Flow {
     pub current_tags: Vec<String>,
     pub in_tag: bool,
     pub skipping_choice: bool,
+    /// Set to `true` when a `Done` opcode fires (explicit `-> DONE`).
+    /// Cleared at the start of each `continue_single` call. If execution
+    /// reaches a terminal state without this flag, the story ran out of
+    /// content — matching C#'s `didSafeExit` check.
+    pub did_safe_exit: bool,
 }
 
 /// Shared game state that lives above individual flows.
@@ -623,6 +628,7 @@ impl FlowInstance {
                 current_tags: Vec::new(),
                 in_tag: false,
                 skipping_choice: false,
+                did_safe_exit: false,
             },
             status: StoryStatus::Active,
             stats: Stats::default(),
@@ -699,6 +705,9 @@ impl FlowInstance {
             self.status = StoryStatus::Active;
         }
 
+        // Clear safe-exit flag — will be set if a Done opcode fires.
+        self.flow.did_safe_exit = false;
+
         // 5. Step VM loop.
         let Self {
             flow,
@@ -761,6 +770,9 @@ impl FlowInstance {
 
                     // Set status based on remaining choices.
                     if flow.pending_choices.is_empty() {
+                        if !flow.did_safe_exit {
+                            return Err(RuntimeError::RanOutOfContent);
+                        }
                         *status = StoryStatus::Done;
                     } else {
                         *status = StoryStatus::WaitingForChoice;

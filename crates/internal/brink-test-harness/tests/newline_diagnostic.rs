@@ -457,6 +457,89 @@ VAR globalVal = 5
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Ran-out-of-content error detection
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn runtime_ran_out_of_content_produces_error() {
+    // I092 pattern: after choosing opt, the nested choice set has zero
+    // valid choices ({false} condition). The story should error with
+    // "ran out of content" matching C#'s behavior.
+    let source = "\
+* opt
+    - - text
+    * * {false} impossible
+- gather
+";
+    let data = compile_to_story_data(source);
+    let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+
+    println!("=== I092 .inkt ===\n{}", dump_inkt(&data));
+
+    // Present and select the "opt" choice
+    let line = story.continue_single().expect("first continue");
+    match &line {
+        brink_runtime::Line::Choices { .. } => story.choose(0).expect("choose"),
+        other => panic!("expected Choices, got {other:?}"),
+    }
+
+    // After choosing opt, the story should eventually error.
+    // It may deliver "opt\n" first, but should not deliver "text\n".
+    let mut got_error = false;
+    let mut delivered_text = String::new();
+    for _ in 0..10 {
+        match story.continue_single() {
+            Ok(brink_runtime::Line::Text { text, .. }) => delivered_text.push_str(&text),
+            Ok(brink_runtime::Line::Done { text, .. }) => {
+                delivered_text.push_str(&text);
+                break;
+            }
+            Err(_) => {
+                got_error = true;
+                break;
+            }
+            Ok(other) => panic!("unexpected: {other:?}"),
+        }
+    }
+    assert!(
+        got_error,
+        "I092 pattern: story should error with 'ran out of content', \
+         but delivered: {delivered_text:?}",
+    );
+}
+
+#[test]
+fn runtime_done_opcode_does_not_error() {
+    // A story with explicit -> DONE should produce Done, not an error.
+    let source = "hello\n-> DONE\n";
+    let data = compile_to_story_data(source);
+    let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+
+    let line = story.continue_single().expect("continue_single");
+    match &line {
+        brink_runtime::Line::Done { text, .. } => assert_eq!(text, "hello\n"),
+        other => panic!("expected Done, got {other:?}"),
+    }
+}
+
+#[test]
+fn runtime_end_opcode_does_not_error() {
+    // A story with explicit -> END should produce End, not an error.
+    let source = "hello\n-> END\n";
+    let data = compile_to_story_data(source);
+    let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+
+    let line = story.continue_single().expect("continue_single");
+    match &line {
+        brink_runtime::Line::End { text, .. } => assert_eq!(text, "hello\n"),
+        other => panic!("expected End, got {other:?}"),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // I037: function call in conditional expression
 // ═══════════════════════════════════════════════════════════════════════
 
