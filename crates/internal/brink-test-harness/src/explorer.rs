@@ -169,16 +169,15 @@ fn explore_inner(
                     external_calls: Vec::new(),
                     writes,
                 });
-                // If the story passed through an empty choice set
-                // (Yield with no choices), probe for the deferred
-                // "ran out of content" error.
-                let outcome = if story.did_unsafe_yield() {
+                // Probe for the deferred "ran out of content" error
+                // when the story didn't reach an explicit -> DONE.
+                let outcome = if story.did_safe_exit() {
+                    Outcome::Done
+                } else {
                     match story.continue_single_observed(&mut recorder) {
                         Err(e) => Outcome::Error(e.to_string()),
                         Ok(_) => Outcome::Done,
                     }
-                } else {
-                    Outcome::Done
                 };
                 episodes.push(Episode {
                     steps,

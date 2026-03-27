@@ -4,16 +4,16 @@ expression: case_snapshot
 ---
 case: tier1/weave/I039-conditional-choice-in-weave-the-second
 oracle: 2, brink: 2, matched: 2
-passing: 2/2
+passing: 0/2
 
-=== episode [0] === PASS
+=== episode [0] === FAIL
 > "first gather\n" [Choices: "option 1" (0), "option 2" (1) -> 0]
 > "the main gather\n" [Continue]
 > "bottom gather\n" [Done]
-outcome: Done
+outcome: Error
 
-=== episode [1] === PASS
+=== episode [1] === FAIL
 > "first gather\n" [Choices: "option 1" (0), "option 2" (1) -> 1]
 > "the main gather\n" [Continue]
 > "bottom gather\n" [Done]
-outcome: Done
+outcome: Error

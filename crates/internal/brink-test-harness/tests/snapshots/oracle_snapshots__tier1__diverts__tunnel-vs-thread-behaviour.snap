@@ -4,7 +4,7 @@ expression: case_snapshot
 ---
 case: tier1/diverts/tunnel-vs-thread-behaviour
 oracle: 6, brink: 6, matched: 6
-passing: 6/6
+passing: 4/6
 
 === episode [0, 0] === PASS
 > "" [Choices: "A" (0), "B" (1) -> 0]
@@ -22,14 +22,14 @@ outcome: Done
 > "D\n" [Done]
 outcome: Done
 
-=== episode [0, 2] === PASS
+=== episode [0, 2] === FAIL
 > "" [Choices: "A" (0), "B" (1) -> 0]
 > "A\n" [Continue]
 > "Finished tunnel.\n" [Continue]
 > "Starting thread.\n" [Choices: "C" (0), "D" (1), "E" (2) -> 2]
 > "E\n" [Continue]
 > "Done.\n" [Done]
-outcome: Done
+outcome: Error
 
 === episode [1, 0] === PASS
 > "" [Choices: "A" (0), "B" (1) -> 1]
@@ -47,11 +47,11 @@ outcome: Done
 > "D\n" [Done]
 outcome: Done
 
-=== episode [1, 2] === PASS
+=== episode [1, 2] === FAIL
 > "" [Choices: "A" (0), "B" (1) -> 1]
 > "B\n" [Continue]
 > "Finished tunnel.\n" [Continue]
 > "Starting thread.\n" [Choices: "C" (0), "D" (1), "E" (2) -> 2]
 > "E\n" [Continue]
 > "Done.\n" [Done]
-outcome: Done
+outcome: Error

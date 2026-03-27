@@ -4,10 +4,10 @@ expression: case_snapshot
 ---
 case: tier3/misc/visit-count-bug-due-to-nested-containers
 oracle: 1, brink: 1, matched: 1
-passing: 1/1
+passing: 0/1
 
-=== episode [0] === PASS
+=== episode [0] === FAIL
 > "1\n" [Choices: "choice" (0) -> 0]
 > "choice\n" [Continue]
 > "1\n" [Done]
-outcome: Done
+outcome: Error
