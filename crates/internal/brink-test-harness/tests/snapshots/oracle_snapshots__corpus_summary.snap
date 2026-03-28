@@ -91,6 +91,7 @@ tier1/diverts/basic-tunnel: PASS (1/1 episodes)
 tier1/diverts/character-range-identifiers-for-divert-names-with-ascii-suffix: SKIP
 tier1/diverts/compare-divert-targets: PASS (1/1 episodes)
 tier1/diverts/complex-tunnels: PASS (1/1 episodes)
+tier1/diverts/cross-choice-label: FAIL (0/1 episodes, 1 mismatch)
 tier1/diverts/divert-in-conditional: PASS (1/1 episodes)
 tier1/diverts/divert-to-weave-points: PASS (1/1 episodes)
 tier1/diverts/same-line-divert-is-inline: PASS (1/1 episodes)
@@ -314,7 +315,7 @@ tier3/misc/I024-includes: PASS (1/1 episodes)
 tier3/misc/I025-nested-includes: PASS (1/1 episodes)
 tier3/misc/I032-list-comparison: PASS (1/1 episodes)
 tier3/misc/I105-list-comparison: PASS (1/1 episodes)
-tier3/misc/TheIntercept: FAIL (540/1000 episodes, 460 missing)
+tier3/misc/TheIntercept: FAIL (540/1000 episodes, 102 mismatch, 358 missing)
 tier3/misc/bools: SKIP
 tier3/misc/comment-eliminator: SKIP
 tier3/misc/empty: SKIP

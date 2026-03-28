@@ -101,6 +101,7 @@ fn plan_block_choices(
             stmt,
             file,
             scope_path,
+            scope_path,
             index,
             ids,
             plan,
@@ -115,6 +116,9 @@ fn plan_stmt_choices(
     stmt: &hir::Stmt,
     file: FileId,
     scope_path: &str,
+    // The knot/stitch scope for label lookups — stays stable while
+    // `scope_path` changes for choice-body child scopes (`c{N}`).
+    label_scope: &str,
     index: &SymbolIndex,
     ids: &mut IdAllocator,
     plan: &mut ContainerPlan,
@@ -127,7 +131,7 @@ fn plan_stmt_choices(
             // without an explicit gather in the source, both backends need
             // a convergence point (inklecate always emits g-0).
             let gather_path = if let Some(ref label) = choice_set.continuation.label {
-                qualify_name(scope_path, &label.text)
+                qualify_name(label_scope, &label.text)
             } else {
                 format!("{scope_path}.g-{gather_counter}")
             };
@@ -148,7 +152,7 @@ fn plan_stmt_choices(
             // Plan each choice target
             for choice in &choice_set.choices {
                 let choice_id = if let Some(ref label) = choice.label {
-                    let label_path = qualify_name(scope_path, &label.text);
+                    let label_path = qualify_name(label_scope, &label.text);
                     lookup_container_id(index, &label_path).unwrap_or_else(|| {
                         ids.alloc_address(&format!("{scope_path}.c{choice_counter}"))
                     })
@@ -166,7 +170,10 @@ fn plan_stmt_choices(
                     choice_id,
                 );
 
-                // Recursively plan nested choices within choice bodies
+                // Recursively plan nested choices within choice bodies.
+                // The scope_path changes to `c{N}` for unnamed container
+                // numbering, but label_scope stays at the knot/stitch
+                // level since ink labels are scoped to the containing flow.
                 let mut nested_choice_counter = 0usize;
                 let mut nested_gather_counter = 0usize;
                 for body_stmt in &choice.body.stmts {
@@ -174,6 +181,7 @@ fn plan_stmt_choices(
                         body_stmt,
                         file,
                         &format!("{scope_path}.c{}", *choice_counter - 1),
+                        label_scope,
                         index,
                         ids,
                         plan,
@@ -189,6 +197,7 @@ fn plan_stmt_choices(
                     cont_stmt,
                     file,
                     scope_path,
+                    label_scope,
                     index,
                     ids,
                     plan,
@@ -200,8 +209,10 @@ fn plan_stmt_choices(
         hir::Stmt::LabeledBlock(block) => {
             // A labeled block wrapping a choice set (opening gather pattern).
             // Allocate a container for the label, then recurse into its stmts.
+            // Use label_scope for the lookup since ink labels are addressed
+            // at the knot/stitch level (e.g. `-> knot.label`).
             if let Some(ref label) = block.label {
-                let label_path = qualify_name(scope_path, &label.text);
+                let label_path = qualify_name(label_scope, &label.text);
                 let label_id = lookup_container_id(index, &label_path)
                     .unwrap_or_else(|| ids.alloc_address(&label_path));
                 plan.gather_targets.insert(
@@ -219,6 +230,7 @@ fn plan_stmt_choices(
                     s,
                     file,
                     scope_path,
+                    label_scope,
                     index,
                     ids,
                     plan,
@@ -248,6 +260,7 @@ fn plan_stmt_choices(
                         s,
                         file,
                         &branch_scope,
+                        label_scope,
                         index,
                         ids,
                         plan,
@@ -271,7 +284,17 @@ fn plan_stmt_choices(
                 let mut bc = 0;
                 let mut bg = 0;
                 for s in &branch.stmts {
-                    plan_stmt_choices(s, file, &child_scope, index, ids, plan, &mut bc, &mut bg);
+                    plan_stmt_choices(
+                        s,
+                        file,
+                        &child_scope,
+                        label_scope,
+                        index,
+                        ids,
+                        plan,
+                        &mut bc,
+                        &mut bg,
+                    );
                 }
             }
         }

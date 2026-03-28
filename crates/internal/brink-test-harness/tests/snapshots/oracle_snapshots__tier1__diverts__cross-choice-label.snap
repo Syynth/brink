@@ -1,0 +1,16 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/diverts/cross-choice-label
+oracle: 1, brink: 1, matched: 1
+passing: 0/1
+
+=== episode [0] === FAIL
+> "\"Pick one.\"\n" [Choices: "A" (0) -> 0]
+> "\"Reached B.\"\n" [Done]
+outcome: Error
+  step 1: outcome differs
+    oracle: Terminal("Continue")
+    brink:  Done
+  step 2: missing (oracle: "\"Done.\"\n")

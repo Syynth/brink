@@ -1,0 +1,49 @@
+{
+  "steps": [
+    {
+      "text": "\"Pick one.\"\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "A",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "\"Reached B.\"\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\"Done.\"\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    0
+  ],
+  "initial_state": {
+    "variables": {
+      "x": true
+    },
+    "turn_index": 0
+  }
+}
