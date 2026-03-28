@@ -121,7 +121,7 @@
               "tags": []
             }
           ],
-          "selected": 0
+          "selected": 1
         }
       },
       "variable_changes": {},
@@ -129,7 +129,7 @@
       "turn_index": 3
     },
     {
-      "text": "\"I'm not in the Service.\"\n",
+      "text": "\"Perhaps. But I didn't choose this life.\"\n",
       "tags": [],
       "outcome": "Continue",
       "variable_changes": {},
@@ -137,7 +137,7 @@
       "turn_index": 4
     },
     {
-      "text": "Harris shakes his head. \"Yes, you are.\"\n",
+      "text": "Harris shakes his head. \"No.\"\n",
       "tags": [],
       "outcome": "Continue",
       "variable_changes": {},
@@ -203,7 +203,7 @@
               "tags": []
             }
           ],
-          "selected": 3
+          "selected": 1
         }
       },
       "variable_changes": {
@@ -211,14 +211,6 @@
       },
       "visit_changes": {},
       "turn_index": 4
-    },
-    {
-      "text": "\n",
-      "tags": [],
-      "outcome": "Continue",
-      "variable_changes": {},
-      "visit_changes": {},
-      "turn_index": 5
     },
     {
       "text": "\"No, the young man wasn't blackmailing me.\"\n",
@@ -244,8 +236,8 @@
     0,
     0,
     0,
-    0,
-    3
+    1,
+    1
   ],
   "initial_state": {
     "variables": {

@@ -72,6 +72,9 @@ fn collect_temps_from_stmt(stmt: &hir::Stmt, map: &mut TempMap, next_slot: &mut 
                 collect_temps_from_block(branch, map, next_slot);
             }
         }
+        hir::Stmt::LabeledBlock(block) => {
+            collect_temps_from_block(block, map, next_slot);
+        }
         _ => {}
     }
 }

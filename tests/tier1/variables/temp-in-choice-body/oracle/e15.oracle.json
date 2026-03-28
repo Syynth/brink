@@ -57,7 +57,7 @@
               "tags": []
             }
           ],
-          "selected": 0
+          "selected": 1
         }
       },
       "variable_changes": {},
@@ -65,7 +65,7 @@
       "turn_index": 1
     },
     {
-      "text": "\"Yes, I considered it. He seemed to know all about me.\"\n",
+      "text": "\"No. Not for more than a moment.\" He seemed to know all about me.\"\n",
       "tags": [],
       "outcome": "Continue",
       "variable_changes": {},
@@ -242,7 +242,7 @@
   "outcome": "Ended",
   "choice_path": [
     0,
-    0,
+    1,
     0,
     0,
     3
