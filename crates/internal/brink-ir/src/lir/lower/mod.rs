@@ -403,8 +403,30 @@ fn lower_block_with_children(
                     .is_some_and(|label| ctx.lookup_address_id(&label.text).is_some());
 
                 // Lower the labeled block's contents
-                let (inner_stmts, inner_children) =
+                let (mut inner_stmts, inner_children) =
                     lower_block_with_children(labeled, ctx, plan, choice_counter, gather_counter);
+
+                // If inside a choice body, append goto gather so the
+                // container is self-sufficient when entered via divert.
+                if let Some(gather_id) = ctx.choice_gather_target {
+                    let ends_terminal = inner_stmts.last().is_some_and(|s| {
+                        matches!(
+                            s,
+                            lir::Stmt::Divert(d) if matches!(
+                                d.target,
+                                lir::DivertTarget::Done
+                                    | lir::DivertTarget::End
+                                    | lir::DivertTarget::Address(_)
+                            )
+                        ) || matches!(s, lir::Stmt::ChoiceSet(_))
+                    });
+                    if !ends_terminal {
+                        inner_stmts.push(lir::Stmt::Divert(lir::Divert {
+                            target: lir::DivertTarget::Address(gather_id),
+                            args: Vec::new(),
+                        }));
+                    }
+                }
 
                 children.push(lir::Container {
                     id: wrapper_id,
@@ -782,13 +804,18 @@ fn lower_choice_with_child(
     // Lower choice body into a child container.
     // Update scope_path to match the planner's convention so nested
     // choice/gather keys resolve to the correct container IDs.
+    // Set choice_gather_target so labeled containers within the body
+    // can include an explicit goto to the gather.
     let old_scope = ctx.scope_path.clone();
+    let old_gather_target = ctx.choice_gather_target;
     ctx.scope_path = format!("{}.c{}", old_scope, *choice_counter - 1);
+    ctx.choice_gather_target = gather_target;
     let mut cc = 0;
     let mut gc = 0;
     let (body_stmts, mut children) =
         lower_block_with_children(&choice.body, ctx, plan, &mut cc, &mut gc);
     ctx.scope_path = old_scope;
+    ctx.choice_gather_target = old_gather_target;
 
     // Build the choice target container body. The output after selecting
     // a choice is: ChoiceOutput(content) + body stmts.
@@ -924,6 +951,7 @@ fn make_ctx<'a>(
         pending_children: Vec::new(),
         visible_temps: param_names.iter().map(|s| (*s).to_string()).collect(),
         file_paths,
+        choice_gather_target: None,
     }
 }
 

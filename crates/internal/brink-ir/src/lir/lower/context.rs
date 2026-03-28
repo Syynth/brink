@@ -144,6 +144,12 @@ pub struct LowerCtx<'a> {
     pub visible_temps: std::collections::HashSet<String>,
     /// Mapping from `FileId` to source file path, for populating `SourceLocation`.
     pub file_paths: &'a std::collections::HashMap<FileId, String>,
+    /// The gather target of the enclosing choice set, if any. Set when
+    /// lowering a choice body so that labeled containers within it can
+    /// include an explicit `goto gather` — making them self-sufficient
+    /// regardless of whether they're entered via `enter_container`
+    /// (structured) or `goto` (ink divert).
+    pub choice_gather_target: Option<brink_format::DefinitionId>,
 }
 
 impl<'a> LowerCtx<'a> {

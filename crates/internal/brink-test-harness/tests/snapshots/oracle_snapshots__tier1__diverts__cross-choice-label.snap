@@ -4,13 +4,10 @@ expression: case_snapshot
 ---
 case: tier1/diverts/cross-choice-label
 oracle: 1, brink: 1, matched: 1
-passing: 0/1
+passing: 1/1
 
-=== episode [0] === FAIL
+=== episode [0] === PASS
 > "\"Pick one.\"\n" [Choices: "A" (0) -> 0]
-> "\"Reached B.\"\n" [Done]
-outcome: Error
-  step 1: outcome differs
-    oracle: Terminal("Continue")
-    brink:  Done
-  step 2: missing (oracle: "\"Done.\"\n")
+> "\"Reached B.\"\n" [Continue]
+> "\"Done.\"\n" [Done]
+outcome: Done
