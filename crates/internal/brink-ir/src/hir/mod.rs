@@ -6,6 +6,7 @@
 //! are semantic nodes — with weave nesting resolved and syntactic sugar stripped.
 
 mod lower;
+pub mod lower2;
 mod normalize;
 mod types;
 

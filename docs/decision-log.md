@@ -557,3 +557,11 @@
 - **SCOPE:** architectural
 - **WHAT:** Remove converter-generated golden episodes (`episodes/*.episode.json`) and converter episode tests. The oracle (`oracle/*.oracle.json`) from the C# ink runtime becomes the sole golden reference for behavioral correctness. A separate converter-vs-oracle test can be added later if needed.
 - **WHY:** Confidence in the brink compiler now exceeds the converter pipeline. The converter was originally built as a known-good reference (ink.json → StoryData), but it has its own bugs (e.g., trailing whitespace in choice text). The C# ink runtime is the canonical source of truth for ink semantics — testing directly against it via the oracle harness eliminates the converter as a middleman and catches bugs in both the compiler and the converter.
+
+## HIR lowering: split context into read-only scope + write-only sink
+- **WHEN:** 2026-03-28
+- **PROJECT:** brink
+- **SYSTEM:** brink-ir / hir lowering
+- **SCOPE:** moderate
+- **WHAT:** When restructuring HIR lowering, the lowering context should be split into a read-only `Scope` (file_id, current_knot, current_stitch) and a write-only `LowerSink` trait (diagnostics, symbol declarations, unresolved refs). Node-level lowering code receives `&Scope` + `&mut impl LowerSink`. Only the backbone/orchestration code mutates scope.
+- **WHY:** Currently `LowerCtx` conflates read and write access — node impls take `&mut LowerCtx` which lets them accidentally mutate scope (current_knot/current_stitch). Only the structural backbone should manage scope transitions. Splitting enforces this at the type level and also enables testability: tests can swap in a recording sink without constructing a full lowering pipeline.
