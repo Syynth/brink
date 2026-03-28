@@ -2822,3 +2822,93 @@ fn glue_at_end_of_choice_body_before_gather() {
         );
     }
 }
+
+// ─── Temp scoping across choice/gather boundaries ─────────────────────
+
+/// Return true if any expression in the container tree is `GetGlobal`.
+fn has_get_global(container: &lir::Container) -> bool {
+    fn in_expr(e: &lir::Expr) -> bool {
+        match e {
+            lir::Expr::GetGlobal(_) => true,
+            lir::Expr::Prefix(_, inner) | lir::Expr::Postfix(inner, _) => in_expr(inner),
+            lir::Expr::Infix(a, _, b) => in_expr(a) || in_expr(b),
+            _ => false,
+        }
+    }
+    fn in_content(c: &lir::Content) -> bool {
+        c.parts.iter().any(|p| match p {
+            lir::ContentPart::Interpolation(e) => in_expr(e),
+            lir::ContentPart::InlineConditional(cond) => cond
+                .branches
+                .iter()
+                .any(|b| b.condition.as_ref().is_some_and(in_expr) || in_stmts(&b.body)),
+            _ => false,
+        })
+    }
+    fn in_stmts(stmts: &[lir::Stmt]) -> bool {
+        stmts.iter().any(|s| match s {
+            lir::Stmt::ExprStmt(e) => in_expr(e),
+            lir::Stmt::Assign { value, .. } => in_expr(value),
+            lir::Stmt::DeclareTemp { value, .. } => value.as_ref().is_some_and(in_expr),
+            lir::Stmt::Conditional(c) => c
+                .branches
+                .iter()
+                .any(|b| b.condition.as_ref().is_some_and(in_expr) || in_stmts(&b.body)),
+            lir::Stmt::ChoiceSet(cs) => cs
+                .choices
+                .iter()
+                .any(|ch| ch.condition.as_ref().is_some_and(in_expr)),
+            lir::Stmt::EmitContent(c) => in_content(c),
+            lir::Stmt::EmitLine(em) | lir::Stmt::EvalLine(em) => {
+                if let lir::RecognizedLine::Template { slot_exprs, .. } = &em.line {
+                    slot_exprs.iter().any(in_expr)
+                } else {
+                    false
+                }
+            }
+            lir::Stmt::ChoiceOutput { content, emission } => {
+                in_content(content)
+                    || emission.as_ref().is_some_and(|em| {
+                        if let lir::RecognizedLine::Template { slot_exprs, .. } = &em.line {
+                            slot_exprs.iter().any(in_expr)
+                        } else {
+                            false
+                        }
+                    })
+            }
+            _ => false,
+        })
+    }
+    in_stmts(&container.body) || container.children.iter().any(has_get_global)
+}
+
+#[test]
+fn temp_visible_in_choice_body_after_gather() {
+    // A temp declared in a gather continuation must be visible in the
+    // next choice set's bodies. A program with no VAR declarations
+    // should produce no globals and no GetGlobal expressions.
+    let p = lower_ink(
+        "\
+-> test_knot
+=== test_knot ===
+ * [A]
+   A.
+-
+  ~ temp saved = true
+ * [Yes]
+   -> DONE
+ * [No]
+   {saved:Saved was true.}
+   -> DONE
+",
+    );
+
+    assert!(
+        p.globals.is_empty(),
+        "program has no VAR — should have no globals"
+    );
+    assert!(
+        !has_get_global(&p.root),
+        "program has no VAR — should have no GetGlobal expressions",
+    );
+}
