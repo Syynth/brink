@@ -60,6 +60,7 @@ fn collect_temps_from_stmt(stmt: &hir::Stmt, map: &mut TempMap, next_slot: &mut 
             for choice in &cs.choices {
                 collect_temps_from_block(&choice.body, map, next_slot);
             }
+            collect_temps_from_block(&cs.continuation, map, next_slot);
         }
         hir::Stmt::Conditional(cond) => {
             for branch in &cond.branches {

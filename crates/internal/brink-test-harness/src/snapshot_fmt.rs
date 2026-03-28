@@ -53,7 +53,11 @@ fn fmt_outcome(outcome: &Outcome) -> &'static str {
         Outcome::Done => "Done",
         Outcome::InputsExhausted { .. } => "InputsExhausted",
         Outcome::StepLimit { .. } => "StepLimit",
-        Outcome::Error(_) => "Error",
+        #[expect(clippy::print_stderr, reason = "diagnostic output for test debugging")]
+        Outcome::Error(msg) => {
+            eprintln!("RUNTIME ERROR: {msg}");
+            "Error"
+        }
     }
 }
 

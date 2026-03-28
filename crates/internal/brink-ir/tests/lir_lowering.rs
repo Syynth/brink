@@ -2887,12 +2887,20 @@ fn temp_visible_in_choice_body_after_gather() {
     // A temp declared in a gather continuation must be visible in the
     // next choice set's bodies. A program with no VAR declarations
     // should produce no globals and no GetGlobal expressions.
+    // Two levels of choice+gather to match TheIntercept's nesting depth.
     let p = lower_ink(
         "\
 -> test_knot
 === test_knot ===
  * [A]
    A.
+ * [B]
+   B.
+- First gather.
+ * [C]
+   C.
+ * [D]
+   D.
 -
   ~ temp saved = true
  * [Yes]

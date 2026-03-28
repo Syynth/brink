@@ -7,7 +7,7 @@
         "Choices": {
           "presented": [
             {
-              "text": "A",
+              "text": "Talk",
               "index": 0,
               "tags": []
             }
@@ -20,7 +20,15 @@
       "turn_index": 0
     },
     {
-      "text": "\"A.\"\n",
+      "text": "\"There was a young man.\"\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "\"You seriously entertained that possibility?\"\n",
       "tags": [],
       "outcome": {
         "Choices": {
@@ -44,22 +52,56 @@
       "turn_index": 1
     },
     {
+      "text": "\"Yes.\"\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
+      "text": "\"Go on.\"\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "Yes",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "No",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    },
+    {
       "text": "",
       "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
       "visit_changes": {},
-      "turn_index": 2
+      "turn_index": 3
     }
   ],
   "outcome": "Ended",
   "choice_path": [
     0,
+    0,
     0
   ],
   "initial_state": {
     "variables": {
-      "drugged": true
+      "drugged": true,
+      "hooper_mentioned": false
     },
     "turn_index": 0
   }

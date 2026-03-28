@@ -157,6 +157,7 @@ tier1/variables/character-range-identifiers-for-simple-variable-names-with-ascii
 tier1/variables/const: PASS (1/1 episodes)
 tier1/variables/multiple-constant-references: PASS (1/1 episodes)
 tier1/variables/string-constants: PASS (1/1 episodes)
+tier1/variables/temp-in-choice-body: PASS (4/4 episodes)
 tier1/variables/temp-ref-passthrough: PASS (1/1 episodes)
 tier1/variables/temp-ref-write-through: PASS (1/1 episodes)
 tier1/variables/turns-since-with-variable-target: PASS (1/1 episodes)

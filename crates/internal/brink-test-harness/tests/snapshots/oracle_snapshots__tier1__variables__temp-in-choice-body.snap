@@ -1,0 +1,43 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier1/variables/temp-in-choice-body
+oracle: 4, brink: 4, matched: 4
+passing: 4/4
+
+=== episode [0, 0, 0] === PASS
+> "" [Choices: "Talk" (0) -> 0]
+> "\"There was a young man.\"\n" [Continue]
+> "\"You seriously entertained that possibility?\"\n" [Choices: "Yes" (0), "No" (1) -> 0]
+> "\"Yes.\"\n" [Continue]
+> "\"Go on.\"\n" [Choices: "Yes" (0), "No" (1) -> 0]
+> "" [Done]
+outcome: Done
+
+=== episode [0, 0, 1] === PASS
+> "" [Choices: "Talk" (0) -> 0]
+> "\"There was a young man.\"\n" [Continue]
+> "\"You seriously entertained that possibility?\"\n" [Choices: "Yes" (0), "No" (1) -> 0]
+> "\"Yes.\"\n" [Continue]
+> "\"Go on.\"\n" [Choices: "Yes" (0), "No" (1) -> 1]
+> "Saved was true.\n" [Done]
+outcome: Done
+
+=== episode [0, 1, 0] === PASS
+> "" [Choices: "Talk" (0) -> 0]
+> "\"There was a young man.\"\n" [Continue]
+> "\"You seriously entertained that possibility?\"\n" [Choices: "Yes" (0), "No" (1) -> 1]
+> "\"No.\"\n" [Continue]
+> "\"Go on.\"\n" [Choices: "Yes" (0), "No" (1) -> 0]
+> "" [Done]
+outcome: Done
+
+=== episode [0, 1, 1] === PASS
+> "" [Choices: "Talk" (0) -> 0]
+> "\"There was a young man.\"\n" [Continue]
+> "\"You seriously entertained that possibility?\"\n" [Choices: "Yes" (0), "No" (1) -> 1]
+> "\"No.\"\n" [Continue]
+> "\"Go on.\"\n" [Choices: "Yes" (0), "No" (1) -> 1]
+> "Saved was true.\n" [Done]
+outcome: Done

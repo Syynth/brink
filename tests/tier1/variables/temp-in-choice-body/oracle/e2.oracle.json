@@ -44,7 +44,7 @@
               "tags": []
             }
           ],
-          "selected": 0
+          "selected": 1
         }
       },
       "variable_changes": {},
@@ -52,7 +52,7 @@
       "turn_index": 1
     },
     {
-      "text": "\"Yes.\"\n",
+      "text": "\"No.\"\n",
       "tags": [],
       "outcome": "Continue",
       "variable_changes": {},
@@ -76,7 +76,7 @@
               "tags": []
             }
           ],
-          "selected": 1
+          "selected": 0
         }
       },
       "variable_changes": {},
@@ -84,7 +84,7 @@
       "turn_index": 2
     },
     {
-      "text": "Saved was true.\n",
+      "text": "",
       "tags": [],
       "outcome": "Ended",
       "variable_changes": {},
@@ -95,8 +95,8 @@
   "outcome": "Ended",
   "choice_path": [
     0,
-    0,
-    1
+    1,
+    0
   ],
   "initial_state": {
     "variables": {
