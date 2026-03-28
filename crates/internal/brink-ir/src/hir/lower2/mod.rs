@@ -9,6 +9,7 @@
 
 mod backbone;
 mod block;
+mod choice;
 mod conditional;
 mod content;
 mod context;
@@ -16,6 +17,7 @@ mod decl;
 mod divert;
 mod expr;
 mod helpers;
+mod structure;
 
 #[cfg(test)]
 mod tests;
@@ -25,6 +27,7 @@ pub use context::{Diagnosed, EffectSink, LowerScope, LowerSink, Lowered};
 
 // Re-export phase traits.
 pub use block::LowerBlock;
+pub use choice::LowerChoice;
 pub use conditional::{LowerConditional, LowerSequence};
 pub use content::LowerBody;
 pub use decl::DeclareSymbols;
@@ -36,3 +39,6 @@ pub use backbone::{BodyChild, classify_body_child, lower_simple_body};
 
 // Re-export accumulator types.
 pub use content::{ContentAccumulator, ContentLineOutput, Integrate, LogicLineOutput};
+
+// Re-export public API (same signature as crate::hir::lower::lower).
+pub use structure::lower;
