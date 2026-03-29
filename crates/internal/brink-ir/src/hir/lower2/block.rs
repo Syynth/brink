@@ -8,12 +8,16 @@ use brink_syntax::ast::{self, AstNode};
 
 use crate::{Block, Content, Stmt};
 
-use super::backbone::{BranchChild, classify_branch_child};
+use super::backbone::{BodyChild, BranchChild, classify_body_child, classify_branch_child};
+use super::choice::{LowerChoice, lower_gather_to_block};
 use super::content::{
-    ContentAccumulator, DirectBackend, HandleResult, lower_content_node_children, lower_tags,
+    BodyBackend, ContentAccumulator, DirectBackend, HandleResult, lower_content_node_children,
+    lower_tags,
 };
 use super::context::{LowerScope, LowerSink};
 use super::divert::LowerDivert;
+
+use crate::hir::lower::{WeaveItem, fold_weave};
 
 // ─── LowerBlock trait ───────────────────────────────────────────────
 
@@ -31,7 +35,6 @@ impl LowerBlock for ast::BranchlessCondBody {
 
         for child in self.syntax().children_with_tokens() {
             match classify_branch_child(&child) {
-                // Shared: delegate to accumulator via generic handle
                 BranchChild::ContentLine(cl) => {
                     acc.handle(&cl, scope, sink);
                 }
@@ -48,11 +51,8 @@ impl LowerBlock for ast::BranchlessCondBody {
                 BranchChild::Glue => acc.push_glue(),
                 BranchChild::Escape(t) => acc.push_escape(&t),
                 BranchChild::Choice(_) | BranchChild::Whitespace(_) | BranchChild::Trivia => {}
-
-                // Stop at else branch
                 BranchChild::Stop => break,
 
-                // Branchless-specific newline logic
                 BranchChild::Newline => {
                     let was_multiline = is_multiline;
                     is_multiline = true;
@@ -77,10 +77,26 @@ impl LowerBlock for ast::BranchlessCondBody {
     }
 }
 
-// ─── Branch body ────────────────────────────────────────────────────
+// ─── MultilineBranchBody ────────────────────────────────────────────
 
-/// Lower a multiline branch body syntax node to a [`Block`].
+impl LowerBlock for ast::MultilineBranchBody {
+    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Block {
+        lower_branch_body_from_syntax(self.syntax(), scope, sink)
+    }
+}
+
+/// Shared branch body logic — used by `MultilineBranchBody::lower_block`
+/// and by callers that have a raw `SyntaxNode` (e.g., conditional branches
+/// that access `.body().syntax()`).
 pub fn lower_branch_body(
+    body: &brink_syntax::SyntaxNode,
+    scope: &LowerScope,
+    sink: &mut impl LowerSink,
+) -> Block {
+    lower_branch_body_from_syntax(body, scope, sink)
+}
+
+fn lower_branch_body_from_syntax(
     body: &brink_syntax::SyntaxNode,
     scope: &LowerScope,
     sink: &mut impl LowerSink,
@@ -92,7 +108,6 @@ pub fn lower_branch_body(
 
     for child in body.children_with_tokens() {
         match classify_branch_child(&child) {
-            // Shared: delegate to accumulator via generic handle
             BranchChild::ContentLine(cl) => {
                 pending_ws = None;
                 acc.handle(&cl, scope, sink);
@@ -145,7 +160,6 @@ pub fn lower_branch_body(
             BranchChild::Trivia => {}
             BranchChild::Stop => break,
 
-            // Branch-specific newline logic
             BranchChild::Newline => {
                 if acc.has_buffered_parts() {
                     let ends_glue = acc.ends_with_glue();
@@ -161,7 +175,6 @@ pub fn lower_branch_body(
                 after_content_block = false;
             }
 
-            // Branch-specific: preserve whitespace between content nodes
             BranchChild::Whitespace(ws) => {
                 if seen_content {
                     if let Some(ref mut existing) = pending_ws {
@@ -179,6 +192,114 @@ pub fn lower_branch_body(
         acc.flush();
         if !ends_glue {
             acc.push_eol();
+        }
+    }
+
+    acc.finish()
+}
+
+// ─── KnotBody ───────────────────────────────────────────────────────
+
+/// Weave backend that collects `WeaveItem`s and calls `fold_weave` on finish.
+struct WeaveBackend {
+    items: Vec<WeaveItem>,
+}
+
+impl WeaveBackend {
+    fn new() -> Self {
+        Self { items: Vec::new() }
+    }
+
+    fn push_choice(&mut self, choice: crate::Choice, depth: usize) {
+        self.items.push(WeaveItem::Choice {
+            choice: Box::new(choice),
+            depth,
+        });
+    }
+
+    fn push_gather(&mut self, block: Block, depth: usize) {
+        self.items.push(WeaveItem::Continuation { block, depth });
+    }
+}
+
+impl BodyBackend for WeaveBackend {
+    fn push_stmt(&mut self, stmt: Stmt) {
+        self.items.push(WeaveItem::Stmt(stmt));
+    }
+
+    fn finish(self) -> Block {
+        fold_weave(self.items)
+    }
+}
+
+impl LowerBlock for ast::KnotBody {
+    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Block {
+        lower_weave_body(self.syntax(), scope, sink)
+    }
+}
+
+// ─── StitchBody ─────────────────────────────────────────────────────
+
+impl LowerBlock for ast::StitchBody {
+    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Block {
+        lower_weave_body(self.syntax(), scope, sink)
+    }
+}
+
+// ─── Weave body (shared by KnotBody, StitchBody, SourceFile root) ──
+
+/// Lower body children with full weave folding.
+///
+/// Used by `KnotBody`, `StitchBody`, and the source file root content.
+pub fn lower_weave_body(
+    parent: &brink_syntax::SyntaxNode,
+    scope: &LowerScope,
+    sink: &mut impl LowerSink,
+) -> Block {
+    let mut acc = ContentAccumulator::new(WeaveBackend::new());
+
+    for child in parent.children() {
+        match classify_body_child(&child) {
+            BodyChild::ContentLine(cl) => {
+                acc.handle(&cl, scope, sink);
+            }
+            BodyChild::LogicLine(ll) => {
+                acc.handle(&ll, scope, sink);
+            }
+            BodyChild::TagLine(tl) => {
+                acc.handle(&tl, scope, sink);
+            }
+            BodyChild::DivertNode(dn) => {
+                acc.handle(&dn, scope, sink);
+            }
+            BodyChild::InlineLogic(il) => {
+                acc.handle(&il, scope, sink);
+            }
+            BodyChild::MultilineBlock(mb) => {
+                acc.handle(&mb, scope, sink);
+            }
+
+            BodyChild::Choice(c) => {
+                acc.flush();
+                let depth = c.bullets().map_or(1, |b| b.depth());
+                if let Ok(choice) = c.lower_choice(scope, sink) {
+                    acc.backend_mut().push_choice(choice, depth);
+                }
+            }
+            BodyChild::Gather(g) => {
+                acc.flush();
+                let depth = g.dashes().map_or(1, |d| d.depth());
+                acc.backend_mut()
+                    .push_gather(lower_gather_to_block(&g, scope, sink), depth);
+                if let Some(c) = g.choice() {
+                    let choice_depth = c.bullets().map_or(1, |b| b.depth());
+                    if let Ok(choice) = c.lower_choice(scope, sink) {
+                        acc.backend_mut().push_choice(choice, choice_depth);
+                    }
+                }
+            }
+
+            BodyChild::Structural | BodyChild::Trivia => {}
         }
     }
 

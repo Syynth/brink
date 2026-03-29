@@ -10,14 +10,11 @@ use crate::{
     IncludeSite, Knot, Name, Param, ParamInfo, Path, Stitch, Stmt, SymbolKind, SymbolManifest,
 };
 
-use super::backbone::{BodyChild, classify_body_child};
-use super::choice::{LowerChoice, lower_gather_to_block};
-use super::content::{BodyBackend, ContentAccumulator};
+use super::block::{LowerBlock, lower_weave_body};
 use super::context::{EffectSink, LowerScope, LowerSink};
 use super::decl::DeclareSymbols;
 use super::helpers::{make_name, name_from_ident};
 
-use crate::hir::lower::{WeaveItem, fold_weave};
 use crate::symbols::LocalSymbol;
 
 // ─── Public API ─────────────────────────────────────────────────────
@@ -82,7 +79,7 @@ fn lower_source_file(
             knots.push(knot);
         }
     }
-    let root_content = lower_body_children(scope, sink, file.syntax());
+    let root_content = lower_weave_body(file.syntax(), scope, sink);
 
     HirFile {
         root_content,
@@ -181,7 +178,7 @@ fn lower_knot_body(
         .stitches()
         .filter_map(|s| lower_stitch(scope, sink, &s, knot_name))
         .collect();
-    let mut block = lower_body_children(scope, sink, body.syntax());
+    let mut block = body.lower_block(scope, sink);
 
     // First-stitch auto-enter
     if block.stmts.is_empty()
@@ -254,9 +251,9 @@ fn lower_top_level_stitch(
             }),
         });
     }
-    let body = stitch.body().map_or_else(Block::default, |b| {
-        lower_body_children(scope, sink, b.syntax())
-    });
+    let body = stitch
+        .body()
+        .map_or_else(Block::default, |b| b.lower_block(scope, sink));
     scope.current_knot = None;
 
     Some(Knot {
@@ -321,9 +318,9 @@ fn lower_stitch(
             }),
         });
     }
-    let body = stitch.body().map_or_else(Block::default, |b| {
-        lower_body_children(scope, sink, b.syntax())
-    });
+    let body = stitch
+        .body()
+        .map_or_else(Block::default, |b| b.lower_block(scope, sink));
     scope.current_stitch = None;
 
     Some(Stitch {
@@ -375,98 +372,4 @@ fn lower_include(inc: &ast::IncludeStmt, sink: &mut impl LowerSink) -> Option<In
         file_path: cleaned.to_owned(),
         ptr: AstPtr::new(inc),
     })
-}
-
-// ─── Weave backend ──────────────────────────────────────────────────
-
-/// Backend that collects `WeaveItem`s and calls `fold_weave` on finish.
-struct WeaveBackend {
-    items: Vec<WeaveItem>,
-}
-
-impl WeaveBackend {
-    fn new() -> Self {
-        Self { items: Vec::new() }
-    }
-
-    fn push_choice(&mut self, choice: crate::Choice, depth: usize) {
-        self.items.push(WeaveItem::Choice {
-            choice: Box::new(choice),
-            depth,
-        });
-    }
-
-    fn push_gather(&mut self, block: Block, depth: usize) {
-        self.items.push(WeaveItem::Continuation { block, depth });
-    }
-}
-
-impl BodyBackend for WeaveBackend {
-    fn push_stmt(&mut self, stmt: Stmt) {
-        self.items.push(WeaveItem::Stmt(stmt));
-    }
-
-    fn finish(self) -> Block {
-        fold_weave(self.items)
-    }
-}
-
-// ─── Body assembly with weave folding ───────────────────────────────
-
-/// Lower body children with full weave folding.
-fn lower_body_children(
-    scope: &mut LowerScope,
-    sink: &mut impl LowerSink,
-    parent: &brink_syntax::SyntaxNode,
-) -> Block {
-    let mut acc = ContentAccumulator::new(WeaveBackend::new());
-
-    for child in parent.children() {
-        match classify_body_child(&child) {
-            // Shared: delegate to accumulator via generic handle
-            BodyChild::ContentLine(cl) => {
-                acc.handle(&cl, scope, sink);
-            }
-            BodyChild::LogicLine(ll) => {
-                acc.handle(&ll, scope, sink);
-            }
-            BodyChild::TagLine(tl) => {
-                acc.handle(&tl, scope, sink);
-            }
-            BodyChild::DivertNode(dn) => {
-                acc.handle(&dn, scope, sink);
-            }
-            BodyChild::InlineLogic(il) => {
-                acc.handle(&il, scope, sink);
-            }
-            BodyChild::MultilineBlock(mb) => {
-                acc.handle(&mb, scope, sink);
-            }
-
-            // Weave-specific: choices and gathers go to backend
-            BodyChild::Choice(c) => {
-                acc.flush();
-                let depth = c.bullets().map_or(1, |b| b.depth());
-                if let Ok(choice) = c.lower_choice(scope, sink) {
-                    acc.backend_mut().push_choice(choice, depth);
-                }
-            }
-            BodyChild::Gather(g) => {
-                acc.flush();
-                let depth = g.dashes().map_or(1, |d| d.depth());
-                acc.backend_mut()
-                    .push_gather(lower_gather_to_block(&g, scope, sink), depth);
-                if let Some(c) = g.choice() {
-                    let choice_depth = c.bullets().map_or(1, |b| b.depth());
-                    if let Ok(choice) = c.lower_choice(scope, sink) {
-                        acc.backend_mut().push_choice(choice, choice_depth);
-                    }
-                }
-            }
-
-            BodyChild::Structural | BodyChild::Trivia => {}
-        }
-    }
-
-    acc.finish()
 }
