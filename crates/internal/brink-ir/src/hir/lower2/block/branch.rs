@@ -7,14 +7,14 @@ use crate::{Block, ChoiceSet, ChoiceSetContext, Stmt};
 use super::super::backbone::{BranchChild, classify_branch_child};
 use super::super::choice::LowerChoice;
 use super::super::content::{ContentAccumulator, DirectBackend, HandleResult};
-use super::super::context::{LowerScope, LowerSink};
+use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::LowerBlock;
 
 // ─── MultilineBranchBody ────────────────────────────────────────────
 
 impl LowerBlock for ast::MultilineBranchBody {
-    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Block {
-        lower_branch_body_from_syntax(self.syntax(), scope, sink)
+    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Block> {
+        Ok(lower_branch_body_from_syntax(self.syntax(), scope, sink))
     }
 }
 

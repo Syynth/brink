@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::super::block::LowerBlock;
-use super::super::context::{LowerScope, LowerSink};
+use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::helpers::{make_name, name_from_ident};
 use super::stitch::lower_stitch;
 
@@ -18,20 +18,17 @@ pub(super) fn lower_knot(
     scope: &mut LowerScope,
     sink: &mut impl LowerSink,
     knot: &ast::KnotDef,
-) -> Option<Knot> {
+) -> Lowered<Knot> {
     let range = knot.syntax().text_range();
-    let header = knot.header().or_else(|| {
-        sink.diagnose(range, DiagnosticCode::E001);
-        None
-    })?;
-    let ident = header.identifier().or_else(|| {
-        sink.diagnose(range, DiagnosticCode::E001);
-        None
-    })?;
-    let name_text = header.name().or_else(|| {
-        sink.diagnose(range, DiagnosticCode::E001);
-        None
-    })?;
+    let header = knot
+        .header()
+        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E001))?;
+    let ident = header
+        .identifier()
+        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E001))?;
+    let name_text = header
+        .name()
+        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E001))?;
     let name = make_name(name_text.clone(), ident.syntax().text_range());
 
     let is_function = header.is_function();
@@ -78,7 +75,7 @@ pub(super) fn lower_knot(
     scope.current_knot = None;
     scope.current_stitch = None;
 
-    Some(Knot {
+    Ok(Knot {
         ptr: ContainerPtr::Knot(AstPtr::new(knot)),
         name,
         is_function,
@@ -96,9 +93,9 @@ pub(super) fn lower_knot_body(
 ) -> (Block, Vec<Stitch>) {
     let stitches: Vec<Stitch> = body
         .stitches()
-        .filter_map(|s| lower_stitch(scope, sink, &s, knot_name))
+        .filter_map(|s| lower_stitch(scope, sink, &s, knot_name).ok())
         .collect();
-    let mut block = body.lower_block(scope, sink);
+    let mut block = body.lower_block(scope, sink).unwrap_or_default();
 
     // First-stitch auto-enter
     if block.stmts.is_empty()
@@ -135,21 +132,18 @@ pub(super) fn lower_knot_params(
     sink: &mut impl LowerSink,
 ) -> Vec<Param> {
     params
-        .map(|p| p.params().filter_map(|pd| lower_param(&pd, sink)).collect())
+        .map(|p| p.params().filter_map(|pd| lower_param(&pd, sink).ok()).collect())
         .unwrap_or_default()
 }
 
-fn lower_param(p: &ast::KnotParamDecl, sink: &mut impl LowerSink) -> Option<Param> {
+fn lower_param(p: &ast::KnotParamDecl, sink: &mut impl LowerSink) -> Lowered<Param> {
     let range = p.syntax().text_range();
-    let ident = p.identifier().or_else(|| {
-        sink.diagnose(range, DiagnosticCode::E003);
-        None
-    })?;
-    let name = name_from_ident(&ident).or_else(|| {
-        sink.diagnose(range, DiagnosticCode::E003);
-        None
-    })?;
-    Some(Param {
+    let ident = p
+        .identifier()
+        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E003))?;
+    let name = name_from_ident(&ident)
+        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E003))?;
+    Ok(Param {
         name,
         is_ref: p.is_ref(),
         is_divert: p.is_divert(),

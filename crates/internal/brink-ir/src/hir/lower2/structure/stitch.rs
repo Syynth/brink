@@ -5,7 +5,7 @@ use brink_syntax::ast::{self, AstNode, AstPtr};
 use crate::{Block, ContainerPtr, DiagnosticCode, Knot, ParamInfo, Stitch, SymbolKind};
 
 use super::super::block::LowerBlock;
-use super::super::context::{LowerScope, LowerSink};
+use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::helpers::make_name;
 use super::knot::lower_knot_params;
 
@@ -15,10 +15,17 @@ pub(super) fn lower_top_level_stitch(
     scope: &mut LowerScope,
     sink: &mut impl LowerSink,
     stitch: &ast::StitchDef,
-) -> Option<Knot> {
-    let header = stitch.header()?;
-    let ident = header.identifier()?;
-    let name_text = header.name()?;
+) -> Lowered<Knot> {
+    let range = stitch.syntax().text_range();
+    let header = stitch
+        .header()
+        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E002))?;
+    let ident = header
+        .identifier()
+        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E002))?;
+    let name_text = header
+        .name()
+        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E002))?;
     let name = make_name(name_text.clone(), ident.syntax().text_range());
 
     let params = lower_knot_params(header.params(), sink);
@@ -54,10 +61,10 @@ pub(super) fn lower_top_level_stitch(
     }
     let body = stitch
         .body()
-        .map_or_else(Block::default, |b| b.lower_block(scope, sink));
+        .map_or_else(Block::default, |b| b.lower_block(scope, sink).unwrap_or_default());
     scope.current_knot = None;
 
-    Some(Knot {
+    Ok(Knot {
         ptr: ContainerPtr::Stitch(AstPtr::new(stitch)),
         name,
         is_function: false,
@@ -72,20 +79,17 @@ pub(super) fn lower_stitch(
     sink: &mut impl LowerSink,
     stitch: &ast::StitchDef,
     knot_name: &str,
-) -> Option<Stitch> {
+) -> Lowered<Stitch> {
     let range = stitch.syntax().text_range();
-    let header = stitch.header().or_else(|| {
-        sink.diagnose(range, DiagnosticCode::E002);
-        None
-    })?;
-    let ident = header.identifier().or_else(|| {
-        sink.diagnose(range, DiagnosticCode::E002);
-        None
-    })?;
-    let name_text = header.name().or_else(|| {
-        sink.diagnose(range, DiagnosticCode::E002);
-        None
-    })?;
+    let header = stitch
+        .header()
+        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E002))?;
+    let ident = header
+        .identifier()
+        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E002))?;
+    let name_text = header
+        .name()
+        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E002))?;
     let name = make_name(name_text.clone(), ident.syntax().text_range());
     let qualified = format!("{knot_name}.{name_text}");
 
@@ -121,10 +125,10 @@ pub(super) fn lower_stitch(
     }
     let body = stitch
         .body()
-        .map_or_else(Block::default, |b| b.lower_block(scope, sink));
+        .map_or_else(Block::default, |b| b.lower_block(scope, sink).unwrap_or_default());
     scope.current_stitch = None;
 
-    Some(Stitch {
+    Ok(Stitch {
         ptr: AstPtr::new(stitch),
         name,
         params,

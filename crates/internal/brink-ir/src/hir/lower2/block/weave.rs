@@ -8,7 +8,7 @@ use crate::{Block, Stmt};
 use super::super::backbone::{BodyChild, classify_body_child};
 use super::super::choice::{LowerChoice, lower_gather_to_block};
 use super::super::content::{BodyBackend, ContentAccumulator};
-use super::super::context::{LowerScope, LowerSink};
+use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::LowerBlock;
 
 use crate::hir::lower::{WeaveItem, fold_weave};
@@ -50,16 +50,16 @@ impl BodyBackend for WeaveBackend {
 // ─── KnotBody ───────────────────────────────────────────────────────
 
 impl LowerBlock for ast::KnotBody {
-    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Block {
-        lower_weave_body(self.syntax(), scope, sink)
+    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Block> {
+        Ok(lower_weave_body(self.syntax(), scope, sink))
     }
 }
 
 // ─── StitchBody ─────────────────────────────────────────────────────
 
 impl LowerBlock for ast::StitchBody {
-    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Block {
-        lower_weave_body(self.syntax(), scope, sink)
+    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Block> {
+        Ok(lower_weave_body(self.syntax(), scope, sink))
     }
 }
 

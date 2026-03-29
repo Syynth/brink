@@ -47,7 +47,7 @@ pub fn lower_single_knot(
     let mut scope = LowerScope::new(file_id);
     let mut sink = EffectSink::new(file_id);
 
-    let result = lower_knot(&mut scope, &mut sink, knot);
+    let result = lower_knot(&mut scope, &mut sink, knot).ok();
     let (manifest, diagnostics) = sink.finish();
     (result, manifest, diagnostics)
 }
@@ -90,7 +90,7 @@ pub fn lower_top_level(
     // Top-level stitches (no parent knot) — promoted to knots.
     let top_level_knots: Vec<_> = file
         .stitches()
-        .filter_map(|stitch| lower_top_level_stitch(&mut scope, &mut sink, &stitch))
+        .filter_map(|stitch| lower_top_level_stitch(&mut scope, &mut sink, &stitch).ok())
         .collect();
 
     let root_content = lower_weave_body(file.syntax(), &mut scope, &mut sink);
@@ -131,14 +131,14 @@ fn lower_source_file(
         .collect();
     let includes: Vec<IncludeSite> = file
         .includes()
-        .filter_map(|i| lower_include(&i, sink))
+        .filter_map(|i| lower_include(&i, sink).ok())
         .collect();
     let mut knots: Vec<Knot> = file
         .knots()
-        .filter_map(|k| lower_knot(scope, sink, &k))
+        .filter_map(|k| lower_knot(scope, sink, &k).ok())
         .collect();
     for stitch in file.stitches() {
-        if let Some(knot) = lower_top_level_stitch(scope, sink, &stitch) {
+        if let Ok(knot) = lower_top_level_stitch(scope, sink, &stitch) {
             knots.push(knot);
         }
     }

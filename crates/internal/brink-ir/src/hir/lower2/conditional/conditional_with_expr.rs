@@ -42,7 +42,7 @@ fn lower_conditional_with_expr(
     // Branchless body: `{x: content}`
     if let Some(body) = cond.branchless_body() {
         use super::super::block::LowerBlock;
-        let block = body.lower_block(scope, sink);
+        let block = body.lower_block(scope, sink).unwrap_or_default();
         branches.push(CondBranch {
             condition: Some(condition.clone()),
             body: block,

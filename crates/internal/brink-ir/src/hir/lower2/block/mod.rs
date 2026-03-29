@@ -15,11 +15,11 @@ pub use wrap::wrap_content_as_block;
 
 use crate::Block;
 
-use super::context::{LowerScope, LowerSink};
+use super::context::{LowerScope, LowerSink, Lowered};
 
 // ─── LowerBlock trait ───────────────────────────────────────────────
 
 /// "I am a body container — lower my children into a [`Block`]."
 pub trait LowerBlock {
-    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Block;
+    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Block>;
 }

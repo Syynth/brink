@@ -8,13 +8,13 @@ use super::super::backbone::BranchChild;
 use super::super::backbone::classify_branch_child;
 use super::super::choice::LowerChoice;
 use super::super::content::{ContentAccumulator, DirectBackend};
-use super::super::context::{LowerScope, LowerSink};
+use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::LowerBlock;
 
 // ─── BranchlessCondBody ─────────────────────────────────────────────
 
 impl LowerBlock for ast::BranchlessCondBody {
-    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Block {
+    fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Block> {
         let mut acc = ContentAccumulator::new(DirectBackend::new());
         let mut is_multiline = false;
 
@@ -77,7 +77,7 @@ impl LowerBlock for ast::BranchlessCondBody {
         // `done`. Move them into the last choice's body so they execute.
         move_trailing_into_choice_body(&mut block.stmts);
 
-        block
+        Ok(block)
     }
 }
 
