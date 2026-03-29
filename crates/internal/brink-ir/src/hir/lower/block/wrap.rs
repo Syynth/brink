@@ -39,5 +39,5 @@ pub fn wrap_content_as_block(
     if stmts.is_empty() {
         return Block::default();
     }
-    Block { label: None, stmts }
+    Block { label: None, stmts, container_id: None }
 }

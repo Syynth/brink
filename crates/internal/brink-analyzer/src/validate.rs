@@ -388,6 +388,7 @@ mod tests {
                     value: None,
                     onwards_args: Vec::new(),
                 })],
+                container_id: None,
             },
             stitches: Vec::new(),
         });
@@ -416,6 +417,7 @@ mod tests {
                     value: Some(Expr::Int(42)),
                     onwards_args: Vec::new(),
                 })],
+                container_id: None,
             },
             stitches: Vec::new(),
         });
@@ -446,6 +448,7 @@ mod tests {
                     value: None,
                     onwards_args: Vec::new(),
                 })],
+                container_id: None,
             },
             stitches: Vec::new(),
         });
@@ -487,6 +490,7 @@ mod tests {
                         tags: Vec::new(),
                     }),
                 ],
+                container_id: None,
             },
             stitches: Vec::new(),
         });
@@ -523,6 +527,7 @@ mod tests {
                     }),
                     Stmt::EndOfLine,
                 ],
+                container_id: None,
             },
             stitches: Vec::new(),
         });
@@ -572,6 +577,7 @@ mod tests {
                         tags: Vec::new(),
                     }),
                 ],
+                container_id: None,
             },
             stitches: Vec::new(),
         });
@@ -615,11 +621,14 @@ mod tests {
                         inner_content: None,
                         tags: Vec::new(),
                         body: Block::default(),
+                        container_id: None,
                     }],
                     continuation: Block::default(),
                     context: ChoiceSetContext::Weave,
                     depth: 1,
+                    gather_id: None,
                 }))],
+                container_id: None,
             },
             stitches: Vec::new(),
         });
@@ -659,6 +668,7 @@ mod tests {
                             inner_content: None,
                             tags: Vec::new(),
                             body: Block::default(),
+                            container_id: None,
                         },
                         Choice {
                             ptr: dummy_choice_ptr(),
@@ -671,12 +681,15 @@ mod tests {
                             inner_content: None,
                             tags: Vec::new(),
                             body: Block::default(),
+                            container_id: None,
                         },
                     ],
                     continuation: Block::default(),
                     context: ChoiceSetContext::Weave,
                     depth: 1,
+                    gather_id: None,
                 }))],
+                container_id: None,
             },
             stitches: Vec::new(),
         });

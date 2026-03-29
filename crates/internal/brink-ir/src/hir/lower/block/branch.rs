@@ -95,6 +95,7 @@ fn lower_branch_body_from_syntax(
                         continuation: Block::default(),
                         context: ChoiceSetContext::Inline,
                         depth: 0,
+                        gather_id: None,
                     })));
                 }
             }

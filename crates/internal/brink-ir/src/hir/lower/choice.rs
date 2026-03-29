@@ -152,6 +152,7 @@ impl LowerChoice for ast::Choice {
             inner_content,
             tags,
             body,
+            container_id: None,
         })
     }
 }
@@ -264,7 +265,7 @@ pub fn lower_gather_to_block(
         stmts.push(Stmt::EndOfLine);
     }
 
-    Block { label, stmts }
+    Block { label, stmts, container_id: None }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────

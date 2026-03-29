@@ -116,6 +116,9 @@ pub struct Param {
 pub struct Block {
     pub label: Option<Name>,
     pub stmts: Vec<Stmt>,
+    /// Pre-assigned container ID for blocks that become LIR containers
+    /// (gather continuations, labeled blocks). Stamped by [`super::stamp_container_ids`].
+    pub container_id: Option<brink_format::DefinitionId>,
 }
 
 /// A single statement within a block.
@@ -181,6 +184,9 @@ pub struct ChoiceSet {
     /// The weave depth at which this choice set was folded.
     /// `0` for inline choice sets (inside conditionals/sequences).
     pub depth: u32,
+    /// Pre-assigned container ID for the gather target.
+    /// Stamped by [`super::stamp_container_ids`].
+    pub gather_id: Option<brink_format::DefinitionId>,
 }
 
 /// A single choice in a choice set.
@@ -204,6 +210,9 @@ pub struct Choice {
     pub tags: Vec<Tag>,
     /// Nested content after this choice is selected.
     pub body: Block,
+    /// Pre-assigned container ID for this choice's target container.
+    /// Stamped by [`super::stamp_container_ids`].
+    pub container_id: Option<brink_format::DefinitionId>,
 }
 
 // ─── Content and inline elements ────────────────────────────────────
@@ -290,6 +299,9 @@ pub struct CondBranch {
     /// `None` for the else branch.
     pub condition: Option<Expr>,
     pub body: Block,
+    /// Pre-assigned container ID for this branch's container.
+    /// Stamped by [`super::stamp_container_ids`].
+    pub container_id: Option<brink_format::DefinitionId>,
 }
 
 /// A sequence block (stopping, cycle, once, shuffle).
@@ -298,6 +310,9 @@ pub struct Sequence {
     pub ptr: SyntaxNodePtr,
     pub kind: SequenceType,
     pub branches: Vec<Block>,
+    /// Pre-assigned container ID for the sequence wrapper container.
+    /// Stamped by [`super::stamp_container_ids`].
+    pub container_id: Option<brink_format::DefinitionId>,
 }
 
 // ─── Control flow ───────────────────────────────────────────────────

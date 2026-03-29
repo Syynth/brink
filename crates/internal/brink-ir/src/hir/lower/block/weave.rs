@@ -210,8 +210,9 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
                         stmts.push(Stmt::LabeledBlock(Box::new(Block {
                             label: Some(prev_label),
                             stmts: gather_stmts,
+                            container_id: None,
                         })));
-                        return Block { label: None, stmts };
+                        return Block { label: None, stmts, container_id: None };
                     }
                     // Standalone gather — emit content as stmts, save label
                     gather_stmts_start = block.label.as_ref().map(|_| stmts.len());
@@ -236,7 +237,7 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
                         base_depth,
                     );
                     // All remaining items consumed — we're done
-                    return Block { label: None, stmts };
+                    return Block { label: None, stmts, container_id: None };
                 }
             }
         }
@@ -253,6 +254,7 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
         stmts.push(Stmt::LabeledBlock(Box::new(Block {
             label: Some(label),
             stmts: gather_stmts,
+            container_id: None,
         })));
     }
 
@@ -264,7 +266,7 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
         gather_stmts_start,
         base_depth,
     );
-    Block { label: None, stmts }
+    Block { label: None, stmts, container_id: None }
 }
 
 /// Extract runs of deeper-depth items and recursively fold them into nested blocks,
@@ -340,6 +342,7 @@ fn flush_choices(
         continuation,
         context: ChoiceSetContext::Weave,
         depth: base_depth as u32,
+        gather_id: None,
     }));
     if let Some(label) = opening_label {
         // Move statements emitted after the standalone gather into the
@@ -353,6 +356,7 @@ fn flush_choices(
         stmts.push(Stmt::LabeledBlock(Box::new(Block {
             label: Some(label),
             stmts: labeled_stmts,
+            container_id: None,
         })));
     } else {
         stmts.push(cs);

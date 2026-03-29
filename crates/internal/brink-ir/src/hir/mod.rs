@@ -7,8 +7,10 @@
 
 pub mod lower;
 mod normalize;
+mod stamp;
 mod types;
 
 pub use lower::{WeaveItem, fold_weave, lower, lower_single_knot, lower_top_level};
 pub use normalize::normalize_file;
+pub use stamp::stamp_container_ids;
 pub use types::*;

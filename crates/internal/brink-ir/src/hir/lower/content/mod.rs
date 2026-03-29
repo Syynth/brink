@@ -58,6 +58,7 @@ impl BodyBackend for DirectBackend {
         crate::Block {
             label: None,
             stmts: self.stmts,
+            container_id: None,
         }
     }
 }

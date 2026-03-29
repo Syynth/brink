@@ -43,6 +43,7 @@ impl LowerBlock for ast::BranchlessCondBody {
                             continuation: Block::default(),
                             context: ChoiceSetContext::Inline,
                             depth: 0,
+                            gather_id: None,
                         })));
                     }
                 }

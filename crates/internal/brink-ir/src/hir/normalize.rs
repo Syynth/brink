@@ -169,6 +169,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 ptr: seq.ptr,
                 kind,
                 branches,
+                container_id: None,
             })])
         }
         ContentPart::InlineConditional(cond) => {
@@ -182,6 +183,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 branches.push(CondBranch {
                     condition: branch.condition.clone(),
                     body,
+                    container_id: None,
                 });
             }
 
@@ -199,6 +201,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 branches.push(CondBranch {
                     condition: None,
                     body: else_body,
+                    container_id: None,
                 });
             }
 
@@ -406,8 +409,10 @@ mod tests {
                             tags: Vec::new(),
                         })]
                     },
+                    container_id: None,
                 })
                 .collect(),
+            container_id: None,
         })
     }
 
@@ -431,7 +436,9 @@ mod tests {
                                 tags: Vec::new(),
                             })]
                         },
+                        container_id: None,
                     },
+                    container_id: None,
                 })
                 .collect(),
         })
@@ -445,7 +452,7 @@ mod tests {
     }
 
     fn mk_block(stmts: Vec<Stmt>) -> Block {
-        Block { label: None, stmts }
+        Block { label: None, stmts, container_id: None }
     }
 
     fn mk_hir(stmts: Vec<Stmt>) -> HirFile {
@@ -658,12 +665,14 @@ mod tests {
             inner_content: None,
             tags: Vec::new(),
             body: mk_block(vec![Stmt::Content(body_content), Stmt::EndOfLine]),
+            container_id: None,
         };
         let cs = ChoiceSet {
             choices: vec![choice],
             continuation: mk_block(vec![]),
             context: ChoiceSetContext::Weave,
             depth: 1,
+            gather_id: None,
         };
         let mut hir = mk_hir(vec![Stmt::ChoiceSet(Box::new(cs))]);
         normalize_file(&mut hir);
@@ -688,6 +697,7 @@ mod tests {
             branches: vec![CondBranch {
                 condition: Some(Expr::Bool(true)),
                 body: mk_block(vec![Stmt::Content(body_content), Stmt::EndOfLine]),
+                container_id: None,
             }],
         };
         let mut hir = mk_hir(vec![Stmt::Conditional(cond)]);

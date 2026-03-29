@@ -46,6 +46,7 @@ fn lower_conditional_with_expr(
         branches.push(CondBranch {
             condition: Some(condition.clone()),
             body: block,
+            container_id: None,
         });
         if let Some(else_branch) = body.else_branch()
             && let Some(ml_branch) = else_branch.branch()
@@ -56,6 +57,7 @@ fn lower_conditional_with_expr(
             branches.push(CondBranch {
                 condition: None,
                 body: else_body,
+                container_id: None,
             });
         }
         return Conditional {
@@ -78,6 +80,7 @@ fn lower_conditional_with_expr(
             branches.push(CondBranch {
                 condition: cond_expr,
                 body: wrap_content_as_block(b.syntax(), scope, sink),
+                container_id: None,
             });
         }
         return Conditional {
@@ -105,6 +108,7 @@ fn lower_conditional_with_expr(
             branches.push(CondBranch {
                 condition: cond_expr,
                 body,
+                container_id: None,
             });
         }
 
@@ -128,6 +132,7 @@ fn lower_conditional_with_expr(
     branches.push(CondBranch {
         condition: Some(condition.clone()),
         body: Block::default(),
+        container_id: None,
     });
     Conditional {
         ptr,

@@ -34,6 +34,7 @@ impl LowerSequence for ast::SequenceWithAnnotation {
             ptr: SyntaxNodePtr::from_node(self.syntax()),
             kind,
             branches,
+            container_id: None,
         })
     }
 }
@@ -50,6 +51,7 @@ impl LowerSequence for ast::ImplicitSequence {
             ptr: SyntaxNodePtr::from_node(self.syntax()),
             kind: SequenceType::STOPPING,
             branches,
+            container_id: None,
         })
     }
 }
@@ -79,6 +81,7 @@ pub fn lower_block_sequence(
         ptr: SyntaxNodePtr::from_node(seq.syntax()),
         kind,
         branches,
+        container_id: None,
     }
 }
 
