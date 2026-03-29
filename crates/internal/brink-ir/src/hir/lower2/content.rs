@@ -275,6 +275,72 @@ impl LowerBody for ast::LogicLine {
     }
 }
 
+// ─── DivertNode ─────────────────────────────────────────────────────
+
+impl LowerBody for ast::DivertNode {
+    type Output = Stmt;
+
+    fn lower_body(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Stmt> {
+        use super::divert::LowerDivert;
+        self.lower_divert(scope, sink)
+    }
+}
+
+// ─── TagLine ────────────────────────────────────────────────────────
+
+pub struct TagLineOutput {
+    pub tags: Vec<Tag>,
+}
+
+impl LowerBody for ast::TagLine {
+    type Output = TagLineOutput;
+
+    fn lower_body(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<TagLineOutput> {
+        Ok(TagLineOutput {
+            tags: lower_tags(self.tags(), scope, sink),
+        })
+    }
+}
+
+// ─── MultilineBlock ─────────────────────────────────────────────────
+
+impl LowerBody for ast::MultilineBlock {
+    type Output = Option<Stmt>;
+
+    fn lower_body(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Option<Stmt>> {
+        Ok(super::conditional::lower_multiline_block(self, scope, sink))
+    }
+}
+
+// ─── InlineLogic ────────────────────────────────────────────────────
+
+/// Output from lowering an `InlineLogic` node in a body context.
+pub enum InlineLogicOutput {
+    /// Promoted to a block-level statement (multiline conditional/sequence).
+    Block(Stmt),
+    /// Stayed inline as content parts (interpolation, inline conditional/sequence).
+    Inline(Vec<ContentPart>),
+}
+
+impl LowerBody for ast::InlineLogic {
+    type Output = InlineLogicOutput;
+
+    fn lower_body(
+        &self,
+        scope: &LowerScope,
+        sink: &mut impl LowerSink,
+    ) -> Lowered<InlineLogicOutput> {
+        // Try block promotion first
+        if let Some(stmt) = lower_multiline_block_from_inline(self, scope, sink) {
+            return Ok(InlineLogicOutput::Block(stmt));
+        }
+        // Fallback: inline content parts
+        let mut parts = Vec::new();
+        lower_inline_logic_into_parts(self, &mut parts, scope, sink);
+        Ok(InlineLogicOutput::Inline(parts))
+    }
+}
+
 // ─── BodyBackend trait ──────────────────────────────────────────────
 
 /// Backend for the [`ContentAccumulator`]. Determines where flushed
@@ -393,69 +459,23 @@ impl<B: BodyBackend> ContentAccumulator<B> {
 
     // ── Block-level dispatch via traits ─────────────────────────
 
-    /// Flush, lower a node via [`LowerBody`], and integrate its output.
-    pub fn handle_content_line(
-        &mut self,
-        cl: &ast::ContentLine,
-        scope: &LowerScope,
-        sink: &mut impl LowerSink,
-    ) {
-        if let Ok(output) = cl.lower_body(scope, sink) {
-            self.integrate_content_line(output);
-        }
-    }
-
-    /// Flush, lower a logic line, and integrate.
-    pub fn handle_logic_line(
-        &mut self,
-        ll: &ast::LogicLine,
-        scope: &LowerScope,
-        sink: &mut impl LowerSink,
-    ) {
-        self.flush();
-        if let Ok(output) = ll.lower_body(scope, sink) {
-            let needs_eol = output.has_call();
-            self.backend.push_stmt(output.into_stmt());
-            self.last_pushed_was_content = false;
-            if needs_eol {
-                self.push_eol();
-            }
-        }
-    }
-
-    /// Flush and lower a divert node.
-    pub fn handle_divert(
-        &mut self,
-        dn: &ast::DivertNode,
-        scope: &LowerScope,
-        sink: &mut impl LowerSink,
-    ) {
-        self.flush();
-        if let Ok(stmt) = dn.lower_divert(scope, sink) {
-            self.backend.push_stmt(stmt);
-            self.last_pushed_was_content = false;
-        }
-    }
-
-    /// Try to promote inline logic to a block-level statement,
-    /// or fall back to buffering inline content parts.
+    /// Lower a node via [`LowerBody`], then integrate its output.
     ///
-    /// Returns `true` if the inline logic was promoted to a block-level
-    /// statement, `false` if it was inlined as content parts.
-    pub fn handle_inline_logic(
+    /// Returns [`HandleResult`] indicating whether the output was
+    /// block-level or inline. Most callers ignore this; branch bodies
+    /// use it for whitespace tracking around inline logic.
+    pub fn handle<N: LowerBody>(
         &mut self,
-        il: &ast::InlineLogic,
+        node: &N,
         scope: &LowerScope,
         sink: &mut impl LowerSink,
-    ) -> bool {
-        if let Some(stmt) = lower_multiline_block_from_inline(il, scope, sink) {
-            self.flush();
-            self.backend.push_stmt(stmt);
-            self.last_pushed_was_content = false;
-            true
-        } else {
-            lower_inline_logic_into_parts(il, &mut self.parts, scope, sink);
-            false
+    ) -> HandleResult
+    where
+        Self: Integrate<N::Output>,
+    {
+        match node.lower_body(scope, sink) {
+            Ok(output) => self.integrate(output),
+            Err(_) => HandleResult::Inline,
         }
     }
 
@@ -479,10 +499,30 @@ impl<B: BodyBackend> ContentAccumulator<B> {
         self.flush();
         self.backend.finish()
     }
+}
 
-    // ── Private: integrate outputs ──────────────────────────────
+// ─── HandleResult ───────────────────────────────────────────────────
 
-    fn integrate_content_line(&mut self, output: ContentLineOutput) {
+/// Indicates whether a handled node produced block-level output or inline
+/// content. Used by branch bodies for whitespace tracking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleResult {
+    /// Output produced block-level statement(s).
+    Block,
+    /// Output produced inline content parts (or nothing).
+    Inline,
+}
+
+// ─── Integrate trait ────────────────────────────────────────────────
+
+/// Tells the [`ContentAccumulator`] how to consume a typed output from
+/// [`LowerBody`]. Returns [`HandleResult`] indicating the nature of the output.
+pub trait Integrate<T> {
+    fn integrate(&mut self, output: T) -> HandleResult;
+}
+
+impl<B: BodyBackend> Integrate<ContentLineOutput> for ContentAccumulator<B> {
+    fn integrate(&mut self, output: ContentLineOutput) -> HandleResult {
         match output {
             ContentLineOutput::Content {
                 content,
@@ -497,10 +537,12 @@ impl<B: BodyBackend> ContentAccumulator<B> {
                 } else if !ends_with_glue {
                     self.push_eol();
                 }
+                HandleResult::Block
             }
             ContentLineOutput::BareDivert(stmt) => {
                 self.backend.push_stmt(stmt);
                 self.last_pushed_was_content = false;
+                HandleResult::Block
             }
             ContentLineOutput::PromotedBlock {
                 stmt,
@@ -520,8 +562,78 @@ impl<B: BodyBackend> ContentAccumulator<B> {
                 } else if needs_eol {
                     self.push_eol();
                 }
+                HandleResult::Block
             }
-            ContentLineOutput::Empty => {}
+            ContentLineOutput::Empty => HandleResult::Inline,
+        }
+    }
+}
+
+impl<B: BodyBackend> Integrate<LogicLineOutput> for ContentAccumulator<B> {
+    fn integrate(&mut self, output: LogicLineOutput) -> HandleResult {
+        self.flush();
+        let needs_eol = output.has_call();
+        self.backend.push_stmt(output.into_stmt());
+        self.last_pushed_was_content = false;
+        if needs_eol {
+            self.push_eol();
+        }
+        HandleResult::Block
+    }
+}
+
+impl<B: BodyBackend> Integrate<Stmt> for ContentAccumulator<B> {
+    fn integrate(&mut self, stmt: Stmt) -> HandleResult {
+        self.flush();
+        self.last_pushed_was_content = false;
+        self.backend.push_stmt(stmt);
+        HandleResult::Block
+    }
+}
+
+impl<B: BodyBackend> Integrate<Option<Stmt>> for ContentAccumulator<B> {
+    fn integrate(&mut self, output: Option<Stmt>) -> HandleResult {
+        if let Some(stmt) = output {
+            self.flush();
+            self.last_pushed_was_content = false;
+            self.backend.push_stmt(stmt);
+            HandleResult::Block
+        } else {
+            HandleResult::Inline
+        }
+    }
+}
+
+impl<B: BodyBackend> Integrate<TagLineOutput> for ContentAccumulator<B> {
+    fn integrate(&mut self, output: TagLineOutput) -> HandleResult {
+        if output.tags.is_empty() {
+            return HandleResult::Inline;
+        }
+        self.flush();
+        self.backend.push_stmt(Stmt::Content(Content {
+            ptr: None,
+            parts: Vec::new(),
+            tags: output.tags,
+        }));
+        self.last_pushed_was_content = true;
+        self.push_eol();
+        HandleResult::Block
+    }
+}
+
+impl<B: BodyBackend> Integrate<InlineLogicOutput> for ContentAccumulator<B> {
+    fn integrate(&mut self, output: InlineLogicOutput) -> HandleResult {
+        match output {
+            InlineLogicOutput::Block(stmt) => {
+                self.flush();
+                self.backend.push_stmt(stmt);
+                self.last_pushed_was_content = false;
+                HandleResult::Block
+            }
+            InlineLogicOutput::Inline(new_parts) => {
+                self.parts.extend(new_parts);
+                HandleResult::Inline
+            }
         }
     }
 }

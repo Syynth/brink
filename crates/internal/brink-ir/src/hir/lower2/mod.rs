@@ -40,7 +40,9 @@ pub use backbone::{
 };
 
 // Re-export accumulator types.
-pub use content::{ContentAccumulator, ContentLineOutput, DirectBackend, LogicLineOutput};
+pub use content::{
+    ContentAccumulator, ContentLineOutput, DirectBackend, HandleResult, Integrate, LogicLineOutput,
+};
 
 // Re-export public API (same signature as crate::hir::lower::lower).
 pub use structure::lower;

@@ -192,7 +192,7 @@ fn lower_body_child(
             if let Some(cl) = ast::ContentLine::cast(child) {
                 let mut acc =
                     super::content::ContentAccumulator::new(super::content::DirectBackend::new());
-                acc.handle_content_line(&cl, scope, sink);
+                acc.handle(&cl, scope, sink);
                 out.extend(acc.finish().stmts);
             }
         }
@@ -200,7 +200,7 @@ fn lower_body_child(
             if let Some(ll) = ast::LogicLine::cast(child) {
                 let mut acc =
                     super::content::ContentAccumulator::new(super::content::DirectBackend::new());
-                acc.handle_logic_line(&ll, scope, sink);
+                acc.handle(&ll, scope, sink);
                 out.extend(acc.finish().stmts);
             }
         }

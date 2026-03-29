@@ -12,8 +12,7 @@ use crate::{
 
 use super::backbone::{BodyChild, classify_body_child};
 use super::choice::{LowerChoice, lower_gather_to_block};
-use super::conditional::lower_multiline_block;
-use super::content::{BodyBackend, ContentAccumulator, lower_tags};
+use super::content::{BodyBackend, ContentAccumulator};
 use super::context::{EffectSink, LowerScope, LowerSink};
 use super::decl::DeclareSymbols;
 use super::helpers::{make_name, name_from_ident};
@@ -424,30 +423,24 @@ fn lower_body_children(
 
     for child in parent.children() {
         match classify_body_child(&child) {
-            // Shared: delegate to accumulator (same as branch bodies)
-            BodyChild::ContentLine(cl) => acc.handle_content_line(&cl, scope, sink),
-            BodyChild::LogicLine(ll) => acc.handle_logic_line(&ll, scope, sink),
-            BodyChild::TagLine(tl) => {
-                let tags = lower_tags(tl.tags(), scope, sink);
-                if !tags.is_empty() {
-                    acc.flush();
-                    acc.push_stmt(Stmt::Content(crate::Content {
-                        ptr: None,
-                        parts: Vec::new(),
-                        tags,
-                    }));
-                    acc.push_eol();
-                }
+            // Shared: delegate to accumulator via generic handle
+            BodyChild::ContentLine(cl) => {
+                acc.handle(&cl, scope, sink);
             }
-            BodyChild::DivertNode(dn) => acc.handle_divert(&dn, scope, sink),
+            BodyChild::LogicLine(ll) => {
+                acc.handle(&ll, scope, sink);
+            }
+            BodyChild::TagLine(tl) => {
+                acc.handle(&tl, scope, sink);
+            }
+            BodyChild::DivertNode(dn) => {
+                acc.handle(&dn, scope, sink);
+            }
             BodyChild::InlineLogic(il) => {
-                acc.handle_inline_logic(&il, scope, sink);
+                acc.handle(&il, scope, sink);
             }
             BodyChild::MultilineBlock(mb) => {
-                if let Some(stmt) = lower_multiline_block(&mb, scope, sink) {
-                    acc.flush();
-                    acc.push_stmt(stmt);
-                }
+                acc.handle(&mb, scope, sink);
             }
 
             // Weave-specific: choices and gathers go to backend

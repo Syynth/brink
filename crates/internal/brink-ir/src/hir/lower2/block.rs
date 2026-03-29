@@ -9,7 +9,9 @@ use brink_syntax::ast::{self, AstNode};
 use crate::{Block, Content, Stmt};
 
 use super::backbone::{BranchChild, classify_branch_child};
-use super::content::{ContentAccumulator, DirectBackend, lower_content_node_children, lower_tags};
+use super::content::{
+    ContentAccumulator, DirectBackend, HandleResult, lower_content_node_children, lower_tags,
+};
 use super::context::{LowerScope, LowerSink};
 use super::divert::LowerDivert;
 
@@ -29,12 +31,18 @@ impl LowerBlock for ast::BranchlessCondBody {
 
         for child in self.syntax().children_with_tokens() {
             match classify_branch_child(&child) {
-                // Shared: delegate to accumulator
-                BranchChild::ContentLine(cl) => acc.handle_content_line(&cl, scope, sink),
-                BranchChild::LogicLine(ll) => acc.handle_logic_line(&ll, scope, sink),
-                BranchChild::DivertNode(dn) => acc.handle_divert(&dn, scope, sink),
+                // Shared: delegate to accumulator via generic handle
+                BranchChild::ContentLine(cl) => {
+                    acc.handle(&cl, scope, sink);
+                }
+                BranchChild::LogicLine(ll) => {
+                    acc.handle(&ll, scope, sink);
+                }
+                BranchChild::DivertNode(dn) => {
+                    acc.handle(&dn, scope, sink);
+                }
                 BranchChild::InlineLogic(il) => {
-                    acc.handle_inline_logic(&il, scope, sink);
+                    acc.handle(&il, scope, sink);
                 }
                 BranchChild::Text(t) => acc.push_text(t),
                 BranchChild::Glue => acc.push_glue(),
@@ -69,13 +77,9 @@ impl LowerBlock for ast::BranchlessCondBody {
     }
 }
 
-// ─── Branch body (for MultilineBranchBody) ──────────────────────────
+// ─── Branch body ────────────────────────────────────────────────────
 
 /// Lower a multiline branch body syntax node to a [`Block`].
-///
-/// This is used for `MultilineBranchBody` accessed via `.body().syntax()`.
-/// Branch bodies track inter-content whitespace and have different
-/// newline rules than branchless bodies.
 pub fn lower_branch_body(
     body: &brink_syntax::SyntaxNode,
     scope: &LowerScope,
@@ -88,33 +92,31 @@ pub fn lower_branch_body(
 
     for child in body.children_with_tokens() {
         match classify_branch_child(&child) {
-            // Shared: delegate to accumulator
+            // Shared: delegate to accumulator via generic handle
             BranchChild::ContentLine(cl) => {
                 pending_ws = None;
-                acc.handle_content_line(&cl, scope, sink);
+                acc.handle(&cl, scope, sink);
             }
             BranchChild::LogicLine(ll) => {
                 pending_ws = None;
-                acc.handle_logic_line(&ll, scope, sink);
+                acc.handle(&ll, scope, sink);
             }
             BranchChild::DivertNode(dn) => {
                 pending_ws = None;
-                acc.handle_divert(&dn, scope, sink);
+                acc.handle(&dn, scope, sink);
             }
-            BranchChild::InlineLogic(il) => {
-                let promoted = acc.handle_inline_logic(&il, scope, sink);
-                if promoted {
-                    // Block promotion — discard pending whitespace
+            BranchChild::InlineLogic(il) => match acc.handle(&il, scope, sink) {
+                HandleResult::Block => {
                     pending_ws = None;
                     after_content_block = true;
-                } else {
-                    // Inline content — flush pending whitespace first
+                }
+                HandleResult::Inline => {
                     if let Some(ws) = pending_ws.take() {
                         acc.push_text(ws);
                     }
                     seen_content = true;
                 }
-            }
+            },
             BranchChild::Text(t) => {
                 if let Some(ws) = pending_ws.take() {
                     acc.push_text(ws);
@@ -141,7 +143,7 @@ pub fn lower_branch_body(
                 acc.flush();
             }
             BranchChild::Trivia => {}
-            BranchChild::Stop => break, // shouldn't happen in branch body, but harmless
+            BranchChild::Stop => break,
 
             // Branch-specific newline logic
             BranchChild::Newline => {
@@ -172,7 +174,6 @@ pub fn lower_branch_body(
         }
     }
 
-    // Flush remaining
     if acc.has_buffered_parts() {
         let ends_glue = acc.ends_with_glue();
         acc.flush();

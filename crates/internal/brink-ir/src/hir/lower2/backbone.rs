@@ -6,10 +6,9 @@
 use brink_syntax::SyntaxKind;
 use brink_syntax::ast::{self, AstNode};
 
-use crate::{Block, Content, Stmt};
+use crate::Block;
 
-use super::conditional::lower_multiline_block;
-use super::content::{ContentAccumulator, DirectBackend, lower_tags};
+use super::content::{ContentAccumulator, DirectBackend};
 use super::context::{LowerScope, LowerSink};
 
 // ─── Weave-context child classification ─────────────────────────────
@@ -79,8 +78,7 @@ pub fn classify_body_child(node: &brink_syntax::SyntaxNode) -> BodyChild {
 // ─── Branch-context child classification ────────────────────────────
 
 /// Children in a branch body context (branchless conditional, multiline
-/// branch body). Includes raw token-level children (text, newline, etc.)
-/// that don't appear in weave context.
+/// branch body). Includes raw token-level children (text, newline, etc.).
 pub enum BranchChild {
     ContentLine(ast::ContentLine),
     LogicLine(ast::LogicLine),
@@ -98,9 +96,6 @@ pub enum BranchChild {
 }
 
 /// Classify children of a branch body (both tokens and nodes).
-///
-/// Yields `BranchChild` for each child in the syntax node. Call
-/// `.children_with_tokens()` externally and pass each element through this.
 pub fn classify_branch_child(
     child: &rowan::NodeOrToken<brink_syntax::SyntaxNode, brink_syntax::SyntaxToken>,
 ) -> BranchChild {
@@ -164,29 +159,23 @@ pub fn lower_simple_body(
 
     for child in parent.children() {
         match classify_body_child(&child) {
-            BodyChild::ContentLine(cl) => acc.handle_content_line(&cl, scope, sink),
-            BodyChild::LogicLine(ll) => acc.handle_logic_line(&ll, scope, sink),
-            BodyChild::TagLine(tl) => {
-                let tags = lower_tags(tl.tags(), scope, sink);
-                if !tags.is_empty() {
-                    acc.flush();
-                    acc.push_stmt(Stmt::Content(Content {
-                        ptr: None,
-                        parts: Vec::new(),
-                        tags,
-                    }));
-                    acc.push_eol();
-                }
+            BodyChild::ContentLine(cl) => {
+                acc.handle(&cl, scope, sink);
             }
-            BodyChild::DivertNode(dn) => acc.handle_divert(&dn, scope, sink),
+            BodyChild::LogicLine(ll) => {
+                acc.handle(&ll, scope, sink);
+            }
+            BodyChild::TagLine(tl) => {
+                acc.handle(&tl, scope, sink);
+            }
+            BodyChild::DivertNode(dn) => {
+                acc.handle(&dn, scope, sink);
+            }
             BodyChild::InlineLogic(il) => {
-                acc.handle_inline_logic(&il, scope, sink);
+                acc.handle(&il, scope, sink);
             }
             BodyChild::MultilineBlock(mb) => {
-                if let Some(stmt) = lower_multiline_block(&mb, scope, sink) {
-                    acc.flush();
-                    acc.push_stmt(stmt);
-                }
+                acc.handle(&mb, scope, sink);
             }
             BodyChild::Choice(_)
             | BodyChild::Gather(_)
