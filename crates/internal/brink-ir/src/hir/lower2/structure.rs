@@ -10,12 +10,12 @@ use crate::{
     IncludeSite, Knot, Name, Param, ParamInfo, Path, Stitch, Stmt, SymbolKind, SymbolManifest,
 };
 
+use super::backbone::{BodyChild, classify_body_child};
 use super::choice::{LowerChoice, lower_gather_to_block};
-use super::conditional::{lower_multiline_block, lower_multiline_block_from_inline};
-use super::content::{ContentAccumulator, LowerBody, lower_tags};
+use super::conditional::lower_multiline_block;
+use super::content::{BodyBackend, ContentAccumulator, lower_tags};
 use super::context::{EffectSink, LowerScope, LowerSink};
 use super::decl::DeclareSymbols;
-use super::divert::LowerDivert;
 use super::helpers::{make_name, name_from_ident};
 
 use crate::hir::lower::{WeaveItem, fold_weave};
@@ -378,130 +378,102 @@ fn lower_include(inc: &ast::IncludeStmt, sink: &mut impl LowerSink) -> Option<In
     })
 }
 
+// ─── Weave backend ──────────────────────────────────────────────────
+
+/// Backend that collects `WeaveItem`s and calls `fold_weave` on finish.
+struct WeaveBackend {
+    items: Vec<WeaveItem>,
+}
+
+impl WeaveBackend {
+    fn new() -> Self {
+        Self { items: Vec::new() }
+    }
+
+    fn push_choice(&mut self, choice: crate::Choice, depth: usize) {
+        self.items.push(WeaveItem::Choice {
+            choice: Box::new(choice),
+            depth,
+        });
+    }
+
+    fn push_gather(&mut self, block: Block, depth: usize) {
+        self.items.push(WeaveItem::Continuation { block, depth });
+    }
+}
+
+impl BodyBackend for WeaveBackend {
+    fn push_stmt(&mut self, stmt: Stmt) {
+        self.items.push(WeaveItem::Stmt(stmt));
+    }
+
+    fn finish(self) -> Block {
+        fold_weave(self.items)
+    }
+}
+
 // ─── Body assembly with weave folding ───────────────────────────────
 
 /// Lower body children with full weave folding.
-///
-/// This is the lower2 equivalent of `lower_body_children` from lower.rs.
-/// It produces `WeaveItem`s and delegates to the existing `fold_weave`.
-#[expect(clippy::too_many_lines, reason = "match arms are individually simple")]
 fn lower_body_children(
     scope: &mut LowerScope,
     sink: &mut impl LowerSink,
     parent: &brink_syntax::SyntaxNode,
 ) -> Block {
-    use brink_syntax::SyntaxKind;
-
-    let mut items = Vec::new();
+    let mut acc = ContentAccumulator::new(WeaveBackend::new());
 
     for child in parent.children() {
-        match child.kind() {
-            SyntaxKind::CONTENT_LINE => {
-                if let Some(cl) = ast::ContentLine::cast(child)
-                    && let Ok(output) = cl.lower_body(scope, sink)
-                {
-                    use super::content::Integrate;
-                    let mut acc = ContentAccumulator::new();
-                    acc.integrate(output);
-                    for stmt in acc.finish() {
-                        items.push(WeaveItem::Stmt(stmt));
-                    }
+        match classify_body_child(&child) {
+            // Shared: delegate to accumulator (same as branch bodies)
+            BodyChild::ContentLine(cl) => acc.handle_content_line(&cl, scope, sink),
+            BodyChild::LogicLine(ll) => acc.handle_logic_line(&ll, scope, sink),
+            BodyChild::TagLine(tl) => {
+                let tags = lower_tags(tl.tags(), scope, sink);
+                if !tags.is_empty() {
+                    acc.flush();
+                    acc.push_stmt(Stmt::Content(crate::Content {
+                        ptr: None,
+                        parts: Vec::new(),
+                        tags,
+                    }));
+                    acc.push_eol();
                 }
             }
-            SyntaxKind::LOGIC_LINE => {
-                if let Some(ll) = ast::LogicLine::cast(child)
-                    && let Ok(output) = ll.lower_body(scope, sink)
-                {
-                    let needs_eol = output.has_call();
-                    items.push(WeaveItem::Stmt(output.into_stmt()));
-                    if needs_eol {
-                        items.push(WeaveItem::Stmt(Stmt::EndOfLine));
-                    }
+            BodyChild::DivertNode(dn) => acc.handle_divert(&dn, scope, sink),
+            BodyChild::InlineLogic(il) => {
+                acc.handle_inline_logic(&il, scope, sink);
+            }
+            BodyChild::MultilineBlock(mb) => {
+                if let Some(stmt) = lower_multiline_block(&mb, scope, sink) {
+                    acc.flush();
+                    acc.push_stmt(stmt);
                 }
             }
-            SyntaxKind::TAG_LINE => {
-                if let Some(tl) = ast::TagLine::cast(child) {
-                    let tags = lower_tags(tl.tags(), scope, sink);
-                    if !tags.is_empty() {
-                        items.push(WeaveItem::Stmt(Stmt::Content(crate::Content {
-                            ptr: None,
-                            parts: Vec::new(),
-                            tags,
-                        })));
-                        items.push(WeaveItem::Stmt(Stmt::EndOfLine));
-                    }
+
+            // Weave-specific: choices and gathers go to backend
+            BodyChild::Choice(c) => {
+                acc.flush();
+                let depth = c.bullets().map_or(1, |b| b.depth());
+                if let Ok(choice) = c.lower_choice(scope, sink) {
+                    acc.backend_mut().push_choice(choice, depth);
                 }
             }
-            SyntaxKind::CHOICE => {
-                if let Some(c) = ast::Choice::cast(child) {
-                    let depth = c.bullets().map_or(1, |b| b.depth());
+            BodyChild::Gather(g) => {
+                acc.flush();
+                let depth = g.dashes().map_or(1, |d| d.depth());
+                acc.backend_mut()
+                    .push_gather(lower_gather_to_block(&g, scope, sink), depth);
+                if let Some(c) = g.choice() {
+                    let choice_depth = c.bullets().map_or(1, |b| b.depth());
                     if let Ok(choice) = c.lower_choice(scope, sink) {
-                        items.push(WeaveItem::Choice {
-                            choice: Box::new(choice),
-                            depth,
-                        });
+                        acc.backend_mut().push_choice(choice, choice_depth);
                     }
                 }
             }
-            SyntaxKind::GATHER => {
-                if let Some(g) = ast::Gather::cast(child) {
-                    let depth = g.dashes().map_or(1, |d| d.depth());
-                    items.push(WeaveItem::Continuation {
-                        block: lower_gather_to_block(&g, scope, sink),
-                        depth,
-                    });
-                    if let Some(c) = g.choice() {
-                        let choice_depth = c.bullets().map_or(1, |b| b.depth());
-                        if let Ok(choice) = c.lower_choice(scope, sink) {
-                            items.push(WeaveItem::Choice {
-                                choice: Box::new(choice),
-                                depth: choice_depth,
-                            });
-                        }
-                    }
-                }
-            }
-            SyntaxKind::INLINE_LOGIC => {
-                if let Some(il) = ast::InlineLogic::cast(child)
-                    && let Some(stmt) = lower_multiline_block_from_inline(&il, scope, sink)
-                {
-                    items.push(WeaveItem::Stmt(stmt));
-                }
-            }
-            SyntaxKind::MULTILINE_BLOCK => {
-                if let Some(mb) = ast::MultilineBlock::cast(child)
-                    && let Some(stmt) = lower_multiline_block(&mb, scope, sink)
-                {
-                    items.push(WeaveItem::Stmt(stmt));
-                }
-            }
-            SyntaxKind::DIVERT_NODE => {
-                if let Some(dn) = ast::DivertNode::cast(child)
-                    && let Ok(stmt) = dn.lower_divert(scope, sink)
-                {
-                    items.push(WeaveItem::Stmt(stmt));
-                }
-            }
-            SyntaxKind::KNOT_DEF
-            | SyntaxKind::KNOT_HEADER
-            | SyntaxKind::STITCH_DEF
-            | SyntaxKind::STITCH_HEADER
-            | SyntaxKind::VAR_DECL
-            | SyntaxKind::CONST_DECL
-            | SyntaxKind::LIST_DECL
-            | SyntaxKind::EXTERNAL_DECL
-            | SyntaxKind::INCLUDE_STMT
-            | SyntaxKind::EMPTY_LINE
-            | SyntaxKind::STRAY_CLOSING_BRACE
-            | SyntaxKind::AUTHOR_WARNING => {}
-            other => {
-                debug_assert!(
-                    other.is_trivia(),
-                    "unexpected SyntaxKind in lower_body_children: {other:?}"
-                );
-            }
+
+            BodyChild::Structural | BodyChild::Trivia => {}
         }
     }
 
-    fold_weave(items)
+    acc.finish()
 }

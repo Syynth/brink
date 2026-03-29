@@ -29,16 +29,18 @@ pub use context::{Diagnosed, EffectSink, LowerScope, LowerSink, Lowered};
 pub use block::LowerBlock;
 pub use choice::LowerChoice;
 pub use conditional::{LowerConditional, LowerSequence};
-pub use content::LowerBody;
+pub use content::{BodyBackend, LowerBody};
 pub use decl::DeclareSymbols;
 pub use divert::LowerDivert;
 pub use expr::LowerExpr;
 
 // Re-export backbone.
-pub use backbone::{BodyChild, classify_body_child, lower_simple_body};
+pub use backbone::{
+    BodyChild, BranchChild, classify_body_child, classify_branch_child, lower_simple_body,
+};
 
 // Re-export accumulator types.
-pub use content::{ContentAccumulator, ContentLineOutput, Integrate, LogicLineOutput};
+pub use content::{ContentAccumulator, ContentLineOutput, DirectBackend, LogicLineOutput};
 
 // Re-export public API (same signature as crate::hir::lower::lower).
 pub use structure::lower;

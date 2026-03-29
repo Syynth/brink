@@ -1,26 +1,20 @@
-//! Body dispatcher — the backbone of the lowering pass.
+//! Body dispatchers and child classifiers.
 //!
-//! Defines the [`BodyChild`] enum for exhaustive dispatch over CST children,
-//! the [`classify_body_child`] function as the single classification point,
-//! and the body dispatcher that ties everything together.
+//! Defines child classification enums for different body contexts and
+//! the dispatcher functions that wire classifiers to the accumulator.
 
 use brink_syntax::SyntaxKind;
 use brink_syntax::ast::{self, AstNode};
 
 use crate::{Block, Content, Stmt};
 
-use super::conditional::{lower_multiline_block, lower_multiline_block_from_inline};
-use super::content::{ContentAccumulator, Integrate, LowerBody, lower_tags};
+use super::conditional::lower_multiline_block;
+use super::content::{ContentAccumulator, DirectBackend, lower_tags};
 use super::context::{LowerScope, LowerSink};
-use super::divert::LowerDivert;
 
-// ─── Body child classification ──────────────────────────────────────
+// ─── Weave-context child classification ─────────────────────────────
 
-/// Exhaustive classification of children within a body context.
-///
-/// The backbone matches on this enum, never on raw [`SyntaxKind`].
-/// Adding a new variant forces all match sites to update — the compiler
-/// catches missing arms.
+/// Children in a weave body context (knot, stitch, source file root).
 pub enum BodyChild {
     ContentLine(ast::ContentLine),
     LogicLine(ast::LogicLine),
@@ -30,19 +24,11 @@ pub enum BodyChild {
     MultilineBlock(ast::MultilineBlock),
     Choice(ast::Choice),
     Gather(ast::Gather),
-    /// Structural children (knot headers, declarations, etc.) that the
-    /// body dispatcher explicitly skips. Listed for exhaustiveness.
     Structural,
-    /// Trivia (whitespace, comments, empty lines).
     Trivia,
 }
 
-/// Classify a CST child node into a [`BodyChild`] variant.
-///
-/// This is the **single point of truth** for what kinds of children
-/// appear in a body context. If a new `SyntaxKind` is added to the
-/// parser, it must be handled here — the `debug_assert` catches
-/// unrecognized node kinds in debug builds.
+/// Classify a CST child in weave body context.
 pub fn classify_body_child(node: &brink_syntax::SyntaxNode) -> BodyChild {
     match node.kind() {
         SyntaxKind::CONTENT_LINE => {
@@ -68,7 +54,6 @@ pub fn classify_body_child(node: &brink_syntax::SyntaxNode) -> BodyChild {
         SyntaxKind::GATHER => {
             ast::Gather::cast(node.clone()).map_or(BodyChild::Trivia, BodyChild::Gather)
         }
-        // Structural children handled by the parent (source file, knot body).
         SyntaxKind::KNOT_DEF
         | SyntaxKind::KNOT_HEADER
         | SyntaxKind::STITCH_DEF
@@ -80,7 +65,6 @@ pub fn classify_body_child(node: &brink_syntax::SyntaxNode) -> BodyChild {
         | SyntaxKind::INCLUDE_STMT
         | SyntaxKind::STRAY_CLOSING_BRACE
         | SyntaxKind::AUTHOR_WARNING => BodyChild::Structural,
-        // Trivia and empty lines.
         SyntaxKind::EMPTY_LINE => BodyChild::Trivia,
         other => {
             debug_assert!(
@@ -92,59 +76,118 @@ pub fn classify_body_child(node: &brink_syntax::SyntaxNode) -> BodyChild {
     }
 }
 
-// ─── Body dispatcher ────────────────────────────────────────────────
+// ─── Branch-context child classification ────────────────────────────
 
-/// Lower a simple body (no weave folding) to a [`Block`].
+/// Children in a branch body context (branchless conditional, multiline
+/// branch body). Includes raw token-level children (text, newline, etc.)
+/// that don't appear in weave context.
+pub enum BranchChild {
+    ContentLine(ast::ContentLine),
+    LogicLine(ast::LogicLine),
+    DivertNode(ast::DivertNode),
+    InlineLogic(ast::InlineLogic),
+    Choice(ast::Choice),
+    Text(String),
+    Glue,
+    Escape(String),
+    Newline,
+    Whitespace(String),
+    /// `ELSE_BRANCH` — signals stop for branchless bodies.
+    Stop,
+    Trivia,
+}
+
+/// Classify children of a branch body (both tokens and nodes).
 ///
-/// Handles content lines, logic lines, tag lines, diverts, inline logic,
-/// and multiline blocks. Choices and gathers are present in the match for
-/// exhaustiveness but not yet wired into weave folding.
+/// Yields `BranchChild` for each child in the syntax node. Call
+/// `.children_with_tokens()` externally and pass each element through this.
+pub fn classify_branch_child(
+    child: &rowan::NodeOrToken<brink_syntax::SyntaxNode, brink_syntax::SyntaxToken>,
+) -> BranchChild {
+    match child {
+        rowan::NodeOrToken::Token(token) => match token.kind() {
+            SyntaxKind::NEWLINE => BranchChild::Newline,
+            SyntaxKind::WHITESPACE => BranchChild::Whitespace(token.text().to_string()),
+            _ => BranchChild::Trivia,
+        },
+        rowan::NodeOrToken::Node(node) => match node.kind() {
+            SyntaxKind::CONTENT_LINE => ast::ContentLine::cast(node.clone())
+                .map_or(BranchChild::Trivia, BranchChild::ContentLine),
+            SyntaxKind::LOGIC_LINE => ast::LogicLine::cast(node.clone())
+                .map_or(BranchChild::Trivia, BranchChild::LogicLine),
+            SyntaxKind::DIVERT_NODE => ast::DivertNode::cast(node.clone())
+                .map_or(BranchChild::Trivia, BranchChild::DivertNode),
+            SyntaxKind::INLINE_LOGIC => ast::InlineLogic::cast(node.clone())
+                .map_or(BranchChild::Trivia, BranchChild::InlineLogic),
+            SyntaxKind::CHOICE => {
+                ast::Choice::cast(node.clone()).map_or(BranchChild::Trivia, BranchChild::Choice)
+            }
+            SyntaxKind::ELSE_BRANCH => BranchChild::Stop,
+            SyntaxKind::TEXT => {
+                let text = node.text().to_string();
+                if text.is_empty() {
+                    BranchChild::Trivia
+                } else {
+                    BranchChild::Text(text)
+                }
+            }
+            SyntaxKind::GLUE_NODE => BranchChild::Glue,
+            SyntaxKind::ESCAPE => {
+                let text = node.text().to_string();
+                if text.len() > 1 {
+                    BranchChild::Escape(text)
+                } else {
+                    BranchChild::Trivia
+                }
+            }
+            other if other.is_token() => BranchChild::Trivia,
+            other => {
+                debug_assert!(
+                    other.is_trivia(),
+                    "unexpected SyntaxKind in classify_branch_child: {other:?}"
+                );
+                BranchChild::Trivia
+            }
+        },
+    }
+}
+
+// ─── Simple body dispatcher (for backbone tests) ────────────────────
+
+/// Lower a simple body (content lines + logic lines, no weave) to a [`Block`].
 pub fn lower_simple_body(
     parent: &brink_syntax::SyntaxNode,
     scope: &LowerScope,
     sink: &mut impl LowerSink,
 ) -> Block {
-    let mut acc = ContentAccumulator::new();
+    let mut acc = ContentAccumulator::new(DirectBackend::new());
 
     for child in parent.children() {
         match classify_body_child(&child) {
-            BodyChild::ContentLine(cl) => {
-                if let Ok(output) = cl.lower_body(scope, sink) {
-                    acc.integrate(output);
-                }
-            }
-            BodyChild::LogicLine(ll) => {
-                if let Ok(output) = ll.lower_body(scope, sink) {
-                    acc.integrate(output);
-                }
-            }
+            BodyChild::ContentLine(cl) => acc.handle_content_line(&cl, scope, sink),
+            BodyChild::LogicLine(ll) => acc.handle_logic_line(&ll, scope, sink),
             BodyChild::TagLine(tl) => {
                 let tags = lower_tags(tl.tags(), scope, sink);
                 if !tags.is_empty() {
+                    acc.flush();
                     acc.push_stmt(Stmt::Content(Content {
                         ptr: None,
                         parts: Vec::new(),
                         tags,
                     }));
-                    acc.push_stmt(Stmt::EndOfLine);
+                    acc.push_eol();
                 }
             }
-            BodyChild::DivertNode(dn) => {
-                if let Ok(stmt) = dn.lower_divert(scope, sink) {
-                    acc.push_stmt(stmt);
-                }
-            }
+            BodyChild::DivertNode(dn) => acc.handle_divert(&dn, scope, sink),
             BodyChild::InlineLogic(il) => {
-                if let Some(stmt) = lower_multiline_block_from_inline(&il, scope, sink) {
-                    acc.push_stmt(stmt);
-                }
+                acc.handle_inline_logic(&il, scope, sink);
             }
             BodyChild::MultilineBlock(mb) => {
                 if let Some(stmt) = lower_multiline_block(&mb, scope, sink) {
+                    acc.flush();
                     acc.push_stmt(stmt);
                 }
             }
-            // Choices/gathers (not yet wired) + structural + trivia.
             BodyChild::Choice(_)
             | BodyChild::Gather(_)
             | BodyChild::Structural
@@ -152,8 +195,5 @@ pub fn lower_simple_body(
         }
     }
 
-    Block {
-        label: None,
-        stmts: acc.finish(),
-    }
+    acc.finish()
 }

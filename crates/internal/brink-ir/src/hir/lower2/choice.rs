@@ -11,7 +11,7 @@ use crate::{
 };
 
 use super::conditional::lower_multiline_block_from_inline;
-use super::content::{LowerBody, lower_content_node_children, lower_tags};
+use super::content::{lower_content_node_children, lower_tags};
 use super::context::{LowerScope, LowerSink, Lowered};
 use super::divert::{LowerDivert, lower_divert_target_with_args};
 use super::expr::LowerExpr;
@@ -189,24 +189,19 @@ fn lower_body_child(
 ) {
     match child.kind() {
         SyntaxKind::CONTENT_LINE => {
-            if let Some(cl) = ast::ContentLine::cast(child)
-                && let Ok(output) = cl.lower_body(scope, sink)
-            {
-                use super::content::Integrate;
-                let mut acc = super::content::ContentAccumulator::new();
-                acc.integrate(output);
-                out.extend(acc.finish());
+            if let Some(cl) = ast::ContentLine::cast(child) {
+                let mut acc =
+                    super::content::ContentAccumulator::new(super::content::DirectBackend::new());
+                acc.handle_content_line(&cl, scope, sink);
+                out.extend(acc.finish().stmts);
             }
         }
         SyntaxKind::LOGIC_LINE => {
-            if let Some(ll) = ast::LogicLine::cast(child)
-                && let Ok(output) = ll.lower_body(scope, sink)
-            {
-                let needs_eol = output.has_call();
-                out.push(output.into_stmt());
-                if needs_eol {
-                    out.push(Stmt::EndOfLine);
-                }
+            if let Some(ll) = ast::LogicLine::cast(child) {
+                let mut acc =
+                    super::content::ContentAccumulator::new(super::content::DirectBackend::new());
+                acc.handle_logic_line(&ll, scope, sink);
+                out.extend(acc.finish().stmts);
             }
         }
         SyntaxKind::DIVERT_NODE => {

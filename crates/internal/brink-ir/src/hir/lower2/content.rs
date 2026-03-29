@@ -1,15 +1,17 @@
 //! Content and body lowering phase.
 //!
 //! Defines rich output types for content lines and logic lines, the
-//! [`LowerBody`] trait, the [`ContentAccumulator`], and the [`Integrate`]
-//! trait that connects them.
+//! [`LowerBody`] trait, the [`BodyBackend`] trait, and the
+//! [`ContentAccumulator`] that ties everything together.
 
 use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
 
 use crate::{
-    AssignOp, Assignment, Content, ContentPart, DiagnosticCode, Expr, Return, Stmt, Tag, TempDecl,
+    AssignOp, Assignment, Block, Content, ContentPart, DiagnosticCode, Expr, Return, Stmt, Tag,
+    TempDecl,
 };
 
+use super::conditional::{lower_inline_logic_into_parts, lower_multiline_block_from_inline};
 use super::context::{LowerScope, LowerSink, Lowered};
 use super::divert::LowerDivert;
 use super::expr::LowerExpr;
@@ -18,10 +20,6 @@ use super::helpers::{content_ends_with_glue, expr_contains_call, name_from_ident
 // ─── Output types ───────────────────────────────────────────────────
 
 /// Structured output from lowering a [`ast::ContentLine`].
-///
-/// Each variant captures all the information the backbone needs to
-/// integrate the result — the node impl decides *what* was produced,
-/// the backbone decides *how* to emit it.
 pub enum ContentLineOutput {
     /// A content statement with optional trailing divert.
     Content {
@@ -31,6 +29,14 @@ pub enum ContentLineOutput {
     },
     /// A bare divert with no content (e.g., `-> knot`).
     BareDivert(Stmt),
+    /// The content line wraps a promoted multiline block.
+    /// All trailing content and divert are pre-lowered.
+    PromotedBlock {
+        stmt: Stmt,
+        trailing_content: Option<Content>,
+        divert: Option<Stmt>,
+        needs_eol: bool,
+    },
     /// The line had no content, no divert, no tags.
     Empty,
 }
@@ -69,12 +75,8 @@ impl LogicLineOutput {
 // ─── LowerBody trait ────────────────────────────────────────────────
 
 /// Extension trait for AST nodes that contribute statements to a body.
-///
-/// Each impl returns a rich typed output. The backbone uses [`Integrate`]
-/// to consume the output and produce the final `Vec<Stmt>`.
 pub trait LowerBody {
     type Output;
-
     fn lower_body(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Self::Output>;
 }
 
@@ -88,13 +90,88 @@ impl LowerBody for ast::ContentLine {
         scope: &LowerScope,
         sink: &mut impl LowerSink,
     ) -> Lowered<ContentLineOutput> {
+        // Check if this content line wraps a multiline block-level construct.
+        if let Some(mc) = self.mixed_content()
+            && let Some(il) = mc.inline_logics().next()
+            && let Some(stmt) = lower_multiline_block_from_inline(&il, scope, sink)
+        {
+            let il_syntax = il.syntax().clone();
+            let mut past_promoted = false;
+            let mut trailing_parts = Vec::new();
+            for child in mc.syntax().children_with_tokens() {
+                if let rowan::NodeOrToken::Node(ref child_node) = child
+                    && *child_node == il_syntax
+                {
+                    past_promoted = true;
+                    continue;
+                }
+                if !past_promoted {
+                    continue;
+                }
+                if let rowan::NodeOrToken::Node(child_node) = child {
+                    match child_node.kind() {
+                        brink_syntax::SyntaxKind::TEXT => {
+                            let text = child_node.text().to_string();
+                            if !text.is_empty() {
+                                trailing_parts.push(ContentPart::Text(text));
+                            }
+                        }
+                        brink_syntax::SyntaxKind::GLUE_NODE => {
+                            trailing_parts.push(ContentPart::Glue);
+                        }
+                        brink_syntax::SyntaxKind::ESCAPE => {
+                            let text = child_node.text().to_string();
+                            if text.len() > 1 {
+                                trailing_parts.push(ContentPart::Text(text[1..].to_string()));
+                            }
+                        }
+                        brink_syntax::SyntaxKind::INLINE_LOGIC => {
+                            if let Some(inline) = ast::InlineLogic::cast(child_node) {
+                                lower_inline_logic_into_parts(
+                                    &inline,
+                                    &mut trailing_parts,
+                                    scope,
+                                    sink,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            let trailing_content = if trailing_parts.is_empty() {
+                None
+            } else {
+                Some(Content {
+                    ptr: None,
+                    parts: trailing_parts,
+                    tags: Vec::new(),
+                })
+            };
+            let divert = self
+                .divert()
+                .and_then(|dn| dn.lower_divert(scope, sink).ok());
+            let ends_glue = trailing_content
+                .as_ref()
+                .is_some_and(|c| content_ends_with_glue(&c.parts));
+            let needs_eol = (trailing_content.is_some() && !ends_glue && divert.is_none())
+                || (trailing_content.is_none() && divert.is_none());
+
+            return Ok(ContentLineOutput::PromotedBlock {
+                stmt,
+                trailing_content,
+                divert,
+                needs_eol,
+            });
+        }
+
         let parts = self
             .mixed_content()
             .map(|mc| lower_content_node_children(mc.syntax(), scope, sink))
             .unwrap_or_default();
         let tags = lower_tags(self.tags(), scope, sink);
 
-        // If this line has only a divert (no content), emit a divert statement.
         if parts.is_empty() && tags.is_empty() {
             if let Some(dn) = self.divert()
                 && let Ok(stmt) = dn.lower_divert(scope, sink)
@@ -149,8 +226,6 @@ impl LowerBody for ast::LogicLine {
             let name = name_from_ident(&ident)
                 .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E014))?;
             let value = temp.value().and_then(|e| e.lower_expr(scope, sink).ok());
-            // Register the local *after* lowering the initializer so
-            // `~ temp x = x` doesn't accidentally self-reference.
             sink.add_local(crate::symbols::LocalSymbol {
                 name: name.text.clone(),
                 range: name.range,
@@ -189,7 +264,6 @@ impl LowerBody for ast::LogicLine {
             }));
         }
 
-        // Bare expression statement: ~ expr
         for child in self.syntax().children() {
             if let Some(expr) = ast::Expr::cast(child) {
                 let e = expr.lower_expr(scope, sink)?;
@@ -201,71 +275,253 @@ impl LowerBody for ast::LogicLine {
     }
 }
 
-// ─── Content accumulator ────────────────────────────────────────────
+// ─── BodyBackend trait ──────────────────────────────────────────────
 
-/// Accumulates statements from body-level outputs.
-///
-/// The backbone dispatches to node trait impls, which return typed outputs.
-/// The accumulator consumes those outputs via [`Integrate`] and builds
-/// the final `Vec<Stmt>`.
+/// Backend for the [`ContentAccumulator`]. Determines where flushed
+/// statements go — directly into a `Vec<Stmt>`, or into weave items.
+pub trait BodyBackend {
+    fn push_stmt(&mut self, stmt: Stmt);
+    fn finish(self) -> Block;
+}
+
+/// Direct backend: collects statements into a `Block`. For branch bodies.
 #[derive(Default)]
-pub struct ContentAccumulator {
+pub struct DirectBackend {
     stmts: Vec<Stmt>,
 }
 
-impl ContentAccumulator {
+impl DirectBackend {
     pub fn new() -> Self {
         Self::default()
     }
+}
 
-    pub fn push_stmt(&mut self, stmt: Stmt) {
+impl BodyBackend for DirectBackend {
+    fn push_stmt(&mut self, stmt: Stmt) {
         self.stmts.push(stmt);
     }
 
-    pub fn finish(self) -> Vec<Stmt> {
-        self.stmts
+    fn finish(self) -> Block {
+        Block {
+            label: None,
+            stmts: self.stmts,
+        }
     }
 }
 
-// ─── Integrate trait ────────────────────────────────────────────────
+// ─── ContentAccumulator ─────────────────────────────────────────────
 
-/// Tells the [`ContentAccumulator`] how to consume a typed output.
+/// Accumulates content parts and block-level statements, flushing
+/// buffered parts when block-level nodes appear.
 ///
-/// Each output type from `LowerBody` has a corresponding `Integrate` impl
-/// that converts it into statement pushes. Missing an impl is a compile error.
-pub trait Integrate<T> {
-    fn integrate(&mut self, output: T);
+/// Generic over [`BodyBackend`] — the backend determines where results go.
+pub struct ContentAccumulator<B: BodyBackend> {
+    backend: B,
+    parts: Vec<ContentPart>,
+    last_pushed_was_content: bool,
 }
 
-impl Integrate<ContentLineOutput> for ContentAccumulator {
-    fn integrate(&mut self, output: ContentLineOutput) {
+impl<B: BodyBackend> ContentAccumulator<B> {
+    pub fn new(backend: B) -> Self {
+        Self {
+            backend,
+            parts: Vec::new(),
+            last_pushed_was_content: false,
+        }
+    }
+
+    // ── Content part buffering ──────────────────────────────────
+
+    pub fn push_text(&mut self, text: String) {
+        if !text.is_empty() {
+            self.parts.push(ContentPart::Text(text));
+        }
+    }
+
+    pub fn push_glue(&mut self) {
+        self.parts.push(ContentPart::Glue);
+    }
+
+    pub fn push_escape(&mut self, text: &str) {
+        if text.len() > 1 {
+            self.parts.push(ContentPart::Text(text[1..].to_string()));
+        }
+    }
+
+    pub fn has_buffered_parts(&self) -> bool {
+        !self.parts.is_empty()
+    }
+
+    pub fn ends_with_glue(&self) -> bool {
+        content_ends_with_glue(&self.parts)
+    }
+
+    // ── Flushing ────────────────────────────────────────────────
+
+    /// Flush buffered content parts as a `Stmt::Content`.
+    pub fn flush(&mut self) {
+        if !self.parts.is_empty() {
+            self.backend.push_stmt(Stmt::Content(Content {
+                ptr: None,
+                parts: std::mem::take(&mut self.parts),
+                tags: Vec::new(),
+            }));
+            self.last_pushed_was_content = true;
+        }
+    }
+
+    /// Flush with tags.
+    pub fn flush_with_tags(&mut self, tags: Vec<Tag>) {
+        if !self.parts.is_empty() || !tags.is_empty() {
+            self.backend.push_stmt(Stmt::Content(Content {
+                ptr: None,
+                parts: std::mem::take(&mut self.parts),
+                tags,
+            }));
+            self.last_pushed_was_content = true;
+        }
+    }
+
+    pub fn push_eol(&mut self) {
+        self.backend.push_stmt(Stmt::EndOfLine);
+        self.last_pushed_was_content = false;
+    }
+
+    pub fn last_was_content(&self) -> bool {
+        self.last_pushed_was_content
+    }
+
+    // ── Block-level dispatch via traits ─────────────────────────
+
+    /// Flush, lower a node via [`LowerBody`], and integrate its output.
+    pub fn handle_content_line(
+        &mut self,
+        cl: &ast::ContentLine,
+        scope: &LowerScope,
+        sink: &mut impl LowerSink,
+    ) {
+        if let Ok(output) = cl.lower_body(scope, sink) {
+            self.integrate_content_line(output);
+        }
+    }
+
+    /// Flush, lower a logic line, and integrate.
+    pub fn handle_logic_line(
+        &mut self,
+        ll: &ast::LogicLine,
+        scope: &LowerScope,
+        sink: &mut impl LowerSink,
+    ) {
+        self.flush();
+        if let Ok(output) = ll.lower_body(scope, sink) {
+            let needs_eol = output.has_call();
+            self.backend.push_stmt(output.into_stmt());
+            self.last_pushed_was_content = false;
+            if needs_eol {
+                self.push_eol();
+            }
+        }
+    }
+
+    /// Flush and lower a divert node.
+    pub fn handle_divert(
+        &mut self,
+        dn: &ast::DivertNode,
+        scope: &LowerScope,
+        sink: &mut impl LowerSink,
+    ) {
+        self.flush();
+        if let Ok(stmt) = dn.lower_divert(scope, sink) {
+            self.backend.push_stmt(stmt);
+            self.last_pushed_was_content = false;
+        }
+    }
+
+    /// Try to promote inline logic to a block-level statement,
+    /// or fall back to buffering inline content parts.
+    ///
+    /// Returns `true` if the inline logic was promoted to a block-level
+    /// statement, `false` if it was inlined as content parts.
+    pub fn handle_inline_logic(
+        &mut self,
+        il: &ast::InlineLogic,
+        scope: &LowerScope,
+        sink: &mut impl LowerSink,
+    ) -> bool {
+        if let Some(stmt) = lower_multiline_block_from_inline(il, scope, sink) {
+            self.flush();
+            self.backend.push_stmt(stmt);
+            self.last_pushed_was_content = false;
+            true
+        } else {
+            lower_inline_logic_into_parts(il, &mut self.parts, scope, sink);
+            false
+        }
+    }
+
+    /// Push a raw statement (bypasses part buffering).
+    pub fn push_stmt(&mut self, stmt: Stmt) {
+        self.last_pushed_was_content = matches!(&stmt, Stmt::Content(_));
+        self.backend.push_stmt(stmt);
+    }
+
+    // ── Backend access ───────────────────────────────────────────
+
+    /// Access the backend directly for backend-specific operations
+    /// (e.g., `WeaveBackend::push_choice`).
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
+    // ── Finish ──────────────────────────────────────────────────
+
+    pub fn finish(mut self) -> Block {
+        self.flush();
+        self.backend.finish()
+    }
+
+    // ── Private: integrate outputs ──────────────────────────────
+
+    fn integrate_content_line(&mut self, output: ContentLineOutput) {
         match output {
             ContentLineOutput::Content {
                 content,
                 divert,
                 ends_with_glue,
             } => {
-                self.stmts.push(Stmt::Content(content));
+                self.backend.push_stmt(Stmt::Content(content));
+                self.last_pushed_was_content = true;
                 if let Some(d) = divert {
-                    self.stmts.push(d);
+                    self.backend.push_stmt(d);
+                    self.last_pushed_was_content = false;
                 } else if !ends_with_glue {
-                    self.stmts.push(Stmt::EndOfLine);
+                    self.push_eol();
                 }
             }
             ContentLineOutput::BareDivert(stmt) => {
-                self.stmts.push(stmt);
+                self.backend.push_stmt(stmt);
+                self.last_pushed_was_content = false;
+            }
+            ContentLineOutput::PromotedBlock {
+                stmt,
+                trailing_content,
+                divert,
+                needs_eol,
+            } => {
+                self.backend.push_stmt(stmt);
+                self.last_pushed_was_content = false;
+                if let Some(tc) = trailing_content {
+                    self.backend.push_stmt(Stmt::Content(tc));
+                    self.last_pushed_was_content = true;
+                }
+                if let Some(d) = divert {
+                    self.backend.push_stmt(d);
+                    self.last_pushed_was_content = false;
+                } else if needs_eol {
+                    self.push_eol();
+                }
             }
             ContentLineOutput::Empty => {}
-        }
-    }
-}
-
-impl Integrate<LogicLineOutput> for ContentAccumulator {
-    fn integrate(&mut self, output: LogicLineOutput) {
-        let needs_eol = output.has_call();
-        self.stmts.push(output.into_stmt());
-        if needs_eol {
-            self.stmts.push(Stmt::EndOfLine);
         }
     }
 }
@@ -300,11 +556,9 @@ pub fn lower_content_node_children(
                 }
                 SyntaxKind::INLINE_LOGIC => {
                     if let Some(inline) = ast::InlineLogic::cast(child_node) {
-                        lower_inline_logic(&inline, &mut parts, scope, sink);
+                        lower_inline_logic_into_parts(&inline, &mut parts, scope, sink);
                     }
                 }
-                // DIVERT_NODE and TAGS appear as siblings in
-                // MIXED_CONTENT — handled by the caller.
                 SyntaxKind::DIVERT_NODE | SyntaxKind::TAGS => {}
                 other => {
                     debug_assert!(
@@ -318,20 +572,7 @@ pub fn lower_content_node_children(
     parts
 }
 
-/// Lower an inline logic node into content parts.
-///
-/// Delegates to [`conditional::lower_inline_logic_into_parts`] which handles
-/// value interpolation, inline conditionals, and inline sequences.
-fn lower_inline_logic(
-    inline: &ast::InlineLogic,
-    parts: &mut Vec<ContentPart>,
-    scope: &LowerScope,
-    sink: &mut impl LowerSink,
-) {
-    super::conditional::lower_inline_logic_into_parts(inline, parts, scope, sink);
-}
-
-/// Lower optional tags into a Vec of Tag.
+/// Lower optional tags into a `Vec<Tag>`.
 pub fn lower_tags(
     tags: Option<ast::Tags>,
     scope: &LowerScope,
@@ -366,7 +607,7 @@ fn lower_tag(tag: &ast::Tag, scope: &LowerScope, sink: &mut impl LowerSink) -> T
                         parts.push(ContentPart::Text(std::mem::take(&mut text_buf)));
                     }
                     if let Some(inline) = ast::InlineLogic::cast(node) {
-                        lower_inline_logic(&inline, &mut parts, scope, sink);
+                        lower_inline_logic_into_parts(&inline, &mut parts, scope, sink);
                     }
                 }
             }
