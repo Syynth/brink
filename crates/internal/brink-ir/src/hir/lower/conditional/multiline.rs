@@ -58,7 +58,11 @@ fn lower_if_else_branches(
             let body = b.body().map_or_else(Block::default, |body| {
                 lower_branch_body(body.syntax(), scope, sink)
             });
-            CondBranch { condition, body, container_id: None }
+            CondBranch {
+                condition,
+                body,
+                container_id: None,
+            }
         })
         .collect();
     Conditional {

@@ -144,6 +144,9 @@ pub struct LowerCtx<'a> {
     pub visible_temps: std::collections::HashSet<String>,
     /// Mapping from `FileId` to source file path, for populating `SourceLocation`.
     pub file_paths: &'a std::collections::HashMap<FileId, String>,
+    /// The root container ID — used as fallback when a stamped container ID
+    /// is missing (should not happen in well-formed HIR).
+    pub root_id: brink_format::DefinitionId,
     /// The gather target of the enclosing choice set, if any. Set when
     /// lowering a choice body so that labeled containers within it can
     /// include an explicit `goto gather` — making them self-sufficient

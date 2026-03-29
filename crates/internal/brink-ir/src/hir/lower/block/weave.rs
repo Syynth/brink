@@ -212,7 +212,11 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
                             stmts: gather_stmts,
                             container_id: None,
                         })));
-                        return Block { label: None, stmts, container_id: None };
+                        return Block {
+                            label: None,
+                            stmts,
+                            container_id: None,
+                        };
                     }
                     // Standalone gather — emit content as stmts, save label
                     gather_stmts_start = block.label.as_ref().map(|_| stmts.len());
@@ -237,7 +241,11 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
                         base_depth,
                     );
                     // All remaining items consumed — we're done
-                    return Block { label: None, stmts, container_id: None };
+                    return Block {
+                        label: None,
+                        stmts,
+                        container_id: None,
+                    };
                 }
             }
         }
@@ -266,7 +274,11 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
         gather_stmts_start,
         base_depth,
     );
-    Block { label: None, stmts, container_id: None }
+    Block {
+        label: None,
+        stmts,
+        container_id: None,
+    }
 }
 
 /// Extract runs of deeper-depth items and recursively fold them into nested blocks,

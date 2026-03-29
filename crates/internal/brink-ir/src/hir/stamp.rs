@@ -13,18 +13,15 @@ use std::hash::{Hash, Hasher};
 
 use brink_format::{DefinitionId, DefinitionTag};
 
+use crate::FileId;
 use crate::hir;
 use crate::symbols::{SymbolIndex, SymbolKind};
-use crate::FileId;
 
 /// Stamp container IDs on all HIR files.
 ///
 /// Must be called after analysis (needs `SymbolIndex` for labeled containers)
 /// and before LIR lowering.
-pub fn stamp_container_ids(
-    files: &mut [(FileId, hir::HirFile)],
-    index: &SymbolIndex,
-) {
+pub fn stamp_container_ids(files: &mut [(FileId, hir::HirFile)], index: &SymbolIndex) {
     for (file_id, hir_file) in files {
         // Root content — scope is empty, counters start at 0.
         let mut seq = 0;
@@ -40,7 +37,14 @@ pub fn stamp_container_ids(
         for knot in &mut hir_file.knots {
             let knot_path = &knot.name.text;
             let mut seq = 0;
-            stamp_block(&mut knot.body, *file_id, knot_path, knot_path, index, &mut seq);
+            stamp_block(
+                &mut knot.body,
+                *file_id,
+                knot_path,
+                knot_path,
+                index,
+                &mut seq,
+            );
 
             for stitch in &mut knot.stitches {
                 let stitch_path = format!("{knot_path}.{}", stitch.name.text);
@@ -84,7 +88,10 @@ fn stamp_block(
 }
 
 /// Stamp container IDs on a single statement and recurse into children.
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "structural match over all statement types"
+)]
 fn stamp_stmt(
     stmt: &mut hir::Stmt,
     scope_path: &str,
@@ -123,8 +130,8 @@ fn stamp_stmt(
 
                 // Recurse into choice body with narrowed scope.
                 let child_scope = format!("{scope_path}.c{}", *choice_counter - 1);
-                let mut nested_cc = 0;
-                let mut nested_gc = 0;
+                let mut child_choice_counter = 0;
+                let mut child_gather_counter = 0;
                 for body_stmt in &mut choice.body.stmts {
                     stamp_stmt(
                         body_stmt,
@@ -132,8 +139,8 @@ fn stamp_stmt(
                         label_scope,
                         index,
                         seq_counter,
-                        &mut nested_cc,
-                        &mut nested_gc,
+                        &mut child_choice_counter,
+                        &mut child_gather_counter,
                     );
                 }
             }

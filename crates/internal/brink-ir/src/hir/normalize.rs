@@ -452,7 +452,11 @@ mod tests {
     }
 
     fn mk_block(stmts: Vec<Stmt>) -> Block {
-        Block { label: None, stmts, container_id: None }
+        Block {
+            label: None,
+            stmts,
+            container_id: None,
+        }
     }
 
     fn mk_hir(stmts: Vec<Stmt>) -> HirFile {

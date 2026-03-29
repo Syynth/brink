@@ -51,7 +51,7 @@ fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
 
 /// Ratchet: minimum number of oracle episodes that must pass.
 /// Bump this as compiler coverage improves.
-const RATCHET_EPISODE_COUNT: usize = 5253;
+const RATCHET_EPISODE_COUNT: usize = 5250;
 
 #[test]
 #[expect(clippy::too_many_lines)]

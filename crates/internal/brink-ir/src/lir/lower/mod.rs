@@ -2,7 +2,6 @@ mod content;
 mod context;
 mod decls;
 mod expr;
-mod plan;
 mod recognize;
 mod stmts;
 mod temps;
@@ -36,7 +35,7 @@ pub fn lower_to_program(
     file_paths: &HashMap<FileId, String>,
 ) -> (lir::Program, Vec<crate::Diagnostic>) {
     // ── Step 0: Normalize HIR (pre-LIR regularization) ──────────
-    let normalized: Vec<(FileId, hir::HirFile)> = files
+    let mut normalized: Vec<(FileId, hir::HirFile)> = files
         .iter()
         .map(|(id, hir_file)| {
             let mut h = (*hir_file).clone();
@@ -44,15 +43,17 @@ pub fn lower_to_program(
             (*id, h)
         })
         .collect();
+
+    // ── Step 1: Stamp container IDs directly on HIR nodes ─────────
+    hir::stamp_container_ids(&mut normalized, index);
+
     let files: Vec<(FileId, &hir::HirFile)> = normalized.iter().map(|(id, h)| (*id, h)).collect();
     let files = &files;
 
     let resolutions = ResolutionLookup::build(resolutions);
     let mut names = NameTable::new();
     let mut ids = context::IdAllocator::new();
-
-    // ── Step 1: Plan containers (pre-allocate IDs) ─────────────────
-    let plan = plan::plan_containers(files, index, &mut ids);
+    let root_id = ids.alloc_address("");
 
     // ── Step 2: Collect declarations ────────────────────────────────
     let mut lir_diagnostics = Vec::new();
@@ -68,7 +69,7 @@ pub fn lower_to_program(
         &resolutions,
         index,
         &mut names,
-        &plan,
+        root_id,
         &mut ids,
         file_paths,
     );
@@ -97,7 +98,7 @@ fn lower_root(
     resolutions: &ResolutionLookup,
     index: &SymbolIndex,
     names: &mut NameTable,
-    plan: &plan::ContainerPlan,
+    root_id: brink_format::DefinitionId,
     ids: &mut context::IdAllocator,
     file_paths: &HashMap<FileId, String>,
 ) -> lir::Container {
@@ -116,6 +117,7 @@ fn lower_root(
             &temp_map,
             names,
             ids,
+            root_id,
             String::new(),
             &[],
             file_paths,
@@ -124,7 +126,7 @@ fn lower_root(
         let mut gc = 0;
         ctx.ids.reset_seq_counter();
         let (stmts, mut block_children) =
-            lower_block_with_children(&hir_file.root_content, &mut ctx, plan, &mut cc, &mut gc);
+            lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc);
         body.extend(stmts);
         children.append(&mut block_children);
 
@@ -138,7 +140,7 @@ fn lower_root(
                 index,
                 names,
                 ids,
-                plan,
+                root_id,
                 file_paths,
             ));
         }
@@ -156,7 +158,7 @@ fn lower_root(
     }
 
     lir::Container {
-        id: plan.root_id,
+        id: root_id,
         name: None,
         kind: lir::ContainerKind::Root,
         params: Vec::new(),
@@ -179,15 +181,11 @@ fn lower_knot(
     index: &SymbolIndex,
     names: &mut NameTable,
     ids: &mut context::IdAllocator,
-    plan: &plan::ContainerPlan,
+    root_id: brink_format::DefinitionId,
     file_paths: &HashMap<FileId, String>,
 ) -> lir::Container {
     let knot_name = &knot.name.text;
-    let knot_id = plan
-        .knot_ids
-        .get(knot_name.as_str())
-        .copied()
-        .unwrap_or(plan.root_id);
+    let knot_id = lookup_container_id(index, knot_name).unwrap_or(root_id);
 
     let mut scope_blocks: Vec<&hir::Block> = vec![&knot.body];
     for stitch in &knot.stitches {
@@ -206,6 +204,7 @@ fn lower_knot(
         &temp_map,
         names,
         ids,
+        root_id,
         knot_name.clone(),
         &knot_param_names,
         file_paths,
@@ -213,8 +212,7 @@ fn lower_knot(
     let mut cc = 0;
     let mut gc = 0;
     ctx.ids.reset_seq_counter();
-    let (body, mut children) =
-        lower_block_with_children(&knot.body, &mut ctx, plan, &mut cc, &mut gc);
+    let (body, mut children) = lower_block_with_children(&knot.body, &mut ctx, &mut cc, &mut gc);
 
     // Add stitches as children
     for stitch in &knot.stitches {
@@ -227,7 +225,7 @@ fn lower_knot(
             index,
             names,
             ids,
-            plan,
+            root_id,
             file_paths,
         ));
     }
@@ -271,16 +269,12 @@ fn lower_stitch(
     index: &SymbolIndex,
     names: &mut NameTable,
     ids: &mut context::IdAllocator,
-    plan: &plan::ContainerPlan,
+    root_id: brink_format::DefinitionId,
     file_paths: &HashMap<FileId, String>,
 ) -> lir::Container {
     let stitch_name = &stitch.name.text;
     let stitch_path = format!("{}.{stitch_name}", knot.name.text);
-    let stitch_id = plan
-        .stitch_ids
-        .get(stitch_path.as_str())
-        .copied()
-        .unwrap_or(plan.root_id);
+    let stitch_id = lookup_container_id(index, &stitch_path).unwrap_or(root_id);
     let params = lower_params(&stitch.params, names, temp_map);
 
     let stitch_param_names: Vec<&str> =
@@ -292,6 +286,7 @@ fn lower_stitch(
         temp_map,
         names,
         ids,
+        root_id,
         stitch_path,
         &stitch_param_names,
         file_paths,
@@ -299,8 +294,7 @@ fn lower_stitch(
     let mut cc = 0;
     let mut gc = 0;
     ctx.ids.reset_seq_counter();
-    let (body, children) =
-        lower_block_with_children(&stitch.body, &mut ctx, plan, &mut cc, &mut gc);
+    let (body, children) = lower_block_with_children(&stitch.body, &mut ctx, &mut cc, &mut gc);
 
     lir::Container {
         id: stitch_id,
@@ -326,7 +320,6 @@ fn lower_stitch(
 fn lower_block_with_children(
     block: &hir::Block,
     ctx: &mut LowerCtx<'_>,
-    plan: &plan::ContainerPlan,
     choice_counter: &mut usize,
     gather_counter: &mut usize,
 ) -> (Vec<lir::Stmt>, Vec<lir::Container>) {
@@ -338,8 +331,9 @@ fn lower_block_with_children(
         let stmt = &block.stmts[pos];
         match stmt {
             hir::Stmt::ChoiceSet(cs) => {
-                // Every choice set gets a gather target — explicit or implicit.
-                let gather_target = find_gather_target(ctx, plan, gather_counter);
+                // Every choice set gets a gather target — read from stamped HIR.
+                let gather_target = cs.gather_id;
+                *gather_counter += 1;
 
                 // Build choice target children
                 let mut choice_children = Vec::new();
@@ -347,13 +341,8 @@ fn lower_block_with_children(
                     .choices
                     .iter()
                     .map(|choice| {
-                        let (lir_choice, child) = lower_choice_with_child(
-                            choice,
-                            ctx,
-                            plan,
-                            choice_counter,
-                            gather_target,
-                        );
+                        let (lir_choice, child) =
+                            lower_choice_with_child(choice, ctx, choice_counter, gather_target);
                         if let Some(c) = child {
                             choice_children.push(c);
                         }
@@ -373,7 +362,6 @@ fn lower_block_with_children(
                 let gather_container = build_continuation_container(
                     &cs.continuation,
                     ctx,
-                    plan,
                     gather_target,
                     *gather_counter - 1,
                     choice_counter,
@@ -387,8 +375,8 @@ fn lower_block_with_children(
                 // gather pattern). Enter the wrapper container so execution
                 // returns to the parent when the child finishes — this allows
                 // sibling LabeledBlocks to chain (e.g. `- (opts) ... - (test)`).
-                let wrapper_target = find_gather_target(ctx, plan, gather_counter);
-                let wrapper_id = wrapper_target.unwrap_or(plan.root_id);
+                let wrapper_id = labeled.container_id.unwrap_or(ctx.root_id);
+                *gather_counter += 1;
 
                 stmts.push(lir::Stmt::EnterContainer(wrapper_id));
 
@@ -404,7 +392,7 @@ fn lower_block_with_children(
 
                 // Lower the labeled block's contents
                 let (mut inner_stmts, inner_children) =
-                    lower_block_with_children(labeled, ctx, plan, choice_counter, gather_counter);
+                    lower_block_with_children(labeled, ctx, choice_counter, gather_counter);
 
                 // If inside a choice body, append goto gather so the
                 // container is self-sufficient when entered via divert.
@@ -488,21 +476,11 @@ fn lower_block_with_children(
                         // Pass through parent choice/gather counters — a ChoiceSet
                         // inside a conditional shares the enclosing scope and must
                         // not collide with sibling gathers/choices.
-                        let (body, branch_children) = lower_block_with_children(
-                            &b.body,
-                            ctx,
-                            plan,
-                            choice_counter,
-                            gather_counter,
-                        );
+                        let (body, branch_children) =
+                            lower_block_with_children(&b.body, ctx, choice_counter, gather_counter);
 
-                        // Create a child container for this branch
-                        let branch_path = if old_scope.is_empty() {
-                            format!("{cond_scope}.{branch_idx}")
-                        } else {
-                            format!("{old_scope}.{cond_scope}.{branch_idx}")
-                        };
-                        let branch_id = ctx.ids.alloc_address(&branch_path);
+                        // Read pre-stamped container ID from HIR.
+                        let branch_id = b.container_id.unwrap_or(ctx.root_id);
 
                         let branch_container = lir::Container {
                             id: branch_id,
@@ -534,9 +512,9 @@ fn lower_block_with_children(
                 pos += 1;
             }
             hir::Stmt::Sequence(seq) => {
-                // Allocate a wrapper container for this sequence.
+                // Read pre-stamped wrapper container ID; keep counter in sync.
                 let seq_idx = ctx.ids.next_seq_index();
-                let wrapper_id = ctx.alloc_sequence_id(seq_idx);
+                let wrapper_id = seq.container_id.unwrap_or(ctx.root_id);
 
                 // Push the wrapper's name onto the scope path so that nested
                 // sequences inside branches get unique IDs (e.g. `scope.s-0.s-0`
@@ -562,15 +540,10 @@ fn lower_block_with_children(
                         let mut bc = 0;
                         let mut gc = 0;
                         let (body, branch_children) =
-                            lower_block_with_children(b, ctx, plan, &mut bc, &mut gc);
+                            lower_block_with_children(b, ctx, &mut bc, &mut gc);
 
-                        // Allocate a child container for this branch
-                        let branch_path = if ctx.scope_path.is_empty() {
-                            format!("{branch_idx}")
-                        } else {
-                            format!("{}.{branch_idx}", ctx.scope_path)
-                        };
-                        let branch_id = ctx.ids.alloc_address(&branch_path);
+                        // Read pre-stamped container ID from HIR branch block.
+                        let branch_id = b.container_id.unwrap_or(ctx.root_id);
 
                         let branch_container = lir::Container {
                             id: branch_id,
@@ -666,13 +639,12 @@ fn lower_block_with_children(
 fn build_continuation_container(
     continuation: &hir::Block,
     ctx: &mut LowerCtx<'_>,
-    plan: &plan::ContainerPlan,
     gather_id: Option<brink_format::DefinitionId>,
     gather_index: usize,
     choice_counter: &mut usize,
     gather_counter: &mut usize,
 ) -> lir::Container {
-    let id = gather_id.unwrap_or(plan.root_id);
+    let id = gather_id.unwrap_or(ctx.root_id);
     let display_name = continuation
         .label
         .as_ref()
@@ -706,7 +678,7 @@ fn build_continuation_container(
 
     // Lower continuation stmts — may contain nested ChoiceSets (gather-choice chains)
     let (body, children) =
-        lower_block_with_children(continuation, ctx, plan, choice_counter, gather_counter);
+        lower_block_with_children(continuation, ctx, choice_counter, gather_counter);
 
     lir::Container {
         id,
@@ -727,22 +699,12 @@ fn build_continuation_container(
 fn lower_choice_with_child(
     choice: &hir::Choice,
     ctx: &mut LowerCtx<'_>,
-    plan: &plan::ContainerPlan,
     choice_counter: &mut usize,
     gather_target: Option<brink_format::DefinitionId>,
 ) -> (lir::Choice, Option<lir::Container>) {
-    let key = plan::ChoiceKey {
-        file: ctx.file,
-        scope: ctx.scope_path.clone(),
-        index: *choice_counter,
-    };
     *choice_counter += 1;
 
-    let target = plan
-        .choice_targets
-        .get(&key)
-        .copied()
-        .unwrap_or(plan.root_id);
+    let target = choice.container_id.unwrap_or(ctx.root_id);
 
     // Preserve the three-part content split for codegen backends.
     let start_content = choice
@@ -812,8 +774,7 @@ fn lower_choice_with_child(
     ctx.choice_gather_target = gather_target;
     let mut cc = 0;
     let mut gc = 0;
-    let (body_stmts, mut children) =
-        lower_block_with_children(&choice.body, ctx, plan, &mut cc, &mut gc);
+    let (body_stmts, mut children) = lower_block_with_children(&choice.body, ctx, &mut cc, &mut gc);
     ctx.scope_path = old_scope;
     ctx.choice_gather_target = old_gather_target;
 
@@ -936,6 +897,7 @@ fn make_ctx<'a>(
     temps: &'a TempMap,
     names: &'a mut NameTable,
     ids: &'a mut context::IdAllocator,
+    root_id: brink_format::DefinitionId,
     scope_path: String,
     param_names: &[&str],
     file_paths: &'a HashMap<FileId, String>,
@@ -951,6 +913,7 @@ fn make_ctx<'a>(
         pending_children: Vec::new(),
         visible_temps: param_names.iter().map(|s| (*s).to_string()).collect(),
         file_paths,
+        root_id,
         choice_gather_target: None,
     }
 }
@@ -975,18 +938,24 @@ fn lower_params(
         .collect()
 }
 
-fn find_gather_target(
-    ctx: &LowerCtx<'_>,
-    plan: &plan::ContainerPlan,
-    gather_counter: &mut usize,
-) -> Option<brink_format::DefinitionId> {
-    let key = plan::GatherKey {
-        file: ctx.file,
-        scope: ctx.scope_path.clone(),
-        index: *gather_counter,
-    };
-    *gather_counter += 1;
-    plan.gather_targets.get(&key).copied()
+/// Look up a container `DefinitionId` by name in the symbol index.
+///
+/// Checks for knot, stitch, or label symbols — the same container
+/// types the analyzer registers.
+fn lookup_container_id(index: &SymbolIndex, name: &str) -> Option<brink_format::DefinitionId> {
+    use crate::symbols::SymbolKind;
+    index.by_name.get(name).and_then(|ids| {
+        ids.iter()
+            .find(|&&id| {
+                index.symbols.get(&id).is_some_and(|info| {
+                    matches!(
+                        info.kind,
+                        SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
+                    )
+                })
+            })
+            .copied()
+    })
 }
 
 // ─── Counting flags ─────────────────────────────────────────────────
