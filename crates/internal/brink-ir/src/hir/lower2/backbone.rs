@@ -53,6 +53,7 @@ pub fn classify_body_child(node: &brink_syntax::SyntaxNode) -> BodyChild {
         SyntaxKind::GATHER => {
             ast::Gather::cast(node.clone()).map_or(BodyChild::Trivia, BodyChild::Gather)
         }
+        // Structural children — handled by the parent, skipped here.
         SyntaxKind::KNOT_DEF
         | SyntaxKind::KNOT_HEADER
         | SyntaxKind::STITCH_DEF
@@ -63,7 +64,17 @@ pub fn classify_body_child(node: &brink_syntax::SyntaxNode) -> BodyChild {
         | SyntaxKind::EXTERNAL_DECL
         | SyntaxKind::INCLUDE_STMT
         | SyntaxKind::STRAY_CLOSING_BRACE
-        | SyntaxKind::AUTHOR_WARNING => BodyChild::Structural,
+        | SyntaxKind::AUTHOR_WARNING
+        // Choice/gather structural parts (when iterating a choice node's children).
+        | SyntaxKind::CHOICE_BULLETS
+        | SyntaxKind::LABEL
+        | SyntaxKind::CHOICE_CONDITION
+        | SyntaxKind::CHOICE_START_CONTENT
+        | SyntaxKind::CHOICE_BRACKET_CONTENT
+        | SyntaxKind::CHOICE_INNER_CONTENT
+        | SyntaxKind::TAGS
+        | SyntaxKind::MIXED_CONTENT
+        | SyntaxKind::GATHER_DASHES => BodyChild::Structural,
         SyntaxKind::EMPTY_LINE => BodyChild::Trivia,
         other => {
             debug_assert!(

@@ -10,8 +10,8 @@ use crate::{
     Tag,
 };
 
-use super::conditional::lower_multiline_block_from_inline;
-use super::content::{lower_content_node_children, lower_tags};
+use super::backbone::{BodyChild, classify_body_child};
+use super::content::{ContentAccumulator, DirectBackend, lower_content_node_children, lower_tags};
 use super::context::{LowerScope, LowerSink, Lowered};
 use super::divert::{LowerDivert, lower_divert_target_with_args};
 use super::expr::LowerExpr;
@@ -158,6 +158,12 @@ impl LowerChoice for ast::Choice {
 
 // ─── Choice body ────────────────────────────────────────────────────
 
+/// Lower the body of a choice using the classifier + accumulator pattern.
+///
+/// The choice's structural children (bullets, label, content regions, tags)
+/// are skipped by the classifier (they're `Structural`/`Trivia`). Only
+/// body-level children (content lines, logic lines, diverts, inline logic)
+/// are dispatched through the accumulator.
 fn lower_choice_body(
     choice: &ast::Choice,
     skip_divert: bool,
@@ -170,72 +176,42 @@ fn lower_choice_body(
         None
     };
 
-    let mut stmts = Vec::new();
+    let mut acc = ContentAccumulator::new(DirectBackend::new());
+
     for child in choice.syntax().children() {
+        // Skip the inline divert if it was already captured.
         if choice_divert_range.is_some_and(|r| r == child.text_range()) {
             continue;
         }
-        lower_body_child(child, &mut stmts, scope, sink);
-    }
-    Block { label: None, stmts }
-}
 
-/// Lower a single child node in a choice/gather body context.
-fn lower_body_child(
-    child: brink_syntax::SyntaxNode,
-    out: &mut Vec<Stmt>,
-    scope: &LowerScope,
-    sink: &mut impl LowerSink,
-) {
-    match child.kind() {
-        SyntaxKind::CONTENT_LINE => {
-            if let Some(cl) = ast::ContentLine::cast(child) {
-                let mut acc =
-                    super::content::ContentAccumulator::new(super::content::DirectBackend::new());
+        match classify_body_child(&child) {
+            BodyChild::ContentLine(cl) => {
                 acc.handle(&cl, scope, sink);
-                out.extend(acc.finish().stmts);
             }
-        }
-        SyntaxKind::LOGIC_LINE => {
-            if let Some(ll) = ast::LogicLine::cast(child) {
-                let mut acc =
-                    super::content::ContentAccumulator::new(super::content::DirectBackend::new());
+            BodyChild::LogicLine(ll) => {
                 acc.handle(&ll, scope, sink);
-                out.extend(acc.finish().stmts);
             }
-        }
-        SyntaxKind::DIVERT_NODE => {
-            if let Some(dn) = ast::DivertNode::cast(child)
-                && let Ok(stmt) = dn.lower_divert(scope, sink)
-            {
-                out.push(stmt);
+            BodyChild::DivertNode(dn) => {
+                acc.handle(&dn, scope, sink);
             }
-        }
-        SyntaxKind::INLINE_LOGIC => {
-            if let Some(il) = ast::InlineLogic::cast(child)
-                && let Some(stmt) = lower_multiline_block_from_inline(&il, scope, sink)
-            {
-                out.push(stmt);
+            BodyChild::InlineLogic(il) => {
+                acc.handle(&il, scope, sink);
             }
-        }
-        SyntaxKind::CHOICE_BULLETS
-        | SyntaxKind::LABEL
-        | SyntaxKind::CHOICE_CONDITION
-        | SyntaxKind::CHOICE_START_CONTENT
-        | SyntaxKind::CHOICE_BRACKET_CONTENT
-        | SyntaxKind::CHOICE_INNER_CONTENT
-        | SyntaxKind::TAGS
-        | SyntaxKind::MIXED_CONTENT
-        | SyntaxKind::GATHER_DASHES
-        | SyntaxKind::MULTILINE_BLOCK
-        | SyntaxKind::GATHER => {}
-        other => {
-            debug_assert!(
-                other.is_trivia(),
-                "unexpected SyntaxKind in lower_body_child: {other:?}"
-            );
+            BodyChild::MultilineBlock(mb) => {
+                acc.handle(&mb, scope, sink);
+            }
+            BodyChild::TagLine(tl) => {
+                acc.handle(&tl, scope, sink);
+            }
+            // Choice structural parts + weave items are skipped.
+            BodyChild::Choice(_)
+            | BodyChild::Gather(_)
+            | BodyChild::Structural
+            | BodyChild::Trivia => {}
         }
     }
+
+    acc.finish()
 }
 
 // ─── Gather ─────────────────────────────────────────────────────────
