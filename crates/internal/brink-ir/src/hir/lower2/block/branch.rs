@@ -2,9 +2,10 @@
 
 use brink_syntax::ast::{self, AstNode};
 
-use crate::Block;
+use crate::{Block, ChoiceSet, ChoiceSetContext, Stmt};
 
 use super::super::backbone::{BranchChild, classify_branch_child};
+use super::super::choice::LowerChoice;
 use super::super::content::{ContentAccumulator, DirectBackend, HandleResult};
 use super::super::context::{LowerScope, LowerSink};
 use super::LowerBlock;
@@ -85,9 +86,17 @@ fn lower_branch_body_from_syntax(
                 seen_content = true;
                 acc.push_escape(&t);
             }
-            BranchChild::Choice(_) => {
+            BranchChild::Choice(c) => {
                 pending_ws = None;
                 acc.flush();
+                if let Ok(choice) = c.lower_choice(scope, sink) {
+                    acc.push_stmt(Stmt::ChoiceSet(Box::new(ChoiceSet {
+                        choices: vec![choice],
+                        continuation: Block::default(),
+                        context: ChoiceSetContext::Inline,
+                        depth: 0,
+                    })));
+                }
             }
             BranchChild::Trivia => {}
             BranchChild::Stop => break,

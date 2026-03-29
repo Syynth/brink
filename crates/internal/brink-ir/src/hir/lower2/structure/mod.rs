@@ -9,7 +9,7 @@ mod stitch;
 
 use brink_syntax::ast::{self, AstNode};
 
-use crate::{FileId, HirFile, IncludeSite, Knot, SymbolManifest};
+use crate::{Block, FileId, HirFile, IncludeSite, Knot, SymbolManifest};
 
 use super::block::lower_weave_body;
 use super::context::{EffectSink, LowerScope, LowerSink};
@@ -23,8 +23,8 @@ use stitch::lower_top_level_stitch;
 
 /// Lower a complete source file to HIR.
 ///
-/// This is the lower2 equivalent of [`crate::hir::lower::lower`]. It
-/// produces the same `(HirFile, SymbolManifest, Vec<Diagnostic>)` tuple.
+/// Produces the same `(HirFile, SymbolManifest, Vec<Diagnostic>)` tuple
+/// as the original `crate::hir::lower::lower`.
 pub fn lower(
     file_id: FileId,
     file: &ast::SourceFile,
@@ -35,6 +35,67 @@ pub fn lower(
     let hir = lower_source_file(&mut scope, &mut sink, file);
     let (manifest, diagnostics) = sink.finish();
     (hir, manifest, diagnostics)
+}
+
+/// Lower a single knot definition in isolation.
+///
+/// Returns `None` for the knot if the AST node is malformed (e.g. missing header).
+pub fn lower_single_knot(
+    file_id: FileId,
+    knot: &ast::KnotDef,
+) -> (Option<Knot>, SymbolManifest, Vec<crate::Diagnostic>) {
+    let mut scope = LowerScope::new(file_id);
+    let mut sink = EffectSink::new(file_id);
+
+    let result = lower_knot(&mut scope, &mut sink, knot);
+    let (manifest, diagnostics) = sink.finish();
+    (result, manifest, diagnostics)
+}
+
+/// Lower only the top-level content and declarations of a file, skipping knots.
+///
+/// Useful for incremental analysis where knots are lowered separately.
+pub fn lower_top_level(
+    file_id: FileId,
+    file: &ast::SourceFile,
+) -> (Block, Vec<Knot>, SymbolManifest, Vec<crate::Diagnostic>) {
+    let mut scope = LowerScope::new(file_id);
+    let mut sink = EffectSink::new(file_id);
+
+    // Lower declarations (registers symbols in manifest).
+    // Walk descendants — VAR/CONST/LIST are global regardless of nesting.
+    let _variables: Vec<_> = file
+        .syntax()
+        .descendants()
+        .filter_map(ast::VarDecl::cast)
+        .filter_map(|v| v.declare_and_lower(&mut scope, &mut sink).ok())
+        .collect();
+    let _constants: Vec<_> = file
+        .syntax()
+        .descendants()
+        .filter_map(ast::ConstDecl::cast)
+        .filter_map(|c| c.declare_and_lower(&mut scope, &mut sink).ok())
+        .collect();
+    let _lists: Vec<_> = file
+        .syntax()
+        .descendants()
+        .filter_map(ast::ListDecl::cast)
+        .filter_map(|l| l.declare_and_lower(&mut scope, &mut sink).ok())
+        .collect();
+    let _externals: Vec<_> = file
+        .externals()
+        .filter_map(|e| e.declare_and_lower(&mut scope, &mut sink).ok())
+        .collect();
+
+    // Top-level stitches (no parent knot) — promoted to knots.
+    let top_level_knots: Vec<_> = file
+        .stitches()
+        .filter_map(|stitch| lower_top_level_stitch(&mut scope, &mut sink, &stitch))
+        .collect();
+
+    let root_content = lower_weave_body(file.syntax(), &mut scope, &mut sink);
+    let (manifest, diagnostics) = sink.finish();
+    (root_content, top_level_knots, manifest, diagnostics)
 }
 
 // ─── Source file ────────────────────────────────────────────────────

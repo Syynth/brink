@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use brink_ir::suppressions::{Suppressions, parse_suppressions};
-use brink_ir::{Diagnostic, FileId, HirFile, SymbolManifest, lower, lower_knot, lower_top_level};
+use brink_ir::{Diagnostic, FileId, HirFile, SymbolManifest, lower, lower_single_knot, lower_top_level};
 use brink_syntax::ast::AstNode as _;
 use brink_syntax::{Parse, parse_with_cache};
 use rowan::{GreenNode, NodeCache};
@@ -51,7 +51,7 @@ impl ProjectDb {
             .map(|knot_ast| {
                 let green = knot_ast.syntax().green().into();
                 let offset = knot_ast.syntax().text_range().start();
-                let (knot, manifest, diagnostics) = lower_knot(file_id, &knot_ast);
+                let (knot, manifest, diagnostics) = lower_single_knot(file_id, &knot_ast);
                 KnotEntry {
                     green,
                     offset,
@@ -141,7 +141,7 @@ impl ProjectDb {
                 });
                 reused += 1;
             } else {
-                let (knot, manifest, diagnostics) = lower_knot(file_id, knot_ast);
+                let (knot, manifest, diagnostics) = lower_single_knot(file_id, knot_ast);
                 knot_entries.push(KnotEntry {
                     green: new_green,
                     offset: new_offset,

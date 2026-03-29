@@ -509,7 +509,7 @@ Hello from knot.
 
     // Per-knot lower
     let ast_knot = tree.knots().next().unwrap();
-    let (knot, manifest, diags) = crate::lower_knot(FileId(0), &ast_knot);
+    let (knot, manifest, diags) = super::lower_knot(FileId(0), &ast_knot);
     let knot = knot.unwrap();
 
     assert!(diags.is_empty());
@@ -529,7 +529,7 @@ fn lower_knot_function_with_params() {
     let tree = parsed.tree();
 
     let ast_knot = tree.knots().next().unwrap();
-    let (knot, manifest, diags) = crate::lower_knot(FileId(0), &ast_knot);
+    let (knot, manifest, diags) = super::lower_knot(FileId(0), &ast_knot);
     let knot = knot.unwrap();
 
     assert!(diags.is_empty());

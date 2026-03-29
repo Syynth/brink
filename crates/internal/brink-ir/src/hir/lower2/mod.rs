@@ -44,5 +44,5 @@ pub use content::{
     ContentAccumulator, ContentLineOutput, DirectBackend, HandleResult, Integrate, LogicLineOutput,
 };
 
-// Re-export public API (same signature as crate::hir::lower::lower).
-pub use structure::lower;
+// Re-export public API (same signatures as crate::hir::lower).
+pub use structure::{lower, lower_single_knot, lower_top_level};
