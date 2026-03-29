@@ -5,12 +5,10 @@
 //! stay as trees, choices and conditionals keep their branch structure, diverts
 //! are semantic nodes — with weave nesting resolved and syntactic sugar stripped.
 
-mod lower;
-pub mod lower2;
+pub mod lower;
 mod normalize;
 mod types;
 
-pub use lower::{WeaveItem, fold_weave};
-pub use lower2::{lower, lower_single_knot, lower_top_level};
+pub use lower::{WeaveItem, fold_weave, lower, lower_single_knot, lower_top_level};
 pub use normalize::normalize_file;
 pub use types::*;

@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use brink_ir::suppressions::{Suppressions, parse_suppressions};
-use brink_ir::{Diagnostic, FileId, HirFile, SymbolManifest, lower, lower_single_knot, lower_top_level};
+use brink_ir::{
+    Diagnostic, FileId, HirFile, SymbolManifest, lower, lower_single_knot, lower_top_level,
+};
 use brink_syntax::ast::AstNode as _;
 use brink_syntax::{Parse, parse_with_cache};
 use rowan::{GreenNode, NodeCache};

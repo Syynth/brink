@@ -59,9 +59,9 @@ pub(super) fn lower_top_level_stitch(
             }),
         });
     }
-    let body = stitch
-        .body()
-        .map_or_else(Block::default, |b| b.lower_block(scope, sink).unwrap_or_default());
+    let body = stitch.body().map_or_else(Block::default, |b| {
+        b.lower_block(scope, sink).unwrap_or_default()
+    });
     scope.current_knot = None;
 
     Ok(Knot {
@@ -123,9 +123,9 @@ pub(super) fn lower_stitch(
             }),
         });
     }
-    let body = stitch
-        .body()
-        .map_or_else(Block::default, |b| b.lower_block(scope, sink).unwrap_or_default());
+    let body = stitch.body().map_or_else(Block::default, |b| {
+        b.lower_block(scope, sink).unwrap_or_default()
+    });
     scope.current_stitch = None;
 
     Ok(Stitch {

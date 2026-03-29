@@ -23,8 +23,7 @@ use stitch::lower_top_level_stitch;
 
 /// Lower a complete source file to HIR.
 ///
-/// Produces the same `(HirFile, SymbolManifest, Vec<Diagnostic>)` tuple
-/// as the original `crate::hir::lower::lower`.
+/// Produces an `(HirFile, SymbolManifest, Vec<Diagnostic>)` tuple.
 pub fn lower(
     file_id: FileId,
     file: &ast::SourceFile,
@@ -68,23 +67,23 @@ pub fn lower_top_level(
         .syntax()
         .descendants()
         .filter_map(ast::VarDecl::cast)
-        .filter_map(|v| v.declare_and_lower(&mut scope, &mut sink).ok())
+        .filter_map(|v| v.declare_and_lower(&scope, &mut sink).ok())
         .collect();
     let _constants: Vec<_> = file
         .syntax()
         .descendants()
         .filter_map(ast::ConstDecl::cast)
-        .filter_map(|c| c.declare_and_lower(&mut scope, &mut sink).ok())
+        .filter_map(|c| c.declare_and_lower(&scope, &mut sink).ok())
         .collect();
     let _lists: Vec<_> = file
         .syntax()
         .descendants()
         .filter_map(ast::ListDecl::cast)
-        .filter_map(|l| l.declare_and_lower(&mut scope, &mut sink).ok())
+        .filter_map(|l| l.declare_and_lower(&scope, &mut sink).ok())
         .collect();
     let _externals: Vec<_> = file
         .externals()
-        .filter_map(|e| e.declare_and_lower(&mut scope, &mut sink).ok())
+        .filter_map(|e| e.declare_and_lower(&scope, &mut sink).ok())
         .collect();
 
     // Top-level stitches (no parent knot) — promoted to knots.
@@ -93,7 +92,7 @@ pub fn lower_top_level(
         .filter_map(|stitch| lower_top_level_stitch(&mut scope, &mut sink, &stitch).ok())
         .collect();
 
-    let root_content = lower_weave_body(file.syntax(), &mut scope, &mut sink);
+    let root_content = lower_weave_body(file.syntax(), &scope, &mut sink);
     let (manifest, diagnostics) = sink.finish();
     (root_content, top_level_knots, manifest, diagnostics)
 }

@@ -1,11 +1,8 @@
-//! Trait-based HIR lowering (v2).
+//! Trait-based HIR lowering.
 //!
-//! A parallel implementation of HIR lowering that uses extension traits
-//! on AST nodes, a read-only scope / write-only sink split, and typed
-//! output enums with the [`Diagnosed`] proof token to prevent silent drops.
-//!
-//! This module coexists with the original `lower` module. Both produce
-//! the same HIR types; the intent is to eventually swap.
+//! Uses extension traits on AST nodes, a read-only scope / write-only sink
+//! split, and typed output enums with the [`Diagnosed`] proof token to
+//! prevent silent drops.
 
 mod backbone;
 mod block;
@@ -44,5 +41,8 @@ pub use content::{
     ContentAccumulator, ContentLineOutput, DirectBackend, HandleResult, Integrate, LogicLineOutput,
 };
 
-// Re-export public API (same signatures as crate::hir::lower).
+// Re-export weave folding.
+pub use block::{WeaveItem, fold_weave};
+
+// Re-export public API.
 pub use structure::{lower, lower_single_knot, lower_top_level};

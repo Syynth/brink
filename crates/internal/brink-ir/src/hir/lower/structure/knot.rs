@@ -132,7 +132,11 @@ pub(super) fn lower_knot_params(
     sink: &mut impl LowerSink,
 ) -> Vec<Param> {
     params
-        .map(|p| p.params().filter_map(|pd| lower_param(&pd, sink).ok()).collect())
+        .map(|p| {
+            p.params()
+                .filter_map(|pd| lower_param(&pd, sink).ok())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -141,8 +145,7 @@ fn lower_param(p: &ast::KnotParamDecl, sink: &mut impl LowerSink) -> Lowered<Par
     let ident = p
         .identifier()
         .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E003))?;
-    let name = name_from_ident(&ident)
-        .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E003))?;
+    let name = name_from_ident(&ident).ok_or_else(|| sink.diagnose(range, DiagnosticCode::E003))?;
     Ok(Param {
         name,
         is_ref: p.is_ref(),

@@ -10,7 +10,7 @@ mod weave;
 mod wrap;
 
 pub use branch::lower_branch_body;
-pub use weave::lower_weave_body;
+pub use weave::{WeaveItem, fold_weave, lower_weave_body};
 pub use wrap::wrap_content_as_block;
 
 use crate::Block;
