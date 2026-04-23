@@ -314,40 +314,10 @@ Each step is independently testable against the episode corpus:
 
 ## Open investigations
 
-### Function capture model mismatch
+### Function capture model mismatch — RESOLVED
 
-**Status**: Identified, not fixed. Reverted an attempt.
+**Status**: Resolved by the fragment model (step 9). As predicted in this section's original writeup, fragments provided a controlled capture context that lets function output flow structurally inside display contexts, eliminating the `discard_capture` whitespace leak.
 
-**The problem**: Our VM calls `begin_capture()` on every `Call`/`CallVariable` opcode, capturing function output to use as a return value. The C# reference runtime does NOT capture at the function level — function output goes directly into the output stream. The C# runtime only captures during string evaluation (`BeginString`/`EndString`, our `BeginStringEval`/`EndStringEval`).
+Verified against the corpus (2026-04-23): all previously listed pre-existing failure cases now pass — `tower-of-hanoi` (1000 episodes), `I096-nested-pass-by-reference` (1), `nested-pass-by-reference` tier3 (2), and `I075-clean-callstack-reset-on-path-choice` (1).
 
-**Impact**: For statement calls (`~ func()`), leaked content from `discard_capture` (which removes the checkpoint but leaves content) causes spurious whitespace/newlines. This is the root cause of the I096, tower-of-hanoi, and nested-pass-by-reference failures.
-
-**What the C# runtime does instead**:
-- Function output goes directly to the output stream (no capture).
-- On function pop, `TrimWhitespaceFromFunctionEnd` walks backward and removes trailing whitespace/newlines from the function's output region.
-- For inline `{func()}`, `BeginString`/`EndString` handles the capture — it collects text from the output stream, removes it, and pushes the concatenated string as a value.
-
-**What we tried**: Removed `begin_capture` from `Call`/`CallVariable`, added `trim_trailing_whitespace` to `OutputBuffer`, changed `pop_call_frame` to trim instead of capture/discard. Result: 8 run_story test failures (`StackUnderflow`) and 35 additional episode regressions. The failures were from inline `{func()}` calls where our hand-written test JSON uses `ev, f(), out, /ev` without `BeginStringEval`/`EndStringEval`. Real inklecate output may use different bytecode.
-
-**Relationship to fragments**: The fragment model (step 9) provides a cleaner path than the reverted fix. Instead of removing function capture and relying on `BeginStringEval`/`EndStringEval`, fragments introduce `BeginFragment`/`EndFragment` as a display-specific capture mechanism. Inside a fragment, function output flows structurally (no resolution at the function boundary). This addresses both the whitespace issue (function output goes directly to the fragment, no `discard_capture` to leak newlines) and the locale re-rendering issue (structural data preserved in the fragment). The function capture model redesign may still be needed for correctness, but fragments reduce the blast radius by providing a controlled capture context for display-bound output.
-
-**Next steps**:
-1. Implement the fragment model (step 9) — this may resolve the function capture issues for display contexts without needing the full C# model redesign.
-2. After fragments are working, evaluate whether the remaining function capture issues (statement calls like `~ func()`) still need the `TrimWhitespaceFromFunctionEnd` approach.
-3. Update hand-written tests that have incorrect bytecode (missing string eval wrappers) regardless of approach.
-
-**Key C# reference locations**:
-- `Story.cs` lines 1301-1440: `BeginString`/`EndString` handling
-- `StoryState.cs` lines 1201-1228: `TrimWhitespaceFromFunctionEnd`
-- `StoryState.cs` lines 1230-1237: `PopCallstack` calls `TrimWhitespaceFromFunctionEnd`
-- `StoryState.cs` lines 920-1024: `PushToOutputStreamIndividual` (function trimming state)
-
-### Pre-existing episode failures (4 cases, 103 episodes)
-
-1. **`tower-of-hanoi`** (100 episodes): Leading `\n` in text output from function body content leaking after `discard_capture`. Root cause: function capture model mismatch (see above).
-
-2. **`I096-nested-pass-by-reference`** (1 episode): Extra `\n` from `squaresquare` function body's `Spring` + `Newline` leaking. Same root cause.
-
-3. **`nested-pass-by-reference`** (tier3, 1 episode): Same issue as I096.
-
-4. **`I075-clean-callstack-reset-on-path-choice`** (1 episode): Tag count mismatch. Pre-existing from the Line enum refactor — likely related to how `build_per_line_tags` reconstructs per-text-line tags from per-Line tags in the test harness.
+If statement-call (`~ func()`) whitespace issues resurface in future cases, the `TrimWhitespaceFromFunctionEnd` approach documented in commit history and the C# reference (`StoryState.cs` lines 1201-1228) is the fallback plan.
