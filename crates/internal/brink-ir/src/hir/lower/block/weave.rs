@@ -23,14 +23,14 @@ impl WeaveBackend {
         Self { items: Vec::new() }
     }
 
-    fn push_choice(&mut self, choice: crate::Choice, depth: usize) {
+    pub(super) fn push_choice(&mut self, choice: crate::Choice, depth: usize) {
         self.items.push(WeaveItem::Choice {
             choice: Box::new(choice),
             depth,
         });
     }
 
-    fn push_gather(&mut self, block: Block, depth: usize) {
+    pub(super) fn push_gather(&mut self, block: Block, depth: usize) {
         self.items.push(WeaveItem::Continuation { block, depth });
     }
 }

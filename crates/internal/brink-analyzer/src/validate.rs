@@ -4,7 +4,7 @@
 //! structurally invalid patterns that the parser accepts but the language
 //! semantics forbid.
 
-use brink_ir::hir::{Block, Choice, ChoiceSet, ChoiceSetContext, Stmt};
+use brink_ir::hir::{Block, Choice, ChoiceSet, Stmt};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
 
 /// Run all structural validation passes on the given files.
@@ -51,7 +51,7 @@ fn walk_block(block: &Block, dead_end: bool, file_id: FileId, diagnostics: &mut 
     for (i, stmt) in block.stmts.iter().enumerate() {
         match stmt {
             Stmt::ChoiceSet(cs) => {
-                if cs.context == ChoiceSetContext::Inline && dead_end {
+                if dead_end {
                     check_choice_set_diverts(cs, file_id, diagnostics);
                 }
                 // Always recurse into choice bodies + continuation.

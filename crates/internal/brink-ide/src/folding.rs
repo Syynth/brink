@@ -51,7 +51,7 @@ fn push_fold(
     // when they sit on separate lines.
     let mut trimmed_start = trimmed_start;
     if collapsed.as_deref() == Some("{...}") {
-        let before = source[..trimmed_start].as_bytes();
+        let before = &source.as_bytes()[..trimmed_start];
         let mut j = before.len();
         while j > 0 && (before[j - 1] == b' ' || before[j - 1] == b'\t' || before[j - 1] == b'\n') {
             j -= 1;
@@ -60,7 +60,7 @@ fn push_fold(
             trimmed_start = j - 1;
         }
 
-        let after = source[end_byte..].as_bytes();
+        let after = &source.as_bytes()[end_byte..];
         let mut i = 0;
         while i < after.len() && (after[i] == b' ' || after[i] == b'\t' || after[i] == b'\n') {
             i += 1;

@@ -2,13 +2,14 @@
 
 use brink_syntax::ast::{self, AstNode};
 
-use crate::{Block, ChoiceSet, ChoiceSetContext, Stmt};
+use crate::Block;
 
 use super::super::backbone::{BranchChild, classify_branch_child};
 use super::super::choice::LowerChoice;
-use super::super::content::{ContentAccumulator, DirectBackend, HandleResult};
+use super::super::content::{ContentAccumulator, HandleResult};
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::LowerBlock;
+use super::weave::WeaveBackend;
 
 // ─── MultilineBranchBody ────────────────────────────────────────────
 
@@ -34,7 +35,7 @@ fn lower_branch_body_from_syntax(
     scope: &LowerScope,
     sink: &mut impl LowerSink,
 ) -> Block {
-    let mut acc = ContentAccumulator::new(DirectBackend::new());
+    let mut acc = ContentAccumulator::new(WeaveBackend::new());
     let mut pending_ws: Option<String> = None;
     let mut seen_content = false;
     let mut after_content_block = false;
@@ -89,14 +90,9 @@ fn lower_branch_body_from_syntax(
             BranchChild::Choice(c) => {
                 pending_ws = None;
                 acc.flush();
+                let depth = c.bullets().map_or(1, |b| b.depth());
                 if let Ok(choice) = c.lower_choice(scope, sink) {
-                    acc.push_stmt(Stmt::ChoiceSet(Box::new(ChoiceSet {
-                        choices: vec![choice],
-                        continuation: Block::default(),
-                        context: ChoiceSetContext::Inline,
-                        depth: 0,
-                        gather_id: None,
-                    })));
+                    acc.backend_mut().push_choice(choice, depth);
                 }
             }
             BranchChild::Trivia => {}
