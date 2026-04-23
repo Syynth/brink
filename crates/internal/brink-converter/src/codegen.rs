@@ -384,13 +384,7 @@ impl<'a> ContainerEmitter<'a> {
 
             Divert::Function { path, .. } => {
                 let id = self.resolve_divert_target(path)?;
-                if self.in_eval_mode {
-                    self.emit(&Opcode::BeginFragment);
-                }
                 self.emit(&Opcode::Call(id));
-                if self.in_eval_mode {
-                    self.emit(&Opcode::EndFragment);
-                }
             }
 
             Divert::FunctionVariable { path, .. } => {
@@ -400,13 +394,7 @@ impl<'a> ContainerEmitter<'a> {
                     let id = path::global_var_id(path);
                     self.emit(&Opcode::GetGlobal(id));
                 }
-                if self.in_eval_mode {
-                    self.emit(&Opcode::BeginFragment);
-                }
                 self.emit(&Opcode::CallVariable);
-                if self.in_eval_mode {
-                    self.emit(&Opcode::EndFragment);
-                }
             }
 
             Divert::Tunnel { path, .. } => {
@@ -430,13 +418,7 @@ impl<'a> ContainerEmitter<'a> {
                 let id = path::external_fn_id(name);
                 #[expect(clippy::cast_possible_truncation)]
                 let argc = *arg_count as u8;
-                if self.in_eval_mode {
-                    self.emit(&Opcode::BeginFragment);
-                }
                 self.emit(&Opcode::CallExternal(id, argc));
-                if self.in_eval_mode {
-                    self.emit(&Opcode::EndFragment);
-                }
             }
         }
         Ok(())
