@@ -73,10 +73,8 @@ pub fn hover(
             "**{kind_str}** `{}{params_str}`{detail_str}{file_note}",
             info.name
         )
-    } else if let Some(builtin) = word_at_offset(source, offset).and_then(builtin_hover_text) {
-        builtin
     } else {
-        return None;
+        word_at_offset(source, offset).and_then(builtin_hover_text)?
     };
 
     let range = analysis

@@ -31,21 +31,21 @@ An episode records a sequence of continues and choice selections with the expect
 # Corpus report -- per-category pass/fail breakdown (run first for triage)
 cargo test -p brink-test-harness --test corpus_report -- --nocapture
 
-# All episodes
-cargo test -p brink-test-harness --test brink_native_episodes -- --nocapture
+# All episodes (insta snapshots vs C# oracle)
+cargo test -p brink-test-harness --test oracle_snapshots -- --nocapture
 
 # Single case with diagnostics
-BRINK_CASE=I002 cargo test -p brink-test-harness --test brink_native_episodes -- --nocapture
+BRINK_CASE=I002 cargo test -p brink-test-harness --test oracle_snapshots -- --nocapture
+
+# Accept snapshot changes after intentional behavioral changes
+INSTA_UPDATE=always cargo test -p brink-test-harness --test oracle_snapshots
 ```
 
-For each failure, the harness prints:
-1. The `.ink` source (what the story says)
-2. The compiler's `.inkt` dump (what brink produced)
-3. The converter's `.inkt` dump (what the correct output looks like)
+Each case has a per-case snapshot in `crates/internal/brink-test-harness/tests/snapshots/`. Failing episodes are listed with step-by-step diffs against the oracle.
 
 ## The ratchet
 
-`RATCHET_EPISODE_COUNT` in `brink_native_episodes.rs` is the minimum number of passing episodes. It only goes up -- the test fails if the pass count drops below it. If a correct fix reveals previously-false passes, the ratchet can be lowered with an explanation.
+`RATCHET_EPISODE_COUNT` in `oracle_snapshots.rs` is the minimum number of passing episodes. It only goes up -- the test fails if the pass count drops below it. If a correct fix reveals previously-false passes, the ratchet can be lowered with an explanation.
 
 ## GitHub corpus
 

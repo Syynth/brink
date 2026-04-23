@@ -148,7 +148,7 @@ pub fn sort_knots_in_source(source: &str) -> String {
     let preamble = &source[..preamble_end];
 
     // Sort by name, case-insensitive
-    knot_slices.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    knot_slices.sort_by_key(|a| a.0.to_lowercase());
 
     let mut result = String::with_capacity(source.len());
     result.push_str(preamble);
@@ -214,7 +214,7 @@ pub fn sort_stitches_in_knot(source: &str, knot_name: &str) -> String {
         stitch_slices.push((name, &source[start..end]));
     }
 
-    stitch_slices.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    stitch_slices.sort_by_key(|a| a.0.to_lowercase());
 
     let mut result = String::with_capacity(source.len());
     result.push_str(&source[..region_start]);

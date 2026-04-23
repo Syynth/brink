@@ -188,11 +188,7 @@ fn corpus_report() {
         let tier_testable: usize = tier_cats.iter().map(|(_, s)| s.testable_cases()).sum();
         let tier_ep_pass: usize = tier_cats.iter().map(|(_, s)| s.episodes_pass).sum();
         let tier_ep_total: usize = tier_cats.iter().map(|(_, s)| s.total_episodes()).sum();
-        let tier_pct = if tier_testable > 0 {
-            tier_pass * 100 / tier_testable
-        } else {
-            0
-        };
+        let tier_pct = (tier_pass * 100).checked_div(tier_testable).unwrap_or(0);
 
         grand_cases_pass += tier_pass;
         grand_cases_total += tier_testable;
@@ -214,11 +210,7 @@ fn corpus_report() {
         for (key, s) in &tier_cats {
             let category = key.split('/').nth(1).unwrap_or(key);
             let testable = s.testable_cases();
-            let pct = if testable > 0 {
-                s.cases_pass * 100 / testable
-            } else {
-                0
-            };
+            let pct = (s.cases_pass * 100).checked_div(testable).unwrap_or(0);
             let check = if s.cases_fail == 0
                 && s.cases_compile_error == 0
                 && s.cases_link_error == 0
@@ -257,19 +249,15 @@ fn corpus_report() {
         println!();
     }
 
-    let grand_pct = if grand_cases_total > 0 {
-        grand_cases_pass * 100 / grand_cases_total
-    } else {
-        0
-    };
-    let ep_pct = if grand_episodes_total > 0 {
-        grand_episodes_pass * 100 / grand_episodes_total
-    } else {
-        0
-    };
+    let grand_pct = (grand_cases_pass * 100)
+        .checked_div(grand_cases_total)
+        .unwrap_or(0);
+    let ep_pct = (grand_episodes_pass * 100)
+        .checked_div(grand_episodes_total)
+        .unwrap_or(0);
 
     println!("============================================================");
-    println!("  OVERALL — {grand_cases_pass}/{grand_cases_total} cases passing ({grand_pct}%)",);
-    println!("  EPISODES — {grand_episodes_pass}/{grand_episodes_total} passing ({ep_pct}%)",);
+    println!("  OVERALL — {grand_cases_pass}/{grand_cases_total} cases passing ({grand_pct}%)");
+    println!("  EPISODES — {grand_episodes_pass}/{grand_episodes_total} passing ({ep_pct}%)");
     println!("============================================================");
 }

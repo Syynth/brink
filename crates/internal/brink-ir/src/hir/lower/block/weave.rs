@@ -296,16 +296,12 @@ fn nest_deeper_items(items: Vec<WeaveItem>, base_depth: usize) -> Vec<WeaveItem>
             // Collect all consecutive items at this deeper depth or beyond
             let inner_depth = d;
             let mut nested_items = vec![item];
-            loop {
-                let Some(peeked) = iter.peek() else {
-                    break;
-                };
+            while let Some(peeked) = iter.peek() {
                 if let Some(d) = item_depth(peeked)
                     && d <= base_depth
                 {
                     break;
                 }
-                // Safe: we just peeked successfully
                 if let Some(next) = iter.next() {
                     nested_items.push(next);
                 }

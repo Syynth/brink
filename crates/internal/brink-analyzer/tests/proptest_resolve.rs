@@ -746,7 +746,7 @@ Hello.
         .iter()
         .filter(|d| d.code == DiagnosticCode::E024)
         .collect();
-    assert!(unresolved.is_empty(), "unresolved diverts: {unresolved:?}",);
+    assert!(unresolved.is_empty(), "unresolved diverts: {unresolved:?}");
 }
 
 #[test]

@@ -446,7 +446,7 @@ fn run_play(
         }
     } else if std::io::stdin().is_terminal() {
         // Interactive TUI mode
-        let char_delay_ms = if speed == 0 { 0 } else { 1000 / speed };
+        let char_delay_ms = 1000_u64.checked_div(speed).unwrap_or(0);
 
         // Auto-discover .inkl files next to the story if none were specified.
         let discovered: Vec<PathBuf>;

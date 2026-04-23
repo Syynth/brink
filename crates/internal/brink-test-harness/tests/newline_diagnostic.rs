@@ -377,7 +377,7 @@ text1
         brink_runtime::Line::Text { text, .. } => text.as_str(),
         other => panic!("expected Text, got {other:?}"),
     };
-    assert_eq!(text1, "text1\n", "function output should be its own line",);
+    assert_eq!(text1, "text1\n", "function output should be its own line");
 
     let line2 = story.continue_single().expect("continue_single 2");
     let text2 = match &line2 {

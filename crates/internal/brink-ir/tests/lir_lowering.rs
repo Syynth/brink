@@ -469,20 +469,20 @@ fn list_global_referenced_in_expression() {
     let g = find_global(&p, "mood");
     let r = root(&p);
 
-    // Find the template slot expression that references mood
-    let has_get_global_with_var_id = r.body.iter().any(|s| {
-        if let lir::Stmt::EmitLine(e) = s
-            && let lir::RecognizedLine::Template { slot_exprs, .. } = &e.line
-        {
-            return slot_exprs
-                .iter()
-                .any(|expr| matches!(expr, lir::Expr::GetGlobal(id) if *id == g.id));
-        }
-        false
+    fn expr_refs_global(expr: &lir::Expr, id: brink_format::DefinitionId) -> bool {
+        matches!(expr, lir::Expr::GetGlobal(x) if *x == id)
+    }
+
+    let has_ref = r.body.iter().any(|s| match s {
+        lir::Stmt::EmitContent(c) => c.parts.iter().any(
+            |p| matches!(p, lir::ContentPart::Interpolation(expr) if expr_refs_global(expr, g.id)),
+        ),
+        lir::Stmt::ExprStmt(expr) => expr_refs_global(expr, g.id),
+        _ => false,
     });
     assert!(
-        has_get_global_with_var_id,
-        "template slot should reference the GlobalVar ID, not the ListDef ID"
+        has_ref,
+        "expression should reference the GlobalVar ID, not the ListDef ID"
     );
 }
 
@@ -914,8 +914,8 @@ fn choice_output_is_content_only() {
                 content
                     .parts
                     .iter()
-                    .all(|p| matches!(p, lir::ContentPart::Text(_))),
-                "ChoiceOutput should only contain text parts"
+                    .all(|p| matches!(p, lir::ContentPart::Text(_) | lir::ContentPart::Spring)),
+                "ChoiceOutput should only contain text parts (Text or Spring)"
             );
         }
         other => panic!(

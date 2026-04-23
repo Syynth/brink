@@ -6,9 +6,9 @@ A C# oracle harness (`tools/ink-oracle/`) that compiles `.ink` source with inkle
 
 ## Current state
 
-- **318/385 cases pass, 3,518/6,561 episodes match** (ratchet at 3,500)
-- 26 cases skipped (compile errors, empty source)
-- 1,758 episodes "missing" — oracle branches brink doesn't produce (different choice availability)
+- **347/361 cases pass, 5,574/6,601 episodes match** (ratchet at 5,574, as of 2026-04-23)
+- Skipped cases: compile errors, empty source
+- "Missing" episodes: oracle branches brink doesn't produce (different choice availability; dominated by the dream_on case)
 - Stash has an incomplete attempt at terminal step splitting + output buffer commit (see below)
 
 ## The step alignment problem (open)

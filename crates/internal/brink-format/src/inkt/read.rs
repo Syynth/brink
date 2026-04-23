@@ -402,9 +402,8 @@ fn parse_list_item_entry(pair: P<'_>) -> Result<ListItemDef, InktParseError> {
             line: 0,
             col: 0,
         })?;
-    let name_val = next_rule(&mut inner, Rule::integer, "list_item name")
-        .map(|p| parse_u16(&p))
-        .unwrap_or(Ok(0))?;
+    let name_val =
+        next_rule(&mut inner, Rule::integer, "list_item name").map_or(Ok(0), |p| parse_u16(&p))?;
     Ok(ListItemDef {
         id,
         origin,

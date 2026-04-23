@@ -173,10 +173,6 @@ pub(crate) fn safe_capacity(
     min_element_size: usize,
 ) -> usize {
     let remaining = buf_len.saturating_sub(offset);
-    let max_possible = if min_element_size > 0 {
-        remaining / min_element_size
-    } else {
-        remaining
-    };
+    let max_possible = remaining.checked_div(min_element_size).unwrap_or(remaining);
     count.min(max_possible)
 }

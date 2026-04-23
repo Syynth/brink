@@ -50,11 +50,9 @@ fn collect_temps_from_block(block: &hir::Block, map: &mut TempMap, next_slot: &m
 
 fn collect_temps_from_stmt(stmt: &hir::Stmt, map: &mut TempMap, next_slot: &mut u16) {
     match stmt {
-        hir::Stmt::TempDecl(decl) => {
-            if map.get(&decl.name.text).is_none() {
-                map.insert(decl.name.text.clone(), *next_slot);
-                *next_slot += 1;
-            }
+        hir::Stmt::TempDecl(decl) if map.get(&decl.name.text).is_none() => {
+            map.insert(decl.name.text.clone(), *next_slot);
+            *next_slot += 1;
         }
         hir::Stmt::ChoiceSet(cs) => {
             for choice in &cs.choices {

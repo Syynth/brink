@@ -39,13 +39,37 @@ fn push_fold(
     out: &mut Vec<FoldRange>,
 ) {
     let start_byte = usize::from(range.start());
-    let end_byte = usize::from(range.end()).min(source.len());
+    let mut end_byte = usize::from(range.end()).min(source.len());
     let slice = &source[start_byte..end_byte];
 
-    // Trim leading whitespace to find the real start line
     let trimmed_start = start_byte + (slice.len() - slice.trim_start().len());
-    // Trim trailing whitespace to find the real end line
-    let trimmed_end = start_byte + slice.trim_end().len();
+    let mut trimmed_end = start_byte + slice.trim_end().len();
+
+    // The HIR ptr for Conditional/Sequence covers only the inner
+    // CONDITIONAL_WITH_EXPR / MULTILINE_BRANCHES_COND node, not the enclosing
+    // `{ ... }`. Extend the fold backward to include `{` and forward to `}`
+    // when they sit on separate lines.
+    let mut trimmed_start = trimmed_start;
+    if collapsed.as_deref() == Some("{...}") {
+        let before = source[..trimmed_start].as_bytes();
+        let mut j = before.len();
+        while j > 0 && (before[j - 1] == b' ' || before[j - 1] == b'\t' || before[j - 1] == b'\n') {
+            j -= 1;
+        }
+        if j > 0 && before[j - 1] == b'{' {
+            trimmed_start = j - 1;
+        }
+
+        let after = source[end_byte..].as_bytes();
+        let mut i = 0;
+        while i < after.len() && (after[i] == b' ' || after[i] == b'\t' || after[i] == b'\n') {
+            i += 1;
+        }
+        if i < after.len() && after[i] == b'}' {
+            end_byte += i + 1;
+            trimmed_end = end_byte;
+        }
+    }
 
     if trimmed_start >= trimmed_end {
         return;
