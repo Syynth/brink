@@ -1,5 +1,5 @@
 ---
-source: crates/internal/brink-syntax/src/parser/tests/inline.rs
+source: crates/internal/brink-syntax/src/parser/tests/inline/mod.rs
 expression: "format!(\"{:#?}\", p.syntax())"
 ---
 SOURCE_FILE@0..19
@@ -17,10 +17,10 @@ SOURCE_FILE@0..19
             INTEGER_LIT@5..6
               INTEGER@5..6 "5"
           COLON@6..7 ":"
-          WHITESPACE@7..8 " "
-          INLINE_BRANCHES_COND@8..17
-            BRANCH_CONTENT@8..11
-              TEXT@8..11
+          INLINE_BRANCHES_COND@7..17
+            BRANCH_CONTENT@7..11
+              TEXT@7..11
+                WHITESPACE@7..8 " "
                 IDENT@8..11 "big"
             PIPE@11..12 "|"
             BRANCH_CONTENT@12..17

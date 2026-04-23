@@ -159,7 +159,6 @@ fn inner_logic(p: &mut Parser<'_, '_>, brace_pos: usize) {
         // conditional_with_expr: we already parsed the expression, now wrap it
         p.start_node_at(checkpoint, CONDITIONAL_WITH_EXPR);
         p.bump(); // COLON
-        p.skip_ws();
         conditional_body(p);
         p.finish_node();
     } else {
@@ -173,7 +172,7 @@ fn inner_logic(p: &mut Parser<'_, '_>, brace_pos: usize) {
 fn conditional_body(p: &mut Parser<'_, '_>) {
     match p.current() {
         NEWLINE => {
-            // Could be multiline branches or branchless body
+            p.skip_ws();
             if at_multiline_branch_start(p) {
                 multiline_branches_cond(p);
             } else {
@@ -181,11 +180,10 @@ fn conditional_body(p: &mut Parser<'_, '_>) {
             }
         }
         R_BRACE => {
-            // Empty inline conditional -- just empty inline branches
+            p.skip_ws();
             inline_branches_cond(p);
         }
         _ => {
-            // inline_branches_cond (content before optional `|`)
             inline_branches_cond(p);
         }
     }
@@ -649,6 +647,7 @@ fn branch_content(p: &mut Parser<'_, '_>) {
                 break;
             }
             L_BRACE => {
+                p.skip_ws();
                 inline_logic(p);
             }
             GLUE => {
@@ -658,6 +657,7 @@ fn branch_content(p: &mut Parser<'_, '_>) {
                 p.finish_node();
             }
             DIVERT | TUNNEL_ONWARDS | THREAD => {
+                p.skip_ws();
                 super::divert::divert(p);
             }
             BACKSLASH => {
