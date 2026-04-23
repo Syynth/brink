@@ -50,6 +50,10 @@ fn lower_branch_body_from_syntax(
                 pending_ws = None;
                 acc.handle(&ll, scope, sink);
             }
+            BranchChild::TagLine(tl) => {
+                pending_ws = None;
+                acc.handle(&tl, scope, sink);
+            }
             BranchChild::DivertNode(dn) => {
                 pending_ws = None;
                 acc.handle(&dn, scope, sink);

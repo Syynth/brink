@@ -459,6 +459,11 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
                 p.skip_ws();
                 at_line_start = true;
             }
+            HASH if at_line_start => {
+                super::tag::tag_line(p);
+                p.skip_ws();
+                at_line_start = true;
+            }
             TILDE => {
                 p.skip_ws();
                 super::logic::logic_line(p);
@@ -564,6 +569,9 @@ fn multiline_branch_body(p: &mut Parser<'_, '_>) {
             STAR | PLUS => {
                 // Choices participate in the outer weave structure.
                 super::choice::choice(p);
+            }
+            HASH => {
+                super::tag::tag_line(p);
             }
             TILDE => {
                 p.skip_ws();

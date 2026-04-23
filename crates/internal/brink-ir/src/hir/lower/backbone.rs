@@ -93,6 +93,7 @@ pub fn classify_body_child(node: &brink_syntax::SyntaxNode) -> BodyChild {
 pub enum BranchChild {
     ContentLine(ast::ContentLine),
     LogicLine(ast::LogicLine),
+    TagLine(ast::TagLine),
     DivertNode(ast::DivertNode),
     InlineLogic(ast::InlineLogic),
     Choice(ast::Choice),
@@ -121,6 +122,9 @@ pub fn classify_branch_child(
                 .map_or(BranchChild::Trivia, BranchChild::ContentLine),
             SyntaxKind::LOGIC_LINE => ast::LogicLine::cast(node.clone())
                 .map_or(BranchChild::Trivia, BranchChild::LogicLine),
+            SyntaxKind::TAG_LINE => {
+                ast::TagLine::cast(node.clone()).map_or(BranchChild::Trivia, BranchChild::TagLine)
+            }
             SyntaxKind::DIVERT_NODE => ast::DivertNode::cast(node.clone())
                 .map_or(BranchChild::Trivia, BranchChild::DivertNode),
             SyntaxKind::INLINE_LOGIC => ast::InlineLogic::cast(node.clone())

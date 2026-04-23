@@ -26,6 +26,9 @@ impl LowerBlock for ast::BranchlessCondBody {
                 BranchChild::LogicLine(ll) => {
                     acc.handle(&ll, scope, sink);
                 }
+                BranchChild::TagLine(tl) => {
+                    acc.handle(&tl, scope, sink);
+                }
                 BranchChild::DivertNode(dn) => {
                     acc.handle(&dn, scope, sink);
                 }
