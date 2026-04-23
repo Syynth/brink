@@ -257,10 +257,16 @@ fn choice_text(p: &mut Parser<'_, '_>) {
 }
 
 /// Returns `true` if we're at a choice content character.
+///
+/// `MINUS` is allowed here: all call sites are already past the choice bullets
+/// (same line as the `*`/`+`) or inside the continuation loop, which guards
+/// against a following-line gather via `p.nth(1) != MINUS`. A same-line `-`
+/// is text content like `-- em dash --`; a line-leading `-` is still treated
+/// as a gather by the outer weave parser.
 fn at_choice_content(p: &Parser<'_, '_>) -> bool {
     !matches!(
         p.current(),
-        NEWLINE | EOF | HASH | DIVERT | TUNNEL_ONWARDS | THREAD | PIPE | MINUS | R_BRACE
+        NEWLINE | EOF | HASH | DIVERT | TUNNEL_ONWARDS | THREAD | PIPE | R_BRACE
     )
 }
 

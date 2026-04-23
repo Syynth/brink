@@ -3,7 +3,7 @@ source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
 expression: summary
 ---
 tests_github/abobilly__kimbar/specs/ink: PASS (1/1 episodes)
-tests_github/bobon4uto__dream_on: FAIL (0/1000 episodes, 40 mismatch, 960 missing)
+tests_github/bobon4uto__dream_on: FAIL (0/1000 episodes, 1000 mismatch)
 tests_github/elliotherriman__calico/templates/Calico_Template: PASS (2/2 episodes)
 tests_github/joshgiesbrecht__Copper/Assets/Plugins/Ink/Example/Ink: PASS (8/8 episodes)
 tier1/basics/I001-minimal-story: PASS (1/1 episodes)
