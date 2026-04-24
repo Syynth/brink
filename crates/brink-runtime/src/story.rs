@@ -350,8 +350,15 @@ pub(crate) struct Flow {
 ///
 /// Holds globals, visit/turn tracking, and RNG state. This is the natural
 /// serialization boundary for save/load (deferred).
+///
+/// Multiple [`FlowInstance`]s can share a single `Context` (matching
+/// inklecate's semantics where flow writes are immediately visible to other
+/// flows), or each flow can hold its own cloned `Context` if the consumer
+/// wants fork/branch/rollback semantics. The runtime's step functions take
+/// `&mut Context` (or any `&mut impl ContextAccess`) without prescribing
+/// where it lives.
 #[derive(Debug, Clone)]
-pub(crate) struct Context {
+pub struct Context {
     pub globals: Vec<Value>,
     pub visit_counts: HashMap<DefinitionId, u32>,
     pub turn_counts: HashMap<DefinitionId, u32>,
@@ -593,23 +600,37 @@ impl ExternalFnHandler for FallbackHandler {
 
 // ── FlowInstance ────────────────────────────────────────────────────────────
 
-/// A paired (Flow, Context, Status) representing one independent execution
-/// thread within a story. The default flow runs from the root container;
-/// named flows can be spawned at arbitrary entry points.
+/// A single independent execution context within a story. The default flow
+/// runs from the root container; named flows can be spawned at arbitrary
+/// entry points via [`FlowInstance::new_at`].
+///
+/// A `FlowInstance` is opaque from outside the crate: its internal fields
+/// (`flow`, `status`, `stats`) are crate-private, but consumers can hold,
+/// clone, serialize, and pass `&mut FlowInstance` to the runtime's step
+/// functions. Use the inherent methods ([`step_single_line`](Self::step_single_line),
+/// [`choose`](Self::choose), [`transcript`](Self::transcript),
+/// [`status`](Self::status), etc.) for all interaction.
 #[derive(Clone, Debug)]
-pub(crate) struct FlowInstance {
+pub struct FlowInstance {
     pub(crate) flow: Flow,
     pub(crate) status: StoryStatus,
     pub(crate) stats: Stats,
 }
 
 impl FlowInstance {
-    /// Create a new flow instance starting at the root container.
-    fn new_at_root(program: &Program) -> (Self, Context) {
+    /// Create a new flow instance starting at the program's root container,
+    /// along with a fresh [`Context`] initialized from the program's global
+    /// defaults.
+    pub fn new_at_root(program: &Program) -> (Self, Context) {
         Self::new_at(program, program.root_idx())
     }
 
-    fn new_at(program: &Program, container_idx: u32) -> (Self, Context) {
+    /// Create a new flow instance starting at an arbitrary container index,
+    /// along with a fresh [`Context`]. Use this to spawn a named flow at a
+    /// specific entry point. The caller is responsible for deciding whether
+    /// to share the returned `Context` with other flows or discard it and
+    /// reuse an existing one.
+    pub fn new_at(program: &Program, container_idx: u32) -> (Self, Context) {
         let globals = program.global_defaults();
         let initial_frame = CallFrame {
             return_address: None,
@@ -664,7 +685,7 @@ impl FlowInstance {
     /// - `Line::Choices` — the story needs a choice selection.
     /// - `Line::End` — the story has permanently ended.
     #[expect(clippy::too_many_lines)]
-    fn step_single_line<R: StoryRng>(
+    pub fn step_single_line<R: StoryRng>(
         &mut self,
         program: &Program,
         line_tables: &[Vec<brink_format::LineEntry>],
@@ -827,8 +848,9 @@ impl FlowInstance {
         }
     }
 
-    /// Select a choice by index. Call [`step_with`] afterward to continue.
-    fn choose(
+    /// Select a choice by index. Call [`step_single_line`](Self::step_single_line)
+    /// afterward to continue execution from the chosen branch.
+    pub fn choose(
         &mut self,
         context: &mut (impl ContextAccess + ?Sized),
         index: usize,
@@ -843,6 +865,49 @@ impl FlowInstance {
             &mut self.stats,
             index,
         )
+    }
+
+    /// The current execution status of this flow.
+    #[must_use]
+    pub fn status(&self) -> StoryStatus {
+        self.status
+    }
+
+    /// Runtime statistics (instructions, materialization counts, etc.)
+    /// accumulated over this flow's execution.
+    #[must_use]
+    pub fn stats(&self) -> &Stats {
+        &self.stats
+    }
+
+    /// The full append-only transcript of all output parts produced so far.
+    ///
+    /// The transcript stores structural references (e.g. `LineRef`) rather
+    /// than resolved strings, so it can be re-rendered in any locale by
+    /// passing a different set of line tables to
+    /// [`transcript::render_transcript`](crate::transcript::render_transcript).
+    #[must_use]
+    pub fn transcript(&self) -> &[crate::output::OutputPart] {
+        self.flow.output.transcript()
+    }
+
+    /// Number of parts in the transcript.
+    #[must_use]
+    pub fn transcript_len(&self) -> usize {
+        self.flow.output.transcript_len()
+    }
+
+    /// Reset the transcript read cursor to the beginning (for re-rendering,
+    /// e.g. after a locale swap).
+    pub fn reset_cursor(&mut self) {
+        self.flow.output.reset_cursor();
+    }
+
+    /// The fragments captured during execution (for re-rendering choice
+    /// display text and computed substrings in a different locale).
+    #[must_use]
+    pub fn fragments(&self) -> &[crate::output::Fragment] {
+        self.flow.output.fragments()
     }
 }
 

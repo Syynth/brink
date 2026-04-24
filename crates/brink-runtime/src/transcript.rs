@@ -194,13 +194,21 @@ pub fn write_transcript(
 
 // ── Read ──────────────────────────────────────────────────────────────────
 
-/// Deserialize a transcript from the `.brkt` binary format.
+/// A decoded transcript: the output parts, the source program's checksum
+/// (to verify compatibility before rendering), and the captured fragments
+/// (for re-rendering choice display text and computed substrings).
 ///
-/// Returns `(parts, source_checksum)`. The caller should validate the
-/// source checksum against the program's checksum before using the parts.
-/// Result of reading a transcript: (parts, `source_checksum`, fragments).
-pub type TranscriptData = (Vec<OutputPart>, u32, Vec<crate::output::Fragment>);
+/// The caller should validate `source_checksum` against the program's
+/// checksum (via [`Program::source_checksum`](crate::Program::source_checksum))
+/// before passing `parts` to [`render_transcript`].
+#[derive(Debug, Clone)]
+pub struct TranscriptData {
+    pub parts: Vec<OutputPart>,
+    pub source_checksum: u32,
+    pub fragments: Vec<crate::output::Fragment>,
+}
 
+/// Deserialize a transcript from the `.brkt` binary format.
 pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> {
     if bytes.len() < HEADER_SIZE {
         return Err(TranscriptError::UnexpectedEof);
@@ -307,7 +315,11 @@ pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> 
         });
     }
 
-    Ok((parts, source_checksum, fragments))
+    Ok(TranscriptData {
+        parts,
+        source_checksum,
+        fragments,
+    })
 }
 
 // ── Render ────────────────────────────────────────────────────────────────
@@ -561,10 +573,6 @@ mod tests {
     use super::*;
     use brink_format::LineFlags;
 
-    fn unwrap_transcript(bytes: &[u8]) -> (Vec<OutputPart>, u32, Vec<crate::output::Fragment>) {
-        read_transcript(bytes).unwrap()
-    }
-
     #[test]
     fn round_trip_simple_parts() {
         let parts = vec![
@@ -575,14 +583,14 @@ mod tests {
             OutputPart::Glue,
         ];
         let bytes = write_transcript(&parts, 0xDEAD_BEEF, &[]);
-        let (decoded, checksum, _fragments) = unwrap_transcript(&bytes);
-        assert_eq!(checksum, 0xDEAD_BEEF);
-        assert_eq!(decoded.len(), 5);
-        assert!(matches!(&decoded[0], OutputPart::Text(s) if s == "Hello"));
-        assert!(matches!(&decoded[1], OutputPart::Spring));
-        assert!(matches!(&decoded[2], OutputPart::Newline));
-        assert!(matches!(&decoded[3], OutputPart::Tag(s) if s == "tag1"));
-        assert!(matches!(&decoded[4], OutputPart::Glue));
+        let data = read_transcript(&bytes).unwrap();
+        assert_eq!(data.source_checksum, 0xDEAD_BEEF);
+        assert_eq!(data.parts.len(), 5);
+        assert!(matches!(&data.parts[0], OutputPart::Text(s) if s == "Hello"));
+        assert!(matches!(&data.parts[1], OutputPart::Spring));
+        assert!(matches!(&data.parts[2], OutputPart::Newline));
+        assert!(matches!(&data.parts[3], OutputPart::Tag(s) if s == "tag1"));
+        assert!(matches!(&data.parts[4], OutputPart::Glue));
     }
 
     #[test]
@@ -594,9 +602,9 @@ mod tests {
             flags: LineFlags::STARTS_WITH_WS | LineFlags::ENDS_WITH_WS,
         }];
         let bytes = write_transcript(&parts, 1234, &[]);
-        let (decoded, _, _fragments) = unwrap_transcript(&bytes);
-        assert_eq!(decoded.len(), 1);
-        match &decoded[0] {
+        let data = read_transcript(&bytes).unwrap();
+        assert_eq!(data.parts.len(), 1);
+        match &data.parts[0] {
             OutputPart::LineRef {
                 container_idx,
                 line_idx,
@@ -622,10 +630,10 @@ mod tests {
             OutputPart::Newline,
         ];
         let bytes = write_transcript(&parts, 0, &[]);
-        let (decoded, _, _fragments) = unwrap_transcript(&bytes);
-        assert_eq!(decoded.len(), 2); // Checkpoint filtered
-        assert!(matches!(&decoded[0], OutputPart::Text(_)));
-        assert!(matches!(&decoded[1], OutputPart::Newline));
+        let data = read_transcript(&bytes).unwrap();
+        assert_eq!(data.parts.len(), 2); // Checkpoint filtered
+        assert!(matches!(&data.parts[0], OutputPart::Text(_)));
+        assert!(matches!(&data.parts[1], OutputPart::Newline));
     }
 
     #[test]

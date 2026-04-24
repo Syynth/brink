@@ -502,13 +502,12 @@ fn run_replay(
 
     // Load and validate transcript
     let transcript_bytes = std::fs::read(transcript_path)?;
-    let (parts, source_checksum, fragments) =
-        brink_runtime::transcript::read_transcript(&transcript_bytes)?;
+    let transcript_data = brink_runtime::transcript::read_transcript(&transcript_bytes)?;
 
-    if source_checksum != program.source_checksum() {
+    if transcript_data.source_checksum != program.source_checksum() {
         return Err(
             brink_runtime::transcript::TranscriptError::ChecksumMismatch {
-                transcript: source_checksum,
+                transcript: transcript_data.source_checksum,
                 program: program.source_checksum(),
             }
             .into(),
@@ -531,11 +530,11 @@ fn run_replay(
 
     // Re-render transcript
     let lines = brink_runtime::transcript::render_transcript(
-        &parts,
+        &transcript_data.parts,
         &program,
         &line_tables,
         None,
-        &fragments,
+        &transcript_data.fragments,
     );
 
     let mut stdout = std::io::stdout().lock();

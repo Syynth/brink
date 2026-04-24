@@ -13,12 +13,14 @@ use crate::story::Context;
 /// Trait for accessing and mutating story execution state.
 ///
 /// This is the interface between the VM and the mutable story state.
-/// `Context` implements it directly. `ObservedContext` wraps a `Context`
-/// and fires `WriteObserver` callbacks on mutations.
+/// [`Context`] implements it directly. [`ObservedContext`] wraps a
+/// `Context` and fires [`WriteObserver`] callbacks on mutations.
+/// Consumers can also implement this trait themselves to plug in custom
+/// observers (e.g. bevy events) or alternate storage backends.
 ///
-/// Unlike the deleted `StoryState` trait, this does NOT include `Program`,
-/// resolver, or any immutable data — it's purely the mutable state surface.
-pub(crate) trait ContextAccess {
+/// This does NOT include `Program`, resolver, or any immutable data — it's
+/// purely the mutable state surface.
+pub trait ContextAccess {
     fn global(&self, idx: u32) -> &Value;
     fn set_global(&mut self, idx: u32, value: Value);
 

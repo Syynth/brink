@@ -573,3 +573,45 @@
 - **SCOPE:** architectural
 - **WHAT:** Eliminate the LIR planning pass by stamping synthetic container `DefinitionId`s on HIR nodes in a lightweight post-HIR-lowering pass. The LIR lowerer reads pre-assigned IDs directly from HIR nodes instead of re-walking the tree with synchronized counters. This also enables a context split (immutable env / mutable allocators / scoped block state) and trait-based architecture for LIR lowering.
 - **WHY:** The planner/lowerer counter-synchronization coupling has been the biggest source of compiler heartburn. Both passes must walk the HIR in exactly the same order with identical counter logic — if they diverge, container IDs silently mismatch and diverts point to wrong targets. Pushing structural identity upstream means LIR lowering becomes a simple tree walk with no planning pass, no counter coordination, and no scope-path threading for ID derivation.
+
+
+## bevy-brink loading modes
+- **WHEN:** 2026-04-24
+- **PROJECT:** brink
+- **SYSTEM:** bevy-brink (new crate)
+- **SCOPE:** architectural
+- **WHAT:** The Bevy asset integration has two modes. Dev mode loads `.ink` source files; the loader tracks the transitive INCLUDE graph and hot-reloads the compiled program when any file in that graph changes (typical projects go ~3 imports deep). Release mode loads precompiled `.inkb` (bytecode) plus `.inkl` (localized line tables) — no compiler in the shipped binary.
+- **WHY:** Dev ergonomics require tight iteration on ink source with live reload. Release requires fast startup, smaller binaries without the compiler, and swappable localization via the runtime's existing program / line-table split.
+
+
+## Expose runtime primitives for direct orchestration
+- **WHEN:** 2026-04-24
+- **PROJECT:** brink
+- **SYSTEM:** brink-runtime
+- **SCOPE:** moderate
+- **WHAT:** Make the runtime primitives publicly available so `bevy-brink` (and other non-`Story` consumers) can drive execution directly: `Context`, `FlowInstance`, `Flow`, and the supporting types needed to construct/snapshot them (`CallFrame`, `CallStack`, `Thread`, `PendingChoice`, etc.) become `pub`. Extract the `continue_single` / step-loop logic from `Story` methods into `pub` free functions that take `(&Program, &LineTables, &mut FlowInstance, &mut Context, ...)` as arguments, so callers can drive the VM without a `Story<'p>` wrapper. `Story` itself remains in place unchanged and continues to serve the CLI and existing test infrastructure — it may eventually become a thin wrapper over the free functions, but that is not required now.
+- **WHY:** `bevy-brink` needs to own state placement (globals in a `Resource`, flows in `Component`s, line tables swappable) and cannot do that while `Story<'p>` owns all of it behind a borrowed-program lifetime. But renaming structs or removing `Story` is a refactor beyond what the integration requires, violates the "don't refactor beyond the task" principle in CLAUDE.md, and risks destabilizing the 5574-episode ratchet. Exposing what's already there and extracting the step loop is the minimum change that unblocks bevy-brink while leaving everything else intact.
+
+## Marker-parameterized bevy types
+- **WHEN:** 2026-04-24
+- **PROJECT:** brink
+- **SYSTEM:** bevy-brink
+- **SCOPE:** architectural
+- **WHAT:** `BrinkPlugin`, `BrinkGlobals`, `BrinkFlow`, `BrinkLineTables`, and related bevy-side types are generic over a ZST marker type `M: Send + Sync + 'static = ()`. Default `()` is the single-story easy path with no boilerplate. Consumers wanting multiple concurrent story instances declare their own marker types (e.g., `struct MainStory; struct DreamSequence;`) and instantiate `BrinkPlugin::<MainStory>::default()`, `BrinkPlugin::<DreamSequence>::default()`. Each marker monomorphizes to distinct Bevy types, so queries and resources are naturally scoped.
+- **WHY:** Compile-time dispatch avoids runtime overhead and keeps the type system honest about story boundaries. More ergonomic than forcing consumers to newtype manually, and is the standard bevy idiom (bevy_ecs_tilemap, leafwing-input-manager). The default `()` keeps the easy path frictionless.
+
+## Default bevy wiring: Resources for shared state, Components for flows
+- **WHEN:** 2026-04-24
+- **PROJECT:** brink
+- **SYSTEM:** bevy-brink
+- **SCOPE:** moderate
+- **WHAT:** The default bevy wiring places `Context` (story-wide globals, visit/turn counts, RNG state) in a `Resource` (`BrinkGlobals<M>`), `FlowInstance` on a `Component` (`BrinkFlow<M>`), and `LineTables` in a `Resource` (`BrinkLineTables<M>`) — one shared context and one active locale per story marker. Two opt-in escape hatches are explicitly supported: (a) per-flow locale overrides or asset-per-locale via storing `LineTables` on a Component or behind a `Handle` instead of the shared Resource, and (b) fork/branch/rollback semantics via storing a `Context` clone on a Component (so each flow runs against isolated state) instead of using the shared `Resource`. Because the runtime's step functions take `&mut Context` regardless of where it lives, no runtime primitives are added for this — `Context: Clone` is sufficient.
+- **WHY:** Shared globals + single-active-locale is the common case and the simplest wiring, matching inklecate's semantics where flow writes are immediately visible to other flows. Exposing `Context` and `LineTables` as plain structs lets consumers switch to Asset-, Component-, or forked-storage when their game needs it (polyglot NPCs, per-scene locale overrides, speculative dialogue previews, rollback mechanics) without us prescribing merge semantics. We deliberately do not ship merge helpers — reconciliation policy (last-write-wins vs additive visit counts vs takes-max vs two-phase commit) is game-specific and any built-in would be wrong for most consumers.
+
+## brink-runtime stays bevy-free
+- **WHEN:** 2026-04-24
+- **PROJECT:** brink
+- **SYSTEM:** brink-runtime / bevy-brink
+- **SCOPE:** architectural
+- **WHAT:** Every public type in `brink-runtime` is a plain `Send + Sync + 'static` struct with no bevy imports. `bevy-brink` provides all `Resource`/`Component`/`Asset` wrappers and the plugin. Downstream consumers can build any indexing or sharing scheme they need (registry-keyed HashMaps, dynamic lookup, custom storage) using the runtime types directly, bypassing `bevy-brink` entirely if they wish.
+- **WHY:** Keeps `brink-runtime` usable in non-bevy contexts (CLI, tests, other frameworks), preserves flexibility to support runtime-dynamic story instances, and makes bevy integration a pure layer on top rather than a coupled rewrite.

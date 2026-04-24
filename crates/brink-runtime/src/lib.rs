@@ -41,5 +41,8 @@ pub use locale::{LocaleMode, apply_locale};
 pub use output::{Fragment, OutputPart};
 pub use program::Program;
 pub use rng::{DotNetRng, FastRng, StoryRng};
-pub use state::WriteObserver;
-pub use story::{Choice, ExternalFnHandler, ExternalResult, Line, Stats, Story, StorySnapshot};
+pub use state::{ContextAccess, ObservedContext, WriteObserver};
+pub use story::{
+    Choice, Context, ExternalFnHandler, ExternalResult, FlowInstance, Line, Stats, Story,
+    StorySnapshot, StoryStatus,
+};
