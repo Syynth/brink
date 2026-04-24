@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -21,17 +21,18 @@ pub enum ValueType {
 
 /// A runtime value in the ink VM.
 ///
-/// Heap-allocating variants (`String`, `List`) are wrapped in `Rc` so that
+/// Heap-allocating variants (`String`, `List`) are wrapped in `Arc` so that
 /// cloning a `Value` is always O(1) — a refcount bump, not a deep copy.
 /// This matches C#'s reference-type semantics and makes call-frame cloning
-/// (during `fork_thread`) essentially free.
+/// (during `fork_thread`) essentially free. Atomic refcounts are used so
+/// `Value` can flow through Bevy's parallel scheduler.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     Int(i32),
     Float(f32),
     Bool(bool),
-    String(Rc<str>),
-    List(Rc<ListValue>),
+    String(Arc<str>),
+    List(Arc<ListValue>),
     DivertTarget(DefinitionId),
     /// A reference to a global variable, used for `ref` parameters.
     VariablePointer(DefinitionId),

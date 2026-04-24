@@ -1,6 +1,6 @@
 //! Arithmetic, comparison, coercion, truthiness, and stringify for [`Value`].
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use brink_format::{ListValue, Value};
 
@@ -82,7 +82,7 @@ pub(crate) fn binary_op(
         // List + Int / List - Int → ordinal shift
         (Value::List(a), Value::Int(b)) if op == BinaryOp::Add || op == BinaryOp::Subtract => {
             let shift = if op == BinaryOp::Add { *b } else { -*b };
-            Ok(Value::List(Rc::new(list_ordinal_shift(a, shift, program))))
+            Ok(Value::List(Arc::new(list_ordinal_shift(a, shift, program))))
         }
         (Value::Int(a), Value::Int(b)) => int_op(op, *a, *b),
         (Value::Float(a), Value::Float(b)) => Ok(float_op(op, *a, *b)),
@@ -252,7 +252,7 @@ fn list_binary_op(
                     origins.push(id);
                 }
             }
-            Ok(Value::List(Rc::new(ListValue { items, origins })))
+            Ok(Value::List(Arc::new(ListValue { items, origins })))
         }
         BinaryOp::Subtract => {
             // Except (a \ b)
@@ -262,7 +262,7 @@ fn list_binary_op(
                 .filter(|id| !b.items.contains(id))
                 .copied()
                 .collect();
-            Ok(Value::List(Rc::new(ListValue {
+            Ok(Value::List(Arc::new(ListValue {
                 items,
                 origins: a.origins.clone(),
             })))
@@ -571,19 +571,19 @@ mod tests {
         let (p, low_id, mid_id, high_id) = program_with_rank_list();
         let list_def_id = DefinitionId::new(DefinitionTag::ListDef, 100);
 
-        let low = Value::List(Rc::new(ListValue {
+        let low = Value::List(Arc::new(ListValue {
             items: vec![low_id],
             origins: vec![list_def_id],
         }));
-        let mid = Value::List(Rc::new(ListValue {
+        let mid = Value::List(Arc::new(ListValue {
             items: vec![mid_id],
             origins: vec![list_def_id],
         }));
-        let high = Value::List(Rc::new(ListValue {
+        let high = Value::List(Arc::new(ListValue {
             items: vec![high_id],
             origins: vec![list_def_id],
         }));
-        let mid_high = Value::List(Rc::new(ListValue {
+        let mid_high = Value::List(Arc::new(ListValue {
             items: vec![mid_id, high_id],
             origins: vec![list_def_id],
         }));
@@ -632,11 +632,11 @@ mod tests {
         let (p, low_id, _, _) = program_with_rank_list();
         let list_def_id = DefinitionId::new(DefinitionTag::ListDef, 100);
 
-        let empty = Value::List(Rc::new(ListValue {
+        let empty = Value::List(Arc::new(ListValue {
             items: vec![],
             origins: vec![list_def_id],
         }));
-        let low = Value::List(Rc::new(ListValue {
+        let low = Value::List(Arc::new(ListValue {
             items: vec![low_id],
             origins: vec![list_def_id],
         }));
@@ -742,7 +742,7 @@ mod tests {
             items: vec![a_id, b_id],
             origins: vec![list_def_id],
         };
-        assert_eq!(stringify(&Value::List(Rc::new(lv)), &p), "red, blue");
+        assert_eq!(stringify(&Value::List(Arc::new(lv)), &p), "red, blue");
     }
 
     /// List items stored without a prefix (legacy/unqualified) still display correctly.
@@ -755,6 +755,6 @@ mod tests {
             items: vec![low_id, mid_id],
             origins: vec![list_def_id],
         };
-        assert_eq!(stringify(&Value::List(Rc::new(lv)), &p), "low, mid");
+        assert_eq!(stringify(&Value::List(Arc::new(lv)), &p), "low, mid");
     }
 }

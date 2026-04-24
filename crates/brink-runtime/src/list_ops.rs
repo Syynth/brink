@@ -1,6 +1,6 @@
 //! List opcode implementations.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use brink_format::{ListValue, Value};
 
@@ -60,7 +60,7 @@ pub(crate) fn list_intersect(flow: &mut Flow) -> Result<(), RuntimeError> {
         }
     }
     flow.value_stack
-        .push(Value::List(Rc::new(ListValue { items, origins })));
+        .push(Value::List(Arc::new(ListValue { items, origins })));
     Ok(())
 }
 
@@ -82,7 +82,7 @@ pub(crate) fn list_min(flow: &mut Flow, program: &Program) -> Result<(), Runtime
         .min_by_key(|&(_, ord)| ord)
         .map(|(id, _)| id);
     let items = min_item.map_or_else(Vec::new, |id| vec![id]);
-    flow.value_stack.push(Value::List(Rc::new(ListValue {
+    flow.value_stack.push(Value::List(Arc::new(ListValue {
         items,
         origins: lv.origins.clone(),
     })));
@@ -99,7 +99,7 @@ pub(crate) fn list_max(flow: &mut Flow, program: &Program) -> Result<(), Runtime
         .max_by_key(|&(_, ord)| ord)
         .map(|(id, _)| id);
     let items = max_item.map_or_else(Vec::new, |id| vec![id]);
-    flow.value_stack.push(Value::List(Rc::new(ListValue {
+    flow.value_stack.push(Value::List(Arc::new(ListValue {
         items,
         origins: lv.origins.clone(),
     })));
@@ -131,7 +131,7 @@ pub(crate) fn list_all(flow: &mut Flow, program: &Program) -> Result<(), Runtime
             }
         }
     }
-    flow.value_stack.push(Value::List(Rc::new(ListValue {
+    flow.value_stack.push(Value::List(Arc::new(ListValue {
         items,
         origins: lv.origins.clone(),
     })));
@@ -151,7 +151,7 @@ pub(crate) fn list_invert(flow: &mut Flow, program: &Program) -> Result<(), Runt
             }
         }
     }
-    flow.value_stack.push(Value::List(Rc::new(ListValue {
+    flow.value_stack.push(Value::List(Arc::new(ListValue {
         items,
         origins: lv.origins.clone(),
     })));
@@ -175,7 +175,7 @@ pub(crate) fn list_range(flow: &mut Flow, program: &Program) -> Result<(), Runti
                 .is_some_and(|e| e.ordinal >= min_val && e.ordinal <= max_val)
         })
         .collect();
-    flow.value_stack.push(Value::List(Rc::new(ListValue {
+    flow.value_stack.push(Value::List(Arc::new(ListValue {
         items,
         origins: lv.origins.clone(),
     })));
@@ -234,7 +234,7 @@ pub(crate) fn list_from_int(flow: &mut Flow, program: &Program) -> Result<(), Ru
     }
 
     flow.value_stack
-        .push(Value::List(Rc::new(ListValue { items, origins })));
+        .push(Value::List(Arc::new(ListValue { items, origins })));
     Ok(())
 }
 
@@ -254,7 +254,7 @@ pub(crate) fn list_random<R: crate::rng::StoryRng>(
         context.set_previous_random(next_random);
         vec![lv.items[idx]]
     };
-    flow.value_stack.push(Value::List(Rc::new(ListValue {
+    flow.value_stack.push(Value::List(Arc::new(ListValue {
         items,
         origins: lv.origins.clone(),
     })));
@@ -264,10 +264,10 @@ pub(crate) fn list_random<R: crate::rng::StoryRng>(
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Convert an already-popped value to a list.
-fn to_list(val: Value) -> Result<Rc<ListValue>, RuntimeError> {
+fn to_list(val: Value) -> Result<Arc<ListValue>, RuntimeError> {
     match val {
         Value::List(lv) => Ok(lv),
-        Value::Null => Ok(Rc::new(ListValue {
+        Value::Null => Ok(Arc::new(ListValue {
             items: vec![],
             origins: vec![],
         })),
@@ -278,12 +278,12 @@ fn to_list(val: Value) -> Result<Rc<ListValue>, RuntimeError> {
     }
 }
 
-fn pop_list(flow: &mut Flow) -> Result<Rc<ListValue>, RuntimeError> {
+fn pop_list(flow: &mut Flow) -> Result<Arc<ListValue>, RuntimeError> {
     let val = flow.pop_value()?;
     match val {
         Value::List(lv) => Ok(lv),
         // An empty list can appear as Null in some contexts.
-        Value::Null => Ok(Rc::new(ListValue {
+        Value::Null => Ok(Arc::new(ListValue {
             items: vec![],
             origins: vec![],
         })),

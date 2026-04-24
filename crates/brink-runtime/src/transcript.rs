@@ -20,7 +20,7 @@
 //!   [Part]*           encoded parts
 //! ```
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use brink_format::{DefinitionId, LineFlags, Value};
 
@@ -509,7 +509,7 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, TranscriptError> {
         }
         VAL_STRING => {
             let s = read_str(buf, off)?;
-            Ok(Value::String(Rc::from(s.as_str())))
+            Ok(Value::String(Arc::from(s.as_str())))
         }
         VAL_LIST => {
             let item_count = read_u32(buf, off)? as usize;
@@ -522,7 +522,7 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, TranscriptError> {
             for _ in 0..origin_count {
                 origins.push(read_def_id(buf, off)?);
             }
-            Ok(Value::List(Rc::new(brink_format::ListValue {
+            Ok(Value::List(Arc::new(brink_format::ListValue {
                 items,
                 origins,
             })))
@@ -598,7 +598,7 @@ mod tests {
         let parts = vec![OutputPart::LineRef {
             container_idx: 42,
             line_idx: 7,
-            slots: vec![Value::Int(123), Value::String(Rc::from("hello"))],
+            slots: vec![Value::Int(123), Value::String(Arc::from("hello"))],
             flags: LineFlags::STARTS_WITH_WS | LineFlags::ENDS_WITH_WS,
         }];
         let bytes = write_transcript(&parts, 1234, &[]);

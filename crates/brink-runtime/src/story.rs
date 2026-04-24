@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use brink_format::{ChoiceFlags, DefinitionId, PluralResolver, Value};
 
@@ -112,7 +112,7 @@ pub struct Stats {
     pub choices_presented: u64,
     /// Individual choices selected.
     pub choices_selected: u64,
-    /// `CallStack::snapshot` cache hits (reused existing `Rc`).
+    /// `CallStack::snapshot` cache hits (reused existing `Arc`).
     pub snapshot_cache_hits: u64,
     /// `CallStack::snapshot` cache misses (new allocation).
     pub snapshot_cache_misses: u64,
@@ -168,17 +168,17 @@ pub(crate) struct CallFrame {
 
 /// Two-part call stack: shared read-only prefix + owned mutable frames.
 ///
-/// `fork_thread` snapshots the parent's frames into a cached `Rc<[CallFrame]>`
-/// (one clone, amortized across all children). Children get `Rc::clone` — O(1).
+/// `fork_thread` snapshots the parent's frames into a cached `Arc<[CallFrame]>`
+/// (one clone, amortized across all children). Children get `Arc::clone` — O(1).
 /// The parent keeps its `own` vec unchanged and continues mutating freely.
 #[derive(Debug, Clone)]
 pub(crate) struct CallStack {
     /// Shared read-only prefix inherited from the parent thread.
-    inherited: Option<Rc<[CallFrame]>>,
+    inherited: Option<Arc<[CallFrame]>>,
     /// Frames owned by this thread (above the fork point).
     own: Vec<CallFrame>,
     /// Cached snapshot so multiple forks from the same parent share one allocation.
-    cached_snapshot: Option<Rc<[CallFrame]>>,
+    cached_snapshot: Option<Arc<[CallFrame]>>,
     /// Count of materializations (flattening inherited prefix into own).
     pub(crate) materialization_count: u64,
 }
@@ -251,24 +251,24 @@ impl CallStack {
         }
     }
 
-    /// Build an `Rc<[CallFrame]>` snapshot of the full stack (inherited + own).
+    /// Build an `Arc<[CallFrame]>` snapshot of the full stack (inherited + own).
     /// The result is cached so multiple forks from the same parent share one
     /// allocation. Returns `(snapshot, cache_hit)`.
-    pub fn snapshot(&mut self) -> (Rc<[CallFrame]>, bool) {
+    pub fn snapshot(&mut self) -> (Arc<[CallFrame]>, bool) {
         if let Some(ref cached) = self.cached_snapshot {
-            return (Rc::clone(cached), true);
+            return (Arc::clone(cached), true);
         }
         let rc = match &self.inherited {
-            None => Rc::from(self.own.as_slice()),
-            Some(prefix) if self.own.is_empty() => Rc::clone(prefix),
+            None => Arc::from(self.own.as_slice()),
+            Some(prefix) if self.own.is_empty() => Arc::clone(prefix),
             Some(prefix) => {
                 let mut combined = Vec::with_capacity(prefix.len() + self.own.len());
                 combined.extend_from_slice(prefix);
                 combined.extend_from_slice(&self.own);
-                Rc::from(combined)
+                Arc::from(combined)
             }
         };
-        self.cached_snapshot = Some(Rc::clone(&rc));
+        self.cached_snapshot = Some(Arc::clone(&rc));
         (rc, false)
     }
 

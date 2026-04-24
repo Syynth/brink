@@ -1,6 +1,6 @@
 //! Opcode decode-dispatch loop.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use brink_format::{
     ChoiceFlags, CountingFlags, DefinitionId, LineContent, LineEntry, LinePart, Opcode,
@@ -249,7 +249,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::PushFloat(v) => flow.value_stack.push(Value::Float(v)),
         Opcode::PushBool(v) => flow.value_stack.push(Value::Bool(v)),
         Opcode::PushString(idx) => {
-            let s: Rc<str> = program.name(brink_format::NameId(idx)).into();
+            let s: Arc<str> = program.name(brink_format::NameId(idx)).into();
             flow.value_stack.push(Value::String(s));
         }
         Opcode::PushNull => {
@@ -257,7 +257,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         }
         Opcode::PushList(idx) => {
             let lv = program.list_literal(idx).clone();
-            flow.value_stack.push(Value::List(Rc::new(lv)));
+            flow.value_stack.push(Value::List(Arc::new(lv)));
         }
         Opcode::PushDivertTarget(id) => {
             flow.value_stack.push(Value::DivertTarget(id));
@@ -329,7 +329,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 && new_lv.origins.is_empty()
                 && let Value::List(old_lv) = context.global(idx)
             {
-                Rc::make_mut(new_lv).origins.clone_from(&old_lv.origins);
+                Arc::make_mut(new_lv).origins.clone_from(&old_lv.origins);
             }
             context.set_global(idx, val);
         }
