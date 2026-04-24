@@ -24,12 +24,14 @@
 //! ));
 //! ```
 
+mod asset;
 mod flow;
 mod globals;
 mod line_tables;
 mod plugin;
 
+pub use asset::{ProgramAsset, ProgramLoader, ProgramLoaderError};
 pub use flow::BrinkFlow;
 pub use globals::BrinkGlobals;
 pub use line_tables::BrinkLineTables;
-pub use plugin::BrinkPlugin;
+pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
