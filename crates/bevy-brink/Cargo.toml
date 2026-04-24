@@ -1,0 +1,24 @@
+[package]
+name = "bevy-brink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Bevy asset integration for brink ink stories"
+
+[dependencies]
+brink-runtime = { path = "../brink-runtime" }
+brink-format = { path = "../internal/brink-format" }
+
+bevy_app = { version = "0.18.1", default-features = false }
+bevy_asset = { version = "0.18.1", default-features = false }
+bevy_ecs = { version = "0.18.1", default-features = false }
+bevy_reflect = { version = "0.18.1", default-features = false }
+
+thiserror.workspace = true
+
+[lints]
+workspace = true
