@@ -16,6 +16,7 @@ brink-format = { path = "../internal/brink-format" }
 bevy_app = { version = "0.18.1", default-features = false }
 bevy_asset = { version = "0.18.1", default-features = false }
 bevy_ecs = { version = "0.18.1", default-features = false }
+bevy_log = { version = "0.18.1", default-features = false }
 bevy_reflect = { version = "0.18.1", default-features = false }
 
 thiserror.workspace = true

@@ -25,13 +25,17 @@
 //! ```
 
 mod asset;
+mod event;
 mod flow;
 mod globals;
 mod line_tables;
 mod plugin;
+mod system;
 
-pub use asset::{ProgramAsset, ProgramLoader, ProgramLoaderError};
+pub use asset::{BrinkProgram, ProgramAsset, ProgramLoader, ProgramLoaderError};
+pub use event::BrinkLineMessage;
 pub use flow::BrinkFlow;
 pub use globals::BrinkGlobals;
 pub use line_tables::BrinkLineTables;
 pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
+pub use system::advance_flows;

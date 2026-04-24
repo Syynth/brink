@@ -17,10 +17,21 @@ use brink_format::LineEntry;
 /// One active locale per marker. If you need per-flow locale overrides or
 /// per-locale `Asset`s, skip this resource and store a `Vec<Vec<LineEntry>>`
 /// however you like — the runtime doesn't care where the slice comes from.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct BrinkLineTables<M: Send + Sync + 'static = ()> {
     pub tables: Vec<Vec<LineEntry>>,
     _marker: PhantomData<fn() -> M>,
+}
+
+// Manual Default avoids requiring `M: Default` (markers are often ZSTs
+// without a derive).
+impl<M: Send + Sync + 'static> Default for BrinkLineTables<M> {
+    fn default() -> Self {
+        Self {
+            tables: Vec::new(),
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<M: Send + Sync + 'static> BrinkLineTables<M> {

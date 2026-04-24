@@ -2,10 +2,13 @@
 
 use std::marker::PhantomData;
 
-use bevy_app::{App, Plugin};
+use bevy_app::{App, Plugin, Update};
 use bevy_asset::AssetApp;
 
 use crate::asset::{ProgramAsset, ProgramLoader};
+use crate::event::BrinkLineMessage;
+use crate::line_tables::BrinkLineTables;
+use crate::system::advance_flows;
 
 /// A Bevy plugin that registers brink story types, systems, and asset
 /// loaders for a single story instance identified by the marker type `M`.
@@ -35,8 +38,9 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         if !app.is_plugin_added::<BrinkAssetsPlugin>() {
             app.add_plugins(BrinkAssetsPlugin);
         }
-        // Marker-specific resources, components, events, and systems will
-        // be registered here as each piece lands.
+        app.init_resource::<BrinkLineTables<M>>();
+        app.add_message::<BrinkLineMessage<M>>();
+        app.add_systems(Update, advance_flows::<M>);
     }
 }
 

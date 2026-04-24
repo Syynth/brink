@@ -1,6 +1,9 @@
 //! Asset types and loaders for compiled brink stories.
 
-use bevy_asset::{Asset, AssetLoader, LoadContext, io::Reader};
+use std::marker::PhantomData;
+
+use bevy_asset::{Asset, AssetLoader, Handle, LoadContext, io::Reader};
+use bevy_ecs::component::Component;
 use bevy_reflect::TypePath;
 use brink_format::LineEntry;
 use brink_runtime::{Program, RuntimeError};
@@ -66,5 +69,34 @@ impl AssetLoader for ProgramLoader {
 
     fn extensions(&self) -> &[&str] {
         &["inkb"]
+    }
+}
+
+/// Component holding the `Handle<ProgramAsset>` a [`BrinkFlow<M>`](crate::BrinkFlow)
+/// executes against.
+///
+/// In Bevy 0.18 `Handle<T>` is no longer a `Component` directly, so flow
+/// entities need a wrapper to associate a flow with its program. Spawn this
+/// alongside `BrinkFlow<M>`:
+///
+/// ```ignore
+/// commands.spawn((
+///     BrinkFlow::<MyStory>::new(flow_state),
+///     BrinkProgram::<MyStory>::new(program_handle),
+/// ));
+/// ```
+#[derive(Component)]
+pub struct BrinkProgram<M: Send + Sync + 'static = ()> {
+    pub handle: Handle<ProgramAsset>,
+    _marker: PhantomData<fn() -> M>,
+}
+
+impl<M: Send + Sync + 'static> BrinkProgram<M> {
+    #[must_use]
+    pub fn new(handle: Handle<ProgramAsset>) -> Self {
+        Self {
+            handle,
+            _marker: PhantomData,
+        }
     }
 }
