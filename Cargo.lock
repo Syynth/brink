@@ -285,6 +285,7 @@ dependencies = [
  "bevy_ecs",
  "bevy_log",
  "bevy_reflect",
+ "brink-compiler",
  "brink-format",
  "brink-runtime",
  "thiserror 2.0.18",

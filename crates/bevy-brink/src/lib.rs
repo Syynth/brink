@@ -32,7 +32,9 @@ mod line_tables;
 mod plugin;
 mod system;
 
-pub use asset::{BrinkProgram, ProgramAsset, ProgramLoader, ProgramLoaderError};
+pub use asset::{
+    BrinkProgram, BrinkStoryAsset, InkbLoader, InkbLoaderError, LineTablesAsset, ProgramAsset,
+};
 pub use event::BrinkLineMessage;
 pub use flow::BrinkFlow;
 pub use globals::BrinkGlobals;

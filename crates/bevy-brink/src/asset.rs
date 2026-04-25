@@ -8,30 +8,61 @@ use bevy_reflect::TypePath;
 use brink_format::LineEntry;
 use brink_runtime::{Program, RuntimeError};
 
-/// A loaded, linked brink program: the immutable bytecode plus its base
-/// (unlocalized) line tables. One `ProgramAsset` is typically shared across
-/// many flow entities.
+/// The immutable bytecode portion of a compiled story — what the VM
+/// actually executes.
 ///
-/// Loaded by [`ProgramLoader`] from `.inkb` files. For locale overlays,
-/// apply a `.inkl` to `base_line_tables` via
-/// [`brink_runtime::apply_locale`] and store the result in
-/// [`BrinkLineTables`](crate::BrinkLineTables).
+/// Produced as a labeled subasset by [`InkbLoader`] (and by the upcoming
+/// `.ink` source loader) under the label `program`. Reference it through
+/// [`BrinkStoryAsset::program`] or load it directly via the labeled path
+/// `path.inkb#program`.
 #[derive(Asset, TypePath)]
 pub struct ProgramAsset {
     pub program: Program,
-    pub base_line_tables: Vec<Vec<LineEntry>>,
+}
+
+/// The localized line-table portion of a compiled story — the swappable
+/// rendering data.
+///
+/// Every `.inkb` carries its source-language line tables embedded; the
+/// loader splits them out as their own asset so future hot-reload
+/// machinery can update tables independently of the program. Additional
+/// `.inkl` overlays will load as standalone `LineTablesAsset`s when that
+/// loader lands.
+///
+/// Loaded as a labeled subasset under the label `line_tables` from
+/// [`InkbLoader`], or directly via `path.inkb#line_tables`.
+#[derive(Asset, TypePath)]
+pub struct LineTablesAsset {
+    pub tables: Vec<Vec<LineEntry>>,
+}
+
+/// Top-level "story" asset — a thin bundle pairing a [`ProgramAsset`]
+/// handle with its companion [`LineTablesAsset`] handle.
+///
+/// `.inkb` (and the upcoming `.ink` source loader) produce this as their
+/// main asset. The compiler and linker emit program and line tables
+/// together, so consumers want to refer to "the story" — but they also
+/// want to be able to swap line tables independently for locale changes
+/// without forcing program reloads, which is why the two pieces are
+/// separate sub-assets.
+#[derive(Asset, TypePath)]
+pub struct BrinkStoryAsset {
+    pub program: Handle<ProgramAsset>,
+    pub line_tables: Handle<LineTablesAsset>,
 }
 
 /// Asset loader for `.inkb` (compiled bytecode) files.
 ///
 /// Reads the bytes, decodes via [`brink_format::read_inkb`], links via
-/// [`brink_runtime::link`], and wraps the result in a [`ProgramAsset`].
+/// [`brink_runtime::link`], registers the resulting `Program` and line
+/// tables as labeled subassets (`#program` and `#line_tables`), and
+/// returns a [`BrinkStoryAsset`] bundling handles to both.
 #[derive(Default, TypePath)]
-pub struct ProgramLoader;
+pub struct InkbLoader;
 
 /// Errors that can occur loading an `.inkb` file.
 #[derive(Debug, thiserror::Error)]
-pub enum ProgramLoaderError {
+pub enum InkbLoaderError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid .inkb: {0:?}")]
@@ -40,30 +71,36 @@ pub enum ProgramLoaderError {
     Link(#[from] RuntimeError),
 }
 
-impl From<brink_format::DecodeError> for ProgramLoaderError {
+impl From<brink_format::DecodeError> for InkbLoaderError {
     fn from(err: brink_format::DecodeError) -> Self {
         Self::Decode(err)
     }
 }
 
-impl AssetLoader for ProgramLoader {
-    type Asset = ProgramAsset;
+impl AssetLoader for InkbLoader {
+    type Asset = BrinkStoryAsset;
     type Settings = ();
-    type Error = ProgramLoaderError;
+    type Error = InkbLoaderError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _settings: &Self::Settings,
-        _load_context: &mut LoadContext<'_>,
+        load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let story_data = brink_format::read_inkb(&bytes)?;
-        let (program, base_line_tables) = brink_runtime::link(&story_data)?;
-        Ok(ProgramAsset {
-            program,
-            base_line_tables,
+        let (program, tables) = brink_runtime::link(&story_data)?;
+
+        let program_handle =
+            load_context.add_labeled_asset("program".to_string(), ProgramAsset { program });
+        let line_tables_handle = load_context
+            .add_labeled_asset("line_tables".to_string(), LineTablesAsset { tables });
+
+        Ok(BrinkStoryAsset {
+            program: program_handle,
+            line_tables: line_tables_handle,
         })
     }
 
@@ -80,9 +117,11 @@ impl AssetLoader for ProgramLoader {
 /// alongside `BrinkFlow<M>`:
 ///
 /// ```ignore
+/// // Once the BrinkStoryAsset has resolved, grab the program handle:
+/// let bundle = story_assets.get(&story_handle).unwrap();
 /// commands.spawn((
 ///     BrinkFlow::<MyStory>::new(flow_state),
-///     BrinkProgram::<MyStory>::new(program_handle),
+///     BrinkProgram::<MyStory>::new(bundle.program.clone()),
 /// ));
 /// ```
 #[derive(Component)]

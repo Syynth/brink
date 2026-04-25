@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use bevy_app::{App, Plugin, Update};
 use bevy_asset::AssetApp;
 
-use crate::asset::{ProgramAsset, ProgramLoader};
+use crate::asset::{BrinkStoryAsset, InkbLoader, LineTablesAsset, ProgramAsset};
 use crate::event::BrinkLineMessage;
 use crate::line_tables::BrinkLineTables;
 use crate::system::advance_flows;
@@ -54,7 +54,9 @@ pub struct BrinkAssetsPlugin;
 
 impl Plugin for BrinkAssetsPlugin {
     fn build(&self, app: &mut App) {
+        app.init_asset::<BrinkStoryAsset>();
         app.init_asset::<ProgramAsset>();
-        app.init_asset_loader::<ProgramLoader>();
+        app.init_asset::<LineTablesAsset>();
+        app.init_asset_loader::<InkbLoader>();
     }
 }

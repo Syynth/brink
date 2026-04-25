@@ -12,6 +12,7 @@ description = "Bevy asset integration for brink ink stories"
 [dependencies]
 brink-runtime = { path = "../brink-runtime" }
 brink-format = { path = "../internal/brink-format" }
+brink-compiler = { path = "../brink-compiler", optional = true }
 
 bevy_app = { version = "0.18.1", default-features = false }
 bevy_asset = { version = "0.18.1", default-features = false }
@@ -20,6 +21,15 @@ bevy_log = { version = "0.18.1", default-features = false }
 bevy_reflect = { version = "0.18.1", default-features = false }
 
 thiserror.workspace = true
+
+[features]
+default = ["dev"]
+# Dev mode: load `.ink` source files, compile at load time, hot-reload
+# the program when any file in the transitive INCLUDE graph changes.
+# Without this feature only compiled `.inkb` (and eventually `.inkl`,
+# `.brkt`) assets are loadable — suitable for shipping a release binary
+# that doesn't carry the brink compiler.
+dev = ["dep:brink-compiler"]
 
 [lints]
 workspace = true
