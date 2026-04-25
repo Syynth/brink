@@ -288,6 +288,7 @@ dependencies = [
  "brink-compiler",
  "brink-format",
  "brink-runtime",
+ "brink-syntax",
  "thiserror 2.0.18",
 ]
 

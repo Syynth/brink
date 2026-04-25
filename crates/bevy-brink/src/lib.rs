@@ -30,6 +30,8 @@ mod flow;
 mod globals;
 mod line_tables;
 mod plugin;
+#[cfg(feature = "dev")]
+mod source_loader;
 mod system;
 
 pub use asset::{
@@ -40,4 +42,6 @@ pub use flow::BrinkFlow;
 pub use globals::BrinkGlobals;
 pub use line_tables::BrinkLineTables;
 pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
+#[cfg(feature = "dev")]
+pub use source_loader::{InkLoader, InkLoaderError};
 pub use system::advance_flows;

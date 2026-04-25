@@ -13,6 +13,7 @@ description = "Bevy asset integration for brink ink stories"
 brink-runtime = { path = "../brink-runtime" }
 brink-format = { path = "../internal/brink-format" }
 brink-compiler = { path = "../brink-compiler", optional = true }
+brink-syntax = { path = "../internal/brink-syntax", optional = true }
 
 bevy_app = { version = "0.18.1", default-features = false }
 bevy_asset = { version = "0.18.1", default-features = false }
@@ -29,7 +30,7 @@ default = ["dev"]
 # Without this feature only compiled `.inkb` (and eventually `.inkl`,
 # `.brkt`) assets are loadable — suitable for shipping a release binary
 # that doesn't carry the brink compiler.
-dev = ["dep:brink-compiler"]
+dev = ["dep:brink-compiler", "dep:brink-syntax"]
 
 [lints]
 workspace = true
