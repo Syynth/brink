@@ -2,15 +2,14 @@
 
 use std::marker::PhantomData;
 
-use bevy_app::{App, Plugin, Update};
+use bevy_app::{App, Plugin};
 use bevy_asset::AssetApp;
 
 use crate::asset::{BrinkStoryAsset, InkbLoader, LineTablesAsset, ProgramAsset};
 use crate::event::BrinkLineMessage;
 use crate::line_tables::BrinkLineTables;
-use crate::system::advance_flows;
 
-/// A Bevy plugin that registers brink story types, systems, and asset
+/// A Bevy plugin that registers brink story types, messages, and asset
 /// loaders for a single story instance identified by the marker type `M`.
 ///
 /// The default `M = ()` suits the common single-story case. Declare your
@@ -21,6 +20,15 @@ use crate::system::advance_flows;
 ///
 /// Adding `BrinkPlugin<M>` also ensures [`BrinkAssetsPlugin`] is added
 /// once to the app (for shared asset types that don't depend on `M`).
+///
+/// **This plugin does not register an auto-advance system.** Most games
+/// drive advancement from input or game-state events, not every tick.
+/// Apps that want per-tick advancement can register
+/// [`advance_flows`](crate::advance_flows) themselves:
+///
+/// ```ignore
+/// app.add_systems(Update, advance_flows::<MyStory>);
+/// ```
 pub struct BrinkPlugin<M: Send + Sync + 'static = ()> {
     _marker: PhantomData<fn() -> M>,
 }
@@ -40,7 +48,6 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         }
         app.init_resource::<BrinkLineTables<M>>();
         app.add_message::<BrinkLineMessage<M>>();
-        app.add_systems(Update, advance_flows::<M>);
     }
 }
 

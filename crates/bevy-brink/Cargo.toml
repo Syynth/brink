@@ -32,5 +32,14 @@ default = ["dev"]
 # that doesn't carry the brink compiler.
 dev = ["dep:brink-compiler", "dep:brink-syntax"]
 
+[dev-dependencies]
+# The `play_story` example uses the bevy umbrella crate for windowing,
+# UI, input, and the file_watcher feature that drives hot-reload.
+bevy = { version = "0.18.1", features = ["file_watcher"] }
+
+[[example]]
+name = "play_story"
+required-features = ["dev"]
+
 [lints]
 workspace = true
