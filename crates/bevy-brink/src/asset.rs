@@ -265,3 +265,91 @@ impl<M: Send + Sync + 'static> BrinkProgram<M> {
         }
     }
 }
+
+#[cfg(test)]
+mod run_init_pass_tests {
+    use super::*;
+    use crate::test_support::compile_test_story;
+
+    #[test]
+    fn captures_var_declarations() {
+        // Compile a story whose VAR declares a global, then verify the
+        // post-init Context has that default value.
+        let source = "VAR score = 42\n=== start ===\nHello.\n* [Continue] -> END\n";
+        let (program, tables, ctx) = compile_test_story(source);
+
+        // Find the global slot for `score`. The init pass should have
+        // run all VAR declarations, so the slot's value matches the
+        // declared default.
+        let mut score_value = None;
+        for slot in 0..program.global_count() {
+            if program.global_name(slot) == Some("score") {
+                score_value = Some(ctx.globals[slot as usize].clone());
+            }
+        }
+        assert!(score_value.is_some(), "score global should exist");
+        assert!(
+            matches!(score_value.unwrap(), brink_format::Value::Int(42)),
+            "score should be 42 after init"
+        );
+        // Sanity: line tables are non-empty (story has at least one line).
+        assert!(!tables.is_empty(), "compiled story should have line tables");
+    }
+
+    #[test]
+    fn run_init_false_returns_uninitialized_context() {
+        // With run_init=false, the loader should return the raw default
+        // Context (program defaults applied, no execution).
+        let source = "VAR score = 42\n=== start ===\nHello.\n* [Continue] -> END\n";
+        let (program, tables, _) = compile_test_story(source);
+
+        let settings = InkLoaderSettings {
+            run_init: false,
+            init_step_limit: 10_000,
+        };
+        let ctx = run_init_pass(&program, &tables, &settings)
+            .expect("run_init=false should never error on a valid program");
+
+        // Even with run_init=false, VAR defaults are applied (those are
+        // a link-time concern via global_defaults, not an init-pass
+        // concern). So score should still be 42.
+        let mut found = false;
+        for slot in 0..program.global_count() {
+            if program.global_name(slot) == Some("score") {
+                assert!(matches!(
+                    ctx.globals[slot as usize],
+                    brink_format::Value::Int(42)
+                ));
+                found = true;
+            }
+        }
+        assert!(found);
+    }
+
+    #[test]
+    fn step_limit_caps_init_immediately_when_zero() {
+        // With init_step_limit = 0 the for-loop never enters; the
+        // function should return StepLimitExceeded(0) regardless of
+        // what the story would have done. Verifies the cap path
+        // without needing to construct a runaway story (the runtime's
+        // own infinite-loop guards make that surprisingly hard).
+        let source = "=== start ===\nhello\n* [Continue] -> END\n";
+        let (program, tables, _) = compile_test_story(source);
+
+        // First, a sanity check: with the default limit the story runs
+        // to completion fine.
+        let ok_result = run_init_pass(&program, &tables, &InkLoaderSettings::default());
+        assert!(ok_result.is_ok(), "default settings should succeed");
+
+        // Now with limit=0 we should hit the cap immediately.
+        let settings = InkLoaderSettings {
+            run_init: true,
+            init_step_limit: 0,
+        };
+        let result = run_init_pass(&program, &tables, &settings);
+        assert!(
+            matches!(result, Err(InitError::StepLimitExceeded(0))),
+            "expected StepLimitExceeded(0), got {result:?}"
+        );
+    }
+}

@@ -201,3 +201,54 @@ impl Program {
         self.globals.len() as u32
     }
 }
+
+#[cfg(test)]
+mod find_address_tests {
+    use super::*;
+
+    fn make_program_with_named_containers(names: &[&str]) -> Program {
+        // Build a minimal Program where each name maps to a unique
+        // container_idx. Used to exercise find_address without going
+        // through the full link path.
+        let mut address_by_path = HashMap::new();
+        for (i, name) in names.iter().enumerate() {
+            #[expect(clippy::cast_possible_truncation, reason = "test fixture")]
+            address_by_path.insert((*name).to_string(), (i as u32, 0));
+        }
+        Program {
+            containers: Vec::new(),
+            address_map: HashMap::new(),
+            scope_ids: Vec::new(),
+            source_checksum: 0,
+            globals: Vec::new(),
+            global_map: HashMap::new(),
+            name_table: Vec::new(),
+            address_by_path,
+            root_idx: 0,
+            list_literals: Vec::new(),
+            list_item_map: HashMap::new(),
+            list_defs: Vec::new(),
+            list_def_map: HashMap::new(),
+            external_fns: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn finds_known_knot() {
+        let program = make_program_with_named_containers(&["intro", "outro"]);
+        assert_eq!(program.find_address("intro"), Some((0, 0)));
+        assert_eq!(program.find_address("outro"), Some((1, 0)));
+    }
+
+    #[test]
+    fn returns_none_for_unknown_knot() {
+        let program = make_program_with_named_containers(&["intro"]);
+        assert_eq!(program.find_address("nope"), None);
+    }
+
+    #[test]
+    fn empty_program_returns_none() {
+        let program = make_program_with_named_containers(&[]);
+        assert_eq!(program.find_address("anything"), None);
+    }
+}

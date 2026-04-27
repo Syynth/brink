@@ -197,3 +197,163 @@ pub fn warn_post_fulfillment_mutations<M: Send + Sync + 'static>(
 
 #[cfg(not(debug_assertions))]
 pub fn warn_post_fulfillment_mutations<M: Send + Sync + 'static>() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{add_story_assets, compile_test_story, make_test_app};
+
+    /// One tick is enough to fulfill a request once its assets are
+    /// already present.
+    #[test]
+    fn fulfillment_replaces_request_with_flow_components() {
+        let mut app = make_test_app();
+        let (program, tables, ctx) =
+            compile_test_story("=== start ===\nhello\n* [Continue] -> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+
+        app.update();
+
+        let world = app.world();
+        let entity_ref = world.entity(entity);
+        assert!(
+            entity_ref.contains::<BrinkFlow<()>>(),
+            "fulfilled entity should have BrinkFlow"
+        );
+        assert!(
+            entity_ref.contains::<BrinkProgram<()>>(),
+            "fulfilled entity should have BrinkProgram"
+        );
+        assert!(
+            !entity_ref.contains::<BrinkFlowRequest<()>>(),
+            "request component should be removed after fulfillment"
+        );
+        assert!(
+            world.contains_resource::<BrinkGlobals<()>>(),
+            "globals should be inserted on first fulfillment"
+        );
+    }
+
+    /// In dev builds, the replay log gets attached automatically so
+    /// hot-reload works.
+    #[test]
+    #[cfg(feature = "dev")]
+    fn fulfillment_attaches_replay_log_in_dev() {
+        let mut app = make_test_app();
+        let (program, tables, ctx) =
+            compile_test_story("=== start ===\nhello\n* [Continue] -> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+
+        app.update();
+
+        assert!(
+            app.world()
+                .entity(entity)
+                .contains::<crate::replay::BrinkReplayLog<()>>(),
+            "BrinkReplayLog should be attached when dev feature is enabled"
+        );
+    }
+
+    /// FlowStart::Address resolves at fulfillment time. If the address
+    /// is unknown, the request is removed and no flow is materialized.
+    #[test]
+    fn fulfillment_removes_request_for_unknown_address() {
+        let mut app = make_test_app();
+        let (program, tables, ctx) = compile_test_story(
+            "=== start ===\nhello\n* [Continue] -> END\n=== outro ===\nbye\n-> END\n",
+        );
+        let story = add_story_assets(&mut app, program, tables, ctx);
+
+        let entity = app
+            .world_mut()
+            .spawn(
+                BrinkFlowRequest::<()>::builder()
+                    .story(story)
+                    .start(FlowStart::Address("nonexistent_knot".to_string()))
+                    .build(),
+            )
+            .id();
+
+        app.update();
+
+        let entity_ref = app.world().entity(entity);
+        assert!(
+            !entity_ref.contains::<BrinkFlowRequest<()>>(),
+            "request should be removed when address can't be resolved"
+        );
+        assert!(
+            !entity_ref.contains::<BrinkFlow<()>>(),
+            "no flow should materialize for unresolvable address"
+        );
+    }
+
+    /// FlowStart::Address resolves when the knot exists.
+    #[test]
+    fn fulfillment_resolves_named_address() {
+        let mut app = make_test_app();
+        let (program, tables, ctx) = compile_test_story(
+            "=== start ===\nhello\n* [Continue] -> END\n=== outro ===\nbye\n-> END\n",
+        );
+        let story = add_story_assets(&mut app, program, tables, ctx);
+
+        let entity = app
+            .world_mut()
+            .spawn(
+                BrinkFlowRequest::<()>::builder()
+                    .story(story)
+                    .start(FlowStart::Address("outro".to_string()))
+                    .build(),
+            )
+            .id();
+
+        app.update();
+
+        assert!(
+            app.world().entity(entity).contains::<BrinkFlow<()>>(),
+            "flow should materialize when address resolves"
+        );
+    }
+
+    /// Multiple flow requests share the same BrinkGlobals — the first
+    /// fulfillment seeds it, subsequent ones reuse.
+    #[test]
+    fn multiple_requests_share_globals() {
+        let mut app = make_test_app();
+        let (program, tables, ctx) = compile_test_story(
+            "VAR shared_counter = 0\n=== start ===\nhi\n* [Continue] -> END\n",
+        );
+        let story = add_story_assets(&mut app, program, tables, ctx);
+
+        let e1 = app
+            .world_mut()
+            .spawn(
+                BrinkFlowRequest::<()>::builder()
+                    .story(story.clone())
+                    .build(),
+            )
+            .id();
+        let e2 = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+
+        app.update();
+
+        let world = app.world();
+        assert!(world.entity(e1).contains::<BrinkFlow<()>>());
+        assert!(world.entity(e2).contains::<BrinkFlow<()>>());
+        // Single resource for the marker — both flows reference it via
+        // the system's ResMut<BrinkGlobals<M>>.
+        assert!(world.contains_resource::<BrinkGlobals<()>>());
+    }
+}

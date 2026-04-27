@@ -10,10 +10,10 @@ The tide is unhurried; the gulls are not.
 * [Leave] -> END
 
 === lighthouse ===
-You climb the wooden stair.
+You climb the wooden stairs.
 Each step creaks like a small announcement.
 At the top, a stranger waits.
-"You came," they say. "I wasn't sure you would!?"
+"You came," they say. "I wasn't sure you would."
 -> END
 
 === watch ===

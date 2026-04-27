@@ -35,6 +35,8 @@ mod replay;
 mod request;
 #[cfg(feature = "dev")]
 mod source_loader;
+#[cfg(test)]
+mod test_support;
 
 pub use asset::{
     BrinkProgram, BrinkStoryAsset, InitError, InitialGlobalsAsset, InkLoaderSettings, InkbLoader,
