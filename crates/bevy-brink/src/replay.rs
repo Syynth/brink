@@ -22,7 +22,7 @@ use brink_runtime::{Context, FallbackHandler, FastRng, FlowInstance, Line, Runti
 
 use crate::asset::{BrinkProgram, BrinkStoryAsset, ProgramAsset};
 use crate::event::BrinkFlowReset;
-use crate::flow::{BrinkFlow, emit_event};
+use crate::flow::BrinkFlow;
 use crate::globals::BrinkGlobals;
 use crate::line_tables::BrinkLineTables;
 use crate::request::FlowStart;
@@ -150,20 +150,19 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         // Replace the in-place flow with the freshly-built one.
         flow.inner = new_flow;
 
-        // Replay each recorded choice. We step until a Choices line
-        // (firing observer events for the new Text along the way), then
-        // call choose. If we ever can't find a choice point for the
-        // next recorded index, stop replay and leave the flow at the
-        // last successful position.
+        // Replay each recorded choice *silently* — we step the VM
+        // through to each choice point and consume the choice without
+        // firing observer events. The events would mislead consumers
+        // into thinking those intermediate choice points are the
+        // current state, but they're bookkeeping; the actual current
+        // state is whatever comes after the last choose.
         let mut replay_failed = false;
         for (i, &choice_idx) in log.choices_made.iter().enumerate() {
-            if let Err(err) = step_to_next_choices::<M>(
+            if let Err(err) = step_to_next_choices(
                 &mut flow.inner,
                 &program_asset.program,
                 &line_tables,
                 &mut globals.inner,
-                entity,
-                &mut commands,
             ) {
                 warn!(
                     "replay: failed to reach choice point {i} for entity {entity:?}: {err}; \
@@ -182,27 +181,49 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
             }
         }
 
-        if !replay_failed {
-            info!(
-                "replay: rebuilt flow on entity {entity:?} from start={:?} +{} choice(s)",
-                log.start,
-                log.choices_made.len()
-            );
+        if replay_failed {
+            continue;
+        }
+
+        // Now advance until the next terminal *with* events firing, so
+        // the UI sees the user's current page in the new program.
+        match flow.advance_until_terminal(
+            &program_asset.program,
+            &line_tables,
+            globals,
+            &FallbackHandler,
+            entity,
+            &mut commands,
+        ) {
+            Ok(_) => {
+                info!(
+                    "replay: rebuilt flow on entity {entity:?} from start={:?} +{} choice(s)",
+                    log.start,
+                    log.choices_made.len()
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "replay: advance after replay failed on entity {entity:?}: {err}"
+                );
+            }
         }
     }
 }
 
-/// Step the flow forward until we land on a `Choices` line, firing
-/// observer events for every line produced along the way (so consumer
-/// UIs see the replayed text exactly as if the player were re-playing
-/// the choices).
+/// Step the flow forward silently until we land on a `Choices` line.
+///
+/// Used during replay reconstruction: we walk the new bytecode to each
+/// choice point so we can re-apply the recorded selection. No observer
+/// events are fired — these intermediate steps are bookkeeping, not
+/// the user's current state. The post-replay `advance_until_terminal`
+/// in [`replay_on_reload`] is what fires events for the actual current
+/// page.
 fn step_to_next_choices<M: Send + Sync + 'static>(
     flow: &mut FlowInstance,
     program: &brink_runtime::Program,
     line_tables: &BrinkLineTables<M>,
     context: &mut Context,
-    entity: bevy_ecs::entity::Entity,
-    commands: &mut Commands,
 ) -> Result<(), RuntimeError> {
     const STEP_LIMIT: usize = 10_000;
     for _ in 0..STEP_LIMIT {
@@ -213,7 +234,6 @@ fn step_to_next_choices<M: Send + Sync + 'static>(
             &FallbackHandler,
             None,
         )?;
-        emit_event::<M>(&line, entity, commands);
         match line {
             // Choices: ready for the next replayed pick.
             // Done / End: nothing to choose against; replay caller will
