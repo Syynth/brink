@@ -21,6 +21,10 @@ pub struct Program {
     pub(crate) globals: Vec<GlobalSlot>,
     pub(crate) global_map: HashMap<DefinitionId, u32>,
     pub(crate) name_table: Vec<String>,
+    /// Map from a knot/stitch path string to `(container_idx, byte_offset)`.
+    /// Built at link time from named scope containers; lets consumers
+    /// spawn flows at named entry points without needing `DefinitionId`s.
+    pub(crate) address_by_path: HashMap<String, (u32, usize)>,
     pub(crate) root_idx: u32,
     /// List literal values referenced by `PushList(idx)`.
     pub(crate) list_literals: Vec<ListValue>,
@@ -130,6 +134,24 @@ impl Program {
     /// Get the root container index.
     pub(crate) fn root_idx(&self) -> u32 {
         self.root_idx
+    }
+
+    /// Resolve a knot/stitch path to its `(container_idx, byte_offset)`.
+    ///
+    /// Currently supports top-level knot names. Fully-qualified paths
+    /// (`knot.stitch`, `knot.stitch.label`) require additional metadata
+    /// from the format that isn't yet wired through; those will return
+    /// `None` until that lands. Use this method to spawn flows at named
+    /// entry points:
+    ///
+    /// ```ignore
+    /// if let Some((idx, _)) = program.find_address("intro_scene") {
+    ///     let (flow, ctx) = FlowInstance::new_at(program, idx);
+    /// }
+    /// ```
+    #[must_use]
+    pub fn find_address(&self, path: &str) -> Option<(u32, usize)> {
+        self.address_by_path.get(path).copied()
     }
 
     /// Build the initial globals vector from slot defaults.

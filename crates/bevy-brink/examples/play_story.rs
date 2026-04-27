@@ -88,7 +88,9 @@ impl ExternalFnHandler for FallbackHandler {
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(AssetPlugin {
-            file_path: "crates/bevy-brink/examples/assets".to_string(),
+            // CARGO_MANIFEST_DIR lets the example find its assets
+            // regardless of which directory the user runs `cargo` from.
+            file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/examples/assets").to_string(),
             // Use the `file_watcher` cargo feature on bevy_asset to
             // watch the assets directory for live edits.
             watch_for_changes_override: Some(true),

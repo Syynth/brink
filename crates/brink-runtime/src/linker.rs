@@ -136,6 +136,18 @@ pub fn link(
         );
     }
 
+    // Build address-by-path lookup: for every named scope container,
+    // map its (currently unqualified) name → (container_idx, 0).
+    // Future: walk scope-parent chain to support `knot.stitch` paths.
+    let mut address_by_path: HashMap<String, (u32, usize)> =
+        HashMap::with_capacity(data.containers.len());
+    for (i, cdef) in data.containers.iter().enumerate() {
+        if let Some(name_id) = cdef.name {
+            let name = data.name_table[name_id.0 as usize].clone();
+            address_by_path.insert(name, (i as u32, 0));
+        }
+    }
+
     let program = Program {
         containers,
         address_map,
@@ -144,6 +156,7 @@ pub fn link(
         globals,
         global_map,
         name_table,
+        address_by_path,
         root_idx,
         list_literals,
         list_item_map,

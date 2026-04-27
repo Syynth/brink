@@ -460,6 +460,7 @@ mod tests {
             globals: vec![],
             global_map: HashMap::new(),
             name_table: vec![],
+            address_by_path: HashMap::new(),
             root_idx: 0,
             list_literals: vec![],
             list_item_map: HashMap::new(),
