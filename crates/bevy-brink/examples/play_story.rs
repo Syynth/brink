@@ -25,13 +25,12 @@
 
 use std::fmt::Write as _;
 
-use bevy::asset::AssetEvent;
 use bevy::input::ButtonInput;
 use bevy::prelude::*;
 use bevy_brink::{
-    BrinkChoicesPresented, BrinkFlow, BrinkFlowRequest, BrinkGlobals, BrinkLineDelivered,
-    BrinkLineTables, BrinkPlugin, BrinkProgram, BrinkReplayLog, BrinkStoryAsset, BrinkStoryEnded,
-    BrinkTurnDone, FlowStart, ProgramAsset,
+    BrinkChoicesPresented, BrinkFlow, BrinkFlowRequest, BrinkFlowReset, BrinkGlobals,
+    BrinkLineDelivered, BrinkLineTables, BrinkPlugin, BrinkProgram, BrinkReplayLog,
+    BrinkStoryAsset, BrinkStoryEnded, BrinkTurnDone, FlowStart, ProgramAsset,
 };
 use brink_runtime::{FallbackHandler, StoryStatus};
 
@@ -86,6 +85,7 @@ fn main() {
         .add_observer(on_choices)
         .add_observer(on_turn_done)
         .add_observer(on_story_ended)
+        .add_observer(on_flow_reset)
         .add_systems(Startup, (setup_ui, load_story))
         .add_systems(
             Update,
@@ -191,6 +191,22 @@ fn on_story_ended(
     banner.0 = "Story ended. Edit the .ink file or press ESC to quit.".to_string();
 }
 
+/// Fired by the plugin's reload-replay system before it walks the new
+/// bytecode. Clearing here (instead of on `AssetEvent::Modified`) lets
+/// trigger ordering guarantee that the subsequent line-delivery events
+/// from replay populate fresh state — no risk of clearing *after* the
+/// page was already populated.
+fn on_flow_reset(
+    _trigger: On<BrinkFlowReset<()>>,
+    mut page: ResMut<PageText>,
+    mut choices: ResMut<PendingChoices>,
+    mut banner: ResMut<Banner>,
+) {
+    page.0.clear();
+    choices.0.clear();
+    banner.0 = "Reloaded — replayed choices in the new program.".to_string();
+}
+
 // ── Input ──────────────────────────────────────────────────────────────────
 
 fn handle_input(
@@ -207,20 +223,9 @@ fn handle_input(
     mut page: ResMut<PageText>,
     mut choices: ResMut<PendingChoices>,
     mut banner: ResMut<Banner>,
-    mut events: MessageReader<AssetEvent<ProgramAsset>>,
     mut exit: MessageWriter<AppExit>,
     mut commands: Commands,
 ) {
-    // Clear the page before observers populate it on reload, so we
-    // don't concatenate stale text with replayed text.
-    for evt in events.read() {
-        if matches!(evt, AssetEvent::Modified { .. }) {
-            page.0.clear();
-            choices.0.clear();
-            banner.0 = "Reloaded — replayed choices in the new program.".to_string();
-        }
-    }
-
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
         return;

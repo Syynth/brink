@@ -21,6 +21,7 @@ use bevy_log::{info, warn};
 use brink_runtime::{Context, FallbackHandler, FastRng, FlowInstance, Line, RuntimeError};
 
 use crate::asset::{BrinkProgram, BrinkStoryAsset, ProgramAsset};
+use crate::event::BrinkFlowReset;
 use crate::flow::{BrinkFlow, emit_event};
 use crate::globals::BrinkGlobals;
 use crate::line_tables::BrinkLineTables;
@@ -117,6 +118,12 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         let Some(program_asset) = programs.get(&brink_program.handle) else {
             continue;
         };
+
+        // Tell consumers a rebuild is starting *before* we fire any
+        // line-delivery events from replay. Triggers process in order,
+        // so observers for BrinkFlowReset run first (typically clearing
+        // UI state), then the per-line events repopulate.
+        commands.trigger(BrinkFlowReset::<M>::new(entity));
 
         // Resolve start position against the (possibly changed) program.
         let new_flow_result = match &log.start {

@@ -43,6 +43,8 @@ pub use asset::{
 pub use event::{
     BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone,
 };
+#[cfg(feature = "dev")]
+pub use event::BrinkFlowReset;
 pub use flow::BrinkFlow;
 pub use globals::BrinkGlobals;
 pub use line_tables::BrinkLineTables;

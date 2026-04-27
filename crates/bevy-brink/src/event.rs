@@ -119,3 +119,29 @@ impl<M: Send + Sync + 'static> BrinkStoryEnded<M> {
         }
     }
 }
+
+/// Fired by the plugin's reload-replay system *before* it starts
+/// rebuilding a flow against a freshly-reloaded program.
+///
+/// Consumers observe this to clear UI state (page text, pending
+/// choices, etc.) so the subsequent stream of line/choice events from
+/// replay populates fresh state instead of concatenating with what was
+/// already on screen. Fires once per reloaded flow entity.
+///
+/// Available only with the `dev` feature.
+#[cfg(feature = "dev")]
+#[derive(Event)]
+pub struct BrinkFlowReset<M: Send + Sync + 'static = ()> {
+    pub entity: Entity,
+    _marker: PhantomData<fn() -> M>,
+}
+
+#[cfg(feature = "dev")]
+impl<M: Send + Sync + 'static> BrinkFlowReset<M> {
+    pub(crate) fn new(entity: Entity) -> Self {
+        Self {
+            entity,
+            _marker: PhantomData,
+        }
+    }
+}
