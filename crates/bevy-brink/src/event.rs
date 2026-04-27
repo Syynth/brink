@@ -1,33 +1,120 @@
-//! Messages emitted by the flow-advance system.
+//! Observer events fired by the runtime as flows advance.
+//!
+//! Bevy 0.18 distinguishes two event flavors:
+//!
+//! - **Observer events** (`Event` derive, `commands.trigger(...)`,
+//!   `app.add_observer(...)`) — synchronous fire-and-react, no buffered
+//!   queue. We use these.
+//! - **Messages** (`Message` derive, `MessageReader`/`MessageWriter`) —
+//!   buffered cross-tick pubsub. Heavier than we need for "the flow
+//!   produced a line just now."
+//!
+//! All events here are split by `Line` variant so observers can target
+//! exactly the situation they care about (no inline `match` on a Line
+//! enum). Pattern: bladeink's `DeliverLine` / `DeliverChoices`.
+//!
+//! For consumers that want the historical view rather than per-event
+//! reaction, see [`brink_runtime::FlowInstance::transcript`] — the
+//! flow keeps an append-only log of every part it emits, which can be
+//! re-rendered against any line tables (locale swap, etc.) via
+//! [`brink_runtime::transcript::render_transcript`].
 
 use std::marker::PhantomData;
 
 use bevy_ecs::entity::Entity;
-use bevy_ecs::message::Message;
-use brink_runtime::Line;
+use bevy_ecs::event::Event;
+use brink_runtime::Choice;
 
-/// Emitted by [`advance_flows`](crate::system::advance_flows) for every line
-/// produced on each tick — one message per [`Line`] returned by
-/// [`brink_runtime::FlowInstance::step_single_line`].
-///
-/// Consumers read these via `MessageReader<BrinkLineMessage<M>>` to drive UI,
-/// dialogue widgets, audio, etc. The `entity` field identifies which flow
-/// produced the line so a single reader can route across many flows.
-///
-/// (Bevy 0.18 terminology: this uses the `Message` trait for buffered
-/// reader/writer pubsub — what older bevy versions called `Event`.)
-#[derive(Message)]
-pub struct BrinkLineMessage<M: Send + Sync + 'static = ()> {
+/// Fired when a flow produces a `Line::Text` — mid-stream content; more
+/// may follow on subsequent steps. Typewriter-style UIs accumulate;
+/// click-to-continue UIs concatenate until a terminal event arrives.
+#[derive(Event)]
+pub struct BrinkLineDelivered<M: Send + Sync + 'static = ()> {
     pub entity: Entity,
-    pub line: Line,
+    pub text: String,
+    pub tags: Vec<String>,
     _marker: PhantomData<fn() -> M>,
 }
 
-impl<M: Send + Sync + 'static> BrinkLineMessage<M> {
-    pub(crate) fn new(entity: Entity, line: Line) -> Self {
+impl<M: Send + Sync + 'static> BrinkLineDelivered<M> {
+    pub(crate) fn new(entity: Entity, text: String, tags: Vec<String>) -> Self {
         Self {
             entity,
-            line,
+            text,
+            tags,
+            _marker: PhantomData,
+        }
+    }
+}
+
+/// Fired when a flow reaches a `Line::Choices` — pick one via
+/// [`BrinkFlow::choose`](crate::BrinkFlow::choose) (or
+/// [`choose_recording`](crate::BrinkFlow::choose_recording) in dev
+/// builds for replay-after-hot-reload).
+#[derive(Event)]
+pub struct BrinkChoicesPresented<M: Send + Sync + 'static = ()> {
+    pub entity: Entity,
+    pub text: String,
+    pub tags: Vec<String>,
+    pub choices: Vec<Choice>,
+    _marker: PhantomData<fn() -> M>,
+}
+
+impl<M: Send + Sync + 'static> BrinkChoicesPresented<M> {
+    pub(crate) fn new(
+        entity: Entity,
+        text: String,
+        tags: Vec<String>,
+        choices: Vec<Choice>,
+    ) -> Self {
+        Self {
+            entity,
+            text,
+            tags,
+            choices,
+            _marker: PhantomData,
+        }
+    }
+}
+
+/// Fired when a flow reaches `Line::Done` — this turn's output is
+/// complete (the ink `-> DONE` instruction). The story is *not* over;
+/// call advance again for the next turn.
+#[derive(Event)]
+pub struct BrinkTurnDone<M: Send + Sync + 'static = ()> {
+    pub entity: Entity,
+    pub text: String,
+    pub tags: Vec<String>,
+    _marker: PhantomData<fn() -> M>,
+}
+
+impl<M: Send + Sync + 'static> BrinkTurnDone<M> {
+    pub(crate) fn new(entity: Entity, text: String, tags: Vec<String>) -> Self {
+        Self {
+            entity,
+            text,
+            tags,
+            _marker: PhantomData,
+        }
+    }
+}
+
+/// Fired when a flow reaches `Line::End` — the story has permanently
+/// ended (the ink `-> END` instruction). No more advance is meaningful.
+#[derive(Event)]
+pub struct BrinkStoryEnded<M: Send + Sync + 'static = ()> {
+    pub entity: Entity,
+    pub text: String,
+    pub tags: Vec<String>,
+    _marker: PhantomData<fn() -> M>,
+}
+
+impl<M: Send + Sync + 'static> BrinkStoryEnded<M> {
+    pub(crate) fn new(entity: Entity, text: String, tags: Vec<String>) -> Self {
+        Self {
+            entity,
+            text,
+            tags,
             _marker: PhantomData,
         }
     }

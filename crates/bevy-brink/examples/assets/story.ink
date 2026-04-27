@@ -13,7 +13,7 @@ The tide is unhurried; the gulls are not.
 You climb the wooden stair.
 Each step creaks like a small announcement.
 At the top, a stranger waits.
-"You came," they say. "I wasn't sure you would."
+"You came," they say. "I wasn't sure you would!?"
 -> END
 
 === watch ===

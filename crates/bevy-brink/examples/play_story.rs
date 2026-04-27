@@ -7,9 +7,14 @@
 //! (or `characters.ink`, which it INCLUDEs), save, and the displayed
 //! story restarts from the beginning with the new content.
 //!
-//! Demonstrates the request-component pattern: just spawn a
-//! `BrinkFlowRequest` and the plugin's fulfillment system handles asset
-//! readiness, globals init, line-table sync, and component materialization.
+//! Demonstrates:
+//! - Request-component spawn pattern: `BrinkFlowRequest` + the plugin
+//!   handles asset readiness, init, globals, line tables.
+//! - Observer-based event hooks: per-line UI updates without buffered
+//!   message readers.
+//! - Hot-reload replay: when the source changes, the plugin rebuilds
+//!   the flow against the new bytecode and replays recorded choices,
+//!   firing the same observer events along the way.
 
 #![expect(
     clippy::needless_pass_by_value,
@@ -24,10 +29,11 @@ use bevy::asset::AssetEvent;
 use bevy::input::ButtonInput;
 use bevy::prelude::*;
 use bevy_brink::{
-    BrinkFlow, BrinkFlowRequest, BrinkGlobals, BrinkLineTables, BrinkPlugin, BrinkProgram,
-    BrinkReplayLog, BrinkStoryAsset, FlowStart, ProgramAsset,
+    BrinkChoicesPresented, BrinkFlow, BrinkFlowRequest, BrinkGlobals, BrinkLineDelivered,
+    BrinkLineTables, BrinkPlugin, BrinkProgram, BrinkReplayLog, BrinkStoryAsset, BrinkStoryEnded,
+    BrinkTurnDone, FlowStart, ProgramAsset,
 };
-use brink_runtime::{FallbackHandler, FastRng, Line, StoryStatus};
+use brink_runtime::{FallbackHandler, StoryStatus};
 
 // ── Resources ──────────────────────────────────────────────────────────────
 
@@ -62,11 +68,7 @@ struct BannerText;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(AssetPlugin {
-            // CARGO_MANIFEST_DIR lets the example find its assets
-            // regardless of which directory the user runs `cargo` from.
             file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/examples/assets").to_string(),
-            // Use the `file_watcher` cargo feature on bevy_asset to
-            // watch the assets directory for live edits.
             watch_for_changes_override: Some(true),
             ..Default::default()
         }))
@@ -74,14 +76,20 @@ fn main() {
         .insert_resource(PageText::default())
         .insert_resource(PendingChoices::default())
         .insert_resource(Banner::default())
+        // Observers run synchronously in response to triggered events.
+        // No MessageReader/Writer needed — each observer reacts to its
+        // event variant. This is also the path replay uses: when the
+        // story file changes, the plugin's replay system fires the same
+        // events as it walks the new bytecode, so the UI stays in sync
+        // automatically.
+        .add_observer(on_line)
+        .add_observer(on_choices)
+        .add_observer(on_turn_done)
+        .add_observer(on_story_ended)
         .add_systems(Startup, (setup_ui, load_story))
         .add_systems(
             Update,
-            (
-                handle_input,
-                update_displays.after(handle_input),
-                clear_page_on_reload,
-            ),
+            (handle_input, update_displays.after(handle_input)),
         )
         .run();
 }
@@ -143,9 +151,6 @@ fn setup_ui(mut commands: Commands) {
         });
 }
 
-/// Load the story and spawn a flow request — the plugin's fulfillment
-/// system handles everything from there (waiting for assets, building
-/// the `FlowInstance`, inserting `BrinkGlobals`, etc.).
 fn load_story(asset_server: Res<AssetServer>, mut commands: Commands) {
     info!("loading story.ink");
     let handle: Handle<BrinkStoryAsset> = asset_server.load("story.ink");
@@ -157,44 +162,65 @@ fn load_story(asset_server: Res<AssetServer>, mut commands: Commands) {
     );
 }
 
-// ── Hot-reload handling ────────────────────────────────────────────────────
+// ── Observers (one per Line variant) ───────────────────────────────────────
 
-/// When the program reloads, the plugin's replay-on-reload system
-/// rebuilds the flow against the new bytecode + replays our recorded
-/// choices in-place. We just need to clear the displayed page so
-/// subsequent advance shows fresh content.
-fn clear_page_on_reload(
-    mut events: MessageReader<AssetEvent<ProgramAsset>>,
-    mut page: ResMut<PageText>,
-    mut choices: ResMut<PendingChoices>,
-    mut banner: ResMut<Banner>,
-) {
-    let mut reloaded = false;
-    for event in events.read() {
-        if matches!(event, AssetEvent::Modified { .. }) {
-            reloaded = true;
-        }
-    }
-    if reloaded {
-        page.0.clear();
-        choices.0.clear();
-        banner.0 = "Reloaded — choices replayed; press SPACE to continue.".to_string();
-    }
+fn on_line(trigger: On<BrinkLineDelivered<()>>, mut page: ResMut<PageText>) {
+    page.0.push_str(&trigger.event().text);
 }
 
-// ── Input + advancement ────────────────────────────────────────────────────
+fn on_choices(
+    trigger: On<BrinkChoicesPresented<()>>,
+    mut page: ResMut<PageText>,
+    mut choices: ResMut<PendingChoices>,
+) {
+    let event = trigger.event();
+    page.0.push_str(&event.text);
+    choices.0 = event.choices.iter().map(|c| c.text.clone()).collect();
+}
+
+fn on_turn_done(trigger: On<BrinkTurnDone<()>>, mut page: ResMut<PageText>) {
+    page.0.push_str(&trigger.event().text);
+}
+
+fn on_story_ended(
+    trigger: On<BrinkStoryEnded<()>>,
+    mut page: ResMut<PageText>,
+    mut banner: ResMut<Banner>,
+) {
+    page.0.push_str(&trigger.event().text);
+    banner.0 = "Story ended. Edit the .ink file or press ESC to quit.".to_string();
+}
+
+// ── Input ──────────────────────────────────────────────────────────────────
 
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
-    mut flows: Query<(&mut BrinkFlow<()>, &BrinkProgram<()>, &mut BrinkReplayLog<()>)>,
+    mut flows: Query<(
+        Entity,
+        &mut BrinkFlow<()>,
+        &BrinkProgram<()>,
+        &mut BrinkReplayLog<()>,
+    )>,
     globals: Option<ResMut<BrinkGlobals<()>>>,
     line_tables: Res<BrinkLineTables<()>>,
     programs: Res<Assets<ProgramAsset>>,
     mut page: ResMut<PageText>,
     mut choices: ResMut<PendingChoices>,
     mut banner: ResMut<Banner>,
+    mut events: MessageReader<AssetEvent<ProgramAsset>>,
     mut exit: MessageWriter<AppExit>,
+    mut commands: Commands,
 ) {
+    // Clear the page before observers populate it on reload, so we
+    // don't concatenate stale text with replayed text.
+    for evt in events.read() {
+        if matches!(evt, AssetEvent::Modified { .. }) {
+            page.0.clear();
+            choices.0.clear();
+            banner.0 = "Reloaded — replayed choices in the new program.".to_string();
+        }
+    }
+
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
         return;
@@ -203,7 +229,7 @@ fn handle_input(
     let Some(mut globals) = globals else {
         return;
     };
-    let Ok((mut flow, brink_program, mut replay_log)) = flows.single_mut() else {
+    let Ok((entity, mut flow, brink_program, mut replay_log)) = flows.single_mut() else {
         return;
     };
     let Some(program_asset) = programs.get(&brink_program.handle) else {
@@ -226,27 +252,26 @@ fn handle_input(
         ];
         for (key, idx) in DIGIT_KEYS {
             if keys.just_pressed(*key) && *idx < choices.0.len() {
-                // Use choose_recording so the replay log captures this
-                // selection and reload-replay can re-apply it.
                 if let Err(err) = flow.choose_recording(&mut globals, &mut replay_log, *idx) {
                     banner.0 = format!("choose error: {err}");
                     return;
                 }
                 page.0.clear();
                 choices.0.clear();
-                advance_until_terminal(
-                    &mut flow,
+                if let Err(err) = flow.advance_until_terminal(
                     &program_asset.program,
                     &line_tables,
                     &mut globals,
-                    &mut page.0,
-                    &mut choices.0,
-                    &mut banner.0,
-                );
+                    &FallbackHandler,
+                    entity,
+                    &mut commands,
+                ) {
+                    banner.0 = format!("advance error: {err}");
+                }
                 return;
             }
         }
-        return; // waiting for choice; SPACE does nothing here
+        return;
     }
 
     // SPACE advances when the story is active or just done.
@@ -254,76 +279,23 @@ fn handle_input(
         match flow.inner.status() {
             StoryStatus::Active | StoryStatus::Done => {
                 page.0.clear();
-                advance_until_terminal(
-                    &mut flow,
+                if let Err(err) = flow.advance_until_terminal(
                     &program_asset.program,
                     &line_tables,
                     &mut globals,
-                    &mut page.0,
-                    &mut choices.0,
-                    &mut banner.0,
-                );
+                    &FallbackHandler,
+                    entity,
+                    &mut commands,
+                ) {
+                    banner.0 = format!("advance error: {err}");
+                }
             }
             StoryStatus::Ended => {
                 banner.0 = "Story ended. Edit the .ink file or press ESC to quit.".to_string();
             }
-            StoryStatus::WaitingForChoice => {
-                // unreachable: handled above
-            }
+            StoryStatus::WaitingForChoice => {}
         }
     }
-}
-
-/// Step the flow repeatedly, accumulating Text into `page`, until we
-/// hit a terminal Line (Done / Choices / End).
-fn advance_until_terminal(
-    flow: &mut BrinkFlow<()>,
-    program: &brink_runtime::Program,
-    line_tables: &BrinkLineTables<()>,
-    globals: &mut BrinkGlobals<()>,
-    page: &mut String,
-    choices: &mut Vec<String>,
-    banner: &mut String,
-) {
-    const STEP_LIMIT: usize = 10_000;
-    for _ in 0..STEP_LIMIT {
-        let line = match flow.inner.step_single_line::<FastRng>(
-            program,
-            &line_tables.tables,
-            &mut globals.inner,
-            &FallbackHandler,
-            None,
-        ) {
-            Ok(line) => line,
-            Err(err) => {
-                *banner = format!("runtime error: {err}");
-                return;
-            }
-        };
-
-        match line {
-            Line::Text { text, .. } => page.push_str(&text),
-            Line::Done { text, .. } => {
-                page.push_str(&text);
-                return;
-            }
-            Line::Choices {
-                text,
-                choices: cs,
-                ..
-            } => {
-                page.push_str(&text);
-                choices.extend(cs.into_iter().map(|c| c.text));
-                return;
-            }
-            Line::End { text, .. } => {
-                page.push_str(&text);
-                *banner = "Story ended. Edit the .ink file or press ESC to quit.".to_string();
-                return;
-            }
-        }
-    }
-    *banner = "step limit exceeded — likely infinite loop".to_string();
 }
 
 // ── Display update ─────────────────────────────────────────────────────────

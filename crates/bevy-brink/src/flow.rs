@@ -3,9 +3,13 @@
 use std::marker::PhantomData;
 
 use bevy_ecs::component::Component;
-use brink_runtime::{FlowInstance, RuntimeError};
+use bevy_ecs::entity::Entity;
+use bevy_ecs::system::Commands;
+use brink_runtime::{ExternalFnHandler, FastRng, FlowInstance, Line, Program, RuntimeError};
 
+use crate::event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 use crate::globals::BrinkGlobals;
+use crate::line_tables::BrinkLineTables;
 
 /// A single live ink flow, attached to an entity. Holds the VM's per-flow
 /// state: call stacks, output buffer, pending choices, and the accumulated
@@ -58,5 +62,96 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
     ) -> Result<(), RuntimeError> {
         log.choices_made.push(index);
         self.inner.choose(&mut globals.inner, index)
+    }
+
+    /// Step the VM by one line and queue the corresponding observer
+    /// event ([`BrinkLineDelivered`], [`BrinkChoicesPresented`],
+    /// [`BrinkTurnDone`], or [`BrinkStoryEnded`]) for the entity.
+    ///
+    /// Use this for typewriter-style UIs that animate one fragment at a
+    /// time. For click-to-continue dialogue, use
+    /// [`advance_until_terminal`](Self::advance_until_terminal).
+    pub fn step_one(
+        &mut self,
+        program: &Program,
+        line_tables: &BrinkLineTables<M>,
+        globals: &mut BrinkGlobals<M>,
+        handler: &dyn ExternalFnHandler,
+        entity: Entity,
+        commands: &mut Commands,
+    ) -> Result<Line, RuntimeError> {
+        let line = self.inner.step_single_line::<FastRng>(
+            program,
+            &line_tables.tables,
+            &mut globals.inner,
+            handler,
+            None,
+        )?;
+        emit_event::<M>(&line, entity, commands);
+        Ok(line)
+    }
+
+    /// Step the VM until reaching a terminal line ([`Line::Done`],
+    /// [`Line::Choices`], or [`Line::End`]), queuing observer events
+    /// for every line produced along the way.
+    ///
+    /// Bounded by a 10,000-line safety cap. Returns the terminal line.
+    pub fn advance_until_terminal(
+        &mut self,
+        program: &Program,
+        line_tables: &BrinkLineTables<M>,
+        globals: &mut BrinkGlobals<M>,
+        handler: &dyn ExternalFnHandler,
+        entity: Entity,
+        commands: &mut Commands,
+    ) -> Result<Line, RuntimeError> {
+        const STEP_LIMIT: u64 = 10_000;
+        for _ in 0..STEP_LIMIT {
+            let line = self.step_one(program, line_tables, globals, handler, entity, commands)?;
+            if !matches!(line, Line::Text { .. }) {
+                return Ok(line);
+            }
+        }
+        Err(RuntimeError::StepLimitExceeded(STEP_LIMIT))
+    }
+}
+
+/// Trigger the appropriate observer event for the produced [`Line`].
+///
+/// Internal helper used by both [`BrinkFlow::step_one`] and the replay
+/// system so that the same set of events fires whether the flow is
+/// being advanced in response to player input or replayed during a
+/// hot-reload.
+pub(crate) fn emit_event<M: Send + Sync + 'static>(
+    line: &Line,
+    entity: Entity,
+    commands: &mut Commands,
+) {
+    match line {
+        Line::Text { text, tags } => commands.trigger(BrinkLineDelivered::<M>::new(
+            entity,
+            text.clone(),
+            tags.clone(),
+        )),
+        Line::Choices {
+            text,
+            tags,
+            choices,
+        } => commands.trigger(BrinkChoicesPresented::<M>::new(
+            entity,
+            text.clone(),
+            tags.clone(),
+            choices.clone(),
+        )),
+        Line::Done { text, tags } => commands.trigger(BrinkTurnDone::<M>::new(
+            entity,
+            text.clone(),
+            tags.clone(),
+        )),
+        Line::End { text, tags } => commands.trigger(BrinkStoryEnded::<M>::new(
+            entity,
+            text.clone(),
+            tags.clone(),
+        )),
     }
 }

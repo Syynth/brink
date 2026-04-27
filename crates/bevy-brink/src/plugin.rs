@@ -8,7 +8,6 @@ use bevy_asset::AssetApp;
 use crate::asset::{
     BrinkStoryAsset, InitialGlobalsAsset, InkbLoader, LineTablesAsset, ProgramAsset,
 };
-use crate::event::BrinkLineMessage;
 use crate::line_tables::BrinkLineTables;
 use crate::request::fulfill_flow_requests;
 
@@ -50,7 +49,6 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
             app.add_plugins(BrinkAssetsPlugin);
         }
         app.init_resource::<BrinkLineTables<M>>();
-        app.add_message::<BrinkLineMessage<M>>();
         app.add_systems(Update, fulfill_flow_requests::<M>);
         #[cfg(feature = "dev")]
         app.add_systems(Update, crate::replay::replay_on_reload::<M>);

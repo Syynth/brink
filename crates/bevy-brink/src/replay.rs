@@ -21,7 +21,7 @@ use bevy_log::{info, warn};
 use brink_runtime::{Context, FallbackHandler, FastRng, FlowInstance, Line, RuntimeError};
 
 use crate::asset::{BrinkProgram, BrinkStoryAsset, ProgramAsset};
-use crate::flow::BrinkFlow;
+use crate::flow::{BrinkFlow, emit_event};
 use crate::globals::BrinkGlobals;
 use crate::line_tables::BrinkLineTables;
 use crate::request::FlowStart;
@@ -144,16 +144,19 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         flow.inner = new_flow;
 
         // Replay each recorded choice. We step until a Choices line
-        // appears, then choose; if we ever can't find a choice point
-        // for the next recorded index, stop replay and leave the flow
-        // at the last successful position.
+        // (firing observer events for the new Text along the way), then
+        // call choose. If we ever can't find a choice point for the
+        // next recorded index, stop replay and leave the flow at the
+        // last successful position.
         let mut replay_failed = false;
         for (i, &choice_idx) in log.choices_made.iter().enumerate() {
-            if let Err(err) = step_to_next_choices(
+            if let Err(err) = step_to_next_choices::<M>(
                 &mut flow.inner,
                 &program_asset.program,
                 &line_tables,
                 &mut globals.inner,
+                entity,
+                &mut commands,
             ) {
                 warn!(
                     "replay: failed to reach choice point {i} for entity {entity:?}: {err}; \
@@ -182,13 +185,17 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
     }
 }
 
-/// Step the flow forward until we land on a `Choices` line. Used during
-/// replay to re-position the flow before each recorded `choose`.
-fn step_to_next_choices(
+/// Step the flow forward until we land on a `Choices` line, firing
+/// observer events for every line produced along the way (so consumer
+/// UIs see the replayed text exactly as if the player were re-playing
+/// the choices).
+fn step_to_next_choices<M: Send + Sync + 'static>(
     flow: &mut FlowInstance,
     program: &brink_runtime::Program,
-    line_tables: &BrinkLineTables<impl Send + Sync + 'static>,
+    line_tables: &BrinkLineTables<M>,
     context: &mut Context,
+    entity: bevy_ecs::entity::Entity,
+    commands: &mut Commands,
 ) -> Result<(), RuntimeError> {
     const STEP_LIMIT: usize = 10_000;
     for _ in 0..STEP_LIMIT {
@@ -199,6 +206,7 @@ fn step_to_next_choices(
             &FallbackHandler,
             None,
         )?;
+        emit_event::<M>(&line, entity, commands);
         match line {
             // Choices: ready for the next replayed pick.
             // Done / End: nothing to choose against; replay caller will
