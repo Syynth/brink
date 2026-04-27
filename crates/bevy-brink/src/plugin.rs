@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use bevy_app::{App, Plugin};
+use bevy_app::{App, Plugin, Update};
 use bevy_asset::AssetApp;
 
 use crate::asset::{
@@ -10,6 +10,7 @@ use crate::asset::{
 };
 use crate::event::BrinkLineMessage;
 use crate::line_tables::BrinkLineTables;
+use crate::request::fulfill_flow_requests;
 
 /// A Bevy plugin that registers brink story types, messages, and asset
 /// loaders for a single story instance identified by the marker type `M`.
@@ -50,6 +51,12 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         }
         app.init_resource::<BrinkLineTables<M>>();
         app.add_message::<BrinkLineMessage<M>>();
+        app.add_systems(Update, fulfill_flow_requests::<M>);
+        #[cfg(debug_assertions)]
+        app.add_systems(
+            Update,
+            crate::request::warn_post_fulfillment_mutations::<M>,
+        );
     }
 }
 
