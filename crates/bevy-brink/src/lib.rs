@@ -30,6 +30,8 @@ mod flow;
 mod globals;
 mod line_tables;
 mod plugin;
+#[cfg(feature = "dev")]
+mod replay;
 mod request;
 #[cfg(feature = "dev")]
 mod source_loader;
@@ -44,6 +46,8 @@ pub use flow::BrinkFlow;
 pub use globals::BrinkGlobals;
 pub use line_tables::BrinkLineTables;
 pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
+#[cfg(feature = "dev")]
+pub use replay::{BrinkReplayLog, replay_on_reload};
 pub use request::{BrinkFlowRequest, FlowStart, fulfill_flow_requests};
 #[cfg(feature = "dev")]
 pub use source_loader::{InkLoader, InkLoaderError};

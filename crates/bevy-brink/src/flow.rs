@@ -3,7 +3,9 @@
 use std::marker::PhantomData;
 
 use bevy_ecs::component::Component;
-use brink_runtime::FlowInstance;
+use brink_runtime::{FlowInstance, RuntimeError};
+
+use crate::globals::BrinkGlobals;
 
 /// A single live ink flow, attached to an entity. Holds the VM's per-flow
 /// state: call stacks, output buffer, pending choices, and the accumulated
@@ -29,5 +31,32 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
             inner: flow,
             _marker: PhantomData,
         }
+    }
+
+    /// Select a choice. Convenience wrapper that pulls `&mut Context`
+    /// out of [`BrinkGlobals`].
+    pub fn choose(
+        &mut self,
+        globals: &mut BrinkGlobals<M>,
+        index: usize,
+    ) -> Result<(), RuntimeError> {
+        self.inner.choose(&mut globals.inner, index)
+    }
+
+    /// Like [`choose`](Self::choose) but also records the chosen index
+    /// into a [`BrinkReplayLog`](crate::BrinkReplayLog) so the plugin's
+    /// reload-replay system can re-apply the choice after a hot-reload.
+    ///
+    /// Available only with the `dev` feature. In release builds, just
+    /// use [`choose`](Self::choose).
+    #[cfg(feature = "dev")]
+    pub fn choose_recording(
+        &mut self,
+        globals: &mut BrinkGlobals<M>,
+        log: &mut crate::replay::BrinkReplayLog<M>,
+        index: usize,
+    ) -> Result<(), RuntimeError> {
+        log.choices_made.push(index);
+        self.inner.choose(&mut globals.inner, index)
     }
 }

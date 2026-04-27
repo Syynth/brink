@@ -131,17 +131,19 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
             }
         };
 
+        // The "starting context" is what we'd seed BrinkGlobals with on
+        // first fulfillment, AND what gets snapshotted into BrinkReplayLog
+        // (in dev builds). Root-start flows run init naturally during
+        // play — fresh defaults. Named-knot flows skip init — use the
+        // post-init context captured at load time.
+        let starting_context = match &req.start {
+            FlowStart::Root => fresh_ctx,
+            FlowStart::Address(_) => ig_asset.context.clone(),
+        };
+
         // Bootstrap BrinkGlobals<M> on first fulfillment.
         if !globals_seeded {
-            // For root-start flows, init runs naturally during play —
-            // seed with fresh defaults to avoid double-applying init.
-            // For named-knot flows, the captured post-init context is
-            // the right starting point.
-            let starting_context = match &req.start {
-                FlowStart::Root => fresh_ctx,
-                FlowStart::Address(_) => ig_asset.context.clone(),
-            };
-            commands.insert_resource(BrinkGlobals::<M>::new(starting_context));
+            commands.insert_resource(BrinkGlobals::<M>::new(starting_context.clone()));
             globals_seeded = true;
         }
 
@@ -150,13 +152,21 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
         line_tables_res.tables.clone_from(&lt_asset.tables);
 
         // Materialize real components, drop the request.
-        commands
-            .entity(entity)
-            .remove::<BrinkFlowRequest<M>>()
-            .insert((
-                BrinkFlow::<M>::new(flow),
-                BrinkProgram::<M>::new(bundle.program.clone()),
-            ));
+        let mut entity_cmds = commands.entity(entity);
+        entity_cmds.remove::<BrinkFlowRequest<M>>();
+        entity_cmds.insert((
+            BrinkFlow::<M>::new(flow),
+            BrinkProgram::<M>::new(bundle.program.clone()),
+        ));
+
+        // In dev builds, attach a replay log so hot-reload can rebuild
+        // the flow and replay choices.
+        #[cfg(feature = "dev")]
+        entity_cmds.insert(crate::replay::BrinkReplayLog::<M>::new(
+            starting_context,
+            req.start.clone(),
+            req.story.clone(),
+        ));
     }
 }
 

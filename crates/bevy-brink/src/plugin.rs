@@ -52,6 +52,8 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         app.init_resource::<BrinkLineTables<M>>();
         app.add_message::<BrinkLineMessage<M>>();
         app.add_systems(Update, fulfill_flow_requests::<M>);
+        #[cfg(feature = "dev")]
+        app.add_systems(Update, crate::replay::replay_on_reload::<M>);
         #[cfg(debug_assertions)]
         app.add_systems(
             Update,

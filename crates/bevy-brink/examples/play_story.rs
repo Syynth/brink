@@ -25,15 +25,11 @@ use bevy::input::ButtonInput;
 use bevy::prelude::*;
 use bevy_brink::{
     BrinkFlow, BrinkFlowRequest, BrinkGlobals, BrinkLineTables, BrinkPlugin, BrinkProgram,
-    BrinkStoryAsset, FlowStart, ProgramAsset,
+    BrinkReplayLog, BrinkStoryAsset, FlowStart, ProgramAsset,
 };
 use brink_runtime::{FallbackHandler, FastRng, Line, StoryStatus};
 
 // ── Resources ──────────────────────────────────────────────────────────────
-
-/// Stores the asset handle so we can re-spawn a request on hot-reload.
-#[derive(Resource)]
-struct StoryHandle(Handle<BrinkStoryAsset>);
 
 /// Accumulated text for the current "page" of the story. Cleared when
 /// the user advances or selects a choice.
@@ -82,9 +78,9 @@ fn main() {
         .add_systems(
             Update,
             (
-                handle_program_reload,
                 handle_input,
                 update_displays.after(handle_input),
+                clear_page_on_reload,
             ),
         )
         .run();
@@ -153,7 +149,6 @@ fn setup_ui(mut commands: Commands) {
 fn load_story(asset_server: Res<AssetServer>, mut commands: Commands) {
     info!("loading story.ink");
     let handle: Handle<BrinkStoryAsset> = asset_server.load("story.ink");
-    commands.insert_resource(StoryHandle(handle.clone()));
     commands.spawn(
         BrinkFlowRequest::<()>::builder()
             .story(handle)
@@ -164,16 +159,12 @@ fn load_story(asset_server: Res<AssetServer>, mut commands: Commands) {
 
 // ── Hot-reload handling ────────────────────────────────────────────────────
 
-/// React to `AssetEvent::Modified<ProgramAsset>` — the watcher saw an
-/// `.ink` (or any INCLUDE'd file) change on disk, the loader re-ran,
-/// and a new `program`/`line_tables`/`initial_globals` trio was emitted.
-/// Reset by despawning the existing flow entity and spawning a fresh
-/// request; the fulfillment system picks it up next tick.
-fn handle_program_reload(
+/// When the program reloads, the plugin's replay-on-reload system
+/// rebuilds the flow against the new bytecode + replays our recorded
+/// choices in-place. We just need to clear the displayed page so
+/// subsequent advance shows fresh content.
+fn clear_page_on_reload(
     mut events: MessageReader<AssetEvent<ProgramAsset>>,
-    flows: Query<Entity, With<BrinkFlow<()>>>,
-    story_handle: Option<Res<StoryHandle>>,
-    mut commands: Commands,
     mut page: ResMut<PageText>,
     mut choices: ResMut<PendingChoices>,
     mut banner: ResMut<Banner>,
@@ -184,32 +175,18 @@ fn handle_program_reload(
             reloaded = true;
         }
     }
-    if !reloaded {
-        return;
+    if reloaded {
+        page.0.clear();
+        choices.0.clear();
+        banner.0 = "Reloaded — choices replayed; press SPACE to continue.".to_string();
     }
-
-    info!("program reloaded — resetting flow");
-    for entity in &flows {
-        commands.entity(entity).despawn();
-    }
-    if let Some(handle) = story_handle {
-        commands.spawn(
-            BrinkFlowRequest::<()>::builder()
-                .story(handle.0.clone())
-                .start(FlowStart::Root)
-                .build(),
-        );
-    }
-    page.0.clear();
-    choices.0.clear();
-    banner.0 = "Reloaded from disk. Story restarted.".to_string();
 }
 
 // ── Input + advancement ────────────────────────────────────────────────────
 
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
-    mut flows: Query<(&mut BrinkFlow<()>, &BrinkProgram<()>)>,
+    mut flows: Query<(&mut BrinkFlow<()>, &BrinkProgram<()>, &mut BrinkReplayLog<()>)>,
     globals: Option<ResMut<BrinkGlobals<()>>>,
     line_tables: Res<BrinkLineTables<()>>,
     programs: Res<Assets<ProgramAsset>>,
@@ -226,7 +203,7 @@ fn handle_input(
     let Some(mut globals) = globals else {
         return;
     };
-    let Ok((mut flow, brink_program)) = flows.single_mut() else {
+    let Ok((mut flow, brink_program, mut replay_log)) = flows.single_mut() else {
         return;
     };
     let Some(program_asset) = programs.get(&brink_program.handle) else {
@@ -249,7 +226,9 @@ fn handle_input(
         ];
         for (key, idx) in DIGIT_KEYS {
             if keys.just_pressed(*key) && *idx < choices.0.len() {
-                if let Err(err) = flow.inner.choose(&mut globals.inner, *idx) {
+                // Use choose_recording so the replay log captures this
+                // selection and reload-replay can re-apply it.
+                if let Err(err) = flow.choose_recording(&mut globals, &mut replay_log, *idx) {
                     banner.0 = format!("choose error: {err}");
                     return;
                 }
