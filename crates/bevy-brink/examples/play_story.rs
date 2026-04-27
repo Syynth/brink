@@ -7,14 +7,9 @@
 //! (or `characters.ink`, which it INCLUDEs), save, and the displayed
 //! story restarts from the beginning with the new content.
 //!
-//! Hot-reload works because:
-//! - Bevy's `file_watcher` feature watches every asset path that
-//!   `LoadContext::read_asset_bytes` was called with.
-//! - `InkLoader` walks the transitive INCLUDE graph through that method,
-//!   so every file in the project is registered as a dep.
-//! - When any file changes, Bevy re-runs `InkLoader`, producing a new
-//!   `ProgramAsset` and `LineTablesAsset`. We listen for the resulting
-//!   `AssetEvent::Modified` and reset the running flow.
+//! Demonstrates the request-component pattern: just spawn a
+//! `BrinkFlowRequest` and the plugin's fulfillment system handles asset
+//! readiness, globals init, line-table sync, and component materialization.
 
 #![expect(
     clippy::needless_pass_by_value,
@@ -29,21 +24,16 @@ use bevy::asset::AssetEvent;
 use bevy::input::ButtonInput;
 use bevy::prelude::*;
 use bevy_brink::{
-    BrinkAssetsPlugin, BrinkFlow, BrinkGlobals, BrinkLineTables, BrinkPlugin, BrinkProgram,
-    BrinkStoryAsset, LineTablesAsset, ProgramAsset,
+    BrinkFlow, BrinkFlowRequest, BrinkGlobals, BrinkLineTables, BrinkPlugin, BrinkProgram,
+    BrinkStoryAsset, FlowStart, ProgramAsset,
 };
-use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng, FlowInstance, Line, StoryStatus};
+use brink_runtime::{FallbackHandler, FastRng, Line, StoryStatus};
 
 // ── Resources ──────────────────────────────────────────────────────────────
 
-/// Holds the in-flight handle to the loaded story bundle.
+/// Stores the asset handle so we can re-spawn a request on hot-reload.
 #[derive(Resource)]
 struct StoryHandle(Handle<BrinkStoryAsset>);
-
-/// Latch flipped once we've created the flow + globals from the loaded
-/// program. Reset to `false` on hot-reload so init runs again.
-#[derive(Resource, Default)]
-struct Initialized(bool);
 
 /// Accumulated text for the current "page" of the story. Cleared when
 /// the user advances or selects a choice.
@@ -71,18 +61,6 @@ struct InstructionsText;
 #[derive(Component)]
 struct BannerText;
 
-// ── External-function handler ──────────────────────────────────────────────
-
-/// Default fallback handler — every external call delegates to its
-/// in-story fallback container.
-struct FallbackHandler;
-
-impl ExternalFnHandler for FallbackHandler {
-    fn call(&self, _name: &str, _args: &[brink_format::Value]) -> ExternalResult {
-        ExternalResult::Fallback
-    }
-}
-
 // ── App entry ──────────────────────────────────────────────────────────────
 
 fn main() {
@@ -96,12 +74,7 @@ fn main() {
             watch_for_changes_override: Some(true),
             ..Default::default()
         }))
-        // Use the asset-only plugin (registers the .ink/.inkb loaders +
-        // the asset types) but do NOT auto-advance on every tick — we
-        // drive advancement from SPACE input instead.
-        .add_plugins(BrinkAssetsPlugin)
         .add_plugins(BrinkPlugin::<()>::default())
-        .insert_resource(Initialized::default())
         .insert_resource(PageText::default())
         .insert_resource(PendingChoices::default())
         .insert_resource(Banner::default())
@@ -109,12 +82,10 @@ fn main() {
         .add_systems(
             Update,
             (
-                initialize_when_ready,
                 handle_program_reload,
                 handle_input,
-                update_displays,
-            )
-                .chain(),
+                update_displays.after(handle_input),
+            ),
         )
         .run();
 }
@@ -176,88 +147,62 @@ fn setup_ui(mut commands: Commands) {
         });
 }
 
+/// Load the story and spawn a flow request — the plugin's fulfillment
+/// system handles everything from there (waiting for assets, building
+/// the `FlowInstance`, inserting `BrinkGlobals`, etc.).
 fn load_story(asset_server: Res<AssetServer>, mut commands: Commands) {
     info!("loading story.ink");
     let handle: Handle<BrinkStoryAsset> = asset_server.load("story.ink");
-    commands.insert_resource(StoryHandle(handle));
+    commands.insert_resource(StoryHandle(handle.clone()));
+    commands.spawn(
+        BrinkFlowRequest::<()>::builder()
+            .story(handle)
+            .start(FlowStart::Root)
+            .build(),
+    );
 }
 
-// ── Initialization ─────────────────────────────────────────────────────────
+// ── Hot-reload handling ────────────────────────────────────────────────────
 
-/// Once the bundle and both labeled subassets are loaded, build the
-/// runtime state: insert `BrinkGlobals<()>`, populate `BrinkLineTables<()>`,
-/// and spawn an entity carrying `BrinkFlow<()>` + `BrinkProgram<()>`.
-///
-/// Idempotent — once `Initialized.0 == true` it returns immediately.
-/// Re-run by setting `Initialized.0 = false` (we do this on hot-reload).
-fn initialize_when_ready(
+/// React to `AssetEvent::Modified<ProgramAsset>` — the watcher saw an
+/// `.ink` (or any INCLUDE'd file) change on disk, the loader re-ran,
+/// and a new `program`/`line_tables`/`initial_globals` trio was emitted.
+/// Reset by despawning the existing flow entity and spawning a fresh
+/// request; the fulfillment system picks it up next tick.
+fn handle_program_reload(
+    mut events: MessageReader<AssetEvent<ProgramAsset>>,
+    flows: Query<Entity, With<BrinkFlow<()>>>,
     story_handle: Option<Res<StoryHandle>>,
-    story_assets: Res<Assets<BrinkStoryAsset>>,
-    program_assets: Res<Assets<ProgramAsset>>,
-    line_table_assets: Res<Assets<LineTablesAsset>>,
-    existing_flows: Query<Entity, With<BrinkFlow<()>>>,
-    mut initialized: ResMut<Initialized>,
-    mut line_tables: ResMut<BrinkLineTables<()>>,
+    mut commands: Commands,
     mut page: ResMut<PageText>,
     mut choices: ResMut<PendingChoices>,
     mut banner: ResMut<Banner>,
-    mut commands: Commands,
 ) {
-    if initialized.0 {
-        return;
-    }
-    let Some(story_handle) = story_handle else {
-        return;
-    };
-    let Some(bundle) = story_assets.get(&story_handle.0) else {
-        return;
-    };
-    let Some(program_asset) = program_assets.get(&bundle.program) else {
-        return;
-    };
-    let Some(lt_asset) = line_table_assets.get(&bundle.line_tables) else {
-        return;
-    };
-
-    // Despawn any existing flow entity from a previous compile.
-    for e in &existing_flows {
-        commands.entity(e).despawn();
-    }
-
-    let (flow, context) = FlowInstance::new_at_root(&program_asset.program);
-
-    commands.insert_resource(BrinkGlobals::<()>::new(context));
-    line_tables.tables.clone_from(&lt_asset.tables);
-
-    commands.spawn((
-        BrinkFlow::<()>::new(flow),
-        BrinkProgram::<()>::new(bundle.program.clone()),
-    ));
-
-    page.0.clear();
-    choices.0.clear();
-    initialized.0 = true;
-    if banner.0.is_empty() {
-        banner.0 = "Story loaded. Press SPACE to begin.".to_string();
-    }
-    info!("story ready");
-}
-
-/// React to `AssetEvent::Modified<ProgramAsset>` — the file watcher saw
-/// an `.ink` (or any INCLUDE'd file) change on disk, the loader re-ran,
-/// and a new program was emitted. Reset the runtime so init runs again.
-fn handle_program_reload(
-    mut events: MessageReader<AssetEvent<ProgramAsset>>,
-    mut initialized: ResMut<Initialized>,
-    mut banner: ResMut<Banner>,
-) {
+    let mut reloaded = false;
     for event in events.read() {
-        if let AssetEvent::Modified { .. } = event {
-            initialized.0 = false;
-            banner.0 = "Reloaded from disk. Story restarted.".to_string();
-            info!("program reloaded — resetting flow");
+        if matches!(event, AssetEvent::Modified { .. }) {
+            reloaded = true;
         }
     }
+    if !reloaded {
+        return;
+    }
+
+    info!("program reloaded — resetting flow");
+    for entity in &flows {
+        commands.entity(entity).despawn();
+    }
+    if let Some(handle) = story_handle {
+        commands.spawn(
+            BrinkFlowRequest::<()>::builder()
+                .story(handle.0.clone())
+                .start(FlowStart::Root)
+                .build(),
+        );
+    }
+    page.0.clear();
+    choices.0.clear();
+    banner.0 = "Reloaded from disk. Story restarted.".to_string();
 }
 
 // ── Input + advancement ────────────────────────────────────────────────────
@@ -273,6 +218,11 @@ fn handle_input(
     mut banner: ResMut<Banner>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    if keys.just_pressed(KeyCode::Escape) {
+        exit.write(AppExit::Success);
+        return;
+    }
+
     let Some(mut globals) = globals else {
         return;
     };
@@ -282,11 +232,6 @@ fn handle_input(
     let Some(program_asset) = programs.get(&brink_program.handle) else {
         return;
     };
-
-    if keys.just_pressed(KeyCode::Escape) {
-        exit.write(AppExit::Success);
-        return;
-    }
 
     // Choice selection: digit 1 through 9 picks choices[0..=8] when a
     // choice prompt is active.
@@ -351,8 +296,7 @@ fn handle_input(
 }
 
 /// Step the flow repeatedly, accumulating Text into `page`, until we
-/// hit a terminal Line (Done / Choices / End). Populates `choices` if
-/// a choice point is reached; sets a banner string on End.
+/// hit a terminal Line (Done / Choices / End).
 fn advance_until_terminal(
     flow: &mut BrinkFlow<()>,
     program: &brink_runtime::Program,
@@ -416,7 +360,7 @@ fn update_displays(
     if let Ok(mut text) = q_story.single_mut() {
         if choices.0.is_empty() {
             if page.0.is_empty() {
-                text.0 = "(press SPACE)".to_string();
+                text.0 = "(press SPACE to begin)".to_string();
             } else {
                 text.0.clone_from(&page.0);
             }
