@@ -43,6 +43,6 @@ pub use program::Program;
 pub use rng::{DotNetRng, FastRng, StoryRng};
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
 pub use story::{
-    Choice, Context, ExternalFnHandler, ExternalResult, FlowInstance, Line, Stats, Story,
-    StorySnapshot, StoryStatus,
+    Choice, Context, ExternalFnHandler, ExternalResult, FallbackHandler, FlowInstance, Line, Stats,
+    Story, StorySnapshot, StoryStatus,
 };

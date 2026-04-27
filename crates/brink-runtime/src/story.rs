@@ -590,7 +590,13 @@ pub trait ExternalFnHandler {
 }
 
 /// Default handler that always falls back to the ink function body.
-struct FallbackHandler;
+///
+/// Use this as the `handler` argument to [`FlowInstance::step_single_line`]
+/// or [`FlowInstance::choose`] when you don't want to provide a custom
+/// external-function binding registry. Every external call returns
+/// [`ExternalResult::Fallback`], delegating to the in-story fallback
+/// container declared on the `EXTERNAL` declaration.
+pub struct FallbackHandler;
 
 impl ExternalFnHandler for FallbackHandler {
     fn call(&self, _name: &str, _args: &[Value]) -> ExternalResult {

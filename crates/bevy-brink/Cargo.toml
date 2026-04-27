@@ -21,6 +21,8 @@ bevy_ecs = { version = "0.18.1", default-features = false }
 bevy_log = { version = "0.18.1", default-features = false }
 bevy_reflect = { version = "0.18.1", default-features = false }
 
+bon.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 
 [features]

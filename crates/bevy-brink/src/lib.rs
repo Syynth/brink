@@ -35,7 +35,8 @@ mod source_loader;
 mod system;
 
 pub use asset::{
-    BrinkProgram, BrinkStoryAsset, InkbLoader, InkbLoaderError, LineTablesAsset, ProgramAsset,
+    BrinkProgram, BrinkStoryAsset, InitError, InitialGlobalsAsset, InkLoaderSettings, InkbLoader,
+    InkbLoaderError, LineTablesAsset, ProgramAsset,
 };
 pub use event::BrinkLineMessage;
 pub use flow::BrinkFlow;

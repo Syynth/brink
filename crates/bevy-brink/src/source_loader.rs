@@ -26,7 +26,9 @@ use std::collections::HashMap;
 use bevy_asset::{AssetLoader, LoadContext, io::Reader};
 use bevy_reflect::TypePath;
 
-use crate::asset::{BrinkStoryAsset, LineTablesAsset, ProgramAsset};
+use crate::asset::{
+    BrinkStoryAsset, InitError, InkLoaderSettings, emit_story_assets, run_init_pass,
+};
 
 /// Asset loader for `.ink` (source) files.
 ///
@@ -52,6 +54,8 @@ pub enum InkLoaderError {
     Compile(#[from] brink_compiler::CompileError),
     #[error("link error: {0}")]
     Link(#[from] brink_runtime::RuntimeError),
+    #[error("init pass failed: {0}")]
+    Init(#[from] InitError),
 }
 
 /// Resolve an `INCLUDE` path relative to the including file's directory.
@@ -67,13 +71,13 @@ fn resolve_include_path(from_file: &str, include_path: &str) -> String {
 
 impl AssetLoader for InkLoader {
     type Asset = BrinkStoryAsset;
-    type Settings = ();
+    type Settings = InkLoaderSettings;
     type Error = InkLoaderError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
-        _settings: &Self::Settings,
+        settings: &Self::Settings,
         load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         // Read the entry source. AssetPath includes optional source +
@@ -126,18 +130,13 @@ impl AssetLoader for InkLoader {
             })
         })?;
         let (program, tables) = brink_runtime::link(&output.data)?;
-
-        // Emit labeled subassets (matching InkbLoader's shape) and bundle
-        // their handles in the top-level BrinkStoryAsset.
-        let program_handle =
-            load_context.add_labeled_asset("program".to_string(), ProgramAsset { program });
-        let line_tables_handle = load_context
-            .add_labeled_asset("line_tables".to_string(), LineTablesAsset { tables });
-
-        Ok(BrinkStoryAsset {
-            program: program_handle,
-            line_tables: line_tables_handle,
-        })
+        let initial_context = run_init_pass(&program, &tables, settings)?;
+        Ok(emit_story_assets(
+            load_context,
+            program,
+            tables,
+            initial_context,
+        ))
     }
 
     fn extensions(&self) -> &[&str] {
