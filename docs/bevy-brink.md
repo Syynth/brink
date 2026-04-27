@@ -196,6 +196,171 @@ state advances, but observer events don't fire.
 - Default bevy wiring: Resources for shared state, Components for flows
 - brink-runtime stays bevy-free
 
+## Design rationale
+
+The decision log captures the formally-approved decisions; this section
+records design discussions that informed the shape of the API but
+weren't logged as standalone decisions. Read this to understand *why*
+the API took the form it did.
+
+### Story-vs-flow split
+
+The reference `bevy_bladeink` integration models ink as "one global
+story per app" — a single `InkStory` resource, an implicit single
+flow. We deliberately chose **multi-flow**: a story is asset-shaped
+(immutable bytecode + line tables, loaded once), and each conversation
+is entity-shaped (per-NPC / per-cutscene mutable state — call stacks,
+output buffer, transcript).
+
+Rationale: real games run many concurrent dialogues (background NPCs,
+cutscenes, side conversations). Forcing them through a single global
+story object means either serializing every interaction or rebuilding
+the story object per-NPC. Per-flow entities let many flows share one
+program and one set of globals (the common case) while leaving room for
+per-flow isolated state when a game needs it (rollback / speculative
+preview / forked branches).
+
+The cost: more API surface than bladeink's single-global model. But
+the request-component pattern + observer events keep the user-facing
+spawn cost to about the same number of lines as bladeink, and the
+ECS-natural shape pays off as soon as you have a second NPC.
+
+### Request component over Commands extension
+
+For "spawn a flow," we considered two patterns:
+
+- **Commands ext**: `commands.brink_spawn_flow::<M>(handle, knot)` —
+  imperative, hides state behind a function call.
+- **Request component**: `commands.spawn(BrinkFlowRequest::<M>::builder().story(handle).build())`
+  — declarative, the entity spawn IS the request, a system fulfills it
+  reactively when assets are ready.
+
+We chose the request-component pattern because:
+- The entity is in a coherent state from spawn — it carries its own
+  intent. No "spawn then later magically attach components."
+- It naturally handles the "assets aren't loaded yet" case without
+  polling or readiness latches in user code.
+- It composes with hot-reload trivially: re-spawn a request, fulfillment
+  rebuilds.
+- It fits the ECS data-driven idiom; Commands extensions feel imperative
+  in a system that's otherwise declarative.
+
+`bon` was chosen for the builder because it handles generic structs
+(including our `<M>` marker via `PhantomData`) cleanly.
+
+### Observer events over MessageReader/Writer
+
+Bevy 0.18 has two event flavors:
+- **Messages** (`Message` derive, `MessageReader`/`MessageWriter`): the
+  renamed buffered events from older Bevy versions. Per-tick polling.
+- **Observer events** (`Event` derive, `commands.trigger`,
+  `app.add_observer`): synchronous fire-and-react.
+
+The user's standing position: "full on message reader/writer seems
+unlikely to be useful" for this domain. Observer events match the
+"a line was just produced" semantic better — it's a punctual event
+addressed at a specific entity (the flow), not a stream consumed by a
+poll loop. Splitting one big `BrinkLineMessage(Line)` into four
+variant-specific events (`BrinkLineDelivered`, `BrinkChoicesPresented`,
+`BrinkTurnDone`, `BrinkStoryEnded`) lets observers target exactly the
+case they care about with no inline `match`.
+
+(See open issue #2: the actual dispatch reliability of `commands.trigger`
+in some contexts is unresolved. If we have to fall back to messages,
+the API surface change would be small.)
+
+### Init pass at load time, not per-flow
+
+A story's top-of-file content is two things stuck together:
+1. **VAR/CONST/LIST declarations** — link-time concern, handled by
+   `program.global_defaults()`.
+2. **Free-floating setup code** before any `=== knot ===` — runtime
+   concern, runs as the start of player-visible content.
+
+For a flow that starts at root, (2) is just the opening of the story
+and runs naturally on advance. For a flow that starts at a *named knot*
+(say, an NPC's dialogue), the player skips (2) entirely — but those
+side effects (e.g. `~ initialize_save_data()`) still need to have
+happened, or the named-knot flow runs against uninitialized globals.
+
+The fix: run a one-time init pass at load time that captures the
+post-(2) `Context` as a labeled `InitialGlobalsAsset`. Named-knot
+flows seed `BrinkGlobals` from this snapshot; root-start flows seed
+from fresh defaults so they don't double-execute init code.
+
+Configurable via `InkLoaderSettings::run_init` (default `true`) for
+stories whose init code calls host-provided externals not yet
+registered at load time.
+
+### CRC-aware asset modification — punted
+
+The original sketch had separate `ProgramAsset` and `LineTablesAsset`
+fire `Modified` events independently based on content CRC: edit a
+string literal, only `LineTablesAsset` would re-emit; in-flight story
+state preserved. The user explicitly punted: "if we don't have robust
+support for independent hot-reloading of one versus the others, that's
+okay."
+
+So v1 always re-emits both subassets together when the source file
+changes. Both `ProgramAsset` and `LineTablesAsset` exist as distinct
+types (good for future split + locale overlays) but we don't try to
+suppress one of them.
+
+### `continue_maximally` is a bad primitive (parked)
+
+The original `Story::continue_maximally` walks until any non-Text line
+appears. The user's standing concern: external function calls can fire
+earlier than expected during this walk, which is bad for game-side
+effects that care about precise timing. The "real" continuation API
+should be one-line-at-a-time (`continue()` style), with the consumer
+deciding when to keep going.
+
+Currently `BrinkFlow::advance_until_terminal` is the
+`continue_maximally` shape. It's the right primitive for a "click to
+continue" demo dialogue UI but probably wrong for a production
+external-function-heavy game. Marked for redesign once external bindings
+land.
+
+### Fork mode for per-flow context (seam, no API)
+
+The shared-globals default (`BrinkGlobals<M>` resource) suits ~95% of
+games. For the remaining 5% — speculative dialogue preview, rollback,
+isolated side-conversations — a fork mode is needed: per-flow `Context`
+on a Component instead of a shared Resource.
+
+The runtime API supports this: the step functions take `&mut Context`,
+not "the resource." The seam is intentional. We haven't built the
+fork-mode wiring (`BrinkFlowRequest::isolated_context: bool`,
+fulfillment branching, advance system handling per-entity context) but
+the design space is clear and the cost is bounded.
+
+The user explicitly said merge semantics (additive vs last-write-wins
+vs takes-max) should NOT ship as a built-in — they're game-specific and
+any default would be wrong for half the consumers. Fork mode would just
+clone the `Context`; reconciliation back to shared state is consumer
+policy.
+
+### Inspiration: `bevy_bladeink`
+
+`~/code/rs/bevy_bladeink/bevy_bladeink/examples/basic.rs` was the
+primary reference for the Bevy-side ergonomics. The visible
+inspirations:
+
+- Per-event-variant observers (their `DeliverLine` / `DeliverChoices`).
+- Single `InkStory` resource as the "bring up the story" verb (we kept
+  this as a request-component instead, but the "one line of user code
+  to start" target was the same).
+- `commands.ink_*` verb pattern for advance/choose (we deliberately
+  chose request components instead, but the simplicity of that surface
+  set the bar).
+
+Where we differ:
+- Multi-flow design (vs. their single-global-story).
+- Marker generic for compile-time multi-story support.
+- Three-asset bundle (vs. their single `InkStory` resource).
+- Asset/hot-reload integration (their basic example doesn't demonstrate
+  hot-reload; we attempted to make it work and hit the open issue).
+
 ## How to pick this work up cleanly
 
 1. **Read this doc.** It is the canonical state.
