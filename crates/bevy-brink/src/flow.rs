@@ -166,12 +166,40 @@ mod tests {
     use bevy_ecs::prelude::*;
 
     /// Recorder for observer events; tests assert against its contents.
+    ///
+    /// Note: terminal `Line` variants (`Done`, `Choices`, `End`) carry
+    /// accumulated text in their own `text` field, not as a separate
+    /// preceding `Line::Text`. So we capture text from every event and
+    /// expose it as `all_text` for tests that just want "did this string
+    /// appear anywhere."
     #[derive(Resource, Default)]
     struct EventRecorder {
         text_lines: Vec<String>,
+        choices_text: Vec<String>,
         choices_presentations: Vec<Vec<String>>,
+        turn_done_text: Vec<String>,
+        story_ended_text: Vec<String>,
         turn_done: u32,
         story_ended: u32,
+    }
+
+    impl EventRecorder {
+        fn all_text(&self) -> String {
+            let mut s = String::new();
+            for t in &self.text_lines {
+                s.push_str(t);
+            }
+            for t in &self.choices_text {
+                s.push_str(t);
+            }
+            for t in &self.turn_done_text {
+                s.push_str(t);
+            }
+            for t in &self.story_ended_text {
+                s.push_str(t);
+            }
+            s
+        }
     }
 
     fn install_recorder(app: &mut bevy_app::App) {
@@ -185,6 +213,7 @@ mod tests {
         );
         app.add_observer(
             |trigger: On<BrinkChoicesPresented<()>>, mut rec: ResMut<EventRecorder>| {
+                rec.choices_text.push(trigger.event().text.clone());
                 rec.choices_presentations.push(
                     trigger
                         .event()
@@ -196,12 +225,14 @@ mod tests {
             },
         );
         app.add_observer(
-            |_: On<BrinkTurnDone<()>>, mut rec: ResMut<EventRecorder>| {
+            |trigger: On<BrinkTurnDone<()>>, mut rec: ResMut<EventRecorder>| {
+                rec.turn_done_text.push(trigger.event().text.clone());
                 rec.turn_done += 1;
             },
         );
         app.add_observer(
-            |_: On<BrinkStoryEnded<()>>, mut rec: ResMut<EventRecorder>| {
+            |trigger: On<BrinkStoryEnded<()>>, mut rec: ResMut<EventRecorder>| {
+                rec.story_ended_text.push(trigger.event().text.clone());
                 rec.story_ended += 1;
             },
         );
@@ -257,17 +288,46 @@ mod tests {
         }
     }
 
+    /// Smoke test: does `commands.trigger` from a `Update` system fire
+    /// observers at all in this minimal app setup? Isolates the dispatch
+    /// path from the rest of the flow machinery.
+    #[derive(Resource, Default)]
+    struct Hits(u32);
+
     #[test]
-    #[ignore = "commands.trigger from a system queued via Update doesn't \
-        fire observers in the test context; flow state mutates correctly \
-        but events don't dispatch. Suspected same root cause as the \
-        hot-reload visual issue. See docs/bevy-brink.md#open-issues."]
+    fn smoke_commands_trigger_fires_observers() {
+        let mut app = make_test_app();
+        app.insert_resource(Hits::default());
+        app.add_observer(
+            |_: On<BrinkLineDelivered<()>>, mut h: ResMut<Hits>| {
+                h.0 += 1;
+            },
+        );
+        app.add_systems(Update, |mut commands: Commands| {
+            commands.trigger(BrinkLineDelivered::<()>::new(
+                Entity::PLACEHOLDER,
+                "hello".into(),
+                vec![],
+            ));
+        });
+
+        app.update();
+        let hits = app.world().resource::<Hits>().0;
+        assert!(hits >= 1, "trigger from system did not reach observer");
+    }
+
+    /// Root-start flow walks text content and reaches a Choices line.
+    /// Content is at root (not under `=== knot ===`) because `FlowStart::Root`
+    /// runs the file's root container — it does not auto-enter a named knot.
+    /// The Choices event itself carries any accumulated text in its `text`
+    /// field, so we check for the strings via `all_text()`.
+    #[test]
     fn advance_until_terminal_fires_text_then_choices() {
         let mut app = make_test_app();
         install_recorder(&mut app);
 
         let (program, tables, ctx) = compile_test_story(
-            "=== start ===\nfirst line\nsecond line\n* [A] -> END\n* [B] -> END\n",
+            "first line\nsecond line\n* [A] -> END\n* [B] -> END\n",
         );
         let story = add_story_assets(&mut app, program, tables, ctx);
         app.world_mut()
@@ -283,14 +343,16 @@ mod tests {
         app.update();
 
         let rec = app.world().resource::<EventRecorder>();
+        let all = rec.all_text();
         assert!(
-            rec.text_lines.iter().any(|s| s.contains("first line")),
-            "expected first line in events; got {:?}",
-            rec.text_lines
+            all.contains("first line"),
+            "expected 'first line' in events; got text_lines={:?} choices_text={:?}",
+            rec.text_lines,
+            rec.choices_text,
         );
         assert!(
-            rec.text_lines.iter().any(|s| s.contains("second line")),
-            "expected second line"
+            all.contains("second line"),
+            "expected 'second line' in events; got {all:?}",
         );
         assert_eq!(
             rec.choices_presentations.len(),
@@ -301,7 +363,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "see advance_until_terminal_fires_text_then_choices"]
     fn advance_to_end_fires_story_ended() {
         let mut app = make_test_app();
         install_recorder(&mut app);
@@ -323,26 +384,28 @@ mod tests {
             "should have fired StoryEnded once; rec={:?}",
             (&rec.text_lines, rec.turn_done, rec.story_ended)
         );
+        // The "goodbye" text is delivered as part of the End event's own
+        // text field, not as a preceding Line::Text — terminal lines
+        // bundle accumulated content.
         assert!(
-            rec.text_lines.iter().any(|s| s.contains("goodbye")),
-            "expected 'goodbye' in events; got {:?}",
-            rec.text_lines
+            rec.all_text().contains("goodbye"),
+            "expected 'goodbye' somewhere in events; story_ended_text={:?} text_lines={:?}",
+            rec.story_ended_text,
+            rec.text_lines,
         );
     }
 
     /// `choose_recording` records into the replay log and forwards to
-    /// `inner.choose`. Currently ignored along with the other event-firing
-    /// tests — the choice itself is applied (verifiable via the log) but
-    /// the test setup depends on advance firing observer events first to
-    /// reach a Choices state.
+    /// `inner.choose`. Drives a flow to a choice, picks a choice, asserts
+    /// the choice index lands in the replay log.
     #[test]
-    #[ignore = "see advance_until_terminal_fires_text_then_choices"]
     #[cfg(feature = "dev")]
     fn choose_recording_appends_to_replay_log() {
         let mut app = make_test_app();
         install_recorder(&mut app);
         // Choose driver: when ChoiceToMake is set, picks that index and
-        // records to the replay log on the matching entity.
+        // records to the replay log on the matching entity. `BrinkGlobals`
+        // is `Option` because it doesn't exist until the first fulfillment.
         #[derive(Resource, Default)]
         struct ChoiceToMake(Option<usize>);
         app.insert_resource(ChoiceToMake::default());
@@ -352,16 +415,19 @@ mod tests {
                 &mut BrinkFlow<()>,
                 &mut crate::replay::BrinkReplayLog<()>,
             )>,
-             mut globals: ResMut<crate::BrinkGlobals<()>>,
+             globals: Option<ResMut<crate::BrinkGlobals<()>>>,
              mut to_make: ResMut<ChoiceToMake>| {
                 let Some(idx) = to_make.0.take() else { return };
+                let Some(mut globals) = globals else { return };
                 let Ok((mut flow, mut log)) = flows.single_mut() else { return };
                 let _ = flow.choose_recording(&mut globals, &mut log, idx);
             },
         );
 
+        // Content at root so the root-start flow reaches the choice
+        // (named knots are not auto-entered by FlowStart::Root).
         let (program, tables, ctx) =
-            compile_test_story("=== start ===\nhi\n* [A] -> END\n* [B] -> END\n");
+            compile_test_story("hi\n* [A] -> END\n* [B] -> END\n");
         let story = add_story_assets(&mut app, program, tables, ctx);
         app.world_mut()
             .spawn(BrinkFlowRequest::<()>::builder().story(story).build());

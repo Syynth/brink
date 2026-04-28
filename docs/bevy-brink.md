@@ -56,14 +56,23 @@ No polling, no readiness latches in user code.
 ### Observer events
 
 The `BrinkFlow::advance_until_terminal` / `step_one` methods queue
-observer events via `commands.trigger`:
+observer events via `commands.trigger`. All four are `EntityEvent`s
+targeting the flow's entity, so consumers can either register a global
+observer via `app.add_observer(...)` or a per-entity observer via
+`world.entity_mut(flow).observe(...)`:
 
 - `BrinkLineDelivered<M>` — a `Line::Text` with text + tags
 - `BrinkChoicesPresented<M>` — choices + leading text
-- `BrinkTurnDone<M>` — `Line::Done` reached
-- `BrinkStoryEnded<M>` — `Line::End` reached
+- `BrinkTurnDone<M>` — `Line::Done` reached, carries any text accumulated
+  this turn
+- `BrinkStoryEnded<M>` — `Line::End` reached, carries any text accumulated
+  this turn
 
-Consumers register observers via `app.add_observer(...)`.
+Important: terminal variants (`Done`, `Choices`, `End`) carry their
+own accumulated text — they don't emit a separate preceding
+`BrinkLineDelivered` for that text. UIs that just want "everything that
+happened this turn" should append the terminal event's `text` field too,
+not only the per-line events.
 
 ### Init pass
 
@@ -122,33 +131,52 @@ iterations:
   `advance_until_terminal`. **User reports this version doesn't render
   anything after the reload.**
 
-The second symptom may be the same root cause as issue #2 below.
+Originally suspected to share a root cause with issue #2 (observer
+dispatch). Issue #2 turned out to be a test bug, not a dispatch bug —
+see below — so the "renders nothing" symptom needs fresh investigation.
 
-**Suggested next step**: revert hot-reload replay to "reset to start, no
-replay" — simpler, easier to verify works. Then revisit replay as a
-dev-feature add-on once the basic path is confirmed.
+**Suggested next step**: with dispatch ruled out, instrument the reload
+flow to see what's actually firing. Likely culprits: system-vs-observer
+ordering inside the reload tick, asset-event timing (does
+`replay_on_reload` see the *new* `ProgramAsset` or the old one?), or
+the post-replay `advance_until_terminal` reaching a state that has no
+events to deliver (e.g. landing back on the same Choices the user just
+consumed). If the rabbit hole gets deep, fall back to "reset to start,
+no replay" — simpler and easier to verify.
 
-### 2. `commands.trigger` observer dispatch — unreliable in tests
+### 2. ~~`commands.trigger` observer dispatch — unreliable in tests~~ — RESOLVED
 
-Tests for `BrinkFlow::advance_until_terminal` consistently fail to see
-observer events fire, even though:
-- The internal flow state mutates correctly (verified via status
-  inspection — `Line::End` reached → `StoryStatus::Ended`).
-- Direct `world.trigger(...)` from outside a system fires observers
-  fine.
-- `app.update()` runs after the system, which should flush deferred
-  commands.
+The previous hypothesis (`Event` derive on a generic `<M>` interacting
+poorly with `Trigger<'a>: Default`) was wrong. Diagnosed 2026-04-28:
 
-**Hypothesis (unverified)**: the `Event` derive on our generic
-`BrinkLineDelivered<M>` interacts poorly with the `Trigger<'a>: Default`
-bound that `commands.trigger` requires. If true, this would also
-explain why hot-reload looks broken at runtime.
+- A minimal smoke test (`smoke_commands_trigger_fires_observers` in
+  `flow.rs`) confirms `commands.trigger` from a system fires observers
+  reliably with the generic `BrinkLineDelivered<()>`.
+- The flow tests were failing for two unrelated reasons:
+  1. **Test expectations didn't match the runtime API.** Terminal `Line`
+     variants (`Done`, `Choices`, `End`) carry their accumulated text in
+     their *own* `text` field — they don't emit a separate preceding
+     `Line::Text`. The test that fed the runtime `"goodbye\n-> END\n"`
+     and expected a `BrinkLineDelivered("goodbye")` event was wrong;
+     the runtime delivers it as `BrinkStoryEnded { text: "goodbye\n" }`.
+  2. **`FlowStart::Root` does not auto-enter named knots.** A test that
+     placed all content under `=== start ===` and used the default
+     `FlowStart::Root` produced an empty `Done` and never reached the
+     choice. Content has to live at root or the request must specify
+     `FlowStart::Address("start")`.
 
-**Suggested next step**: build a minimal reproducer in a fresh crate,
-file a Bevy issue if confirmed, and switch to one of:
-- `&mut World` system params + direct `world.trigger`
-- Buffered `Message` events (give up the synchronous-observer ergonomics
-  but get reliable dispatch)
+While diagnosing this, the `Event` derive was switched to `EntityEvent`
+(every event carries `entity: Entity`, so it's the right idiomatic
+choice — and it opens up per-entity observers via `entity.observe(...)`).
+This change is not load-bearing for dispatch; it's purely an API-quality
+upgrade.
+
+**Implication for hot-reload (issue #1):** the "blank page after reload"
+symptom is *not* a dispatch problem either. Possible causes to revisit
+with that constraint removed: observer-vs-system ordering inside the
+reload tick, an asset-event timing issue (replay running before the new
+`ProgramAsset` is committed), or genuinely empty post-replay state for
+some story shapes. Needs fresh investigation.
 
 ## Deferred (not started)
 
@@ -182,11 +210,8 @@ Inline test modules + `crates/bevy-brink/src/test_support.rs`:
 | `program::find_address_tests`         | 3       | 0       |
 | `asset::run_init_pass_tests`          | 3       | 0       |
 | `request::tests` (fulfillment)        | 5       | 0       |
-| `flow::tests` (advance + events)      | 0       | 3       |
-
-The flow tests fail in a way that looks identical to the suspected
-runtime issue (#2 above): `advance_until_terminal` runs and the flow
-state advances, but observer events don't fire.
+| `flow::tests` (advance + events)      | 4       | 0       |
+| `source_loader::tests`                | 3       | 0       |
 
 ## Decisions captured (see `docs/decision-log.md`)
 
@@ -265,9 +290,9 @@ variant-specific events (`BrinkLineDelivered`, `BrinkChoicesPresented`,
 `BrinkTurnDone`, `BrinkStoryEnded`) lets observers target exactly the
 case they care about with no inline `match`.
 
-(See open issue #2: the actual dispatch reliability of `commands.trigger`
-in some contexts is unresolved. If we have to fall back to messages,
-the API surface change would be small.)
+(Earlier worry about `commands.trigger` reliability in some contexts
+turned out to be a test-side bug, not a dispatch issue. See resolved
+issue #2 in "Open issues" below for the post-mortem.)
 
 ### Init pass at load time, not per-flow
 
@@ -359,7 +384,8 @@ Where we differ:
 - Marker generic for compile-time multi-story support.
 - Three-asset bundle (vs. their single `InkStory` resource).
 - Asset/hot-reload integration (their basic example doesn't demonstrate
-  hot-reload; we attempted to make it work and hit the open issue).
+  hot-reload; we attempted to make it work and the visual UX is still
+  parked — see issue #1).
 
 ## How to pick this work up cleanly
 

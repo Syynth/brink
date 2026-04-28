@@ -22,13 +22,13 @@
 use std::marker::PhantomData;
 
 use bevy_ecs::entity::Entity;
-use bevy_ecs::event::Event;
+use bevy_ecs::event::EntityEvent;
 use brink_runtime::Choice;
 
 /// Fired when a flow produces a `Line::Text` — mid-stream content; more
 /// may follow on subsequent steps. Typewriter-style UIs accumulate;
 /// click-to-continue UIs concatenate until a terminal event arrives.
-#[derive(Event)]
+#[derive(EntityEvent)]
 pub struct BrinkLineDelivered<M: Send + Sync + 'static = ()> {
     pub entity: Entity,
     pub text: String,
@@ -51,7 +51,7 @@ impl<M: Send + Sync + 'static> BrinkLineDelivered<M> {
 /// [`BrinkFlow::choose`](crate::BrinkFlow::choose) (or
 /// [`choose_recording`](crate::BrinkFlow::choose_recording) in dev
 /// builds for replay-after-hot-reload).
-#[derive(Event)]
+#[derive(EntityEvent)]
 pub struct BrinkChoicesPresented<M: Send + Sync + 'static = ()> {
     pub entity: Entity,
     pub text: String,
@@ -80,7 +80,7 @@ impl<M: Send + Sync + 'static> BrinkChoicesPresented<M> {
 /// Fired when a flow reaches `Line::Done` — this turn's output is
 /// complete (the ink `-> DONE` instruction). The story is *not* over;
 /// call advance again for the next turn.
-#[derive(Event)]
+#[derive(EntityEvent)]
 pub struct BrinkTurnDone<M: Send + Sync + 'static = ()> {
     pub entity: Entity,
     pub text: String,
@@ -101,7 +101,7 @@ impl<M: Send + Sync + 'static> BrinkTurnDone<M> {
 
 /// Fired when a flow reaches `Line::End` — the story has permanently
 /// ended (the ink `-> END` instruction). No more advance is meaningful.
-#[derive(Event)]
+#[derive(EntityEvent)]
 pub struct BrinkStoryEnded<M: Send + Sync + 'static = ()> {
     pub entity: Entity,
     pub text: String,
@@ -130,7 +130,7 @@ impl<M: Send + Sync + 'static> BrinkStoryEnded<M> {
 ///
 /// Available only with the `dev` feature.
 #[cfg(feature = "dev")]
-#[derive(Event)]
+#[derive(EntityEvent)]
 pub struct BrinkFlowReset<M: Send + Sync + 'static = ()> {
     pub entity: Entity,
     _marker: PhantomData<fn() -> M>,
