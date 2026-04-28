@@ -1,11 +1,11 @@
-description = "Choice with its own emitted content followed by a divert to a new knot. The chosen choice's content (\"Picked.\\n\") and the divert target's first line (\"After divert.\\n\") should appear as separate transcript lines, not merged via glue."
+description = "Choice with its own emitted content followed by a divert to a new knot. The chosen choice's content (\"Picked.\\n\") and the divert target's first line (\"After divert.\\n\") should appear as separate transcript steps."
 mode = "runtime"
 
 [source]
 origin = "bevy-brink-conformance"
-notes = "Surfaced from the play_story bevy-brink example: a choice with content immediately diverting to another knot rendered as one merged line in brink, but C# ink produces two separate paragraphs. Awaiting oracle generation via tools/ink-oracle to lock in the expected behavior."
+notes = "Surfaced from the play_story bevy-brink example, where a similar pattern rendered as one merged line. Adding this minimal repro confirmed brink's runtime+compiler match the C# oracle for this case (passes 1/1) — so the bevy-brink rendering glitch lives elsewhere (likely in render_transcript's batch glue resolution, not in step_single_line). Worth investigating as a separate bevy-brink-side issue."
 
 [classification]
 tier = 1
 feature = "choices"
-tags = ["choices", "divert", "newline", "needs-oracle"]
+tags = ["choices", "divert", "newline"]
