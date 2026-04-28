@@ -11,10 +11,10 @@
 //!
 //! ## 1. One entity per conversation
 //!
-//! Each active flow lives on its own entity. Per-flow state — including
-//! UI state for that flow — is stored as components on that entity. A
-//! game with multiple concurrent NPC dialogues spawns multiple such
-//! entities; each one self-contains.
+//! Each active flow lives on its own entity. Per-flow input state
+//! (pending choices, status banner) is stored as components on that
+//! entity. A game with multiple concurrent NPC dialogues spawns
+//! multiple such entities; each one self-contains.
 //!
 //! ## 2. Request-component fulfillment
 //!
@@ -24,20 +24,33 @@
 //! flow components once assets are ready. No polling, no readiness
 //! latches.
 //!
-//! ## 3. Observer-driven UI updates
+//! ## 3. The flow's transcript is the rendering source of truth
 //!
-//! As the flow advances, observer events fire on the flow's entity:
-//! `BrinkLineDelivered`, `BrinkChoicesPresented`, `BrinkTurnDone`,
-//! `BrinkStoryEnded` (plus `BrinkFlowReset` in dev mode). Observers
-//! receive `trigger.event().entity` to identify *which* flow produced
-//! the event, and write into per-flow UI components on that entity.
+//! `BrinkFlow.inner.transcript()` is an append-only structural log of
+//! every output part the runtime has produced. The renderer walks
+//! it through `brink_runtime::transcript::render_transcript` against
+//! the current line tables to produce displayable lines — locale
+//! swaps re-render the same transcript with different tables.
 //!
-//! ## 4. Hot-reload as event redelivery
+//! UIs do **not** maintain their own running text by accumulating from
+//! `BrinkLineDelivered` events. The runtime owns the transcript;
+//! consumers read it. Observers exist for *input state* (which choices
+//! are pending) and *status transitions* (story just ended, hot-reload
+//! happened) — not for assembling text.
+//!
+//! ## 4. One SPACE press = one `step_one`
+//!
+//! The consumer's input pace is the flow's pace. External function
+//! calls and per-line side effects fire at predictable moments. There
+//! is no "advance until terminal" verb in production code.
+//!
+//! ## 5. Hot-reload as transcript reset
 //!
 //! When the source file changes, `replay_on_reload` rebuilds the flow
-//! against the new bytecode and walks to the player's current page,
-//! firing the same observer events as a fresh advance. UIs that
-//! react to those events stay in sync automatically.
+//! against the new bytecode (clearing its transcript) and walks to
+//! the player's current page, firing the same observer events as a
+//! fresh advance. The transcript repopulates naturally; UIs reading
+//! it stay in sync.
 
 #![expect(
     clippy::needless_pass_by_value,
@@ -51,25 +64,26 @@ use std::fmt::Write as _;
 use bevy::input::ButtonInput;
 use bevy::prelude::*;
 use bevy_brink::{
-    BrinkChoicesPresented, BrinkContext, BrinkFlow, BrinkFlowRequest, BrinkFlowReset,
-    BrinkLineDelivered, BrinkLocale, BrinkPlugin, BrinkProgram, BrinkReplayLog, BrinkStoryAsset,
-    BrinkStoryEnded, BrinkTurnDone, LineTablesAsset, ProgramAsset, digit_key_to_choice_index,
+    BrinkChoicesPresented, BrinkContext, BrinkFlow, BrinkFlowRequest, BrinkFlowReset, BrinkLocale,
+    BrinkPlugin, BrinkProgram, BrinkReplayLog, BrinkStoryAsset, BrinkStoryEnded, BrinkTranscript,
+    LineTablesAsset, ProgramAsset, digit_key_to_choice_index,
 };
 use brink_runtime::{FallbackHandler, StoryStatus};
 
 // ── Per-flow UI components ────────────────────────────────────────────────
 //
-// These live on the flow entity, alongside the brink-provided components
-// (BrinkFlow, BrinkContext, BrinkProgram, BrinkLocale, BrinkReplayLog).
-// Observers populate them; the rendering system reads them.
+// These live on the flow entity alongside the brink-provided components
+// (BrinkFlow, BrinkContext, BrinkProgram, BrinkLocale, BrinkReplayLog,
+// and the opt-in BrinkTranscript). PendingChoices is *input state* —
+// what digit keys mean right now. Banner is *status* — ephemeral
+// feedback the rendering system surfaces.
 //
-// In a multi-flow game (several concurrent NPC dialogues), each flow
-// entity has its own copy of these — no global cross-talk.
-
-/// Accumulated text for the current "page" of the story. Cleared when
-/// the user advances or selects a choice.
-#[derive(Component, Default)]
-struct PageText(String);
+// We do NOT keep an accumulated "page text" component. Story text is
+// owned by the runtime: BrinkTranscript<M> is auto-rendered by the
+// plugin from `flow.inner.transcript()`, and we read it in the render
+// system. UIs that want to display something other than the runtime's
+// transcript (e.g. typewriter animation per BrinkLineDelivered event)
+// can opt out of BrinkTranscript and observe events directly.
 
 /// Choices currently presented to the player, indexed 1..=N for keyboard
 /// digits. Empty when the story isn't waiting for a choice.
@@ -106,15 +120,12 @@ fn main() {
             ..Default::default()
         }))
         .add_plugins(BrinkPlugin::<()>::default())
-        // Observers run synchronously in response to triggered events.
-        // No MessageReader/Writer needed. Each observer reacts to one
-        // event variant. This is also the path replay uses: when the
-        // story file changes, the plugin's replay system fires the
-        // same events as it walks the new bytecode, so the UI stays
-        // in sync automatically.
-        .add_observer(on_line)
+        // Observers track *input state* and *status transitions* — not
+        // story text. on_choices captures pending choices for input
+        // handling; on_story_ended/on_flow_reset surface user-visible
+        // status. Story text is auto-accumulated into BrinkTranscript
+        // by the plugin and read in update_displays.
         .add_observer(on_choices)
-        .add_observer(on_turn_done)
         .add_observer(on_story_ended)
         .add_observer(on_flow_reset)
         .add_systems(Startup, (setup_ui, load_story))
@@ -124,17 +135,20 @@ fn main() {
 
 // ── (1) Loading a story ───────────────────────────────────────────────────
 //
-// One `commands.spawn` carrying the request component + the per-flow
-// UI components. The fulfillment system swaps in the live flow
-// components without disturbing the UI state.
+// One `commands.spawn` carrying the request + the per-flow components
+// we want on this flow. `BrinkTranscript::default()` opts this flow
+// into auto-rendered transcript output — the plugin keeps it in sync
+// with `flow.inner.transcript()`. The fulfillment system swaps the
+// request for the live flow components without disturbing the rest.
 
 fn load_story(asset_server: Res<AssetServer>, mut commands: Commands) {
     info!("loading story.ink");
     let story: Handle<BrinkStoryAsset> = asset_server.load("story.ink");
     commands.spawn((
         BrinkFlowRequest::<()>::builder().story(story).build(),
-        // Per-flow UI state, attached to the same entity.
-        PageText::default(),
+        // Auto-rendered transcript — opt-in.
+        BrinkTranscript::<()>::default(),
+        // Per-flow input state and status.
         PendingChoices::default(),
         Banner::default(),
     ));
@@ -203,63 +217,43 @@ fn setup_ui(mut commands: Commands) {
 // ── (3) Reacting to flow events ───────────────────────────────────────────
 //
 // Each observer reads `trigger.event().entity` to find the flow
-// entity that produced the event and writes into that entity's
-// per-flow UI components.
+// entity that produced the event and writes into that entity's input
+// state / status components. Story text is NOT touched here — it
+// lives on the runtime side, available via BrinkTranscript.
 //
-// For a single-flow app this is just `q.get_mut(event.entity)`. For a
-// multi-flow app the same pattern routes events to the right entity's
-// state automatically.
-
-fn on_line(
-    trigger: On<BrinkLineDelivered<()>>,
-    mut q: Query<&mut PageText>,
-) {
-    if let Ok(mut page) = q.get_mut(trigger.event().entity) {
-        page.0.push_str(&trigger.event().text);
-    }
-}
+// For a single-flow app `q.get_mut(event.entity)` is just a one-entity
+// lookup. For a multi-flow app the same pattern routes events to the
+// right entity's state automatically.
 
 fn on_choices(
     trigger: On<BrinkChoicesPresented<()>>,
-    mut q: Query<(&mut PageText, &mut PendingChoices)>,
+    mut q: Query<&mut PendingChoices>,
 ) {
-    if let Ok((mut page, mut choices)) = q.get_mut(trigger.event().entity) {
-        let event = trigger.event();
-        page.0.push_str(&event.text);
-        choices.0 = event.choices.iter().map(|c| c.text.clone()).collect();
+    if let Ok(mut choices) = q.get_mut(trigger.event().entity) {
+        choices.0 = trigger
+            .event()
+            .choices
+            .iter()
+            .map(|c| c.text.clone())
+            .collect();
     }
 }
 
-fn on_turn_done(
-    trigger: On<BrinkTurnDone<()>>,
-    mut q: Query<&mut PageText>,
-) {
-    if let Ok(mut page) = q.get_mut(trigger.event().entity) {
-        page.0.push_str(&trigger.event().text);
-    }
-}
-
-fn on_story_ended(
-    trigger: On<BrinkStoryEnded<()>>,
-    mut q: Query<(&mut PageText, &mut Banner)>,
-) {
-    if let Ok((mut page, mut banner)) = q.get_mut(trigger.event().entity) {
-        page.0.push_str(&trigger.event().text);
+fn on_story_ended(trigger: On<BrinkStoryEnded<()>>, mut q: Query<&mut Banner>) {
+    if let Ok(mut banner) = q.get_mut(trigger.event().entity) {
         banner.0 = "Story ended. Edit the .ink file or press ESC to quit.".to_string();
     }
 }
 
 /// Fired by the plugin's reload-replay system *before* it walks the
-/// new bytecode. Clearing per-flow UI state here (rather than on
-/// `AssetEvent::Modified`) lets trigger ordering guarantee that the
-/// subsequent line-delivery events from replay populate fresh state —
-/// no risk of clearing *after* the page was already populated.
+/// new bytecode. Clears input state and updates the banner. The
+/// transcript is reset by the runtime when the flow is rebuilt; we
+/// don't touch it here.
 fn on_flow_reset(
     trigger: On<BrinkFlowReset<()>>,
-    mut q: Query<(&mut PageText, &mut PendingChoices, &mut Banner)>,
+    mut q: Query<(&mut PendingChoices, &mut Banner)>,
 ) {
-    if let Ok((mut page, mut choices, mut banner)) = q.get_mut(trigger.event().entity) {
-        page.0.clear();
+    if let Ok((mut choices, mut banner)) = q.get_mut(trigger.event().entity) {
         choices.0.clear();
         banner.0 = "Reloaded — replayed choices in the new program.".to_string();
     }
@@ -267,16 +261,19 @@ fn on_flow_reset(
 
 // ── (4) Driving the flow ──────────────────────────────────────────────────
 //
-// Read input, look up the assets the flow needs (program + line
-// tables — the per-flow handles point us at the Asset slots), call
-// `choose` / `advance_until_terminal` against the per-flow Context.
+// Each SPACE press maps to ONE `flow.step_one(...)` call — one line at
+// a time. The consumer's input pace is the flow's pace, so external
+// function calls and other per-line side effects fire at predictable
+// moments. (Walking past multiple lines in one shot via a "step until
+// terminal" verb is *not* the recommended pattern for production game
+// code: external callbacks would fire at unpredictable times relative
+// to player input.)
 //
-// The query holds every per-flow component this system needs to
-// touch: BrinkFlow (mutable, to step), BrinkContext (mutable, the
-// Context the flow advances against), BrinkProgram + BrinkLocale
-// (read-only handles), BrinkReplayLog (mutable, to record choices
-// for hot-reload), Banner (mutable, to surface errors), PageText +
-// PendingChoices (mutable, cleared when we advance).
+// Each step fires observer events; the observers above append text
+// into the per-flow `PageText` component. So this handler is just
+// "consume input → call step_one or choose; let the events do the
+// rendering." The transcript accumulates for the entire run — it's
+// only ever cleared on hot-reload (`BrinkFlowReset`).
 
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
@@ -287,7 +284,6 @@ fn handle_input(
         &BrinkProgram<()>,
         &BrinkLocale<()>,
         &mut BrinkReplayLog<()>,
-        &mut PageText,
         &mut PendingChoices,
         &mut Banner,
     )>,
@@ -308,7 +304,6 @@ fn handle_input(
         brink_program,
         locale,
         mut replay_log,
-        mut page,
         mut choices,
         mut banner,
     )) = flows.single_mut()
@@ -322,80 +317,83 @@ fn handle_input(
         return;
     };
 
-    // While a choice is active: digit keys pick. After picking, advance
-    // until the next terminal line.
+    // While a choice is active: digit keys pick. choose() consumes
+    // the pending choice but does not produce output; the next SPACE
+    // will step into the chosen path. Whether the picked choice
+    // appears in the transcript depends on the ink choice syntax —
+    // content-emitting choices (e.g. `* Hello\n  ...`) are part of
+    // the runtime's output and land in BrinkTranscript naturally;
+    // suppressed choices (e.g. `* [Hello] -> ...`) don't.
     if !choices.0.is_empty() {
         if let Some(idx) = digit_key_to_choice_index(&keys, choices.0.len()) {
             if let Err(err) = flow.choose_recording(&mut ctx.inner, &mut replay_log, idx) {
                 banner.0 = format!("choose error: {err}");
                 return;
             }
-            page.0.clear();
             choices.0.clear();
-            if let Err(err) = flow.advance_until_terminal(
-                &program_asset.program,
-                &lt_asset.tables,
-                &mut ctx.inner,
-                &FallbackHandler,
-                entity,
-                &mut commands,
-            ) {
-                banner.0 = format!("advance error: {err}");
-            }
         }
         return;
     }
 
-    // Otherwise, SPACE advances when the flow is active or just done.
-    if keys.just_pressed(KeyCode::Space) {
-        match flow.inner.status() {
-            StoryStatus::Active | StoryStatus::Done => {
-                page.0.clear();
-                if let Err(err) = flow.advance_until_terminal(
-                    &program_asset.program,
-                    &lt_asset.tables,
-                    &mut ctx.inner,
-                    &FallbackHandler,
-                    entity,
-                    &mut commands,
-                ) {
-                    banner.0 = format!("advance error: {err}");
-                }
-            }
-            StoryStatus::Ended => {
-                banner.0 = "Story ended. Edit the .ink file or press ESC to quit.".to_string();
-            }
-            StoryStatus::WaitingForChoice => {}
+    if !keys.just_pressed(KeyCode::Space) {
+        return;
+    }
+
+    // Status-driven dispatch:
+    // - Active / Done: step one more line. Done means a `-> DONE` was
+    //   hit last step; the next step begins a new turn naturally.
+    // - Ended: nothing more to do.
+    // - WaitingForChoice: handled above; reaching here would be a bug
+    //   (choices should be non-empty), but guard anyway.
+    match flow.inner.status() {
+        StoryStatus::Active | StoryStatus::Done => {}
+        StoryStatus::Ended => {
+            banner.0 = "Story ended. Edit the .ink file or press ESC to quit.".to_string();
+            return;
         }
+        StoryStatus::WaitingForChoice => return,
+    }
+
+    if let Err(err) = flow.step_one(
+        &program_asset.program,
+        &lt_asset.tables,
+        &mut ctx.inner,
+        &FallbackHandler,
+        entity,
+        &mut commands,
+    ) {
+        banner.0 = format!("step error: {err}");
     }
 }
 
 // ── (5) Rendering the UI ──────────────────────────────────────────────────
 //
-// Read the per-flow UI components and write into the visible Text
-// nodes. For a multi-flow game with separate UI panels, you'd query
-// each flow entity and route to a per-flow Text node — this version
-// just shows the single flow's state.
+// Read the runtime-owned BrinkTranscript<()> and the per-flow input
+// state, write into the visible Text nodes. For a multi-flow game
+// with separate UI panels, query each flow entity and route to a
+// per-flow Text node — this version just shows the single flow's
+// state.
 
 fn update_displays(
-    flow_ui: Query<(&PageText, &PendingChoices, &Banner)>,
+    flow_q: Query<(&BrinkTranscript<()>, &PendingChoices, &Banner)>,
     mut q_story: Query<&mut Text, (With<StoryText>, Without<InstructionsText>, Without<BannerText>)>,
     mut q_instr: Query<&mut Text, (With<InstructionsText>, Without<StoryText>, Without<BannerText>)>,
     mut q_banner: Query<&mut Text, (With<BannerText>, Without<StoryText>, Without<InstructionsText>)>,
 ) {
-    let Ok((page, choices, banner)) = flow_ui.single() else {
+    let Ok((transcript, choices, banner)) = flow_q.single() else {
         return;
     };
 
     if let Ok(mut text) = q_story.single_mut() {
+        let body = transcript.text();
         if choices.0.is_empty() {
-            if page.0.is_empty() {
+            if body.is_empty() {
                 text.0 = "(press SPACE to begin)".to_string();
             } else {
-                text.0.clone_from(&page.0);
+                text.0 = body;
             }
         } else {
-            let mut s = page.0.clone();
+            let mut s = body;
             if !s.is_empty() && !s.ends_with('\n') {
                 s.push('\n');
             }

@@ -47,6 +47,9 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
             app.add_plugins(BrinkAssetsPlugin);
         }
         app.add_systems(Update, fulfill_flow_requests::<M>);
+        // Auto-render BrinkTranscript<M> for any flow that has it.
+        // No-op for flows that don't (the query just yields nothing).
+        app.add_systems(Update, crate::transcript::refresh_transcripts::<M>);
         #[cfg(feature = "dev")]
         app.add_systems(Update, crate::replay::replay_on_reload::<M>);
         #[cfg(debug_assertions)]

@@ -38,6 +38,7 @@ mod request;
 mod source_loader;
 #[cfg(test)]
 mod test_support;
+mod transcript;
 
 pub use asset::{
     BrinkProgram, BrinkStory, BrinkStoryAsset, InkbLoader, InkbLoaderError, LineTablesAsset,
@@ -53,6 +54,7 @@ pub use globals::{BrinkContext, BrinkGlobals};
 pub use input::digit_key_to_choice_index;
 pub use line_tables::BrinkLocale;
 pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
+pub use transcript::{BrinkTranscript, refresh_transcripts};
 #[cfg(feature = "dev")]
 pub use replay::{BrinkReplayLog, replay_on_reload};
 pub use request::{BrinkFlowRequest, ContextSeed, FlowStart, fulfill_flow_requests};
