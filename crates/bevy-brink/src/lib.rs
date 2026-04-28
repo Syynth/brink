@@ -28,6 +28,7 @@ mod asset;
 mod event;
 mod flow;
 mod globals;
+mod input;
 mod line_tables;
 mod plugin;
 #[cfg(feature = "dev")]
@@ -49,6 +50,7 @@ pub use event::{
 pub use event::BrinkFlowReset;
 pub use flow::BrinkFlow;
 pub use globals::{BrinkContext, BrinkGlobals};
+pub use input::digit_key_to_choice_index;
 pub use line_tables::BrinkLocale;
 pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
 #[cfg(feature = "dev")]

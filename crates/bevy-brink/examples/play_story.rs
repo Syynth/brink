@@ -31,6 +31,7 @@ use bevy_brink::{
     BrinkChoicesPresented, BrinkContext, BrinkFlow, BrinkFlowRequest, BrinkFlowReset,
     BrinkLineDelivered, BrinkLocale, BrinkPlugin, BrinkProgram, BrinkReplayLog, BrinkStoryAsset,
     BrinkStoryEnded, BrinkTurnDone, FlowStart, LineTablesAsset, ProgramAsset,
+    digit_key_to_choice_index,
 };
 use brink_runtime::{FallbackHandler, StoryStatus};
 
@@ -247,38 +248,22 @@ fn handle_input(
     // Choice selection: digit 1 through 9 picks choices[0..=8] when a
     // choice prompt is active.
     if !choices.0.is_empty() {
-        const DIGIT_KEYS: &[(KeyCode, usize)] = &[
-            (KeyCode::Digit1, 0),
-            (KeyCode::Digit2, 1),
-            (KeyCode::Digit3, 2),
-            (KeyCode::Digit4, 3),
-            (KeyCode::Digit5, 4),
-            (KeyCode::Digit6, 5),
-            (KeyCode::Digit7, 6),
-            (KeyCode::Digit8, 7),
-            (KeyCode::Digit9, 8),
-        ];
-        for (key, idx) in DIGIT_KEYS {
-            if keys.just_pressed(*key) && *idx < choices.0.len() {
-                if let Err(err) =
-                    flow.choose_recording(&mut ctx.inner, &mut replay_log, *idx)
-                {
-                    banner.0 = format!("choose error: {err}");
-                    return;
-                }
-                page.0.clear();
-                choices.0.clear();
-                if let Err(err) = flow.advance_until_terminal(
-                    &program_asset.program,
-                    &lt_asset.tables,
-                    &mut ctx.inner,
-                    &FallbackHandler,
-                    entity,
-                    &mut commands,
-                ) {
-                    banner.0 = format!("advance error: {err}");
-                }
+        if let Some(idx) = digit_key_to_choice_index(&keys, choices.0.len()) {
+            if let Err(err) = flow.choose_recording(&mut ctx.inner, &mut replay_log, idx) {
+                banner.0 = format!("choose error: {err}");
                 return;
+            }
+            page.0.clear();
+            choices.0.clear();
+            if let Err(err) = flow.advance_until_terminal(
+                &program_asset.program,
+                &lt_asset.tables,
+                &mut ctx.inner,
+                &FallbackHandler,
+                entity,
+                &mut commands,
+            ) {
+                banner.0 = format!("advance error: {err}");
             }
         }
         return;
