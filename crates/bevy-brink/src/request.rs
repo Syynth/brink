@@ -20,7 +20,7 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::system::{Commands, Query, Res};
 use bevy_ecs::query::Without;
 use bevy_log::{error, warn};
-use brink_runtime::FlowInstance;
+use brink_runtime::{Context, FlowInstance};
 
 use crate::asset::{BrinkStory, BrinkStoryAsset, ProgramAsset};
 use crate::flow::BrinkFlow;
@@ -36,6 +36,25 @@ pub enum FlowStart {
     /// Resolve a knot/stitch name to a starting position. Errors at
     /// fulfillment if the name is unknown.
     Address(String),
+}
+
+/// How a freshly-fulfilled flow should seed its
+/// [`BrinkContext<M>`](crate::BrinkContext) component.
+#[derive(Default, Clone, Debug)]
+pub enum ContextSeed {
+    /// Clone from the current [`BrinkGlobals<M>`](crate::BrinkGlobals)
+    /// resource — the consumer's "save data." Default: this is what
+    /// most flows want.
+    #[default]
+    FromGlobals,
+    /// Use the program's fresh starting state from
+    /// [`ProgramAsset::initial_context`](crate::ProgramAsset). Useful
+    /// for speculative-fork flows that should run independently of the
+    /// shared save state, or for testing.
+    FromInitial,
+    /// Use a caller-supplied `Context`. For consumers that compute
+    /// custom seed state (e.g. mid-game branch from a snapshot).
+    Custom(Context),
 }
 
 /// Marker component requesting that this entity become a flow once its
@@ -68,6 +87,11 @@ pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
     /// Where to start. Defaults to `FlowStart::Root`.
     #[builder(default)]
     pub start: FlowStart,
+    /// How to seed this flow's [`BrinkContext`](crate::BrinkContext).
+    /// Defaults to `ContextSeed::FromGlobals` — clone from
+    /// [`BrinkGlobals<M>`](crate::BrinkGlobals).
+    #[builder(default)]
+    pub seed: ContextSeed,
     #[builder(skip)]
     _marker: PhantomData<fn() -> M>,
 }
@@ -102,12 +126,12 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
     globals: Option<Res<BrinkGlobals<M>>>,
     mut commands: Commands,
 ) {
-    // Snapshot of what to seed each flow's BrinkContext from. If
-    // BrinkGlobals already exists (the "save data"), we clone it. If
-    // not, the first fulfilled flow this call creates it from the
-    // program's initial_context, and remaining flows in this batch
-    // seed from the same snapshot.
-    let mut shared_seed: Option<brink_runtime::Context> =
+    // Snapshot of the current "save data" Context. Used to seed flows
+    // whose request asks for ContextSeed::FromGlobals (the default).
+    // We capture this once at the top of the system call so multiple
+    // requests in the same batch see consistent state, even when the
+    // first request's fulfillment also creates the resource.
+    let mut globals_snapshot: Option<Context> =
         globals.as_ref().map(|g| g.inner.clone());
 
     for (entity, req) in &requests {
@@ -135,13 +159,24 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
             }
         };
 
-        let starting_context = if let Some(ctx) = &shared_seed {
-            ctx.clone()
-        } else {
-            let ctx = program_asset.initial_context.clone();
-            commands.insert_resource(BrinkGlobals::<M>::new(ctx.clone()));
-            shared_seed = Some(ctx.clone());
-            ctx
+        // Seed this flow's BrinkContext per the request's ContextSeed.
+        // FromGlobals: clone the resource snapshot. If BrinkGlobals
+        // doesn't exist yet, this is the first fulfillment for marker
+        // M — create it from program.initial_context, and use that as
+        // the snapshot for this flow and any later requests in this batch.
+        let starting_context = match &req.seed {
+            ContextSeed::FromGlobals => {
+                if let Some(ctx) = &globals_snapshot {
+                    ctx.clone()
+                } else {
+                    let ctx = program_asset.initial_context.clone();
+                    commands.insert_resource(BrinkGlobals::<M>::new(ctx.clone()));
+                    globals_snapshot = Some(ctx.clone());
+                    ctx
+                }
+            }
+            ContextSeed::FromInitial => program_asset.initial_context.clone(),
+            ContextSeed::Custom(ctx) => ctx.clone(),
         };
 
         // Materialize real components, drop the request.
