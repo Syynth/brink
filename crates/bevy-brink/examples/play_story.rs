@@ -28,9 +28,9 @@ use std::fmt::Write as _;
 use bevy::input::ButtonInput;
 use bevy::prelude::*;
 use bevy_brink::{
-    BrinkChoicesPresented, BrinkFlow, BrinkFlowRequest, BrinkFlowReset, BrinkGlobals,
-    BrinkLineDelivered, BrinkLineTables, BrinkPlugin, BrinkProgram, BrinkReplayLog,
-    BrinkStoryAsset, BrinkStoryEnded, BrinkTurnDone, FlowStart, ProgramAsset,
+    BrinkChoicesPresented, BrinkContext, BrinkFlow, BrinkFlowRequest, BrinkFlowReset,
+    BrinkLineDelivered, BrinkLocale, BrinkPlugin, BrinkProgram, BrinkReplayLog, BrinkStoryAsset,
+    BrinkStoryEnded, BrinkTurnDone, FlowStart, LineTablesAsset, ProgramAsset,
 };
 use brink_runtime::{FallbackHandler, StoryStatus};
 
@@ -214,12 +214,13 @@ fn handle_input(
     mut flows: Query<(
         Entity,
         &mut BrinkFlow<()>,
+        &mut BrinkContext<()>,
         &BrinkProgram<()>,
+        &BrinkLocale<()>,
         &mut BrinkReplayLog<()>,
     )>,
-    globals: Option<ResMut<BrinkGlobals<()>>>,
-    line_tables: Res<BrinkLineTables<()>>,
     programs: Res<Assets<ProgramAsset>>,
+    line_tables_assets: Res<Assets<LineTablesAsset>>,
     mut page: ResMut<PageText>,
     mut choices: ResMut<PendingChoices>,
     mut banner: ResMut<Banner>,
@@ -231,13 +232,15 @@ fn handle_input(
         return;
     }
 
-    let Some(mut globals) = globals else {
-        return;
-    };
-    let Ok((entity, mut flow, brink_program, mut replay_log)) = flows.single_mut() else {
+    let Ok((entity, mut flow, mut ctx, brink_program, locale, mut replay_log)) =
+        flows.single_mut()
+    else {
         return;
     };
     let Some(program_asset) = programs.get(&brink_program.handle) else {
+        return;
+    };
+    let Some(lt_asset) = line_tables_assets.get(&locale.handle) else {
         return;
     };
 
@@ -257,7 +260,9 @@ fn handle_input(
         ];
         for (key, idx) in DIGIT_KEYS {
             if keys.just_pressed(*key) && *idx < choices.0.len() {
-                if let Err(err) = flow.choose_recording(&mut globals, &mut replay_log, *idx) {
+                if let Err(err) =
+                    flow.choose_recording(&mut ctx.inner, &mut replay_log, *idx)
+                {
                     banner.0 = format!("choose error: {err}");
                     return;
                 }
@@ -265,8 +270,8 @@ fn handle_input(
                 choices.0.clear();
                 if let Err(err) = flow.advance_until_terminal(
                     &program_asset.program,
-                    &line_tables,
-                    &mut globals,
+                    &lt_asset.tables,
+                    &mut ctx.inner,
                     &FallbackHandler,
                     entity,
                     &mut commands,
@@ -286,8 +291,8 @@ fn handle_input(
                 page.0.clear();
                 if let Err(err) = flow.advance_until_terminal(
                     &program_asset.program,
-                    &line_tables,
-                    &mut globals,
+                    &lt_asset.tables,
+                    &mut ctx.inner,
                     &FallbackHandler,
                     entity,
                     &mut commands,

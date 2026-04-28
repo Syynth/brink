@@ -3,10 +3,13 @@
 use std::marker::PhantomData;
 
 use bevy_asset::{Asset, AssetLoader, Handle, LoadContext, io::Reader};
+use bevy_ecs::bundle::Bundle;
 use bevy_ecs::component::Component;
 use bevy_reflect::TypePath;
 use brink_format::LineEntry;
 use brink_runtime::{Context, FlowInstance, Program, RuntimeError};
+
+use crate::line_tables::BrinkLocale;
 
 /// The immutable bytecode portion of a compiled story — what the VM
 /// actually executes — together with the fresh starting [`Context`]
@@ -153,9 +156,9 @@ pub(crate) fn emit_story_assets(
 ///
 /// In Bevy 0.18 `Handle<T>` is no longer a `Component` directly, so
 /// flow entities need a wrapper to associate a flow with its program.
-/// The fulfillment system inserts this when consuming a
-/// [`BrinkFlowRequest`](crate::BrinkFlowRequest); manual usage is
-/// possible but rare.
+/// The fulfillment system inserts this (as part of [`BrinkStory`])
+/// when consuming a [`BrinkFlowRequest`](crate::BrinkFlowRequest);
+/// manual usage is possible but rare.
 #[derive(Component)]
 pub struct BrinkProgram<M: Send + Sync + 'static = ()> {
     pub handle: Handle<ProgramAsset>,
@@ -168,6 +171,31 @@ impl<M: Send + Sync + 'static> BrinkProgram<M> {
         Self {
             handle,
             _marker: PhantomData,
+        }
+    }
+}
+
+/// Bundle that pairs a flow's [`BrinkProgram`] (program handle) with
+/// its [`BrinkLocale`] (line-tables handle).
+///
+/// Inserted by `fulfill_flow_requests` as a single bundle so the two
+/// always travel together. Consumers can also spawn this directly if
+/// they're managing flows manually.
+///
+/// The two components stay individually queryable — `Changed<BrinkLocale<M>>`
+/// detects locale swaps without false positives from program changes.
+#[derive(Bundle)]
+pub struct BrinkStory<M: Send + Sync + 'static = ()> {
+    pub program: BrinkProgram<M>,
+    pub locale: BrinkLocale<M>,
+}
+
+impl<M: Send + Sync + 'static> BrinkStory<M> {
+    #[must_use]
+    pub fn new(program: Handle<ProgramAsset>, line_tables: Handle<LineTablesAsset>) -> Self {
+        Self {
+            program: BrinkProgram::new(program),
+            locale: BrinkLocale::new(line_tables),
         }
     }
 }

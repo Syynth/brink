@@ -6,7 +6,6 @@ use bevy_app::{App, Plugin, Update};
 use bevy_asset::AssetApp;
 
 use crate::asset::{BrinkStoryAsset, InkbLoader, LineTablesAsset, ProgramAsset};
-use crate::line_tables::BrinkLineTables;
 use crate::request::fulfill_flow_requests;
 
 /// A Bevy plugin that registers brink story types, messages, and asset
@@ -14,9 +13,10 @@ use crate::request::fulfill_flow_requests;
 ///
 /// The default `M = ()` suits the common single-story case. Declare your
 /// own marker types (any `Send + Sync + 'static` ZST works) when you need
-/// multiple concurrent stories in one app — each gets its own `BrinkGlobals<M>`
-/// resource, `BrinkFlow<M>` component, and `BrinkLineTables<M>` resource,
-/// monomorphized to distinct Bevy types with no runtime overhead.
+/// multiple concurrent stories in one app — each gets its own
+/// `BrinkGlobals<M>` resource and `BrinkFlow<M>`/`BrinkContext<M>`/
+/// `BrinkLocale<M>` components, monomorphized to distinct Bevy types
+/// with no runtime overhead.
 ///
 /// Adding `BrinkPlugin<M>` also ensures [`BrinkAssetsPlugin`] is added
 /// once to the app (for shared asset types that don't depend on `M`).
@@ -46,7 +46,6 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         if !app.is_plugin_added::<BrinkAssetsPlugin>() {
             app.add_plugins(BrinkAssetsPlugin);
         }
-        app.init_resource::<BrinkLineTables<M>>();
         app.add_systems(Update, fulfill_flow_requests::<M>);
         #[cfg(feature = "dev")]
         app.add_systems(Update, crate::replay::replay_on_reload::<M>);

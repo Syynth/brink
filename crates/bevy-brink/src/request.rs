@@ -4,9 +4,10 @@
 //! handle to a [`BrinkStoryAsset`](crate::BrinkStoryAsset). A
 //! plugin-managed system ([`fulfill_flow_requests`]) waits for the
 //! story's sub-assets to load, builds a `FlowInstance`, replaces the
-//! request component with [`BrinkFlow<M>`](crate::BrinkFlow) +
-//! [`BrinkProgram<M>`](crate::BrinkProgram), and bootstraps
-//! [`BrinkGlobals<M>`](crate::BrinkGlobals) the first time.
+//! request component with [`BrinkFlow<M>`](crate::BrinkFlow), the
+//! [`BrinkStory<M>`](crate::BrinkStory) bundle (program + locale
+//! handles), and a per-flow [`BrinkContext<M>`](crate::BrinkContext)
+//! seeded from [`BrinkGlobals<M>`](crate::BrinkGlobals).
 //!
 //! No polling, no readiness latches: the user just spawns the request
 //! and lets the plugin fulfill it whenever assets become available.
@@ -16,15 +17,14 @@ use std::marker::PhantomData;
 use bevy_asset::{Assets, Handle};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
-use bevy_ecs::system::{Commands, Query, Res, ResMut};
+use bevy_ecs::system::{Commands, Query, Res};
 use bevy_ecs::query::Without;
 use bevy_log::{error, warn};
 use brink_runtime::FlowInstance;
 
-use crate::asset::{BrinkProgram, BrinkStoryAsset, LineTablesAsset, ProgramAsset};
+use crate::asset::{BrinkStory, BrinkStoryAsset, ProgramAsset};
 use crate::flow::BrinkFlow;
-use crate::globals::BrinkGlobals;
-use crate::line_tables::BrinkLineTables;
+use crate::globals::{BrinkContext, BrinkGlobals};
 
 /// Where a freshly-spawned flow should begin executing.
 #[derive(Default, Clone, Debug)]
@@ -54,10 +54,13 @@ pub enum FlowStart {
 /// ```
 ///
 /// The fulfillment system removes this component and inserts
-/// [`BrinkFlow<M>`](crate::BrinkFlow) + [`BrinkProgram<M>`](crate::BrinkProgram)
-/// once the program, line tables, and initial-globals subassets are all
-/// loaded. Mutating the request after fulfillment is a no-op (in debug
-/// builds, a warning is emitted via [`warn_post_fulfillment_mutations`]).
+/// [`BrinkFlow<M>`](crate::BrinkFlow), the [`BrinkStory<M>`](crate::BrinkStory)
+/// bundle, and a per-flow [`BrinkContext<M>`](crate::BrinkContext)
+/// (seeded from [`BrinkGlobals<M>`](crate::BrinkGlobals), or from
+/// [`ProgramAsset::initial_context`](crate::ProgramAsset) on first
+/// fulfillment) once the program and line-tables subassets are loaded.
+/// Mutating the request after fulfillment is a no-op (in debug builds,
+/// a warning is emitted via [`warn_post_fulfillment_mutations`]).
 #[derive(Component, bon::Builder)]
 pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
     /// The story to spawn this flow against.
@@ -70,18 +73,22 @@ pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
 }
 
 /// Plugin-managed system: walk pending [`BrinkFlowRequest<M>`] entities,
-/// fulfill each whose assets are ready, and bootstrap shared resources.
+/// fulfill each whose assets are ready, and bootstrap the entity's
+/// per-flow components.
 ///
 /// Behavior:
 ///
 /// - Skips requests whose `BrinkStoryAsset` (or any of its sub-assets)
 ///   isn't loaded yet — the request just waits.
 /// - On first fulfillment for marker `M`, inserts [`BrinkGlobals<M>`]
-///   seeded from [`ProgramAsset::initial_context`] (the fresh starting
-///   `Context` — globals from `VAR`/`CONST`/`LIST` defaults, zero
-///   visit/turn counts).
-/// - Refreshes [`BrinkLineTables<M>`] from the loaded asset every time
-///   (so hot-reload of the source file's line tables propagates).
+///   seeded from [`ProgramAsset::initial_context`](crate::ProgramAsset)
+///   (the fresh starting `Context` — globals from `VAR`/`CONST`/`LIST`
+///   defaults, zero visit/turn counts). Acts as the "save data" the
+///   flow's per-entity [`BrinkContext`] is cloned from.
+/// - Inserts the per-flow [`BrinkContext<M>`] component, seeded by
+///   cloning the current `BrinkGlobals<M>` resource. Each flow has its
+///   own `Context`; globals are not auto-shared.
+/// - Inserts the [`BrinkStory<M>`] bundle (program + locale handles).
 /// - Errors and removes the request if `FlowStart::Address` references
 ///   a name that isn't in the program.
 #[expect(
@@ -92,21 +99,22 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
     requests: Query<(Entity, &BrinkFlowRequest<M>), Without<BrinkFlow<M>>>,
     stories: Res<Assets<BrinkStoryAsset>>,
     programs: Res<Assets<ProgramAsset>>,
-    line_tables: Res<Assets<LineTablesAsset>>,
     globals: Option<Res<BrinkGlobals<M>>>,
-    mut line_tables_res: ResMut<BrinkLineTables<M>>,
     mut commands: Commands,
 ) {
-    let mut globals_seeded = globals.is_some();
+    // Snapshot of what to seed each flow's BrinkContext from. If
+    // BrinkGlobals already exists (the "save data"), we clone it. If
+    // not, the first fulfilled flow this call creates it from the
+    // program's initial_context, and remaining flows in this batch
+    // seed from the same snapshot.
+    let mut shared_seed: Option<brink_runtime::Context> =
+        globals.as_ref().map(|g| g.inner.clone());
 
     for (entity, req) in &requests {
         let Some(bundle) = stories.get(&req.story) else {
             continue;
         };
         let Some(program_asset) = programs.get(&bundle.program) else {
-            continue;
-        };
-        let Some(lt_asset) = line_tables.get(&bundle.line_tables) else {
             continue;
         };
 
@@ -127,31 +135,22 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
             }
         };
 
-        // Starting context is the program's fresh initial_context — same
-        // for root-start and named-knot flows. Root-start flows naturally
-        // walk through any free-floating top-of-file setup code as they
-        // advance. Named-knot flows skip that code entirely; if the story
-        // depends on side effects from it, the consumer is responsible
-        // for arranging them (e.g. running a root flow first, or writing
-        // knots that don't depend on root setup).
-        let starting_context = program_asset.initial_context.clone();
-
-        // Bootstrap BrinkGlobals<M> on first fulfillment.
-        if !globals_seeded {
-            commands.insert_resource(BrinkGlobals::<M>::new(starting_context.clone()));
-            globals_seeded = true;
-        }
-
-        // Always refresh line tables — hot-reload of the source file
-        // (or future locale swap) propagates through this resource.
-        line_tables_res.tables.clone_from(&lt_asset.tables);
+        let starting_context = if let Some(ctx) = &shared_seed {
+            ctx.clone()
+        } else {
+            let ctx = program_asset.initial_context.clone();
+            commands.insert_resource(BrinkGlobals::<M>::new(ctx.clone()));
+            shared_seed = Some(ctx.clone());
+            ctx
+        };
 
         // Materialize real components, drop the request.
         let mut entity_cmds = commands.entity(entity);
         entity_cmds.remove::<BrinkFlowRequest<M>>();
         entity_cmds.insert((
             BrinkFlow::<M>::new(flow),
-            BrinkProgram::<M>::new(bundle.program.clone()),
+            BrinkContext::<M>::new(starting_context.clone()),
+            BrinkStory::<M>::new(bundle.program.clone(), bundle.line_tables.clone()),
         ));
 
         // In dev builds, attach a replay log so hot-reload can rebuild
@@ -221,8 +220,16 @@ mod tests {
             "fulfilled entity should have BrinkFlow"
         );
         assert!(
-            entity_ref.contains::<BrinkProgram<()>>(),
+            entity_ref.contains::<crate::BrinkProgram<()>>(),
             "fulfilled entity should have BrinkProgram"
+        );
+        assert!(
+            entity_ref.contains::<crate::BrinkLocale<()>>(),
+            "fulfilled entity should have BrinkLocale"
+        );
+        assert!(
+            entity_ref.contains::<BrinkContext<()>>(),
+            "fulfilled entity should have BrinkContext"
         );
         assert!(
             !entity_ref.contains::<BrinkFlowRequest<()>>(),

@@ -39,7 +39,8 @@ mod source_loader;
 mod test_support;
 
 pub use asset::{
-    BrinkProgram, BrinkStoryAsset, InkbLoader, InkbLoaderError, LineTablesAsset, ProgramAsset,
+    BrinkProgram, BrinkStory, BrinkStoryAsset, InkbLoader, InkbLoaderError, LineTablesAsset,
+    ProgramAsset,
 };
 pub use event::{
     BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone,
@@ -47,8 +48,8 @@ pub use event::{
 #[cfg(feature = "dev")]
 pub use event::BrinkFlowReset;
 pub use flow::BrinkFlow;
-pub use globals::BrinkGlobals;
-pub use line_tables::BrinkLineTables;
+pub use globals::{BrinkContext, BrinkGlobals};
+pub use line_tables::BrinkLocale;
 pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
 #[cfg(feature = "dev")]
 pub use replay::{BrinkReplayLog, replay_on_reload};

@@ -5,20 +5,23 @@ use std::marker::PhantomData;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::system::Commands;
-use brink_runtime::{ExternalFnHandler, FastRng, FlowInstance, Line, Program, RuntimeError};
+use brink_format::LineEntry;
+use brink_runtime::{
+    Context, ExternalFnHandler, FastRng, FlowInstance, Line, Program, RuntimeError,
+};
 
 use crate::event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
-use crate::globals::BrinkGlobals;
-use crate::line_tables::BrinkLineTables;
 
 /// A single live ink flow, attached to an entity. Holds the VM's per-flow
 /// state: call stacks, output buffer, pending choices, and the accumulated
 /// transcript.
 ///
 /// Spawn one of these per active conversation. Systems advance the flow by
-/// calling methods on `inner` against the shared [`BrinkGlobals`](crate::BrinkGlobals)
-/// (or a per-flow `Context` if you're doing fork/branch) and the current
-/// program from `Assets<ProgramAsset>`.
+/// calling methods on it against the per-flow
+/// [`BrinkContext`](crate::BrinkContext) component, the current
+/// [`Program`] from `Assets<ProgramAsset>`, and the current line tables
+/// from `Assets<LineTablesAsset>` (looked up via the entity's
+/// [`BrinkLocale`](crate::BrinkLocale)).
 #[derive(Component)]
 pub struct BrinkFlow<M: Send + Sync + 'static = ()> {
     pub inner: FlowInstance,
@@ -37,14 +40,13 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         }
     }
 
-    /// Select a choice. Convenience wrapper that pulls `&mut Context`
-    /// out of [`BrinkGlobals`].
+    /// Select a choice against the flow's `Context`.
     pub fn choose(
         &mut self,
-        globals: &mut BrinkGlobals<M>,
+        context: &mut Context,
         index: usize,
     ) -> Result<(), RuntimeError> {
-        self.inner.choose(&mut globals.inner, index)
+        self.inner.choose(context, index)
     }
 
     /// Like [`choose`](Self::choose) but also records the chosen index
@@ -56,12 +58,12 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
     #[cfg(feature = "dev")]
     pub fn choose_recording(
         &mut self,
-        globals: &mut BrinkGlobals<M>,
+        context: &mut Context,
         log: &mut crate::replay::BrinkReplayLog<M>,
         index: usize,
     ) -> Result<(), RuntimeError> {
         log.choices_made.push(index);
-        self.inner.choose(&mut globals.inner, index)
+        self.inner.choose(context, index)
     }
 
     /// Step the VM by one line and queue the corresponding observer
@@ -74,19 +76,15 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
     pub fn step_one(
         &mut self,
         program: &Program,
-        line_tables: &BrinkLineTables<M>,
-        globals: &mut BrinkGlobals<M>,
+        line_tables: &[Vec<LineEntry>],
+        context: &mut Context,
         handler: &dyn ExternalFnHandler,
         entity: Entity,
         commands: &mut Commands,
     ) -> Result<Line, RuntimeError> {
-        let line = self.inner.step_single_line::<FastRng>(
-            program,
-            &line_tables.tables,
-            &mut globals.inner,
-            handler,
-            None,
-        )?;
+        let line = self
+            .inner
+            .step_single_line::<FastRng>(program, line_tables, context, handler, None)?;
         emit_event::<M>(&line, entity, commands);
         Ok(line)
     }
@@ -99,15 +97,15 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
     pub fn advance_until_terminal(
         &mut self,
         program: &Program,
-        line_tables: &BrinkLineTables<M>,
-        globals: &mut BrinkGlobals<M>,
+        line_tables: &[Vec<LineEntry>],
+        context: &mut Context,
         handler: &dyn ExternalFnHandler,
         entity: Entity,
         commands: &mut Commands,
     ) -> Result<Line, RuntimeError> {
         const STEP_LIMIT: u64 = 10_000;
         for _ in 0..STEP_LIMIT {
-            let line = self.step_one(program, line_tables, globals, handler, entity, commands)?;
+            let line = self.step_one(program, line_tables, context, handler, entity, commands)?;
             if !matches!(line, Line::Text { .. }) {
                 return Ok(line);
             }
@@ -160,7 +158,7 @@ pub(crate) fn emit_event<M: Send + Sync + 'static>(
 mod tests {
     use super::*;
     use crate::test_support::{add_story_assets, compile_test_story, make_test_app};
-    use crate::{BrinkFlowRequest, BrinkProgram};
+    use crate::BrinkFlowRequest;
     use bevy_app::Update;
     use bevy_asset::Assets;
     use bevy_ecs::prelude::*;
@@ -266,11 +264,21 @@ mod tests {
         app.update();
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        clippy::type_complexity,
+        reason = "bevy systems take Res by value and have complex query tuples"
+    )]
     fn advance_driver_system(
-        mut flows: Query<(Entity, &mut BrinkFlow<()>, &BrinkProgram<()>)>,
-        line_tables: Res<crate::BrinkLineTables<()>>,
-        globals: Option<ResMut<crate::BrinkGlobals<()>>>,
+        mut flows: Query<(
+            Entity,
+            &mut BrinkFlow<()>,
+            &mut crate::BrinkContext<()>,
+            &crate::BrinkProgram<()>,
+            &crate::BrinkLocale<()>,
+        )>,
         programs: Res<Assets<crate::ProgramAsset>>,
+        line_tables_assets: Res<Assets<crate::LineTablesAsset>>,
         mut drive: ResMut<DriveAdvance>,
         mut commands: Commands,
     ) {
@@ -279,21 +287,21 @@ mod tests {
         }
         drive.0 = false;
         eprintln!("[advance] running");
-        let Some(mut globals) = globals else {
-            eprintln!("[advance] no globals yet");
-            return;
-        };
         let count = flows.iter().count();
         eprintln!("[advance] {count} flow(s)");
-        for (entity, mut flow, brink_program) in &mut flows {
+        for (entity, mut flow, mut ctx, brink_program, locale) in &mut flows {
             let Some(program_asset) = programs.get(&brink_program.handle) else {
                 eprintln!("[advance] no program asset");
                 continue;
             };
+            let Some(lt_asset) = line_tables_assets.get(&locale.handle) else {
+                eprintln!("[advance] no line tables asset");
+                continue;
+            };
             let result = flow.advance_until_terminal(
                 &program_asset.program,
-                &line_tables,
-                &mut globals,
+                &lt_asset.tables,
+                &mut ctx.inner,
                 &brink_runtime::FallbackHandler,
                 entity,
                 &mut commands,
@@ -418,8 +426,7 @@ mod tests {
         let mut app = make_test_app();
         install_recorder(&mut app);
         // Choose driver: when ChoiceToMake is set, picks that index and
-        // records to the replay log on the matching entity. `BrinkGlobals`
-        // is `Option` because it doesn't exist until the first fulfillment.
+        // records to the replay log on the matching entity.
         #[derive(Resource, Default)]
         struct ChoiceToMake(Option<usize>);
         app.insert_resource(ChoiceToMake::default());
@@ -427,14 +434,13 @@ mod tests {
             Update,
             |mut flows: Query<(
                 &mut BrinkFlow<()>,
+                &mut crate::BrinkContext<()>,
                 &mut crate::replay::BrinkReplayLog<()>,
             )>,
-             globals: Option<ResMut<crate::BrinkGlobals<()>>>,
              mut to_make: ResMut<ChoiceToMake>| {
                 let Some(idx) = to_make.0.take() else { return };
-                let Some(mut globals) = globals else { return };
-                let Ok((mut flow, mut log)) = flows.single_mut() else { return };
-                let _ = flow.choose_recording(&mut globals, &mut log, idx);
+                let Ok((mut flow, mut ctx, mut log)) = flows.single_mut() else { return };
+                let _ = flow.choose_recording(&mut ctx.inner, &mut log, idx);
             },
         );
 

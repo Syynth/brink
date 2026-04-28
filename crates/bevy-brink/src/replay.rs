@@ -16,28 +16,29 @@ use bevy_asset::{AssetEvent, Assets, Handle};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
-use bevy_ecs::system::{Commands, Query, Res, ResMut};
+use bevy_ecs::system::{Commands, Query, Res};
 use bevy_log::{info, warn};
+use brink_format::LineEntry;
 use brink_runtime::{Context, FallbackHandler, FastRng, FlowInstance, Line, RuntimeError};
 
 use crate::asset::{BrinkProgram, BrinkStoryAsset, LineTablesAsset, ProgramAsset};
 use crate::event::BrinkFlowReset;
 use crate::flow::BrinkFlow;
-use crate::globals::BrinkGlobals;
-use crate::line_tables::BrinkLineTables;
+use crate::globals::BrinkContext;
 use crate::request::FlowStart;
 
 /// Per-flow snapshot used to reconstruct the flow on hot-reload.
 ///
 /// Inserted alongside [`BrinkFlow<M>`] by the fulfillment system when
-/// the `dev` feature is enabled. Contains the globals snapshot at the
-/// moment the flow was spawned, the start address, the story handle
-/// (so we can find the new program after reload), and the running list
-/// of choice selections.
+/// the `dev` feature is enabled. Contains the per-flow `Context`
+/// snapshot at the moment the flow was spawned, the start address, the
+/// story handle (so we can find the new program after reload), and the
+/// running list of choice selections.
 #[derive(Component)]
 pub struct BrinkReplayLog<M: Send + Sync + 'static = ()> {
-    /// Snapshot of [`BrinkGlobals`](crate::BrinkGlobals)'s context taken at fulfillment.
-    pub start_globals: Context,
+    /// Snapshot of the flow's [`BrinkContext`](crate::BrinkContext)
+    /// taken at fulfillment.
+    pub start_context: Context,
     /// Where this flow began executing.
     pub start: FlowStart,
     /// The story this flow is bound to (for re-resolving the program
@@ -51,12 +52,12 @@ pub struct BrinkReplayLog<M: Send + Sync + 'static = ()> {
 
 impl<M: Send + Sync + 'static> BrinkReplayLog<M> {
     pub(crate) fn new(
-        start_globals: Context,
+        start_context: Context,
         start: FlowStart,
         story: Handle<BrinkStoryAsset>,
     ) -> Self {
         Self {
-            start_globals,
+            start_context,
             start,
             story,
             choices_made: Vec::new(),
@@ -71,7 +72,7 @@ impl<M: Send + Sync + 'static> BrinkReplayLog<M> {
 ///
 /// Behavior:
 /// - For each entity with both `BrinkFlow<M>` and `BrinkReplayLog<M>`:
-///   1. Reset [`BrinkGlobals<M>`] from `log.start_globals`.
+///   1. Reset the entity's [`BrinkContext<M>`] from `log.start_context`.
 ///   2. Resolve `log.start` against the new program; build fresh `FlowInstance`.
 ///   3. For each choice in `log.choices_made`: step until a `Choices` line
 ///      appears, then call `choose(idx)`. If anything fails (choice index
@@ -83,8 +84,7 @@ impl<M: Send + Sync + 'static> BrinkReplayLog<M> {
 #[expect(
     clippy::needless_pass_by_value,
     clippy::type_complexity,
-    clippy::too_many_arguments,
-    reason = "bevy systems take Res/Query by value and naturally collect many parameters"
+    reason = "bevy systems take Res/Query by value and have complex query tuples"
 )]
 pub fn replay_on_reload<M: Send + Sync + 'static>(
     mut events: MessageReader<AssetEvent<ProgramAsset>>,
@@ -92,13 +92,12 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         Entity,
         &mut BrinkFlow<M>,
         &BrinkProgram<M>,
+        &mut BrinkContext<M>,
         &mut BrinkReplayLog<M>,
     )>,
     programs: Res<Assets<ProgramAsset>>,
     stories: Res<Assets<BrinkStoryAsset>>,
     line_tables_assets: Res<Assets<LineTablesAsset>>,
-    mut line_tables: ResMut<BrinkLineTables<M>>,
-    mut globals: Option<ResMut<BrinkGlobals<M>>>,
     mut commands: Commands,
 ) {
     // Drain events; we only care that *some* program changed. Per-flow
@@ -113,24 +112,22 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         return;
     }
 
-    let Some(globals) = globals.as_mut() else {
-        return;
-    };
-
-    for (entity, mut flow, brink_program, log) in &mut flows {
+    for (entity, mut flow, brink_program, mut context, log) in &mut flows {
         let Some(program_asset) = programs.get(&brink_program.handle) else {
             continue;
         };
 
-        // Refresh BrinkLineTables<M> from the bundle's current
-        // LineTablesAsset before walking — without this, the post-reload
-        // walk reads NEW program against OLD tables and either renders
-        // stale text or fails to resolve new string IDs.
-        if let Some(bundle) = stories.get(&log.story)
-            && let Some(lt_asset) = line_tables_assets.get(&bundle.line_tables)
+        // Look up the new line tables via the story bundle. Without
+        // this, the post-reload walk would read NEW program against
+        // OLD tables and either render stale text or fail to resolve
+        // new string IDs.
+        let line_tables: &[Vec<LineEntry>] = match stories
+            .get(&log.story)
+            .and_then(|bundle| line_tables_assets.get(&bundle.line_tables))
         {
-            line_tables.tables.clone_from(&lt_asset.tables);
-        }
+            Some(lt_asset) => &lt_asset.tables,
+            None => continue,
+        };
 
         // Tell consumers a rebuild is starting *before* we fire any
         // line-delivery events from replay. Triggers process in order,
@@ -157,8 +154,8 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
             continue;
         };
 
-        // Reset globals to the captured snapshot.
-        globals.inner = log.start_globals.clone();
+        // Reset the per-flow Context to the captured snapshot.
+        context.inner = log.start_context.clone();
 
         // Replace the in-place flow with the freshly-built one.
         flow.inner = new_flow;
@@ -174,8 +171,8 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
             if let Err(err) = step_to_next_choices(
                 &mut flow.inner,
                 &program_asset.program,
-                &line_tables,
-                &mut globals.inner,
+                line_tables,
+                &mut context.inner,
             ) {
                 warn!(
                     "replay: failed to reach choice point {i} for entity {entity:?}: {err}; \
@@ -184,7 +181,7 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
                 replay_failed = true;
                 break;
             }
-            if let Err(err) = flow.inner.choose(&mut globals.inner, choice_idx) {
+            if let Err(err) = flow.inner.choose(&mut context.inner, choice_idx) {
                 warn!(
                     "replay: choose({choice_idx}) at step {i} for entity {entity:?}: {err}; \
                      stopping replay"
@@ -202,8 +199,8 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         // the UI sees the user's current page in the new program.
         match flow.advance_until_terminal(
             &program_asset.program,
-            &line_tables,
-            globals,
+            line_tables,
+            &mut context.inner,
             &FallbackHandler,
             entity,
             &mut commands,
@@ -232,17 +229,17 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
 /// the user's current state. The post-replay `advance_until_terminal`
 /// in [`replay_on_reload`] is what fires events for the actual current
 /// page.
-fn step_to_next_choices<M: Send + Sync + 'static>(
+fn step_to_next_choices(
     flow: &mut FlowInstance,
     program: &brink_runtime::Program,
-    line_tables: &BrinkLineTables<M>,
+    line_tables: &[Vec<LineEntry>],
     context: &mut Context,
 ) -> Result<(), RuntimeError> {
     const STEP_LIMIT: usize = 10_000;
     for _ in 0..STEP_LIMIT {
         let line = flow.step_single_line::<FastRng>(
             program,
-            &line_tables.tables,
+            line_tables,
             context,
             &FallbackHandler,
             None,

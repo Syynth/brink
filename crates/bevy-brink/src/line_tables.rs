@@ -1,46 +1,37 @@
-//! Localized line tables — the swappable rendering data for a story.
+//! Per-flow locale handle: which `LineTablesAsset` a flow renders against.
 
 use std::marker::PhantomData;
 
-use bevy_ecs::resource::Resource;
-use brink_format::LineEntry;
+use bevy_asset::Handle;
+use bevy_ecs::component::Component;
 
-/// The active set of line tables (localized strings and slot templates)
-/// for a story identified by marker `M`.
+use crate::asset::LineTablesAsset;
+
+/// The active locale for a flow — a handle to the `LineTablesAsset`
+/// whose strings and slot templates render this flow's output.
 ///
-/// The runtime's step functions take `&[Vec<LineEntry>]`, and a flow's
-/// append-only transcript stores structural references (`LineRef { ... }`)
-/// rather than resolved strings — so swapping these tables re-renders
-/// previously-produced output in the new locale without re-executing
-/// the story.
+/// Inserted by `fulfill_flow_requests` alongside `BrinkProgram<M>`,
+/// typically as part of the `BrinkStory<M>` bundle. To swap locale,
+/// assign a different `Handle<LineTablesAsset>`; consumers can detect
+/// the swap with `Changed<BrinkLocale<M>>` and re-render the flow's
+/// transcript against the new tables (the runtime's transcript stores
+/// structural references, not resolved strings).
 ///
-/// One active locale per marker. If you need per-flow locale overrides or
-/// per-locale `Asset`s, skip this resource and store a `Vec<Vec<LineEntry>>`
-/// however you like — the runtime doesn't care where the slice comes from.
-#[derive(Resource)]
-pub struct BrinkLineTables<M: Send + Sync + 'static = ()> {
-    pub tables: Vec<Vec<LineEntry>>,
+/// Note: hot-reload of the *content* of an existing handle does NOT
+/// fire `Changed` — Bevy's asset system updates the slot in place, so
+/// the handle is stable. That path is signalled by
+/// `AssetEvent::Modified<LineTablesAsset>` instead.
+#[derive(Component)]
+pub struct BrinkLocale<M: Send + Sync + 'static = ()> {
+    pub handle: Handle<LineTablesAsset>,
     _marker: PhantomData<fn() -> M>,
 }
 
-// Manual Default avoids requiring `M: Default` (markers are often ZSTs
-// without a derive).
-impl<M: Send + Sync + 'static> Default for BrinkLineTables<M> {
-    fn default() -> Self {
-        Self {
-            tables: Vec::new(),
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<M: Send + Sync + 'static> BrinkLineTables<M> {
-    /// Wrap a `Vec<Vec<LineEntry>>` (e.g. the base tables returned by
-    /// [`brink_runtime::link`]) as a Bevy `Resource`.
+impl<M: Send + Sync + 'static> BrinkLocale<M> {
     #[must_use]
-    pub fn new(tables: Vec<Vec<LineEntry>>) -> Self {
+    pub fn new(handle: Handle<LineTablesAsset>) -> Self {
         Self {
-            tables,
+            handle,
             _marker: PhantomData,
         }
     }
