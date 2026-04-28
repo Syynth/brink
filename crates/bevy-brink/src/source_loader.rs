@@ -26,9 +26,7 @@ use std::collections::HashMap;
 use bevy_asset::{AssetLoader, LoadContext, io::Reader};
 use bevy_reflect::TypePath;
 
-use crate::asset::{
-    BrinkStoryAsset, InitError, InkLoaderSettings, emit_story_assets, run_init_pass,
-};
+use crate::asset::{BrinkStoryAsset, emit_story_assets};
 
 /// Asset loader for `.ink` (source) files.
 ///
@@ -54,8 +52,6 @@ pub enum InkLoaderError {
     Compile(#[from] brink_compiler::CompileError),
     #[error("link error: {0}")]
     Link(#[from] brink_runtime::RuntimeError),
-    #[error("init pass failed: {0}")]
-    Init(#[from] InitError),
 }
 
 /// Resolve an `INCLUDE` path relative to the including file's directory.
@@ -71,13 +67,13 @@ fn resolve_include_path(from_file: &str, include_path: &str) -> String {
 
 impl AssetLoader for InkLoader {
     type Asset = BrinkStoryAsset;
-    type Settings = InkLoaderSettings;
+    type Settings = ();
     type Error = InkLoaderError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
-        settings: &Self::Settings,
+        _settings: &Self::Settings,
         load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         // Read the entry source. AssetPath includes optional source +
@@ -130,13 +126,7 @@ impl AssetLoader for InkLoader {
             })
         })?;
         let (program, tables) = brink_runtime::link(&output.data)?;
-        let initial_context = run_init_pass(&program, &tables, settings)?;
-        Ok(emit_story_assets(
-            load_context,
-            program,
-            tables,
-            initial_context,
-        ))
+        Ok(emit_story_assets(load_context, program, tables))
     }
 
     fn extensions(&self) -> &[&str] {

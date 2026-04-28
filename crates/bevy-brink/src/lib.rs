@@ -39,8 +39,7 @@ mod source_loader;
 mod test_support;
 
 pub use asset::{
-    BrinkProgram, BrinkStoryAsset, InitError, InitialGlobalsAsset, InkLoaderSettings, InkbLoader,
-    InkbLoaderError, LineTablesAsset, ProgramAsset,
+    BrinkProgram, BrinkStoryAsset, InkbLoader, InkbLoaderError, LineTablesAsset, ProgramAsset,
 };
 pub use event::{
     BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone,

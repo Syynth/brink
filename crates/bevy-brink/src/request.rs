@@ -21,9 +21,7 @@ use bevy_ecs::query::Without;
 use bevy_log::{error, warn};
 use brink_runtime::FlowInstance;
 
-use crate::asset::{
-    BrinkProgram, BrinkStoryAsset, InitialGlobalsAsset, LineTablesAsset, ProgramAsset,
-};
+use crate::asset::{BrinkProgram, BrinkStoryAsset, LineTablesAsset, ProgramAsset};
 use crate::flow::BrinkFlow;
 use crate::globals::BrinkGlobals;
 use crate::line_tables::BrinkLineTables;
@@ -79,25 +77,22 @@ pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
 /// - Skips requests whose `BrinkStoryAsset` (or any of its sub-assets)
 ///   isn't loaded yet — the request just waits.
 /// - On first fulfillment for marker `M`, inserts [`BrinkGlobals<M>`]
-///   seeded from either the program's fresh defaults (for `FlowStart::Root`)
-///   or from [`InitialGlobalsAsset`] (for `FlowStart::Address`). This
-///   matters because root-start flows naturally run init code when they
-///   advance, while named-knot flows skip init and need post-init globals.
+///   seeded from [`ProgramAsset::initial_context`] (the fresh starting
+///   `Context` — globals from `VAR`/`CONST`/`LIST` defaults, zero
+///   visit/turn counts).
 /// - Refreshes [`BrinkLineTables<M>`] from the loaded asset every time
 ///   (so hot-reload of the source file's line tables propagates).
 /// - Errors and removes the request if `FlowStart::Address` references
 ///   a name that isn't in the program.
 #[expect(
     clippy::needless_pass_by_value,
-    clippy::too_many_arguments,
-    reason = "bevy systems take Res/Query by value and naturally have many arguments"
+    reason = "bevy systems take Res/Query by value"
 )]
 pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
     requests: Query<(Entity, &BrinkFlowRequest<M>), Without<BrinkFlow<M>>>,
     stories: Res<Assets<BrinkStoryAsset>>,
     programs: Res<Assets<ProgramAsset>>,
     line_tables: Res<Assets<LineTablesAsset>>,
-    initial_globals: Res<Assets<InitialGlobalsAsset>>,
     globals: Option<Res<BrinkGlobals<M>>>,
     mut line_tables_res: ResMut<BrinkLineTables<M>>,
     mut commands: Commands,
@@ -114,32 +109,32 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
         let Some(lt_asset) = line_tables.get(&bundle.line_tables) else {
             continue;
         };
-        let Some(ig_asset) = initial_globals.get(&bundle.initial_globals) else {
-            continue;
-        };
 
         // Resolve start position.
-        let (flow, fresh_ctx) = match &req.start {
-            FlowStart::Root => FlowInstance::new_at_root(&program_asset.program),
+        let flow = match &req.start {
+            FlowStart::Root => {
+                let (flow, _ctx) = FlowInstance::new_at_root(&program_asset.program);
+                flow
+            }
             FlowStart::Address(name) => {
                 let Some((idx, _)) = program_asset.program.find_address(name) else {
                     error!("BrinkFlowRequest: knot '{name}' not found; removing request");
                     commands.entity(entity).remove::<BrinkFlowRequest<M>>();
                     continue;
                 };
-                FlowInstance::new_at(&program_asset.program, idx)
+                let (flow, _ctx) = FlowInstance::new_at(&program_asset.program, idx);
+                flow
             }
         };
 
-        // The "starting context" is what we'd seed BrinkGlobals with on
-        // first fulfillment, AND what gets snapshotted into BrinkReplayLog
-        // (in dev builds). Root-start flows run init naturally during
-        // play — fresh defaults. Named-knot flows skip init — use the
-        // post-init context captured at load time.
-        let starting_context = match &req.start {
-            FlowStart::Root => fresh_ctx,
-            FlowStart::Address(_) => ig_asset.context.clone(),
-        };
+        // Starting context is the program's fresh initial_context — same
+        // for root-start and named-knot flows. Root-start flows naturally
+        // walk through any free-floating top-of-file setup code as they
+        // advance. Named-knot flows skip that code entirely; if the story
+        // depends on side effects from it, the consumer is responsible
+        // for arranging them (e.g. running a root flow first, or writing
+        // knots that don't depend on root setup).
+        let starting_context = program_asset.initial_context.clone();
 
         // Bootstrap BrinkGlobals<M> on first fulfillment.
         if !globals_seeded {

@@ -3,8 +3,8 @@
 //!
 //! Provides:
 //! - `compile_test_story`: compile a small ink source into the trio of
-//!   (Program, line_tables, initial_globals_context) needed to set up
-//!   asset state in a test.
+//!   (`Program`, line tables, fresh `Context`) needed to set up asset
+//!   state in a test.
 //! - `make_test_app` / `add_story_assets`: build a minimal Bevy `App`
 //!   wired with `BrinkPlugin`, plus directly insert pre-built story
 //!   assets so tests don't have to round-trip through the file-watcher
@@ -16,14 +16,10 @@ use bevy_app::App;
 use bevy_asset::{AssetPlugin, Assets, Handle};
 use brink_runtime::{Context, Program};
 
-use crate::asset::{
-    BrinkStoryAsset, InitialGlobalsAsset, InkLoaderSettings, LineTablesAsset, ProgramAsset,
-    run_init_pass,
-};
+use crate::asset::{BrinkStoryAsset, LineTablesAsset, ProgramAsset, fresh_context};
 
-/// Compile an inline ink source through the full pipeline (compile +
-/// link + run init pass) and return the artifacts needed to construct
-/// a `BrinkStoryAsset` in a test.
+/// Compile an inline ink source and return the (`Program`, line tables,
+/// fresh `Context`) tuple needed to build a `BrinkStoryAsset` in a test.
 ///
 /// Panics on any failure — tests should provide valid ink sources.
 #[expect(
@@ -44,9 +40,8 @@ pub fn compile_test_story(source: &str) -> (Program, Vec<Vec<brink_format::LineE
     .expect("test fixture should compile");
     let (program, tables) =
         brink_runtime::link(&output.data).expect("test fixture should link");
-    let initial_globals = run_init_pass(&program, &tables, &InkLoaderSettings::default())
-        .expect("test fixture init pass should succeed");
-    (program, tables, initial_globals)
+    let initial_context = fresh_context(&program);
+    (program, tables, initial_context)
 }
 
 /// Build an `App` with the minimum plugins needed to exercise
@@ -72,18 +67,15 @@ pub fn add_story_assets(
     let world = app.world_mut();
     let program_handle = world
         .resource_mut::<Assets<ProgramAsset>>()
-        .add(ProgramAsset { program });
+        .add(ProgramAsset {
+            program,
+            initial_context,
+        });
     let tables_handle = world
         .resource_mut::<Assets<LineTablesAsset>>()
         .add(LineTablesAsset { tables });
-    let initial_globals_handle = world
-        .resource_mut::<Assets<InitialGlobalsAsset>>()
-        .add(InitialGlobalsAsset {
-            context: initial_context,
-        });
     world.resource_mut::<Assets<BrinkStoryAsset>>().add(BrinkStoryAsset {
         program: program_handle,
         line_tables: tables_handle,
-        initial_globals: initial_globals_handle,
     })
 }

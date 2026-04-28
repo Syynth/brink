@@ -6,13 +6,22 @@ use bevy_asset::{Asset, AssetLoader, Handle, LoadContext, io::Reader};
 use bevy_ecs::component::Component;
 use bevy_reflect::TypePath;
 use brink_format::LineEntry;
-use brink_runtime::{
-    Context, FallbackHandler, FastRng, FlowInstance, Line, Program, RuntimeError, StoryStatus,
-};
-use serde::{Deserialize, Serialize};
+use brink_runtime::{Context, FlowInstance, Program, RuntimeError};
 
 /// The immutable bytecode portion of a compiled story — what the VM
-/// actually executes.
+/// actually executes — together with the fresh starting [`Context`]
+/// (globals seeded from `VAR`/`CONST`/`LIST` defaults; zero visit and
+/// turn counts).
+///
+/// `initial_context` is read-only "fresh start" state. Consumers use
+/// it to seed [`BrinkGlobals`](crate::BrinkGlobals) on first
+/// fulfillment, and can commit it back later for a "new game" reset
+/// (`globals.commit_from(&program.initial_context)`).
+///
+/// No execution happens to produce this — it's a pure function of the
+/// linked [`Program`]'s declarations. Stories with free-floating
+/// top-of-file setup (`~ initialize_save_data()` etc.) need a flow at
+/// root to advance through that code; the runtime doesn't pre-run it.
 ///
 /// Produced as a labeled subasset by [`InkbLoader`] (and the `.ink`
 /// source loader) under the label `program`. Reference it through
@@ -21,6 +30,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Asset, TypePath)]
 pub struct ProgramAsset {
     pub program: Program,
+    pub initial_context: Context,
 }
 
 /// The localized line-table portion of a compiled story — the swappable
@@ -39,29 +49,9 @@ pub struct LineTablesAsset {
     pub tables: Vec<Vec<LineEntry>>,
 }
 
-/// The starting [`Context`] that results from running the story's init
-/// pass at load time — globals declared with `VAR`/`CONST`/`LIST` and
-/// any free-floating top-of-file setup are evaluated once during load,
-/// and the resulting state is captured here.
-///
-/// When a flow is spawned via [`BrinkFlowRequest`](crate::BrinkFlowRequest),
-/// the fulfillment system uses this snapshot to seed
-/// [`BrinkGlobals`](crate::BrinkGlobals) the first time. Subsequent
-/// flow spawns reuse the existing globals — they don't replay init.
-///
-/// When [`InkLoaderSettings::run_init`] is `false`, this contains the
-/// raw post-`global_defaults` Context with no execution applied, so
-/// callers that want to perform their own init can do so.
-///
-/// Loaded as a labeled subasset under the label `initial_globals`.
-#[derive(Asset, TypePath)]
-pub struct InitialGlobalsAsset {
-    pub context: Context,
-}
-
-/// Top-level "story" asset — a thin bundle pairing the three
-/// labeled subassets ([`ProgramAsset`], [`LineTablesAsset`],
-/// [`InitialGlobalsAsset`]) that together describe a loaded story.
+/// Top-level "story" asset — a thin bundle pairing the two
+/// labeled subassets ([`ProgramAsset`], [`LineTablesAsset`]) that
+/// together describe a loaded story.
 ///
 /// `.inkb` and `.ink` loaders emit this. Consumers usually don't need
 /// to load the labeled subassets directly — they spawn an entity with
@@ -72,52 +62,15 @@ pub struct InitialGlobalsAsset {
 pub struct BrinkStoryAsset {
     pub program: Handle<ProgramAsset>,
     pub line_tables: Handle<LineTablesAsset>,
-    pub initial_globals: Handle<InitialGlobalsAsset>,
-}
-
-/// Loader-time configuration for both [`InkbLoader`] and the `.ink`
-/// source loader.
-///
-/// Use [`AssetServer::load_with_settings`](bevy_asset::AssetServer::load_with_settings)
-/// to override the defaults:
-///
-/// ```ignore
-/// let handle: Handle<BrinkStoryAsset> = asset_server.load_with_settings(
-///     "story.ink",
-///     |s: &mut InkLoaderSettings| { s.run_init = false; },
-/// );
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InkLoaderSettings {
-    /// Run the story's init pass at load time to evaluate global
-    /// declarations and any top-of-file setup, capturing the resulting
-    /// `Context` as [`InitialGlobalsAsset`].
-    ///
-    /// Default: `true`. Set to `false` if your story's init code calls
-    /// host-provided external functions that aren't registered yet at
-    /// load time — in that case run init yourself once your bindings
-    /// are ready.
-    pub run_init: bool,
-    /// Safety cap on the number of VM steps the init pass may execute
-    /// before erroring out. Guards against runaway bytecode.
-    pub init_step_limit: usize,
-}
-
-impl Default for InkLoaderSettings {
-    fn default() -> Self {
-        Self {
-            run_init: true,
-            init_step_limit: 10_000,
-        }
-    }
 }
 
 /// Asset loader for `.inkb` (compiled bytecode) files.
 ///
 /// Reads the bytes, decodes via [`brink_format::read_inkb`], links via
-/// [`brink_runtime::link`], optionally runs the init pass, and emits
-/// labeled subassets (`#program`, `#line_tables`, `#initial_globals`)
-/// bundled in the returned [`BrinkStoryAsset`].
+/// [`brink_runtime::link`], computes the fresh starting [`Context`]
+/// from the program's declarations, and emits labeled subassets
+/// (`#program`, `#line_tables`) bundled in the returned
+/// [`BrinkStoryAsset`].
 #[derive(Default, TypePath)]
 pub struct InkbLoader;
 
@@ -130,8 +83,6 @@ pub enum InkbLoaderError {
     Decode(brink_format::DecodeError),
     #[error("link error: {0}")]
     Link(#[from] RuntimeError),
-    #[error("init pass failed: {0}")]
-    Init(#[from] InitError),
 }
 
 impl From<brink_format::DecodeError> for InkbLoaderError {
@@ -142,26 +93,20 @@ impl From<brink_format::DecodeError> for InkbLoaderError {
 
 impl AssetLoader for InkbLoader {
     type Asset = BrinkStoryAsset;
-    type Settings = InkLoaderSettings;
+    type Settings = ();
     type Error = InkbLoaderError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
-        settings: &Self::Settings,
+        _settings: &Self::Settings,
         load_context: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let story_data = brink_format::read_inkb(&bytes)?;
         let (program, tables) = brink_runtime::link(&story_data)?;
-        let initial_context = run_init_pass(&program, &tables, settings)?;
-        Ok(emit_story_assets(
-            load_context,
-            program,
-            tables,
-            initial_context,
-        ))
+        Ok(emit_story_assets(load_context, program, tables))
     }
 
     fn extensions(&self) -> &[&str] {
@@ -169,76 +114,37 @@ impl AssetLoader for InkbLoader {
     }
 }
 
-/// Run the story's init pass: spawn a fresh flow at root, step until
-/// the first terminal Line, and capture the resulting `Context`.
-///
-/// When `settings.run_init` is `false`, returns the un-executed Context
-/// straight from `program.global_defaults()` — useful for stories whose
-/// init code depends on host-provided externals not yet registered.
-pub(crate) fn run_init_pass(
-    program: &Program,
-    line_tables: &[Vec<LineEntry>],
-    settings: &InkLoaderSettings,
-) -> Result<Context, InitError> {
-    let (mut flow, mut context) = FlowInstance::new_at_root(program);
-    if !settings.run_init {
-        return Ok(context);
-    }
-
-    for _ in 0..settings.init_step_limit {
-        let line = flow
-            .step_single_line::<FastRng>(
-                program,
-                line_tables,
-                &mut context,
-                &FallbackHandler,
-                None,
-            )
-            .map_err(InitError::Runtime)?;
-
-        // Stop at the first non-Text line — that's where init naturally
-        // hands control back to the player (a choice, a Done, or End).
-        if !matches!(line, Line::Text { .. }) {
-            return Ok(context);
-        }
-        // Some stories never reach a terminal but go Active → Ended; bail.
-        if matches!(flow.status(), StoryStatus::Ended) {
-            return Ok(context);
-        }
-    }
-    Err(InitError::StepLimitExceeded(settings.init_step_limit))
+/// Compute the fresh starting [`Context`] for a program — globals seeded
+/// from `VAR`/`CONST`/`LIST` defaults, zero visit and turn counts. No
+/// execution; pure function of the linked program.
+pub(crate) fn fresh_context(program: &Program) -> Context {
+    // FlowInstance::new_at_root constructs both a flow and a fresh
+    // Context; we only want the Context here.
+    let (_, context) = FlowInstance::new_at_root(program);
+    context
 }
 
-/// Errors from the init pass.
-#[derive(Debug, thiserror::Error)]
-pub enum InitError {
-    #[error("runtime error during init: {0}")]
-    Runtime(RuntimeError),
-    #[error("init pass exceeded step limit ({0}); story may have an infinite loop")]
-    StepLimitExceeded(usize),
-}
-
-/// Emit the three labeled subassets (`#program`, `#line_tables`,
-/// `#initial_globals`) and return the bundle holding their handles.
+/// Emit the two labeled subassets (`#program`, `#line_tables`) and
+/// return the bundle holding their handles. The fresh starting
+/// [`Context`] is computed and stored inline on `ProgramAsset`.
 pub(crate) fn emit_story_assets(
     load_context: &mut LoadContext<'_>,
     program: Program,
     tables: Vec<Vec<LineEntry>>,
-    initial_context: Context,
 ) -> BrinkStoryAsset {
-    let program = load_context.add_labeled_asset("program".to_string(), ProgramAsset { program });
-    let line_tables =
-        load_context.add_labeled_asset("line_tables".to_string(), LineTablesAsset { tables });
-    let initial_globals = load_context.add_labeled_asset(
-        "initial_globals".to_string(),
-        InitialGlobalsAsset {
-            context: initial_context,
+    let initial_context = fresh_context(&program);
+    let program = load_context.add_labeled_asset(
+        "program".to_string(),
+        ProgramAsset {
+            program,
+            initial_context,
         },
     );
+    let line_tables =
+        load_context.add_labeled_asset("line_tables".to_string(), LineTablesAsset { tables });
     BrinkStoryAsset {
         program,
         line_tables,
-        initial_globals,
     }
 }
 
@@ -267,20 +173,17 @@ impl<M: Send + Sync + 'static> BrinkProgram<M> {
 }
 
 #[cfg(test)]
-mod run_init_pass_tests {
-    use super::*;
+mod fresh_context_tests {
     use crate::test_support::compile_test_story;
 
+    /// `VAR` defaults are a link-time concern (`Program::global_defaults`),
+    /// not an init-pass concern. The fresh Context picks them up
+    /// without any execution.
     #[test]
-    fn captures_var_declarations() {
-        // Compile a story whose VAR declares a global, then verify the
-        // post-init Context has that default value.
+    fn fresh_context_picks_up_var_defaults() {
         let source = "VAR score = 42\n=== start ===\nHello.\n* [Continue] -> END\n";
         let (program, tables, ctx) = compile_test_story(source);
 
-        // Find the global slot for `score`. The init pass should have
-        // run all VAR declarations, so the slot's value matches the
-        // declared default.
         let mut score_value = None;
         for slot in 0..program.global_count() {
             if program.global_name(slot) == Some("score") {
@@ -290,66 +193,8 @@ mod run_init_pass_tests {
         assert!(score_value.is_some(), "score global should exist");
         assert!(
             matches!(score_value.unwrap(), brink_format::Value::Int(42)),
-            "score should be 42 after init"
+            "score should be 42 from the VAR default"
         );
-        // Sanity: line tables are non-empty (story has at least one line).
         assert!(!tables.is_empty(), "compiled story should have line tables");
-    }
-
-    #[test]
-    fn run_init_false_returns_uninitialized_context() {
-        // With run_init=false, the loader should return the raw default
-        // Context (program defaults applied, no execution).
-        let source = "VAR score = 42\n=== start ===\nHello.\n* [Continue] -> END\n";
-        let (program, tables, _) = compile_test_story(source);
-
-        let settings = InkLoaderSettings {
-            run_init: false,
-            init_step_limit: 10_000,
-        };
-        let ctx = run_init_pass(&program, &tables, &settings)
-            .expect("run_init=false should never error on a valid program");
-
-        // Even with run_init=false, VAR defaults are applied (those are
-        // a link-time concern via global_defaults, not an init-pass
-        // concern). So score should still be 42.
-        let mut found = false;
-        for slot in 0..program.global_count() {
-            if program.global_name(slot) == Some("score") {
-                assert!(matches!(
-                    ctx.globals[slot as usize],
-                    brink_format::Value::Int(42)
-                ));
-                found = true;
-            }
-        }
-        assert!(found);
-    }
-
-    #[test]
-    fn step_limit_caps_init_immediately_when_zero() {
-        // With init_step_limit = 0 the for-loop never enters; the
-        // function should return StepLimitExceeded(0) regardless of
-        // what the story would have done. Verifies the cap path
-        // without needing to construct a runaway story (the runtime's
-        // own infinite-loop guards make that surprisingly hard).
-        let source = "=== start ===\nhello\n* [Continue] -> END\n";
-        let (program, tables, _) = compile_test_story(source);
-
-        // First, a sanity check: with the default limit the story runs
-        // to completion fine.
-        let ok_result = run_init_pass(&program, &tables, &InkLoaderSettings::default());
-        assert!(ok_result.is_ok(), "default settings should succeed");
-
-        // Now with limit=0 we should hit the cap immediately.
-        let settings = InkLoaderSettings {
-            run_init: true,
-            init_step_limit: 0,
-        };
-        let result = run_init_pass(&program, &tables, &settings);
-        assert!(
-            matches!(result, Err(InitError::StepLimitExceeded(0))),
-            "expected StepLimitExceeded(0), got {result:?}"
-        );
     }
 }
