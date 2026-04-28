@@ -116,7 +116,7 @@ Stories whose init code calls host-provided externals can opt out via
 
 ## Open issues
 
-### 1. Hot-reload visual behavior (parked)
+### 1. ~~Hot-reload visual behavior (parked)~~ — FIXED (2026-04-28, visually confirmed)
 
 When the file watcher fires after an edit, the plugin reset+replays the
 flow against the new bytecode. The attempted UX has gone through several
@@ -128,21 +128,37 @@ iterations:
   produced "choose error: not waiting for choice".
 - **Second attempt** (commit `dfb548d7`): replay walks silently, then
   fires events only for the post-replay current page via
-  `advance_until_terminal`. **User reports this version doesn't render
-  anything after the reload.**
+  `advance_until_terminal`. User reported this version "didn't render
+  anything after the reload."
 
-Originally suspected to share a root cause with issue #2 (observer
-dispatch). Issue #2 turned out to be a test bug, not a dispatch bug —
-see below — so the "renders nothing" symptom needs fresh investigation.
+**Diagnosis (2026-04-28)**: the symptom was actually "renders OLD
+text", not "renders nothing." `replay_on_reload` walked the new program
+against a stale `BrinkLineTables<M>` resource — the resource is set by
+`fulfill_flow_requests` once at fulfillment, and that system is gated
+`Without<BrinkFlow<M>>` so it never re-runs to refresh. Sub-asset
+labels are stable across reloads, so `Assets<ProgramAsset>::get_mut`
+returns the new program, but the line tables resource still pointed to
+the old strings. New string IDs in the new program either resolved to
+old strings or to nothing depending on overlap.
 
-**Suggested next step**: with dispatch ruled out, instrument the reload
-flow to see what's actually firing. Likely culprits: system-vs-observer
-ordering inside the reload tick, asset-event timing (does
-`replay_on_reload` see the *new* `ProgramAsset` or the old one?), or
-the post-replay `advance_until_terminal` reaching a state that has no
-events to deliver (e.g. landing back on the same Choices the user just
-consumed). If the rabbit hole gets deep, fall back to "reset to start,
-no replay" — simpler and easier to verify.
+**Fix**: `replay_on_reload` now re-reads `BrinkLineTables<M>` from
+the bundle's current `LineTablesAsset` before walking. See
+[replay.rs](../crates/bevy-brink/src/replay.rs) — added `Res<Assets<BrinkStoryAsset>>`
+and `Res<Assets<LineTablesAsset>>` system params and a refresh step
+right after the modified-event drain.
+
+**Verified**: `flow::tests::hot_reload_with_new_content_renders_new_text`
+in `flow.rs` reproduces a real content swap (recompiles the story with
+different text and replaces both `ProgramAsset` and `LineTablesAsset`
+contents in place) and asserts the rendered output (via a UI render
+harness that mirrors `play_story.rs`'s observer wiring) contains the
+NEW story text and not the OLD.
+
+**Visual confirmation (2026-04-28)**: ran `cargo run --example play_story`,
+edited `crates/bevy-brink/examples/assets/story.ink`, saved, and the
+window updated to show the new content with the "Reloaded" banner.
+Loader logs confirmed the file watcher fired and `replay_on_reload`
+completed without errors.
 
 ### 2. ~~`commands.trigger` observer dispatch — unreliable in tests~~ — RESOLVED
 

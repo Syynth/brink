@@ -181,9 +181,17 @@ mod tests {
         story_ended_text: Vec<String>,
         turn_done: u32,
         story_ended: u32,
+        #[cfg(feature = "dev")]
+        flow_resets: u32,
     }
 
     impl EventRecorder {
+        /// Wipe all recorded events. Useful for "what happened *after*
+        /// this point" tests (e.g. re-deliveries during hot-reload).
+        fn clear(&mut self) {
+            *self = Self::default();
+        }
+
         fn all_text(&self) -> String {
             let mut s = String::new();
             for t in &self.text_lines {
@@ -234,6 +242,12 @@ mod tests {
             |trigger: On<BrinkStoryEnded<()>>, mut rec: ResMut<EventRecorder>| {
                 rec.story_ended_text.push(trigger.event().text.clone());
                 rec.story_ended += 1;
+            },
+        );
+        #[cfg(feature = "dev")]
+        app.add_observer(
+            |_: On<crate::BrinkFlowReset<()>>, mut rec: ResMut<EventRecorder>| {
+                rec.flow_resets += 1;
             },
         );
     }
@@ -455,5 +469,296 @@ mod tests {
         app.update();
         let recorded = app.world().resource::<LogReader>().0.clone();
         assert_eq!(recorded, vec![1]);
+    }
+
+    /// Sanity test: when only the asset event fires (with content
+    /// unchanged), `replay_on_reload` correctly fires `BrinkFlowReset`
+    /// and re-delivers the current page. Doesn't exercise any failure
+    /// modes that depend on the new program differing from the old —
+    /// see `hot_reload_with_new_content_*` for those.
+    #[test]
+    #[cfg(feature = "dev")]
+    fn hot_reload_redelivers_current_page_events() {
+        let mut app = make_test_app();
+        install_recorder(&mut app);
+
+        let (program, tables, ctx) =
+            compile_test_story("hello\n* [A] -> END\n* [B] -> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+
+        // Tick 1: fulfill request. Tick 2: drive advance to the choice.
+        app.update();
+        run_advance(&mut app);
+        app.update();
+
+        let before = app.world().resource::<EventRecorder>();
+        eprintln!(
+            "[before-reload] text_lines={:?} choices={} resets={}",
+            before.text_lines,
+            before.choices_presentations.len(),
+            before.flow_resets,
+        );
+        assert_eq!(
+            before.choices_presentations.len(),
+            1,
+            "test setup: should have reached the choice page before reload"
+        );
+
+        // Reset the recorder so post-reload assertions see only events
+        // delivered as a result of the simulated hot-reload.
+        app.world_mut().resource_mut::<EventRecorder>().clear();
+
+        // Simulate the hot-reload: file watcher would normally re-issue
+        // the asset; here we just mutate the program asset in place,
+        // which queues `AssetEvent::Modified` and triggers `replay_on_reload`.
+        let program_handle = app
+            .world()
+            .entity(entity)
+            .get::<crate::BrinkProgram<()>>()
+            .expect("entity should have BrinkProgram after fulfillment")
+            .handle
+            .clone();
+        {
+            let mut programs = app
+                .world_mut()
+                .resource_mut::<bevy_asset::Assets<crate::ProgramAsset>>();
+            let _ = programs.get_mut(&program_handle);
+        }
+
+        // Tick: asset_events system propagates the queued event into the
+        // MessageReader, then replay_on_reload sees it and rebuilds.
+        app.update();
+        // Second tick: any deferred triggers from the reload propagate.
+        app.update();
+
+        let after = app.world().resource::<EventRecorder>();
+        eprintln!(
+            "[after-reload] text_lines={:?} choices_text={:?} \
+             choices_presentations={} turn_done={} story_ended={} \
+             resets={}",
+            after.text_lines,
+            after.choices_text,
+            after.choices_presentations.len(),
+            after.turn_done,
+            after.story_ended,
+            after.flow_resets,
+        );
+
+        assert_eq!(
+            after.flow_resets, 1,
+            "expected exactly one BrinkFlowReset after the reload"
+        );
+        assert!(
+            !after.all_text().is_empty() || !after.choices_presentations.is_empty(),
+            "expected SOME post-reload events; got nothing — this is \
+             the 'blank page after reload' symptom"
+        );
+        assert_eq!(
+            after.choices_presentations.len(),
+            1,
+            "post-replay current page should be the choice again \
+             (no choices recorded → replay log empty → flow restarts \
+             at root → walks to the same Choices)"
+        );
+    }
+
+    /// "Render harness" — mirrors what `play_story.rs` does for the
+    /// visual example: a `PageText`/`PendingChoices`/`Banner` triple
+    /// driven by observers, plus a render function that produces the
+    /// same string the example would display.
+    ///
+    /// Tests that use this can call `simulate_render(&app)` to get the
+    /// exact rendered output without any windowing.
+    #[cfg(feature = "dev")]
+    mod render_harness {
+        use super::*;
+        use std::fmt::Write as _;
+
+        #[derive(Resource, Default)]
+        pub struct PageText(pub String);
+
+        #[derive(Resource, Default)]
+        pub struct PendingChoices(pub Vec<String>);
+
+        #[derive(Resource, Default)]
+        pub struct Banner(pub String);
+
+        pub fn install(app: &mut bevy_app::App) {
+            app.insert_resource(PageText::default());
+            app.insert_resource(PendingChoices::default());
+            app.insert_resource(Banner::default());
+            app.add_observer(
+                |trigger: On<BrinkLineDelivered<()>>, mut page: ResMut<PageText>| {
+                    page.0.push_str(&trigger.event().text);
+                },
+            );
+            app.add_observer(
+                |trigger: On<BrinkChoicesPresented<()>>,
+                 mut page: ResMut<PageText>,
+                 mut choices: ResMut<PendingChoices>| {
+                    page.0.push_str(&trigger.event().text);
+                    choices.0 = trigger
+                        .event()
+                        .choices
+                        .iter()
+                        .map(|c| c.text.clone())
+                        .collect();
+                },
+            );
+            app.add_observer(
+                |trigger: On<BrinkTurnDone<()>>, mut page: ResMut<PageText>| {
+                    page.0.push_str(&trigger.event().text);
+                },
+            );
+            app.add_observer(
+                |trigger: On<BrinkStoryEnded<()>>,
+                 mut page: ResMut<PageText>,
+                 mut banner: ResMut<Banner>| {
+                    page.0.push_str(&trigger.event().text);
+                    banner.0 = "Story ended.".to_string();
+                },
+            );
+            app.add_observer(
+                |_: On<crate::BrinkFlowReset<()>>,
+                 mut page: ResMut<PageText>,
+                 mut choices: ResMut<PendingChoices>,
+                 mut banner: ResMut<Banner>| {
+                    page.0.clear();
+                    choices.0.clear();
+                    banner.0 = "Reloaded.".to_string();
+                },
+            );
+        }
+
+        /// Produce the string the `play_story` example would render, given
+        /// the current state of the page/choices/banner resources.
+        pub fn render(app: &bevy_app::App) -> String {
+            let page = &app.world().resource::<PageText>().0;
+            let choices = &app.world().resource::<PendingChoices>().0;
+            let banner = &app.world().resource::<Banner>().0;
+            let mut out = String::new();
+            if !banner.is_empty() {
+                let _ = writeln!(out, "[banner] {banner}");
+            }
+            if choices.is_empty() {
+                if page.is_empty() {
+                    out.push_str("(press SPACE to begin)");
+                } else {
+                    out.push_str(page);
+                }
+            } else {
+                out.push_str(page);
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                for (i, c) in choices.iter().enumerate() {
+                    let _ = write!(out, "\n  [{}] {}", i + 1, c);
+                }
+            }
+            out
+        }
+    }
+
+    /// Simulate a "real" hot-reload where the program asset's content
+    /// is replaced with a freshly-compiled version. Mirrors the path
+    /// the file watcher takes (mod the loader replay) — the `AssetId`
+    /// is stable but the contents change.
+    ///
+    /// Returns what the `play_story` UI would render before vs. after.
+    /// This exposes the line-tables-not-refreshed bug if it exists:
+    /// the rendered text after reload should reflect the new story
+    /// content, not the old.
+    #[test]
+    #[cfg(feature = "dev")]
+    fn hot_reload_with_new_content_renders_new_text() {
+        use bevy_asset::Assets;
+
+        let mut app = make_test_app();
+        install_recorder(&mut app);
+        render_harness::install(&mut app);
+
+        // First version of the story: simple choice.
+        let (program_v1, tables_v1, ctx_v1) =
+            compile_test_story("hello\n* [yes] -> END\n* [no] -> END\n");
+        let story = add_story_assets(&mut app, program_v1, tables_v1, ctx_v1);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story.clone()).build())
+            .id();
+
+        app.update();
+        run_advance(&mut app);
+        app.update();
+
+        let rendered_before = render_harness::render(&app);
+        eprintln!("[BEFORE RELOAD]\n{rendered_before}\n");
+
+        // Compile a SECOND version of the story with completely
+        // different text. Replace the contents of the existing
+        // ProgramAsset and LineTablesAsset slots — this is closest to
+        // what the file watcher / labeled-subasset reload does.
+        let (program_v2, tables_v2, _ctx_v2) =
+            compile_test_story("BRAND NEW WORDS\n* [foo] -> END\n* [bar] -> END\n");
+
+        let program_handle = app
+            .world()
+            .entity(entity)
+            .get::<crate::BrinkProgram<()>>()
+            .expect("entity should have BrinkProgram")
+            .handle
+            .clone();
+        let line_tables_handle = {
+            let bundle_handle = story.clone();
+            let stories = app.world().resource::<Assets<crate::BrinkStoryAsset>>();
+            stories.get(&bundle_handle).unwrap().line_tables.clone()
+        };
+
+        // Replace program content (also fires AssetEvent::Modified).
+        {
+            let mut programs = app
+                .world_mut()
+                .resource_mut::<Assets<crate::ProgramAsset>>();
+            if let Some(slot) = programs.get_mut(&program_handle) {
+                slot.program = program_v2;
+            }
+        }
+        // Replace line-tables content too.
+        {
+            let mut tables = app
+                .world_mut()
+                .resource_mut::<Assets<crate::LineTablesAsset>>();
+            if let Some(slot) = tables.get_mut(&line_tables_handle) {
+                slot.tables = tables_v2;
+            }
+        }
+
+        // Two ticks: first lets asset_events propagate, second flushes
+        // any deferred triggers from replay.
+        app.update();
+        app.update();
+
+        let rendered_after = render_harness::render(&app);
+        eprintln!("[AFTER RELOAD]\n{rendered_after}\n");
+
+        // Hard assertion: the rendered output must contain the new
+        // story's text, not the old story's text.
+        assert!(
+            rendered_after.contains("BRAND NEW WORDS"),
+            "expected new story content in rendered output;\n\
+             got: {rendered_after:?}\n\
+             this is the 'blank page' / 'wrong text' bug"
+        );
+        assert!(
+            !rendered_after.contains("hello"),
+            "old story content should not appear after reload; got: {rendered_after:?}"
+        );
+        assert!(
+            rendered_after.contains("foo"),
+            "new choice 'foo' should be in rendered output; got: {rendered_after:?}"
+        );
     }
 }

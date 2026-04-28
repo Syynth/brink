@@ -20,7 +20,7 @@ use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_log::{info, warn};
 use brink_runtime::{Context, FallbackHandler, FastRng, FlowInstance, Line, RuntimeError};
 
-use crate::asset::{BrinkProgram, BrinkStoryAsset, ProgramAsset};
+use crate::asset::{BrinkProgram, BrinkStoryAsset, LineTablesAsset, ProgramAsset};
 use crate::event::BrinkFlowReset;
 use crate::flow::BrinkFlow;
 use crate::globals::BrinkGlobals;
@@ -83,7 +83,8 @@ impl<M: Send + Sync + 'static> BrinkReplayLog<M> {
 #[expect(
     clippy::needless_pass_by_value,
     clippy::type_complexity,
-    reason = "bevy systems take Res/Query by value and have complex query tuples"
+    clippy::too_many_arguments,
+    reason = "bevy systems take Res/Query by value and naturally collect many parameters"
 )]
 pub fn replay_on_reload<M: Send + Sync + 'static>(
     mut events: MessageReader<AssetEvent<ProgramAsset>>,
@@ -94,7 +95,9 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         &mut BrinkReplayLog<M>,
     )>,
     programs: Res<Assets<ProgramAsset>>,
-    line_tables: Res<BrinkLineTables<M>>,
+    stories: Res<Assets<BrinkStoryAsset>>,
+    line_tables_assets: Res<Assets<LineTablesAsset>>,
+    mut line_tables: ResMut<BrinkLineTables<M>>,
     mut globals: Option<ResMut<BrinkGlobals<M>>>,
     mut commands: Commands,
 ) {
@@ -118,6 +121,16 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         let Some(program_asset) = programs.get(&brink_program.handle) else {
             continue;
         };
+
+        // Refresh BrinkLineTables<M> from the bundle's current
+        // LineTablesAsset before walking — without this, the post-reload
+        // walk reads NEW program against OLD tables and either renders
+        // stale text or fails to resolve new string IDs.
+        if let Some(bundle) = stories.get(&log.story)
+            && let Some(lt_asset) = line_tables_assets.get(&bundle.line_tables)
+        {
+            line_tables.tables.clone_from(&lt_asset.tables);
+        }
 
         // Tell consumers a rebuild is starting *before* we fire any
         // line-delivery events from replay. Triggers process in order,
