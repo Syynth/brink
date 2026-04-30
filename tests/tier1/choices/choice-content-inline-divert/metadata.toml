@@ -1,0 +1,11 @@
+description = "Choice with its own emitted content and a divert on the SAME LINE: `* Picked. -> after`. Per C# ink semantics, this form does NOT preserve the newline at the end of the choice content — \"Picked.\" glues with the divert target's first line, producing one combined transcript step (\"Picked. After divert.\\n\"). Compare with choice-content-then-divert (indented two-line form), which DOES preserve the newline and produces two separate steps."
+mode = "runtime"
+
+[source]
+origin = "bevy-brink-conformance"
+notes = "Surfaced from the play_story bevy-brink example. Authors who want choice content as its own paragraph must use the indented two-line form (`* Picked.` then `  -> after` on the next line). Brink matches C# ink behavior here — passes 1/1."
+
+[classification]
+tier = 1
+feature = "choices"
+tags = ["choices", "divert", "newline", "glue"]
