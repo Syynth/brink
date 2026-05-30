@@ -70,3 +70,6 @@ icu_locale_core = "2.1"
 icu_plurals = "2.1"
 smallvec = "1"
 bon = "3"
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

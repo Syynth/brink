@@ -24,6 +24,11 @@
 //! ));
 //! ```
 
+// Lets `#[derive(BrinkCommand)]`-generated code reference `::bevy_brink`
+// from within this crate itself (the same trick serde/bevy use for their
+// own derives).
+extern crate self as bevy_brink;
+
 mod asset;
 mod bindings;
 mod event;
@@ -48,6 +53,14 @@ pub use asset::{
 pub use bindings::{
     BrinkArgError, BrinkBindings, BrinkBindingsAppExt, BrinkCommand, BrinkHandler,
 };
+/// `#[derive(BrinkCommand)]` — generates [`BrinkCommand::from_ink_args`].
+/// Shares its name with the trait (macro vs. type namespace), so a single
+/// `use bevy_brink::BrinkCommand;` brings both into scope.
+pub use bevy_brink_derive::BrinkCommand;
+/// Re-exported so `#[derive(BrinkCommand)]`-generated code (and binding
+/// authors) can name the ink runtime value type without depending on
+/// `brink-format` directly.
+pub use brink_format::Value;
 pub use event::{
     BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone,
 };

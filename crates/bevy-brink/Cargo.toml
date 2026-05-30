@@ -12,6 +12,7 @@ description = "Bevy asset integration for brink ink stories"
 [dependencies]
 brink-runtime = { path = "../brink-runtime" }
 brink-format = { path = "../internal/brink-format" }
+bevy-brink-derive = { path = "../internal/bevy-brink-derive" }
 brink-compiler = { path = "../brink-compiler", optional = true }
 brink-syntax = { path = "../internal/brink-syntax", optional = true }
 
