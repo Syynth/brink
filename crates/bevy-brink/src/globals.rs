@@ -133,49 +133,54 @@ mod commit_tests {
 
     #[test]
     fn commit_from_replaces_wholesale() {
-        let mut globals = BrinkGlobals::<()>::new(ctx_with(
-            vec![Value::Int(1), Value::Int(2)],
-            &[(0, 5)],
-            10,
-        ));
+        let mut globals =
+            BrinkGlobals::<()>::new(ctx_with(vec![Value::Int(1), Value::Int(2)], &[(0, 5)], 10));
         let flow_ctx = ctx_with(vec![Value::Int(99), Value::Int(100)], &[(0, 1)], 3);
         globals.commit_from(&flow_ctx);
         assert!(matches!(globals.inner.globals[0], Value::Int(99)));
-        assert_eq!(globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 0)], 1);
+        assert_eq!(
+            globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 0)],
+            1
+        );
         assert_eq!(globals.inner.turn_index, 3);
     }
 
     #[test]
     fn commit_progress_takes_max_of_counts() {
-        let mut globals = BrinkGlobals::<()>::new(ctx_with(
-            vec![Value::Int(1)],
-            &[(0, 5), (1, 2)],
-            10,
-        ));
+        let mut globals =
+            BrinkGlobals::<()>::new(ctx_with(vec![Value::Int(1)], &[(0, 5), (1, 2)], 10));
         let flow_ctx = ctx_with(vec![Value::Int(99)], &[(0, 3), (2, 7)], 4);
         globals.commit_progress(&flow_ctx);
         // Globals: replaced from flow.
         assert!(matches!(globals.inner.globals[0], Value::Int(99)));
         // Visit counts: max per id; ids only in self stay; ids only
         // in flow added.
-        assert_eq!(globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 0)], 5);
-        assert_eq!(globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 1)], 2);
-        assert_eq!(globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 2)], 7);
+        assert_eq!(
+            globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 0)],
+            5
+        );
+        assert_eq!(
+            globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 1)],
+            2
+        );
+        assert_eq!(
+            globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 2)],
+            7
+        );
         // Turn index: max.
         assert_eq!(globals.inner.turn_index, 10);
     }
 
     #[test]
     fn commit_globals_only_leaves_counts_alone() {
-        let mut globals = BrinkGlobals::<()>::new(ctx_with(
-            vec![Value::Int(1)],
-            &[(0, 5)],
-            10,
-        ));
+        let mut globals = BrinkGlobals::<()>::new(ctx_with(vec![Value::Int(1)], &[(0, 5)], 10));
         let flow_ctx = ctx_with(vec![Value::Int(99)], &[(0, 99)], 99);
         globals.commit_globals_only(&flow_ctx);
         assert!(matches!(globals.inner.globals[0], Value::Int(99)));
-        assert_eq!(globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 0)], 5);
+        assert_eq!(
+            globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 0)],
+            5
+        );
         assert_eq!(globals.inner.turn_index, 10);
     }
 }

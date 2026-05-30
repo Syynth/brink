@@ -50,30 +50,26 @@ pub use asset::{
     BrinkProgram, BrinkStory, BrinkStoryAsset, InkbLoader, InkbLoaderError, LineTablesAsset,
     ProgramAsset,
 };
-pub use bindings::{
-    BrinkArgError, BrinkBindings, BrinkBindingsAppExt, BrinkCommand, BrinkHandler,
-};
 /// `#[derive(BrinkCommand)]` — generates [`BrinkCommand::from_ink_args`].
 /// Shares its name with the trait (macro vs. type namespace), so a single
 /// `use bevy_brink::BrinkCommand;` brings both into scope.
 pub use bevy_brink_derive::BrinkCommand;
+pub use bindings::{BrinkArgError, BrinkBindings, BrinkBindingsAppExt, BrinkCommand, BrinkHandler};
 /// Re-exported so `#[derive(BrinkCommand)]`-generated code (and binding
 /// authors) can name the ink runtime value type without depending on
 /// `brink-format` directly.
 pub use brink_format::Value;
-pub use event::{
-    BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone,
-};
 #[cfg(feature = "dev")]
 pub use event::BrinkFlowReset;
+pub use event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 pub use flow::BrinkFlow;
 pub use globals::{BrinkContext, BrinkGlobals};
 pub use input::digit_key_to_choice_index;
 pub use line_tables::BrinkLocale;
 pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
-pub use transcript::{BrinkTranscript, refresh_transcripts};
 #[cfg(feature = "dev")]
 pub use replay::{BrinkReplayLog, replay_on_reload};
 pub use request::{BrinkFlowRequest, ContextSeed, FlowStart, fulfill_flow_requests};
 #[cfg(feature = "dev")]
 pub use source_loader::{InkLoader, InkLoaderError};
+pub use transcript::{BrinkTranscript, refresh_transcripts};

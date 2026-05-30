@@ -150,7 +150,9 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
                 log.start
             );
             let (root_flow, _) = FlowInstance::new_at_root(&program_asset.program);
-            commands.entity(entity).insert(BrinkFlow::<M>::new(root_flow));
+            commands
+                .entity(entity)
+                .insert(BrinkFlow::<M>::new(root_flow));
             continue;
         };
 
@@ -213,9 +215,7 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
                 );
             }
             Err(err) => {
-                warn!(
-                    "replay: advance after replay failed on entity {entity:?}: {err}"
-                );
+                warn!("replay: advance after replay failed on entity {entity:?}: {err}");
             }
         }
     }

@@ -31,10 +31,7 @@ const DIGIT_KEYS: [KeyCode; 9] = [
 /// }
 /// ```
 #[must_use]
-pub fn digit_key_to_choice_index(
-    keys: &ButtonInput<KeyCode>,
-    max: usize,
-) -> Option<usize> {
+pub fn digit_key_to_choice_index(keys: &ButtonInput<KeyCode>, max: usize) -> Option<usize> {
     for (idx, key) in DIGIT_KEYS.iter().enumerate() {
         if idx >= max {
             return None;

@@ -153,9 +153,6 @@ mod tests {
 
     #[test]
     fn resolves_nested_directory() {
-        assert_eq!(
-            resolve_include_path("a/b/c.ink", "d.ink"),
-            "a/b/d.ink"
-        );
+        assert_eq!(resolve_include_path("a/b/c.ink", "d.ink"), "a/b/d.ink");
     }
 }

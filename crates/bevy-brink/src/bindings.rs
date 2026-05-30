@@ -497,9 +497,8 @@ mod tests {
         #[derive(Resource, Default)]
         struct VolumeLog(Vec<(i32, f32)>);
 
-        let (program, tables, _ctx) = compile_test_story(
-            "EXTERNAL set_volume(ch, lvl)\nA{set_volume(2, 0.5)}B\n-> END\n",
-        );
+        let (program, tables, _ctx) =
+            compile_test_story("EXTERNAL set_volume(ch, lvl)\nA{set_volume(2, 0.5)}B\n-> END\n");
 
         let mut app = App::new();
         app.bind_brink_command::<(), SetVolume>("set_volume");
@@ -528,6 +527,10 @@ mod tests {
         }
 
         let log = app.world().resource::<VolumeLog>();
-        assert_eq!(log.0, vec![(2, 0.5)], "observer should see set_volume(2, 0.5)");
+        assert_eq!(
+            log.0,
+            vec![(2, 0.5)],
+            "observer should see set_volume(2, 0.5)"
+        );
     }
 }

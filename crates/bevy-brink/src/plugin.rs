@@ -53,10 +53,7 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         #[cfg(feature = "dev")]
         app.add_systems(Update, crate::replay::replay_on_reload::<M>);
         #[cfg(debug_assertions)]
-        app.add_systems(
-            Update,
-            crate::request::warn_post_fulfillment_mutations::<M>,
-        );
+        app.add_systems(Update, crate::request::warn_post_fulfillment_mutations::<M>);
     }
 }
 

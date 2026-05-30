@@ -38,8 +38,7 @@ pub fn compile_test_story(source: &str) -> (Program, Vec<Vec<brink_format::LineE
         }
     })
     .expect("test fixture should compile");
-    let (program, tables) =
-        brink_runtime::link(&output.data).expect("test fixture should link");
+    let (program, tables) = brink_runtime::link(&output.data).expect("test fixture should link");
     let initial_context = fresh_context(&program);
     (program, tables, initial_context)
 }
@@ -74,8 +73,10 @@ pub fn add_story_assets(
     let tables_handle = world
         .resource_mut::<Assets<LineTablesAsset>>()
         .add(LineTablesAsset { tables });
-    world.resource_mut::<Assets<BrinkStoryAsset>>().add(BrinkStoryAsset {
-        program: program_handle,
-        line_tables: tables_handle,
-    })
+    world
+        .resource_mut::<Assets<BrinkStoryAsset>>()
+        .add(BrinkStoryAsset {
+            program: program_handle,
+            line_tables: tables_handle,
+        })
 }

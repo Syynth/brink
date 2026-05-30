@@ -46,12 +46,9 @@ pub fn derive_brink_command(input: TokenStream) -> TokenStream {
     let fields = match &input.data {
         Data::Struct(data) => &data.fields,
         _ => {
-            return syn::Error::new_spanned(
-                &input,
-                "BrinkCommand can only be derived for structs",
-            )
-            .to_compile_error()
-            .into();
+            return syn::Error::new_spanned(&input, "BrinkCommand can only be derived for structs")
+                .to_compile_error()
+                .into();
         }
     };
 
@@ -123,9 +120,7 @@ pub fn derive_brink_command(input: TokenStream) -> TokenStream {
 
 /// Map a supported field type to its `(Value variant, extraction expr,
 /// human-readable type name)`. Errors on unsupported types.
-fn value_mapping(
-    ty: &Type,
-) -> Result<(Ident, proc_macro2::TokenStream, &'static str), syn::Error> {
+fn value_mapping(ty: &Type) -> Result<(Ident, proc_macro2::TokenStream, &'static str), syn::Error> {
     let type_name = quote!(#ty).to_string();
     let span = Span::call_site();
     match type_name.as_str() {

@@ -41,11 +41,7 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
     }
 
     /// Select a choice against the flow's `Context`.
-    pub fn choose(
-        &mut self,
-        context: &mut Context,
-        index: usize,
-    ) -> Result<(), RuntimeError> {
+    pub fn choose(&mut self, context: &mut Context, index: usize) -> Result<(), RuntimeError> {
         self.inner.choose(context, index)
     }
 
@@ -82,9 +78,9 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         entity: Entity,
         commands: &mut Commands,
     ) -> Result<Line, RuntimeError> {
-        let line = self
-            .inner
-            .step_single_line::<FastRng>(program, line_tables, context, handler, None)?;
+        let line =
+            self.inner
+                .step_single_line::<FastRng>(program, line_tables, context, handler, None)?;
         emit_event::<M>(&line, entity, commands);
         Ok(line)
     }
@@ -141,11 +137,9 @@ pub(crate) fn emit_event<M: Send + Sync + 'static>(
             tags.clone(),
             choices.clone(),
         )),
-        Line::Done { text, tags } => commands.trigger(BrinkTurnDone::<M>::new(
-            entity,
-            text.clone(),
-            tags.clone(),
-        )),
+        Line::Done { text, tags } => {
+            commands.trigger(BrinkTurnDone::<M>::new(entity, text.clone(), tags.clone()))
+        }
         Line::End { text, tags } => commands.trigger(BrinkStoryEnded::<M>::new(
             entity,
             text.clone(),
@@ -157,8 +151,8 @@ pub(crate) fn emit_event<M: Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{add_story_assets, compile_test_story, make_test_app};
     use crate::BrinkFlowRequest;
+    use crate::test_support::{add_story_assets, compile_test_story, make_test_app};
     use bevy_app::Update;
     use bevy_asset::Assets;
     use bevy_ecs::prelude::*;
@@ -306,7 +300,11 @@ mod tests {
                 entity,
                 &mut commands,
             );
-            eprintln!("[advance] result={:?}, status={:?}", result.is_ok(), flow.inner.status());
+            eprintln!(
+                "[advance] result={:?}, status={:?}",
+                result.is_ok(),
+                flow.inner.status()
+            );
         }
     }
 
@@ -320,11 +318,9 @@ mod tests {
     fn smoke_commands_trigger_fires_observers() {
         let mut app = make_test_app();
         app.insert_resource(Hits::default());
-        app.add_observer(
-            |_: On<BrinkLineDelivered<()>>, mut h: ResMut<Hits>| {
-                h.0 += 1;
-            },
-        );
+        app.add_observer(|_: On<BrinkLineDelivered<()>>, mut h: ResMut<Hits>| {
+            h.0 += 1;
+        });
         app.add_systems(Update, |mut commands: Commands| {
             commands.trigger(BrinkLineDelivered::<()>::new(
                 Entity::PLACEHOLDER,
@@ -348,9 +344,8 @@ mod tests {
         let mut app = make_test_app();
         install_recorder(&mut app);
 
-        let (program, tables, ctx) = compile_test_story(
-            "first line\nsecond line\n* [A] -> END\n* [B] -> END\n",
-        );
+        let (program, tables, ctx) =
+            compile_test_story("first line\nsecond line\n* [A] -> END\n* [B] -> END\n");
         let story = add_story_assets(&mut app, program, tables, ctx);
         app.world_mut()
             .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
@@ -402,7 +397,8 @@ mod tests {
 
         let rec = app.world().resource::<EventRecorder>();
         assert_eq!(
-            rec.story_ended, 1,
+            rec.story_ended,
+            1,
             "should have fired StoryEnded once; rec={:?}",
             (&rec.text_lines, rec.turn_done, rec.story_ended)
         );
@@ -439,15 +435,16 @@ mod tests {
             )>,
              mut to_make: ResMut<ChoiceToMake>| {
                 let Some(idx) = to_make.0.take() else { return };
-                let Ok((mut flow, mut ctx, mut log)) = flows.single_mut() else { return };
+                let Ok((mut flow, mut ctx, mut log)) = flows.single_mut() else {
+                    return;
+                };
                 let _ = flow.choose_recording(&mut ctx.inner, &mut log, idx);
             },
         );
 
         // Content at root so the root-start flow reaches the choice
         // (named knots are not auto-entered by FlowStart::Root).
-        let (program, tables, ctx) =
-            compile_test_story("hi\n* [A] -> END\n* [B] -> END\n");
+        let (program, tables, ctx) = compile_test_story("hi\n* [A] -> END\n* [B] -> END\n");
         let story = add_story_assets(&mut app, program, tables, ctx);
         app.world_mut()
             .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
@@ -465,8 +462,7 @@ mod tests {
         app.insert_resource(LogReader::default());
         app.add_systems(
             Update,
-            |flows: Query<&crate::replay::BrinkReplayLog<()>>,
-             mut out: ResMut<LogReader>| {
+            |flows: Query<&crate::replay::BrinkReplayLog<()>>, mut out: ResMut<LogReader>| {
                 if let Ok(log) = flows.single() {
                     out.0.clone_from(&log.choices_made);
                 }
@@ -488,8 +484,7 @@ mod tests {
         let mut app = make_test_app();
         install_recorder(&mut app);
 
-        let (program, tables, ctx) =
-            compile_test_story("hello\n* [A] -> END\n* [B] -> END\n");
+        let (program, tables, ctx) = compile_test_story("hello\n* [A] -> END\n* [B] -> END\n");
         let story = add_story_assets(&mut app, program, tables, ctx);
         let entity = app
             .world_mut()
@@ -693,7 +688,11 @@ mod tests {
         let story = add_story_assets(&mut app, program_v1, tables_v1, ctx_v1);
         let entity = app
             .world_mut()
-            .spawn(BrinkFlowRequest::<()>::builder().story(story.clone()).build())
+            .spawn(
+                BrinkFlowRequest::<()>::builder()
+                    .story(story.clone())
+                    .build(),
+            )
             .id();
 
         app.update();

@@ -17,8 +17,8 @@ use std::marker::PhantomData;
 use bevy_asset::{Assets, Handle};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
-use bevy_ecs::system::{Commands, Query, Res};
 use bevy_ecs::query::Without;
+use bevy_ecs::system::{Commands, Query, Res};
 use bevy_log::{error, warn};
 use brink_runtime::{Context, FlowInstance};
 
@@ -131,8 +131,7 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
     // We capture this once at the top of the system call so multiple
     // requests in the same batch see consistent state, even when the
     // first request's fulfillment also creates the resource.
-    let mut globals_snapshot: Option<Context> =
-        globals.as_ref().map(|g| g.inner.clone());
+    let mut globals_snapshot: Option<Context> = globals.as_ref().map(|g| g.inner.clone());
 
     for (entity, req) in &requests {
         let Some(bundle) = stories.get(&req.story) else {
@@ -366,9 +365,8 @@ mod tests {
     #[test]
     fn multiple_requests_share_globals() {
         let mut app = make_test_app();
-        let (program, tables, ctx) = compile_test_story(
-            "VAR shared_counter = 0\n=== start ===\nhi\n* [Continue] -> END\n",
-        );
+        let (program, tables, ctx) =
+            compile_test_story("VAR shared_counter = 0\n=== start ===\nhi\n* [Continue] -> END\n");
         let story = add_story_assets(&mut app, program, tables, ctx);
 
         let e1 = app

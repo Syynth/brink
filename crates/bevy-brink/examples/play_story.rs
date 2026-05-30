@@ -251,10 +251,7 @@ fn setup_ui(mut commands: Commands) {
 // lookup. For a multi-flow app the same pattern routes events to the
 // right entity's state automatically.
 
-fn on_choices(
-    trigger: On<BrinkChoicesPresented<()>>,
-    mut q: Query<&mut PendingChoices>,
-) {
+fn on_choices(trigger: On<BrinkChoicesPresented<()>>, mut q: Query<&mut PendingChoices>) {
     if let Ok(mut choices) = q.get_mut(trigger.event().entity) {
         choices.0 = trigger
             .event()
@@ -418,9 +415,30 @@ fn handle_input(
 
 fn update_displays(
     flow_q: Query<(&BrinkTranscript<()>, &PendingChoices, &Banner)>,
-    mut q_story: Query<&mut Text, (With<StoryText>, Without<InstructionsText>, Without<BannerText>)>,
-    mut q_instr: Query<&mut Text, (With<InstructionsText>, Without<StoryText>, Without<BannerText>)>,
-    mut q_banner: Query<&mut Text, (With<BannerText>, Without<StoryText>, Without<InstructionsText>)>,
+    mut q_story: Query<
+        &mut Text,
+        (
+            With<StoryText>,
+            Without<InstructionsText>,
+            Without<BannerText>,
+        ),
+    >,
+    mut q_instr: Query<
+        &mut Text,
+        (
+            With<InstructionsText>,
+            Without<StoryText>,
+            Without<BannerText>,
+        ),
+    >,
+    mut q_banner: Query<
+        &mut Text,
+        (
+            With<BannerText>,
+            Without<StoryText>,
+            Without<InstructionsText>,
+        ),
+    >,
 ) {
     let Ok((transcript, choices, banner)) = flow_q.single() else {
         return;
