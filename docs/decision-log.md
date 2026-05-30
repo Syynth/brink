@@ -615,3 +615,11 @@
 - **SCOPE:** architectural
 - **WHAT:** Every public type in `brink-runtime` is a plain `Send + Sync + 'static` struct with no bevy imports. `bevy-brink` provides all `Resource`/`Component`/`Asset` wrappers and the plugin. Downstream consumers can build any indexing or sharing scheme they need (registry-keyed HashMaps, dynamic lookup, custom storage) using the runtime types directly, bypassing `bevy-brink` entirely if they wish.
 - **WHY:** Keeps `brink-runtime` usable in non-bevy contexts (CLI, tests, other frameworks), preserves flexibility to support runtime-dynamic story instances, and makes bevy integration a pure layer on top rather than a coupled rewrite.
+
+## ink↔engine binding boundary: split by World access, not sync/async return shape
+- **WHEN:** 2026-05-29
+- **PROJECT:** brink
+- **SYSTEM:** cross-system (bevy-brink / brink-runtime)
+- **SCOPE:** architectural
+- **WHAT:** The external-function binding boundary is split by World access, not by sync/async return shape. (1) Externals needing no World access — pure compute + fire-and-forget event publishing — resolve synchronously, inline in the flow-driver. (2) Externals needing World access resolve asynchronously: flow enters Pending, a run-condition-gated exclusive resolver runs the binding as a real Bevy system (`run_system_with`), supplies the return value, flow resumes a later frame (schedule-based, NOT Tokio). (3) Engine→ink calls from an exclusive system are synchronous; from a non-exclusive system they use a real async API whose result handler is an observer scoped to a unique per-call entity — NOT a name/ID-keyed request/return event pair.
+- **WHY:** World access is the real constraint — Bevy's borrow model can't give arbitrary typed `SystemParam` access to a binding called inline from inside another system, so World-touching work must defer. Pure/event bindings have no such constraint and shouldn't pay the 1-frame latency. The per-call-entity observer makes call/response mis-correlation structurally impossible (each call = its own entity, result event targets only it, events are crate-private so user code can't mis-fire) — eliminating the correlation-ID bookkeeping an event-pair would force on the user.
