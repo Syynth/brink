@@ -25,6 +25,7 @@
 //! ```
 
 mod asset;
+mod bindings;
 mod event;
 mod flow;
 mod globals;
@@ -43,6 +44,9 @@ mod transcript;
 pub use asset::{
     BrinkProgram, BrinkStory, BrinkStoryAsset, InkbLoader, InkbLoaderError, LineTablesAsset,
     ProgramAsset,
+};
+pub use bindings::{
+    BrinkArgError, BrinkBindings, BrinkBindingsAppExt, BrinkCommand, BrinkHandler,
 };
 pub use event::{
     BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone,
