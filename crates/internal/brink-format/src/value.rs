@@ -64,6 +64,98 @@ impl Value {
             Self::FragmentRef(_) => ValueType::FragmentRef,
         }
     }
+
+    /// Extract an `i32` if this value is an [`Int`](Self::Int).
+    ///
+    /// Strict: does not coerce floats or booleans. Returns `None` for any
+    /// other variant. For binding authors that want to read an integer
+    /// argument from ink.
+    pub fn as_int(&self) -> Option<i32> {
+        match self {
+            Self::Int(i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// Extract an `f32` if this value is numeric.
+    ///
+    /// Lenient on the int → float direction only: an [`Int`](Self::Int) is
+    /// widened to `f32` (matching ink's implicit int→float promotion), but a
+    /// float is never truncated to an int by [`as_int`](Self::as_int).
+    pub fn as_float(&self) -> Option<f32> {
+        match self {
+            Self::Float(f) => Some(*f),
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "int->float promotion matches ink coercion semantics"
+            )]
+            Self::Int(i) => Some(*i as f32),
+            _ => None,
+        }
+    }
+
+    /// Extract a `bool` if this value is a [`Bool`](Self::Bool).
+    ///
+    /// Strict: does not treat nonzero numbers as truthy. Use the VM's own
+    /// truthiness rules if you need ink-style coercion.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// Borrow the string contents if this value is a [`String`](Self::String).
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+impl From<i32> for Value {
+    fn from(v: i32) -> Self {
+        Self::Int(v)
+    }
+}
+
+impl From<f32> for Value {
+    fn from(v: f32) -> Self {
+        Self::Float(v)
+    }
+}
+
+impl From<bool> for Value {
+    fn from(v: bool) -> Self {
+        Self::Bool(v)
+    }
+}
+
+impl From<&str> for Value {
+    fn from(v: &str) -> Self {
+        Self::String(Arc::from(v))
+    }
+}
+
+impl From<String> for Value {
+    fn from(v: String) -> Self {
+        Self::String(Arc::from(v))
+    }
+}
+
+impl From<Arc<str>> for Value {
+    fn from(v: Arc<str>) -> Self {
+        Self::String(v)
+    }
+}
+
+impl From<()> for Value {
+    /// The unit type maps to [`Null`](Self::Null) — the natural return for a
+    /// fire-and-forget external that produces no value.
+    fn from((): ()) -> Self {
+        Self::Null
+    }
 }
 
 /// An ink list value: a set of list items plus their origin list definitions.
@@ -99,5 +191,33 @@ mod tests {
             Value::DivertTarget(target).value_type(),
             ValueType::DivertTarget
         );
+    }
+
+    #[test]
+    fn from_impls_roundtrip() {
+        assert_eq!(Value::from(7_i32), Value::Int(7));
+        assert_eq!(Value::from(1.5_f32), Value::Float(1.5));
+        assert_eq!(Value::from(true), Value::Bool(true));
+        assert_eq!(Value::from("hi"), Value::String("hi".into()));
+        assert_eq!(Value::from(String::from("hi")), Value::String("hi".into()));
+        assert_eq!(Value::from(()), Value::Null);
+    }
+
+    #[test]
+    fn accessors_are_strict_except_int_to_float() {
+        assert_eq!(Value::Int(3).as_int(), Some(3));
+        assert_eq!(Value::Float(3.0).as_int(), None);
+        assert_eq!(Value::Bool(true).as_int(), None);
+
+        // int->float promotion is allowed (matches ink coercion);
+        // float->int truncation is not.
+        assert_eq!(Value::Int(3).as_float(), Some(3.0));
+        assert_eq!(Value::Float(2.5).as_float(), Some(2.5));
+
+        assert_eq!(Value::Bool(true).as_bool(), Some(true));
+        assert_eq!(Value::Int(1).as_bool(), None);
+
+        assert_eq!(Value::String("x".into()).as_str(), Some("x"));
+        assert_eq!(Value::Int(1).as_str(), None);
     }
 }
