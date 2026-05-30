@@ -1,5 +1,18 @@
 INCLUDE characters.ink
 
+// ── External functions (resolved by the engine) ───────────────────────
+// These are declared here and bound in main():
+//   • play_sound(name) — bind_brink_command::<(), PlaySound>: fires a
+//     Bevy PlaySound event (fire-and-forget). Returns nothing to ink.
+//   • shout(text) — bind_brink_fn: a pure transform; returns the text
+//     uppercased, inlined into story output below.
+EXTERNAL play_sound(name)
+EXTERNAL shout(text)
+
+// Fire-and-forget: ask the engine to start the ambient loop. The `~`
+// statement form evaluates and discards the (null) return.
+~ play_sound("waves_loop")
+
 You wake at the edge of a quiet shoreline.
 The tide is unhurried; the gulls are not.
 
@@ -21,12 +34,15 @@ The tide is unhurried; the gulls are not.
 * [Leave] -> END
 
 === lighthouse ===
+~ play_sound("door_creak")
 You climb the wooden stairs.
 Each step creaks like a small announcement.
 At the top, a stranger waits.
-"You came," they say. "I wasn't sure you would."
+// `shout` is a pure binding: "you came" comes back as "YOU CAME".
+"{shout("you came")}," they say. "I wasn't sure you would."
 -> END
 
 === watch ===
+~ play_sound("gentle_surf")
 The waves do what waves do — arrive, then leave, then arrive again.
 -> END

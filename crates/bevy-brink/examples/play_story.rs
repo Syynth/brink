@@ -64,11 +64,12 @@ use std::fmt::Write as _;
 use bevy::input::ButtonInput;
 use bevy::prelude::*;
 use bevy_brink::{
-    BrinkChoicesPresented, BrinkContext, BrinkFlow, BrinkFlowRequest, BrinkFlowReset, BrinkLocale,
-    BrinkPlugin, BrinkProgram, BrinkReplayLog, BrinkStoryAsset, BrinkStoryEnded, BrinkTranscript,
-    LineTablesAsset, ProgramAsset, digit_key_to_choice_index,
+    BrinkBindings, BrinkBindingsAppExt, BrinkChoicesPresented, BrinkCommand, BrinkContext,
+    BrinkFlow, BrinkFlowRequest, BrinkFlowReset, BrinkLocale, BrinkPlugin, BrinkProgram,
+    BrinkReplayLog, BrinkStoryAsset, BrinkStoryEnded, BrinkTranscript, LineTablesAsset,
+    ProgramAsset, Value, digit_key_to_choice_index,
 };
-use brink_runtime::{FallbackHandler, StoryStatus};
+use brink_runtime::StoryStatus;
 
 // ── Per-flow UI components ────────────────────────────────────────────────
 //
@@ -96,6 +97,15 @@ struct PendingChoices(Vec<String>);
 #[derive(Component, Default)]
 struct Banner(String);
 
+/// Fire-and-forget command event for the story's `~ play_sound("name")`
+/// calls. `#[derive(BrinkCommand)]` generates the parse from the ink
+/// args (one `String`); `#[derive(Event)]` makes it observable. A real
+/// game would play audio in the observer — here we just log it.
+#[derive(Event, BrinkCommand)]
+struct PlaySound {
+    name: String,
+}
+
 // ── UI node markers ───────────────────────────────────────────────────────
 //
 // These tag the visible Text nodes in the layout. The render system
@@ -120,6 +130,21 @@ fn main() {
             ..Default::default()
         }))
         .add_plugins(BrinkPlugin::<()>::default())
+        // ── External-function bindings (ink → engine) ──────────────────
+        // Two synchronous kinds, registered once at startup:
+        //   • bind_brink_fn  — a pure function of the ink args. Resolved
+        //     inline while the VM steps; no World access. Here: uppercase
+        //     a string, so `{shout("come in")}` renders "COME IN".
+        //   • bind_brink_command — parse the ink args into a Bevy Event
+        //     and fire it (fire-and-forget). The story's `~ play_sound(...)`
+        //     calls land as PlaySound events; `on_play_sound` reacts.
+        .bind_brink_fn::<(), _, _>("shout", |args| {
+            args.first()
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_uppercase()
+        })
+        .bind_brink_command::<(), PlaySound>("play_sound")
         // Observers track *input state* and *status transitions* — not
         // story text. on_choices captures pending choices for input
         // handling; on_story_ended/on_flow_reset surface user-visible
@@ -128,6 +153,7 @@ fn main() {
         .add_observer(on_choices)
         .add_observer(on_story_ended)
         .add_observer(on_flow_reset)
+        .add_observer(on_play_sound)
         .add_systems(Startup, (setup_ui, load_story))
         .add_systems(Update, (handle_input, update_displays.after(handle_input)))
         .run();
@@ -245,6 +271,15 @@ fn on_story_ended(trigger: On<BrinkStoryEnded<()>>, mut q: Query<&mut Banner>) {
     }
 }
 
+/// Reacts to the story's `~ play_sound(...)` calls. The flow-driver
+/// (`handle_input`) builds these into events while stepping and flushes
+/// them via `BrinkHandler::flush`; this observer is where a real game
+/// would trigger audio. We just log so the binding is visible in the
+/// console as you play.
+fn on_play_sound(trigger: On<PlaySound>) {
+    info!("[play_sound] {}", trigger.event().name);
+}
+
 /// Fired by the plugin's reload-replay system *before* it walks the
 /// new bytecode. Clears input state and updates the banner. The
 /// transcript is reset by the runtime when the flow is rebuilt; we
@@ -289,6 +324,7 @@ fn handle_input(
     )>,
     programs: Res<Assets<ProgramAsset>>,
     line_tables_assets: Res<Assets<LineTablesAsset>>,
+    bindings: Res<BrinkBindings<()>>,
     mut exit: MessageWriter<AppExit>,
     mut commands: Commands,
 ) {
@@ -354,14 +390,20 @@ fn handle_input(
         StoryStatus::WaitingForChoice => return,
     }
 
-    if let Err(err) = flow.step_one(
+    // Build a handler from the binding registry, step one line through
+    // it (pure-fn bindings resolve inline; command bindings are buffered),
+    // then flush the buffered command events into the world.
+    let handler = bindings.handler();
+    let result = flow.step_one(
         &program_asset.program,
         &lt_asset.tables,
         &mut ctx.inner,
-        &FallbackHandler,
+        &handler,
         entity,
         &mut commands,
-    ) {
+    );
+    handler.flush(&mut commands);
+    if let Err(err) = result {
         banner.0 = format!("step error: {err}");
     }
 }
