@@ -562,6 +562,7 @@ impl Flow {
 }
 
 /// Result of an external function handler call.
+#[derive(Debug, Clone)]
 pub enum ExternalResult {
     /// The handler resolved the call and returned a value.
     /// `Value::Null` is valid for fire-and-forget calls.
@@ -914,6 +915,59 @@ impl FlowInstance {
     #[must_use]
     pub fn fragments(&self) -> &[crate::output::Fragment] {
         self.flow.output.fragments()
+    }
+
+    // ── External calls (ink → engine) ────────────────────────────────
+
+    /// Returns `true` if this flow is frozen on an unresolved external
+    /// call — i.e. the VM hit a `CallExternal` opcode and the handler
+    /// returned [`ExternalResult::Pending`], leaving the `External` frame
+    /// on top of the call stack.
+    ///
+    /// The orchestration layer (e.g. a Bevy resolver system) polls this to
+    /// decide whether the flow needs an external resolved before it can be
+    /// driven further. Resolve via [`resolve_external`](Self::resolve_external).
+    #[must_use]
+    pub fn has_pending_external(&self) -> bool {
+        self.flow.external_fn_id().is_some()
+    }
+
+    /// The [`DefinitionId`] of the pending external function, if this flow
+    /// is frozen on one. Returns `None` otherwise.
+    #[must_use]
+    pub fn pending_external_fn_id(&self) -> Option<DefinitionId> {
+        self.flow.external_fn_id()
+    }
+
+    /// The arguments to the pending external call, in declaration order.
+    /// Empty if no external call is pending.
+    #[must_use]
+    pub fn pending_external_args(&self) -> &[Value] {
+        self.flow.external_args()
+    }
+
+    /// The ink-declared name of the pending external function, resolved
+    /// against `program`'s name table. Returns `None` if no external is
+    /// pending (or the entry is missing, which would indicate a malformed
+    /// program).
+    ///
+    /// The orchestration layer uses this to look up the binding registered
+    /// for this name.
+    #[must_use]
+    pub fn pending_external_name<'p>(&self, program: &'p Program) -> Option<&'p str> {
+        let id = self.flow.external_fn_id()?;
+        let entry = program.external_fn(id)?;
+        Some(program.name(entry.name))
+    }
+
+    /// Resolve a pending external call by supplying its return value. Pops
+    /// the `External` frame and pushes `value` onto the value stack so the
+    /// VM can resume. For fire-and-forget externals, pass [`Value::Null`].
+    ///
+    /// No-op if no external call is pending. After resolving, drive the
+    /// flow forward with [`step_single_line`](Self::step_single_line).
+    pub fn resolve_external(&mut self, value: Value) {
+        self.flow.resolve_external(value);
     }
 }
 
