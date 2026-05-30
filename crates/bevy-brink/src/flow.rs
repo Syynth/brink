@@ -138,7 +138,7 @@ pub(crate) fn emit_event<M: Send + Sync + 'static>(
             choices.clone(),
         )),
         Line::Done { text, tags } => {
-            commands.trigger(BrinkTurnDone::<M>::new(entity, text.clone(), tags.clone()))
+            commands.trigger(BrinkTurnDone::<M>::new(entity, text.clone(), tags.clone()));
         }
         Line::End { text, tags } => commands.trigger(BrinkStoryEnded::<M>::new(
             entity,
@@ -251,7 +251,7 @@ mod tests {
     struct DriveAdvance(bool);
 
     /// Drive a single advance pass and flush its triggers via the
-    /// regular Update schedule (RunSystemOnce doesn't reliably flush
+    /// regular Update schedule (`RunSystemOnce` doesn't reliably flush
     /// queued observer triggers in 0.18 test contexts).
     fn run_advance(app: &mut bevy_app::App) {
         app.world_mut().resource_mut::<DriveAdvance>().0 = true;
@@ -419,12 +419,16 @@ mod tests {
     #[test]
     #[cfg(feature = "dev")]
     fn choose_recording_appends_to_replay_log() {
-        let mut app = make_test_app();
-        install_recorder(&mut app);
         // Choose driver: when ChoiceToMake is set, picks that index and
         // records to the replay log on the matching entity.
         #[derive(Resource, Default)]
         struct ChoiceToMake(Option<usize>);
+        // Reads the replay log back out via a one-tick driver system.
+        #[derive(Resource, Default)]
+        struct LogReader(Vec<usize>);
+
+        let mut app = make_test_app();
+        install_recorder(&mut app);
         app.insert_resource(ChoiceToMake::default());
         app.add_systems(
             Update,
@@ -457,8 +461,6 @@ mod tests {
         app.update();
 
         // Read the log via a one-tick driver system.
-        #[derive(Resource, Default)]
-        struct LogReader(Vec<usize>);
         app.insert_resource(LogReader::default());
         app.add_systems(
             Update,

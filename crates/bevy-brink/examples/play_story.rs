@@ -54,9 +54,8 @@
 
 #![expect(
     clippy::needless_pass_by_value,
-    clippy::too_many_arguments,
     clippy::type_complexity,
-    reason = "bevy systems take Res/Query by value and naturally have many arguments and complex query filters"
+    reason = "bevy systems take Res/Query by value and have complex query filters"
 )]
 
 use std::fmt::Write as _;

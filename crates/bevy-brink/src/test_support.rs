@@ -22,10 +22,7 @@ use crate::asset::{BrinkStoryAsset, LineTablesAsset, ProgramAsset, fresh_context
 /// fresh `Context`) tuple needed to build a `BrinkStoryAsset` in a test.
 ///
 /// Panics on any failure — tests should provide valid ink sources.
-#[expect(
-    clippy::expect_used,
-    reason = "test helper: panic on bad fixtures is fine"
-)]
+/// (`expect` is allowed in tests via `clippy.toml`'s `allow-expect-in-tests`.)
 pub fn compile_test_story(source: &str) -> (Program, Vec<Vec<brink_format::LineEntry>>, Context) {
     let output = brink_compiler::compile("test.ink", |path| {
         if path == "test.ink" {

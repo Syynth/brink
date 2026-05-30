@@ -300,7 +300,7 @@ mod tests {
         );
     }
 
-    /// FlowStart::Address resolves at fulfillment time. If the address
+    /// `FlowStart::Address` resolves at fulfillment time. If the address
     /// is unknown, the request is removed and no flow is materialized.
     #[test]
     fn fulfillment_removes_request_for_unknown_address() {
@@ -333,7 +333,7 @@ mod tests {
         );
     }
 
-    /// FlowStart::Address resolves when the knot exists.
+    /// `FlowStart::Address` resolves when the knot exists.
     #[test]
     fn fulfillment_resolves_named_address() {
         let mut app = make_test_app();
@@ -360,7 +360,7 @@ mod tests {
         );
     }
 
-    /// Multiple flow requests share the same BrinkGlobals — the first
+    /// Multiple flow requests share the same `BrinkGlobals` — the first
     /// fulfillment seeds it, subsequent ones reuse.
     #[test]
     fn multiple_requests_share_globals() {
