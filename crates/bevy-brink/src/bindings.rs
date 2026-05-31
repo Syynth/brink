@@ -164,26 +164,15 @@ impl<M: Send + Sync + 'static> BrinkBindings<M> {
     /// to a flow's step method, then call [`BrinkHandler::flush`] to emit
     /// any buffered command events.
     ///
-    /// Query bindings (which need World access) fall through to the
-    /// in-story fallback — use [`advance_flow`] from an exclusive context
-    /// to resolve them during playback.
+    /// Query bindings (which need World access) yield
+    /// [`ExternalResult::Pending`] so a flow pauses on them; the plugin's
+    /// resolver (or [`advance_flow`]) runs the query against the World and
+    /// resumes.
     #[must_use]
     pub fn handler(&self) -> BrinkHandler<'_, M> {
         BrinkHandler {
             bindings: self,
             queued: RefCell::new(Vec::new()),
-            pend_queries: false,
-        }
-    }
-
-    /// Like [`handler`](Self::handler), but query bindings yield
-    /// [`ExternalResult::Pending`] so an exclusive driver ([`advance_flow`])
-    /// can resolve them against the World. Used internally by `advance_flow`.
-    fn drive_handler(&self) -> BrinkHandler<'_, M> {
-        BrinkHandler {
-            bindings: self,
-            queued: RefCell::new(Vec::new()),
-            pend_queries: true,
         }
     }
 
@@ -204,9 +193,6 @@ impl<M: Send + Sync + 'static> BrinkBindings<M> {
 pub struct BrinkHandler<'a, M: Send + Sync + 'static = ()> {
     bindings: &'a BrinkBindings<M>,
     queued: RefCell<Vec<TriggerFn>>,
-    /// When `true`, query bindings yield `Pending` (for the exclusive
-    /// driver) instead of falling back.
-    pend_queries: bool,
 }
 
 impl<M: Send + Sync + 'static> BrinkHandler<'_, M> {
@@ -250,7 +236,9 @@ impl<M: Send + Sync + 'static> ExternalFnHandler for BrinkHandler<'_, M> {
                 }
             };
         }
-        if self.pend_queries && self.bindings.queries.contains_key(name) {
+        if self.bindings.queries.contains_key(name) {
+            // World-access binding — pause so the driver/resolver can run
+            // it against the World, then resume.
             return ExternalResult::Pending;
         }
         ExternalResult::Fallback
@@ -673,7 +661,7 @@ pub fn advance_flow<M: Send + Sync + 'static>(
                 .get(&loc_c.handle)
                 .ok_or(BrinkCallError::LineTablesNotLoaded)?
                 .tables;
-            let handler = bindings.drive_handler();
+            let handler = bindings.handler();
             let outcome = flow.inner.advance::<FastRng>(
                 program,
                 line_tables,
@@ -717,6 +705,86 @@ pub fn advance_flow<M: Send + Sync + 'static>(
                     .map_err(|_| BrinkCallError::NotAFlow)?;
                 flow.inner.resolve_external(value);
             }
+        }
+    }
+}
+
+/// If the flow at `entity` is paused on a world-access query binding, run
+/// the query's system and resolve the external. Returns `Ok(true)` if a
+/// query was resolved, `Ok(false)` if the flow had no pending external.
+fn resolve_one_query<M: Send + Sync + 'static>(
+    world: &mut World,
+    entity: Entity,
+) -> Result<bool, BrinkCallError> {
+    #[expect(
+        clippy::type_complexity,
+        reason = "SystemState param tuple for the flow component + assets + bindings"
+    )]
+    let (system, qargs) = {
+        let mut state: SystemState<(
+            Query<(&BrinkProgram<M>, &BrinkFlow<M>)>,
+            Res<Assets<ProgramAsset>>,
+            Res<BrinkBindings<M>>,
+        )> = SystemState::new(world);
+        let (flows, programs, bindings) = state.get(world);
+        let Ok((prog_c, flow)) = flows.get(entity) else {
+            return Ok(false);
+        };
+        if !flow.inner.has_pending_external() {
+            return Ok(false);
+        }
+        let program = &programs
+            .get(&prog_c.handle)
+            .ok_or(BrinkCallError::ProgramNotLoaded)?
+            .program;
+        let name = flow
+            .inner
+            .pending_external_name(program)
+            .unwrap_or_default()
+            .to_owned();
+        let system = bindings
+            .query(&name)
+            .ok_or(BrinkCallError::UnknownQuery(name))?;
+        let qargs = flow.inner.pending_external_args().to_vec();
+        (system, qargs)
+    };
+
+    let value = world
+        .run_system_with(system, (entity, qargs))
+        .map_err(|e| BrinkCallError::QueryFailed(format!("{e:?}")))?;
+    let mut flows = world.query::<&mut BrinkFlow<M>>();
+    if let Ok(mut flow) = flows.get_mut(world, entity) {
+        flow.inner.resolve_external(value);
+    }
+    Ok(true)
+}
+
+/// Run condition: `true` if any `BrinkFlow<M>` is paused on a pending
+/// external (so the resolver only runs when there's work).
+#[must_use]
+pub fn any_flow_awaiting_external<M: Send + Sync + 'static>(flows: Query<&BrinkFlow<M>>) -> bool {
+    flows.iter().any(|f| f.inner.has_pending_external())
+}
+
+/// Exclusive plugin system: resolve world-access query bindings for flows
+/// that paused during normal playback (after a non-exclusive
+/// [`step_one`](crate::BrinkFlow::step_one) yielded
+/// [`Advance::AwaitingQuery`](crate::Advance::AwaitingQuery)). Runs each
+/// pending query's system and resolves the external; the flow resumes on
+/// the next `step_one`. Registered by the plugin, gated on
+/// [`any_flow_awaiting_external`].
+pub fn resolve_pending_queries<M: Send + Sync + 'static>(world: &mut World) {
+    let paused: Vec<Entity> = {
+        let mut flows = world.query::<(Entity, &BrinkFlow<M>)>();
+        flows
+            .iter(world)
+            .filter(|(_, f)| f.inner.has_pending_external())
+            .map(|(e, _)| e)
+            .collect()
+    };
+    for entity in paused {
+        if let Err(err) = resolve_one_query::<M>(world, entity) {
+            bevy_log::warn!("brink: failed to resolve pending query on {entity:?}: {err}");
         }
     }
 }
@@ -1093,6 +1161,87 @@ mod tests {
             line.text().contains("Enemies near: 2."),
             "inline query should resolve to 2; got {:?}",
             line.text()
+        );
+    }
+
+    /// The non-exclusive path: a normal `step_one` driver pauses on a query
+    /// (`Advance::AwaitingQuery`), the plugin's resolver resolves it across
+    /// frames, and the driver resumes to produce the line.
+    #[test]
+    #[expect(clippy::type_complexity, reason = "bevy driver closure query tuple")]
+    fn step_one_query_pauses_and_plugin_resolver_resumes() {
+        use crate::test_support::{add_story_assets, make_test_app};
+        use crate::{
+            Advance, BrinkContext, BrinkFlow, BrinkFlowRequest, BrinkLocale, BrinkProgram,
+        };
+        use bevy_app::Update;
+
+        #[derive(Resource, Default)]
+        struct Lines(Vec<String>);
+
+        let mut app = make_test_app();
+        app.init_resource::<Lines>();
+        app.bind_brink_query::<(), _, _>("enemy_count", enemy_count);
+
+        let (program, tables, ctx) =
+            compile_test_story("EXTERNAL enemy_count()\nEnemies near: {enemy_count()}.\n-> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        app.world_mut().spawn(Enemy);
+        app.world_mut().spawn(Enemy);
+        app.world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
+
+        // A normal (non-exclusive) driver: step each flow once per frame,
+        // skipping flows paused on a query (the plugin resolver handles
+        // those; we resume next frame).
+        app.add_systems(
+            Update,
+            |mut flows: Query<(
+                Entity,
+                &mut BrinkFlow<()>,
+                &mut BrinkContext<()>,
+                &BrinkProgram<()>,
+                &BrinkLocale<()>,
+            )>,
+             programs: Res<Assets<ProgramAsset>>,
+             tables: Res<Assets<LineTablesAsset>>,
+             bindings: Res<BrinkBindings<()>>,
+             mut commands: Commands,
+             mut out: ResMut<Lines>| {
+                for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
+                    if flow.inner.has_pending_external() {
+                        continue; // paused on a query; wait for the resolver
+                    }
+                    let (Some(p), Some(t)) = (programs.get(&prog.handle), tables.get(&loc.handle))
+                    else {
+                        continue;
+                    };
+                    let handler = bindings.handler();
+                    if let Ok(Advance::Line(line)) = flow.step_one(
+                        &p.program,
+                        &t.tables,
+                        &mut ctx.inner,
+                        &handler,
+                        entity,
+                        &mut commands,
+                    ) {
+                        out.0.push(line.text().to_string());
+                    }
+                    handler.flush(&mut commands);
+                }
+            },
+        );
+
+        // First update fulfills the request; subsequent updates drive +
+        // resolve. A handful is plenty regardless of intra-frame ordering.
+        for _ in 0..6 {
+            app.update();
+        }
+
+        let lines = &app.world().resource::<Lines>().0;
+        assert!(
+            lines.iter().any(|l| l.contains("Enemies near: 2.")),
+            "expected the resolved inline-query line; got {lines:?}"
         );
     }
 }

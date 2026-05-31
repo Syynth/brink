@@ -7,10 +7,28 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::system::Commands;
 use brink_format::LineEntry;
 use brink_runtime::{
-    Context, ExternalFnHandler, FastRng, FlowInstance, Line, Program, RuntimeError,
+    Context, ExternalFnHandler, FastRng, FlowInstance, Line, Program, RuntimeError, StepOutcome,
 };
 
 use crate::event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
+
+/// Result of advancing a flow one step via [`BrinkFlow::step_one`].
+#[derive(Debug, Clone)]
+pub enum Advance {
+    /// A line was produced (and its observer event fired).
+    Line(Line),
+    /// The flow paused on a world-access query binding (`bind_brink_query`),
+    /// which can't be resolved from a non-exclusive system. The plugin's
+    /// resolver (gated on
+    /// [`any_flow_awaiting_external`](crate::any_flow_awaiting_external))
+    /// runs the query against the World; call `step_one` again afterward to
+    /// resume. Drivers should stop advancing this flow until then.
+    ///
+    /// (From an exclusive `&mut World` context, prefer
+    /// [`advance_flow`](crate::advance_flow), which resolves the query
+    /// inline and never yields this.)
+    AwaitingQuery,
+}
 
 /// A single live ink flow, attached to an entity. Holds the VM's per-flow
 /// state: call stacks, output buffer, pending choices, and the accumulated
@@ -69,6 +87,11 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
     /// Use this for typewriter-style UIs that animate one fragment at a
     /// time. For click-to-continue dialogue, use
     /// [`advance_until_terminal`](Self::advance_until_terminal).
+    ///
+    /// Returns [`Advance::AwaitingQuery`] if the flow paused on a
+    /// world-access query binding — the plugin resolver runs it, then call
+    /// `step_one` again. (Pass `bindings.handler()` so query bindings pause
+    /// rather than fall back.)
     pub fn step_one(
         &mut self,
         program: &Program,
@@ -77,19 +100,27 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         handler: &dyn ExternalFnHandler,
         entity: Entity,
         commands: &mut Commands,
-    ) -> Result<Line, RuntimeError> {
-        let line =
-            self.inner
-                .step_single_line::<FastRng>(program, line_tables, context, handler, None)?;
-        emit_event::<M>(&line, entity, commands);
-        Ok(line)
+    ) -> Result<Advance, RuntimeError> {
+        match self
+            .inner
+            .advance::<FastRng>(program, line_tables, context, handler, None)?
+        {
+            StepOutcome::Line(line) => {
+                emit_event::<M>(&line, entity, commands);
+                Ok(Advance::Line(line))
+            }
+            StepOutcome::AwaitingExternal => Ok(Advance::AwaitingQuery),
+        }
     }
 
     /// Step the VM until reaching a terminal line ([`Line::Done`],
     /// [`Line::Choices`], or [`Line::End`]), queuing observer events
     /// for every line produced along the way.
     ///
-    /// Bounded by a 10,000-line safety cap. Returns the terminal line.
+    /// Bounded by a 10,000-line safety cap. Returns the terminal line, or
+    /// [`Advance::AwaitingQuery`] if the flow paused on a world-access
+    /// query binding (which a non-exclusive driver can't resolve — the
+    /// plugin resolver handles it; resume by calling this again).
     pub fn advance_until_terminal(
         &mut self,
         program: &Program,
@@ -98,12 +129,15 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         handler: &dyn ExternalFnHandler,
         entity: Entity,
         commands: &mut Commands,
-    ) -> Result<Line, RuntimeError> {
+    ) -> Result<Advance, RuntimeError> {
         const STEP_LIMIT: u64 = 10_000;
         for _ in 0..STEP_LIMIT {
-            let line = self.step_one(program, line_tables, context, handler, entity, commands)?;
-            if !matches!(line, Line::Text { .. }) {
-                return Ok(line);
+            match self.step_one(program, line_tables, context, handler, entity, commands)? {
+                Advance::Line(line) if line.is_terminal() => return Ok(Advance::Line(line)),
+                Advance::Line(_) => {}
+                // Can't resolve a world query from here — yield to the
+                // plugin resolver; the caller resumes next frame.
+                Advance::AwaitingQuery => return Ok(Advance::AwaitingQuery),
             }
         }
         Err(RuntimeError::StepLimitExceeded(STEP_LIMIT))

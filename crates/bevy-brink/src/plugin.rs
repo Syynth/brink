@@ -62,6 +62,15 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
                 >,
             ),
         );
+        // Resolve world-access query bindings for flows that paused during
+        // normal playback (a non-exclusive step_one yielded AwaitingQuery).
+        // Exclusive (needs &mut World), gated so it only runs when a flow
+        // is actually awaiting one.
+        app.add_systems(
+            Update,
+            crate::bindings::resolve_pending_queries::<M>
+                .run_if(crate::bindings::any_flow_awaiting_external::<M>),
+        );
         #[cfg(feature = "dev")]
         app.add_systems(Update, crate::replay::replay_on_reload::<M>);
         #[cfg(debug_assertions)]

@@ -57,7 +57,8 @@ pub use asset::{
 pub use bevy_brink_derive::BrinkCommand;
 pub use bindings::{
     BrinkArgError, BrinkBindings, BrinkBindingsAppExt, BrinkCallError, BrinkCommand, BrinkHandler,
-    BrinkQueryInput, advance_flow, call_ink_function,
+    BrinkQueryInput, advance_flow, any_flow_awaiting_external, call_ink_function,
+    resolve_pending_queries,
 };
 /// Re-exported so `#[derive(BrinkCommand)]`-generated code (and binding
 /// authors) can name the ink runtime value type without depending on
@@ -70,7 +71,7 @@ pub use call::{
 #[cfg(feature = "dev")]
 pub use event::BrinkFlowReset;
 pub use event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
-pub use flow::BrinkFlow;
+pub use flow::{Advance, BrinkFlow};
 pub use globals::{BrinkContext, BrinkGlobals};
 pub use input::digit_key_to_choice_index;
 pub use line_tables::BrinkLocale;
