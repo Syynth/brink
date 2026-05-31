@@ -55,7 +55,8 @@ use bevy_ecs::world::World;
 use bevy_log::warn;
 use brink_format::Value;
 use brink_runtime::{
-    ExternalFnHandler, ExternalResult, FastRng, FlowInstance, Program, RuntimeError,
+    ExternalFnHandler, ExternalResult, FastRng, FlowInstance, Line, Program, RuntimeError,
+    StepOutcome,
 };
 use thiserror::Error;
 
@@ -162,11 +163,27 @@ impl<M: Send + Sync + 'static> BrinkBindings<M> {
     /// Build a [`BrinkHandler`] borrowing this registry. Pass `&handler`
     /// to a flow's step method, then call [`BrinkHandler::flush`] to emit
     /// any buffered command events.
+    ///
+    /// Query bindings (which need World access) fall through to the
+    /// in-story fallback — use [`advance_flow`] from an exclusive context
+    /// to resolve them during playback.
     #[must_use]
     pub fn handler(&self) -> BrinkHandler<'_, M> {
         BrinkHandler {
             bindings: self,
             queued: RefCell::new(Vec::new()),
+            pend_queries: false,
+        }
+    }
+
+    /// Like [`handler`](Self::handler), but query bindings yield
+    /// [`ExternalResult::Pending`] so an exclusive driver ([`advance_flow`])
+    /// can resolve them against the World. Used internally by `advance_flow`.
+    fn drive_handler(&self) -> BrinkHandler<'_, M> {
+        BrinkHandler {
+            bindings: self,
+            queued: RefCell::new(Vec::new()),
+            pend_queries: true,
         }
     }
 
@@ -187,6 +204,9 @@ impl<M: Send + Sync + 'static> BrinkBindings<M> {
 pub struct BrinkHandler<'a, M: Send + Sync + 'static = ()> {
     bindings: &'a BrinkBindings<M>,
     queued: RefCell<Vec<TriggerFn>>,
+    /// When `true`, query bindings yield `Pending` (for the exclusive
+    /// driver) instead of falling back.
+    pend_queries: bool,
 }
 
 impl<M: Send + Sync + 'static> BrinkHandler<'_, M> {
@@ -197,6 +217,13 @@ impl<M: Send + Sync + 'static> BrinkHandler<'_, M> {
         for trigger in self.queued.into_inner() {
             commands.queue(trigger);
         }
+    }
+
+    /// Take the buffered command-event triggers, leaving the handler empty.
+    /// Used by [`advance_flow`] to accumulate triggers across the
+    /// suspensions of a single line and flush them against the World.
+    fn take_queued(&self) -> Vec<TriggerFn> {
+        std::mem::take(&mut self.queued.borrow_mut())
     }
 
     /// Number of command triggers buffered so far (for tests/diagnostics).
@@ -222,6 +249,9 @@ impl<M: Send + Sync + 'static> ExternalFnHandler for BrinkHandler<'_, M> {
                     ExternalResult::Resolved(Value::Null)
                 }
             };
+        }
+        if self.pend_queries && self.bindings.queries.contains_key(name) {
+            return ExternalResult::Pending;
         }
         ExternalResult::Fallback
     }
@@ -543,6 +573,149 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
                     )?;
                     classify_eval(&flow.inner, program, &bindings, outcome)?
                 };
+            }
+        }
+    }
+}
+
+/// One step of the [`advance_flow`] loop, captured inside the borrow scope
+/// so the World can be re-borrowed (for `run_system_with`) afterward.
+enum FlowStep {
+    /// A line was produced.
+    Line(Line),
+    /// The flow paused on a world-access query; run this system then resume.
+    Query {
+        system: QuerySystemId,
+        qargs: Vec<Value>,
+    },
+}
+
+/// Fire the per-line observer event (matching [`step_one`](crate::BrinkFlow::step_one))
+/// from an exclusive `&mut World` context.
+fn emit_line_event_world<M: Send + Sync + 'static>(world: &mut World, entity: Entity, line: &Line) {
+    use crate::event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
+    match line {
+        Line::Text { text, tags } => {
+            world
+                .entity_mut(entity)
+                .trigger(|e| BrinkLineDelivered::<M>::new(e, text.clone(), tags.clone()));
+        }
+        Line::Choices {
+            text,
+            tags,
+            choices,
+        } => {
+            world.entity_mut(entity).trigger(|e| {
+                BrinkChoicesPresented::<M>::new(e, text.clone(), tags.clone(), choices.clone())
+            });
+        }
+        Line::Done { text, tags } => {
+            world
+                .entity_mut(entity)
+                .trigger(|e| BrinkTurnDone::<M>::new(e, text.clone(), tags.clone()));
+        }
+        Line::End { text, tags } => {
+            world
+                .entity_mut(entity)
+                .trigger(|e| BrinkStoryEnded::<M>::new(e, text.clone(), tags.clone()));
+        }
+    }
+}
+
+/// Advance a flow by one line from an exclusive (`&mut World`) context,
+/// resolving any world-access query bindings inline via `run_system_with`.
+///
+/// This is the playback counterpart to [`call_ink_function`]: where a
+/// non-exclusive `step_one` can only resolve pure/command bindings (query
+/// bindings fall back), `advance_flow` runs the query binding's system
+/// between the runtime's eval suspensions — so a story line like
+/// `{enemy_count()}` resolves transparently in one frame. Buffered command
+/// events are flushed and the line's observer event is fired, exactly as
+/// `step_one` would.
+///
+/// # Errors
+/// See [`BrinkCallError`].
+pub fn advance_flow<M: Send + Sync + 'static>(
+    world: &mut World,
+    entity: Entity,
+) -> Result<Line, BrinkCallError> {
+    #[expect(
+        clippy::type_complexity,
+        reason = "SystemState param tuple for the flow components + assets + bindings"
+    )]
+    let mut state: SystemState<(
+        Query<(
+            &BrinkProgram<M>,
+            &BrinkLocale<M>,
+            &mut BrinkFlow<M>,
+            &mut BrinkContext<M>,
+        )>,
+        Res<Assets<ProgramAsset>>,
+        Res<Assets<LineTablesAsset>>,
+        Res<BrinkBindings<M>>,
+    )> = SystemState::new(world);
+
+    // Command-event triggers accumulate across the suspensions of a single
+    // line, then flush once the line is produced.
+    let mut triggers: Vec<TriggerFn> = Vec::new();
+
+    loop {
+        let step = {
+            let (mut flows, programs, tables, bindings) = state.get_mut(world);
+            let (prog_c, loc_c, mut flow, mut ctx) = flows
+                .get_mut(entity)
+                .map_err(|_| BrinkCallError::NotAFlow)?;
+            let program = &programs
+                .get(&prog_c.handle)
+                .ok_or(BrinkCallError::ProgramNotLoaded)?
+                .program;
+            let line_tables = &tables
+                .get(&loc_c.handle)
+                .ok_or(BrinkCallError::LineTablesNotLoaded)?
+                .tables;
+            let handler = bindings.drive_handler();
+            let outcome = flow.inner.advance::<FastRng>(
+                program,
+                line_tables,
+                &mut ctx.inner,
+                &handler,
+                None,
+            )?;
+            triggers.extend(handler.take_queued());
+            match outcome {
+                StepOutcome::Line(line) => FlowStep::Line(line),
+                StepOutcome::AwaitingExternal => {
+                    let name = flow
+                        .inner
+                        .pending_external_name(program)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let system = bindings
+                        .query(&name)
+                        .ok_or(BrinkCallError::UnknownQuery(name))?;
+                    let qargs = flow.inner.pending_external_args().to_vec();
+                    FlowStep::Query { system, qargs }
+                }
+            }
+        };
+
+        match step {
+            FlowStep::Line(line) => {
+                for trigger in triggers {
+                    trigger(world);
+                }
+                emit_line_event_world::<M>(world, entity, &line);
+                return Ok(line);
+            }
+            FlowStep::Query { system, qargs } => {
+                let value = world
+                    .run_system_with(system, (entity, qargs))
+                    .map_err(|e| BrinkCallError::QueryFailed(format!("{e:?}")))?;
+                let (mut flows, ..) = state.get_mut(world);
+                let (_, _, mut flow, _) = flows
+                    .get_mut(entity)
+                    .map_err(|_| BrinkCallError::NotAFlow)?;
+                flow.inner.resolve_external(value);
             }
         }
     }
@@ -889,6 +1062,37 @@ mod tests {
         assert!(
             matches!(err, BrinkCallError::FunctionNotFound(_)),
             "got {err:?}"
+        );
+    }
+
+    /// A story line that calls a world-access query binding inline
+    /// (`{enemy_count()}`) resolves transparently when driven by
+    /// `advance_flow`.
+    #[test]
+    fn advance_flow_resolves_inline_query_during_playback() {
+        use crate::BrinkFlowRequest;
+        use crate::test_support::{add_story_assets, make_test_app};
+
+        let mut app = make_test_app();
+        app.bind_brink_query::<(), _, _>("enemy_count", enemy_count);
+
+        let (program, tables, ctx) =
+            compile_test_story("EXTERNAL enemy_count()\nEnemies near: {enemy_count()}.\n-> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        app.world_mut().spawn(Enemy);
+        app.world_mut().spawn(Enemy);
+
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update(); // fulfill
+
+        let line = advance_flow::<()>(app.world_mut(), entity).unwrap();
+        assert!(
+            line.text().contains("Enemies near: 2."),
+            "inline query should resolve to 2; got {:?}",
+            line.text()
         );
     }
 }
