@@ -81,6 +81,58 @@ top-of-file setup at load time and captures the resulting `Context`.
 Stories whose init code calls host-provided externals can opt out via
 `run_init: false`.
 
+### External-function bindings (ink ↔ engine)
+
+The binding facility connects ink `EXTERNAL` functions to engine code and
+lets engine code evaluate ink functions. The boundary is split by **World
+access**, not by sync/async return shape (see the decision log).
+
+**ink → engine** — register at app build via `BrinkBindingsAppExt` (stored
+in the `BrinkBindings<M>` resource):
+
+| Verb | Shape | Resolution |
+|------|-------|------------|
+| `bind_brink_fn(name, Fn(&[Value]) -> impl Into<Value>)` | pure compute, no World | inline while the VM steps |
+| `bind_brink_command::<M, E>(name)` | parse args into a `#[derive(Event, BrinkCommand)]` and trigger it; optional `BrinkCommand::reply` value back to ink | buffered during the step, flushed after |
+| `bind_brink_query(name, system)` | a Bevy system `In<BrinkQueryInput> -> Value` with arbitrary `SystemParam`s | flow pauses (`Pending`); a driver runs it via `run_system_with` between suspensions, then resumes |
+
+`In<BrinkQueryInput>` = `(Entity, Vec<Value>)` — the calling flow entity
+plus the ink args. Query bindings can read anything in the World with no
+upfront declaration.
+
+**engine → ink** — evaluate an ink function out-of-band (output isolated,
+transcript untouched, visit counts not bumped):
+
+- `call_ink_function::<M>(&mut World, entity, name, args) -> Result<Value, BrinkCallError>`
+  — synchronous, from an exclusive system. Resolves world-access query
+  bindings inline (it has `&mut World`).
+- `commands.brink_call::<M>(flow, name, args).observe(|on: On<BrinkCallResolved>| …)`
+  — deferred, from a normal (non-exclusive) system. Spawns a per-call
+  entity; the plugin's resolver evaluates and fires `BrinkCallResolved` /
+  `BrinkCallFailed` **scoped to that entity**, so a result can never be
+  mis-correlated with another call. `IntoBrinkArgs` accepts `()`, tuples of
+  `Into<Value>`, `Vec<Value>`, or `&[Value]`.
+
+**playback with inline world queries** — for a story line like
+`Enemies near: {enemy_count()}.`:
+
+- `advance_flow::<M>(&mut World, entity) -> Result<Line, BrinkCallError>`
+  — exclusive single-line driver; resolves query bindings inline in one
+  frame (the playback counterpart to `call_ink_function`).
+- non-exclusive `BrinkFlow::step_one` returns `Advance::{ Line, AwaitingQuery }`;
+  on `AwaitingQuery` the driver skips the flow (`has_pending_external`) and
+  the plugin's `resolve_pending_queries` system (gated on
+  `any_flow_awaiting_external`) resolves it across frames.
+
+Why pause/resume rather than resolve inline: the live eval holds
+`&mut flow`/`&mut ctx`, which conflicts with the `&mut World` that
+`run_system_with` needs. Releasing the borrows at the pause point is the
+borrow-safe way to run a registered system mid-evaluation.
+
+Runnable demo: `cargo run --example engine_bindings` (headless) exercises
+all of the above; `play_story` covers `bind_brink_fn`/`bind_brink_command`
+in an interactive window.
+
 ## What is implemented
 
 - ✅ `Rc → Arc` swap in brink-format/brink-runtime so `Program`, `Context`,
@@ -106,6 +158,16 @@ Stories whose init code calls host-provided externals can opt out via
   (current behavior **unverified** — see "Issues" below).
 - ✅ Visual example at `crates/bevy-brink/examples/play_story.rs` — UI
   window with text + choices, SPACE to advance, digit keys to choose.
+- ✅ **External-function binding facility** (above): `bind_brink_fn` /
+  `bind_brink_command` (+ `#[derive(BrinkCommand)]`) / `bind_brink_query`,
+  `call_ink_function`, `commands.brink_call(...).observe(...)`,
+  `advance_flow`, and the non-exclusive `step_one` → `Advance` pause/resume
+  with the `resolve_pending_queries` plugin system.
+- ✅ Per-flow `Context` on a `BrinkContext<M>` component (not a shared
+  resource); `BrinkGlobals<M>` is the commit target. Opt-in
+  `BrinkTranscript<M>` auto-renders from the flow's runtime transcript.
+- ✅ Headless example `crates/bevy-brink/examples/engine_bindings.rs`
+  demonstrating the engine↔ink facility end-to-end.
 
 ## What is verified working (by user observation)
 
@@ -198,21 +260,22 @@ some story shapes. Needs fresh investigation.
 
 In rough priority order:
 
-- **External function handler registry** — most important for real
-  games. Today every flow uses `FallbackHandler`. Need a `Resource` (or
-  trait-object plugin) that lets games register `EXTERNAL` bindings.
 - **`.inkl` overlay loader** + a system that applies overlays onto the
-  base via `apply_locale` and updates `BrinkLineTables<M>`.
+  base via `apply_locale` and updates the active `LineTablesAsset`.
 - **`.brkt` transcript asset** + capture/render helpers (the runtime
   already has `read_transcript`/`render_transcript`).
-- **`step_until_terminal` on `FlowInstance`** (runtime addition; small,
-  contained — would let consumers walk to the next yield point without
-  reimplementing the loop). User flagged that `continue_maximally` is
-  generally the wrong primitive ("external functions get called earlier
-  than you anticipate") — this is on the "discuss before implementing"
-  list.
+- **Async-task bindings mid-eval** — today a world-access binding resolves
+  synchronously within one resolver pass (`run_system_with`). A binding
+  that needs to await a `Task`/network round-trip across frames would need
+  `begin_function_eval`/`advance` to suspend across frames (the runtime
+  already supports the `AwaitingExternal` pause; only the bevy driver loop
+  assumes one-pass resolution). Deferred until a real need appears.
 - **Full `knot.stitch.label` addressing** — needs format-side work to
   encode qualified paths; currently top-level knot only.
+
+Done since this list was written: the external-function binding facility
+(was "most important"), and a pausable stepping primitive (`advance` /
+`StepOutcome`) superseding the proposed `step_until_terminal`.
 - **Fork / isolated context per flow** — design is decided (per-flow
   `Context` on a Component instead of shared Resource), no API surface
   yet.
