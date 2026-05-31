@@ -14,9 +14,14 @@
 //!   [`BrinkHandler::flush`]. Optionally returns a value to ink via
 //!   [`BrinkCommand::reply`].
 //!
-//! The third kind — `bind_brink_query`, for bindings that need read access
-//! to the Bevy World — is deferred: it needs the async (Pending +
-//! exclusive-resolver) path that engine→ink calls also use.
+//! plus a third, *world-access* kind used by engine→ink calls:
+//!
+//! - **`bind_brink_query`** — a Bevy system with arbitrary `SystemParam`s
+//!   that reads the World and returns a [`Value`]. It can't run inline
+//!   while the VM steps, so [`call_ink_function`] (an exclusive-`&mut World`
+//!   driver) runs it via `run_system_with` between evaluation suspensions —
+//!   letting an ink function called from the engine query anything in the
+//!   World, with no upfront declaration.
 //!
 //! ## Wiring it up
 //!
@@ -41,14 +46,31 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use bevy_app::App;
+use bevy_asset::Assets;
+use bevy_ecs::entity::Entity;
 use bevy_ecs::event::Event;
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::Commands;
+use bevy_ecs::system::{Commands, In, IntoSystem, Query, Res, SystemId, SystemState};
 use bevy_ecs::world::World;
 use bevy_log::warn;
 use brink_format::Value;
-use brink_runtime::{ExternalFnHandler, ExternalResult};
+use brink_runtime::{
+    ExternalFnHandler, ExternalResult, FastRng, FlowInstance, Program, RuntimeError,
+};
 use thiserror::Error;
+
+use crate::asset::{BrinkProgram, LineTablesAsset, ProgramAsset};
+use crate::flow::BrinkFlow;
+use crate::globals::BrinkContext;
+use crate::line_tables::BrinkLocale;
+
+/// Input type for a world-access (`bind_brink_query`) binding system: the
+/// flow entity that triggered the call, plus the ink arguments.
+pub type BrinkQueryInput = (Entity, Vec<Value>);
+
+/// The [`SystemId`] of a registered query binding — a Bevy system taking
+/// [`BrinkQueryInput`] and returning a [`Value`].
+type QuerySystemId = SystemId<In<BrinkQueryInput>, Value>;
 
 /// Error produced when ink arguments can't be parsed into a binding's
 /// expected shape. Returned by [`BrinkCommand::from_ink_args`].
@@ -121,6 +143,7 @@ struct QueuedCommand {
 pub struct BrinkBindings<M: Send + Sync + 'static = ()> {
     pure: HashMap<String, PureFn>,
     commands: HashMap<String, CommandFn>,
+    queries: HashMap<String, QuerySystemId>,
     _marker: PhantomData<fn() -> M>,
 }
 
@@ -129,6 +152,7 @@ impl<M: Send + Sync + 'static> Default for BrinkBindings<M> {
         Self {
             pure: HashMap::new(),
             commands: HashMap::new(),
+            queries: HashMap::new(),
             _marker: PhantomData,
         }
     }
@@ -144,6 +168,11 @@ impl<M: Send + Sync + 'static> BrinkBindings<M> {
             bindings: self,
             queued: RefCell::new(Vec::new()),
         }
+    }
+
+    /// The [`SystemId`] of the query binding registered under `name`, if any.
+    fn query(&self, name: &str) -> Option<QuerySystemId> {
+        self.queries.get(name).copied()
     }
 }
 
@@ -198,6 +227,40 @@ impl<M: Send + Sync + 'static> ExternalFnHandler for BrinkHandler<'_, M> {
     }
 }
 
+impl<M: Send + Sync + 'static> BrinkBindings<M> {
+    /// Build an [`EvalHandler`] for an engine→ink call. Pure bindings
+    /// resolve inline; query bindings yield
+    /// [`ExternalResult::Pending`] so the exclusive driver
+    /// ([`call_ink_function`]) can run them against the World between
+    /// suspensions; everything else falls back to the in-story body.
+    fn eval_handler(&self) -> EvalHandler<'_, M> {
+        EvalHandler { bindings: self }
+    }
+}
+
+/// Handler used while evaluating an ink function from engine code
+/// ([`call_ink_function`]). Unlike [`BrinkHandler`], it cannot buffer
+/// commands or touch the World — it only resolves pure bindings inline and
+/// defers world-access (query) bindings to the driver via
+/// [`ExternalResult::Pending`].
+struct EvalHandler<'a, M: Send + Sync + 'static> {
+    bindings: &'a BrinkBindings<M>,
+}
+
+impl<M: Send + Sync + 'static> ExternalFnHandler for EvalHandler<'_, M> {
+    fn call(&self, name: &str, args: &[Value]) -> ExternalResult {
+        if let Some(f) = self.bindings.pure.get(name) {
+            return ExternalResult::Resolved(f(args));
+        }
+        if self.bindings.queries.contains_key(name) {
+            // World-access binding — the driver resolves it between
+            // suspensions, where it can borrow the World.
+            return ExternalResult::Pending;
+        }
+        ExternalResult::Fallback
+    }
+}
+
 /// App-extension verbs for registering synchronous ink→engine bindings.
 ///
 /// Both verbs take the story marker `M` as the first explicit type
@@ -229,6 +292,27 @@ pub trait BrinkBindingsAppExt {
         M: Send + Sync + 'static,
         E: Event + BrinkCommand,
         for<'a> <E as Event>::Trigger<'a>: Default;
+
+    /// Register a **query** binding: a Bevy system with arbitrary
+    /// `SystemParam`s that reads the World and returns a [`Value`] to the
+    /// story. The system takes [`BrinkQueryInput`] — the flow [`Entity`]
+    /// that triggered the call plus the ink arguments.
+    ///
+    /// Resolving a query needs World access, so it can't run inline while
+    /// the VM steps. Engine→ink calls ([`call_ink_function`]) drive it via
+    /// `run_system_with` between suspensions; the binding can therefore
+    /// query anything in the World, with no upfront declaration.
+    ///
+    /// ```ignore
+    /// fn enemy_count(In((_e, _args)): In<BrinkQueryInput>, q: Query<&Enemy>) -> Value {
+    ///     Value::Int(q.iter().count() as i32)
+    /// }
+    /// app.bind_brink_query::<(), _, _>("enemy_count", enemy_count);
+    /// ```
+    fn bind_brink_query<M, S, SM>(&mut self, name: impl Into<String>, system: S) -> &mut Self
+    where
+        M: Send + Sync + 'static,
+        S: IntoSystem<In<BrinkQueryInput>, Value, SM> + 'static;
 }
 
 impl BrinkBindingsAppExt for App {
@@ -274,6 +358,193 @@ impl BrinkBindingsAppExt for App {
             );
         }
         self
+    }
+
+    fn bind_brink_query<M, S, SM>(&mut self, name: impl Into<String>, system: S) -> &mut Self
+    where
+        M: Send + Sync + 'static,
+        S: IntoSystem<In<BrinkQueryInput>, Value, SM> + 'static,
+    {
+        let name = name.into();
+        let id = self.world_mut().register_system(system);
+        {
+            let mut reg = self
+                .world_mut()
+                .get_resource_or_insert_with(BrinkBindings::<M>::default);
+            reg.queries.insert(name, id);
+        }
+        self
+    }
+}
+
+/// Errors from an engine→ink call ([`call_ink_function`]).
+#[derive(Debug, Error)]
+pub enum BrinkCallError {
+    /// The entity isn't a fulfilled flow (missing `BrinkFlow`/`BrinkProgram`/
+    /// `BrinkLocale`/`BrinkContext`).
+    #[error("entity is not a fulfilled brink flow")]
+    NotAFlow,
+    /// The flow's program asset isn't loaded.
+    #[error("program asset not loaded")]
+    ProgramNotLoaded,
+    /// The flow's line-tables asset isn't loaded.
+    #[error("line tables asset not loaded")]
+    LineTablesNotLoaded,
+    /// No function with this name exists in the program.
+    #[error("function '{0}' not found")]
+    FunctionNotFound(String),
+    /// The function called a world-access external with no registered
+    /// query binding (and no in-story fallback).
+    #[error("no query binding registered for external '{0}'")]
+    UnknownQuery(String),
+    /// A query binding's system failed to run.
+    #[error("query binding system failed: {0}")]
+    QueryFailed(String),
+    /// The runtime raised an error during evaluation.
+    #[error(transparent)]
+    Runtime(#[from] RuntimeError),
+}
+
+/// The next thing the [`call_ink_function`] driver must do.
+enum NextStep {
+    /// The function returned this value — evaluation is complete.
+    Done(Value),
+    /// The function is awaiting a world-access query; run this system with
+    /// the given ink args, resolve, and resume.
+    RunQuery {
+        system: QuerySystemId,
+        qargs: Vec<Value>,
+    },
+}
+
+/// Classify a [`FunctionEval`] outcome into the driver's [`NextStep`],
+/// looking up the query system for a pending external. Called inside the
+/// borrow scope where `flow`/`program`/`bindings` are available.
+fn classify_eval<M: Send + Sync + 'static>(
+    flow: &FlowInstance,
+    program: &Program,
+    bindings: &BrinkBindings<M>,
+    outcome: brink_runtime::FunctionEval,
+) -> Result<NextStep, BrinkCallError> {
+    match outcome {
+        brink_runtime::FunctionEval::Returned(value) => Ok(NextStep::Done(value)),
+        brink_runtime::FunctionEval::AwaitingExternal => {
+            let name = flow
+                .pending_external_name(program)
+                .unwrap_or_default()
+                .to_owned();
+            let system = bindings
+                .query(&name)
+                .ok_or(BrinkCallError::UnknownQuery(name))?;
+            let qargs = flow.pending_external_args().to_vec();
+            Ok(NextStep::RunQuery { system, qargs })
+        }
+    }
+}
+
+/// Synchronously evaluate an ink function on a flow entity from an
+/// exclusive (`&mut World`) context, returning its value.
+///
+/// Pure bindings resolve inline; world-access (`bind_brink_query`) bindings
+/// are run via `run_system_with` between evaluation suspensions — so the
+/// function can query anything in the World. The whole call completes in
+/// one pass (one frame): the function's output is isolated, the
+/// player-visible story is untouched, and visit counts aren't bumped.
+///
+/// `M` is the story marker (use `()` for the default). For callers that
+/// don't have `&mut World` (a normal system), use the deferred
+/// `commands.brink_call(...)` API instead.
+///
+/// # Errors
+/// See [`BrinkCallError`].
+pub fn call_ink_function<M: Send + Sync + 'static>(
+    world: &mut World,
+    entity: Entity,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, BrinkCallError> {
+    #[expect(
+        clippy::type_complexity,
+        reason = "SystemState param tuple for the flow components + assets + bindings"
+    )]
+    let mut state: SystemState<(
+        Query<(
+            &BrinkProgram<M>,
+            &BrinkLocale<M>,
+            &mut BrinkFlow<M>,
+            &mut BrinkContext<M>,
+        )>,
+        Res<Assets<ProgramAsset>>,
+        Res<Assets<LineTablesAsset>>,
+        Res<BrinkBindings<M>>,
+    )> = SystemState::new(world);
+
+    // Begin the evaluation.
+    let mut next = {
+        let (mut flows, programs, tables, bindings) = state.get_mut(world);
+        let (prog_c, loc_c, mut flow, mut ctx) = flows
+            .get_mut(entity)
+            .map_err(|_| BrinkCallError::NotAFlow)?;
+        let program = &programs
+            .get(&prog_c.handle)
+            .ok_or(BrinkCallError::ProgramNotLoaded)?
+            .program;
+        let line_tables = &tables
+            .get(&loc_c.handle)
+            .ok_or(BrinkCallError::LineTablesNotLoaded)?
+            .tables;
+        let idx = program
+            .find_address(name)
+            .ok_or_else(|| BrinkCallError::FunctionNotFound(name.to_owned()))?
+            .0;
+        let handler = bindings.eval_handler();
+        let outcome = flow.inner.begin_function_eval::<FastRng>(
+            program,
+            line_tables,
+            &mut ctx.inner,
+            &handler,
+            idx,
+            args,
+            None,
+        )?;
+        classify_eval(&flow.inner, program, &bindings, outcome)?
+    };
+
+    // Drive: run each pending world-access query against the World (borrows
+    // released here), resolve it, and resume — until the function returns.
+    loop {
+        match next {
+            NextStep::Done(value) => return Ok(value),
+            NextStep::RunQuery { system, qargs } => {
+                let value = world
+                    .run_system_with(system, (entity, qargs))
+                    .map_err(|e| BrinkCallError::QueryFailed(format!("{e:?}")))?;
+                next = {
+                    let (mut flows, programs, tables, bindings) = state.get_mut(world);
+                    let (prog_c, loc_c, mut flow, mut ctx) = flows
+                        .get_mut(entity)
+                        .map_err(|_| BrinkCallError::NotAFlow)?;
+                    let program = &programs
+                        .get(&prog_c.handle)
+                        .ok_or(BrinkCallError::ProgramNotLoaded)?
+                        .program;
+                    let line_tables = &tables
+                        .get(&loc_c.handle)
+                        .ok_or(BrinkCallError::LineTablesNotLoaded)?
+                        .tables;
+                    let handler = bindings.eval_handler();
+                    flow.inner.resolve_external(value);
+                    let outcome = flow.inner.resume_function_eval::<FastRng>(
+                        program,
+                        line_tables,
+                        &mut ctx.inner,
+                        &handler,
+                        None,
+                    )?;
+                    classify_eval(&flow.inner, program, &bindings, outcome)?
+                };
+            }
+        }
     }
 }
 
@@ -531,6 +802,93 @@ mod tests {
             log.0,
             vec![(2, 0.5)],
             "observer should see set_volume(2, 0.5)"
+        );
+    }
+
+    // ── Engine → ink: call_ink_function + bind_brink_query ───────────
+
+    #[derive(Component)]
+    struct Enemy;
+
+    /// A world-access query binding: count `Enemy` entities.
+    fn enemy_count(In((_entity, _args)): In<BrinkQueryInput>, enemies: Query<&Enemy>) -> Value {
+        #[expect(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        Value::Int(enemies.iter().count() as i32)
+    }
+
+    /// End-to-end engine→ink: an ink function that queries the World via a
+    /// `bind_brink_query` binding, driven synchronously by
+    /// `call_ink_function`.
+    #[test]
+    fn call_ink_function_resolves_world_query() {
+        use crate::BrinkFlowRequest;
+        use crate::test_support::{add_story_assets, make_test_app};
+
+        let mut app = make_test_app();
+        app.bind_brink_query::<(), _, _>("enemy_count", enemy_count);
+
+        // can_spawn() := enemy_count() < 3
+        let (program, tables, ctx) = compile_test_story(
+            "EXTERNAL enemy_count()\n-> END\n=== function can_spawn() ===\n~ return enemy_count() < 3\n",
+        );
+        let story = add_story_assets(&mut app, program, tables, ctx);
+
+        // Two enemies → can_spawn should be true (2 < 3).
+        app.world_mut().spawn(Enemy);
+        app.world_mut().spawn(Enemy);
+
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update(); // fulfill the request → flow components on `entity`
+
+        let result = call_ink_function::<()>(app.world_mut(), entity, "can_spawn", &[]).unwrap();
+        assert_eq!(result.as_bool(), Some(true), "2 enemies < 3 → can spawn");
+
+        // Add two more enemies (4 total) → can_spawn should now be false.
+        app.world_mut().spawn(Enemy);
+        app.world_mut().spawn(Enemy);
+        let result = call_ink_function::<()>(app.world_mut(), entity, "can_spawn", &[]).unwrap();
+        assert_eq!(
+            result.as_bool(),
+            Some(false),
+            "4 enemies !< 3 → cannot spawn"
+        );
+    }
+
+    /// A pure binding called from inside an engine→ink function resolves
+    /// inline (no World access), and an unknown function errors clearly.
+    #[test]
+    fn call_ink_function_pure_and_errors() {
+        use crate::BrinkFlowRequest;
+        use crate::test_support::{add_story_assets, make_test_app};
+
+        let mut app = make_test_app();
+        app.bind_brink_fn::<(), _, _>("triple", |args| {
+            args.first().and_then(Value::as_int).unwrap_or(0) * 3
+        });
+
+        let (program, tables, ctx) = compile_test_story(
+            "EXTERNAL triple(n)\n-> END\n=== function scaled(n) ===\n~ return triple(n) + 1\n",
+        );
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update();
+
+        // triple(7) + 1 = 22
+        let result =
+            call_ink_function::<()>(app.world_mut(), entity, "scaled", &[Value::Int(7)]).unwrap();
+        assert_eq!(result, Value::Int(22));
+
+        // Unknown function → clear error.
+        let err = call_ink_function::<()>(app.world_mut(), entity, "nope", &[]).unwrap_err();
+        assert!(
+            matches!(err, BrinkCallError::FunctionNotFound(_)),
+            "got {err:?}"
         );
     }
 }

@@ -54,7 +54,10 @@ pub use asset::{
 /// Shares its name with the trait (macro vs. type namespace), so a single
 /// `use bevy_brink::BrinkCommand;` brings both into scope.
 pub use bevy_brink_derive::BrinkCommand;
-pub use bindings::{BrinkArgError, BrinkBindings, BrinkBindingsAppExt, BrinkCommand, BrinkHandler};
+pub use bindings::{
+    BrinkArgError, BrinkBindings, BrinkBindingsAppExt, BrinkCallError, BrinkCommand, BrinkHandler,
+    BrinkQueryInput, call_ink_function,
+};
 /// Re-exported so `#[derive(BrinkCommand)]`-generated code (and binding
 /// authors) can name the ink runtime value type without depending on
 /// `brink-format` directly.
