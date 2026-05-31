@@ -31,6 +31,7 @@ extern crate self as bevy_brink;
 
 mod asset;
 mod bindings;
+mod call;
 mod event;
 mod flow;
 mod globals;
@@ -62,6 +63,10 @@ pub use bindings::{
 /// authors) can name the ink runtime value type without depending on
 /// `brink-format` directly.
 pub use brink_format::Value;
+pub use call::{
+    BrinkCallCommandsExt, BrinkCallFailed, BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs,
+    resolve_brink_calls,
+};
 #[cfg(feature = "dev")]
 pub use event::BrinkFlowReset;
 pub use event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};

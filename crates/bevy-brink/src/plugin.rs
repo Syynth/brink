@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_asset::AssetApp;
+use bevy_ecs::schedule::IntoScheduleConfigs as _;
 
 use crate::asset::{BrinkStoryAsset, InkbLoader, LineTablesAsset, ProgramAsset};
 use crate::request::fulfill_flow_requests;
@@ -50,6 +51,17 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         // Auto-render BrinkTranscript<M> for any flow that has it.
         // No-op for flows that don't (the query just yields nothing).
         app.add_systems(Update, crate::transcript::refresh_transcripts::<M>);
+        // Resolve deferred engine→ink calls (commands.brink_call). Exclusive
+        // (needs &mut World to run query bindings), gated so it only runs
+        // when a call is actually pending.
+        app.add_systems(
+            Update,
+            crate::call::resolve_brink_calls::<M>.run_if(
+                bevy_ecs::schedule::common_conditions::any_with_component::<
+                    crate::call::BrinkCallRequest<M>,
+                >,
+            ),
+        );
         #[cfg(feature = "dev")]
         app.add_systems(Update, crate::replay::replay_on_reload::<M>);
         #[cfg(debug_assertions)]
