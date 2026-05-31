@@ -1065,7 +1065,11 @@ fn handle_frame_exhaustion(
         return Ok(Stepped::Done);
     }
 
-    if frame_type != CallFrameType::Function && !flow.pending_choices.is_empty() {
+    if !matches!(
+        frame_type,
+        CallFrameType::Function | CallFrameType::FunctionEvalFromGame
+    ) && !flow.pending_choices.is_empty()
+    {
         // Non-function frame with pending choices: the fork captured at
         // choice creation preserves the state for resumption.
         if flow.can_pop_thread() {
@@ -1113,7 +1117,10 @@ fn pop_call_frame(
         .ok_or(RuntimeError::CallStackUnderflow)?;
     stats.frames_popped += 1;
 
-    if popped.frame_type == CallFrameType::Function {
+    if matches!(
+        popped.frame_type,
+        CallFrameType::Function | CallFrameType::FunctionEvalFromGame
+    ) {
         // Trim trailing whitespace from the function's output region,
         // matching the C# runtime's TrimWhitespaceFromFunctionEnd.
         if let Some(start) = popped.function_output_start {

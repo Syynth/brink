@@ -149,6 +149,13 @@ pub(crate) enum CallFrameType {
     Tunnel,
     Thread,
     External,
+    /// Boundary frame pushed by an engine→ink call
+    /// ([`FlowInstance::begin_function_eval`]). Behaves like `Function`
+    /// for output trimming and implicit-return purposes, but marks where
+    /// a from-game evaluation began so the eval driver knows when the
+    /// function has returned. Mirrors C#'s
+    /// `PushPopType.FunctionEvaluationFromGame`.
+    FunctionEvalFromGame,
 }
 
 #[derive(Debug, Clone)]
@@ -458,6 +465,18 @@ impl Flow {
         self.threads.len() > 1
     }
 
+    /// Returns `true` if a `FunctionEvalFromGame` boundary frame is present
+    /// in the current thread's call stack — i.e. an engine→ink function
+    /// evaluation is still in progress. Functions don't fork threads, so
+    /// the current thread is where the boundary lives. The eval driver
+    /// uses this to detect when the function has returned (boundary popped).
+    pub fn has_eval_boundary(&self) -> bool {
+        let cs = &self.current_thread().call_stack;
+        (0..cs.len())
+            .filter_map(|i| cs.get(i))
+            .any(|f| f.frame_type == CallFrameType::FunctionEvalFromGame)
+    }
+
     pub fn pop_thread(&mut self) {
         self.threads.pop();
     }
@@ -605,6 +624,31 @@ impl ExternalFnHandler for FallbackHandler {
     }
 }
 
+/// Outcome of an engine→ink function evaluation
+/// ([`FlowInstance::begin_function_eval`] / [`resume_function_eval`](FlowInstance::resume_function_eval)).
+///
+/// Evaluating an ink function from engine code does not advance the
+/// player-visible story: its output is isolated and discarded, and the
+/// transcript is untouched. The only result is the function's return
+/// value — unless the function calls an external that can't be resolved
+/// synchronously.
+#[derive(Debug, Clone)]
+pub enum FunctionEval {
+    /// The function returned this value and evaluation is complete.
+    /// (Functions with no explicit `~ return` yield [`Value::Null`].)
+    Returned(Value),
+    /// The function called an external whose handler returned
+    /// [`ExternalResult::Pending`] — typically a binding that needs
+    /// engine/World access resolved out-of-band. Evaluation is paused
+    /// with its full state intact. Inspect the pending call via
+    /// [`pending_external_name`](FlowInstance::pending_external_name) /
+    /// [`pending_external_args`](FlowInstance::pending_external_args),
+    /// supply the result with
+    /// [`resolve_external`](FlowInstance::resolve_external), then call
+    /// [`resume_function_eval`](FlowInstance::resume_function_eval).
+    AwaitingExternal,
+}
+
 // ── FlowInstance ────────────────────────────────────────────────────────────
 
 /// A single independent execution context within a story. The default flow
@@ -622,6 +666,23 @@ pub struct FlowInstance {
     pub(crate) flow: Flow,
     pub(crate) status: StoryStatus,
     pub(crate) stats: Stats,
+    /// Transient state for an in-progress engine→ink function evaluation
+    /// ([`begin_function_eval`](Self::begin_function_eval)). `Some` only
+    /// while a from-game call is mid-flight (possibly paused on an
+    /// external); `None` during normal play. Not meaningful to persist.
+    pub(crate) eval: Option<EvalState>,
+}
+
+/// Bookkeeping for an in-progress engine→ink function evaluation.
+#[derive(Debug, Clone)]
+pub(crate) struct EvalState {
+    /// Value-stack length recorded before arguments were pushed, so the
+    /// return value (and any leftover args) can be reclaimed on return.
+    pub value_floor: usize,
+    /// Pending-choice count when the eval began. A function that *grows*
+    /// this presented a choice — illegal, and distinct from choices the
+    /// main story may already have waiting.
+    pub choice_floor: usize,
 }
 
 impl FlowInstance {
@@ -667,6 +728,7 @@ impl FlowInstance {
             },
             status: StoryStatus::Active,
             stats: Stats::default(),
+            eval: None,
         };
         let context = Context {
             globals,
@@ -968,6 +1030,245 @@ impl FlowInstance {
     /// flow forward with [`step_single_line`](Self::step_single_line).
     pub fn resolve_external(&mut self, value: Value) {
         self.flow.resolve_external(value);
+    }
+
+    // ── Engine → ink calls ───────────────────────────────────────────
+
+    /// Evaluate an ink function from engine code, returning its value.
+    ///
+    /// This does **not** advance the player-visible story: a
+    /// `FunctionEvalFromGame` boundary frame is pushed, `args` are passed
+    /// in declaration order (exactly as a normal call site would), output
+    /// is captured and discarded, and the function runs until it returns.
+    ///
+    /// If the function calls an external whose handler returns
+    /// [`ExternalResult::Pending`] (e.g. a binding that needs Bevy World
+    /// access), evaluation pauses and returns
+    /// [`FunctionEval::AwaitingExternal`]; the caller resolves the
+    /// external (see [`resolve_external`](Self::resolve_external)) and
+    /// calls [`resume_function_eval`](Self::resume_function_eval).
+    ///
+    /// `container_idx` is the function's container, typically obtained from
+    /// [`Program::find_address`](crate::Program::find_address) on the
+    /// function name. Unlike a normal `Call`, this does not increment the
+    /// function's visit count — an engine query is out-of-band, matching
+    /// C#'s `EvaluateFunction`.
+    ///
+    /// # Errors
+    /// - [`AlreadyEvaluatingFunction`](RuntimeError::AlreadyEvaluatingFunction)
+    ///   if a function evaluation is already in progress on this flow.
+    /// - [`FunctionYielded`](RuntimeError::FunctionYielded) if the function
+    ///   presents choices or ends the story (functions must not yield).
+    /// - [`UnresolvedExternalCall`](RuntimeError::UnresolvedExternalCall)
+    ///   if an external has neither a binding nor a fallback.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the VM environment (program, line tables, context, handler, resolver) plus the call target and args"
+    )]
+    pub fn begin_function_eval<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        container_idx: u32,
+        args: &[Value],
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Result<FunctionEval, RuntimeError> {
+        if self.eval.is_some() {
+            return Err(RuntimeError::AlreadyEvaluatingFunction);
+        }
+
+        // Record floors BEFORE pushing args: the value-stack length (so the
+        // return value and any leftover args can be reclaimed), and the
+        // pending-choice count (so we can tell a choice the function
+        // presents from choices the main story already has waiting).
+        let value_floor = self.flow.value_stack.len();
+        let choice_floor = self.flow.pending_choices.len();
+
+        // Isolate output: anything the function emits routes to the
+        // capture scratch space and never reaches the transcript.
+        self.flow.output.begin_capture();
+
+        let output_start = self.flow.output.target_len();
+        let boundary = CallFrame {
+            return_address: None,
+            temps: Vec::new(),
+            container_stack: vec![ContainerPosition {
+                container_idx,
+                offset: 0,
+            }],
+            frame_type: CallFrameType::FunctionEvalFromGame,
+            external_fn_id: None,
+            function_output_start: Some(output_start),
+        };
+        self.flow.current_thread_mut().call_stack.push(boundary);
+        self.stats.frames_pushed += 1;
+
+        // Pass arguments onto the value stack in declaration order — the
+        // function's prologue (`DeclareTemp`) binds them exactly as it
+        // would for an in-story call.
+        self.flow.value_stack.extend_from_slice(args);
+
+        self.eval = Some(EvalState {
+            value_floor,
+            choice_floor,
+        });
+        self.drive_function_eval::<R>(program, line_tables, context, handler, resolver)
+    }
+
+    /// Resume a function evaluation that paused on
+    /// [`FunctionEval::AwaitingExternal`], after the pending external has
+    /// been resolved via [`resolve_external`](Self::resolve_external).
+    ///
+    /// # Errors
+    /// - [`NotEvaluatingFunction`](RuntimeError::NotEvaluatingFunction) if
+    ///   no evaluation is in progress.
+    /// - Same evaluation errors as
+    ///   [`begin_function_eval`](Self::begin_function_eval).
+    pub fn resume_function_eval<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Result<FunctionEval, RuntimeError> {
+        if self.eval.is_none() {
+            return Err(RuntimeError::NotEvaluatingFunction);
+        }
+        self.drive_function_eval::<R>(program, line_tables, context, handler, resolver)
+    }
+
+    /// Returns `true` if a function evaluation is in progress (possibly
+    /// paused awaiting an external).
+    #[must_use]
+    pub fn is_evaluating_function(&self) -> bool {
+        self.eval.is_some()
+    }
+
+    /// Step the VM until the in-progress function evaluation returns or
+    /// pauses on a pending external. Shared by `begin`/`resume`.
+    fn drive_function_eval<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Result<FunctionEval, RuntimeError> {
+        let step_start = self.stats.steps;
+        loop {
+            self.stats.steps += 1;
+            if self.stats.steps - step_start > Self::STEP_LIMIT {
+                self.abort_eval(program, line_tables, resolver);
+                return Err(RuntimeError::StepLimitExceeded(Self::STEP_LIMIT));
+            }
+
+            let stepped = vm::step::<R>(
+                &mut self.flow,
+                program,
+                line_tables,
+                context,
+                &mut self.stats,
+                resolver,
+            )?;
+            self.stats.materializations += self.flow.drain_materializations();
+
+            match stepped {
+                vm::Stepped::Done | vm::Stepped::Ended => {
+                    // A function reached `-> DONE`/`-> END` — illegal.
+                    self.abort_eval(program, line_tables, resolver);
+                    return Err(RuntimeError::FunctionYielded);
+                }
+                vm::Stepped::ExternalCall => {
+                    if let Some(pending) =
+                        self.resolve_eval_external(program, line_tables, resolver, handler)?
+                    {
+                        return Ok(pending);
+                    }
+                }
+                vm::Stepped::Continue | vm::Stepped::ThreadCompleted => {}
+            }
+
+            // Did the boundary frame pop? Then the function has returned
+            // (via `~ return` or implicit exhaustion).
+            if !self.flow.has_eval_boundary() {
+                let _captured = self.flow.output.end_capture(program, line_tables, resolver);
+                let floor = self.eval.take().map_or(0, |e| e.value_floor);
+                let mut ret: Option<Value> = None;
+                while self.flow.value_stack.len() > floor {
+                    let v = self.flow.value_stack.pop();
+                    if ret.is_none() {
+                        ret = v; // first popped = top of stack = the return value
+                    }
+                }
+                return Ok(FunctionEval::Returned(ret.unwrap_or(Value::Null)));
+            }
+
+            // A function must not present choices. Compare against the
+            // count when the eval began — the main story may already have
+            // choices waiting, which are none of our concern.
+            let choice_floor = self.eval.as_ref().map_or(0, |e| e.choice_floor);
+            if self.flow.pending_choices.len() > choice_floor {
+                self.abort_eval(program, line_tables, resolver);
+                return Err(RuntimeError::FunctionYielded);
+            }
+        }
+    }
+
+    /// Resolve an external hit during function evaluation, mirroring the
+    /// normal step path but surfacing [`ExternalResult::Pending`] as
+    /// [`FunctionEval::AwaitingExternal`] (returned as `Some`) rather than
+    /// an error. Returns `None` when the external resolved and stepping
+    /// should continue.
+    fn resolve_eval_external(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        resolver: Option<&dyn PluralResolver>,
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<Option<FunctionEval>, RuntimeError> {
+        let fn_id = self
+            .flow
+            .external_fn_id()
+            .ok_or(RuntimeError::CallStackUnderflow)?;
+        let entry = program.external_fn(fn_id);
+        let fn_name = entry.map_or("?", |e| program.name(e.name));
+        match handler.call(fn_name, self.flow.external_args()) {
+            ExternalResult::Resolved(value) => {
+                self.flow.resolve_external(value);
+                Ok(None)
+            }
+            ExternalResult::Fallback => {
+                if let Some(fb_id) = entry.and_then(|e| e.fallback) {
+                    let container_idx = program
+                        .resolve_target(fb_id)
+                        .map(|(idx, _)| idx)
+                        .ok_or(RuntimeError::UnresolvedDefinition(fb_id))?;
+                    self.flow.invoke_fallback(container_idx);
+                    Ok(None)
+                } else {
+                    self.abort_eval(program, line_tables, resolver);
+                    Err(RuntimeError::UnresolvedExternalCall(fn_id))
+                }
+            }
+            ExternalResult::Pending => Ok(Some(FunctionEval::AwaitingExternal)),
+        }
+    }
+
+    /// Tear down an aborted/failed evaluation: end the output capture and
+    /// clear the eval marker. Leaves the call stack as-is (the caller is
+    /// erroring out).
+    fn abort_eval(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        resolver: Option<&dyn PluralResolver>,
+    ) {
+        if self.eval.take().is_some() {
+            let _ = self.flow.output.end_capture(program, line_tables, resolver);
+        }
     }
 }
 

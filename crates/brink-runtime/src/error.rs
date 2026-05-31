@@ -73,4 +73,15 @@ pub enum RuntimeError {
 
     #[error("locale missing scope required by strict mode: {0}")]
     LocaleScopeMissing(DefinitionId),
+
+    #[error(
+        "function evaluation yielded (a function called from the engine cannot present choices or end the story)"
+    )]
+    FunctionYielded,
+
+    #[error("no function evaluation in progress")]
+    NotEvaluatingFunction,
+
+    #[error("a function evaluation is already in progress on this flow")]
+    AlreadyEvaluatingFunction,
 }
