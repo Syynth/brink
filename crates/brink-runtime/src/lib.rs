@@ -44,5 +44,5 @@ pub use rng::{DotNetRng, FastRng, StoryRng};
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
 pub use story::{
     Choice, Context, ExternalFnHandler, ExternalResult, FallbackHandler, FlowInstance,
-    FunctionEval, Line, Stats, Story, StorySnapshot, StoryStatus,
+    FunctionEval, Line, Stats, StepOutcome, Story, StorySnapshot, StoryStatus,
 };

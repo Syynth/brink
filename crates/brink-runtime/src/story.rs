@@ -80,6 +80,28 @@ impl Line {
     }
 }
 
+/// Outcome of a single [`FlowInstance::advance`] step.
+///
+/// Like [`Line`], but with an extra variant for when a binding handler
+/// deferred an external call ([`ExternalResult::Pending`]) — e.g. a
+/// world-access query hit during normal playback. The flow is paused with
+/// its state intact: inspect the pending call via
+/// [`pending_external_name`](FlowInstance::pending_external_name) /
+/// [`pending_external_args`](FlowInstance::pending_external_args), supply
+/// the result with [`resolve_external`](FlowInstance::resolve_external),
+/// then call [`advance`](FlowInstance::advance) again.
+///
+/// [`step_single_line`](FlowInstance::step_single_line) is the simpler API
+/// for consumers whose handler never pauses — it maps `AwaitingExternal`
+/// to an error.
+#[derive(Debug, Clone)]
+pub enum StepOutcome {
+    /// A line of output, or a yield point (`Done`/`Choices`/`End`).
+    Line(Line),
+    /// The flow paused on a deferred external; resolve it and `advance`.
+    AwaitingExternal,
+}
+
 /// A single choice presented to the player.
 #[derive(Debug, Clone)]
 pub struct Choice {
@@ -745,15 +767,15 @@ impl FlowInstance {
     /// Prevents infinite loops from malformed bytecode.
     const STEP_LIMIT: u64 = 1_000_000;
 
-    /// Execute until one complete line of output is available, or until
-    /// a yield point (choices/done/ended) if no newline occurs first.
+    /// Execute until one complete line of output is available, or until a
+    /// yield point (choices/done/ended) if no newline occurs first.
     ///
-    /// Returns a [`Line`] variant that tells the caller what happened:
-    /// - `Line::Text` — mid-stream content, more may follow.
-    /// - `Line::Done` — this turn is complete, call again for more.
-    /// - `Line::Choices` — the story needs a choice selection.
-    /// - `Line::End` — the story has permanently ended.
-    #[expect(clippy::too_many_lines)]
+    /// Returns a [`Line`] telling the caller what happened (`Text`/`Done`/
+    /// `Choices`/`End`). This is the simple API for consumers whose
+    /// external handler never defers: if the handler returns
+    /// [`ExternalResult::Pending`], this errors with
+    /// [`UnresolvedExternalCall`](RuntimeError::UnresolvedExternalCall).
+    /// For pausable world-access bindings, use [`advance`](Self::advance).
     pub fn step_single_line<R: StoryRng>(
         &mut self,
         program: &Program,
@@ -762,6 +784,35 @@ impl FlowInstance {
         handler: &dyn ExternalFnHandler,
         resolver: Option<&dyn PluralResolver>,
     ) -> Result<Line, RuntimeError> {
+        match self.advance::<R>(program, line_tables, context, handler, resolver)? {
+            StepOutcome::Line(line) => Ok(line),
+            StepOutcome::AwaitingExternal => {
+                // Preserve historical behavior for consumers using this
+                // (non-pausing) API: a deferred external they can't resolve
+                // is an error.
+                let id = self
+                    .flow
+                    .external_fn_id()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                Err(RuntimeError::UnresolvedExternalCall(id))
+            }
+        }
+    }
+
+    /// Like [`step_single_line`](Self::step_single_line), but surfaces a
+    /// deferred external ([`ExternalResult::Pending`]) as
+    /// [`StepOutcome::AwaitingExternal`] instead of an error — so a
+    /// world-access binding hit during normal playback can pause cleanly.
+    /// Resolve the pending external and call `advance` again to continue.
+    #[expect(clippy::too_many_lines)]
+    pub fn advance<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Result<StepOutcome, RuntimeError> {
         // 1. If buffer already has a completed line from a previous step,
         //    take it immediately (no VM stepping needed).
         if self.flow.output.has_completed_line()
@@ -770,7 +821,7 @@ impl FlowInstance {
                     .output
                     .take_first_line(program, line_tables, resolver)
         {
-            return Ok(Line::Text { text, tags });
+            return Ok(StepOutcome::Line(Line::Text { text, tags }));
         }
 
         // 2. If buffer has partial content but VM has already yielded
@@ -778,7 +829,7 @@ impl FlowInstance {
         //    output is coming, so trailing Newlines are committed.
         if self.flow.output.has_unread() && self.status != StoryStatus::Active {
             let (text, tags) = flush_remaining(&mut self.flow, program, line_tables, resolver);
-            return Ok(make_yield_line(
+            return Ok(StepOutcome::Line(make_yield_line(
                 self.status,
                 text,
                 tags,
@@ -786,7 +837,7 @@ impl FlowInstance {
                 program,
                 line_tables,
                 resolver,
-            ));
+            )));
         }
 
         // 3. Status checks.
@@ -837,17 +888,21 @@ impl FlowInstance {
                         && let Some((text, tags)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(Line::Text { text, tags });
+                        return Ok(StepOutcome::Line(Line::Text { text, tags }));
                     }
                 }
 
                 vm::Stepped::ExternalCall => {
-                    resolve_external_call(flow, program, handler)?;
+                    // `false` means the handler deferred (Pending): pause
+                    // cleanly so the caller can resolve it out-of-band.
+                    if !resolve_external_call(flow, program, handler)? {
+                        return Ok(StepOutcome::AwaitingExternal);
+                    }
                     if flow.output.has_completed_line()
                         && let Some((text, tags)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(Line::Text { text, tags });
+                        return Ok(StepOutcome::Line(Line::Text { text, tags }));
                     }
                 }
 
@@ -866,7 +921,7 @@ impl FlowInstance {
                                 && let Some((text, tags)) =
                                     flow.output.take_first_line(program, line_tables, resolver)
                             {
-                                return Ok(Line::Text { text, tags });
+                                return Ok(StepOutcome::Line(Line::Text { text, tags }));
                             }
                             continue;
                         }
@@ -884,11 +939,11 @@ impl FlowInstance {
                         && let Some((text, tags)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(Line::Text { text, tags });
+                        return Ok(StepOutcome::Line(Line::Text { text, tags }));
                     }
 
                     let (text, tags) = flush_remaining(flow, program, line_tables, resolver);
-                    return Ok(make_yield_line(
+                    return Ok(StepOutcome::Line(make_yield_line(
                         *status,
                         text,
                         tags,
@@ -896,7 +951,7 @@ impl FlowInstance {
                         program,
                         line_tables,
                         resolver,
-                    ));
+                    )));
                 }
 
                 vm::Stepped::Ended => {
@@ -907,11 +962,11 @@ impl FlowInstance {
                         && let Some((text, tags)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(Line::Text { text, tags });
+                        return Ok(StepOutcome::Line(Line::Text { text, tags }));
                     }
 
                     let (text, tags) = flush_remaining(flow, program, line_tables, resolver);
-                    return Ok(Line::End { text, tags });
+                    return Ok(StepOutcome::Line(Line::End { text, tags }));
                 }
             }
         }
@@ -1325,11 +1380,17 @@ fn select_choice(
 }
 
 /// Resolve an external function call using the handler and program metadata.
+///
+/// Returns `Ok(true)` if the call was resolved (a value was supplied or the
+/// in-story fallback was invoked) and stepping should continue; `Ok(false)`
+/// if the handler deferred ([`ExternalResult::Pending`]), leaving the
+/// `External` frame intact for the caller to resolve out-of-band. Errors
+/// only when the handler declined and no fallback exists.
 fn resolve_external_call(
     flow: &mut Flow,
     program: &Program,
     handler: &dyn ExternalFnHandler,
-) -> Result<(), RuntimeError> {
+) -> Result<bool, RuntimeError> {
     let fn_id = flow
         .external_fn_id()
         .ok_or(RuntimeError::CallStackUnderflow)?;
@@ -1341,6 +1402,7 @@ fn resolve_external_call(
     match result {
         ExternalResult::Resolved(value) => {
             flow.resolve_external(value);
+            Ok(true)
         }
         ExternalResult::Fallback => {
             let fallback_id = entry.and_then(|e| e.fallback);
@@ -1351,17 +1413,17 @@ fn resolve_external_call(
                     .ok_or(RuntimeError::UnresolvedDefinition(fb_id))?;
 
                 flow.invoke_fallback(container_idx);
+                Ok(true)
             } else {
-                return Err(RuntimeError::UnresolvedExternalCall(fn_id));
+                Err(RuntimeError::UnresolvedExternalCall(fn_id))
             }
         }
         ExternalResult::Pending => {
-            // Leave the External frame intact — the caller must resolve
-            // via story.resolve_external(value) before continuing.
-            return Err(RuntimeError::UnresolvedExternalCall(fn_id));
+            // Leave the External frame intact — the caller resolves it
+            // out-of-band (via resolve_external) before continuing.
+            Ok(false)
         }
     }
-    Ok(())
 }
 
 /// Flush remaining output buffer content into `(text, tags)`.
