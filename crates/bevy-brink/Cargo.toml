@@ -53,5 +53,10 @@ brink-runtime = { path = "../brink-runtime", features = ["testing"] }
 name = "play_story"
 required-features = ["dev"]
 
+# Headless demo of the engine↔ink dynamic binding facility
+# (bind_brink_query / call_ink_function / commands.brink_call / advance_flow).
+[[example]]
+name = "engine_bindings"
+
 [lints]
 workspace = true
