@@ -28,16 +28,16 @@ pub(crate) mod read;
 pub(crate) mod write;
 
 pub use read::{
-    read_inkb, read_inkb_index, read_section_addresses, read_section_containers,
-    read_section_externals, read_section_line_tables, read_section_list_defs,
-    read_section_list_items, read_section_list_literals, read_section_name_table,
-    read_section_variables,
+    read_inkb, read_inkb_index, read_section_address_paths, read_section_addresses,
+    read_section_containers, read_section_externals, read_section_line_tables,
+    read_section_list_defs, read_section_list_items, read_section_list_literals,
+    read_section_name_table, read_section_variables,
 };
 pub use write::{
-    assemble_inkb, write_inkb, write_section_addresses, write_section_containers,
-    write_section_externals, write_section_line_tables, write_section_list_defs,
-    write_section_list_items, write_section_list_literals, write_section_name_table,
-    write_section_variables,
+    assemble_inkb, write_inkb, write_section_address_paths, write_section_addresses,
+    write_section_containers, write_section_externals, write_section_line_tables,
+    write_section_list_defs, write_section_list_items, write_section_list_literals,
+    write_section_name_table, write_section_variables,
 };
 
 use std::ops::Range;
@@ -53,7 +53,7 @@ pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)
 pub(crate) const SECTION_ENTRY_SIZE: usize = 8;
 /// Number of sections in the current format.
-pub(crate) const SECTION_COUNT: u8 = 9;
+pub(crate) const SECTION_COUNT: u8 = 10;
 
 // Value type tags
 pub(crate) const VAL_INT: u8 = 0x00;
@@ -104,6 +104,7 @@ pub enum SectionKind {
     LineTables = 0x07,
     Labels = 0x08,
     ListLiterals = 0x09,
+    AddressPaths = 0x0A,
 }
 
 impl SectionKind {
@@ -118,6 +119,7 @@ impl SectionKind {
             0x07 => Ok(Self::LineTables),
             0x08 => Ok(Self::Labels),
             0x09 => Ok(Self::ListLiterals),
+            0x0A => Ok(Self::AddressPaths),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }

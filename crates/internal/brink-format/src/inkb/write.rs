@@ -4,8 +4,8 @@ use crate::codec::{
     crc32, write_def_id, write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
 };
 use crate::definition::{
-    AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
-    ScopeLineTable,
+    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
+    ListItemDef, ScopeLineTable,
 };
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::story::StoryData;
@@ -41,8 +41,9 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         SectionKind::LineTables,
         SectionKind::Labels,
         SectionKind::ListLiterals,
+        SectionKind::AddressPaths,
     ];
-    let mut section_offsets = [0u32; 9];
+    let mut section_offsets = [0u32; 10];
 
     // 1. NameTable
     section_offsets[0] = (buf.len() - base) as u32;
@@ -79,6 +80,10 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // 9. ListLiterals
     section_offsets[8] = (buf.len() - base) as u32;
     write_section_list_literals(&story.list_literals, buf);
+
+    // 10. AddressPaths
+    section_offsets[9] = (buf.len() - base) as u32;
+    write_section_address_paths(&story.address_paths, buf);
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -211,6 +216,16 @@ pub fn write_section_addresses(addresses: &[AddressDef], buf: &mut Vec<u8>) {
         write_def_id(buf, addr.id);
         write_def_id(buf, addr.container_id);
         write_u32(buf, addr.byte_offset);
+    }
+}
+
+/// Write the address-paths section (no header framing).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_address_paths(address_paths: &[AddressPath], buf: &mut Vec<u8>) {
+    write_u32(buf, address_paths.len() as u32);
+    for ap in address_paths {
+        write_u16(buf, ap.path.0);
+        write_def_id(buf, ap.target);
     }
 }
 

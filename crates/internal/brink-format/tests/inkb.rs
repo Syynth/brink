@@ -6,10 +6,10 @@ use brink_format::{
     DecodeError, SectionKind, assemble_inkb, read_inkb, read_inkb_index, read_section_addresses,
     read_section_containers, read_section_externals, read_section_line_tables,
     read_section_list_defs, read_section_list_items, read_section_list_literals,
-    read_section_name_table, read_section_variables, write_inkb, write_section_addresses,
-    write_section_containers, write_section_externals, write_section_line_tables,
-    write_section_list_defs, write_section_list_items, write_section_list_literals,
-    write_section_name_table, write_section_variables,
+    read_section_name_table, read_section_variables, write_inkb, write_section_address_paths,
+    write_section_addresses, write_section_containers, write_section_externals,
+    write_section_line_tables, write_section_list_defs, write_section_list_items,
+    write_section_list_literals, write_section_name_table, write_section_variables,
 };
 use brink_json::InkJson;
 
@@ -170,7 +170,7 @@ fn index_parsing() {
     let index = read_inkb_index(&buf).unwrap();
     assert_eq!(index.version, 1);
     assert_eq!(index.file_size as usize, buf.len());
-    assert_eq!(index.sections.len(), 9);
+    assert_eq!(index.sections.len(), 10);
 
     // Sections are in canonical order.
     assert_eq!(index.sections[0].kind, SectionKind::NameTable);
@@ -182,9 +182,10 @@ fn index_parsing() {
     assert_eq!(index.sections[6].kind, SectionKind::LineTables);
     assert_eq!(index.sections[7].kind, SectionKind::Labels);
     assert_eq!(index.sections[8].kind, SectionKind::ListLiterals);
+    assert_eq!(index.sections[9].kind, SectionKind::AddressPaths);
 
-    // Header size is 16 + 8*9 = 88.
-    assert_eq!(index.header_size(), 88);
+    // Header size is 16 + 8*10 = 96.
+    assert_eq!(index.header_size(), 96);
 
     // First section starts right after header.
     assert_eq!(index.sections[0].offset as usize, index.header_size());
@@ -309,6 +310,9 @@ fn assemble_inkb_equivalence() {
     let mut list_lit_buf = Vec::new();
     write_section_list_literals(&data.list_literals, &mut list_lit_buf);
 
+    let mut ap_buf = Vec::new();
+    write_section_address_paths(&data.address_paths, &mut ap_buf);
+
     let mut assembled = Vec::new();
     assemble_inkb(
         &[
@@ -321,6 +325,7 @@ fn assemble_inkb_equivalence() {
             (SectionKind::LineTables, &line_table_buf),
             (SectionKind::Labels, &label_buf),
             (SectionKind::ListLiterals, &list_lit_buf),
+            (SectionKind::AddressPaths, &ap_buf),
         ],
         &mut assembled,
     );
@@ -397,6 +402,7 @@ fn roundtrip_line_entry_with_audio_ref() {
         list_items: vec![],
         externals: vec![],
         addresses: vec![],
+        address_paths: vec![],
         name_table: vec!["root".to_string()],
         list_literals: vec![],
         source_checksum: 0,

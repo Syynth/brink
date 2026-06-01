@@ -12,7 +12,8 @@ use std::collections::HashMap;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
+    ListItemDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
@@ -34,6 +35,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_list_items(w, &story.list_items)?;
     write_externals(w, &story.externals)?;
     write_addresses(w, &story.addresses)?;
+    write_address_paths(w, &story.address_paths)?;
     write_list_literals(w, &story.list_literals)?;
 
     // Build a lookup from scope_id → line table for writing
@@ -182,6 +184,18 @@ fn write_addresses(w: &mut dyn fmt::Write, addresses: &[AddressDef]) -> fmt::Res
             "    (address {} -> {} +{})",
             addr.id, addr.container_id, addr.byte_offset
         )?;
+    }
+    writeln!(w, "  )")
+}
+
+fn write_address_paths(w: &mut dyn fmt::Write, address_paths: &[AddressPath]) -> fmt::Result {
+    if address_paths.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (address_paths")?;
+    for ap in address_paths {
+        writeln!(w, "    (path {} -> {})", ap.path.0, ap.target)?;
     }
     writeln!(w, "  )")
 }
@@ -601,6 +615,7 @@ mod tests {
             list_items: vec![],
             externals: vec![],
             addresses: vec![],
+            address_paths: vec![],
             name_table: vec![],
             list_literals: vec![],
             source_checksum: 0,

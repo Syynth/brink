@@ -3,8 +3,8 @@
 use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64};
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
-    ScopeLineTable, SlotInfo, SourceLocation,
+    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
+    ListItemDef, ScopeLineTable, SlotInfo, SourceLocation,
 };
 use crate::id::NameId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -45,6 +45,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let line_tables = read_section_line_tables(buf, &index)?;
     let addresses = read_section_addresses(buf, &index)?;
     let list_literals = read_section_list_literals(buf, &index)?;
+    let address_paths = read_section_address_paths(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -54,6 +55,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         list_items,
         externals,
         addresses,
+        address_paths,
         name_table,
         list_literals,
         source_checksum: index.checksum,
@@ -271,6 +273,28 @@ pub fn read_section_addresses(
         });
     }
     Ok(addresses)
+}
+
+/// Read the address-paths section using a pre-parsed index.
+pub fn read_section_address_paths(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<AddressPath>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::AddressPaths) else {
+        // AddressPaths section is optional for backwards compatibility
+        // (legacy `.inkb` and converter output omit it).
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let count = read_u32(buf, &mut off)? as usize;
+    // Each entry: path NameId(2) + target def_id(8) = 10 bytes
+    let mut paths = Vec::with_capacity(safe_capacity(count, buf.len(), off, 10));
+    for _ in 0..count {
+        let path = NameId(read_u16(buf, &mut off)?);
+        let target = read_def_id(buf, &mut off)?;
+        paths.push(AddressPath { path, target });
+    }
+    Ok(paths)
 }
 
 // ── Decode helpers (private) ────────────────────────────────────────────────

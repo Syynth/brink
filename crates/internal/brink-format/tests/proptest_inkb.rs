@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
 use brink_format::{
-    ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef, GlobalVarDef,
-    LineContent, LineEntry, LinePart, ListDef, ListItemDef, NameId, PluralCategory, ScopeLineTable,
-    SectionKind, SelectKey, SlotInfo, SourceLocation, StoryData, Value, ValueType, read_inkb,
-    read_inkb_index, write_inkb,
+    AddressPath, ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef,
+    GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, NameId, PluralCategory,
+    ScopeLineTable, SectionKind, SelectKey, SlotInfo, SourceLocation, StoryData, Value, ValueType,
+    read_inkb, read_inkb_index, write_inkb,
 };
 use proptest::prelude::*;
 
@@ -211,6 +211,10 @@ fn arb_external() -> impl Strategy<Value = ExternalFnDef> {
         })
 }
 
+fn arb_address_path() -> impl Strategy<Value = AddressPath> {
+    (arb_name_id(), arb_def_id()).prop_map(|(path, target)| AddressPath { path, target })
+}
+
 fn arb_story_data() -> impl Strategy<Value = StoryData> {
     (
         prop::collection::vec(arb_container_with_lines(), 0..5),
@@ -218,10 +222,11 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
         prop::collection::vec(arb_list_def(), 0..5),
         prop::collection::vec(arb_list_item(), 0..5),
         prop::collection::vec(arb_external(), 0..5),
+        prop::collection::vec(arb_address_path(), 0..5),
         prop::collection::vec(".*", 0..8),
     )
         .prop_map(
-            |(pairs, variables, list_defs, list_items, externals, name_table)| {
+            |(pairs, variables, list_defs, list_items, externals, address_paths, name_table)| {
                 let (containers, line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
                 StoryData {
                     containers,
@@ -231,6 +236,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     list_items,
                     externals,
                     addresses: vec![],
+                    address_paths,
                     name_table,
                     list_literals: vec![],
                     source_checksum: 0,
@@ -259,8 +265,8 @@ proptest! {
         // Correct version.
         prop_assert_eq!(index.version, 1);
 
-        // Exactly 9 sections in canonical order.
-        prop_assert_eq!(index.sections.len(), 9);
+        // Exactly 10 sections in canonical order.
+        prop_assert_eq!(index.sections.len(), 10);
         prop_assert_eq!(index.sections[0].kind, SectionKind::NameTable);
         prop_assert_eq!(index.sections[1].kind, SectionKind::Variables);
         prop_assert_eq!(index.sections[2].kind, SectionKind::ListDefs);
@@ -270,6 +276,7 @@ proptest! {
         prop_assert_eq!(index.sections[6].kind, SectionKind::LineTables);
         prop_assert_eq!(index.sections[7].kind, SectionKind::Labels);
         prop_assert_eq!(index.sections[8].kind, SectionKind::ListLiterals);
+        prop_assert_eq!(index.sections[9].kind, SectionKind::AddressPaths);
 
         let header_size = u32::try_from(index.header_size()).unwrap();
 

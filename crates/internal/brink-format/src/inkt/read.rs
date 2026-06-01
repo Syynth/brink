@@ -5,8 +5,8 @@ use pest_derive::Parser;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
-    ScopeLineTable, SlotInfo, SourceLocation,
+    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
+    ListItemDef, ScopeLineTable, SlotInfo, SourceLocation,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -75,6 +75,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut list_items = Vec::new();
     let mut externals = Vec::new();
     let mut addresses = Vec::new();
+    let mut address_paths = Vec::new();
     let mut containers = Vec::new();
     let mut line_tables = Vec::new();
     let mut list_literals = Vec::new();
@@ -93,6 +94,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::list_items => list_items = parse_list_items(inner)?,
             Rule::externals => externals = parse_externals(inner)?,
             Rule::addresses => addresses = parse_addresses(inner)?,
+            Rule::address_paths => address_paths = parse_address_paths(inner)?,
             Rule::list_literals => list_literals = parse_list_literals(inner)?,
             Rule::container => {
                 let (container, lt) = parse_container(inner)?;
@@ -120,6 +122,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         list_items,
         externals,
         addresses,
+        address_paths,
         name_table,
         list_literals,
         source_checksum,
@@ -510,6 +513,32 @@ fn parse_address_entry(pair: P<'_>) -> Result<AddressDef, InktParseError> {
         container_id,
         byte_offset,
     })
+}
+
+fn parse_address_paths(pair: P<'_>) -> Result<Vec<AddressPath>, InktParseError> {
+    let mut paths = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::address_path_entry {
+            paths.push(parse_address_path_entry(entry)?);
+        }
+    }
+    Ok(paths)
+}
+
+fn parse_address_path_entry(pair: P<'_>) -> Result<AddressPath, InktParseError> {
+    let mut inner = pair.into_inner();
+    let path_int = inner.next().ok_or_else(|| InktParseError {
+        message: "expected path index in address_path".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let path = NameId(parse_u16(&path_int)?);
+    let target = parse_def_id(inner.next().ok_or_else(|| InktParseError {
+        message: "expected target def_id in address_path".into(),
+        line: 0,
+        col: 0,
+    })?)?;
+    Ok(AddressPath { path, target })
 }
 
 // ── List literals ────────────────────────────────────────────────────────────

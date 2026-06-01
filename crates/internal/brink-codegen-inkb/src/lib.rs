@@ -7,8 +7,8 @@ mod expr;
 use std::collections::HashMap;
 
 use brink_format::{
-    AddressDef, ContainerDef, DefinitionId, ExternalFnDef, GlobalVarDef, LineContent, LineEntry,
-    ListDef, ListItemDef, ListValue, NameId, Opcode, ScopeLineTable, StoryData, Value,
+    AddressDef, AddressPath, ContainerDef, DefinitionId, ExternalFnDef, GlobalVarDef, LineContent,
+    LineEntry, ListDef, ListItemDef, ListValue, NameId, Opcode, ScopeLineTable, StoryData, Value,
 };
 use brink_ir::lir;
 
@@ -35,6 +35,7 @@ pub fn emit(program: &lir::Program) -> StoryData {
     let mut state = EmitState {
         containers: Vec::new(),
         addresses: Vec::new(),
+        address_paths: Vec::new(),
         scope_line_tables: HashMap::new(),
         list_literals: Vec::new(),
         name_table: program.name_table.clone(),
@@ -48,8 +49,9 @@ pub fn emit(program: &lir::Program) -> StoryData {
     }
 
     // Walk the container tree depth-first.
-    // Root is always a scope — its scope_id is its own id.
-    walk_container(&program.root, "", program.root.id, &mut state);
+    // Root is always a scope — its scope_id is its own id; its author scope
+    // path is empty.
+    walk_container(&program.root, "", "", program.root.id, &mut state);
 
     // Build globals, lists, externals.
     let variables = build_globals(&program.globals);
@@ -73,6 +75,7 @@ pub fn emit(program: &lir::Program) -> StoryData {
         list_items,
         externals,
         addresses: state.addresses,
+        address_paths: state.address_paths,
         name_table: state.name_table,
         list_literals: state.list_literals,
         source_checksum: 0,
@@ -84,6 +87,8 @@ pub fn emit(program: &lir::Program) -> StoryData {
 struct EmitState {
     containers: Vec<ContainerDef>,
     addresses: Vec<AddressDef>,
+    /// Qualified-path → target table (scope containers + author labels).
+    address_paths: Vec<AddressPath>,
     /// Scope-shared line tables: `scope_id` → accumulated line entries.
     scope_line_tables: HashMap<DefinitionId, Vec<LineEntry>>,
     list_literals: Vec<ListValue>,
@@ -224,9 +229,21 @@ fn is_scope_kind(kind: lir::ContainerKind) -> bool {
 fn walk_container(
     container: &lir::Container,
     path: &str,
+    scope_author_path: &str,
     scope_id: DefinitionId,
     state: &mut EmitState,
 ) {
+    // The author-facing path of the nearest enclosing scope. For a scope
+    // container this is its own `path` (scope paths never get inklecate's
+    // implicit `0.` stitch prefix); non-scope containers inherit it. Used to
+    // qualify author labels (matching the analyzer's `qualify_label`),
+    // independent of the inklecate `path` used for `path_hash`.
+    let this_scope_path = if is_scope_kind(container.kind) {
+        path
+    } else {
+        scope_author_path
+    };
+
     // Emit this container's bytecode.
     let mut emitter = ContainerEmitter::new(state, scope_id);
 
@@ -258,6 +275,24 @@ fn walk_container(
         None
     };
 
+    // Qualified author path → this container, for find_address. Scope
+    // containers are addressable by their scope path; author-labeled
+    // gathers/choices by `{enclosing_scope}.{label}`. Interned now while the
+    // emitter is alive; the entry is pushed after the emitter is consumed.
+    let address_path_id: Option<NameId> = if is_scope_kind(container.kind) {
+        name
+    } else if container.labeled {
+        let label = container.name.as_deref().unwrap_or("_anon");
+        let qualified = if this_scope_path.is_empty() {
+            label.to_string()
+        } else {
+            format!("{this_scope_path}.{label}")
+        };
+        Some(emitter.intern_string(&qualified))
+    } else {
+        None
+    };
+
     let def = ContainerDef {
         id: container.id,
         scope_id,
@@ -275,6 +310,14 @@ fn walk_container(
         container_id: container.id,
         byte_offset: 0,
     });
+
+    // Record the qualified-path → container mapping for find_address.
+    if let Some(path_id) = address_path_id {
+        state.address_paths.push(AddressPath {
+            path: path_id,
+            target: container.id,
+        });
+    }
 
     // Recurse into children.
     for child in &container.children {
@@ -323,7 +366,20 @@ fn walk_container(
         } else {
             scope_id
         };
-        walk_container(child, &child_path, child_scope_id, state);
+        // A scope child's author path is its own (author-form) path; other
+        // children inherit the nearest enclosing scope's author path.
+        let child_scope_author_path: &str = if is_scope_kind(child.kind) {
+            &child_path
+        } else {
+            this_scope_path
+        };
+        walk_container(
+            child,
+            &child_path,
+            child_scope_author_path,
+            child_scope_id,
+            state,
+        );
     }
 }
 

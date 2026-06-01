@@ -1,5 +1,6 @@
 use crate::definition::{
-    AddressDef, ContainerDef, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef, ScopeLineTable,
+    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef,
+    ScopeLineTable,
 };
 use crate::value::ListValue;
 
@@ -16,6 +17,11 @@ pub struct StoryData {
     pub externals: Vec<ExternalFnDef>,
     /// Address definitions mapping IDs to byte offsets within containers.
     pub addresses: Vec<AddressDef>,
+    /// Qualified-path → address-target table. The single source of truth for
+    /// [`Program::find_address`](../../brink_runtime/struct.Program.html#method.find_address);
+    /// empty for legacy/converter output (the linker then falls back to
+    /// deriving scope paths from container names).
+    pub address_paths: Vec<AddressPath>,
     /// Interned name strings, indexed by [`NameId`](crate::id::NameId).
     pub name_table: Vec<String>,
     /// List literal values referenced by `PushList(idx)` opcodes.

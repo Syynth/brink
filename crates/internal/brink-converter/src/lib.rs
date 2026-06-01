@@ -67,6 +67,10 @@ pub fn convert(story: &InkJson) -> Result<StoryData, ConvertError> {
         list_items,
         externals,
         addresses,
+        // The converter does not yet emit the qualified-path table; the
+        // linker falls back to deriving scope paths from container names,
+        // preserving the converter's existing (knot/stitch) addressing.
+        address_paths: Vec::new(),
         name_table: name_table.into_vec(),
         list_literals,
         source_checksum: 0,

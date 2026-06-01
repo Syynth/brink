@@ -2,9 +2,9 @@
 #![allow(clippy::unwrap_used)]
 
 use brink_format::{
-    ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef, GlobalVarDef,
-    LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue, NameId, Opcode,
-    PluralCategory, ScopeLineTable, SelectKey, SlotInfo, SourceLocation, StoryData, Value,
+    AddressPath, ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef,
+    GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue, NameId,
+    Opcode, PluralCategory, ScopeLineTable, SelectKey, SlotInfo, SourceLocation, StoryData, Value,
 };
 use proptest::prelude::*;
 
@@ -273,6 +273,10 @@ fn arb_external() -> impl Strategy<Value = ExternalFnDef> {
         })
 }
 
+fn arb_address_path() -> impl Strategy<Value = AddressPath> {
+    (arb_name_id(), arb_def_id()).prop_map(|(path, target)| AddressPath { path, target })
+}
+
 fn arb_story_data() -> impl Strategy<Value = StoryData> {
     (
         prop::collection::vec(arb_container_with_lines(), 0..5),
@@ -280,11 +284,21 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
         prop::collection::vec(arb_list_def(), 0..5),
         prop::collection::vec(arb_list_item(), 0..5),
         prop::collection::vec(arb_external(), 0..5),
+        prop::collection::vec(arb_address_path(), 0..5),
         prop::collection::vec("[^\"\\\\\x00]*", 0..8),
         any::<u32>(),
     )
         .prop_map(
-            |(pairs, variables, list_defs, list_items, externals, name_table, source_checksum)| {
+            |(
+                pairs,
+                variables,
+                list_defs,
+                list_items,
+                externals,
+                address_paths,
+                name_table,
+                source_checksum,
+            )| {
                 let (containers, mut line_tables): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
                 // Sort line tables by scope_id to match reader's output ordering.
                 line_tables.sort_by_key(|lt| lt.scope_id.to_raw());
@@ -296,6 +310,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     list_items,
                     externals,
                     addresses: vec![],
+                    address_paths,
                     name_table,
                     list_literals: vec![],
                     source_checksum,

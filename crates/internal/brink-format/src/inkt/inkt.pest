@@ -3,7 +3,7 @@
 
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
-story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ list_literals? ~ container* ~ ")" ~ EOI }
+story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ container* ~ ")" ~ EOI }
 story_checksum = { "checksum=" ~ hex_literal }
 
 // ── Name table ──────────────────────────────────────────────────────────────
@@ -39,6 +39,11 @@ fallback = { "(" ~ "fallback" ~ def_id ~ ")" }
 
 addresses = { "(" ~ "addresses" ~ address_entry* ~ ")" }
 address_entry = { "(" ~ "address" ~ def_id ~ "->" ~ def_id ~ "+" ~ integer ~ ")" }
+
+// ── Address paths ─────────────────────────────────────────────────────────────
+
+address_paths = { "(" ~ "address_paths" ~ address_path_entry* ~ ")" }
+address_path_entry = { "(" ~ "path" ~ integer ~ "->" ~ def_id ~ ")" }
 
 // ── List literals ────────────────────────────────────────────────────────────
 

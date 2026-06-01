@@ -123,6 +123,21 @@ pub struct AddressDef {
     pub byte_offset: u32,
 }
 
+/// Maps a qualified author path (e.g. `knot`, `knot.stitch`, `knot.label`,
+/// `knot.stitch.label`) to the [`DefinitionId`] it addresses.
+///
+/// This is the source of truth for path → address lookup
+/// ([`Program::find_address`](../../brink_runtime/struct.Program.html#method.find_address)):
+/// the linker resolves each `target` through its address map. The compiler
+/// emits one entry per scope container (knot/stitch) and per author-labeled
+/// gather/choice. `path` indexes the name table; `target` is the addressed
+/// container/label id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AddressPath {
+    pub path: NameId,
+    pub target: DefinitionId,
+}
+
 /// Compute a deterministic hash of line content text.
 ///
 /// Used by both the compiler codegen and the converter to populate
