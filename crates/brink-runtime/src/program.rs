@@ -136,13 +136,14 @@ impl Program {
         self.root_idx
     }
 
-    /// Resolve a knot/stitch path to its `(container_idx, byte_offset)`.
+    /// Resolve a qualified ink path to its `(container_idx, byte_offset)`.
     ///
-    /// Currently supports top-level knot names. Fully-qualified paths
-    /// (`knot.stitch`, `knot.stitch.label`) require additional metadata
-    /// from the format that isn't yet wired through; those will return
-    /// `None` until that lands. Use this method to spawn flows at named
-    /// entry points:
+    /// Supports knot names (`intro`), qualified stitches (`knot.stitch`), and,
+    /// for programs compiled by `brink-compiler`, author labels
+    /// (`knot.label`, `knot.stitch.label`). Programs without the compiler's
+    /// `address_paths` table (legacy `.inkb` or converter output) resolve
+    /// knot/stitch scope paths only. Use this to spawn flows at named entry
+    /// points:
     ///
     /// ```ignore
     /// if let Some((idx, _)) = program.find_address("intro_scene") {

@@ -136,15 +136,35 @@ pub fn link(
         );
     }
 
-    // Build address-by-path lookup: for every named scope container,
-    // map its (currently unqualified) name → (container_idx, 0).
-    // Future: walk scope-parent chain to support `knot.stitch` paths.
-    let mut address_by_path: HashMap<String, (u32, usize)> =
-        HashMap::with_capacity(data.containers.len());
-    for (i, cdef) in data.containers.iter().enumerate() {
-        if let Some(name_id) = cdef.name {
-            let name = data.name_table[name_id.0 as usize].clone();
-            address_by_path.insert(name, (i as u32, 0));
+    // Build the path → address lookup used by `Program::find_address`.
+    //
+    // When the program carries an explicit `address_paths` table (compiler
+    // output), it is the source of truth: each entry's qualified path maps to
+    // its target, resolved through `address_map`. This is what enables
+    // qualified addressing of scopes (`knot`, `knot.stitch`) and author labels
+    // (`knot.label`, `knot.stitch.label`).
+    //
+    // When the table is empty (legacy `.inkb` or converter output, which does
+    // not emit it), fall back to deriving scope paths from container names —
+    // the previous behavior, which already qualifies knot/stitch scope names.
+    let mut address_by_path: HashMap<String, (u32, usize)> = HashMap::new();
+    if data.address_paths.is_empty() {
+        address_by_path.reserve(data.containers.len());
+        for (i, cdef) in data.containers.iter().enumerate() {
+            if let Some(name_id) = cdef.name {
+                let name = data.name_table[name_id.0 as usize].clone();
+                address_by_path.insert(name, (i as u32, 0));
+            }
+        }
+    } else {
+        address_by_path.reserve(data.address_paths.len());
+        for ap in &data.address_paths {
+            // Resolve the target through the address map; skip anything
+            // unresolvable (defensive — should not happen for valid output).
+            if let Some(&(idx, offset)) = address_map.get(&ap.target) {
+                let name = data.name_table[ap.path.0 as usize].clone();
+                address_by_path.insert(name, (idx, offset));
+            }
         }
     }
 
