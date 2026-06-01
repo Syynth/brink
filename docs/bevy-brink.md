@@ -144,9 +144,12 @@ in an interactive window.
 - ✅ `.ink` loader (gated on `dev` cargo feature) — async BFS over the
   INCLUDE graph via `LoadContext::read_asset_bytes`, sync compile from
   the resulting in-memory cache.
-- ✅ `Program::find_address(name)` in brink-runtime for knot-name →
-  container lookup. Currently supports top-level knot names; nested
-  `knot.stitch.label` paths return None pending format extension.
+- ✅ `Program::find_address(path)` in brink-runtime for qualified-path →
+  container lookup. Resolves knots, qualified stitches (`knot.stitch`),
+  and — for compiler-built stories — author labels (`knot.label`,
+  `knot.stitch.label`) via the `address_paths` table emitted by
+  `brink-codegen-inkb`. Converter output resolves knot/stitch scopes only
+  (label parity deferred).
 - ✅ `BrinkFlowRequest<M>` with `bon` builder + `fulfillment_system`.
 - ✅ `BrinkPlugin<M>` and `BrinkAssetsPlugin`. `BrinkPlugin<M>` is
   marker-parameterized; `BrinkAssetsPlugin` registers types and is
@@ -270,8 +273,11 @@ In rough priority order:
   `begin_function_eval`/`advance` to suspend across frames (the runtime
   already supports the `AwaitingExternal` pause; only the bevy driver loop
   assumes one-pass resolution). Deferred until a real need appears.
-- **Full `knot.stitch.label` addressing** — needs format-side work to
-  encode qualified paths; currently top-level knot only.
+- **Converter label-path addressing** — the compiler now emits an
+  `address_paths` table so `find_address` resolves `knot.label` /
+  `knot.stitch.label` for compiled stories; the converter still emits an
+  empty table (knot/stitch scopes only). Bring the converter to parity if
+  a `.ink.json`-sourced story ever needs label addressing.
 
 Done since this list was written: the external-function binding facility
 (was "most important"), and a pausable stepping primitive (`advance` /
