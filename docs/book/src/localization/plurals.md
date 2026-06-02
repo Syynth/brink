@@ -57,4 +57,15 @@ impl PluralResolver for EnglishPlurals {
 }
 ```
 
-A batteries-included implementation backed by ICU4X/CLDR baked data is planned (`brink-intl` crate) but not yet built.
+## Batteries-included resolvers
+
+The `brink-intl` crate ships two ready-made resolvers so you don't have to hand-write CLDR rules:
+
+- **`IcuPluralResolver`** — backed by ICU4X with CLDR baked data (~50 KB), correct for every CLDR locale.
+- **`DefaultPluralResolver`** — a minimal English-only resolver for stories that don't localize.
+
+```rust,ignore
+use brink_intl::IcuPluralResolver;
+let resolver = IcuPluralResolver::new();
+// pass `Some(&resolver)` to render_transcript / apply_locale rendering
+```
