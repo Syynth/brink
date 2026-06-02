@@ -62,14 +62,25 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
                 >,
             ),
         );
-        // Resolve world-access query bindings for flows that paused during
-        // normal playback (a non-exclusive step_one yielded AwaitingQuery).
-        // Exclusive (needs &mut World), gated so it only runs when a flow
-        // is actually awaiting one.
+        // Service flows that paused on a pending external during normal
+        // playback (a non-exclusive step_one yielded AwaitingQuery): resolve
+        // world-access queries inline, fire BrinkExternalAwaited for async
+        // (event) bindings, spawn tasks for task bindings. Exclusive (needs
+        // &mut World), gated so it only runs when a flow is actually awaiting.
         app.add_systems(
             Update,
-            crate::bindings::resolve_pending_queries::<M>
+            crate::bindings::resolve_pending_externals::<M>
                 .run_if(crate::bindings::any_flow_awaiting_external::<M>),
+        );
+        // Poll detached bind_brink_task futures; resolve the flow when one
+        // finishes. Gated so it only runs while a task is pending.
+        app.add_systems(
+            Update,
+            crate::async_bind::poll_brink_tasks::<M>.run_if(
+                bevy_ecs::schedule::common_conditions::any_with_component::<
+                    crate::async_bind::BrinkPendingTask<M>,
+                >,
+            ),
         );
         // Global, event-driven locale switching: the current-locale resource,
         // an observer that reconciles flows when it changes, and a catch-up

@@ -43,7 +43,9 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::future::Future;
 use std::marker::PhantomData;
+use std::pin::Pin;
 
 use bevy_app::App;
 use bevy_asset::Assets;
@@ -53,6 +55,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Commands, In, IntoSystem, Query, Res, SystemId, SystemState};
 use bevy_ecs::world::World;
 use bevy_log::warn;
+use bevy_tasks::{AsyncComputeTaskPool, TaskPool};
 use brink_format::Value;
 use brink_runtime::{
     ExternalFnHandler, ExternalResult, FastRng, FlowInstance, Line, Program, RuntimeError,
@@ -61,6 +64,7 @@ use brink_runtime::{
 use thiserror::Error;
 
 use crate::asset::{BrinkProgram, LineTablesAsset, ProgramAsset};
+use crate::async_bind::{BrinkAwaiting, BrinkExternalAwaited, BrinkPendingTask};
 use crate::flow::BrinkFlow;
 use crate::globals::BrinkContext;
 use crate::line_tables::BrinkLocale;
@@ -120,6 +124,21 @@ pub trait BrinkCommand: Sized {
 // Type aliases for the boxed registry entries.
 type PureFn = Box<dyn Fn(&[Value]) -> Value + Send + Sync>;
 type CommandFn = Box<dyn Fn(&[Value]) -> Result<QueuedCommand, BrinkArgError> + Send + Sync>;
+/// Factory for a [`bind_brink_task`](BrinkBindingsAppExt::bind_brink_task)
+/// future: given the ink args, produce a boxed `Send + 'static` future that
+/// computes the external's return value off the main thread.
+type TaskFn = Box<dyn Fn(Vec<Value>) -> Pin<Box<dyn Future<Output = Value> + Send>> + Send + Sync>;
+
+/// How an async (defer-across-frames) external resolves once a flow parks on
+/// it. Stored in [`BrinkBindings::async_bindings`].
+enum AsyncKind {
+    /// `bind_brink_async`: fire [`BrinkExternalAwaited`] and wait for the
+    /// engine to call `resolve_brink_external`.
+    Event,
+    /// `bind_brink_task`: spawn the future on the async task pool and resolve
+    /// with its output when it completes.
+    Task(TaskFn),
+}
 /// A deferred World mutation that triggers a parsed command event. Boxed
 /// so heterogeneous command types share one buffer; run during flush.
 type TriggerFn = Box<dyn FnOnce(&mut World) + Send>;
@@ -145,6 +164,10 @@ pub struct BrinkBindings<M: Send + Sync + 'static = ()> {
     pure: HashMap<String, PureFn>,
     commands: HashMap<String, CommandFn>,
     queries: HashMap<String, QuerySystemId>,
+    /// Async (defer-across-frames) bindings: `bind_brink_async` (event) and
+    /// `bind_brink_task` (detached task). A flow pauses on these and resolves
+    /// out-of-band.
+    async_bindings: HashMap<String, AsyncKind>,
     _marker: PhantomData<fn() -> M>,
 }
 
@@ -154,6 +177,7 @@ impl<M: Send + Sync + 'static> Default for BrinkBindings<M> {
             pure: HashMap::new(),
             commands: HashMap::new(),
             queries: HashMap::new(),
+            async_bindings: HashMap::new(),
             _marker: PhantomData,
         }
     }
@@ -236,9 +260,12 @@ impl<M: Send + Sync + 'static> ExternalFnHandler for BrinkHandler<'_, M> {
                 }
             };
         }
-        if self.bindings.queries.contains_key(name) {
-            // World-access binding — pause so the driver/resolver can run
-            // it against the World, then resume.
+        if self.bindings.queries.contains_key(name)
+            || self.bindings.async_bindings.contains_key(name)
+        {
+            // World-access query or async (defer-across-frames) binding —
+            // pause so the driver/resolver can run the query against the World
+            // (sync) or hand off to the engine/task pool (async), then resume.
             return ExternalResult::Pending;
         }
         ExternalResult::Fallback
@@ -270,9 +297,12 @@ impl<M: Send + Sync + 'static> ExternalFnHandler for EvalHandler<'_, M> {
         if let Some(f) = self.bindings.pure.get(name) {
             return ExternalResult::Resolved(f(args));
         }
-        if self.bindings.queries.contains_key(name) {
-            // World-access binding — the driver resolves it between
-            // suspensions, where it can borrow the World.
+        if self.bindings.queries.contains_key(name)
+            || self.bindings.async_bindings.contains_key(name)
+        {
+            // World-access query (resolved between suspensions) or async
+            // binding (unsupported in the one-pass engine→ink driver — the
+            // driver maps it to AsyncExternalUnsupported). Pause either way.
             return ExternalResult::Pending;
         }
         ExternalResult::Fallback
@@ -331,6 +361,44 @@ pub trait BrinkBindingsAppExt {
     where
         M: Send + Sync + 'static,
         S: IntoSystem<In<BrinkQueryInput>, Value, SM> + 'static;
+
+    /// Register an **async (event) primitive** binding: when ink calls the
+    /// external, the flow *parks* and
+    /// [`BrinkExternalAwaited`](crate::BrinkExternalAwaited) fires (once) at
+    /// the flow entity. The engine does whatever multi-frame work the external
+    /// represents (UI, input, world state) and resolves with
+    /// [`resolve_brink_external`](crate::BrinkResolveExternalExt::resolve_brink_external).
+    /// Use this when the value can't be produced in one pass and needs World
+    /// access over several frames.
+    ///
+    /// Only usable on the `step_one` playback path — the one-pass exclusive
+    /// drivers ([`advance_flow`]/[`call_ink_function`]) return
+    /// [`BrinkCallError::AsyncExternalUnsupported`] on an async external.
+    fn bind_brink_async<M>(&mut self, name: impl Into<String>) -> &mut Self
+    where
+        M: Send + Sync + 'static;
+
+    /// Register an **async task** binding: when ink calls the external,
+    /// bevy-brink spawns `f(args)` on [`bevy_tasks::AsyncComputeTaskPool`] and
+    /// resolves the flow's external with the future's output once it completes
+    /// (polled each frame by [`poll_brink_tasks`](crate::poll_brink_tasks)).
+    ///
+    /// The future is `Send + 'static` and runs off the main thread, so it
+    /// **cannot access the World** — it computes from the ink arguments only
+    /// (heavy compute, IO, network). For World-dependent async, use
+    /// [`bind_brink_async`](Self::bind_brink_async).
+    ///
+    /// ```ignore
+    /// app.bind_brink_task::<(), _, _>("expensive_roll", |args| async move {
+    ///     let n = args.first().and_then(Value::as_int).unwrap_or(1);
+    ///     Value::Int(compute_roll(n).await)
+    /// });
+    /// ```
+    fn bind_brink_task<M, F, Fut>(&mut self, name: impl Into<String>, f: F) -> &mut Self
+    where
+        M: Send + Sync + 'static,
+        F: Fn(Vec<Value>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Value> + Send + 'static;
 }
 
 impl BrinkBindingsAppExt for App {
@@ -393,6 +461,37 @@ impl BrinkBindingsAppExt for App {
         }
         self
     }
+
+    fn bind_brink_async<M>(&mut self, name: impl Into<String>) -> &mut Self
+    where
+        M: Send + Sync + 'static,
+    {
+        let name = name.into();
+        {
+            let mut reg = self
+                .world_mut()
+                .get_resource_or_insert_with(BrinkBindings::<M>::default);
+            reg.async_bindings.insert(name, AsyncKind::Event);
+        }
+        self
+    }
+
+    fn bind_brink_task<M, F, Fut>(&mut self, name: impl Into<String>, f: F) -> &mut Self
+    where
+        M: Send + Sync + 'static,
+        F: Fn(Vec<Value>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Value> + Send + 'static,
+    {
+        let name = name.into();
+        let factory: TaskFn = Box::new(move |args| Box::pin(f(args)));
+        {
+            let mut reg = self
+                .world_mut()
+                .get_resource_or_insert_with(BrinkBindings::<M>::default);
+            reg.async_bindings.insert(name, AsyncKind::Task(factory));
+        }
+        self
+    }
 }
 
 /// Errors from an engine→ink call ([`call_ink_function`]).
@@ -415,6 +514,12 @@ pub enum BrinkCallError {
     /// query binding (and no in-story fallback).
     #[error("no query binding registered for external '{0}'")]
     UnknownQuery(String),
+    /// The function called an **async** external (`bind_brink_async` /
+    /// `bind_brink_task`), which can't resolve in a single `&mut World` pass.
+    /// Drive such stories via the `step_one` playback path + the plugin's
+    /// `resolve_pending_externals` resolver instead.
+    #[error("external '{0}' is async; drive the flow via step_one, not the exclusive driver")]
+    AsyncExternalUnsupported(String),
     /// A query binding's system failed to run.
     #[error("query binding system failed: {0}")]
     QueryFailed(String),
@@ -451,6 +556,9 @@ fn classify_eval<M: Send + Sync + 'static>(
                 .pending_external_name(program)
                 .unwrap_or_default()
                 .to_owned();
+            if bindings.async_bindings.contains_key(&name) {
+                return Err(BrinkCallError::AsyncExternalUnsupported(name));
+            }
             let system = bindings
                 .query(&name)
                 .ok_or(BrinkCallError::UnknownQuery(name))?;
@@ -678,6 +786,9 @@ pub fn advance_flow<M: Send + Sync + 'static>(
                         .pending_external_name(program)
                         .unwrap_or_default()
                         .to_owned();
+                    if bindings.async_bindings.contains_key(&name) {
+                        return Err(BrinkCallError::AsyncExternalUnsupported(name));
+                    }
                     let system = bindings
                         .query(&name)
                         .ok_or(BrinkCallError::UnknownQuery(name))?;
@@ -709,54 +820,122 @@ pub fn advance_flow<M: Send + Sync + 'static>(
     }
 }
 
-/// If the flow at `entity` is paused on a world-access query binding, run
-/// the query's system and resolve the external. Returns `Ok(true)` if a
-/// query was resolved, `Ok(false)` if the flow had no pending external.
-fn resolve_one_query<M: Send + Sync + 'static>(
-    world: &mut World,
-    entity: Entity,
-) -> Result<bool, BrinkCallError> {
+/// What [`dispatch_one_external`] decided to do for a parked flow, computed
+/// inside the immutable borrow scope and acted on afterward (each variant
+/// needs `&mut World`).
+enum Dispatch {
+    /// Nothing to do (no pending external, program not loaded yet, already
+    /// dispatched, or genuinely unbound — the latter warns inside).
+    Nothing,
+    /// World-access query: run the system, resolve with its return value.
+    Query {
+        system: QuerySystemId,
+        qargs: Vec<Value>,
+    },
+    /// `bind_brink_async` (event): fire [`BrinkExternalAwaited`] + insert the
+    /// [`BrinkAwaiting`] marker.
+    FireEvent { name: String, qargs: Vec<Value> },
+    /// `bind_brink_task`: spawn this future on the async pool, park a
+    /// [`BrinkPendingTask`].
+    SpawnTask {
+        fut: Pin<Box<dyn Future<Output = Value> + Send>>,
+    },
+}
+
+/// Resolve / hand off the (single) external a parked flow is waiting on,
+/// dispatched by binding kind:
+/// - world-access query → run its system inline and resolve;
+/// - `bind_brink_async` → fire [`BrinkExternalAwaited`] once (guarded by the
+///   [`BrinkAwaiting`] marker) and leave the flow parked for the engine;
+/// - `bind_brink_task` → spawn the future once (guarded by [`BrinkPendingTask`])
+///   and leave the flow parked for [`poll_brink_tasks`](crate::poll_brink_tasks).
+///
+/// A no-op when the flow has no pending external or its program isn't loaded.
+fn dispatch_one_external<M: Send + Sync + 'static>(world: &mut World, entity: Entity) {
     #[expect(
         clippy::type_complexity,
-        reason = "SystemState param tuple for the flow component + assets + bindings"
+        reason = "SystemState param tuple for the flow component (+ dispatch markers) + assets + bindings"
     )]
-    let (system, qargs) = {
+    let dispatch = {
         let mut state: SystemState<(
-            Query<(&BrinkProgram<M>, &BrinkFlow<M>)>,
+            Query<(
+                &BrinkProgram<M>,
+                &BrinkFlow<M>,
+                Option<&BrinkAwaiting<M>>,
+                Option<&BrinkPendingTask<M>>,
+            )>,
             Res<Assets<ProgramAsset>>,
             Res<BrinkBindings<M>>,
         )> = SystemState::new(world);
         let (flows, programs, bindings) = state.get(world);
-        let Ok((prog_c, flow)) = flows.get(entity) else {
-            return Ok(false);
+        let Ok((prog_c, flow, awaiting, pending_task)) = flows.get(entity) else {
+            return;
         };
         if !flow.inner.has_pending_external() {
-            return Ok(false);
+            return;
         }
-        let program = &programs
-            .get(&prog_c.handle)
-            .ok_or(BrinkCallError::ProgramNotLoaded)?
-            .program;
+        let Some(program) = programs.get(&prog_c.handle) else {
+            // Program not loaded yet — leave parked; we'll retry next frame.
+            return;
+        };
+        let program = &program.program;
         let name = flow
             .inner
             .pending_external_name(program)
             .unwrap_or_default()
             .to_owned();
-        let system = bindings
-            .query(&name)
-            .ok_or(BrinkCallError::UnknownQuery(name))?;
         let qargs = flow.inner.pending_external_args().to_vec();
-        (system, qargs)
+
+        if let Some(system) = bindings.query(&name) {
+            Dispatch::Query { system, qargs }
+        } else if let Some(kind) = bindings.async_bindings.get(&name) {
+            match kind {
+                AsyncKind::Event if awaiting.is_some() => Dispatch::Nothing, // already fired
+                AsyncKind::Event => Dispatch::FireEvent { name, qargs },
+                AsyncKind::Task(_) if pending_task.is_some() => Dispatch::Nothing, // already spawned
+                AsyncKind::Task(factory) => Dispatch::SpawnTask {
+                    fut: factory(qargs),
+                },
+            }
+        } else {
+            // Pending but unbound. The handler only pauses on registered names,
+            // so this indicates a registration race; warn and leave parked.
+            warn!("brink: flow {entity:?} parked on unbound external '{name}'");
+            Dispatch::Nothing
+        }
     };
 
-    let value = world
-        .run_system_with(system, (entity, qargs))
-        .map_err(|e| BrinkCallError::QueryFailed(format!("{e:?}")))?;
-    let mut flows = world.query::<&mut BrinkFlow<M>>();
-    if let Ok(mut flow) = flows.get_mut(world, entity) {
-        flow.inner.resolve_external(value);
+    match dispatch {
+        Dispatch::Nothing => {}
+        Dispatch::Query { system, qargs } => match world.run_system_with(system, (entity, qargs)) {
+            Ok(value) => {
+                let mut flows = world.query::<&mut BrinkFlow<M>>();
+                if let Ok(mut flow) = flows.get_mut(world, entity) {
+                    flow.inner.resolve_external(value);
+                }
+            }
+            Err(err) => warn!("brink: query binding failed on {entity:?}: {err:?}"),
+        },
+        Dispatch::FireEvent { name, qargs } => {
+            // Insert the marker BEFORE firing so a synchronous resolve observer
+            // can find + remove it (world.trigger runs observers and flushes
+            // their commands inline).
+            world
+                .entity_mut(entity)
+                .insert(BrinkAwaiting::<M>::new(name.clone()));
+            world
+                .entity_mut(entity)
+                .trigger(|e| BrinkExternalAwaited::<M>::new(e, name, qargs));
+        }
+        Dispatch::SpawnTask { fut } => {
+            // get_or_init so we don't panic in apps/tests without TaskPoolPlugin;
+            // a no-op when the pool is already set up (e.g. by DefaultPlugins).
+            let task = AsyncComputeTaskPool::get_or_init(TaskPool::default).spawn(fut);
+            world
+                .entity_mut(entity)
+                .insert(BrinkPendingTask::<M>::new(task));
+        }
     }
-    Ok(true)
 }
 
 /// Run condition: `true` if any `BrinkFlow<M>` is paused on a pending
@@ -766,14 +945,16 @@ pub fn any_flow_awaiting_external<M: Send + Sync + 'static>(flows: Query<&BrinkF
     flows.iter().any(|f| f.inner.has_pending_external())
 }
 
-/// Exclusive plugin system: resolve world-access query bindings for flows
-/// that paused during normal playback (after a non-exclusive
+/// Exclusive plugin system: service flows that paused on a pending external
+/// during normal playback (after a non-exclusive
 /// [`step_one`](crate::BrinkFlow::step_one) yielded
-/// [`Advance::AwaitingQuery`](crate::Advance::AwaitingQuery)). Runs each
-/// pending query's system and resolves the external; the flow resumes on
-/// the next `step_one`. Registered by the plugin, gated on
-/// [`any_flow_awaiting_external`].
-pub fn resolve_pending_queries<M: Send + Sync + 'static>(world: &mut World) {
+/// [`Advance::AwaitingQuery`](crate::Advance::AwaitingQuery)).
+///
+/// For each parked flow, [`dispatch_one_external`] resolves a world-access
+/// query inline, fires [`BrinkExternalAwaited`] for a `bind_brink_async`
+/// binding, or spawns the task for a `bind_brink_task` binding. Registered by
+/// the plugin, gated on [`any_flow_awaiting_external`].
+pub fn resolve_pending_externals<M: Send + Sync + 'static>(world: &mut World) {
     let paused: Vec<Entity> = {
         let mut flows = world.query::<(Entity, &BrinkFlow<M>)>();
         flows
@@ -783,9 +964,7 @@ pub fn resolve_pending_queries<M: Send + Sync + 'static>(world: &mut World) {
             .collect()
     };
     for entity in paused {
-        if let Err(err) = resolve_one_query::<M>(world, entity) {
-            bevy_log::warn!("brink: failed to resolve pending query on {entity:?}: {err}");
-        }
+        dispatch_one_external::<M>(world, entity);
     }
 }
 

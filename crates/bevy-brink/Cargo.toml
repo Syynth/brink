@@ -22,6 +22,11 @@ bevy_ecs = { version = "0.18.1", default-features = false }
 bevy_input = { version = "0.18.1", default-features = false, features = ["std", "keyboard"] }
 bevy_log = { version = "0.18.1", default-features = false }
 bevy_reflect = { version = "0.18.1", default-features = false }
+# Async-task bindings (bind_brink_task) spawn detached futures on
+# AsyncComputeTaskPool and poll them via poll_once/block_on. `multi_threaded`
+# matches what bevy_app's DefaultPlugins set up so spawned work runs off the
+# main thread; `futures-lite` (default) supplies poll_once + block_on.
+bevy_tasks = { version = "0.18.1", features = ["multi_threaded"] }
 
 bon.workspace = true
 serde.workspace = true
