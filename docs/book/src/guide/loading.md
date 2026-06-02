@@ -6,34 +6,37 @@ Before running a story, you need to produce `StoryData` and link it into a `Prog
 
 There are two paths:
 
-**From `.ink` source** (native compiler):
+**From `.ink` source** (native compiler): `compile_path` returns a
+`CompileOutput`; its `.data` field is the `StoryData`.
 
 ```rust,ignore
-let story_data = brink_compiler::compile_path("story.ink")?;
+use std::path::Path;
+let output = brink_compiler::compile_path(Path::new("story.ink"))?;
+let story_data = output.data;
 ```
 
 **From `.inkb` bytes** (pre-compiled binary):
 
 ```rust,ignore
 let bytes = std::fs::read("story.inkb")?;
-let story_data = brink_format::inkb::decode(&bytes)?;
+let story_data = brink_format::read_inkb(&bytes)?;
 ```
 
 ## Linking
 
 ```rust,ignore
-let program = brink_runtime::link(&story_data)?;
+let (program, line_tables) = brink_runtime::link(&story_data)?;
 ```
 
-The linker resolves all `DefinitionId` references to compact runtime indices, validates the container graph, and initializes global variable defaults. The result is an immutable `Program`.
+The linker resolves all `DefinitionId` references to compact runtime indices, validates the container graph, and initializes global variable defaults. It returns the immutable `Program` together with the story's line tables (`Vec<Vec<LineEntry>>`) — the localizable rendering data, kept separate so it can be swapped for a locale overlay or hot-reloaded without rebuilding the program.
 
 ## Creating stories
 
 ```rust,ignore
-let mut story = Story::new(&program);
+let mut story = Story::new(&program, line_tables);
 ```
 
-`Story` borrows from `Program`. You can create multiple stories from the same program for parallel execution or replaying with different choices.
+`Story` borrows from `Program` and owns the line tables it renders with. You can create multiple stories from the same program for parallel execution or replaying with different choices.
 
 ## Error cases
 

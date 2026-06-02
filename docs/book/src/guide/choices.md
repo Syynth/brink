@@ -1,9 +1,9 @@
 # Choices
 
-When a story yields `StepResult::Choices`, the player must select one before execution can continue.
+When a story yields `Line::Choices`, the player must select one before execution can continue.
 
 ```rust,ignore
-StepResult::Choices { text, choices, .. } => {
+Line::Choices { text, choices, .. } => {
     for choice in &choices {
         println!("{}: {}", choice.index + 1, choice.text);
     }
