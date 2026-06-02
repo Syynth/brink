@@ -18,7 +18,7 @@ use bevy_asset::{Assets, Handle};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::Without;
-use bevy_ecs::system::{Commands, Query, Res};
+use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_log::{error, warn};
 use brink_runtime::{Context, FlowInstance};
 
@@ -119,11 +119,19 @@ pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
     clippy::needless_pass_by_value,
     reason = "bevy systems take Res/Query by value"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bevy system: flow + globals + locale assets/resources for spawn-time locale reconcile"
+)]
 pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
     requests: Query<(Entity, &BrinkFlowRequest<M>), Without<BrinkFlow<M>>>,
     stories: Res<Assets<BrinkStoryAsset>>,
     programs: Res<Assets<ProgramAsset>>,
     globals: Option<Res<BrinkGlobals<M>>>,
+    current_locale: Option<Res<crate::locale::BrinkCurrentLocale<M>>>,
+    locales: Res<Assets<crate::locale::LocaleAsset>>,
+    mut line_tables: ResMut<Assets<crate::asset::LineTablesAsset>>,
+    mut cache: ResMut<crate::locale::LocalizedTablesCache<M>>,
     mut commands: Commands,
 ) {
     // Snapshot of the current "save data" Context. Used to seed flows
@@ -178,13 +186,28 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
             ContextSeed::Custom(ctx) => ctx.clone(),
         };
 
+        // Resolve the flow's starting locale: base unless a global locale is
+        // active and its overlay is loaded (otherwise base now, caught up by
+        // `catch_up_loaded_locales` when the `.inkl` loads). `BrinkBaseLocale`
+        // retains the canonical base so future switches always overlay it.
+        let base_handle = bundle.line_tables.clone();
+        let active_handle = crate::locale::initial_locale_handle::<M>(
+            &base_handle,
+            program_asset,
+            current_locale.as_deref(),
+            &locales,
+            &mut cache,
+            &mut line_tables,
+        );
+
         // Materialize real components, drop the request.
         let mut entity_cmds = commands.entity(entity);
         entity_cmds.remove::<BrinkFlowRequest<M>>();
         entity_cmds.insert((
             BrinkFlow::<M>::new(flow),
             BrinkContext::<M>::new(starting_context.clone()),
-            BrinkStory::<M>::new(bundle.program.clone(), bundle.line_tables.clone()),
+            BrinkStory::<M>::new(bundle.program.clone(), active_handle),
+            crate::locale::BrinkBaseLocale::<M>::new(base_handle),
         ));
 
         // In dev builds, attach a replay log so hot-reload can rebuild

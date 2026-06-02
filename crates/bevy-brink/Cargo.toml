@@ -48,6 +48,9 @@ brink-compiler = { path = "../brink-compiler" }
 # Enable brink-runtime's `testing` feature so tests can introspect
 # globals by name (Program::global_count, Program::global_name).
 brink-runtime = { path = "../brink-runtime", features = ["testing"] }
+# The locale example + tests build `.inkl` overlays via the intl pipeline
+# (export_lines + compile_locale).
+brink-intl = { path = "../internal/brink-intl" }
 
 [[example]]
 name = "play_story"
@@ -57,6 +60,10 @@ required-features = ["dev"]
 # (bind_brink_query / call_ink_function / commands.brink_call / advance_flow).
 [[example]]
 name = "engine_bindings"
+
+# Headless demo of global, event-driven locale switching (.inkl overlays).
+[[example]]
+name = "locale_switch"
 
 [lints]
 workspace = true

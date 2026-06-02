@@ -71,6 +71,13 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
             crate::bindings::resolve_pending_queries::<M>
                 .run_if(crate::bindings::any_flow_awaiting_external::<M>),
         );
+        // Global, event-driven locale switching: the current-locale resource,
+        // an observer that reconciles flows when it changes, and a catch-up
+        // system for `.inkl`s that finish loading after a switch.
+        app.init_resource::<crate::locale::BrinkCurrentLocale<M>>();
+        app.init_resource::<crate::locale::LocalizedTablesCache<M>>();
+        app.add_observer(crate::locale::on_locale_changed::<M>);
+        app.add_systems(Update, crate::locale::catch_up_loaded_locales::<M>);
         #[cfg(feature = "dev")]
         app.add_systems(Update, crate::replay::replay_on_reload::<M>);
         #[cfg(debug_assertions)]
@@ -91,7 +98,9 @@ impl Plugin for BrinkAssetsPlugin {
         app.init_asset::<BrinkStoryAsset>();
         app.init_asset::<ProgramAsset>();
         app.init_asset::<LineTablesAsset>();
+        app.init_asset::<crate::locale::LocaleAsset>();
         app.init_asset_loader::<InkbLoader>();
+        app.init_asset_loader::<crate::locale::InklLoader>();
         #[cfg(feature = "dev")]
         app.init_asset_loader::<crate::source_loader::InkLoader>();
     }

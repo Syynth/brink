@@ -448,6 +448,7 @@ dependencies = [
  "bon",
  "brink-compiler",
  "brink-format",
+ "brink-intl",
  "brink-runtime",
  "brink-syntax",
  "serde",

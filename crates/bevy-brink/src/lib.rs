@@ -37,6 +37,7 @@ mod flow;
 mod globals;
 mod input;
 mod line_tables;
+mod locale;
 mod plugin;
 #[cfg(feature = "dev")]
 mod replay;
@@ -64,6 +65,9 @@ pub use bindings::{
 /// authors) can name the ink runtime value type without depending on
 /// `brink-format` directly.
 pub use brink_format::Value;
+/// Re-exported so consumers can choose `Overlay`/`Strict` application without
+/// a direct `brink-runtime` dependency.
+pub use brink_runtime::LocaleMode;
 pub use call::{
     BrinkCallCommandsExt, BrinkCallFailed, BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs,
     resolve_brink_calls,
@@ -75,6 +79,11 @@ pub use flow::{Advance, BrinkFlow};
 pub use globals::{BrinkContext, BrinkGlobals};
 pub use input::digit_key_to_choice_index;
 pub use line_tables::BrinkLocale;
+pub use locale::{
+    BrinkBaseLocale, BrinkCurrentLocale, BrinkLocaleChanged, BrinkLocaleOverride, InklLoader,
+    InklLoaderError, LocaleAsset, LocalizedTablesCache, SetBrinkLocale, apply_locale_overlay,
+    catch_up_loaded_locales, on_locale_changed,
+};
 pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
 #[cfg(feature = "dev")]
 pub use replay::{BrinkReplayLog, replay_on_reload};
