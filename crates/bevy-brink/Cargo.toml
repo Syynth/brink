@@ -74,5 +74,16 @@ name = "locale_switch"
 [[example]]
 name = "transcript_save"
 
+# Headless demo of bind_brink_task: an async external resolved by a detached
+# task on AsyncComputeTaskPool, across frames.
+[[example]]
+name = "async_task"
+
+# Headless demo of bind_brink_async: the event+resolve primitive for a
+# multi-frame World interaction (targeting UI), via BrinkExternalAwaited +
+# resolve_brink_external.
+[[example]]
+name = "async_external"
+
 [lints]
 workspace = true
