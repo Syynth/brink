@@ -1,4 +1,4 @@
-import init, { compile, StoryRunner, semantic_tokens, token_type_names } from './pkg/brink_web.js';
+import init, { EditorSession, token_type_names } from './pkg/brink_web.js';
 import { createEditor } from './editor.js';
 import { createPlayer } from './player.js';
 
@@ -32,26 +32,22 @@ async function main() {
 
   document.getElementById('loading').remove();
 
+  // Stateful IDE session: the single source of truth for parse/analysis,
+  // shared by highlighting and compilation.
+  const session = new EditorSession();
+
   const player = createPlayer(document.getElementById('player'));
 
   const editor = createEditor(document.getElementById('editor'), {
     initialDoc: DEFAULT_INK,
-    onCompile(source) {
-      const json = compile(source);
-      const result = JSON.parse(json);
-
-      if (result.ok && result.story_bytes) {
-        const bytes = new Uint8Array(result.story_bytes);
-        player.loadStory(bytes);
-      }
-
-      return result;
-    },
-    semanticTokens(source) {
-      return JSON.parse(semantic_tokens(source));
-    },
+    session,
     tokenTypeNames() {
       return JSON.parse(token_type_names());
+    },
+    onCompiled(result) {
+      if (result.ok && result.story_bytes) {
+        player.loadStory(new Uint8Array(result.story_bytes));
+      }
     },
   });
 
