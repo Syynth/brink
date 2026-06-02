@@ -259,12 +259,24 @@ reload tick, an asset-event timing issue (replay running before the new
 `ProgramAsset` is committed), or genuinely empty post-replay state for
 some story shapes. Needs fresh investigation.
 
+## Implemented (intl)
+
+- ✅ **`.inkl` overlay loader + global, event-driven locale switching**
+  (`src/locale.rs`). `InklLoader` loads `.inkl` → `LocaleAsset`;
+  `apply_locale_overlay` is the primitive (base + overlay → localized
+  `LineTablesAsset`). `BrinkCurrentLocale<M>` holds the active locale;
+  `Commands::set_brink_locale::<M>(Some(handle))` sets it and fires
+  `BrinkLocaleChanged<M>`; an observer reconciles every flow's `BrinkLocale`
+  (cached/shared per `(base, locale)` via `LocalizedTablesCache`), the
+  transcript re-renders automatically. New flows read the locale at spawn;
+  `catch_up_loaded_locales` handles `.inkl`s that load after a switch.
+  `BrinkLocaleOverride<M>` opts a flow out (polyglot NPCs). Demoed in
+  `examples/locale_switch.rs`.
+
 ## Deferred (not started)
 
 In rough priority order:
 
-- **`.inkl` overlay loader** + a system that applies overlays onto the
-  base via `apply_locale` and updates the active `LineTablesAsset`.
 - **`.brkt` transcript asset** + capture/render helpers (the runtime
   already has `read_transcript`/`render_transcript`).
 - **Async-task bindings mid-eval** — today a world-access binding resolves
