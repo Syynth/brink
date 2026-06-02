@@ -17,6 +17,8 @@
     reason = "bevy systems take Res/Query by value"
 )]
 
+use std::time::Duration;
+
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use bevy_brink::{
@@ -50,7 +52,10 @@ fn main() {
     // ink arguments (no World access).
     app.bind_brink_task::<(), _, _>("expensive_roll", |args: Vec<Value>| async move {
         let sides = args.first().and_then(Value::as_int).unwrap_or(6);
-        // A real binding would do real work here (and may `.await`).
+        // Simulate real off-thread work that takes time: the flow stays parked
+        // across many app frames until this future completes. (A real binding
+        // might `.await` a network round-trip or run a heavy computation.)
+        std::thread::sleep(Duration::from_millis(40));
         Value::Int(sides / 2 + 4)
     });
     app.add_systems(Update, drive_flows);
@@ -91,12 +96,18 @@ fn drive_flows(
     bindings: Res<BrinkBindings<()>>,
     mut commands: Commands,
     mut finished: ResMut<Finished>,
+    // Announce the parked state once (the loop runs every frame while parked).
+    mut announced: Local<bool>,
 ) {
     for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
         if flow.inner.has_pending_external() {
-            info!("[await]    flow parked — expensive_roll running off-thread…");
+            if !*announced {
+                info!("[await]    flow parked — expensive_roll running off-thread…");
+                *announced = true;
+            }
             continue;
         }
+        *announced = false;
         if finished.0 {
             continue;
         }
