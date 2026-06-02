@@ -105,7 +105,7 @@ function PlayerPane() {
   const text = useStudioStore((s) => s.playerText);
   const choices = useStudioStore((s) => s.playerChoices);
   const ended = useStudioStore((s) => s.playerEnded);
-  const hasPending = useStudioStore((s) => s._pendingLines.length > 0);
+  const hasPending = useStudioStore((s) => s.playerCanContinue);
   const chooseOption = useStudioStore((s) => s.chooseOption);
   const resetStory = useStudioStore((s) => s.resetStory);
   const compile = useStudioStore((s) => s.compile);

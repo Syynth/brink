@@ -50,6 +50,12 @@ export interface PlayerSlice {
   playerText: string[];
   playerChoices: Choice[];
   playerEnded: boolean;
+  /**
+   * Whether the last revealed line was a `text` line — i.e. the runtime
+   * has more output to reveal before reaching choices or the end. Drives
+   * the "Continue" button in the player.
+   */
+  playerCanContinue: boolean;
   _runner: StoryRunnerHandle | null;
 
   /** Full choice index log for save/restore. */
@@ -74,6 +80,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
   playerText: [],
   playerChoices: [],
   playerEnded: false,
+  playerCanContinue: false,
   _runner: null,
   _choiceLog: [],
   playerFullscreen: false,
@@ -100,6 +107,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerText: [],
         playerChoices: [],
         playerEnded: false,
+        playerCanContinue: false,
         _choiceLog: [],
       });
 
@@ -117,6 +125,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerText: [`Load error: ${msg}`],
         playerChoices: [],
         playerEnded: true,
+        playerCanContinue: false,
         _choiceLog: [],
       });
     }
@@ -136,6 +145,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerText: [...state.playerText, `Choose error: ${msg}`],
         playerChoices: [],
         playerEnded: true,
+        playerCanContinue: false,
       }));
       return;
     }
@@ -166,6 +176,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
       playerText: [],
       playerChoices: [],
       playerEnded: false,
+      playerCanContinue: false,
       _choiceLog: [],
     });
     get().revealNext();
@@ -182,6 +193,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerText: text ? [...state.playerText, text] : state.playerText,
         playerChoices: line.type === "choices" ? (line.choices ?? []) : [],
         playerEnded: line.type === "end",
+        playerCanContinue: line.type === "text",
       }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -189,6 +201,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerText: [...state.playerText, `Runtime error: ${msg}`],
         playerChoices: [],
         playerEnded: true,
+        playerCanContinue: false,
       }));
     }
   },
@@ -261,6 +274,7 @@ function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void {
           playerText: allText,
           playerChoices: [],
           playerEnded: true,
+          playerCanContinue: false,
           _choiceLog: choiceLog.slice(0, choiceIdx),
         });
         return;
