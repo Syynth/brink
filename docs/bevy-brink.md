@@ -95,10 +95,34 @@ in the `BrinkBindings<M>` resource):
 | `bind_brink_fn(name, Fn(&[Value]) -> impl Into<Value>)` | pure compute, no World | inline while the VM steps |
 | `bind_brink_command::<M, E>(name)` | parse args into a `#[derive(Event, BrinkCommand)]` and trigger it; optional `BrinkCommand::reply` value back to ink | buffered during the step, flushed after |
 | `bind_brink_query(name, system)` | a Bevy system `In<BrinkQueryInput> -> Value` with arbitrary `SystemParam`s | flow pauses (`Pending`); a driver runs it via `run_system_with` between suspensions, then resumes |
+| `bind_brink_async(name)` | the **async event primitive**: no behavior, just "pause + hand off" | flow parks; `BrinkExternalAwaited<M>` fires (once) at the flow entity; engine resolves across frames via `commands.resolve_brink_external` |
+| `bind_brink_task(name, \|args\| async move { … })` | **async task sugar** over `AsyncComputeTaskPool` | flow parks; bevy-brink spawns the `Send + 'static` future and resolves with its output when it finishes (`poll_brink_tasks`) |
 
 `In<BrinkQueryInput>` = `(Entity, Vec<Value>)` — the calling flow entity
 plus the ink args. Query bindings can read anything in the World with no
 upfront declaration.
+
+**async (defer-across-frames) bindings** — for externals that can't resolve
+in one pass. The flow parks on the pending external (the runtime's
+`AwaitingExternal`/`resolve_external` pause/resume) and is frozen until
+resolved, so the **flow entity is the correlation key** — no per-call entity
+or id (unlike `brink_call`). Two flavors:
+
+- `bind_brink_async` — a multi-frame **World interaction** (e.g. `pick_target()`
+  opens a targeting UI, waits for a click). On park, `BrinkExternalAwaited<M>`
+  (an `EntityEvent` carrying `name` + `args`) fires once at the flow; an
+  observer does the work and calls `commands.resolve_brink_external::<M>(flow,
+  value)` whenever it's ready (guarded by `has_pending_external`, so stale /
+  double resolves are safe no-ops).
+- `bind_brink_task` — a detached **off-thread** future (heavy compute, IO,
+  network). The future is `Send + 'static` and **cannot access the World** — it
+  computes from the ink args only. bevy-brink spawns it on
+  `AsyncComputeTaskPool`, parks a `BrinkPendingTask<M>`, and `poll_brink_tasks`
+  resolves the flow when it completes.
+
+Async bindings are a **`step_one`-path feature**. The one-pass exclusive
+drivers (`advance_flow`, `call_ink_function`) can't await across frames, so on
+an async external they return `BrinkCallError::AsyncExternalUnsupported`.
 
 **engine → ink** — evaluate an ink function out-of-band (output isolated,
 transcript untouched, visit counts not bumped):
@@ -121,17 +145,20 @@ transcript untouched, visit counts not bumped):
   frame (the playback counterpart to `call_ink_function`).
 - non-exclusive `BrinkFlow::step_one` returns `Advance::{ Line, AwaitingQuery }`;
   on `AwaitingQuery` the driver skips the flow (`has_pending_external`) and
-  the plugin's `resolve_pending_queries` system (gated on
-  `any_flow_awaiting_external`) resolves it across frames.
+  the plugin's `resolve_pending_externals` system (gated on
+  `any_flow_awaiting_external`) services it across frames — resolving a query
+  inline, firing `BrinkExternalAwaited` for an async-event binding, or spawning
+  the task for a task binding.
 
 Why pause/resume rather than resolve inline: the live eval holds
 `&mut flow`/`&mut ctx`, which conflicts with the `&mut World` that
 `run_system_with` needs. Releasing the borrows at the pause point is the
 borrow-safe way to run a registered system mid-evaluation.
 
-Runnable demo: `cargo run --example engine_bindings` (headless) exercises
-all of the above; `play_story` covers `bind_brink_fn`/`bind_brink_command`
-in an interactive window.
+Runnable demos (headless): `cargo run --example engine_bindings` exercises the
+sync bindings + engine→ink calls; `async_task` and `async_external` cover the
+two async flavors. `play_story` covers `bind_brink_fn`/`bind_brink_command` in
+an interactive window.
 
 ## What is implemented
 
@@ -165,7 +192,12 @@ in an interactive window.
   `bind_brink_command` (+ `#[derive(BrinkCommand)]`) / `bind_brink_query`,
   `call_ink_function`, `commands.brink_call(...).observe(...)`,
   `advance_flow`, and the non-exclusive `step_one` → `Advance` pause/resume
-  with the `resolve_pending_queries` plugin system.
+  with the `resolve_pending_externals` plugin system.
+- ✅ **Async (defer-across-frames) bindings**: `bind_brink_async` (the
+  `BrinkExternalAwaited` + `resolve_brink_external` event primitive) and
+  `bind_brink_task` (`AsyncComputeTaskPool` task lifecycle via
+  `BrinkPendingTask` + `poll_brink_tasks`). Examples: `async_external`,
+  `async_task`.
 - ✅ Per-flow `Context` on a `BrinkContext<M>` component (not a shared
   resource); `BrinkGlobals<M>` is the commit target. Opt-in
   `BrinkTranscript<M>` auto-renders from the flow's runtime transcript.
@@ -278,17 +310,18 @@ some story shapes. Needs fresh investigation.
   + `BrktLoader` load saved bytes; `render_transcript_asset` re-renders a
   loaded transcript against a program + locale (checksum-validated), so a
   saved history localizes too. Demoed in `examples/transcript_save.rs`.
+- ✅ **Async (defer-across-frames) external bindings** (`src/async_bind.rs`).
+  `bind_brink_async` parks a flow and fires `BrinkExternalAwaited<M>` (the
+  event primitive; resolved by `commands.resolve_brink_external`);
+  `bind_brink_task` spawns a `Send + 'static` future on `AsyncComputeTaskPool`
+  and resolves the flow when it finishes (`BrinkPendingTask` + `poll_brink_tasks`).
+  The flow entity is the correlation key. Demoed in `examples/async_external.rs`
+  and `examples/async_task.rs`.
 
 ## Deferred (not started)
 
 In rough priority order:
 
-- **Async-task bindings mid-eval** — today a world-access binding resolves
-  synchronously within one resolver pass (`run_system_with`). A binding
-  that needs to await a `Task`/network round-trip across frames would need
-  `begin_function_eval`/`advance` to suspend across frames (the runtime
-  already supports the `AwaitingExternal` pause; only the bevy driver loop
-  assumes one-pass resolution). Deferred until a real need appears.
 - **Converter label-path addressing** — the compiler now emits an
   `address_paths` table so `find_address` resolves `knot.label` /
   `knot.stitch.label` for compiled stories; the converter still emits an
@@ -296,8 +329,9 @@ In rough priority order:
   a `.ink.json`-sourced story ever needs label addressing.
 
 Done since this list was written: the external-function binding facility
-(was "most important"), and a pausable stepping primitive (`advance` /
-`StepOutcome`) superseding the proposed `step_until_terminal`.
+(was "most important"), a pausable stepping primitive (`advance` /
+`StepOutcome`) superseding the proposed `step_until_terminal`, and
+async-task / defer-across-frames bindings (the former first item here).
 - **Fork / isolated context per flow** — design is decided (per-flow
   `Context` on a Component instead of shared Resource), no API surface
   yet.
