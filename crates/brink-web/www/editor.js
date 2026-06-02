@@ -5,10 +5,17 @@ import { defaultKeymap } from '@codemirror/commands';
 import { setDiagnostics } from '@codemirror/lint';
 import { buildDecorations } from './highlight.js';
 
-export function createEditor(container, { initialDoc, onCompile, semanticTokens, tokenTypeNames }) {
+// Drives a stateful `EditorSession` (the wasm IDE API): every doc change syncs
+// the session's source once, then highlight and compile read its cached analysis.
+export function createEditor(container, { initialDoc, session, onCompiled, tokenTypeNames }) {
   const typeNames = tokenTypeNames();
   let compileTimeout = null;
-  let highlightTimeout = null;
+
+  // Sync the session to `source` and return its semantic tokens.
+  function semanticTokens(source) {
+    session.update_source(source);
+    return JSON.parse(session.semantic_tokens());
+  }
 
   // Semantic highlight plugin
   const highlightPlugin = EditorView.decorations.compute(['doc'], (state) => {
@@ -23,7 +30,8 @@ export function createEditor(container, { initialDoc, onCompile, semanticTokens,
 
   function doCompile(view) {
     const source = view.state.doc.toString();
-    const result = onCompile(source);
+    session.update_source(source);
+    const result = JSON.parse(session.compile_project('main.ink'));
 
     // Map diagnostics
     const diags = [];
@@ -49,9 +57,11 @@ export function createEditor(container, { initialDoc, onCompile, semanticTokens,
     }
 
     view.dispatch(setDiagnostics(view.state, diags));
+
+    onCompiled(result);
   }
 
-  // Update listener for auto-compile and highlighting
+  // Update listener for auto-compile
   const updateListener = EditorView.updateListener.of((update) => {
     if (!update.docChanged) return;
 
