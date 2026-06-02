@@ -17,6 +17,13 @@
   - [Choices](./guide/choices.md)
   - [Error Handling](./guide/errors.md)
 
+# Bevy Integration
+
+- [Overview](./bevy/index.md)
+- [Spawning & Driving Flows](./bevy/flows.md)
+- [External Functions](./bevy/bindings.md)
+- [Localization & Saves](./bevy/localization.md)
+
 # Architecture
 
 - [Overview](./architecture/overview.md)
