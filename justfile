@@ -35,6 +35,22 @@ cross-language-benchmark:
 wasm:
     wasm-pack build crates/brink-web --target web --out-dir www/pkg
 
+# Stage the embedded book playground (brink-web wasm + www front-end) into docs/book/src/playground/
+book-assets:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="docs/book/src/playground"
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    # Static playground front-end (index.html + JS modules); exclude any local www/pkg build
+    find crates/brink-web/www -maxdepth 1 -type f -exec cp {} "$dest/" \;
+    # Compile the wasm bundle straight into the playground dir (out-dir is relative to the crate)
+    wasm-pack build crates/brink-web --target web --out-dir "../../$dest/pkg"
+
+# Build the book with the embedded playground
+book: book-assets
+    mdbook build docs/book
+
 # Run brink-studio dev server (builds wasm first)
 studio-dev: wasm
     cd packages/brink-studio && pnpm dev

@@ -1,5 +1,6 @@
 /target
 /docs/book/book
+/docs/book/src/playground
 /crates/zed-brink/target
 CLAUDE.md
 CLAUDE.md.bak

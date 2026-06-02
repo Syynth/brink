@@ -22,7 +22,14 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,wasm-pack
       - run: cargo install mdbook --locked
+      - run: just book-assets   # build brink-web wasm + stage playground into docs/book/src/playground
       - run: mdbook build docs/book
       - uses: actions/upload-pages-artifact@v3
         with:
