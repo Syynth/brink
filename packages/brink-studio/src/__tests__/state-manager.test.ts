@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EditorView } from "@codemirror/view";
-import { EditorStateManager, type TabTarget } from "../editor/state-manager.js";
-import { ProjectSession } from "../project-session.js";
-import { InMemoryFileProvider } from "../provider.js";
-import { initWasm } from "../wasm.js";
+import {
+  EditorStateManager,
+  type TabTarget,
+  ProjectSession,
+  InMemoryFileProvider,
+} from "@brink/ink-editor";
+import { initWasm } from "@brink/wasm";
 
 // ── Fixtures ────────────────────────────────────────────────────────
 
