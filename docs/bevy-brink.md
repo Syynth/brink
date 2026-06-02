@@ -272,13 +272,17 @@ some story shapes. Needs fresh investigation.
   `catch_up_loaded_locales` handles `.inkl`s that load after a switch.
   `BrinkLocaleOverride<M>` opts a flow out (polyglot NPCs). Demoed in
   `examples/locale_switch.rs`.
+- ✅ **`.brkt` transcript persistence** (`src/brkt.rs`). `capture_transcript`
+  serializes a flow's output history to `.brkt` bytes (the visible-history
+  half of a save file / a story-log mechanic / QA capture); `TranscriptAsset`
+  + `BrktLoader` load saved bytes; `render_transcript_asset` re-renders a
+  loaded transcript against a program + locale (checksum-validated), so a
+  saved history localizes too. Demoed in `examples/transcript_save.rs`.
 
 ## Deferred (not started)
 
 In rough priority order:
 
-- **`.brkt` transcript asset** + capture/render helpers (the runtime
-  already has `read_transcript`/`render_transcript`).
 - **Async-task bindings mid-eval** — today a world-access binding resolves
   synchronously within one resolver pass (`run_system_with`). A binding
   that needs to await a `Task`/network round-trip across frames would need
