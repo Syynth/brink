@@ -14,6 +14,10 @@ Accepts `.inkb`, `.ink.json`, or `.inkt` files.
 |------|---------|-------------|
 | `--speed <N>` / `-s` | `30` | Typewriter speed in characters per second (0 = instant) |
 | `--input <FILE>` / `-i` | -- | Read choice inputs from a file (batch mode) |
+| `--locale <FILE>` | -- | Locale overlay (`.inkl`) to make available; repeatable. Switch at runtime with the `l` key. |
+| `--save-transcript <FILE>` | -- | Write the playthrough's `.brkt` transcript after the session ends. |
+
+A saved `.brkt` can be re-rendered later (in any locale) with `brink replay <TRANSCRIPT> --story <FILE> [--locale <FILE>]`.
 
 ## Interactive mode
 

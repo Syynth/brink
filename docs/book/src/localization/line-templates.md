@@ -51,7 +51,7 @@ enum SelectKey {
 
 ## Line tables
 
-Line tables are stored per-container in the `.inkb` format. Each container has a sequence of `LineEntry` values referenced by index from `EmitLine` opcodes. The `EvalLine` opcode handles templates with interpolation, evaluating slots from the current stack state.
+Line tables are stored per-scope (one per knot/stitch/root) in the `.inkb` format. Each scope has a sequence of `LineEntry` values referenced by index from `EmitLine` opcodes. The `EvalLine` opcode handles templates with interpolation, evaluating slots from the current stack state.
 
 ## Choice text decomposition
 

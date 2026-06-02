@@ -1,6 +1,7 @@
 # The CLI
 
-`brink-cli` provides commands for compiling and playing ink stories.
+`brink-cli` (the `brink` binary) provides commands for compiling, playing,
+localizing, and formatting ink stories.
 
 ```sh
 brink --help
@@ -13,3 +14,8 @@ brink --help
 | [`compile`](./compile.md) | Compile `.ink` source to `.inkb` or `.inkt` |
 | [`convert`](./convert.md) | Convert between ink formats (`.ink.json`, `.inkb`, `.inkt`) |
 | [`play`](./play.md) | Play an ink story interactively or in batch mode |
+| [`export-xliff`](../localization/xliff.md) | Export a story's line tables as an XLIFF 2.0 file for translation |
+| [`compile-locale`](../localization/xliff.md) | Compile a translated XLIFF into a `.inkl` locale overlay |
+| [`regenerate-xliff`](../localization/xliff.md) | Update an XLIFF after recompilation, preserving translations |
+| `fmt` | Format `.ink` source files (`--check`, `--stdin`) |
+| `replay` | Re-render a saved `.brkt` transcript against a story (optionally a locale) |

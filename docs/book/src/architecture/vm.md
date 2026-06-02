@@ -16,16 +16,17 @@ enum Value {
     Int(i32),
     Float(f32),
     Bool(bool),
-    String(Rc<str>),               // Refcounted for cheap cloning
-    List(Rc<ListValue>),           // Refcounted
+    String(Arc<str>),              // Refcounted for cheap cloning
+    List(Arc<ListValue>),          // Refcounted
     DivertTarget(DefinitionId),    // Target address for diverts
     VariablePointer(DefinitionId), // Reference to a global variable
     TempPointer { slot, frame_depth }, // Reference to a local variable
     Null,
+    FragmentRef(u32),              // Index into the output fragment store
 }
 ```
 
-`String` and `List` are `Rc`-wrapped so cloning is O(1), matching C# reference semantics and making call-frame forking cheap.
+`String` and `List` are `Arc`-wrapped so cloning is O(1), matching C# reference semantics and making call-frame forking cheap. (Atomic refcounts, so a `Value` can flow through Bevy's parallel scheduler.) `FragmentRef` points at a captured run of structural output parts, kept intact so it can be re-rendered in another locale.
 
 ## Opcode reference
 
@@ -130,13 +131,16 @@ Thread forking clones the current VM state (call stack, variable state) to explo
 
 | Opcode | Operands | Description |
 |--------|----------|-------------|
-| `EmitLine` | `u16` (index) | Emit a line from the container's line table |
+| `EmitLine` | `u16` (index), `u8` (slot count) | Emit a line from the scope's line table; `slot count` interpolation slots are popped from the stack |
 | `EmitValue` | -- | Pop a value and emit its string representation |
 | `EmitNewline` | -- | Emit a newline character |
+| `Spring` | -- | Word break — renders as a single space between content parts |
 | `Glue` | -- | Suppress the previous newline (joins lines) |
 | `BeginTag` | -- | Begin capturing tag content |
 | `EndTag` | -- | End tag capture and attach to current output |
-| `EvalLine` | `u16` (index) | Evaluate an interpolated line template |
+| `EvalLine` | `u16` (index), `u8` (slot count) | Evaluate an interpolated line template with `slot count` popped slots |
+| `BeginFragment` | -- | Begin capturing output into a fragment |
+| `EndFragment` | -- | End fragment capture; store the parts and push a `FragmentRef` |
 
 ### Choices
 
@@ -217,7 +221,8 @@ Thread forking clones the current VM state (call stack, variable state) to explo
 
 | Opcode | Description |
 |--------|-------------|
-| `Done` | Yield -- the story pauses and can be resumed |
+| `Done` | Yield -- the story pauses and can be resumed (marks a safe exit) |
+| `Yield` | Pause for choice presentation — like `Done` but does not mark a safe exit |
 | `End` | Permanent end -- the story is finished |
 | `Nop` | No operation |
 
@@ -229,10 +234,10 @@ Thread forking clones the current VM state (call stack, variable state) to explo
 
 ## Execution model
 
-The step function (`continue_maximally`) executes opcodes in a loop until reaching a yield point: `Done`, `End`, or choice presentation. At each yield, accumulated output text is returned to the host via `StepResult`.
+The step function executes opcodes in a loop until reaching a yield point: `Done`, `End`, or choice presentation. Each yield produces a `Line` (`Text`/`Done`/`Choices`/`End`) carrying the output text accumulated since the last yield — `continue_single` returns one, `continue_maximally` returns a `Vec<Line>` ending in a terminal variant.
 
 **Call stack**: Function and tunnel calls push frames onto the call stack. Each frame has its own local variable storage (temp slots). `Return` and `TunnelReturn` pop frames.
 
 **Container stack**: Each call frame tracks which containers are currently active. `EnterContainer` pushes, `ExitContainer` pops. This drives visit counting and turn tracking.
 
-**Thread forking**: `ThreadCall` forks the current execution state (stacks, globals, output) to explore a choice branch. All threads run within the same step. At yield, threads are merged: each live thread contributes its choices to the final `StepResult`.
+**Thread forking**: `ThreadCall` forks the current execution state (stacks, globals, output) to explore a choice branch. All threads run within the same step. At yield, threads are merged: each live thread contributes its choices to the final `Line::Choices`.

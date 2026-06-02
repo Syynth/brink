@@ -9,8 +9,10 @@ brink is organized as a Cargo workspace with strict dependency rules. The centra
 | `brink` | `crates/brink/` | Public API -- re-exports from compiler and runtime |
 | `brink-compiler` | `crates/brink-compiler/` | Pipeline driver: `.ink` to `StoryData` |
 | `brink-runtime` | `crates/brink-runtime/` | Bytecode VM for executing compiled stories |
-| `brink-cli` | `crates/brink-cli/` | CLI tool: compile, convert, play |
+| `brink-cli` | `crates/brink-cli/` | CLI tool: compile, convert, play, export-xliff, compile-locale, regenerate-xliff, fmt, replay |
 | `brink-lsp` | `crates/brink-lsp/` | Language server for ink files |
+| `brink-web` | `crates/brink-web/` | WASM bindings for the IDE + runtime; powers the web playground |
+| `bevy-brink` | `crates/bevy-brink/` | Bevy 0.18 integration: plugin, assets, components, external-function bindings |
 
 ## Internal crates
 
@@ -19,13 +21,19 @@ brink is organized as a Cargo workspace with strict dependency rules. The centra
 | `brink-syntax` | `crates/internal/brink-syntax/` | Lexer, parser, lossless CST, typed AST |
 | `brink-ir` | `crates/internal/brink-ir/` | HIR + LIR intermediate representations, lowering |
 | `brink-analyzer` | `crates/internal/brink-analyzer/` | Cross-file semantic analysis, symbol resolution |
+| `brink-driver` | `crates/internal/brink-driver/` | Pipeline orchestration: file discovery + cross-file analysis |
 | `brink-codegen-inkb` | `crates/internal/brink-codegen-inkb/` | Bytecode codegen: LIR to `StoryData` |
 | `brink-codegen-json` | `crates/internal/brink-codegen-json/` | JSON codegen: LIR to `.ink.json` (for diffing) |
 | `brink-format` | `crates/internal/brink-format/` | Binary interface between compiler and runtime |
 | `brink-db` | `crates/internal/brink-db/` | Incremental project database, file discovery |
 | `brink-json` | `crates/internal/brink-json/` | Parser for inklecate `.ink.json` output |
 | `brink-converter` | `crates/internal/brink-converter/` | Reference pipeline: `.ink.json` to `StoryData` |
-| `brink-test-harness` | `crates/internal/brink-test-harness/` | Episode-based behavioral testing |
+| `brink-fmt` | `crates/internal/brink-fmt/` | `.ink` source formatter (powers `brink fmt`) |
+| `brink-intl` | `crates/internal/brink-intl/` | Internationalization tooling: line export, XLIFF round-trip, `.inkl` compile, ICU plurals |
+| `xliff2` | `crates/internal/xliff2/` | General-purpose XLIFF 2.0 read/write library |
+| `brink-ide` | `crates/internal/brink-ide/` | Protocol-agnostic IDE query library (shared by the LSP/web) |
+| `bevy-brink-derive` | `crates/internal/bevy-brink-derive/` | Derive macros for `bevy-brink` (`#[derive(BrinkCommand)]`) |
+| `brink-test-harness` | `crates/internal/brink-test-harness/` | Episode-based behavioral testing (oracle corpus) |
 
 Internal crates have `publish = false` and are not published to crates.io.
 
