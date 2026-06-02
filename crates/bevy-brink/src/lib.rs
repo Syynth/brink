@@ -31,6 +31,7 @@ extern crate self as bevy_brink;
 
 mod asset;
 mod bindings;
+mod brkt;
 mod call;
 mod event;
 mod flow;
@@ -68,6 +69,12 @@ pub use brink_format::Value;
 /// Re-exported so consumers can choose `Overlay`/`Strict` application without
 /// a direct `brink-runtime` dependency.
 pub use brink_runtime::LocaleMode;
+/// Re-exported so consumers can name the decoded-transcript type and its
+/// error without depending on `brink-runtime` directly.
+pub use brink_runtime::transcript::{TranscriptData, TranscriptError};
+pub use brkt::{
+    BrktLoader, BrktLoaderError, TranscriptAsset, capture_transcript, render_transcript_asset,
+};
 pub use call::{
     BrinkCallCommandsExt, BrinkCallFailed, BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs,
     resolve_brink_calls,

@@ -99,8 +99,10 @@ impl Plugin for BrinkAssetsPlugin {
         app.init_asset::<ProgramAsset>();
         app.init_asset::<LineTablesAsset>();
         app.init_asset::<crate::locale::LocaleAsset>();
+        app.init_asset::<crate::brkt::TranscriptAsset>();
         app.init_asset_loader::<InkbLoader>();
         app.init_asset_loader::<crate::locale::InklLoader>();
+        app.init_asset_loader::<crate::brkt::BrktLoader>();
         #[cfg(feature = "dev")]
         app.init_asset_loader::<crate::source_loader::InkLoader>();
     }

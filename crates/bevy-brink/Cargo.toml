@@ -65,5 +65,9 @@ name = "engine_bindings"
 [[example]]
 name = "locale_switch"
 
+# Headless demo of .brkt transcript persistence (capture / reload / re-render).
+[[example]]
+name = "transcript_save"
+
 [lints]
 workspace = true
