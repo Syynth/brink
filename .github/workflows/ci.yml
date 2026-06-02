@@ -23,6 +23,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # bevy-brink's `bevy` dev-dependency (windowed `play_story` example) pulls
+      # in wayland-sys/winit/alsa, whose build scripts need these system libs.
+      # `cargo test` compiles examples, so they're required here.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
       - run: cargo test --workspace
 
   clippy:
@@ -33,6 +41,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      # `--all-targets` compiles the bevy examples, which need bevy's Linux
+      # system libs (wayland-sys build script, etc.).
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   fmt:
