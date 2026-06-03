@@ -24,6 +24,8 @@ export class ProjectSession {
   private session: EditorSessionHandle;
   private activeFile: string;
   private onExternalFileChange?: (path: string, content: string | null) => void;
+  private unsubscribeExternal?: () => void;
+  private destroyed = false;
 
   constructor(options: ProjectSessionOptions) {
     this.provider = options.provider;
@@ -46,8 +48,11 @@ export class ProjectSession {
     this.session.setActiveFile(this.entryFile);
     this.activeFile = this.entryFile;
 
-    // Register external change callback if the provider supports it
-    this.provider.onExternalChange?.((path, content) => {
+    // Register external change callback if the provider supports it. Keep the
+    // unsubscribe so destroy() can detach it — otherwise a later external change
+    // would call into a freed wasm session (use-after-free).
+    this.unsubscribeExternal = this.provider.onExternalChange?.((path, content) => {
+      if (this.destroyed) return;
       if (content === null) {
         this.session.removeFile(path);
       } else {
@@ -141,8 +146,13 @@ export class ProjectSession {
     await this.provider.requestSave?.();
   }
 
-  /** Tear down. */
+  /** Tear down. Detaches the external-change listener before freeing the
+   *  session so a late callback can't touch freed wasm memory. */
   destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.unsubscribeExternal?.();
+    this.unsubscribeExternal = undefined;
     this.session.free();
   }
 
