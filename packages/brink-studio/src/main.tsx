@@ -175,6 +175,17 @@ function Root({ store, project, studioOptions, updateListener }: RootProps) {
     }
   }, [store, project, manager]);
 
+  // Tear down the wasm session + story runner when the app unmounts. The
+  // standalone playground never unmounts, but the embeddable/host case does —
+  // this keeps the lifecycle owned instead of leaking the cached parse/HIR.
+  useEffect(
+    () => () => {
+      store.getState().disposePlayer();
+      project.destroy();
+    },
+    [store, project],
+  );
+
   return (
     <StoreProvider store={store}>
       <App

@@ -1,4 +1,4 @@
-import { memo, useCallback, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import {
   BinderContextMenu,
@@ -109,6 +109,15 @@ function BinderRow({
   onDrop,
 }: RowProps) {
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cancel the pending single-click timer if the row unmounts (e.g. a
+  // reorder/reparent drops it) so it can't fire onClick after teardown.
+  useEffect(
+    () => () => {
+      if (clickTimer.current) clearTimeout(clickTimer.current);
+    },
+    [],
+  );
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {

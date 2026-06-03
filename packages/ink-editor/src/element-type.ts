@@ -177,7 +177,7 @@ function classifyLine(text: string): LineInfo {
     return { type: ElementType.Character, depth: 0, sticky: false, standalone: false };
   }
 
-  if (/^\(.*\)<>$/.test(trimmed)) {
+  if (/^\([^)]*\)<>$/.test(trimmed)) {
     return { type: ElementType.Parenthetical, depth: 0, sticky: false, standalone: false };
   }
 
@@ -231,10 +231,12 @@ function computeLineInfos(state: EditorState): LineInfo[] {
     for (let i = 0; i < infos.length; i++) {
       const lt = state.doc.line(i + 1).text;
       const trimmed = lt.trimStart();
+      // Preserve the line's weave depth (screenplay elements inside a choice
+      // body keep their indentation, so Tab/Shift-Tab weave math stays correct).
       if (/^@[^:]*:<>$/.test(trimmed)) {
-        infos[i] = { type: ElementType.Character, depth: 0, sticky: false, standalone: false };
-      } else if (/^\(.*\)<>$/.test(trimmed)) {
-        infos[i] = { type: ElementType.Parenthetical, depth: 0, sticky: false, standalone: false };
+        infos[i] = { type: ElementType.Character, depth: infos[i].depth, sticky: false, standalone: false };
+      } else if (/^\([^)]*\)<>$/.test(trimmed)) {
+        infos[i] = { type: ElementType.Parenthetical, depth: infos[i].depth, sticky: false, standalone: false };
       }
     }
     // Narrative after character/parenthetical/dialogue → dialogue
@@ -244,7 +246,7 @@ function computeLineInfos(state: EditorState): LineInfo[] {
         (prev.type === ElementType.Character || prev.type === ElementType.Parenthetical || prev.type === ElementType.Dialogue) &&
         infos[i].type === ElementType.NarrativeText
       ) {
-        infos[i] = { type: ElementType.Dialogue, depth: 0, sticky: false, standalone: false };
+        infos[i] = { type: ElementType.Dialogue, depth: infos[i].depth, sticky: false, standalone: false };
       }
     }
 

@@ -66,6 +66,8 @@ export interface PlayerSlice {
   resetStory(): void;
   /** Reveal the next line from the runtime (or show choices/end). */
   revealNext(): void;
+  /** Free the current story runner's wasm memory (call on teardown). */
+  disposePlayer(): void;
 
   /** Player fullscreen mode — hides the editor pane. */
   playerFullscreen: boolean;
@@ -165,6 +167,12 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
 
     // Reveal first line of next section
     get().revealNext();
+  },
+
+  disposePlayer() {
+    const runner = get()._runner;
+    if (runner) runner.free();
+    set({ _runner: null });
   },
 
   resetStory() {
