@@ -1112,7 +1112,7 @@ impl EditorSession {
         match brink_ide::structural_move::move_stitch(
             source, analysis, file_id, src_knot, stitch, dest_knot,
         ) {
-            Ok(result) => move_result_json(result, path),
+            Ok(result) => move_result_json(&self.session, result, path),
             Err(e) => error_json(&e.to_string()),
         }
     }
@@ -1133,7 +1133,7 @@ impl EditorSession {
         match brink_ide::structural_move::promote_stitch_to_knot(
             source, analysis, file_id, knot, stitch,
         ) {
-            Ok(result) => move_result_json(result, path),
+            Ok(result) => move_result_json(&self.session, result, path),
             Err(e) => error_json(&e.to_string()),
         }
     }
@@ -1219,7 +1219,7 @@ impl EditorSession {
         match brink_ide::structural_move::demote_knot_to_stitch(
             source, analysis, file_id, knot, dest_knot,
         ) {
-            Ok(result) => move_result_json(result, path),
+            Ok(result) => move_result_json(&self.session, result, path),
             Err(e) => error_json(&e.to_string()),
         }
     }
@@ -1552,25 +1552,69 @@ struct MoveResultJs {
     error: Option<String>,
 }
 
+/// A cross-file reference edit, resolved to the full new source of the file.
+///
+/// brink-ide reports cross-file edits as `(FileId, byte range, new_text)`, but
+/// the editor works in paths and UTF-16 offsets. We resolve each affected file
+/// here — applying its byte-range edits against its source — so the consumer
+/// just replaces the file's content by path.
 #[derive(Serialize)]
 struct CrossFileEditJs {
-    file: u32,
-    start: u32,
-    end: u32,
-    new_text: String,
+    path: String,
+    new_source: String,
 }
 
-fn move_result_json(result: brink_ide::structural_move::MoveResult, path: &str) -> String {
-    let edits: Vec<CrossFileEditJs> = result
-        .cross_file_edits
-        .iter()
-        .map(|e| CrossFileEditJs {
-            file: e.file.0,
-            start: e.range.start().into(),
-            end: e.range.end().into(),
-            new_text: e.new_text.clone(),
-        })
-        .collect();
+/// Apply non-overlapping byte-range edits to `src`. Edits are applied from the
+/// highest start offset down so earlier offsets stay valid; out-of-bounds or
+/// non-char-boundary edits are skipped (defensive — they should never occur).
+fn apply_edits(src: &str, mut edits: Vec<(usize, usize, String)>) -> String {
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    let mut out = src.to_owned();
+    for (start, end, text) in edits {
+        if start <= end
+            && end <= out.len()
+            && out.is_char_boundary(start)
+            && out.is_char_boundary(end)
+        {
+            out.replace_range(start..end, &text);
+        }
+    }
+    out
+}
+
+fn move_result_json(
+    session: &IdeSession,
+    result: brink_ide::structural_move::MoveResult,
+    path: &str,
+) -> String {
+    // Group reference edits by file (BTreeMap for deterministic output).
+    let mut by_file: std::collections::BTreeMap<u32, Vec<(usize, usize, String)>> =
+        std::collections::BTreeMap::new();
+    for e in &result.cross_file_edits {
+        by_file.entry(e.file.0).or_default().push((
+            usize::from(e.range.start()),
+            usize::from(e.range.end()),
+            e.new_text.clone(),
+        ));
+    }
+
+    let db = session.db();
+    let mut edits: Vec<CrossFileEditJs> = Vec::new();
+    for (file_raw, file_edits) in by_file {
+        let file_id = brink_ir::FileId(file_raw);
+        let (Some(src), Some(fpath)) = (session.source(file_id), db.file_path(file_id)) else {
+            continue;
+        };
+        // The primary file is already covered by `new_source`.
+        if fpath == path {
+            continue;
+        }
+        edits.push(CrossFileEditJs {
+            path: fpath.to_owned(),
+            new_source: apply_edits(src, file_edits),
+        });
+    }
+
     let resp = MoveResultJs {
         ok: true,
         path: Some(path.to_owned()),
@@ -1737,5 +1781,64 @@ mod tests {
             12,
             "definition start must be UTF-16, not bytes"
         );
+    }
+
+    // ── Cross-file structural-move edits (#12) ──────────────────────
+
+    use super::apply_edits;
+
+    #[test]
+    fn apply_edits_applies_descending_and_preserves_offsets() {
+        let src = "alpha beta gamma";
+        // Two edits given out of order; both must land correctly.
+        let out = apply_edits(
+            src,
+            vec![
+                (11, 16, "GAMMA".to_owned()), // gamma -> GAMMA
+                (0, 5, "ALPHA".to_owned()),   // alpha -> ALPHA
+            ],
+        );
+        assert_eq!(out, "ALPHA beta GAMMA");
+    }
+
+    #[test]
+    fn apply_edits_skips_out_of_bounds() {
+        let src = "short";
+        let out = apply_edits(src, vec![(0, 999, "x".to_owned())]);
+        assert_eq!(out, "short", "out-of-bounds edit is skipped, not panicking");
+    }
+
+    #[test]
+    fn cross_file_move_resolves_reference_edit_to_new_source() {
+        // `other.ink` diverts into a stitch of `main.ink`; moving that stitch to
+        // another knot must produce a cross-file edit updating the divert, now
+        // delivered as the full new source of `other.ink`.
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "=== a ===\n= s\nstuff\n-> END\n\n=== b ===\nbee\n-> END\n",
+        );
+        s.update_file("other.ink", "-> a.s\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let json = s.move_stitch("main.ink", "a", "s", "b");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["ok"], true, "move should succeed: {json}");
+
+        let cfe = v["cross_file_edits"].as_array().unwrap();
+        let other_edit = cfe.iter().find(|e| e["path"] == "other.ink");
+        assert!(
+            other_edit.is_some(),
+            "expected a cross-file edit for other.ink, got {cfe:?}"
+        );
+        let other = other_edit.unwrap();
+        // The divert `-> a.s` must now point at the moved stitch's new path.
+        assert!(
+            other["new_source"].as_str().unwrap().contains("b.s"),
+            "cross-file new_source should reference b.s: {other:?}"
+        );
+        // It carries the full file source (path-keyed), not byte ranges.
+        assert!(other.get("new_source").is_some());
+        assert!(other.get("start").is_none());
     }
 }

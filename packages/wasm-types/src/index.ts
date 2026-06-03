@@ -115,10 +115,10 @@ export interface CodeAction {
 // ── Structural move types ───────────────────────────────────────
 
 export interface CrossFileEdit {
-  file: number;
-  start: number;
-  end: number;
-  new_text: string;
+  /** Path of the file whose content is replaced. */
+  path: string;
+  /** The file's full source after applying its reference edits. */
+  new_source: string;
 }
 
 export interface MoveResult {
