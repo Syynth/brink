@@ -20,8 +20,10 @@ export interface FileProvider {
   onFileChanged?(path: string, content: string): void;
 
   /** Register a callback for external file changes (e.g. filesystem watcher).
-   *  Content is null when the file was deleted. */
-  onExternalChange?(callback: (path: string, content: string | null) => void): void;
+   *  Content is null when the file was deleted. Returns an unsubscribe function
+   *  the consumer MUST call on teardown, so the callback can't fire into a
+   *  freed session. */
+  onExternalChange?(callback: (path: string, content: string | null) => void): () => void;
 
   /** Create a new file at the given path. */
   createFile(path: string, content: string): Promise<void>;

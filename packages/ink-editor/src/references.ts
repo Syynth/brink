@@ -1,5 +1,12 @@
 import { type Extension, StateEffect, StateField, RangeSet } from "@codemirror/state";
-import { Decoration, type DecorationSet, EditorView, keymap } from "@codemirror/view";
+import {
+  Decoration,
+  type DecorationSet,
+  EditorView,
+  ViewPlugin,
+  type ViewUpdate,
+  keymap,
+} from "@codemirror/view";
 import type { Location } from "@brink/wasm-types";
 
 export interface ReferencesOptions {
@@ -23,9 +30,54 @@ const referenceHighlightField = StateField.define<DecorationSet>({
 
 const referenceHighlight = Decoration.mark({ class: "brink-reference-highlight" });
 
+/**
+ * Owns the auto-clear timer for reference highlights. When a `setReferenceHighlights`
+ * effect sets a non-empty highlight set, schedule a 3s clear (cancelling any prior).
+ * `destroy()` cancels the pending timer so it can't dispatch into a detached or
+ * replaced view.
+ */
+const referenceClearTimer = ViewPlugin.fromClass(
+  class {
+    private timeout: ReturnType<typeof setTimeout> | null = null;
+
+    constructor(private readonly view: EditorView) {}
+
+    update(update: ViewUpdate): void {
+      for (const tr of update.transactions) {
+        for (const e of tr.effects) {
+          if (!e.is(setReferenceHighlights)) continue;
+          this.cancel();
+          // Only schedule a clear when highlights were actually set (size > 0),
+          // not for the clear effect itself.
+          if (e.value.size > 0) {
+            this.timeout = setTimeout(() => {
+              this.timeout = null;
+              if (this.view.dom.isConnected) {
+                this.view.dispatch({ effects: setReferenceHighlights.of(RangeSet.empty) });
+              }
+            }, 3000);
+          }
+        }
+      }
+    }
+
+    destroy(): void {
+      this.cancel();
+    }
+
+    private cancel(): void {
+      if (this.timeout !== null) {
+        clearTimeout(this.timeout);
+        this.timeout = null;
+      }
+    }
+  },
+);
+
 export function referencesExtension(options: ReferencesOptions): Extension {
   return [
     referenceHighlightField,
+    referenceClearTimer,
     keymap.of([
       {
         key: "Shift-Alt-f",
@@ -46,16 +98,10 @@ export function referencesExtension(options: ReferencesOptions): Extension {
             .map((r) => referenceHighlight.range(r.start, r.end))
             .sort((a, b) => a.from - b.from);
 
+          // The referenceClearTimer plugin schedules the auto-clear.
           view.dispatch({
             effects: setReferenceHighlights.of(Decoration.set(decos)),
           });
-
-          // Clear highlights after 3 seconds
-          setTimeout(() => {
-            view.dispatch({
-              effects: setReferenceHighlights.of(RangeSet.empty),
-            });
-          }, 3000);
 
           return true;
         },
