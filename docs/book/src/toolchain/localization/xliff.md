@@ -1,12 +1,12 @@
 # XLIFF Workflow
 
-Localization source files use **XLIFF 2.0** — one file per locale. Lexical scopes (knots/stitches/root) map to `<file>` elements within the XLIFF document. Brink-specific metadata (content hashes for change tracking) uses XLIFF's custom namespace extension (`brink:`, see `BRINK_NS` in `brink-intl`), which conforming tools preserve across round-trips.
+Localization source files use **XLIFF 2.0** — one file per locale. Lexical scopes (knots/stitches/root) map to `<file>` elements within the XLIFF document. brink-specific metadata (content hashes for change tracking) uses XLIFF's custom namespace extension (`brink:`, see `BRINK_NS` in `brink-intl`), which conforming tools preserve across round-trips.
 
 The workflow is shipped end-to-end: the `brink` CLI exposes `export-xliff`, `compile-locale`, and `regenerate-xliff`, and `brink-intl` exposes the same operations as a library (`generate_locale`, `compile_locale_xliff`, `regenerate_locale`).
 
 ## Why XLIFF
 
-Every major translation management platform (Lokalise, Crowdin, etc.) natively imports/exports XLIFF, and the spec requires tools to preserve unknown extensions -- brink-specific metadata survives round-trips through external tooling.
+Every major translation management platform (Lokalise, Crowdin, etc.) natively imports/exports XLIFF, and the spec requires tools to preserve unknown extensions — brink-specific metadata survives round-trips through external tooling.
 
 ## Workflow
 

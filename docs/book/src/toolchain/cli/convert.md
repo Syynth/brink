@@ -19,7 +19,7 @@ brink convert <INPUT> [--output <OUTPUT>]
 | Extension | Format | Description |
 |-----------|--------|-------------|
 | `.ink.json` | inklecate JSON | Output from the reference ink compiler |
-| `.inkb` | Binary bytecode | Brink's native binary format |
+| `.inkb` | Binary bytecode | brink's native binary format |
 | `.inkt` | Textual bytecode | Human-readable disassembly |
 
 ## Examples

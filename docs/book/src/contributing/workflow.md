@@ -36,4 +36,4 @@ cargo fmt --all                                        # format fix
 
 ## Determinism
 
-Never iterate `HashMap` keys/values where order affects output. Sort or use `BTreeMap`. This applies to all output-producing code paths -- bytecode emission, line table construction, name table serialization, and test output.
+Never iterate `HashMap` keys/values where order affects output. Sort or use `BTreeMap`. This applies to all output-producing code paths — bytecode emission, line table construction, name table serialization, and test output.

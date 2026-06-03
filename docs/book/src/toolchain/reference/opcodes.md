@@ -30,7 +30,7 @@ enum Value {
 
 ## Opcode reference
 
-The VM executes 70+ opcodes. Each opcode is encoded as a single discriminant byte followed by zero or more operand bytes.
+The VM's full instruction set is listed below — around 70 opcodes. Each is encoded as a single discriminant byte followed by zero or more operand bytes.
 
 ### Stack and literals
 
@@ -42,9 +42,9 @@ The VM executes 70+ opcodes. Each opcode is encoded as a single discriminant byt
 | `PushString` | `u16` | Push a string by line table index |
 | `PushList` | `u16` | Push a list literal by index |
 | `PushDivertTarget` | `DefinitionId` | Push a divert target address |
-| `PushNull` | -- | Push null |
-| `Pop` | -- | Discard the top value |
-| `Duplicate` | -- | Duplicate the top value |
+| `PushNull` | — | Push null |
+| `Pop` | — | Discard the top value |
+| `Duplicate` | — | Duplicate the top value |
 
 ### Arithmetic
 
@@ -97,33 +97,33 @@ The VM executes 70+ opcodes. Each opcode is encoded as a single discriminant byt
 | `JumpIfFalse` | `i32` (offset) | Pop a value; jump if falsy |
 | `Goto` | `DefinitionId` | Absolute jump to a named address |
 | `GotoIf` | `DefinitionId` | Pop a value; goto the address if truthy |
-| `GotoVariable` | -- | Pop a `DivertTarget` from the stack and goto it |
+| `GotoVariable` | — | Pop a `DivertTarget` from the stack and goto it |
 
 ### Container flow
 
 | Opcode | Operands | Description |
 |--------|----------|-------------|
 | `EnterContainer` | `DefinitionId` | Push a container onto the container stack (updates visit counts) |
-| `ExitContainer` | -- | Pop the current container from the container stack |
+| `ExitContainer` | — | Pop the current container from the container stack |
 
 ### Functions and tunnels
 
 | Opcode | Operands | Description |
 |--------|----------|-------------|
-| `Call` | `DefinitionId` | Call a function -- pushes a new call frame with fresh temp storage |
-| `Return` | -- | Return from a function call |
-| `TunnelCall` | `DefinitionId` | Tunnel into a knot -- pushes a return address, shares the output stream |
-| `TunnelReturn` | -- | Return from a tunnel |
-| `TunnelCallVariable` | -- | Pop a `DivertTarget` and tunnel to it |
-| `CallVariable` | -- | Pop a `DivertTarget` and call it as a function |
+| `Call` | `DefinitionId` | Call a function — pushes a new call frame with fresh temp storage |
+| `Return` | — | Return from a function call |
+| `TunnelCall` | `DefinitionId` | Tunnel into a knot — pushes a return address, shares the output stream |
+| `TunnelReturn` | — | Return from a tunnel |
+| `TunnelCallVariable` | — | Pop a `DivertTarget` and tunnel to it |
+| `CallVariable` | — | Pop a `DivertTarget` and call it as a function |
 
 ### Threads
 
 | Opcode | Operands | Description |
 |--------|----------|-------------|
 | `ThreadCall` | `DefinitionId` | Fork execution to explore a choice branch |
-| `ThreadStart` | -- | Mark the beginning of a forked thread's code |
-| `ThreadDone` | -- | Mark the end of a forked thread |
+| `ThreadStart` | — | Mark the beginning of a forked thread's code |
+| `ThreadDone` | — | Mark the end of a forked thread |
 
 Thread forking clones the current VM state (call stack, variable state) to explore choice branches in isolation. Each choice's thread is evaluated independently to determine its display text and conditions.
 
@@ -132,29 +132,29 @@ Thread forking clones the current VM state (call stack, variable state) to explo
 | Opcode | Operands | Description |
 |--------|----------|-------------|
 | `EmitLine` | `u16` (index), `u8` (slot count) | Emit a line from the scope's line table; `slot count` interpolation slots are popped from the stack |
-| `EmitValue` | -- | Pop a value and emit its string representation |
-| `EmitNewline` | -- | Emit a newline character |
-| `Spring` | -- | Word break — renders as a single space between content parts |
-| `Glue` | -- | Suppress the previous newline (joins lines) |
-| `BeginTag` | -- | Begin capturing tag content |
-| `EndTag` | -- | End tag capture and attach to current output |
+| `EmitValue` | — | Pop a value and emit its string representation |
+| `EmitNewline` | — | Emit a newline character |
+| `Spring` | — | Word break — renders as a single space between content parts |
+| `Glue` | — | Suppress the previous newline (joins lines) |
+| `BeginTag` | — | Begin capturing tag content |
+| `EndTag` | — | End tag capture and attach to current output |
 | `EvalLine` | `u16` (index), `u8` (slot count) | Evaluate an interpolated line template with `slot count` popped slots |
-| `BeginFragment` | -- | Begin capturing output into a fragment |
-| `EndFragment` | -- | End fragment capture; store the parts and push a `FragmentRef` |
+| `BeginFragment` | — | Begin capturing output into a fragment |
+| `EndFragment` | — | End fragment capture; store the parts and push a `FragmentRef` |
 
 ### Choices
 
 | Opcode | Operands | Description |
 |--------|----------|-------------|
 | `BeginChoice` | `flags: u8`, `DefinitionId` | Begin a choice with flags and a target address |
-| `EndChoice` | -- | Finalize the current choice |
+| `EndChoice` | — | Finalize the current choice |
 
 `BeginChoice` flags (packed into a single byte):
-- Bit 0: `has_condition` -- choice has a conditional guard
-- Bit 1: `has_start_content` -- choice has text before `[`
-- Bit 2: `has_choice_only_content` -- choice has text inside `[]`
-- Bit 3: `once_only` -- choice can only be selected once
-- Bit 4: `is_invisible_default` -- fallback choice when no others are available
+- Bit 0: `has_condition` — choice has a conditional guard
+- Bit 1: `has_start_content` — choice has text before `[`
+- Bit 2: `has_choice_only_content` — choice has text inside `[]`
+- Bit 3: `once_only` — choice can only be selected once
+- Bit 4: `is_invisible_default` — fallback choice when no others are available
 
 ### Sequences
 
@@ -221,9 +221,9 @@ Thread forking clones the current VM state (call stack, variable state) to explo
 
 | Opcode | Description |
 |--------|-------------|
-| `Done` | Yield -- the story pauses and can be resumed (marks a safe exit) |
+| `Done` | Yield — the story pauses and can be resumed (marks a safe exit) |
 | `Yield` | Pause for choice presentation — like `Done` but does not mark a safe exit |
-| `End` | Permanent end -- the story is finished |
+| `End` | Permanent end — the story is finished |
 | `Nop` | No operation |
 
 ### Debug

@@ -45,7 +45,7 @@ Each case has a per-case snapshot in `crates/internal/brink-test-harness/tests/s
 
 ## The ratchet
 
-`RATCHET_EPISODE_COUNT` in `oracle_snapshots.rs` is the minimum number of passing episodes. It only goes up -- the test fails if the pass count drops below it. If a correct fix reveals previously-false passes, the ratchet can be lowered with an explanation.
+`RATCHET_EPISODE_COUNT` in `oracle_snapshots.rs` is the minimum number of passing episodes. It only goes up — the test fails if the pass count drops below it. If a correct fix reveals previously-false passes, the ratchet can be lowered with an explanation.
 
 ## GitHub corpus
 
