@@ -220,27 +220,43 @@ type GetFn = () => StudioState;
  * bulk `continueStory()` API, collecting all text and applying choices,
  * then show the final state with text visible.
  */
-function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void {
+export function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void {
   const runner = get()._runner;
   if (!runner) return;
 
   const allText: string[] = [];
   let choiceIdx = 0;
 
-  // Fast-forward through all saved choices
+  // The saved log no longer matches the current story — discard it and start
+  // the story fresh.
+  const bailToFresh = (): void => {
+    clearStorage();
+    runner.reset();
+    set({ _choiceLog: [] });
+    get().revealNext();
+  };
+
+  // Each pass must consume exactly one saved choice. Cap iterations at the
+  // number of saved choices (+1 margin) so a story that dead-ends on DONE
+  // before reaching the next saved choice can't spin forever (it would lock
+  // the UI thread). The `consumedChoice` check below is the precise guard;
+  // this cap is a hard backstop.
+  let budget = choiceLog.length + 1;
   while (choiceIdx < choiceLog.length) {
+    if (budget-- <= 0) {
+      bailToFresh();
+      return;
+    }
+
     let lines;
     try {
       lines = runner.continueStory();
     } catch {
-      // Replay failed — start fresh
-      clearStorage();
-      runner.reset();
-      set({ _choiceLog: [] });
-      get().revealNext();
+      bailToFresh();
       return;
     }
 
+    let consumedChoice = false;
     for (const line of lines) {
       const text = line.text.replace(/\n$/, "");
       if (text) {
@@ -257,14 +273,11 @@ function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void {
         try {
           runner.choose(savedChoice);
         } catch {
-          // Invalid choice — start fresh
-          clearStorage();
-          runner.reset();
-          set({ _choiceLog: [] });
-          get().revealNext();
+          bailToFresh();
           return;
         }
         choiceIdx++;
+        consumedChoice = true;
         break;
       }
 
@@ -279,6 +292,14 @@ function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void {
         });
         return;
       }
+    }
+
+    // The pass produced no choice to consume and didn't end (e.g. it reached a
+    // `-> DONE` dead-end). The saved choice can't be replayed, so the log is
+    // stale — bail rather than calling continueStory() forever.
+    if (!consumedChoice) {
+      bailToFresh();
+      return;
     }
   }
 
