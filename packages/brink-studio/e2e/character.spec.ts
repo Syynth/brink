@@ -227,6 +227,36 @@ test.describe("character lines", () => {
     expect(await getLineText(page, 1)).toBe("@JohnDoe:<>");
   });
 
+  // ── 8c. Delete must NOT fold a structural next line (#8) ────────
+
+  test("delete at end of name does not fold a following character line", async ({
+    page,
+  }) => {
+    await setEditorContent(page, "@Alice:<>\n@Bob:<>");
+    // Cursor after "Alice", before ":<>" → position 6
+    await setCursor(page, 6);
+    await page.keyboard.press("Delete");
+
+    // Must NOT corrupt into @Alice@Bob:<>:<> — both lines stay intact.
+    expect(await getLineText(page, 1)).toBe("@Alice:<>");
+    expect(await getLineText(page, 2)).toBe("@Bob:<>");
+  });
+
+  // ── 8d. Backspace must NOT fold a structural line into the name (#8) ─
+
+  test("backspace on a choice after a character does not fold into the name", async ({
+    page,
+  }) => {
+    await setEditorContent(page, "@Alice:<>\n* a choice");
+    // Cursor at the start of line 2 (line 1 is "@Alice:<>" = 9 chars + newline)
+    await setCursor(page, 10);
+    await page.keyboard.press("Backspace");
+
+    // The choice text must never be spliced inside the @...:<> name region.
+    const doc = await getDocText(page);
+    expect(doc).not.toContain("choice:<>");
+  });
+
   // ── 10. Enter with content splits correctly ─────────────────────
 
   test("Enter mid-name creates character line + plain text on next line", async ({
