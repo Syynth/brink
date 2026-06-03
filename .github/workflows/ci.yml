@@ -68,3 +68,39 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install mdbook --locked
       - run: mdbook build docs/book
+
+  frontend:
+    name: Frontend (brink-studio)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+      # The @brink/wasm package is a file: dependency on the wasm-pack output,
+      # so the bundle must be built BEFORE `pnpm install` can link it.
+      - name: Build brink-web wasm package
+        run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm --filter @brink/studio typecheck
+      - name: Unit tests (vitest)
+        run: pnpm --filter @brink/studio test
+      - name: Install Playwright browser
+        run: pnpm --filter @brink/studio exec playwright install --with-deps chromium
+      # Scoped to character.spec for now — the binder/decorations/stitches specs
+      # are stale on main (they assume an old default document). Tracked in #25;
+      # drop the path arg to restore the full `test:e2e` suite once that lands.
+      - name: E2E tests (Playwright)
+        run: pnpm --filter @brink/studio exec playwright test e2e/character.spec.ts
