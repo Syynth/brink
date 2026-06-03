@@ -655,3 +655,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The mdbook playground page embeds brink-web's WASM. The bundle is generated at book-build time (wasm-pack + copy `www` → `docs/book/src/playground/`, gitignored) rather than committing the wasm to git. The book CI/deploy (`book.yml`) gains a wasm-pack build step before `mdbook build`; a `just book-assets` recipe does the same locally.
 - **WHY:** Keeps generated wasm binaries out of git and guarantees the deployed playground reflects the compiler at deploy time, avoiding stale committed artifacts. Cost accepted: the book deploy now compiles brink-web to wasm.
+
+## Brink backlog tracked in GitHub Project #6
+- **WHEN:** 2026-06-02
+- **PROJECT:** brink
+- **SYSTEM:** process / project-management
+- **SCOPE:** moderate
+- **WHAT:** Brink's backlog lives in the user-level GitHub Project "Brink" (#6, owner Syynth — https://github.com/users/Syynth/projects/6), mirroring the Folklore workflow. Board columns: Todo / In Progress / Done / Icebox. Labels: area (`studio`, `editor`, `wasm`, `runtime`, `compiler`, `bevy-brink`, `intl`), severity (`severity:critical|high|medium|low`), and `needs-design`. Issues are filed one-per-finding (granular, independently closeable) and added to the board via `gh project item-add 6 --owner Syynth --url <url>`. `needs-design` and Icebox items are skipped when picking up autonomous work.
+- **WHY:** A single shared source-of-truth backlog for user and agents, consistent with the Folklore setup the user already runs. Granular issues ease triage/bisecting; severity labels surface highest-impact work; `needs-design` gates items that require product/design direction before implementation.
