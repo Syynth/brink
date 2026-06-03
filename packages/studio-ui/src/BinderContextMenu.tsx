@@ -55,11 +55,20 @@ function BinderContextMenuInner({ x, y, target, outline, onAction, onClose }: Pr
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
+    // The menu is fixed-positioned at the right-click coords, so a scroll /
+    // resize / focus loss would strand it — close on any of those.
+    const close = () => onClose();
     document.addEventListener("mousedown", handleClick);
     document.addEventListener("keydown", handleKey);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("blur", close);
     return () => {
       document.removeEventListener("mousedown", handleClick);
       document.removeEventListener("keydown", handleKey);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("blur", close);
     };
   }, [onClose]);
 

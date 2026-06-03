@@ -76,6 +76,20 @@ function ElementDropdownInner({ visible, onSelect, onDismiss, anchorRect }: Elem
     return () => document.removeEventListener("click", handleClick);
   }, [visible, onDismiss]);
 
+  // The menu is position:fixed against a rect captured at open time, so a
+  // scroll or resize would leave it floating at a stale spot — dismiss instead.
+  // Capture phase catches scrolls in any scrollable ancestor, not just window.
+  useEffect(() => {
+    if (!visible) return;
+    const dismiss = () => onDismiss();
+    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("resize", dismiss);
+    return () => {
+      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("resize", dismiss);
+    };
+  }, [visible, onDismiss]);
+
   if (!visible || !anchorRect) return null;
 
   const style: React.CSSProperties = {
