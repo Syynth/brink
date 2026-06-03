@@ -238,6 +238,47 @@ function buildFlatRows(outline: FileOutline[], collapsed: Set<string>): FlatRow[
   return rows;
 }
 
+// ── Drag-reorder helpers ────────────────────────────────────────────
+
+/** Last `::`-separated segment of a row key (the knot or stitch name). */
+function lastSegment(key: string): string {
+  const parts = key.split("::");
+  return parts[parts.length - 1]!;
+}
+
+/** Stitch names in a knot, in document order, from the outline. */
+function stitchNamesIn(outline: FileOutline[], path: string, knot: string): string[] {
+  const file = outline.find((f) => f.path === path);
+  const k = file?.symbols.find((s) => s.kind === "knot" && s.name === knot);
+  return (k?.children ?? []).filter((c) => c.kind === "stitch").map((c) => c.name);
+}
+
+/** Top-level knot names in a file, in document order. */
+function knotNamesIn(outline: FileOutline[], path: string): string[] {
+  const file = outline.find((f) => f.path === path);
+  return (file?.symbols ?? []).filter((s) => s.kind === "knot").map((s) => s.name);
+}
+
+/**
+ * Compute the new sibling order after dropping `dragged` (kept in their current
+ * relative order) just before/after `refName`. Returns the order unchanged if
+ * `refName` is itself dragged (drop onto self) or not found.
+ */
+export function computeReorder(
+  siblings: string[],
+  dragged: string[],
+  refName: string,
+  side: "before" | "after",
+): string[] {
+  const draggedSet = new Set(dragged);
+  const orderedDragged = siblings.filter((n) => draggedSet.has(n));
+  const without = siblings.filter((n) => !draggedSet.has(n));
+  let idx = without.indexOf(refName);
+  if (idx === -1) return siblings;
+  if (side === "after") idx += 1;
+  return [...without.slice(0, idx), ...orderedDragged, ...without.slice(idx)];
+}
+
 // ── Main Binder component ──────────────────────────────────────────
 
 function BinderInner() {
@@ -297,6 +338,14 @@ function BinderInner() {
         case "reorderKnot":
           result = session.reorderKnot(action.path, action.knot, action.direction);
           description = `Reorder ${action.knot} ${action.direction > 0 ? "down" : "up"}`;
+          break;
+        case "reorderStitches":
+          result = session.reorderStitches(action.path, action.knot, action.order);
+          description = `Reorder stitches in ${action.knot}`;
+          break;
+        case "reorderKnots":
+          result = session.reorderKnots(action.path, action.order);
+          description = `Reorder knots`;
           break;
         case "moveStitch":
           result = session.moveStitch(action.path, action.srcKnot, action.stitch, action.destKnot);
@@ -588,57 +637,59 @@ function BinderInner() {
   );
 
   const handleDrop = useCallback(
-    (e: React.DragEvent, row: FlatRow) => {
+    (e: React.DragEvent, _row: FlatRow) => {
       e.preventDefault();
       if (!dragState || !dropTarget) return;
 
-      const sourceKey = dragState.sourceKeys[0]!;
-      const sourceParts = sourceKey.split("::");
-
       const path = dragState.sourcePath;
+      // All selected items move together (in their current relative order).
+      const draggedNames = dragState.sourceKeys.map(lastSegment);
+      const side = dropTarget.targetKey === "after" ? "after" : "before";
 
       if (dragState.sourceKind === "stitch") {
-        const srcKnot = sourceParts[1]!;
-        const stitch = sourceParts[2]!;
+        const srcKnot = dragState.sourceParent!;
 
         if (dropTarget.kind === "into") {
-          // Move to different knot
+          // Reparent every selected stitch into the target knot. Sequential so
+          // each move sees the source updated by the previous one.
           const destParts = dropTarget.targetKey!.split("::");
           const destKnot = destParts[1] ?? destParts[0]!;
           if (destKnot !== srcKnot) {
-            void executeAction({ type: "moveStitch", path, srcKnot, stitch, destKnot });
+            void (async () => {
+              for (const stitch of draggedNames) {
+                await executeAction({ type: "moveStitch", path, srcKnot, stitch, destKnot });
+              }
+            })();
           }
-        } else {
-          // Reorder within same knot
-          const direction =
-            dropTarget.targetKey === "after" ? 1 : -1;
-          void executeAction({
-            type: "reorderStitch",
-            path,
-            knot: srcKnot,
-            stitch,
-            direction,
-          });
+        } else if (dropTarget.afterKey) {
+          // Reorder within the knot to the exact dropped position.
+          const siblings = stitchNamesIn(outline, path, srcKnot);
+          const order = computeReorder(siblings, draggedNames, lastSegment(dropTarget.afterKey), side);
+          void executeAction({ type: "reorderStitches", path, knot: srcKnot, order });
         }
       } else if (dragState.sourceKind === "knot") {
-        const knot = sourceParts[1]!;
-
         if (dropTarget.kind === "into") {
-          // Demote into target knot
+          // Demote every selected knot into the target knot.
           const destParts = dropTarget.targetKey!.split("::");
           const destKnot = destParts[1] ?? destParts[0]!;
-          void executeAction({ type: "demoteKnot", path, knot, destKnot });
-        } else {
-          // Reorder
-          const direction = dropTarget.targetKey === "after" ? 1 : -1;
-          void executeAction({ type: "reorderKnot", path, knot, direction });
+          void (async () => {
+            for (const knot of draggedNames) {
+              if (knot !== destKnot) {
+                await executeAction({ type: "demoteKnot", path, knot, destKnot });
+              }
+            }
+          })();
+        } else if (dropTarget.afterKey) {
+          const siblings = knotNamesIn(outline, path);
+          const order = computeReorder(siblings, draggedNames, lastSegment(dropTarget.afterKey), side);
+          void executeAction({ type: "reorderKnots", path, order });
         }
       }
 
       setDragState(null);
       setDropTarget(null);
     },
-    [dragState, dropTarget, executeAction],
+    [dragState, dropTarget, executeAction, outline],
   );
 
   // ── Drop line helper ───────────────────────────────────────────

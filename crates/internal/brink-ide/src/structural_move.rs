@@ -17,6 +17,8 @@ pub enum MoveError {
     NameCollision { name: String, context: String },
     #[error("illegal nesting: knot has sub-stitches and cannot be demoted")]
     IllegalNesting,
+    #[error("invalid reorder: list is not a permutation of the existing names")]
+    InvalidReorder,
 }
 
 /// The result of a structural move operation.
@@ -192,6 +194,141 @@ pub fn reorder_knot(
         result.push_str(slice);
     }
 
+    Ok(result)
+}
+
+// ── Phase 1c: order-based reorder ───────────────────────────────────
+
+/// Resolve a target name `order` into indices that permute `current`.
+///
+/// `order` must be a permutation of `current` (same set, each used once).
+/// Returns the index into `current` for each entry of `order`.
+fn resolve_permutation(current: &[String], order: &[String]) -> Result<Vec<usize>, MoveError> {
+    if order.len() != current.len() {
+        return Err(MoveError::InvalidReorder);
+    }
+    let mut used = vec![false; current.len()];
+    let mut out = Vec::with_capacity(current.len());
+    for name in order {
+        let idx = current
+            .iter()
+            .position(|n| n == name)
+            .ok_or(MoveError::InvalidReorder)?;
+        if used[idx] {
+            return Err(MoveError::InvalidReorder);
+        }
+        used[idx] = true;
+        out.push(idx);
+    }
+    Ok(out)
+}
+
+/// Reorder all stitches within a knot to match `order` (a permutation of the
+/// knot's stitch names).
+///
+/// Unlike [`reorder_stitch`] (a single ±1 step), this moves stitches to
+/// arbitrary positions in one operation — the form drag-and-drop needs, since
+/// the drop knows the full destination order, and the form multi-select moves
+/// need. Pure text slice/reassemble; whitespace within each stitch is
+/// preserved.
+pub fn reorder_stitches(
+    source: &str,
+    knot_name: &str,
+    order: &[String],
+) -> Result<String, MoveError> {
+    let parse = brink_syntax::parse(source);
+    let tree = parse.tree();
+
+    let knots: Vec<_> = tree.knots().collect();
+    let (ki, knot) = knots
+        .iter()
+        .enumerate()
+        .find(|(_, k)| k.header().and_then(|h| h.name()).as_deref() == Some(knot_name))
+        .ok_or(MoveError::SourceNotFound)?;
+
+    let Some(body) = knot.body() else {
+        return Err(MoveError::SourceNotFound);
+    };
+    let stitches: Vec<_> = body.stitches().collect();
+    if stitches.is_empty() {
+        return Ok(source.to_owned());
+    }
+
+    let names: Vec<String> = stitches
+        .iter()
+        .map(|s| s.header().and_then(|h| h.name()).unwrap_or_default())
+        .collect();
+    let new_order = resolve_permutation(&names, order)?;
+
+    // Build stitch slices (each owns text from its start to the next stitch's
+    // start, or to the end of the knot region for the last one).
+    let knot_end: usize = if ki + 1 < knots.len() {
+        knots[ki + 1].syntax().text_range().start().into()
+    } else {
+        source.len()
+    };
+    let last_ast_end: usize = stitches
+        .last()
+        .map_or(knot_end, |s| s.syntax().text_range().end().into());
+    let mut slices: Vec<&str> = Vec::with_capacity(stitches.len());
+    for (i, stitch) in stitches.iter().enumerate() {
+        let start: usize = stitch.syntax().text_range().start().into();
+        let end: usize = if i + 1 < stitches.len() {
+            stitches[i + 1].syntax().text_range().start().into()
+        } else {
+            last_ast_end
+        };
+        slices.push(&source[start..end]);
+    }
+
+    let region_start: usize = stitches[0].syntax().text_range().start().into();
+    let trailing = &source[last_ast_end..knot_end];
+
+    let mut result = String::with_capacity(source.len());
+    result.push_str(&source[..region_start]);
+    for &idx in &new_order {
+        result.push_str(slices[idx]);
+    }
+    result.push_str(trailing);
+    result.push_str(&source[knot_end..]);
+    Ok(result)
+}
+
+/// Reorder all top-level knots to match `order` (a permutation of the knot
+/// names). The order-based counterpart of [`reorder_knot`]. Preamble before
+/// the first knot is preserved.
+pub fn reorder_knots(source: &str, order: &[String]) -> Result<String, MoveError> {
+    let parse = brink_syntax::parse(source);
+    let tree = parse.tree();
+
+    let knots: Vec<_> = tree.knots().collect();
+    if knots.is_empty() {
+        return Err(MoveError::SourceNotFound);
+    }
+
+    let names: Vec<String> = knots
+        .iter()
+        .map(|k| k.header().and_then(|h| h.name()).unwrap_or_default())
+        .collect();
+    let new_order = resolve_permutation(&names, order)?;
+
+    let preamble_end: usize = knots[0].syntax().text_range().start().into();
+    let mut slices: Vec<&str> = Vec::with_capacity(knots.len());
+    for (i, knot) in knots.iter().enumerate() {
+        let start: usize = knot.syntax().text_range().start().into();
+        let end: usize = if i + 1 < knots.len() {
+            knots[i + 1].syntax().text_range().start().into()
+        } else {
+            source.len()
+        };
+        slices.push(&source[start..end]);
+    }
+
+    let mut result = String::with_capacity(source.len());
+    result.push_str(&source[..preamble_end]);
+    for &idx in &new_order {
+        result.push_str(slices[idx]);
+    }
     Ok(result)
 }
 
@@ -847,6 +984,85 @@ Gamma content.
             beta_pos < alpha_pos,
             "beta should come before alpha after moving beta up"
         );
+    }
+
+    // ── order-based reorder tests ───────────────────────────────────
+
+    #[test]
+    fn reorder_stitches_moves_first_to_last() {
+        let source = "\
+=== my_knot ===
+= alpha
+Alpha content.
+= beta
+Beta content.
+= gamma
+Gamma content.
+";
+        // Move alpha to the end in one op (a multi-slot move the ±1 API can't do).
+        let order = ["beta", "gamma", "alpha"].map(String::from);
+        let result = reorder_stitches(source, "my_knot", &order).unwrap();
+        let a = result.find("= alpha").unwrap();
+        let b = result.find("= beta").unwrap();
+        let g = result.find("= gamma").unwrap();
+        assert!(b < g && g < a, "order should be beta, gamma, alpha");
+        // Content travels with each stitch.
+        assert!(result.contains("= alpha\nAlpha content."));
+    }
+
+    #[test]
+    fn reorder_stitches_identity_is_noop() {
+        let source = "\
+=== k ===
+= a
+A.
+= b
+B.
+";
+        let order = ["a", "b"].map(String::from);
+        assert_eq!(reorder_stitches(source, "k", &order).unwrap(), source);
+    }
+
+    #[test]
+    fn reorder_stitches_rejects_non_permutation() {
+        let source = "=== k ===\n= a\nA.\n= b\nB.\n";
+        // Wrong length, unknown name, and duplicate all rejected.
+        assert!(reorder_stitches(source, "k", &["a".to_owned()]).is_err());
+        assert!(reorder_stitches(source, "k", &["a", "zzz"].map(String::from)).is_err());
+        assert!(reorder_stitches(source, "k", &["a", "a"].map(String::from)).is_err());
+    }
+
+    #[test]
+    fn reorder_knots_moves_to_arbitrary_position() {
+        let source = "\
+=== one ===
+One.
+=== two ===
+Two.
+=== three ===
+Three.
+";
+        let order = ["three", "one", "two"].map(String::from);
+        let result = reorder_knots(source, &order).unwrap();
+        let o = result.find("=== one ===").unwrap();
+        let t = result.find("=== two ===").unwrap();
+        let th = result.find("=== three ===").unwrap();
+        assert!(th < o && o < t, "order should be three, one, two");
+    }
+
+    #[test]
+    fn reorder_knots_preserves_preamble() {
+        let source = "\
+VAR x = 1
+// preamble comment
+=== a ===
+A.
+=== b ===
+B.
+";
+        let result = reorder_knots(source, &["b", "a"].map(String::from)).unwrap();
+        assert!(result.starts_with("VAR x = 1\n// preamble comment\n"));
+        assert!(result.find("=== b ===").unwrap() < result.find("=== a ===").unwrap());
     }
 
     #[test]
