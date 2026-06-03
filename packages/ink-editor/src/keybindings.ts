@@ -7,6 +7,20 @@ import { CONVERTIBLE_TYPES, convertLineToType } from "./convert.js";
 
 const HANDLED_KEYS = ["Enter", "Shift-Enter", "Tab", "Shift-Tab", "Backspace", "Delete"] as const;
 
+/**
+ * Lines whose text may be absorbed into a character name (`@Name:<>`) by the
+ * Delete/Backspace fold handlers. Only plain content folds — folding a
+ * structural line (another character, choice, gather, header, divert, …) would
+ * splice its sigils into the name and corrupt the syntax (e.g. `@Alice@Bob:<>:<>`).
+ */
+function isFoldableIntoName(type: ElementType): boolean {
+  return (
+    type === ElementType.NarrativeText ||
+    type === ElementType.Dialogue ||
+    type === ElementType.Blank
+  );
+}
+
 function handleKey(key: string, view: EditorView): boolean {
   const { state } = view;
   const infos = state.field(elementTypeField);
@@ -60,9 +74,11 @@ function handleKey(key: string, view: EditorView): boolean {
       return true;
     }
 
-    // Delete at name end: fold next line content into name
+    // Delete at name end: fold the next line into the name — only when that
+    // line is plain. Folding a structural line would corrupt the syntax.
     if (key === "Delete" && head === nameEnd) {
-      if (line.number < state.doc.lines) {
+      const nextInfo = infos[lineIndex + 1];
+      if (line.number < state.doc.lines && nextInfo && isFoldableIntoName(nextInfo.type)) {
         const nextLine = state.doc.line(line.number + 1);
         const nextText = nextLine.text;
         const name = line.text.slice(ws + 1, line.text.length - 3);
@@ -72,6 +88,8 @@ function handleKey(key: string, view: EditorView): boolean {
           annotations: sigilBypass.of(true),
         });
       }
+      // Consume Delete at name end regardless: the cursor sits before the atomic
+      // `:<>`, so the default forward-delete has nothing safe to do.
       return true;
     }
 
@@ -90,10 +108,13 @@ function handleKey(key: string, view: EditorView): boolean {
     }
   }
 
-  // Backspace at start of line after a character line: fold content into the name
+  // Backspace at start of line after a character line: fold this line's content
+  // into the name — only when this line is plain. A structural line must not be
+  // folded (it would splice its sigils into the name); fall through to the
+  // default line-join instead.
   if (key === "Backspace" && lineIndex > 0 && state.selection.main.head === line.from) {
     const prevInfo = infos[lineIndex - 1];
-    if (prevInfo?.type === ElementType.Character) {
+    if (prevInfo?.type === ElementType.Character && isFoldableIntoName(info.type)) {
       const prevLine = state.doc.line(line.number - 1);
       const prevTrimmed = prevLine.text.trimStart();
       const prevWs = prevLine.text.length - prevTrimmed.length;
