@@ -236,6 +236,22 @@ export class EditorSessionHandle {
     return JSON.parse(json) as MoveResult;
   }
 
+  /**
+   * Reorder all stitches in a knot to match `order` (a permutation of the
+   * knot's stitch names). Used by drag-and-drop, which knows the full
+   * destination order, and by multi-select moves.
+   */
+  reorderStitches(path: string, knot: string, order: string[]): MoveResult {
+    const json = this.session.reorder_stitches(path, knot, order);
+    return JSON.parse(json) as MoveResult;
+  }
+
+  /** Reorder all top-level knots to match `order` (a permutation of the knot names). */
+  reorderKnots(path: string, order: string[]): MoveResult {
+    const json = this.session.reorder_knots(path, order);
+    return JSON.parse(json) as MoveResult;
+  }
+
   /** Move a stitch from one knot to another. */
   moveStitch(path: string, srcKnot: string, stitch: string, destKnot: string): MoveResult {
     const json = this.session.move_stitch(path, srcKnot, stitch, destKnot);

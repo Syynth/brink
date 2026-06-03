@@ -33,6 +33,8 @@ interface Props {
 export type ContextMenuAction =
   | { type: "reorderStitch"; path: string; knot: string; stitch: string; direction: number }
   | { type: "reorderKnot"; path: string; knot: string; direction: number }
+  | { type: "reorderStitches"; path: string; knot: string; order: string[] }
+  | { type: "reorderKnots"; path: string; order: string[] }
   | { type: "moveStitch"; path: string; srcKnot: string; stitch: string; destKnot: string }
   | { type: "promoteStitch"; path: string; knot: string; stitch: string }
   | { type: "demoteKnot"; path: string; knot: string; destKnot: string };

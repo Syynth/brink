@@ -1162,6 +1162,47 @@ impl EditorSession {
         }
     }
 
+    /// Reorder all stitches in a knot to match `order` (a permutation of the
+    /// knot's stitch names). Used by drag-and-drop and multi-select moves,
+    /// which know the full destination order. Returns JSON `MoveResult` or error.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "wasm-bindgen requires owned Vec<String> across the boundary"
+    )]
+    pub fn reorder_stitches(&self, path: &str, knot: &str, order: Vec<String>) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return error_json("file not loaded");
+        };
+        let Some(source) = self.session.source(file_id) else {
+            return error_json("no source");
+        };
+
+        match brink_ide::structural_move::reorder_stitches(source, knot, &order) {
+            Ok(new_source) => move_result_json_simple(new_source, path),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    /// Reorder all top-level knots to match `order` (a permutation of the knot
+    /// names). Returns JSON `MoveResult` or error.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "wasm-bindgen requires owned Vec<String> across the boundary"
+    )]
+    pub fn reorder_knots(&self, path: &str, order: Vec<String>) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return error_json("file not loaded");
+        };
+        let Some(source) = self.session.source(file_id) else {
+            return error_json("no source");
+        };
+
+        match brink_ide::structural_move::reorder_knots(source, &order) {
+            Ok(new_source) => move_result_json_simple(new_source, path),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
     /// Demote a top-level knot to a stitch inside another knot. Returns JSON `MoveResult` or error.
     ///
     /// `path`: file containing both knots.
