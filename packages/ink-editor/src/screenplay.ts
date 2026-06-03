@@ -2,6 +2,48 @@ import { type Extension, RangeSetBuilder, EditorState, Annotation } from "@codem
 import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
 import { elementTypeField, elementClass, ElementType } from "./element-type.js";
 
+// ── Screenplay sigil geometry ───────────────────────────────────────
+// Character lines are `@Name:<>` (hidden suffix `:<>`, 3 chars); parentheticals
+// are `(text)<>` (hidden glue `<>`, 2 chars). Centralize the offset math here so
+// the sigil shapes live in exactly one place instead of scattered magic offsets.
+
+/** Width of the hidden `:<>` suffix on a character line. */
+export const CHAR_SUFFIX_LEN = 3;
+/** Width of the hidden `<>` glue suffix on a parenthetical / glued line. */
+export const GLUE_LEN = 2;
+
+export interface SigilLine {
+  readonly from: number;
+  readonly to: number;
+  readonly text: string;
+}
+
+/** Leading-whitespace length of a line's text. */
+export function leadingWsLen(text: string): number {
+  return text.length - text.trimStart().length;
+}
+
+/**
+ * Editable name region of a character line `@Name:<>`. All positions are
+ * absolute document offsets except `ws` (a length).
+ */
+export function characterName(line: SigilLine): {
+  ws: number;
+  atSign: number;
+  nameStart: number;
+  nameEnd: number;
+  name: string;
+} {
+  const ws = leadingWsLen(line.text);
+  return {
+    ws,
+    atSign: line.from + ws,
+    nameStart: line.from + ws + 1,
+    nameEnd: line.to - CHAR_SUFFIX_LEN,
+    name: line.text.slice(ws + 1, line.text.length - CHAR_SUFFIX_LEN),
+  };
+}
+
 const DEPTH_INDENT_EM = 2;
 
 // ── Superscript depth indicators ───────────────────────────────────
@@ -132,7 +174,7 @@ function buildLineDecos(view: EditorView): DecorationSet {
         Decoration.replace({ widget: new EmptySigilWidget() }),
       );
       // Hide :<> at end (>= so empty template @:<> also hides)
-      const colonGlueStart = line.to - 3; // :<> is 3 chars
+      const colonGlueStart = line.to - CHAR_SUFFIX_LEN; // :<> is 3 chars
       if (colonGlueStart >= line.from + ws + 1) {
         builder.add(
           colonGlueStart,
@@ -144,7 +186,7 @@ function buildLineDecos(view: EditorView): DecorationSet {
 
     // Parenthetical line: hide <> at end
     if (info.type === ElementType.Parenthetical) {
-      const glueStart = line.to - 2; // <> is 2 chars
+      const glueStart = line.to - GLUE_LEN; // <> is 2 chars
       if (glueStart > line.from) {
         builder.add(
           glueStart,
@@ -247,7 +289,7 @@ const screenplayAtomicRanges = EditorView.atomicRanges.of((view) => {
       // @ at start
       builder.add(line.from + ws, line.from + ws + 1, atomicMark);
       // :<> at end (>= so empty template @:<> is also atomic)
-      const colonGlueStart = line.to - 3;
+      const colonGlueStart = line.to - CHAR_SUFFIX_LEN;
       if (colonGlueStart >= line.from + ws + 1) {
         builder.add(colonGlueStart, line.to, atomicMark);
       }
@@ -255,7 +297,7 @@ const screenplayAtomicRanges = EditorView.atomicRanges.of((view) => {
 
     if (info.type === ElementType.Parenthetical) {
       // <> at end
-      const glueStart = line.to - 2;
+      const glueStart = line.to - GLUE_LEN;
       if (glueStart > line.from) {
         builder.add(glueStart, line.to, atomicMark);
       }
@@ -288,7 +330,7 @@ const screenplaySigilGuard = EditorState.transactionFilter.of((tr) => {
       const trimmed = line.text.trimStart();
       const ws = line.text.length - trimmed.length;
       const nameStart = line.from + ws + 1; // after @
-      const nameEnd = line.to - 3;          // before :<>
+      const nameEnd = line.to - CHAR_SUFFIX_LEN;          // before :<>
 
       // Block if the change touches sigil regions
       if (fromA < nameStart || toA > nameEnd) {
@@ -297,7 +339,7 @@ const screenplaySigilGuard = EditorState.transactionFilter.of((tr) => {
     }
 
     if (info.type === ElementType.Parenthetical) {
-      const glueStart = line.to - 2; // before <>
+      const glueStart = line.to - GLUE_LEN; // before <>
       if (toA > glueStart) {
         dominated = true;
       }
