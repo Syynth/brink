@@ -115,9 +115,17 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
 
     const session = project.getSession();
 
-    // 1. Snapshot current sources for undo
+    // Every file this move touches: the primary file plus any cross-file
+    // reference edits (e.g. diverts in other files that point at a moved
+    // symbol). De-duplicated, preserving order.
+    const touchedPaths = [
+      ...new Set([...affectedPaths, ...result.cross_file_edits.map((e) => e.path)]),
+    ];
+
+    // 1. Snapshot current sources for undo (all touched files, so undo can
+    //    restore the cross-file edits too).
     const snapshots: Array<{ path: string; source: string }> = [];
-    for (const path of affectedPaths) {
+    for (const path of touchedPaths) {
       const source = session.getFileSource(path);
       if (source != null) {
         snapshots.push({ path, source });
@@ -129,16 +137,18 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       session.updateFile(result.path, result.new_source);
     }
 
-    // 3. Apply cross_file_edits (if any)
-    // Cross-file edits use file IDs — for now these are not common in
-    // single-file operations, but the infrastructure is here.
+    // 3. Apply cross-file reference edits — each carries the full new source
+    //    of an affected file, keyed by path.
+    for (const edit of result.cross_file_edits) {
+      session.updateFile(edit.path, edit.new_source);
+    }
 
     // 4. Push undo entry
     const undoStack = [...state.undoStack, { description, snapshots }];
 
     // 5. Invalidate editor states for affected files. invalidateFile clears
     //    view context and reloads the active view if it targets the path.
-    for (const path of affectedPaths) {
+    for (const path of touchedPaths) {
       if (stateManager.invalidateFile) {
         stateManager.invalidateFile(path);
       }
