@@ -87,6 +87,9 @@ export type StudioStore = ReturnType<typeof createStudioStore>;
 
 // ── Re-exports ──────────────────────────────────────────────────────
 
+// Exposed for unit testing the replay loop's termination guard.
+export { replayChoices } from "./slices/player.js";
+
 export type {
   ElementType,
   LineInfo,
