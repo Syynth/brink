@@ -193,7 +193,9 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerText: text ? [...state.playerText, text] : state.playerText,
         playerChoices: line.type === "choices" ? (line.choices ?? []) : [],
         playerEnded: line.type === "end",
-        playerCanContinue: line.type === "text",
+        // `done` (ink `-> DONE`) is a turn boundary, not the end — keep the
+        // Continue button so the player can resume past it, like a `text` line.
+        playerCanContinue: line.type === "text" || line.type === "done",
       }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
