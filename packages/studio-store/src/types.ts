@@ -67,9 +67,6 @@ export interface InkEditorHandle {
   convertLineToType(sigil: string): void;
 }
 
-// ── Opaque types for complex objects not yet migrated ────────────────
+// ── Editor types (the real classes from @brink/ink-editor) ───────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type EditorStateManager = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type ProjectSession = any;
+export type { EditorStateManager, ProjectSession } from "@brink/ink-editor";

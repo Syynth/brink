@@ -1,7 +1,7 @@
 import { type Extension, Prec } from "@codemirror/state";
 import { keymap, type EditorView } from "@codemirror/view";
 import { elementTypeField, ElementType, getEditorSession } from "./element-type.js";
-import { sigilBypass } from "./screenplay.js";
+import { sigilBypass, characterName, CHAR_SUFFIX_LEN } from "./screenplay.js";
 import { findTransition, lineHasContent, executeAction, buildContext } from "./transitions.js";
 import { CONVERTIBLE_TYPES, convertLineToType } from "./convert.js";
 
@@ -48,9 +48,7 @@ function handleKey(key: string, view: EditorView): boolean {
   // Character line special handlers
   if (info.type === ElementType.Character) {
     const trimmed = line.text.trimStart();
-    const ws = line.text.length - trimmed.length;
-    const nameStart = line.from + ws + 1; // after @
-    const nameEnd = line.to - 3;          // before :<>
+    const { ws, nameStart, nameEnd, name } = characterName(line);
     const head = state.selection.main.head;
 
     // Backspace on empty (@:<>): clear entire line
@@ -65,7 +63,6 @@ function handleKey(key: string, view: EditorView): boolean {
 
     // Backspace at name start: strip all sigils, leave name as plain text
     if (key === "Backspace" && head === nameStart) {
-      const name = line.text.slice(ws + 1, line.text.length - 3);
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: line.text.slice(0, ws) + name },
         selection: { anchor: line.from + ws },
@@ -81,7 +78,6 @@ function handleKey(key: string, view: EditorView): boolean {
       if (line.number < state.doc.lines && nextInfo && isFoldableIntoName(nextInfo.type)) {
         const nextLine = state.doc.line(line.number + 1);
         const nextText = nextLine.text;
-        const name = line.text.slice(ws + 1, line.text.length - 3);
         view.dispatch({
           changes: { from: line.from, to: nextLine.to, insert: "@" + name + nextText + ":<>" },
           selection: { anchor: line.from + 1 + name.length + nextText.length },
@@ -97,11 +93,11 @@ function handleKey(key: string, view: EditorView): boolean {
     // Skip when name is empty — fall through to clearScreenplaySigils transition
     if (key === "Enter" && nameStart < nameEnd) {
       const leftName = line.text.slice(ws + 1, head - line.from);
-      const rightName = line.text.slice(head - line.from, line.text.length - 3);
+      const rightName = line.text.slice(head - line.from, line.text.length - CHAR_SUFFIX_LEN);
       const prefix = line.text.slice(0, ws);
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: prefix + "@" + leftName + ":<>\n" + rightName },
-        selection: { anchor: line.from + prefix.length + 1 + leftName.length + 3 + 1 },
+        selection: { anchor: line.from + prefix.length + 1 + leftName.length + CHAR_SUFFIX_LEN + 1 },
         annotations: sigilBypass.of(true),
       });
       return true;
@@ -116,9 +112,7 @@ function handleKey(key: string, view: EditorView): boolean {
     const prevInfo = infos[lineIndex - 1];
     if (prevInfo?.type === ElementType.Character && isFoldableIntoName(info.type)) {
       const prevLine = state.doc.line(line.number - 1);
-      const prevTrimmed = prevLine.text.trimStart();
-      const prevWs = prevLine.text.length - prevTrimmed.length;
-      const prevName = prevLine.text.slice(prevWs + 1, prevLine.text.length - 3);
+      const { name: prevName } = characterName(prevLine);
       const content = line.text;
       view.dispatch({
         changes: { from: prevLine.from, to: line.to, insert: "@" + prevName + content + ":<>" },
@@ -148,10 +142,9 @@ function characterNameRange(view: EditorView): { start: number; end: number } | 
   const info = infos[line.number - 1];
   if (!info || info.type !== ElementType.Character) return null;
 
-  const trimmed = line.text.trimStart();
-  const ws = line.text.length - trimmed.length;
   // Name is between @ and :<>
-  return { start: line.from + ws + 1, end: line.to - 3 };
+  const { nameStart, nameEnd } = characterName(line);
+  return { start: nameStart, end: nameEnd };
 }
 
 function handleHome(view: EditorView): boolean {
@@ -207,7 +200,7 @@ function handleArrowLeft(view: EditorView): boolean {
     const prevInfo = infos[prevLine.number - 1];
     if (prevInfo?.type === ElementType.Character) {
       // Jump to end of name on previous character line (before :<>)
-      const nameEnd = prevLine.to - 3;
+      const { nameEnd } = characterName(prevLine);
       view.dispatch({ selection: { anchor: nameEnd } });
       return true;
     }
