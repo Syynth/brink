@@ -59,7 +59,7 @@ async function setEditorContent(page: Page, content: string) {
 
 test.describe("stitches in binder", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?fixture=screenplay");
     await waitForBinder(page);
   });
 

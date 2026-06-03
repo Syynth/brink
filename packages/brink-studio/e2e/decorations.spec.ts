@@ -30,7 +30,7 @@ async function getKnotTextLines(page: Page): Promise<number[]> {
 
 test.describe("decoration tracking", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?fixture=screenplay");
     await page.waitForSelector(".brink-knot-header", { timeout: 5000 });
   });
 

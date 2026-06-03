@@ -41,7 +41,7 @@ async function getFileLabels(page: Page) {
 
 test.describe("binder", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?fixture=screenplay");
     await waitForBinder(page);
   });
 
@@ -91,7 +91,7 @@ test.describe("binder", () => {
 
 test.describe("binder → tab opening", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?fixture=screenplay");
     await waitForBinder(page);
   });
 
@@ -174,7 +174,7 @@ test.describe("binder → tab opening", () => {
 
 test.describe("tab pinning", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?fixture=screenplay");
     await waitForBinder(page);
   });
 
@@ -223,7 +223,7 @@ test.describe("tab pinning", () => {
 
 test.describe("focused view content", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?fixture=screenplay");
     await waitForBinder(page);
   });
 

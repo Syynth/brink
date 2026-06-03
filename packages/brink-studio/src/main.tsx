@@ -36,6 +36,24 @@ Which story would you like to play?
   -> introduction
 `;
 
+// Deterministic single-file project for e2e, loaded via `?fixture=screenplay`.
+// This decouples the binder/decorations/stitches specs from the demo default
+// above (which is multi-file and has no top-level knots). Not used in normal
+// app usage — only when the query param is present.
+const SCREENPLAY_FIXTURE = `// A short screenplay-style demo.
+-> opening
+
+=== opening ===
+The lights dim.
+A figure steps into the light.
+-> evidence
+
+=== interrogation ===
+= evidence
+"Where were you that night?"
+-> END
+`;
+
 // ── Root component ─────────────────────────────────────────────
 
 interface RootProps {
@@ -184,12 +202,18 @@ async function main(): Promise<void> {
   const loading = document.getElementById("loading");
   if (loading) loading.remove();
 
-  // Initialize project BEFORE rendering so the wasm session has files loaded
-  const provider = new InMemoryFileProvider({
-    "main.ink": MAIN_INK,
-    "ratchets-lair.ink": ratchetsLair,
-    "candlelit-daughters.ink": candlelitDaughters,
-  });
+  // Initialize project BEFORE rendering so the wasm session has files loaded.
+  // `?fixture=screenplay` loads a deterministic single-file project for e2e.
+  const fixture = new URLSearchParams(window.location.search).get("fixture");
+  const files: Record<string, string> =
+    fixture === "screenplay"
+      ? { "main.ink": SCREENPLAY_FIXTURE }
+      : {
+          "main.ink": MAIN_INK,
+          "ratchets-lair.ink": ratchetsLair,
+          "candlelit-daughters.ink": candlelitDaughters,
+        };
+  const provider = new InMemoryFileProvider(files);
   const project = new ProjectSession({ provider, entryFile: "main.ink" });
   await project.initialize();
 
