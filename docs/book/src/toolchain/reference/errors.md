@@ -6,7 +6,7 @@ All runtime operations that can fail return `Result<T, RuntimeError>`.
 
 ### Host errors
 
-These indicate a bug in your code -- the host called the API incorrectly.
+These indicate a bug in your code — the host called the API incorrectly.
 
 | Variant | When |
 |---------|------|
@@ -15,7 +15,7 @@ These indicate a bug in your code -- the host called the API incorrectly.
 | `StoryEnded` | Tried to continue a story that has permanently ended |
 | `UnknownFlow` | Referenced a named flow that doesn't exist |
 | `FlowAlreadyExists` | Tried to spawn a flow with a name that's already active |
-| `StepLimitExceeded` | Safety limit hit -- possible infinite loop in the story |
+| `StepLimitExceeded` | Safety limit hit — possible infinite loop in the story |
 
 ### Story errors
 
@@ -30,7 +30,7 @@ These indicate a problem in the ink source or an unsupported feature.
 
 ### Internal errors
 
-These typically indicate a compiler bug -- the bytecode is malformed.
+These typically indicate a compiler bug — the bytecode is malformed.
 
 | Variant | When |
 |---------|------|
@@ -45,4 +45,4 @@ These typically indicate a compiler bug -- the bytecode is malformed.
 
 ## Recovery
 
-Host errors are recoverable -- fix the calling code and retry. Story errors may be recoverable depending on context. Internal errors generally indicate broken bytecode and are not recoverable.
+Host errors are recoverable — fix the calling code and retry. Story errors may be recoverable depending on context. Internal errors generally indicate broken bytecode and are not recoverable.

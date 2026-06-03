@@ -6,7 +6,7 @@ brink is organized as a Cargo workspace with strict dependency rules. The centra
 
 | Crate | Path | Purpose |
 |-------|------|---------|
-| `brink` | `crates/brink/` | Public API -- re-exports from compiler and runtime |
+| `brink` | `crates/brink/` | Public API — re-exports from compiler and runtime |
 | `brink-compiler` | `crates/brink-compiler/` | Pipeline driver: `.ink` to `StoryData` |
 | `brink-runtime` | `crates/brink-runtime/` | Bytecode VM for executing compiled stories |
 | `brink-cli` | `crates/brink-cli/` | CLI tool: compile, convert, play, export-xliff, compile-locale, regenerate-xliff, fmt, replay |
@@ -45,10 +45,10 @@ Internal crates have `publish = false` and are not published to crates.io.
 
 ## Key dependency rules
 
-1. **`brink-runtime`** depends ONLY on `brink-format` -- keeps the runtime minimal and embeddable
-2. **`brink-lsp`** depends on `brink-analyzer`, NOT on `brink-compiler` -- the LSP needs parse through validation, not codegen
-3. **`brink-format`** has no brink-internal dependencies -- it is the stable interface layer
-4. **`brink-format`** is the firewall -- source-level concepts never leak into the runtime
+1. **`brink-runtime`** depends ONLY on `brink-format` — keeps the runtime minimal and embeddable
+2. **`brink-lsp`** depends on `brink-analyzer`, NOT on `brink-compiler` — the LSP needs parse through validation, not codegen
+3. **`brink-format`** has no brink-internal dependencies — it is the stable interface layer
+4. **`brink-format`** is the firewall — source-level concepts never leak into the runtime
 
 These rules enable hot-reload (runtime loads new bytecode without the compiler), compile-time isolation (changing compiler internals doesn't rebuild the runtime), and small runtime binaries for embedding.
 

@@ -40,6 +40,6 @@ let mut story = Story::new(&program, line_tables);
 
 ## Error cases
 
-- **`Decode`** -- corrupt or incompatible `.inkb` file (wrong magic, bad checksum, truncated data)
-- **`UnresolvedDefinition`** -- a container references a `DefinitionId` that doesn't exist in the story data
-- **`NoRootContainer`** -- the story has no entry point container
+- **`Decode`** — corrupt or incompatible `.inkb` file (wrong magic, bad checksum, truncated data)
+- **`UnresolvedDefinition`** — a container references a `DefinitionId` that doesn't exist in the story data
+- **`NoRootContainer`** — the story has no entry point container

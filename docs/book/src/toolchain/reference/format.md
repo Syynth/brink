@@ -57,7 +57,7 @@ With 10 sections, the offset table occupies 80 bytes (10 x 8). The total header 
 - All multi-byte integers are **little-endian**.
 - `DefinitionId` values are encoded as raw `u64` LE (8 bytes).
 - Strings in the name table are length-prefixed: `u16` LE byte count followed by UTF-8 bytes.
-- Sections are self-contained -- the runtime can deserialize them independently. The `read_inkb` function parses all sections into a complete `StoryData` for linking.
+- Sections are self-contained — the runtime can deserialize them independently. The `read_inkb` function parses all sections into a complete `StoryData` for linking.
 
 ## `.inkt` format
 

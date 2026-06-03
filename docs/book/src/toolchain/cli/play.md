@@ -13,9 +13,9 @@ Accepts `.inkb`, `.ink.json`, or `.inkt` files.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--speed <N>` / `-s` | `30` | Typewriter speed in characters per second (0 = instant) |
-| `--input <FILE>` / `-i` | -- | Read choice inputs from a file (batch mode) |
-| `--locale <FILE>` | -- | Locale overlay (`.inkl`) to make available; repeatable. Switch at runtime with the `l` key. |
-| `--save-transcript <FILE>` | -- | Write the playthrough's `.brkt` transcript after the session ends. |
+| `--input <FILE>` / `-i` | — | Read choice inputs from a file (batch mode) |
+| `--locale <FILE>` | — | Locale overlay (`.inkl`) to make available; repeatable. Switch at runtime with the `l` key. |
+| `--save-transcript <FILE>` | — | Write the playthrough's `.brkt` transcript after the session ends. |
 
 A saved `.brkt` can be re-rendered later (in any locale) with `brink replay <TRANSCRIPT> --story <FILE> [--locale <FILE>]`.
 
@@ -29,7 +29,7 @@ When run in a terminal, `brink play` launches a TUI with typewriter text reveal 
 |-----|------------|--------------|
 | `Space` | Skip typewriter | Skip typewriter |
 | `Up/Down` | Scroll history | Select choice |
-| `Enter` | -- | Confirm choice |
+| `Enter` | — | Confirm choice |
 | `Tab` | Focus choices | Focus story |
 | `q` | Quit | Quit |
 

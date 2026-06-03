@@ -1,6 +1,6 @@
 # Plural Resolution
 
-Brink uses CLDR plural categories for locale-aware text. The runtime itself ships no locale data -- consumers provide a resolver via the `PluralResolver` trait.
+brink uses CLDR plural categories for locale-aware text. The runtime itself ships no locale data — consumers provide a resolver via the `PluralResolver` trait.
 
 ## PluralCategory
 
@@ -15,7 +15,7 @@ enum PluralCategory {
 }
 ```
 
-These correspond to the six CLDR plural categories. Different languages use different subsets -- English uses `One` and `Other`, Arabic uses all six, Japanese uses only `Other`.
+These correspond to the six CLDR plural categories. Different languages use different subsets — English uses `One` and `Other`, Arabic uses all six, Japanese uses only `Other`.
 
 ## The PluralResolver trait
 
@@ -26,9 +26,9 @@ trait PluralResolver {
 }
 ```
 
-- **`cardinal()`** -- determines the plural form for cardinal numbers. "1 apple" vs "2 apples" in English; more complex rules in other languages.
-- **`ordinal()`** -- determines the plural form for ordinal numbers. "1st", "2nd", "3rd", "4th" in English.
-- **`locale_override`** -- allows per-call locale switching for mixed-language stories.
+- **`cardinal()`** — determines the plural form for cardinal numbers. "1 apple" vs "2 apples" in English; more complex rules in other languages.
+- **`ordinal()`** — determines the plural form for ordinal numbers. "1st", "2nd", "3rd", "4th" in English.
+- **`locale_override`** — allows per-call locale switching for mixed-language stories.
 
 ## No resolver (fallback)
 

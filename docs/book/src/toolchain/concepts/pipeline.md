@@ -19,7 +19,7 @@ The LSP runs phases 1-3. The compiler runs all phases.
 
 ## Phase 2: HIR Lowering
 
-The AST is lowered to HIR (High-level Intermediate Representation) per-file. This phase handles weave folding -- converting the flat sequence of choices and gathers in ink source into a container tree. Implicit structure like root containers and auto-entering the first stitch is materialized here.
+The AST is lowered to HIR (High-level Intermediate Representation) per-file. This phase handles weave folding — converting the flat sequence of choices and gathers in ink source into a container tree. Implicit structure like root containers and auto-entering the first stitch is materialized here.
 
 ## Phase 3: Analysis
 
