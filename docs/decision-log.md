@@ -663,3 +663,11 @@
 - **SCOPE:** moderate
 - **WHAT:** Brink's backlog lives in the user-level GitHub Project "Brink" (#6, owner Syynth — https://github.com/users/Syynth/projects/6), mirroring the Folklore workflow. Board columns: Todo / In Progress / Done / Icebox. Labels: area (`studio`, `editor`, `wasm`, `runtime`, `compiler`, `bevy-brink`, `intl`), severity (`severity:critical|high|medium|low`), and `needs-design`. Issues are filed one-per-finding (granular, independently closeable) and added to the board via `gh project item-add 6 --owner Syynth --url <url>`. `needs-design` and Icebox items are skipped when picking up autonomous work.
 - **WHY:** A single shared source-of-truth backlog for user and agents, consistent with the Folklore setup the user already runs. Granular issues ease triage/bisecting; severity labels surface highest-impact work; `needs-design` gates items that require product/design direction before implementation.
+
+## Book structure: separate the core toolchain from integrations/clients
+- **WHEN:** 2026-06-03
+- **PROJECT:** brink
+- **SYSTEM:** docs/book
+- **SCOPE:** moderate
+- **WHAT:** Restructure the mdBook so the core compiler toolchain (compiler, runtime library, CLI, binary format, localization tooling) is documented as one domain, and integrations/clients (bevy-brink, the web/WASM surface via brink-web, brink-studio, and a future React client) as a separate top-level domain. Bevy stops being a peer of the toolchain docs and becomes one client among several. brink-web is documented as the wasm foundation that web/React clients and the studio build on; brink-studio gets its own chapter as the reference authoring app. Dividing line: "produces or runs StoryData" = toolchain; "embeds brink in a product" = integration.
+- **WHY:** brink is the toolchain; Bevy is just the first of several front-ends. Treating it as a peer of the compiler docs misrepresents the architecture and won't scale as web/React/studio clients land. Separating the layers keeps the toolchain docs engine-neutral and gives each client a clear home.

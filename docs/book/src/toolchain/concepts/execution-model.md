@@ -1,7 +1,10 @@
-# The Step Loop
+# The Execution Model
 
-The core execution model is a synchronous step function that runs until a yield
-point and returns a `Line`. The variant tells you what to do next.
+A compiled story runs as a synchronous **step function**: it executes bytecode
+until it reaches a yield point, then hands back a `Line`. The variant of that
+`Line` tells you what just happened and what to do next. This loop is the shared
+foundation under every client — raw Rust, Bevy, the web runner all express the
+same model.
 
 ```rust,ignore
 use brink_runtime::{Line, Story};
@@ -26,6 +29,9 @@ loop {
     }
 }
 ```
+
+> `Story` is the mutable half of the [two-object model](../embedding/index.md#the-two-object-model):
+> it borrows an immutable `Program` and carries all the execution state.
 
 ## `Line` variants
 
@@ -66,7 +72,42 @@ loop {
 
 Both have `_with(&handler)` variants (`continue_single_with`,
 `continue_maximally_with`) that take a custom `ExternalFnHandler` for
-[external functions](./runtime.md#external-functions).
+[external functions](../embedding/external-functions.md).
+
+## Choices
+
+When the story yields `Line::Choices`, execution is blocked until you select one
+with `story.choose(index)`:
+
+```rust,ignore
+Line::Choices { text, choices, .. } => {
+    for choice in &choices {
+        println!("{}: {}", choice.index + 1, choice.text);
+    }
+    story.choose(choices[selected].index)?;
+}
+```
+
+Each `Choice` carries:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `text` | `String` | display text for this choice |
+| `index` | `usize` | the value to pass to `story.choose()` |
+| `tags` | `Vec<String>` | tags attached to this choice |
+
+Ink defines several choice *kinds*, but they're resolved by the compiler and VM
+— the runtime always hands you a flat `Vec<Choice>` of the ones currently
+selectable:
+
+- **Once-only** (`*`) — the default; disappears after it's taken.
+- **Sticky** (`+`) — stays available on later visits.
+- **Fallback** — has no display text; auto-selected when nothing else is
+  available, and never appears in the `choices` vec.
+- **Conditional** — guarded by a condition; only present when the guard is true.
+
+Choice-related errors (`InvalidChoiceIndex`, `NotWaitingForChoice`) are listed in
+[Reference › Errors](../reference/errors.md).
 
 ## StoryStatus
 
