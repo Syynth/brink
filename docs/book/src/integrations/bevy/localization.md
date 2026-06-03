@@ -3,7 +3,7 @@
 Two bevy-brink features build on the program/line-tables split: runtime locale
 switching (swap the rendering data) and `.brkt` transcript persistence (save and
 re-render the visible history). Both rely on line tables being independent of the
-immutable program — see the [Overview](./index.md#the-three-asset-bundle).
+immutable program — see the [Overview](./index.md#the-story-asset-bundle).
 
 ## Locale switching
 

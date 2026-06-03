@@ -2,46 +2,43 @@
 
 [Introduction](./introduction.md)
 
-# User Guide
+# The Toolchain
 
-- [Getting Started](./guide/getting-started.md)
-  - [Installation](./guide/installation.md)
-  - [Quick Start](./guide/quick-start.md)
-- [The CLI](./cli/index.md)
-  - [brink compile](./cli/compile.md)
-  - [brink convert](./cli/convert.md)
-  - [brink play](./cli/play.md)
-- [Runtime API](./guide/runtime.md)
-  - [Loading & Linking](./guide/loading.md)
-  - [The Step Loop](./guide/step-loop.md)
-  - [Choices](./guide/choices.md)
-  - [Error Handling](./guide/errors.md)
+- [Installation](./toolchain/installation.md)
+- [Your First Story](./toolchain/first-story.md)
+- [The CLI](./toolchain/cli/index.md)
+  - [brink compile](./toolchain/cli/compile.md)
+  - [brink convert](./toolchain/cli/convert.md)
+  - [brink play](./toolchain/cli/play.md)
+- [Embedding the Runtime](./toolchain/embedding/index.md)
+  - [Loading & Linking](./toolchain/embedding/loading.md)
+  - [External Functions](./toolchain/embedding/external-functions.md)
+  - [Named Flows](./toolchain/embedding/named-flows.md)
+- [Localization](./toolchain/localization/overview.md)
+  - [XLIFF Workflow](./toolchain/localization/xliff.md)
+  - [Plurals](./toolchain/localization/plurals.md)
+- [Concepts](./toolchain/concepts/index.md)
+  - [The Two Pipelines](./toolchain/concepts/two-pipelines.md)
+  - [The Execution Model](./toolchain/concepts/execution-model.md)
+  - [Architecture & the Firewall](./toolchain/concepts/architecture.md)
+  - [The Compilation Pipeline](./toolchain/concepts/pipeline.md)
+- [Reference](./toolchain/reference/index.md)
+  - [Runtime API](./toolchain/reference/runtime-api.md)
+  - [Bytecode & Opcodes](./toolchain/reference/opcodes.md)
+  - [Binary Format](./toolchain/reference/format.md)
+  - [Containers & DefinitionId](./toolchain/reference/containers.md)
+  - [Line Templates](./toolchain/reference/line-templates.md)
+  - [Errors](./toolchain/reference/errors.md)
 
-# Bevy Integration
+# Integrations & Clients
 
-- [Overview](./bevy/index.md)
-- [Spawning & Driving Flows](./bevy/flows.md)
-- [External Functions](./bevy/bindings.md)
-- [Localization & Saves](./bevy/localization.md)
-
-# Architecture
-
-- [Overview](./architecture/overview.md)
-- [Compilation Pipeline](./architecture/pipeline.md)
-- [Containers & DefinitionId](./architecture/containers.md)
-- [Bytecode VM](./architecture/vm.md)
-- [Binary Format](./architecture/format.md)
-
-# Localization
-
-- [Overview](./localization/overview.md)
-- [Line Templates](./localization/line-templates.md)
-- [XLIFF Workflow](./localization/xliff.md)
-- [Plural Resolution](./localization/plurals.md)
-
-# Playground
-
-- [Playground](./playground.md)
+- [Bevy](./integrations/bevy/index.md)
+  - [Spawning & Driving Flows](./integrations/bevy/flows.md)
+  - [External Functions](./integrations/bevy/bindings.md)
+  - [Localization & Saves](./integrations/bevy/localization.md)
+- [Web & WASM](./integrations/web/index.md)
+  - [Playground](./integrations/web/playground.md)
+- [Studio](./integrations/studio/index.md)
 
 # Contributing
 

@@ -63,9 +63,9 @@ Each marker gets its own `BrinkGlobals<M>` resource and
 `BrinkFlow<M>`/`BrinkContext<M>`/`BrinkLocale<M>` components. Use `()` unless
 you actually need this.
 
-## The three-asset bundle
+## The story-asset bundle
 
-A loaded story is a thin bundle of two labeled sub-assets:
+A loaded story is a thin bundle (`BrinkStoryAsset`) of two labeled sub-assets:
 
 | Asset | Holds | Notes |
 |-------|-------|-------|

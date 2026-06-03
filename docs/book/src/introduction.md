@@ -1,33 +1,50 @@
 # Introduction
 
-brink is a compiler and runtime for [inkle's ink](https://github.com/inkle/ink) narrative scripting language, written in Rust.
+brink is a **toolchain** for [inkle's ink](https://github.com/inkle/ink)
+narrative scripting language, written in Rust. It compiles `.ink` source to a
+compact bytecode format and executes it in a stack-based VM — as a CLI tool, an
+embeddable Rust library, or a WASM module behind a web app.
 
-It compiles `.ink` source files to a compact bytecode format and executes them in a stack-based VM. You can use brink as a CLI tool to compile and play stories, or embed the runtime as a Rust library in games and applications.
+## Where to start
+
+The book is in two halves: **the toolchain** (the engine-neutral core — compile
+and run stories) and **integrations & clients** (the things built on top). Jump
+to what you're doing:
+
+| You want to… | Start at |
+|--------------|----------|
+| Write ink and play it from the terminal | [Installation](./toolchain/installation.md) → [The CLI](./toolchain/cli/index.md) |
+| Drive stories from a Rust program | [Your First Story](./toolchain/first-story.md) → [Embedding the Runtime](./toolchain/embedding/index.md) |
+| Ship a story in a **Bevy** game | [Bevy Integration](./integrations/bevy/index.md) |
+| Build a **web** front-end or editor | [Web & WASM](./integrations/web/index.md) · [Studio](./integrations/studio/index.md) |
+| Translate a story | [Localization](./toolchain/localization/overview.md) |
+| Understand how it works, or hack on it | [Concepts](./toolchain/concepts/index.md) · [Contributing](./contributing/crate-layout.md) |
 
 ## Features
 
-- Full ink language support: choices, gathers, weave, variables, lists, sequences, tunnels, threads, external functions
+- Full ink language support: choices, gathers, weave, variables, lists,
+  sequences, tunnels, threads, external functions
 - Bytecode compiler with multi-file support (`INCLUDE` resolution)
-- Stack-based VM with multi-instance execution (one compiled program, many story instances)
-- Localization-ready format with line templates, interpolation slots, and plural categories
-- Language server (LSP) for editor integration
-- No unsafe code, no panics -- strict lint policy
-
-## How it works
-
-brink has two pipelines:
-
-1. **Native compiler**: `.ink` source -> parse -> HIR -> analyze -> LIR -> bytecode codegen -> `StoryData`
-2. **Converter** (reference): `.ink.json` (inklecate output) -> convert -> `StoryData`
-
-The converter pipeline processes output from inkle's reference C# compiler and serves as the known-good reference implementation. The native compiler is under active development and is validated against the converter's output using an episode-based test corpus.
-
-Both pipelines produce the same `StoryData` structure, which is linked and executed by `brink-runtime`.
+- Stack-based VM with multi-instance execution (one compiled program, many
+  story instances)
+- Localization-ready format with line templates, interpolation slots, and
+  plural categories
+- Language server (LSP) and WASM bindings for editor and web integration
+- No unsafe code, no panics — strict lint policy
 
 ## Learning ink
 
-brink implements the ink language as designed by inkle. To learn the ink language itself, see the [Writing with Ink](https://github.com/inkle/ink/blob/master/Documentation/WritingWithInk.md) documentation.
+brink implements the ink language as designed by inkle. To learn the *language*
+itself, see inkle's
+[Writing with Ink](https://github.com/inkle/ink/blob/master/Documentation/WritingWithInk.md).
+This book documents brink — the compiler, runtime, and the things you build with
+them.
 
-## Current status
+## A note on maturity
 
-The compiler is under active development. The episode-based test corpus tracks behavioral conformance between the native compiler and the converter reference. Not all ink features are fully supported by the native compiler yet -- the converter pipeline is available for production use in the meantime.
+brink has two ways to produce a runnable story: the **native compiler** (the
+normal path, reads `.ink`) and a **converter** that ingests inklecate's output
+as a known-good reference. The native compiler is under active development and
+validated against the converter; until it reaches full parity, the converter is
+available for stories you already have as `.ink.json`. See
+[The Two Pipelines](./toolchain/concepts/two-pipelines.md) for which to use.

@@ -1,6 +1,6 @@
 # brink convert
 
-Convert between ink formats. This uses the **converter** pipeline (`brink-converter`), which processes inklecate's JSON output rather than compiling from `.ink` source. Use `brink compile` for native compilation.
+Convert between ink formats. This uses the **converter** pipeline (`brink-converter`), which processes inklecate's JSON output rather than compiling from `.ink` source. Use `brink compile` for native compilation — see [The Two Pipelines](../concepts/two-pipelines.md) for which you want.
 
 Input format is inferred from the file extension; output defaults to `.inkt` on stdout.
 
