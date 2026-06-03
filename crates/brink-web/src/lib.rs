@@ -18,12 +18,7 @@ pub fn compile(source: &str) -> String {
             let warnings: Vec<DiagnosticJs> = output
                 .warnings
                 .iter()
-                .map(|d| DiagnosticJs {
-                    message: d.message.clone(),
-                    start: d.range.start().into(),
-                    end: d.range.end().into(),
-                    severity: format!("{:?}", d.code.severity()),
-                })
+                .map(|d| diagnostic_to_js(d, source))
                 .collect();
 
             let data = output.data;
@@ -44,15 +39,7 @@ pub fn compile(source: &str) -> String {
 
             match e {
                 brink_compiler::CompileError::Diagnostics(diags) => {
-                    diagnostics = diags
-                        .iter()
-                        .map(|d| DiagnosticJs {
-                            message: d.message.clone(),
-                            start: d.range.start().into(),
-                            end: d.range.end().into(),
-                            severity: format!("{:?}", d.code.severity()),
-                        })
-                        .collect();
+                    diagnostics = diags.iter().map(|d| diagnostic_to_js(d, source)).collect();
                 }
                 other => {
                     error_msg = Some(format!("{other}"));
@@ -366,6 +353,12 @@ impl EditorSession {
     /// Set a view context scoping the editor to `[start, end)` of the active file.
     /// IDE queries will adjust offsets relative to this range.
     pub fn set_view_context(&mut self, start: u32, end: u32) {
+        // Boundary offsets are UTF-16 code units; convert to bytes for the
+        // internal byte-indexed logic below (and stored ViewContext range).
+        let (start, end) = match self.active_source() {
+            Some(s) => (utf16_to_byte(s, start), utf16_to_byte(s, end)),
+            None => (start, end),
+        };
         // Check if there's a newline right at `end` (the separator between this
         // section and the next). If so, we'll ensure it's preserved after splices.
         // Trim trailing blank lines from the view range and check if there's a
@@ -479,13 +472,23 @@ impl EditorSession {
         };
 
         let syms = brink_ide::document::document_symbols(hir, manifest);
-        let items: Vec<DocumentSymbolJs> = syms.into_iter().map(convert_document_symbol).collect();
+        let source = self.session.source(file_id).unwrap_or("");
+        let items: Vec<DocumentSymbolJs> = syms
+            .into_iter()
+            .map(|s| convert_document_symbol(s, source))
+            .collect();
         serde_json::to_string(&items).unwrap_or_default()
     }
 
     /// Compile the project using all loaded files. Returns JSON `CompileResult`.
     pub fn compile_project(&self, entry: &str) -> String {
         let session = &self.session;
+        // Diagnostic ranges are byte offsets into the compiled entry file; we
+        // convert them to UTF-16 for the editor against that file's source.
+        let diag_source = session
+            .file_id(entry)
+            .and_then(|id| session.source(id))
+            .unwrap_or("");
         let result = brink_compiler::compile(entry, |path| {
             session
                 .file_id(path)
@@ -504,12 +507,7 @@ impl EditorSession {
                 let warnings: Vec<DiagnosticJs> = output
                     .warnings
                     .iter()
-                    .map(|d| DiagnosticJs {
-                        message: d.message.clone(),
-                        start: d.range.start().into(),
-                        end: d.range.end().into(),
-                        severity: format!("{:?}", d.code.severity()),
-                    })
+                    .map(|d| diagnostic_to_js(d, diag_source))
                     .collect();
 
                 let data = output.data;
@@ -532,12 +530,7 @@ impl EditorSession {
                     brink_compiler::CompileError::Diagnostics(diags) => {
                         diagnostics = diags
                             .iter()
-                            .map(|d| DiagnosticJs {
-                                message: d.message.clone(),
-                                start: d.range.start().into(),
-                                end: d.range.end().into(),
-                                severity: format!("{:?}", d.code.severity()),
-                            })
+                            .map(|d| diagnostic_to_js(d, diag_source))
                             .collect();
                     }
                     other => {
@@ -574,8 +567,11 @@ impl EditorSession {
             };
 
             let syms = brink_ide::document::document_symbols(hir, manifest);
-            let items: Vec<DocumentSymbolJs> =
-                syms.into_iter().map(convert_document_symbol).collect();
+            let source = db.source(id).unwrap_or("");
+            let items: Vec<DocumentSymbolJs> = syms
+                .into_iter()
+                .map(|s| convert_document_symbol(s, source))
+                .collect();
             outline.push(FileOutlineJs {
                 path: path.to_owned(),
                 symbols: items,
@@ -721,7 +717,7 @@ impl EditorSession {
                 let db = self.session.db();
                 let file_path = db.file_path(loc.file).unwrap_or_default().to_owned();
                 let (start, end) = if loc.file == file_id {
-                    // Same file: adjust to view-relative offsets
+                    // Same file: adjust to view-relative UTF-16 offsets
                     (
                         self.to_relative(loc.range.start().into())
                             .unwrap_or(loc.range.start().into()),
@@ -729,7 +725,12 @@ impl EditorSession {
                             .unwrap_or(loc.range.end().into()),
                     )
                 } else {
-                    (loc.range.start().into(), loc.range.end().into())
+                    // Cross-file: convert bytes to UTF-16 in the target file
+                    let src = self.session.source(loc.file).unwrap_or("");
+                    (
+                        byte_to_utf16(src, loc.range.start().into()),
+                        byte_to_utf16(src, loc.range.end().into()),
+                    )
                 };
                 let js = LocationJs {
                     file: file_path,
@@ -773,10 +774,12 @@ impl EditorSession {
                         end,
                     })
                 } else {
+                    // Cross-file: convert bytes to UTF-16 in the target file
+                    let src = self.session.source(loc.file).unwrap_or("");
                     Some(LocationJs {
                         file: db.file_path(loc.file).unwrap_or_default().to_owned(),
-                        start: loc.range.start().into(),
-                        end: loc.range.end().into(),
+                        start: byte_to_utf16(src, loc.range.start().into()),
+                        end: byte_to_utf16(src, loc.range.end().into()),
                     })
                 }
             })
@@ -973,7 +976,11 @@ impl EditorSession {
         };
 
         let syms = brink_ide::document::document_symbols(hir, manifest);
-        let items: Vec<DocumentSymbolJs> = syms.into_iter().map(convert_document_symbol).collect();
+        let source = self.session.source(file_id).unwrap_or("");
+        let items: Vec<DocumentSymbolJs> = syms
+            .into_iter()
+            .map(|s| convert_document_symbol(s, source))
+            .collect();
 
         serde_json::to_string(&items).unwrap_or_default()
     }
@@ -1180,17 +1187,59 @@ impl EditorSession {
 // ── View context helpers (private, not wasm-exported) ───────────────
 
 impl EditorSession {
-    /// Convert a view-relative byte offset to a file-absolute offset.
-    fn to_absolute(&self, offset: u32) -> u32 {
-        self.view.as_ref().map_or(offset, |v| v.start + offset)
+    /// Source text of the active file, if loaded.
+    fn active_source(&self) -> Option<&str> {
+        self.session
+            .file_id(&self.active_path)
+            .and_then(|id| self.session.source(id))
     }
 
-    /// Convert a file-absolute byte offset to a view-relative offset.
+    /// Convert a UTF-16 view-relative offset (the boundary convention) to a
+    /// file-absolute **byte** offset for `brink-ide`/rowan.
+    ///
+    /// When a view context is active the offset is relative to the displayed
+    /// fragment (`source[view.start..view.end]`); otherwise it's relative to
+    /// the whole file.
+    fn to_absolute(&self, offset: u32) -> u32 {
+        let Some(source) = self.active_source() else {
+            return offset;
+        };
+        match self.view.as_ref() {
+            Some(v) => {
+                let start = floor_char_boundary(source, v.start as usize);
+                let end = floor_char_boundary(source, (v.end as usize).max(start));
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "ink files are always < 4GB"
+                )]
+                let abs = start as u32 + utf16_to_byte(&source[start..end], offset);
+                abs
+            }
+            None => utf16_to_byte(source, offset),
+        }
+    }
+
+    /// Convert a file-absolute **byte** offset (from `brink-ide`) to a
+    /// UTF-16 view-relative offset for the editor.
     /// Returns `None` if the offset is outside the view range.
     fn to_relative(&self, offset: u32) -> Option<u32> {
-        self.view.as_ref().map_or(Some(offset), |v| {
-            (offset >= v.start && offset <= v.end).then(|| offset - v.start)
-        })
+        let source = self.active_source()?;
+        match self.view.as_ref() {
+            Some(v) => {
+                if offset < v.start || offset > v.end {
+                    return None;
+                }
+                let start = floor_char_boundary(source, v.start as usize);
+                let end = floor_char_boundary(source, (v.end as usize).max(start));
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "ink files are always < 4GB"
+                )]
+                let byte_in_fragment = (offset as usize).saturating_sub(start) as u32;
+                Some(byte_to_utf16(&source[start..end], byte_in_fragment))
+            }
+            None => Some(byte_to_utf16(source, offset)),
+        }
     }
 
     /// Convert a file-absolute line number (0-based) to a view-relative line.
@@ -1219,6 +1268,60 @@ impl EditorSession {
 )]
 fn count_newlines(s: &str) -> u32 {
     s.matches('\n').count() as u32
+}
+
+// ── UTF-16 ↔ byte offset conversion ─────────────────────────────────
+//
+// The wasm `EditorSession` boundary speaks UTF-16 code-unit offsets, to
+// match CodeMirror / JS string indexing on the TypeScript side. Internally
+// (rowan, `TextSize`, `&str`) everything is byte offsets. These helpers
+// translate at the boundary. Both clamp to the end of `s` when the input
+// falls past the string, and round a position that lands inside a multi-unit
+// boundary up to the next char start (CodeMirror never produces such inputs,
+// but the clamp keeps us panic-free).
+
+/// Convert a byte offset within `s` to a UTF-16 code-unit offset.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "ink files are always < 4GB"
+)]
+fn byte_to_utf16(s: &str, byte: u32) -> u32 {
+    let byte = byte as usize;
+    let mut units = 0u32;
+    for (i, c) in s.char_indices() {
+        if i >= byte {
+            return units;
+        }
+        units += c.len_utf16() as u32;
+    }
+    units
+}
+
+/// Convert a UTF-16 code-unit offset within `s` to a byte offset.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "ink files are always < 4GB"
+)]
+fn utf16_to_byte(s: &str, utf16: u32) -> u32 {
+    let mut units = 0u32;
+    for (i, c) in s.char_indices() {
+        if units >= utf16 {
+            return i as u32;
+        }
+        units += c.len_utf16() as u32;
+    }
+    s.len() as u32
+}
+
+/// Largest byte index `<= i` that is a char boundary in `s` (clamped to `len`).
+/// Keeps fragment slicing panic-free if a stored byte offset ever lands inside
+/// a multibyte char.
+fn floor_char_boundary(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 // ── Serialization types ─────────────────────────────────────────────
@@ -1360,19 +1463,35 @@ fn inlay_hint_kind_str(kind: &brink_ide::inlay_hints::InlayHintKind) -> &'static
     }
 }
 
-fn convert_document_symbol(sym: brink_ide::document::DocumentSymbol) -> DocumentSymbolJs {
+/// Convert a compiler diagnostic to JSON, translating its byte range to UTF-16
+/// offsets against `source` (the file the range refers to).
+fn diagnostic_to_js(d: &brink_ir::Diagnostic, source: &str) -> DiagnosticJs {
+    DiagnosticJs {
+        message: d.message.clone(),
+        start: byte_to_utf16(source, d.range.start().into()),
+        end: byte_to_utf16(source, d.range.end().into()),
+        severity: format!("{:?}", d.code.severity()),
+    }
+}
+
+/// Convert a symbol tree to JSON, translating byte ranges to UTF-16 offsets
+/// against `source` (the file the symbols belong to).
+fn convert_document_symbol(
+    sym: brink_ide::document::DocumentSymbol,
+    source: &str,
+) -> DocumentSymbolJs {
     DocumentSymbolJs {
         name: sym.name,
         kind: symbol_kind_str(sym.kind).to_owned(),
         detail: sym.detail,
-        start: sym.range.start().into(),
-        end: sym.range.end().into(),
-        full_start: sym.full_range.start().into(),
-        full_end: sym.full_range.end().into(),
+        start: byte_to_utf16(source, sym.range.start().into()),
+        end: byte_to_utf16(source, sym.range.end().into()),
+        full_start: byte_to_utf16(source, sym.full_range.start().into()),
+        full_end: byte_to_utf16(source, sym.full_range.end().into()),
         children: sym
             .children
             .into_iter()
-            .map(convert_document_symbol)
+            .map(|c| convert_document_symbol(c, source))
             .collect(),
     }
 }
@@ -1455,4 +1574,127 @@ pub fn token_type_names() -> String {
 #[wasm_bindgen]
 pub fn token_modifier_names() -> String {
     serde_json::to_string(brink_ide::semantic_tokens::token_modifier_names()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::cast_possible_truncation,
+        reason = "tiny literal test strings; offsets cannot overflow u32"
+    )]
+    use super::{byte_to_utf16, utf16_to_byte};
+
+    #[test]
+    fn ascii_is_identity() {
+        let s = "hello world";
+        for i in 0..=s.len() as u32 {
+            assert_eq!(byte_to_utf16(s, i), i, "byte_to_utf16 at {i}");
+            assert_eq!(utf16_to_byte(s, i), i, "utf16_to_byte at {i}");
+        }
+    }
+
+    #[test]
+    fn two_byte_char_caf_e() {
+        // "café": c=0, a=1, f=2, é=3..5 (2 bytes, 1 UTF-16 unit), len=5 bytes / 4 units
+        let s = "café";
+        assert_eq!(byte_to_utf16(s, 3), 3); // start of é
+        assert_eq!(byte_to_utf16(s, 5), 4); // end of string
+        assert_eq!(utf16_to_byte(s, 3), 3);
+        assert_eq!(utf16_to_byte(s, 4), 5);
+    }
+
+    #[test]
+    fn three_byte_em_dash() {
+        // "a—b": a=0, —=1..4 (U+2014, 3 bytes, 1 unit), b=4..5
+        let s = "a—b";
+        assert_eq!(byte_to_utf16(s, 4), 2); // start of b
+        assert_eq!(byte_to_utf16(s, 5), 3); // end
+        assert_eq!(utf16_to_byte(s, 2), 4);
+        assert_eq!(utf16_to_byte(s, 3), 5);
+    }
+
+    #[test]
+    fn four_byte_astral_emoji() {
+        // "a😀b": a=0, 😀=1..5 (U+1F600, 4 bytes, 2 UTF-16 units), b=5..6
+        let s = "a😀b";
+        assert_eq!(byte_to_utf16(s, 1), 1); // start of emoji
+        assert_eq!(byte_to_utf16(s, 5), 3); // after emoji (1 + 2 units)
+        assert_eq!(byte_to_utf16(s, 6), 4); // end
+        assert_eq!(utf16_to_byte(s, 1), 1);
+        assert_eq!(utf16_to_byte(s, 3), 5);
+        assert_eq!(utf16_to_byte(s, 4), 6);
+    }
+
+    #[test]
+    fn round_trip_on_char_boundaries() {
+        let s = "x—y😀zé!";
+        for (i, _) in s.char_indices().chain(std::iter::once((s.len(), ' '))) {
+            let units = byte_to_utf16(s, i as u32);
+            assert_eq!(utf16_to_byte(s, units), i as u32, "round-trip at byte {i}");
+        }
+    }
+
+    #[test]
+    fn clamps_past_end() {
+        let s = "café";
+        assert_eq!(byte_to_utf16(s, 999), 4); // total UTF-16 length
+        assert_eq!(utf16_to_byte(s, 999), 5); // total byte length
+    }
+
+    // ── End-to-end boundary tests ───────────────────────────────────
+    // These prove the EditorSession surfaces UTF-16 offsets even when a
+    // non-ASCII char shifts the byte/UTF-16 mapping. The é before the knot
+    // makes every byte offset past it 1 larger than its UTF-16 offset.
+
+    use super::EditorSession;
+
+    #[test]
+    fn document_symbols_returns_utf16_offsets() {
+        // "é\n=== k ===\n": é = 2 bytes / 1 UTF-16 unit, so the knot header
+        // starts at byte 3 but UTF-16 offset 2; the name `k` at byte 7 / unit 6.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "é\n=== k ===\nhi\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let json = s.document_symbols();
+        let syms: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let knot = &syms[0];
+        assert_eq!(knot["name"], "k");
+        // UTF-16 offsets, not bytes (byte would be 7 / full_start 3).
+        assert_eq!(
+            knot["start"].as_u64().unwrap(),
+            6,
+            "name start must be UTF-16"
+        );
+        assert_eq!(
+            knot["full_start"].as_u64().unwrap(),
+            2,
+            "knot full_start must be UTF-16"
+        );
+    }
+
+    #[test]
+    fn goto_definition_round_trips_utf16() {
+        // Divert target on line 1, knot on line 3, with é shifting offsets.
+        // "é -> k\n\n=== k ===\nhi\n"
+        //  byte:  é(0..2) space(2) -(3) >(4) space(5) k(6) \n(7) ...
+        //  utf16: é(0..1) space(1) -(2) >(3) space(4) k(5) \n(6) ...
+        // Cursor on the `k` of `-> k` is UTF-16 offset 5.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "é -> k\n\n=== k ===\nhi\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let json = s.goto_definition(5);
+        assert_ne!(json, "null", "should resolve the divert target");
+        let loc: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // goto resolves to the knot's name `k` inside `=== k ===`. That `k` is
+        // at byte 13 but UTF-16 offset 12 (one é before it). A byte-based
+        // result would be 13 — so 12 proves both the input offset (UTF-16 5 →
+        // byte 6, the divert's `k`) and the output (byte 13 → UTF-16 12).
+        assert_eq!(
+            loc["start"].as_u64().unwrap(),
+            12,
+            "definition start must be UTF-16, not bytes"
+        );
+    }
 }
