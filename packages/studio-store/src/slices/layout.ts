@@ -11,6 +11,9 @@ import type { StudioState } from "../index.js";
 
 export type LayoutTier = "wide" | "medium" | "narrow";
 
+/** Which view occupies the left sidebar dock (selected via the activity bar). */
+export type SidebarView = "binder" | "state";
+
 export interface LayoutSlice {
   /** Current responsive tier (set by the width observer). */
   tier: LayoutTier;
@@ -18,18 +21,22 @@ export interface LayoutSlice {
   binderDrawerOpen: boolean;
   /** Narrow tier: whether the Story (player) overlay is active vs the editor. */
   storyOpen: boolean;
+  /** The view shown in the left sidebar dock / drawer. */
+  activeSidebarView: SidebarView;
 
   setTier(tier: LayoutTier): void;
   setBinderDrawerOpen(open: boolean): void;
   toggleBinderDrawer(): void;
   setStoryOpen(open: boolean): void;
   toggleStory(): void;
+  setSidebarView(view: SidebarView): void;
 }
 
 export const createLayoutSlice: StateCreator<StudioState, [], [], LayoutSlice> = (set) => ({
   tier: "wide",
   binderDrawerOpen: false,
   storyOpen: false,
+  activeSidebarView: "binder",
 
   setTier(tier) {
     set((s) => {
@@ -55,5 +62,8 @@ export const createLayoutSlice: StateCreator<StudioState, [], [], LayoutSlice> =
   },
   toggleStory() {
     set((s) => ({ storyOpen: !s.storyOpen }));
+  },
+  setSidebarView(view) {
+    set({ activeSidebarView: view });
   },
 });

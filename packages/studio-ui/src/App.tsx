@@ -3,6 +3,8 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { Binder } from "./Binder.js";
 import { EditorPane } from "./EditorPane.js";
 import { PlayerPane } from "./PlayerPane.js";
+import { StateView } from "./StateView.js";
+import { ActivityBar, sidebarViewLabel } from "./ActivityBar.js";
 import { Toast } from "./Toast.js";
 import { useStudioStore } from "./StoreContext.js";
 import { useTier } from "./useTier.js";
@@ -17,9 +19,15 @@ function App({ editorSlot }: { editorSlot: ReactNode }) {
   const toggleBinderDrawer = useStudioStore((s) => s.toggleBinderDrawer);
   const setBinderDrawerOpen = useStudioStore((s) => s.setBinderDrawerOpen);
   const setStoryOpen = useStudioStore((s) => s.setStoryOpen);
+  const activeSidebarView = useStudioStore((s) => s.activeSidebarView);
 
   const rootRef = useRef<HTMLDivElement>(null);
   useTier(rootRef);
+
+  // The active sidebar view (Binder or State), shared by the wide dock and the
+  // compact drawer so the activity bar switches both the same way.
+  const sidebarTitle = sidebarViewLabel(activeSidebarView);
+  const sidebarBody = activeSidebarView === "binder" ? <Binder /> : <StateView />;
 
   const compact = tier !== "wide";
   const narrow = tier === "narrow";
@@ -68,12 +76,13 @@ function App({ editorSlot }: { editorSlot: ReactNode }) {
       )}
 
       <div className="studio-body">
+        {binderDocked && <ActivityBar />}
         <Group orientation="horizontal" id="brink-layout" className="studio-panes">
           {binderDocked && (
             <Panel id="binder" key="binder" defaultSize="220px" minSize="140px" maxSize="400px">
               <div className="binder-pane">
                 <div className="header">
-                  <span>Binder</span>
+                  <span>{sidebarTitle}</span>
                   <button
                     className="brink-panel-toggle"
                     onClick={togglePlayerVisible}
@@ -82,7 +91,7 @@ function App({ editorSlot }: { editorSlot: ReactNode }) {
                     {playerVisible ? "▶" : "◀"}
                   </button>
                 </div>
-                <Binder />
+                {sidebarBody}
               </div>
             </Panel>
           )}
@@ -118,18 +127,21 @@ function App({ editorSlot }: { editorSlot: ReactNode }) {
               className={"binder-drawer" + (binderDrawerOpen ? " open" : "")}
               aria-hidden={!binderDrawerOpen}
             >
-              <div className="binder-pane">
-                <div className="header">
-                  <span>Binder</span>
-                  <button
-                    className="brink-panel-toggle"
-                    onClick={() => setBinderDrawerOpen(false)}
-                    title="Close"
-                  >
-                    {"×"}
-                  </button>
+              <div className="drawer-inner">
+                <ActivityBar />
+                <div className="binder-pane">
+                  <div className="header">
+                    <span>{sidebarTitle}</span>
+                    <button
+                      className="brink-panel-toggle"
+                      onClick={() => setBinderDrawerOpen(false)}
+                      title="Close"
+                    >
+                      {"×"}
+                    </button>
+                  </div>
+                  {sidebarBody}
                 </div>
-                <Binder />
               </div>
             </aside>
           </>
