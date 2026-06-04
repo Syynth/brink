@@ -1,0 +1,320 @@
+// The Toppled Temple — a one-delve dungeon for the brink studio playground.
+// You are an unnamed delver. The only voices down here belong to a sardonic
+// merchant, a riddling ghost, a nervous goblin, and twelve tons of stone.
+//
+// This story leans on the fuller ink toolbox on purpose — LISTs, functions,
+// sequences, and a thread — so it doubles as a workout for the compiler.
+
+VAR gold = 12
+VAR health = 10
+VAR torch = 6
+VAR golem_hp = 12
+VAR rounds = 0
+VAR weakness_known = false
+
+LIST Gear = sword, shield, charm, draught, sparetorch
+VAR pack = ()
+
+LIST Boon = blessed, cursed
+VAR boon = ()
+
+LIST Rooms = riddle, altar, armory
+VAR explored = ()
+
+// ── helpers ────────────────────────────────────────────────────────
+
+=== function carrying(item) ===
+~ return pack ? item
+
+=== function roll(lo, hi) ===
+~ return RANDOM(lo, hi)
+
+=== function spend_torch(n) ===
+~ torch = torch - n
+{ torch < 0:
+    ~ torch = 0
+}
+
+=== function torch_desc() ===
+{
+    - torch <= 0: has guttered out — you fight blind
+    - torch <= 2: burns low, shadows crowding in
+    - else: holds steady
+}
+
+=== function damage() ===
+~ temp d = roll(2, 4)
+{ carrying(sword):
+    ~ d = d + 2
+}
+{ weakness_known:
+    ~ d = d + 3
+}
+{ boon == blessed:
+    ~ d = d + 1
+}
+{ boon == cursed:
+    ~ d = d - 1
+}
+{ torch <= 0:
+    ~ d = d - 1
+}
+{ d < 1:
+    ~ d = 1
+}
+~ return d
+
+// ── intro ──────────────────────────────────────────────────────────
+
+=== intro ===
+You descend the worn steps into the Toppled Temple. Somewhere below, water drips with the patience of the very old.
+
+Your torch is lit. You have {gold} coin and a stubborn disposition.
+
+A figure unfolds from the shadow of a broken pillar — all patched cloak and one glinting eye.
+
+@GRISWOLD:<>
+(not getting up)<>
+Buying or dying? I haven't got all century, and neither, frankly, have you.
+
+* [Browse his wares]
+    -> barter
+* [Push past him]
+    He shrugs, a man long past being insulted by the doomed.
+    -> threshold
+
+// ── barter (the shop loop) ──────────────────────────────────────────
+
+=== barter ===
+Griswold spreads a stained cloth. On it: the usual last-chance assortment.
+- (opts)
+You have {gold} coin.
++ {gold >= 6 and not carrying(sword)} [A short sword — 6 coin]
+    ~ gold = gold - 6
+    ~ pack += sword
+    @GRISWOLD:<>
+    Pointy end goes in the monster. Try to remember which end.
+    -> opts
++ {gold >= 5 and not carrying(shield)} [A dented shield — 5 coin]
+    ~ gold = gold - 5
+    ~ pack += shield
+    -> opts
++ {gold >= 7 and not carrying(charm)} [A warding charm — 7 coin]
+    ~ gold = gold - 7
+    ~ pack += charm
+    @GRISWOLD:<>
+    (lowering his voice)<>
+    Old temple silver. Stone doesn't care for it. Don't ask how I know.
+    -> opts
++ {gold >= 3 and not carrying(draught)} [A healing draught — 3 coin]
+    ~ gold = gold - 3
+    ~ pack += draught
+    -> opts
++ {gold >= 2 and not carrying(sparetorch)} [A spare torch — 2 coin]
+    ~ gold = gold - 2
+    ~ pack += sparetorch
+    -> opts
+* [Enough shopping]
+    @GRISWOLD:<>
+    (already counting your coin)<>
+    Pleasure doing business. Do scream if you need me. I won't come.
+    -> threshold
+
+// ── threshold (the hub) ─────────────────────────────────────────────
+
+=== threshold ===
+{ explored == ():
+    The temple opens into a toppled nave. Three ways lead off into the dark.
+- else:
+    You stand again in the toppled nave.
+}
+Your torch {torch_desc()}.
+
+* {not (explored ? riddle)} [The whispering hall]
+    -> riddle_hall
+* {not (explored ? altar)} [The cracked altar]
+    -> cursed_altar
+* {not (explored ? armory)} [The collapsed armory]
+    -> armory
+* {explored != ()} [Approach the vault doors]
+    -> vault_door
+
+=== riddle_hall ===
+~ explored += riddle
+~ spend_torch(1)
+A corridor of weeping stone. A pale shape gathers at its end — a SPECTRE, thin as candle smoke.
+
+@SPECTRE:<>
+(a voice like a draft under a door)<>
+Answer me true and I'll name the Warden's flaw. Answer false and... well. I'll laugh.
+
+"I have no throat, yet I swallow your light. I have no hands, yet I hold the whole temple. What am I?"
+
+* ["The dark"]
+    @SPECTRE:<>
+    (delighted)<>
+    Just so. And the Warden is a thing of the dark — so bring it light. Strike while your torch burns bright; it flinches from the flame.
+    ~ weakness_known = true
+    -> threshold
+* ["The Warden"]
+    @SPECTRE:<>
+    Flattering. Wrong.
+    -> threshold
+* ["Your mother"]
+    @SPECTRE:<>
+    (after a long pause)<>
+    ...I am three centuries dead and that still landed. Wrong, though.
+    -> threshold
+
+=== cursed_altar ===
+~ explored += altar
+~ spend_torch(1)
+A black altar, split down the middle. Old offerings rot in the crack — and something gleams beneath them.
+
+* [Kneel and pray]
+    A cold blessing settles over you like a clean sheet. Your wounds knit a little.
+    ~ boon = blessed
+    ~ health = health + 2
+    -> threshold
+* [Pocket the gleaming thing]
+    Twelve coin of temple gold. The altar exhales, and a chill follows you out and does not leave.
+    ~ gold = gold + 12
+    ~ boon = cursed
+    -> threshold
+* [Leave it well alone]
+    Wise. Rare, but wise.
+    -> threshold
+
+=== armory ===
+~ explored += armory
+~ spend_torch(1)
+The armory roof gave out an age ago. Rusted racks, a few salvageable blades — and a goblin perched on the best of them, gnawing something you decline to identify.
+
+@GRIK:<>
+(scrambling upright)<>
+{~Mine! Found it first!|Don't — don't look at me like that!|I'm very dangerous! Ask anyone! ...there's no one to ask.}
+
+* {carrying(sword) or carrying(shield)} [Advance, armed]
+    You take one deliberate step. Grik reconsiders his entire career.
+    @GRIK:<>
+    (fleeing)<>
+    Keep the rack! Keep the temple! I never liked it here!
+    { carrying(sword):
+        ~ pack += shield
+    - else:
+        ~ pack += sword
+    }
+    You help yourself to what he abandoned.
+    -> threshold
+* {gold >= 3} [Bribe him — 3 coin]
+    ~ gold = gold - 3
+    Grik bites the coin, beams, and presses a surprisingly decent blade into your hands.
+    ~ pack += sword
+    -> threshold
+* [Snuff your torch and slip past]
+    ~ spend_torch(2)
+    Slow work in the dark, but you pocket a spare from the rack as you go.
+    ~ pack += sparetorch
+    -> threshold
+
+=== vault_door ===
+Two vault doors, each three men tall, hang half off their hinges. Beyond: a chamber, and in it something enormous and patient.
+
+{weakness_known: You remember the Spectre — strike while your torch burns bright.}
+{not weakness_known: You have the distinct sense you forgot to ask someone something important.}
+
+You step through. The doors groan shut behind you, because of course they do.
+-> warden_golem
+
+// ── the Warden (battle loop) ────────────────────────────────────────
+
+=== warden_golem ===
+{ golem_hp <= 0: -> victory }
+{ health <= 0: -> defeat }
+~ rounds = rounds + 1
+
+{!The Warden rises — a hill of fitted stone, eyes like coals in a cold grate. It does not hurry. It has never had to.}
+
+The Warden {~grinds a step closer|considers you, slow as weather|rolls its shoulders with the sound of a rockslide}.
+{
+    - golem_hp > 8: It stands entirely unbothered.
+    - golem_hp > 4: A crack runs up its flank now.
+    - else: It lists badly, one arm hanging.
+}
+Your torch {torch_desc()}.{health <= 3:  You are badly hurt.}
+
+<- specials
++ [Strike]
+    ~ temp d = damage()
+    ~ golem_hp = golem_hp - d
+    You strike for {d}.{weakness_known and torch > 2:  The flame flares as you swing; the Warden flinches.}
+    -> warden_turn
++ {carrying(draught)} [Drink the draught (+5)]
+    ~ pack -= draught
+    ~ health = health + 5
+    The draught burns going down. Better.
+    -> warden_turn
+* {torch <= 0 and carrying(sparetorch)} [Light your spare torch]
+    ~ pack -= sparetorch
+    ~ torch = 6
+    Light floods back, and the Warden actually recoils.
+    -> warden_turn
+
+= specials
++ {carrying(charm) and golem_hp > 0} [Crush the warding charm against it]
+    ~ pack -= charm
+    Temple silver hisses against stone; the Warden sloughs a slab of its hide like old skin.
+    ~ golem_hp = golem_hp - 5
+    -> warden_turn
+- -> DONE
+
+= warden_turn
+{ golem_hp <= 0: -> warden_golem }
+The Warden answers — {~a backhand like a falling wall|a stamp that splits the floor|a slow, grinding grab}.
+~ temp hit = roll(1, 3)
+{ carrying(shield):
+    ~ hit = hit - 1
+}
+{ boon == cursed:
+    ~ hit = hit + 1
+}
+{ hit < 0:
+    ~ hit = 0
+}
+~ health = health - hit
+{hit <= 0: You turn it aside.|It catches you for {hit}.}
+~ spend_torch(1)
+-> warden_golem
+
+// ── endings ─────────────────────────────────────────────────────────
+
+=== victory ===
+The Warden comes apart at the seams — a slow avalanche of dressed stone, then stillness, then dust.
+
+The vault behind it stands open. Inside: enough old temple gold to make the whole miserable trip worthwhile.
+~ gold = gold + 40
+
+You climb back toward daylight. Griswold is exactly where you left him.
+
+@GRISWOLD:<>
+(eyeing your bulging pack)<>
+Well, well. The corpse walks, and rich besides. Tell you what — I'll take that gold off your hands at a generous rate.
+
+* [Haggle him to a standstill]
+    @GRISWOLD:<>
+    (grinning)<>
+    There it is. Knew I liked you.
+    You step out into the light {gold} coin heavier and only slightly cursed.
+    -> END
+* [Walk past him into the sun]
+    You do not even slow down.
+    @GRISWOLD:<>
+    (calling after)<>
+    Sensible! Do come back when you're greedy again!
+    -> END
+
+=== defeat ===
+The last blow folds you against the cold floor. The Warden settles back into its patient waiting, as if you were never more than a draft.
+
+Your torch goes out. Then the dark takes the rest.
+-> END
