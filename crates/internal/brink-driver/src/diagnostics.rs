@@ -157,4 +157,37 @@ mod tests {
             assert!(report_total < without_total);
         }
     }
+
+    /// Regression test for #43: a diagnostic originating in an included
+    /// (non-entry) file must be attributed to *that* file, not collapsed onto
+    /// the entry file. The studio currently shows every included-file error on
+    /// the entry (`main.ink`), which makes multi-file errors unlocatable.
+    #[test]
+    fn diagnostic_from_included_file_carries_its_file_id() {
+        let mut db = ProjectDb::new();
+        db.set_file("main.ink", "INCLUDE helper.ink\n-> top\n".to_string());
+        db.set_file("helper.ink", "=== top ===\n-> does_not_exist\n".to_string());
+        let analysis = run_analysis(&db);
+        let entry = db.file_id("main.ink");
+        let helper = db
+            .file_id("helper.ink")
+            .expect("helper.ink should have a FileId");
+        let report = collect_diagnostics(&db, &analysis, entry);
+
+        let all: Vec<_> = report.errors.iter().chain(report.warnings.iter()).collect();
+        assert!(
+            !all.is_empty(),
+            "the unresolved divert in helper.ink should produce a diagnostic"
+        );
+        // The error is wholly within helper.ink, so every diagnostic it produces
+        // must be attributed to helper.ink — not the entry file.
+        for d in &all {
+            assert_eq!(
+                d.file, helper,
+                "diagnostic `{}` for an error inside helper.ink should carry \
+                 helper.ink's FileId ({:?}), not the entry's ({:?})",
+                d.message, helper, entry
+            );
+        }
+    }
 }
