@@ -75,7 +75,10 @@ pub fn classify_body_child(node: &brink_syntax::SyntaxNode) -> BodyChild {
         | SyntaxKind::TAGS
         | SyntaxKind::MIXED_CONTENT
         | SyntaxKind::GATHER_DASHES => BodyChild::Structural,
-        SyntaxKind::EMPTY_LINE => BodyChild::Trivia,
+        // EMPTY_LINE is trivia; ERROR nodes appear on malformed input (already
+        // diagnosed by the parser) — skip them gracefully rather than panicking,
+        // the diagnostic still fails the compile.
+        SyntaxKind::EMPTY_LINE | SyntaxKind::ERROR => BodyChild::Trivia,
         other => {
             debug_assert!(
                 other.is_trivia(),
@@ -150,6 +153,9 @@ pub fn classify_branch_child(
                     BranchChild::Trivia
                 }
             }
+            // Error-recovery nodes appear on malformed input (the parser has
+            // already diagnosed them); skip rather than panic.
+            SyntaxKind::ERROR => BranchChild::Trivia,
             other if other.is_token() => BranchChild::Trivia,
             other => {
                 debug_assert!(

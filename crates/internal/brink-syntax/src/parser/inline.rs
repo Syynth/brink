@@ -668,6 +668,16 @@ fn branch_content(p: &mut Parser<'_, '_>) {
                 p.skip_ws();
                 super::divert::divert(p);
             }
+            // A `~` logic statement at the start of an inline branch is invalid
+            // ink — logic only lives in a multiline conditional block. (A literal
+            // mid-text tilde is consumed inside `branch_text`, so it never reaches
+            // here.) Reject it with a diagnostic and recover.
+            TILDE => {
+                p.error_recover(
+                    "logic statements aren't allowed in an inline conditional; \
+                     use a multiline block, e.g. `{ cond:` then `~ ...` on its own line",
+                );
+            }
             BACKSLASH => {
                 if matches!(p.nth(1), NEWLINE | EOF) {
                     // Backslash before newline/EOF — consume as text to avoid stall

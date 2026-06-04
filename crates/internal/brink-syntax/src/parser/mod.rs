@@ -40,10 +40,12 @@ impl Parse {
     }
 }
 
-/// A parse error with a message.
+/// A parse error with a message and the source range it points at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
     pub message: String,
+    /// Byte range in the source that the error points at.
+    pub range: rowan::TextRange,
 }
 
 /// Parse an Ink source string into a lossless CST.
@@ -412,7 +414,17 @@ impl<'t, 'c> Parser<'t, 'c> {
 
     /// Record a parse error at the current position.
     fn error(&mut self, message: String) {
-        self.errors.push(ParseError { message });
+        // Byte offset of the current token = total length of all preceding
+        // tokens (the lexer emits contiguous tokens covering the whole source).
+        let upto = self.pos.min(self.tokens.len());
+        let start: usize = self.tokens[..upto].iter().map(|(_, t)| t.len()).sum();
+        let len: usize = self.tokens.get(self.pos).map_or(0, |(_, t)| t.len());
+        let start = rowan::TextSize::from(u32::try_from(start).unwrap_or(u32::MAX));
+        let len = rowan::TextSize::from(u32::try_from(len).unwrap_or(u32::MAX));
+        self.errors.push(ParseError {
+            message,
+            range: rowan::TextRange::at(start, len),
+        });
     }
 
     /// Wrap the current token in an `ERROR` node and advance.

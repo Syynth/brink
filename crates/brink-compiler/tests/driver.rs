@@ -1890,10 +1890,7 @@ fn glue_in_choice_body_runtime_joins_text() {
 /// `{ cond: ~ statement }` — a logic statement inside an inline conditional.
 /// Logic must live in a multiline block (`{ cond:\n    ~ ... \n}`), so the
 /// inline form is invalid ink and must error.
-///
-/// Currently brink silently compiles it and emits `~ x = 2` as story text.
 #[test]
-#[ignore = "known bug #44: silently compiled; emits `~ x = 2` as story text instead of erroring"]
 fn compile_error_inline_conditional_with_logic() {
     let files: HashMap<&str, &str> = HashMap::from([(
         "main.ink",
@@ -1912,11 +1909,7 @@ fn compile_error_inline_conditional_with_logic() {
 /// (`{ - c1: a\n  - c2: b\n  - else: c }`), so the inline pipe form is invalid
 /// ink and must error.
 ///
-/// Worse than a silent miscompile: brink currently panics while lowering
-/// this — `backbone.rs` hits `unexpected SyntaxKind in classify_body_child` —
-/// instead of surfacing a diagnostic.
 #[test]
-#[ignore = "known bug #44: PANICS in HIR lowering instead of emitting a diagnostic"]
 fn compile_error_inline_multi_branch_conditional() {
     let files: HashMap<&str, &str> = HashMap::from([(
         "main.ink",
