@@ -13,13 +13,14 @@ import type { TabTarget } from "@brink/studio-store";
 const ICON_FILE = "\ud83d\udcc4";
 const ICON_KNOT = "\u25c6";
 const ICON_STITCH = "\u25c7";
+const ICON_FUNCTION = "\u0192"; // \u0192 \u2014 a knot declared as a function
 
-function iconChar(kind: string): string {
+function iconChar(kind: string, isFunction = false): string {
   switch (kind) {
     case "file":
       return ICON_FILE;
     case "knot":
-      return ICON_KNOT;
+      return isFunction ? ICON_FUNCTION : ICON_KNOT;
     case "stitch":
       return ICON_STITCH;
     default:
@@ -27,12 +28,12 @@ function iconChar(kind: string): string {
   }
 }
 
-function iconClass(kind: string): string {
+function iconClass(kind: string, isFunction = false): string {
   switch (kind) {
     case "file":
       return "brink-binder-icon-file";
     case "knot":
-      return "brink-binder-icon-knot";
+      return isFunction ? "brink-binder-icon-function" : "brink-binder-icon-knot";
     case "stitch":
       return "brink-binder-icon-stitch";
     default:
@@ -66,6 +67,8 @@ interface RowProps {
   rowKey: string;
   depth: number;
   kind: string;
+  /** For knot rows: whether the knot is declared as a function. */
+  isFunction?: boolean;
   label: string;
   expandable: boolean;
   isExpanded: boolean;
@@ -89,6 +92,7 @@ interface RowProps {
 function BinderRow({
   depth,
   kind,
+  isFunction = false,
   label,
   expandable,
   isExpanded,
@@ -187,7 +191,9 @@ function BinderRow({
         <div className={chevronClass} onClick={handleChevronClick}>
           {expandable ? "\u25b6" : ""}
         </div>
-        <span className={"brink-binder-icon " + iconClass(kind)}>{iconChar(kind)}</span>
+        <span className={"brink-binder-icon " + iconClass(kind, isFunction)}>
+          {iconChar(kind, isFunction)}
+        </span>
         <span className="brink-binder-label">{label}</span>
       </div>
       {dropLinePosition === "after" && <div className="brink-binder-drop-line" />}
@@ -770,6 +776,7 @@ function BinderInner() {
           rowKey={knotKey}
           depth={1}
           kind="knot"
+          isFunction={knot.detail === "function"}
           label={knot.name}
           expandable={hasStitches}
           isExpanded={isExpanded}
