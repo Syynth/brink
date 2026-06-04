@@ -6,7 +6,7 @@ Play an ink story interactively in the terminal.
 brink play [OPTIONS] <FILE>
 ```
 
-Accepts `.inkb`, `.ink.json`, or `.inkt` files.
+Accepts a compiled story (`.inkb`, `.ink.json`, or `.inkt`) or raw `.ink` source — `.ink` files are compiled in-memory via the native pipeline, so `brink play story.ink` works without a separate `brink compile` step.
 
 ## Options
 
