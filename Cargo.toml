@@ -107,6 +107,10 @@ installers = ["shell", "powershell"]
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Which actions to run on pull requests
 pr-run-mode = "plan"
+# Trigger binary releases via manual workflow_dispatch instead of tag pushes, so
+# release-plz's ~20 per-crate tags don't collide with dist (or GitHub's
+# 3-tags-per-push limit). Ship binaries from the Actions "Release" → Run workflow.
+dispatch-releases = true
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program
