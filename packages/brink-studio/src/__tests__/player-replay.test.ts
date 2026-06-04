@@ -13,6 +13,7 @@ function makeHarness(runner: Record<string, unknown>, choiceLog: number[]) {
     _runner: runner,
     _choiceLog: choiceLog,
     revealNext: vi.fn(),
+    _refreshDebugState: vi.fn(),
   };
   const get = () => state as never;
   const set = (partial: unknown) => {

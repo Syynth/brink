@@ -302,6 +302,11 @@ export class StoryRunnerHandle {
     this.runner.reset();
   }
 
+  /** Human-readable snapshot of the runtime's current state (State View). */
+  debugState(): string {
+    return this.runner.debug_state();
+  }
+
   free(): void {
     this.runner.free();
   }
