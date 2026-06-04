@@ -805,3 +805,110 @@
 .brink-studio .brink-toast-dismiss:hover {
   color: var(--brink-fg);
 }
+
+/* ── Responsive layout (split → drawer → tabbed) ──────────────────── */
+
+.brink-studio {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.brink-studio .studio-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.brink-studio .studio-panes {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Compact top bar (medium + narrow tiers) */
+.brink-studio .studio-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 8px;
+  background: var(--brink-bg-surface);
+  border-bottom: 1px solid var(--brink-border);
+  flex-shrink: 0;
+}
+
+.brink-studio .studio-iconbtn {
+  background: var(--brink-bg-panel);
+  color: var(--brink-fg);
+  border: 1px solid var(--brink-border);
+  border-radius: 4px;
+  padding: 3px 9px;
+  font-size: 14px;
+  line-height: 1.1;
+  cursor: pointer;
+}
+.brink-studio .studio-iconbtn:hover { background: var(--brink-border); }
+
+.brink-studio .studio-segmented {
+  display: inline-flex;
+  border: 1px solid var(--brink-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.brink-studio .studio-seg {
+  background: var(--brink-bg-panel);
+  color: var(--brink-fg-dim);
+  border: none;
+  padding: 3px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.brink-studio .studio-seg + .studio-seg { border-left: 1px solid var(--brink-border); }
+.brink-studio .studio-seg.active {
+  background: var(--brink-accent);
+  color: var(--brink-bg);
+  font-weight: 600;
+}
+
+/* Binder slide-over drawer */
+.brink-studio .studio-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  z-index: 40;
+}
+.brink-studio .studio-scrim.open { opacity: 1; pointer-events: auto; }
+
+.brink-studio .binder-drawer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(280px, 82%);
+  transform: translateX(-100%);
+  transition: transform 0.18s ease;
+  z-index: 50;
+  box-shadow: 2px 0 14px rgba(0, 0, 0, 0.45);
+}
+.brink-studio .binder-drawer.open { transform: translateX(0); }
+.brink-studio .binder-drawer .binder-pane { height: 100%; }
+
+/* Player overlay (narrow Story tab) */
+.brink-studio .player-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: var(--brink-bg);
+  transform: translateX(100%);
+  transition: transform 0.18s ease;
+}
+.brink-studio .player-overlay.open { transform: translateX(0); }
+.brink-studio .player-overlay .player-pane { height: 100%; }
+
+/* Editor content floor — below the minimum, scroll within the pane rather
+   than crushing the text column. */
+.brink-studio .editor .cm-content { min-width: 22rem; }
+.brink-studio .editor .cm-scroller { overflow-x: auto; }
