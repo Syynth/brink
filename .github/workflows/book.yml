@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
     paths: [docs/book/**]
+  # Manual trigger: studio changes (the embedded playground) affect the deployed
+  # site without touching docs/book, so allow publishing on demand.
+  workflow_dispatch:
 
 permissions: {}
 
