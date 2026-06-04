@@ -9,15 +9,21 @@ keywords.workspace = true
 categories.workspace = true
 description = "CLI for compiling and running ink stories"
 
+# The installed command is `brink` (the crate keeps the `brink-cli` name so the
+# umbrella `brink` crate can own that name on crates.io).
+[[bin]]
+name = "brink"
+path = "src/main.rs"
+
 [dependencies]
-brink-compiler = { path = "../brink-compiler" }
-brink-fmt = { path = "../internal/brink-fmt" }
-brink-format = { path = "../internal/brink-format", features = ["inkt"] }
-brink-json = { path = "../internal/brink-json" }
-brink-converter = { path = "../internal/brink-converter" }
-brink-intl = { path = "../internal/brink-intl" }
-brink-runtime = { path = "../brink-runtime" }
-xliff2 = { path = "../internal/xliff2" }
+brink-compiler = { workspace = true }
+brink-fmt = { workspace = true }
+brink-format = { workspace = true, features = ["inkt"] }
+brink-json = { workspace = true }
+brink-converter = { workspace = true }
+brink-intl = { workspace = true }
+brink-runtime = { workspace = true }
+xliff2 = { workspace = true }
 clap.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

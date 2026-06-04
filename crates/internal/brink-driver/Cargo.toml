@@ -8,12 +8,11 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Pipeline orchestration for the brink ink compiler"
-publish = false
 
 [dependencies]
-brink-db = { path = "../brink-db" }
-brink-analyzer = { path = "../brink-analyzer" }
-brink-ir = { path = "../brink-ir" }
+brink-db = { workspace = true }
+brink-analyzer = { workspace = true }
+brink-ir = { workspace = true }
 tracing.workspace = true
 thiserror.workspace = true
 

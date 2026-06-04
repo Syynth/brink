@@ -8,11 +8,10 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Incremental project database for inkle's ink narrative scripting language"
-publish = false
 
 [dependencies]
-brink-syntax = { path = "../brink-syntax" }
-brink-ir = { path = "../brink-ir" }
+brink-syntax = { workspace = true }
+brink-ir = { workspace = true }
 rowan.workspace = true
 tracing.workspace = true
 thiserror.workspace = true

@@ -5,14 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
 
 [dependencies]
-brink-syntax = { path = "../brink-syntax" }
-brink-ir = { path = "../brink-ir" }
-brink-analyzer = { path = "../brink-analyzer" }
-brink-db = { path = "../brink-db" }
-brink-fmt = { path = "../brink-fmt" }
+brink-syntax = { workspace = true }
+brink-ir = { workspace = true }
+brink-analyzer = { workspace = true }
+brink-db = { workspace = true }
+brink-fmt = { workspace = true }
 rowan.workspace = true
 serde.workspace = true
 thiserror.workspace = true

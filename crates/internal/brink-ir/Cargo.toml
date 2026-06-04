@@ -8,11 +8,10 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Intermediate representations for inkle's ink narrative scripting language"
-publish = false
 
 [dependencies]
-brink-syntax = { path = "../brink-syntax" }
-brink-format = { path = "../brink-format" }
+brink-syntax = { workspace = true }
+brink-format = { workspace = true }
 rowan.workspace = true
 bitflags.workspace = true
 tracing.workspace = true

@@ -8,7 +8,6 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Syntax types and parser for inkle's ink narrative scripting language"
-publish = false
 
 [dependencies]
 rowan.workspace = true

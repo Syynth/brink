@@ -8,12 +8,11 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Cross-file semantic analysis for inkle's ink narrative scripting language"
-publish = false
 
 [dependencies]
-brink-ir = { path = "../brink-ir" }
-brink-format = { path = "../brink-format" }
-brink-syntax = { path = "../brink-syntax" }
+brink-ir = { workspace = true }
+brink-format = { workspace = true }
+brink-syntax = { workspace = true }
 rowan.workspace = true
 
 [dev-dependencies]

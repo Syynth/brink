@@ -9,12 +9,16 @@ keywords.workspace = true
 categories.workspace = true
 description = "Bevy asset integration for brink ink stories"
 
+# Render all features on docs.rs (the optional compiler/syntax bindings).
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
-brink-runtime = { path = "../brink-runtime" }
-brink-format = { path = "../internal/brink-format" }
-bevy-brink-derive = { path = "../internal/bevy-brink-derive" }
-brink-compiler = { path = "../brink-compiler", optional = true }
-brink-syntax = { path = "../internal/brink-syntax", optional = true }
+brink-runtime = { workspace = true }
+brink-format = { workspace = true }
+bevy-brink-derive = { workspace = true }
+brink-compiler = { workspace = true, optional = true }
+brink-syntax = { workspace = true, optional = true }
 
 bevy_app = { version = "0.18.1", default-features = false }
 bevy_asset = { version = "0.18.1", default-features = false }
@@ -52,7 +56,7 @@ bevy = { version = "0.18.1", features = ["file_watcher"] }
 brink-compiler = { path = "../brink-compiler" }
 # Enable brink-runtime's `testing` feature so tests can introspect
 # globals by name (Program::global_count, Program::global_name).
-brink-runtime = { path = "../brink-runtime", features = ["testing"] }
+brink-runtime = { path = "../brink-runtime", features = ["testing"]  }
 # The locale example + tests build `.inkl` overlays via the intl pipeline
 # (export_lines + compile_locale).
 brink-intl = { path = "../internal/brink-intl" }

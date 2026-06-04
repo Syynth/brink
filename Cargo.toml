@@ -73,3 +73,43 @@ bon = "3"
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
+
+# Internal brink crates (versioned for crates.io publish; release-plz keeps these in sync)
+bevy-brink-derive = { path = "crates/internal/bevy-brink-derive", version = "0.0.1" }
+brink-analyzer = { path = "crates/internal/brink-analyzer", version = "0.0.1" }
+brink-codegen-inkb = { path = "crates/internal/brink-codegen-inkb", version = "0.0.1" }
+brink-codegen-json = { path = "crates/internal/brink-codegen-json", version = "0.0.1" }
+brink-compiler = { path = "crates/brink-compiler", version = "0.0.1" }
+brink-converter = { path = "crates/internal/brink-converter", version = "0.0.1" }
+brink-db = { path = "crates/internal/brink-db", version = "0.0.1" }
+brink-driver = { path = "crates/internal/brink-driver", version = "0.0.1" }
+brink-fmt = { path = "crates/internal/brink-fmt", version = "0.0.1" }
+brink-format = { path = "crates/internal/brink-format", version = "0.0.1" }
+brink-ide = { path = "crates/internal/brink-ide", version = "0.0.1" }
+brink-intl = { path = "crates/internal/brink-intl", version = "0.0.1" }
+brink-ir = { path = "crates/internal/brink-ir", version = "0.0.1" }
+brink-json = { path = "crates/internal/brink-json", version = "0.0.1" }
+brink-runtime = { path = "crates/brink-runtime", version = "0.0.1" }
+brink-syntax = { path = "crates/internal/brink-syntax", version = "0.0.1" }
+# Unpublished (dev-only): no version, so `cargo publish` strips it from dependents.
+brink-test-harness = { path = "crates/internal/brink-test-harness" }
+xliff2 = { path = "crates/internal/xliff2", version = "0.0.1" }
+
+# cargo-dist / `dist`: prebuilt brink-cli & brink-lsp binaries on GitHub Releases.
+# This block is the *input* to `dist init`/`dist generate`. Run `dist init --yes`
+# once locally (see docs/releasing.md) to pin `cargo-dist-version` to your
+# installed `dist` and to generate `.github/workflows/release.yml`. dist ships
+# only the crates that build binaries (brink-cli, brink-lsp); every other
+# published crate is a library and is skipped automatically.
+[workspace.metadata.dist]
+cargo-dist-version = "0.28.0"   # placeholder; `dist init` re-pins to your install
+ci = ["github"]
+installers = ["shell", "powershell"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+# PRs only run `dist plan`; the full build matrix runs on tag pushes.
+pr-run-mode = "plan"

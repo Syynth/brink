@@ -10,12 +10,12 @@ categories.workspace = true
 description = "Compiler for inkle's ink narrative scripting language"
 
 [dependencies]
-brink-ir = { path = "../internal/brink-ir" }
-brink-format = { path = "../internal/brink-format" }
-brink-json = { path = "../internal/brink-json" }
-brink-codegen-json = { path = "../internal/brink-codegen-json" }
-brink-codegen-inkb = { path = "../internal/brink-codegen-inkb" }
-brink-driver = { path = "../internal/brink-driver" }
+brink-ir = { workspace = true }
+brink-format = { workspace = true }
+brink-json = { workspace = true }
+brink-codegen-json = { workspace = true }
+brink-codegen-inkb = { workspace = true }
+brink-driver = { workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
 
@@ -23,7 +23,7 @@ tracing.workspace = true
 brink-analyzer = { path = "../internal/brink-analyzer" }
 brink-runtime = { path = "../brink-runtime" }
 brink-syntax = { path = "../internal/brink-syntax" }
-brink-format = { path = "../internal/brink-format", features = ["inkt"] }
+brink-format = { path = "../internal/brink-format", features = ["inkt"]  }
 brink-test-harness = { path = "../internal/brink-test-harness" }
 serde_json.workspace = true
 
