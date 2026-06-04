@@ -80,14 +80,14 @@ generated `.github/workflows/release.yml` build the `brink` (from `brink-cli`)
 and `brink-lsp` binaries for macOS (arm64/x64), Linux (x64), and Windows (x64),
 plus shell/PowerShell installers.
 
-The dist workflow is **decoupled from crate publishing**: it triggers only on a
-unified `vX.Y.Z` tag (release-plz's per-crate tags like `brink-cli-v0.0.3` are
-intentionally ignored — pushing all 20 at once would collide with GitHub's
-3-tags-per-push limit). The trigger in `release.yml` is a manual narrowing; if
-you ever re-run `dist generate`/`dist init` it resets to `**[0-9]…` and must be
-re-narrowed to `v[0-9]+.[0-9]+.[0-9]+*`.
+The dist workflow is **decoupled from crate publishing** (`dispatch-releases =
+true`): it's triggered manually via **workflow_dispatch**, not by tag pushes, so
+release-plz's ~20 per-crate tags never collide with dist or hit GitHub's
+3-tags-per-push limit.
 
-Re-run `dist init` only when changing targets/installers or upgrading `dist`.
+Re-run `dist init`/`dist generate` only when changing targets/installers or
+upgrading `dist` (the config drives everything — don't hand-edit `release.yml`,
+or the `plan` CI check fails).
 
 ## Release flow
 
@@ -97,14 +97,11 @@ Re-run `dist init` only when changing targets/installers or upgrading `dist`.
    versions + `CHANGELOG.md` updates. Review it.
 3. Merge the release PR. release-plz publishes the changed crates to crates.io
    (over OIDC) in dependency order and pushes per-crate git tags + GitHub releases.
-4. **To ship binaries** for that version, push a unified tag:
-
-   ```sh
-   git tag v0.0.3 && git push origin v0.0.3
-   ```
-
-   That fires cargo-dist, which builds the `brink` / `brink-lsp` binaries +
-   installers and attaches them to a `v0.0.3` GitHub release.
+4. **To ship binaries** for that version: GitHub → **Actions** → **Release**
+   workflow → **Run workflow**, and enter the tag (e.g. `v0.0.3`). cargo-dist
+   builds the `brink` / `brink-lsp` binaries + installers and attaches them to a
+   `v0.0.3` GitHub release. (Use the default `dry-run` to test the build without
+   publishing a release.)
 
 ## Adding a new published crate later
 
