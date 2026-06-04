@@ -18,21 +18,6 @@ git_release_enable = true
 # Keep changelog noise down: dependency-only bumps don't warrant an entry.
 dependencies_update = false
 
-# --- Crates that must never reach crates.io --------------------------------
-# release-plz already honors `publish = false`, but listing them here keeps the
-# release PR and changelogs free of these crates.
-[[package]]
-name = "brink"
-release = false
-
-[[package]]
-name = "brink-web"
-release = false
-
-[[package]]
-name = "zed-brink"
-release = false
-
-[[package]]
-name = "brink-test-harness"
-release = false
+# Unpublished crates (brink, brink-web, zed-brink, brink-test-harness) are
+# skipped automatically via their `publish = false` — no per-package overrides
+# needed (and zed-brink isn't a workspace member, so an override would error).
