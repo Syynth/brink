@@ -90,7 +90,7 @@ enum Commands {
     },
     /// Play an ink story interactively
     Play {
-        /// Story file (.ink.json, .inkb, or .inkt)
+        /// Story file (.ink source, .ink.json, .inkb, or .inkt)
         file: PathBuf,
         /// Read choice inputs from a file (one 1-indexed choice per line)
         #[arg(short, long)]
@@ -109,7 +109,7 @@ enum Commands {
     Replay {
         /// Transcript file (.brkt)
         transcript: PathBuf,
-        /// Story file (.ink.json, .inkb, or .inkt)
+        /// Story file (.ink source, .ink.json, .inkb, or .inkt)
         #[arg(short, long)]
         story: PathBuf,
         /// Locale overlay file (.inkl) to apply before rendering
@@ -264,7 +264,14 @@ fn load_story_data(
     input: &std::path::Path,
 ) -> Result<brink_format::StoryData, Box<dyn std::error::Error>> {
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if ext == "inkb" {
+    if ext == "ink" {
+        // Raw .ink source — compile in-memory via the native pipeline.
+        let output_result = brink_compiler::compile_path(input)?;
+        for w in &output_result.warnings {
+            tracing::warn!("[{}] {}", w.code.as_str(), w.message);
+        }
+        Ok(output_result.data)
+    } else if ext == "inkb" {
         let bytes = std::fs::read(input)?;
         Ok(brink_format::read_inkb(&bytes)?)
     } else if ext == "inkt" {
