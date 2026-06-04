@@ -13,6 +13,7 @@ import type { CompileSlice } from "./slices/compile.js";
 import type { TabsSlice } from "./slices/tabs.js";
 import type { PlayerSlice } from "./slices/player.js";
 import type { BinderSlice } from "./slices/binder.js";
+import type { LayoutSlice } from "./slices/layout.js";
 import type { InkEditorHandle, EditorStateManager, ProjectSession } from "./types.js";
 
 import { createEditorSlice } from "./slices/editor.js";
@@ -20,6 +21,7 @@ import { createCompileSlice } from "./slices/compile.js";
 import { createTabsSlice } from "./slices/tabs.js";
 import { createPlayerSlice } from "./slices/player.js";
 import { createBinderSlice } from "./slices/binder.js";
+import { createLayoutSlice } from "./slices/layout.js";
 
 // ── Combined state ──────────────────────────────────────────────────
 
@@ -28,7 +30,8 @@ export interface StudioState
     CompileSlice,
     TabsSlice,
     PlayerSlice,
-    BinderSlice {
+    BinderSlice,
+    LayoutSlice {
   // Non-reactive refs — imperative handles that don't trigger re-renders
   _editorRef: InkEditorHandle | null;
   _stateManager: EditorStateManager | null;
@@ -54,6 +57,7 @@ export const createStudioStore = () =>
       ...createTabsSlice(...args),
       ...createPlayerSlice(...args),
       ...createBinderSlice(...args),
+      ...createLayoutSlice(...args),
 
       // Non-reactive refs
       _editorRef: null,
@@ -102,3 +106,5 @@ export type {
 } from "./types.js";
 
 export { ElementType as ElementTypeEnum } from "./types.js";
+
+export type { LayoutTier } from "./slices/layout.js";
