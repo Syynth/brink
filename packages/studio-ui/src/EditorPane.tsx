@@ -4,9 +4,9 @@ import { StatusBar } from "./StatusBar.js";
 
 function EditorPane({ children }: { children: ReactNode }) {
   return (
-    <div id="editor-pane">
+    <div className="editor-pane">
       <FileTabBar />
-      <div id="editor">{children}</div>
+      <div className="editor">{children}</div>
       <StatusBar />
     </div>
   );

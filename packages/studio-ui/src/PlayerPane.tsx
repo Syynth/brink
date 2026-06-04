@@ -142,14 +142,14 @@ function PlayerPane() {
   }, [revealNext]);
 
   return (
-    <div id="player-pane">
+    <div className="player-pane">
       <div className="header">
         <span>Story</span>
         <div className="toolbar">
-          <button id="btn-run" onClick={handleRun}>
+          <button className="btn-run" onClick={handleRun}>
             Run
           </button>
-          <button id="btn-restart" onClick={handleRestart}>
+          <button className="btn-restart" onClick={handleRestart}>
             Restart
           </button>
           <button onClick={toggleFullscreen} title={fullscreen ? "Exit fullscreen" : "Fullscreen"}>
@@ -157,7 +157,7 @@ function PlayerPane() {
           </button>
         </div>
       </div>
-      <div id="player" ref={playerRef}>
+      <div className="player" ref={playerRef}>
         <div className="story-text">
           {text.map((line, i) => (
             <p key={i}>{renderLine(line)}</p>

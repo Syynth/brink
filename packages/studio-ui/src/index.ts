@@ -1,3 +1,5 @@
+import "./studio.css";
+
 export { StoreProvider, useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 export { App } from "./App.js";
 export { Binder, computeReorder } from "./Binder.js";
