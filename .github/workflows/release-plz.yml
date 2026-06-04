@@ -42,12 +42,8 @@ jobs:
           # A PAT (not the default GITHUB_TOKEN) so the tags release-plz pushes
           # can trigger the cargo-dist `release.yml` workflow. See docs/releasing.md.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-          # FIRST RELEASE ONLY: Trusted Publishing can't create a *new* crate, so
-          # the initial publish needs a token. Once all crates exist and each has
-          # a trusted publisher configured on crates.io, DELETE the line below —
-          # release-plz then authenticates via the `id-token: write` OIDC flow
-          # above with no stored secret. See docs/releasing.md.
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          # Publishing authenticates via crates.io Trusted Publishing (OIDC) using
+          # the `id-token: write` permission above — no stored registry token.
 
   # Opens/updates the release PR (version bump + changelogs) on every push to main.
   release-pr:
