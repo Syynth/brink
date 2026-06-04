@@ -114,6 +114,7 @@
 }
 .brink-studio .brink-binder-icon-file { color: var(--brink-accent); }
 .brink-studio .brink-binder-icon-knot { color: var(--brink-mauve); }
+.brink-studio .brink-binder-icon-function { color: var(--brink-peach); font-style: italic; }
 .brink-studio .brink-binder-icon-stitch { color: var(--brink-teal); }
 /* Label */
 .brink-studio .brink-binder-label {
