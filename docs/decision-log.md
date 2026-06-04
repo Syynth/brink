@@ -695,3 +695,27 @@
 - **SCOPE:** moderate
 - **WHAT:** Apply maximal-security hardening to CI + release, mirroring the bevy_rmmz_assets model: crates.io Trusted Publishing (OIDC, `id-token: write`, no stored registry token in steady state); all third-party GitHub Actions pinned to commit SHAs with version comments; least-privilege `permissions: {}` + per-job grants + `persist-credentials: false`; a `crates-io` environment gate on the publish job; pinned Rust toolchain via `rust-toolchain.toml` (1.95.0, minimal profile); Dependabot covering github-actions + cargo + npm; and a `cargo-deny` CI job (`deny.toml`: advisories, permissive-only license allowlist, wildcard/source bans). The one-time first publish of the ~20 new crates uses `CARGO_REGISTRY_TOKEN` in CI (Trusted Publishing can't create new crates), after which the token is removed and per-crate trusted publishers take over. An in-place dependency audit was run: 750 crates resolved, 100% permissive licenses, 0 vulnerabilities, 3 accepted transitive informational advisories.
 - **WHY:** A public crate's release pipeline is a high-value supply-chain target; OIDC removes the standing secret, SHA pins defeat tag-repointing attacks, least privilege limits blast radius, and cargo-deny continuously gates advisories/licenses/sources. Matches the security posture already established for bevy_rmmz_assets so the two projects are consistent.
+
+## State View panel is a read-only runtime debugger
+- **WHEN:** 2026-06-04
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-ui (state-view) / cross-system (runtime + wasm)
+- **SCOPE:** architectural
+- **WHAT:** The new "State View" panel in brink-studio is scoped as a read-only runtime debugger surfacing the transcript, global variables, current location (knot/stitch), call stack, and visit counts. It reads live state during playback and does not mutate it.
+- **WHY:** The author needs the runtime's actual behavior to be legible while debugging narrative logic. A bare variables list is insufficient; seeing location + call stack + visit counts + transcript together explains why the story is where it is.
+
+## Editable runtime state (save/restore variables) is a follow-up
+- **WHEN:** 2026-06-04
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-ui (state-view) / runtime / wasm
+- **SCOPE:** moderate
+- **WHAT:** Making runtime state editable (poking variable values mid-playback) is deferred to a separate follow-up issue (#57) rather than shipped with the initial State View. The concrete motivating capability is save + restore of (at least) variable state.
+- **WHY:** Editing live state needs a wasm setter and careful UX about when edits take effect; the immediate need is read-only visibility. Save/restore of variable state is the real capability wanted from editability and is worth tracking as its own work item.
+
+## Runtime changes deferred to separate design issues
+- **WHEN:** 2026-06-04
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** process / cross-system
+- **SCOPE:** moderate
+- **WHAT:** Any studio (or other) feature work that requires modifying `brink-runtime` is split out into its own separate needs-design issue rather than implemented inline. Studio-side work proceeds against existing runtime/wasm capabilities or an interim approach until the runtime API is designed. Concretely: #56's State View ships an interim view over the existing `Story::debug_state()` string (via the runtime's pre-existing, purely-additive `testing` feature — no runtime source change); the structured `DebugSnapshot` runtime API becomes its own needs-design issue (#62).
+- **WHY:** The runtime is the trusted, oracle-validated core; changes carry correctness risk and deserve deliberate design before implementation. Bundling runtime changes into studio feature PRs couples UI iteration to runtime design and risks under-designed runtime APIs.
