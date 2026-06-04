@@ -1,0 +1,72 @@
+name: release-plz
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  # Publishes crates to crates.io and creates git tags + GitHub releases when a
+  # release PR is merged (i.e. when the bumped versions land on `main`).
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    # Gate the publish behind the `crates-io` environment (optional required
+    # reviewers; also scopes the OIDC trust). Configure it under
+    # Settings > Environments > crates-io.
+    environment: crates-io
+    permissions:
+      contents: write   # push tags + create GitHub releases
+      id-token: write   # mint the crates.io OIDC token (Trusted Publishing)
+    concurrency:
+      group: release-plz-release
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+      # Toolchain comes from rust-toolchain.toml (rustup honors it).
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # `cargo publish` runs a verification build of each crate; bevy-brink's
+      # bevy deps need these system libs (matches ci.yml).
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: release-plz release
+        uses: release-plz/action@064f4d1e36c843611ddf013be726beaa4ad804db # v0.5
+        with:
+          command: release
+        env:
+          # A PAT (not the default GITHUB_TOKEN) so the tags release-plz pushes
+          # can trigger the cargo-dist `release.yml` workflow. See docs/releasing.md.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          # FIRST RELEASE ONLY: Trusted Publishing can't create a *new* crate, so
+          # the initial publish needs a token. Once all crates exist and each has
+          # a trusted publisher configured on crates.io, DELETE the line below —
+          # release-plz then authenticates via the `id-token: write` OIDC flow
+          # above with no stored secret. See docs/releasing.md.
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Opens/updates the release PR (version bump + changelogs) on every push to main.
+  release-pr:
+    name: release-pr
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # push the release branch
+      pull-requests: write   # open/update the release PR
+    concurrency:
+      group: release-plz-pr
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: release-plz release-pr
+        uses: release-plz/action@064f4d1e36c843611ddf013be726beaa4ad804db # v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}

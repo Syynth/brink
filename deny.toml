@@ -1,0 +1,54 @@
+# cargo-deny — supply-chain policy for the dependency graph.
+# Run locally with `cargo deny check`; CI enforces it (see .github/workflows/ci.yml).
+
+[advisories]
+# Fail on any security vulnerability (RUSTSEC). yanked crates are also rejected.
+yanked = "deny"
+# Known-and-accepted informational advisories (re-evaluate on each bump). These
+# are all transitive (pulled in via bevy / wgpu) and not actual vulnerabilities:
+ignore = [
+    # `paste` is unmaintained but has no known vulnerability; pervasive transitive dep.
+    "RUSTSEC-2024-0436",
+    # `rand` unsoundness only triggers with a custom logger calling `rand::rng()`;
+    # we don't hit that path. Pulled in transitively (bevy, etc.).
+    "RUSTSEC-2026-0097",
+]
+
+[licenses]
+# Allowlist — every crate in the graph resolves to one of these (verified via
+# `cargo metadata`: 100% permissive, no copyleft obligations).
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "WTFPL",
+]
+# Crates whose license must be confirmed by hand can be pinned here; none needed.
+confidence-threshold = 0.9
+
+[bans]
+# Surface (don't hard-fail) duplicate versions of the same crate — common and
+# mostly unavoidable in a bevy-sized graph, but worth keeping an eye on.
+multiple-versions = "warn"
+wildcards = "deny"
+# Our internal dev-dependencies are intentionally version-less path deps (so
+# `cargo publish` strips them); cargo reads those as `*`. Permit wildcards only
+# when they're path deps — real registry wildcards are still denied.
+allow-wildcard-paths = true
+
+[sources]
+# Every dependency must come from crates.io. No git or alternate registries.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

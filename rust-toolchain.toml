@@ -1,0 +1,12 @@
+# Pin the toolchain for reproducible, deterministic CI + release builds.
+# rustup honors this file automatically, so workflows don't need a separate
+# toolchain-install action (one fewer third-party action in the publish path).
+# Bump deliberately; there's no Dependabot ecosystem for this file.
+[toolchain]
+channel = "1.95.0"
+# Minimal profile + explicit components, so installing this pinned toolchain
+# doesn't try to pull a globally-configured `complete` profile (miri, cranelift)
+# that isn't available for every release.
+profile = "minimal"
+components = ["clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]
