@@ -14,7 +14,11 @@ crate-type = ["cdylib"]
 brink-compiler = { workspace = true }
 brink-db = { workspace = true }
 brink-ide = { workspace = true }
-brink-runtime = { workspace = true }
+# `testing` exposes brink-runtime's read-only debug accessors (Story::debug_state,
+# Program::global_name) used by the studio State View. The feature is purely
+# additive (`testing = []`, no behavior change). Interim until the structured
+# DebugSnapshot API lands (see issue #62).
+brink-runtime = { workspace = true, features = ["testing"] }
 brink-syntax = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-ir = { workspace = true }

@@ -185,6 +185,20 @@ impl StoryRunner {
             brink_runtime::Story::<FastRng>::new(program_ref, self.base_line_tables.clone());
         *self.story.borrow_mut() = Some(story);
     }
+
+    /// Read-only snapshot of the runtime's current state for the studio State
+    /// View: status, current position, call stack, value stack, output buffer,
+    /// globals, and pending choices, as a human-readable string.
+    ///
+    /// Interim: surfaces `Story::debug_state` directly. The structured,
+    /// name-resolved `DebugSnapshot` API is tracked in issue #62.
+    pub fn debug_state(&self) -> Result<String, JsError> {
+        let borrow = self.story.borrow();
+        let story = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        Ok(story.debug_state())
+    }
 }
 
 fn line_to_js(line: brink_runtime::Line) -> LineJs {
