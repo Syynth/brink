@@ -22,18 +22,11 @@ import {
   buildContext,
 } from "@brink/ink-editor";
 import type { BrinkStudioOptions } from "@brink/ink-editor";
-import ratchetsLair from "./stories/ratchets-lair.ink.txt?raw";
-import candlelitDaughters from "./stories/candlelit-daughters.ink.txt?raw";
+import toppledTemple from "./stories/toppled-temple.ink.txt?raw";
 
-const MAIN_INK = `INCLUDE ratchets-lair.ink
-INCLUDE candlelit-daughters.ink
+const MAIN_INK = `INCLUDE toppled-temple.ink
 
-Which story would you like to play?
-
-* [The Quest for Ratchet's Lair]
-  -> intro
-* [Codetta: The Candlelit Daughters]
-  -> introduction
+-> intro
 `;
 
 // Deterministic single-file project for e2e, loaded via `?fixture=screenplay`.
@@ -221,8 +214,7 @@ async function main(): Promise<void> {
       ? { "main.ink": SCREENPLAY_FIXTURE }
       : {
           "main.ink": MAIN_INK,
-          "ratchets-lair.ink": ratchetsLair,
-          "candlelit-daughters.ink": candlelitDaughters,
+          "toppled-temple.ink": toppledTemple,
         };
   const provider = new InMemoryFileProvider(files);
   const project = new ProjectSession({ provider, entryFile: "main.ink" });
