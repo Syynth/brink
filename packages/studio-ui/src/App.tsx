@@ -12,9 +12,9 @@ function App({ editorSlot }: { editorSlot: ReactNode }) {
   const togglePlayerVisible = useStudioStore((s) => s.togglePlayerVisible);
 
   return (
-    <Group orientation="horizontal" id="brink-layout">
+    <Group orientation="horizontal" id="brink-layout" className="brink-studio">
       <Panel id="binder" defaultSize="220px" minSize="140px" maxSize="400px">
-        <div id="binder-pane">
+        <div className="binder-pane">
           <div className="header">
             <span>Binder</span>
             <button

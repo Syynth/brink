@@ -1,0 +1,807 @@
+/* brink-studio component styles. Scoped under .brink-studio so the
+   package is self-contained and multi-instance safe. Side-effect imported
+   from index.ts. The app shell (index.html) keeps only the global reset +
+   the pre-mount loading screen. */
+
+.brink-studio {
+  --brink-bg: #1e1e2e;
+  --brink-bg-surface: #252536;
+  --brink-bg-panel: #2a2a3d;
+  --brink-fg: #cdd6f4;
+  --brink-fg-dim: #6c7086;
+  --brink-accent: #89b4fa;
+  --brink-border: #45475a;
+  --brink-green: #a6e3a1;
+  --brink-red: #f38ba8;
+  --brink-yellow: #f9e2af;
+  --brink-mauve: #cba6f7;
+  --brink-teal: #89dceb;
+  --brink-peach: #fab387;
+  --brink-pink: #f5c2e7;
+  --brink-flamingo: #f2cdcd;
+  height: 100%;
+}
+
+/* Binder pane */
+.brink-studio .binder-pane {
+  height: 100%;
+  background: var(--brink-bg-surface);
+  display: flex;
+  flex-direction: column;
+}
+.brink-studio .binder-pane .header {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brink-fg-dim);
+  border-bottom: 1px solid var(--brink-border);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+/* Binder tree */
+.brink-studio .brink-binder {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+  font-size: 13px;
+  --binder-indent: 18px;
+  --binder-row-height: 26px;
+  --binder-guide-color: rgba(108, 112, 134, 0.2);
+}
+.brink-studio .brink-binder-row {
+  display: flex;
+  align-items: center;
+  height: var(--binder-row-height);
+  padding-right: 8px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  position: relative;
+}
+.brink-studio .brink-binder-row:hover {
+  background: var(--brink-bg-panel);
+}
+.brink-studio .brink-binder-row.brink-binder-active {
+  background: rgba(137, 180, 250, 0.15);
+}
+/* Indent guides — spacing for each depth level */
+.brink-studio .brink-binder-guides {
+  display: flex;
+  flex-shrink: 0;
+  height: 100%;
+}
+.brink-studio .brink-binder-guide {
+  width: var(--binder-indent);
+  height: 100%;
+  flex-shrink: 0;
+}
+/* Chevron for expand/collapse */
+.brink-studio .brink-binder-chevron {
+  width: var(--binder-indent);
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--brink-fg-dim);
+  transition: transform 0.12s ease;
+  transform: rotate(90deg);
+}
+.brink-studio .brink-binder-chevron:hover {
+  color: var(--brink-fg);
+}
+.brink-studio .brink-binder-chevron.collapsed {
+  transform: rotate(0deg);
+}
+.brink-studio .brink-binder-chevron.leaf {
+  visibility: hidden;
+}
+/* Icon */
+.brink-studio .brink-binder-icon {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-right: 6px;
+  font-size: 14px;
+  line-height: 1;
+}
+.brink-studio .brink-binder-icon-file { color: var(--brink-accent); }
+.brink-studio .brink-binder-icon-knot { color: var(--brink-mauve); }
+.brink-studio .brink-binder-icon-stitch { color: var(--brink-teal); }
+/* Label */
+.brink-studio .brink-binder-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brink-studio .brink-binder-file-row .brink-binder-label {
+  font-weight: 600;
+}
+.brink-studio .brink-binder-knot .brink-binder-label {
+  color: var(--brink-fg);
+}
+.brink-studio .brink-binder-stitch .brink-binder-label {
+  color: var(--brink-fg-dim);
+}
+.brink-studio .brink-binder-new {
+  color: var(--brink-fg-dim);
+  margin-top: 4px;
+  padding-left: 8px;
+  font-size: 12px;
+  height: var(--binder-row-height);
+  display: flex;
+  align-items: center;
+}
+.brink-studio .brink-binder-new:hover {
+  color: var(--brink-fg);
+}
+.brink-studio .brink-binder-input-wrapper {
+  padding: 4px 8px;
+}
+/* Editor pane */
+.brink-studio .editor-pane {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.brink-studio .editor-pane .header {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brink-fg-dim);
+  background: var(--brink-bg-surface);
+  border-bottom: 1px solid var(--brink-border);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.brink-studio .editor {
+  flex: 1;
+  overflow: auto;
+  /* Responsive manuscript metrics: full physical sizes when the editor pane is
+     wide, scaling down (cqi = 1% of the pane's inline size) as it narrows, so the
+     screenplay layout stays usable in a split pane or a small embed. The values
+     are consumed by .cm-content and the screenplay line styles below. */
+  container-type: inline-size;
+  --editor-margin: clamp(10px, 5cqi, 1in);
+  --indent-character: clamp(16px, 28cqi, 2.5in);
+  --indent-parenthetical: clamp(12px, 23cqi, 2in);
+  --indent-dialogue: clamp(10px, 18cqi, 1.5in);
+  --indent-dialogue-right: clamp(10px, 35cqi, 3in);
+}
+.brink-studio .editor .cm-editor {
+  height: 100%;
+  background: var(--brink-bg);
+}
+.brink-studio .editor .cm-editor .cm-scroller {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.brink-studio .editor .cm-editor .cm-gutters {
+  background: var(--brink-bg);
+  border-right: 1px solid var(--brink-border);
+  color: var(--brink-fg-dim);
+}
+.brink-studio .editor .cm-editor .cm-activeLineGutter {
+  background: var(--brink-bg-surface);
+}
+.brink-studio .editor .cm-editor .cm-activeLine {
+  background: rgba(37, 37, 54, 0.6);
+}
+.brink-studio .editor .cm-editor .cm-selectionBackground,
+.brink-studio .editor .cm-editor.cm-focused .cm-selectionBackground {
+  background: rgba(137, 180, 250, 0.25) !important;
+}
+.brink-studio .editor .cm-editor .cm-cursor {
+  border-left-color: var(--brink-accent);
+}
+.brink-studio .editor .cm-editor .cm-content {
+  caret-color: var(--brink-accent);
+  color: var(--brink-fg);
+  padding-left: var(--editor-margin);
+  padding-right: var(--editor-margin);
+  width: 100%;
+  max-width: 8.5in;
+  box-sizing: border-box;
+  border-right: 1px solid var(--brink-border);
+}
+/* Screenplay element line styles */
+.brink-studio .cm-line.brink-knot-header {
+  font-weight: 700;
+  border-top: 1px solid rgba(69, 71, 90, 0.6);
+  margin-left: calc(-1 * var(--editor-margin));
+  margin-right: calc(-1 * var(--editor-margin));
+  padding-left: var(--editor-margin);
+  padding-right: var(--editor-margin);
+}
+.brink-studio .cm-line.brink-stitch-header {
+  font-weight: 700;
+}
+.brink-studio .cm-line.brink-choice {
+  color: var(--brink-accent);
+}
+.brink-studio .cm-line.brink-gather {
+  color: var(--brink-fg-dim);
+}
+.brink-studio .cm-line.brink-divert {
+}
+.brink-studio .cm-line.brink-logic,
+.brink-studio .cm-line.brink-var-decl {
+  opacity: 0.7;
+}
+.brink-studio .cm-line.brink-comment {
+  font-style: italic;
+  opacity: 0.5;
+}
+.brink-studio .cm-line.brink-include,
+.brink-studio .cm-line.brink-external {
+  opacity: 0.7;
+}
+.brink-studio .cm-line.brink-tag {
+  color: var(--brink-fg-dim);
+}
+/* Screenplay: character / parenthetical / dialogue */
+.brink-studio .cm-line.brink-character {
+  font-weight: 700;
+  color: var(--brink-accent);
+  text-transform: uppercase;
+  padding-left: var(--indent-character);
+}
+.brink-studio .cm-line.brink-parenthetical {
+  font-style: italic;
+  color: var(--brink-fg-dim);
+  padding-left: var(--indent-parenthetical);
+}
+.brink-studio .cm-line.brink-dialogue {
+  padding-left: var(--indent-dialogue);
+  padding-right: var(--indent-dialogue-right);
+}
+/* Hidden sigil widget — zero-width but in flow for cursor anchoring */
+.brink-studio .brink-hidden-sigil {
+  display: inline;
+  width: 0;
+  overflow: hidden;
+  font-size: 0;
+}
+/* Depth sigil widget */
+.brink-studio .brink-depth-sigil {
+  opacity: 0.7;
+}
+/* Choice bracket styling */
+.brink-studio .brink-choice-bracket {
+  background: rgba(137, 180, 250, 0.08);
+}
+/* Semantic token classes */
+.brink-studio .tok-namespace { color: #cba6f7; }
+.brink-studio .tok-function { color: #89b4fa; }
+.brink-studio .tok-variable { color: #cdd6f4; }
+.brink-studio .tok-string { color: #a6e3a1; }
+.brink-studio .tok-number { color: #fab387; }
+.brink-studio .tok-keyword { color: #cba6f7; font-weight: 600; }
+.brink-studio .tok-operator { color: #89dceb; }
+.brink-studio .tok-comment { color: #6c7086; font-style: italic; }
+.brink-studio .tok-enum { color: #f9e2af; }
+.brink-studio .tok-enumMember { color: #f9e2af; }
+.brink-studio .tok-parameter { color: #f2cdcd; }
+.brink-studio .tok-decorator { color: #fab387; }
+.brink-studio .tok-label { color: #f5c2e7; }
+/* CM6 lint panel overrides */
+.brink-studio .cm-panel.cm-panel-lint {
+  background: var(--brink-bg-surface);
+  border-top: 1px solid var(--brink-border);
+}
+.brink-studio .cm-diagnostic-error { border-left-color: var(--brink-red); }
+.brink-studio .cm-diagnostic-warning { border-left-color: var(--brink-yellow); }
+/* File tab bar */
+.brink-studio .brink-file-tabs {
+  display: flex;
+  align-items: stretch;
+  background: var(--brink-bg-surface);
+  border-bottom: 1px solid var(--brink-border);
+  overflow-x: auto;
+  min-height: 33px;
+  scrollbar-width: none;
+}
+.brink-studio .brink-file-tabs::-webkit-scrollbar {
+  display: none;
+}
+.brink-studio .brink-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--brink-fg-dim);
+  cursor: pointer;
+  border-right: 1px solid var(--brink-border);
+  white-space: nowrap;
+  user-select: none;
+}
+.brink-studio .brink-tab:hover {
+  background: var(--brink-bg-panel);
+}
+.brink-studio .brink-tab.active {
+  color: var(--brink-fg);
+  background: var(--brink-bg);
+}
+.brink-studio .brink-tab.unpinned .brink-tab-label {
+  font-style: italic;
+}
+.brink-studio .brink-tab-close {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 3px;
+  color: var(--brink-fg-dim);
+}
+.brink-studio .brink-tab:hover .brink-tab-close {
+  display: flex;
+}
+.brink-studio .brink-tab-close:hover {
+  background: rgba(243, 139, 168, 0.2);
+  color: var(--brink-red);
+}
+.brink-studio .brink-tab-new {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 16px;
+  color: var(--brink-fg-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.brink-studio .brink-tab-new:hover {
+  color: var(--brink-fg);
+  background: var(--brink-bg-panel);
+}
+.brink-studio .brink-tab-input-wrapper {
+  display: flex;
+  align-items: center;
+  padding: 4px 6px;
+}
+.brink-studio .brink-tab-input {
+  background: var(--brink-bg);
+  color: var(--brink-fg);
+  border: 1px solid var(--brink-border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+.brink-studio .brink-tab-input:focus {
+  border-color: var(--brink-accent);
+}
+.brink-studio .brink-tab-input.error {
+  border-color: var(--brink-red);
+}
+/* Status bar */
+.brink-studio .brink-statusbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 12px;
+  font-size: 12px;
+  color: var(--brink-fg-dim);
+  background: var(--brink-bg-surface);
+  border-top: 1px solid var(--brink-border);
+}
+.brink-studio .brink-status-left,
+.brink-studio .brink-status-right {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.brink-studio .brink-status-keyhint {
+  opacity: 0.7;
+}
+.brink-studio .brink-status-element-btn {
+  background: none;
+  border: 1px solid var(--brink-border);
+  color: var(--brink-fg);
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.brink-studio .brink-status-element-btn:hover {
+  background: var(--brink-bg-panel);
+}
+.brink-studio .brink-status-cursor {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+}
+.brink-studio .brink-status-diag.has-errors {
+  color: var(--brink-red);
+}
+.brink-studio .brink-status-diag.has-warnings {
+  color: var(--brink-yellow);
+}
+/* Element type dropdown */
+.brink-studio .brink-element-dropdown {
+  position: fixed;
+  background: var(--brink-bg-panel);
+  border: 1px solid var(--brink-border);
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 200;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  min-width: 160px;
+}
+.brink-studio .brink-element-dropdown-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--brink-fg);
+  padding: 5px 10px;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.brink-studio .brink-element-dropdown-key {
+  color: var(--brink-fg-dim);
+  font-size: 11px;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  margin-left: 16px;
+  opacity: 0.6;
+}
+.brink-studio .brink-element-dropdown-item:hover,
+.brink-studio .brink-element-dropdown-item.selected {
+  background: var(--brink-bg-surface);
+}
+/* Hover tooltip */
+.brink-studio .brink-hover-tooltip {
+  background: var(--brink-bg-panel);
+  border: 1px solid var(--brink-border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 13px;
+  max-width: 500px;
+  line-height: 1.5;
+}
+.brink-studio .brink-hover-tooltip code {
+  background: var(--brink-bg-surface);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 12px;
+}
+.brink-studio .brink-hover-tooltip strong {
+  color: var(--brink-accent);
+}
+/* Inlay hints */
+.brink-studio .brink-inlay-hint {
+  color: var(--brink-fg-dim);
+  font-size: 0.85em;
+  font-style: italic;
+  background: rgba(108, 112, 134, 0.15);
+  border-radius: 2px;
+  padding: 0 3px;
+  margin-left: 2px;
+}
+/* Signature help */
+.brink-studio .brink-signature-help {
+  background: var(--brink-bg-panel);
+  border: 1px solid var(--brink-border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 13px;
+}
+.brink-studio .brink-sig-active-param {
+  color: var(--brink-accent);
+  font-weight: 600;
+  text-decoration: underline;
+}
+.brink-studio .brink-sig-doc {
+  margin-top: 4px;
+  color: var(--brink-fg-dim);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+/* Reference highlights */
+.brink-studio .brink-reference-highlight {
+  background: rgba(137, 180, 250, 0.2);
+  border-bottom: 1px solid var(--brink-accent);
+}
+/* Code actions menu */
+.brink-studio .brink-code-actions-menu {
+  background: var(--brink-bg-panel);
+  border: 1px solid var(--brink-border);
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  min-width: 200px;
+}
+.brink-studio .brink-code-action-item {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--brink-fg);
+  padding: 6px 10px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.brink-studio .brink-code-action-item:hover {
+  background: var(--brink-bg-surface);
+}
+/* Player pane */
+.brink-studio .player-pane {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.brink-studio .player-pane .header {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brink-fg-dim);
+  background: var(--brink-bg-surface);
+  border-bottom: 1px solid var(--brink-border);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.brink-studio .player-pane .header .toolbar {
+  display: flex;
+  gap: 6px;
+}
+.brink-studio .player-pane .header button {
+  background: var(--brink-bg-panel);
+  color: var(--brink-fg);
+  border: 1px solid var(--brink-border);
+  border-radius: 4px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.brink-studio .player-pane .header button:hover {
+  background: var(--brink-border);
+}
+.brink-studio .player {
+  flex: 1;
+  overflow: auto;
+  padding: 24px 40px;
+  max-width: 8in;
+  margin: 0 auto;
+  box-sizing: border-box;
+  font-family: "Georgia", "Palatino Linotype", "Book Antiqua", serif;
+}
+.brink-studio .player .story-text p {
+  margin-bottom: 12px;
+  line-height: 1.8;
+  font-size: 17px;
+  letter-spacing: 0.01em;
+}
+.brink-studio .player .choices {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.brink-studio .player .choices button {
+  background: var(--brink-bg-panel);
+  color: var(--brink-accent);
+  border: 1px solid var(--brink-border);
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-size: 16px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.brink-studio .player .choices button:hover {
+  background: var(--brink-border);
+}
+.brink-studio .player .end-marker {
+  margin-top: 16px;
+  padding: 8px;
+  text-align: center;
+  color: var(--brink-fg-dim);
+  font-style: italic;
+  font-size: 13px;
+}
+.brink-studio .player .error {
+  color: var(--brink-red);
+  font-family: monospace;
+  font-size: 13px;
+  padding: 8px;
+  background: rgba(243, 139, 168, 0.1);
+  border-radius: 4px;
+  margin-top: 8px;
+}
+/* Resize handle (react-resizable-panels) */
+.brink-studio .brink-resize-handle {
+  width: 5px;
+  background: transparent;
+  position: relative;
+  z-index: 10;
+  transition: background 0.15s;
+}
+.brink-studio .brink-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--brink-border);
+  transition: background 0.15s, width 0.15s;
+}
+.brink-studio .brink-resize-handle:hover::after,
+.brink-studio .brink-resize-handle[data-resize-handle-active]::after {
+  background: var(--brink-accent);
+  width: 2px;
+  left: 1px;
+}
+/* Panel toggle button */
+.brink-studio .brink-panel-toggle {
+  background: none;
+  border: none;
+  color: var(--brink-fg-dim);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.brink-studio .brink-panel-toggle:hover {
+  color: var(--brink-fg);
+  background: var(--brink-bg-panel);
+}
+/* Binder: multi-select highlight */
+.brink-studio .brink-binder-row.brink-binder-selected {
+  background: rgba(137, 180, 250, 0.15);
+  border-left: 2px solid var(--brink-accent);
+}
+/* Binder: keyboard focus indicator */
+.brink-studio .brink-binder-row.brink-binder-focused {
+  outline: 1px solid rgba(137, 180, 250, 0.4);
+  outline-offset: -1px;
+}
+/* Binder: drag source opacity */
+.brink-studio .brink-binder-row.brink-binder-dragging {
+  opacity: 0.4;
+}
+/* Binder: drop target knot highlight */
+.brink-studio .brink-binder-row.brink-binder-drop-into {
+  background: rgba(137, 180, 250, 0.1);
+  border: 1px dashed var(--brink-accent);
+}
+/* Binder: drop insertion line */
+.brink-studio .brink-binder-drop-line {
+  height: 2px;
+  background: var(--brink-accent);
+  margin: 0 8px;
+  border-radius: 1px;
+  box-shadow: 0 0 4px rgba(137, 180, 250, 0.5);
+  pointer-events: none;
+}
+/* Binder: post-move flash animation */
+@keyframes brink-binder-flash {
+  0% { background: rgba(137, 180, 250, 0.3); }
+  100% { background: transparent; }
+}
+.brink-studio .brink-binder-flash {
+  animation: brink-binder-flash 0.5s ease-out;
+}
+/* Binder: focus outline for container */
+.brink-studio .brink-binder:focus {
+  outline: none;
+}
+/* Context menu */
+.brink-studio .brink-context-menu {
+  position: fixed;
+  background: var(--brink-bg-panel);
+  border: 1px solid var(--brink-border);
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 300;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  min-width: 160px;
+}
+.brink-studio .brink-context-menu-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--brink-fg);
+  cursor: pointer;
+  border-radius: 3px;
+  user-select: none;
+  position: relative;
+}
+.brink-studio .brink-context-menu-item:hover {
+  background: var(--brink-bg-surface);
+}
+.brink-studio .brink-context-menu-item.disabled {
+  color: var(--brink-fg-dim);
+  opacity: 0.5;
+  cursor: default;
+}
+.brink-studio .brink-context-menu-item.disabled:hover {
+  background: none;
+}
+.brink-studio .brink-context-menu-separator {
+  height: 1px;
+  background: var(--brink-border);
+  margin: 4px 6px;
+}
+.brink-studio .brink-context-menu-arrow {
+  font-size: 8px;
+  color: var(--brink-fg-dim);
+  margin-left: 12px;
+}
+.brink-studio .brink-context-submenu {
+  position: absolute;
+  left: 100%;
+  top: 0;
+}
+/* Toast notification */
+.brink-studio .brink-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--brink-bg-panel);
+  border: 1px solid var(--brink-border);
+  border-radius: 6px;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--brink-fg);
+  z-index: 400;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+.brink-studio .brink-toast-message {
+  flex: 1;
+}
+.brink-studio .brink-toast-undo {
+  background: none;
+  border: 1px solid var(--brink-accent);
+  color: var(--brink-accent);
+  border-radius: 3px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.brink-studio .brink-toast-undo:hover {
+  background: rgba(137, 180, 250, 0.15);
+}
+.brink-studio .brink-toast-dismiss {
+  background: none;
+  border: none;
+  color: var(--brink-fg-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.brink-studio .brink-toast-dismiss:hover {
+  color: var(--brink-fg);
+}
