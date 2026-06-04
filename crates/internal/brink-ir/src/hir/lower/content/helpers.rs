@@ -36,7 +36,10 @@ pub fn lower_content_node_children(
                         lower_inline_logic_into_parts(&inline, &mut parts, scope, sink);
                     }
                 }
-                SyntaxKind::DIVERT_NODE | SyntaxKind::TAGS => {}
+                // DIVERT_NODE/TAGS are handled elsewhere; ERROR nodes appear on
+                // malformed input (already diagnosed by the parser) — skip rather
+                // than panic.
+                SyntaxKind::DIVERT_NODE | SyntaxKind::TAGS | SyntaxKind::ERROR => {}
                 other => {
                     debug_assert!(
                         other.is_token(),

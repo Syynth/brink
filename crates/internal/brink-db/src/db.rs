@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use brink_ir::suppressions::{Suppressions, parse_suppressions};
 use brink_ir::{
-    Diagnostic, FileId, HirFile, SymbolManifest, lower, lower_single_knot, lower_top_level,
+    Diagnostic, DiagnosticCode, FileId, HirFile, SymbolManifest, lower, lower_single_knot,
+    lower_top_level,
 };
 use brink_syntax::ast::AstNode as _;
 use brink_syntax::{Parse, parse_with_cache};
@@ -68,8 +69,10 @@ impl ProjectDb {
         let top_level = Self::lower_top_level_entry(file_id, &tree);
 
         // Assemble full HirFile and SymbolManifest
-        let (hir, manifest, diagnostics) =
+        let (hir, manifest, mut diagnostics) =
             Self::assemble(file_id, &knot_entries, &top_level, &tree);
+        // Surface parser/syntax errors as compile diagnostics alongside lowering.
+        diagnostics.extend(Self::syntax_diagnostics(file_id, &parse));
 
         let suppressions = parse_suppressions(&source);
 
@@ -161,8 +164,9 @@ impl ProjectDb {
             "knot diff complete"
         );
 
-        let (hir, manifest, diagnostics) =
+        let (hir, manifest, mut diagnostics) =
             Self::assemble(file_id, &knot_entries, &top_level, &tree);
+        diagnostics.extend(Self::syntax_diagnostics(file_id, &parse));
 
         let suppressions = parse_suppressions(&source);
 
@@ -424,6 +428,21 @@ impl ProjectDb {
         }
 
         (full_hir, manifest, diagnostics)
+    }
+
+    /// Convert parser/syntax errors into compile diagnostics (`E037`), so
+    /// malformed source fails the compile instead of being silently ignored.
+    fn syntax_diagnostics(file_id: FileId, parse: &Parse) -> Vec<Diagnostic> {
+        parse
+            .errors()
+            .iter()
+            .map(|e| Diagnostic {
+                file: file_id,
+                range: e.range,
+                message: e.message.clone(),
+                code: DiagnosticCode::E037,
+            })
+            .collect()
     }
 }
 

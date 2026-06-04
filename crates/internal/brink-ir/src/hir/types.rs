@@ -763,6 +763,8 @@ pub enum DiagnosticCode {
     E035,
     /// Expected diagnostic not produced (`// brink-expect`).
     E036,
+    /// Syntax error reported by the parser (malformed source).
+    E037,
 }
 
 impl DiagnosticCode {
@@ -806,6 +808,7 @@ impl DiagnosticCode {
             Self::E034 => "E034",
             Self::E035 => "E035",
             Self::E036 => "E036",
+            Self::E037 => "E037",
         }
     }
 
@@ -849,6 +852,7 @@ impl DiagnosticCode {
             Self::E034 => "choice set has only fallback choices",
             Self::E035 => "name shadows a built-in function",
             Self::E036 => "expected diagnostic not produced",
+            Self::E037 => "syntax error",
         }
     }
 
@@ -909,6 +913,7 @@ impl DiagnosticCode {
             "E034" => Some(Self::E034),
             "E035" => Some(Self::E035),
             "E036" => Some(Self::E036),
+            "E037" => Some(Self::E037),
             _ => None,
         }
     }
