@@ -1912,8 +1912,8 @@ fn compile_error_inline_conditional_with_logic() {
 /// (`{ - c1: a\n  - c2: b\n  - else: c }`), so the inline pipe form is invalid
 /// ink and must error.
 ///
-/// Worse than a silent miscompile: brink currently PANICS lowering this
-/// (`backbone.rs`: "unexpected SyntaxKind in classify_body_child: ERROR")
+/// Worse than a silent miscompile: brink currently panics while lowering
+/// this — `backbone.rs` hits `unexpected SyntaxKind in classify_body_child` —
 /// instead of surfacing a diagnostic.
 #[test]
 #[ignore = "known bug #44: PANICS in HIR lowering instead of emitting a diagnostic"]

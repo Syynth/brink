@@ -158,7 +158,7 @@ mod tests {
         }
     }
 
-    /// Regression test for #43: a diagnostic originating in an INCLUDEd
+    /// Regression test for #43: a diagnostic originating in an included
     /// (non-entry) file must be attributed to *that* file, not collapsed onto
     /// the entry file. The studio currently shows every included-file error on
     /// the entry (`main.ink`), which makes multi-file errors unlocatable.
