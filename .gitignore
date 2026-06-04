@@ -8,4 +8,5 @@ CLAUDE.md.bak
 crates/brink-web/www/pkg/
 node_modules/
 packages/brink-studio/dist/
+packages/brink-studio/dist-embed/
 test-results/

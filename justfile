@@ -35,17 +35,22 @@ cross-language-benchmark:
 wasm:
     wasm-pack build crates/brink-web --target web --out-dir www/pkg
 
-# Stage the embedded book playground (brink-web wasm + www front-end) into docs/book/src/playground/
+# Build the full brink-studio as a standalone static app and stage it into
+# docs/book/src/playground/ (the embedded book playground).
 book-assets:
     #!/usr/bin/env bash
     set -euo pipefail
     dest="docs/book/src/playground"
+    # The studio's Vite build resolves `brink-web` against this wasm pkg, so it
+    # must exist first (out-dir is relative to the crate -> crates/brink-web/www/pkg).
+    wasm-pack build crates/brink-web --target web --out-dir www/pkg
+    # Install JS deps and build the studio as a self-contained static bundle.
+    pnpm install --frozen-lockfile
+    pnpm --filter @brink/studio build:embed
+    # Stage the static build (index.html + assets/, wasm bundled) into the book.
     rm -rf "$dest"
     mkdir -p "$dest"
-    # Static playground front-end (index.html + JS modules); exclude any local www/pkg build
-    find crates/brink-web/www -maxdepth 1 -type f -exec cp {} "$dest/" \;
-    # Compile the wasm bundle straight into the playground dir (out-dir is relative to the crate)
-    wasm-pack build crates/brink-web --target web --out-dir "../../$dest/pkg"
+    cp -R packages/brink-studio/dist-embed/. "$dest/"
 
 # Build the book with the embedded playground
 book: book-assets
