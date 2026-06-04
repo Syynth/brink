@@ -18,7 +18,7 @@ pub fn compile(source: &str) -> String {
             let warnings: Vec<DiagnosticJs> = output
                 .warnings
                 .iter()
-                .map(|d| diagnostic_to_js(d, source))
+                .map(|d| diagnostic_to_js(d, source, "main.ink".to_owned()))
                 .collect();
 
             let data = output.data;
@@ -39,7 +39,10 @@ pub fn compile(source: &str) -> String {
 
             match e {
                 brink_compiler::CompileError::Diagnostics(diags) => {
-                    diagnostics = diags.iter().map(|d| diagnostic_to_js(d, source)).collect();
+                    diagnostics = diags
+                        .iter()
+                        .map(|d| diagnostic_to_js(d, source, "main.ink".to_owned()))
+                        .collect();
                 }
                 other => {
                     error_msg = Some(format!("{other}"));
@@ -73,6 +76,10 @@ struct DiagnosticJs {
     start: u32,
     end: u32,
     severity: String,
+    /// Path of the file this diagnostic belongs to. In a multi-file project a
+    /// diagnostic may live in an included file rather than the entry, so the
+    /// editor uses this to place it on the right tab.
+    file: String,
 }
 
 // ── Runtime ─────────────────────────────────────────────────────────
@@ -483,12 +490,6 @@ impl EditorSession {
     /// Compile the project using all loaded files. Returns JSON `CompileResult`.
     pub fn compile_project(&self, entry: &str) -> String {
         let session = &self.session;
-        // Diagnostic ranges are byte offsets into the compiled entry file; we
-        // convert them to UTF-16 for the editor against that file's source.
-        let diag_source = session
-            .file_id(entry)
-            .and_then(|id| session.source(id))
-            .unwrap_or("");
         let result = brink_compiler::compile(entry, |path| {
             session
                 .file_id(path)
@@ -502,13 +503,18 @@ impl EditorSession {
                 })
         });
 
+        // Convert a diagnostic against its OWN file's source (offsets are
+        // file-relative) and attach that file's path, so an INCLUDEd file's
+        // error lands on the right tab instead of collapsing onto the entry.
+        let to_js = |d: &brink_ir::Diagnostic| {
+            let src = session.source(d.file).unwrap_or("");
+            let file = session.file_path(d.file).unwrap_or_default().to_owned();
+            diagnostic_to_js(d, src, file)
+        };
+
         match result {
             Ok(output) => {
-                let warnings: Vec<DiagnosticJs> = output
-                    .warnings
-                    .iter()
-                    .map(|d| diagnostic_to_js(d, diag_source))
-                    .collect();
+                let warnings: Vec<DiagnosticJs> = output.warnings.iter().map(to_js).collect();
 
                 let data = output.data;
                 let mut bytes = Vec::new();
@@ -528,10 +534,7 @@ impl EditorSession {
 
                 match e {
                     brink_compiler::CompileError::Diagnostics(diags) => {
-                        diagnostics = diags
-                            .iter()
-                            .map(|d| diagnostic_to_js(d, diag_source))
-                            .collect();
+                        diagnostics = diags.iter().map(to_js).collect();
                     }
                     other => {
                         error_msg = Some(format!("{other}"));
@@ -1505,13 +1508,15 @@ fn inlay_hint_kind_str(kind: &brink_ide::inlay_hints::InlayHintKind) -> &'static
 }
 
 /// Convert a compiler diagnostic to JSON, translating its byte range to UTF-16
-/// offsets against `source` (the file the range refers to).
-fn diagnostic_to_js(d: &brink_ir::Diagnostic, source: &str) -> DiagnosticJs {
+/// offsets against `source` (the diagnostic's own file) and attaching `file`
+/// (that file's path).
+fn diagnostic_to_js(d: &brink_ir::Diagnostic, source: &str, file: String) -> DiagnosticJs {
     DiagnosticJs {
         message: d.message.clone(),
         start: byte_to_utf16(source, d.range.start().into()),
         end: byte_to_utf16(source, d.range.end().into()),
         severity: format!("{:?}", d.code.severity()),
+        file,
     }
 }
 

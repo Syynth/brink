@@ -12,6 +12,8 @@ export interface Diagnostic {
   end: number;
   message: string;
   severity: "Error" | "Warning";
+  /** Path of the file this diagnostic belongs to (may be an INCLUDEd file). */
+  file: string;
 }
 
 export interface CompileResult {

@@ -98,6 +98,7 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     diagnosticsExtension({
       compile: options.compile,
       onCompile: options.onCompile,
+      getActiveFile: options.getActiveFile,
     }),
     brinkKeymap(),
     ideCompartment.of(ideExtensions),

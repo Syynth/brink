@@ -102,6 +102,11 @@ impl IdeSession {
         self.db.source(id)
     }
 
+    /// Get the path for a file.
+    pub fn file_path(&self, id: FileId) -> Option<&str> {
+        self.db.file_path(id)
+    }
+
     /// Get the parse tree root for a file.
     pub fn syntax_root(&self, id: FileId) -> Option<brink_syntax::SyntaxNode> {
         self.db.parse(id).map(brink_syntax::Parse::syntax)
