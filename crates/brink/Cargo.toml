@@ -8,6 +8,8 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "A compiler and runtime for inkle's ink narrative scripting language"
+# Empty umbrella/name-reservation crate; nothing to ship yet.
+publish = false
 
 [lints]
 workspace = true

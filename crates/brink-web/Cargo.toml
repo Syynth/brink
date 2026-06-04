@@ -11,14 +11,14 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-brink-compiler = { path = "../brink-compiler" }
-brink-db = { path = "../internal/brink-db" }
-brink-ide = { path = "../internal/brink-ide" }
-brink-runtime = { path = "../brink-runtime" }
-brink-syntax = { path = "../internal/brink-syntax" }
-brink-analyzer = { path = "../internal/brink-analyzer" }
-brink-ir = { path = "../internal/brink-ir" }
-brink-format = { path = "../internal/brink-format" }
+brink-compiler = { workspace = true }
+brink-db = { workspace = true }
+brink-ide = { workspace = true }
+brink-runtime = { workspace = true }
+brink-syntax = { workspace = true }
+brink-analyzer = { workspace = true }
+brink-ir = { workspace = true }
+brink-format = { workspace = true }
 rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true

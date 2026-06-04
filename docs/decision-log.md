@@ -679,3 +679,19 @@
 - **SCOPE:** moderate
 - **WHAT:** Replace the simple brink-web www playground embedded in the book's Playground page with the full brink-studio app, built as a standalone static bundle via a new app-mode Vite config (no lib build, bundled deps, base: "./"; wasm auto-emitted by Vite, no extra plugin). Stage it through the `just book-assets` pipeline and ship it to GitHub Pages (book.yml gains Node/pnpm setup + a studio build step). The Book CI check (ci.yml) is unaffected — it only runs `mdbook build`.
 - **WHY:** The studio is the far richer reference client and the better in-browser showcase of brink; one best-in-class playground beats maintaining a second minimal one. Shipping it live lets people try the real authoring experience with no install. The cost (~670 kB gzipped page, added CI build step) is acceptable for a docs playground.
+
+## Publish the full brink Rust toolchain to crates.io as dependency closures (release-plz + cargo-dist)
+- **WHEN:** 2026-06-04
+- **PROJECT:** brink
+- **SYSTEM:** release-infra / cross-system
+- **SCOPE:** architectural
+- **WHAT:** Publish the full brink Rust toolchain to crates.io by publishing dependency closures — the 5 front doors (`brink-runtime`, `bevy-brink`, `brink-compiler`, `brink-cli`, `brink-lsp`) plus all internal crates in their closures (~20 crates total). Internal crates become public with an explicit "no semver guarantees" note. `brink-test-harness`, `brink-web`, `zed-brink`, and the empty `brink` umbrella stay unpublished (`publish = false`). Automated via release-plz (unified versioning, conventional-commit changelogs) for crates.io and cargo-dist for prebuilt `brink-cli`/`brink-lsp` binaries on GitHub Releases. Internal path deps move to `[workspace.dependencies]` with versions (also aligning with the existing `dep.workspace = true` convention). JS/web → npm/JSR is a separate follow-up.
+- **WHY:** A single coherent publish boundary is impossible without publishing closures — crates.io flattens deps and every front door depends transitively into `crates/internal/`, so the FS public/private split is organizational only, not a valid registry boundary. Publishing internals (as swc/salsa/rustc do) avoids a large structural refactor and respects the workspace's separation-of-concerns design principle. release-plz + cargo-dist gives hands-off, dependency-ordered releases with binary artifacts.
+
+## Harden the release/CI supply chain (OIDC trusted publishing, SHA-pinned actions, cargo-deny)
+- **WHEN:** 2026-06-04
+- **PROJECT:** brink
+- **SYSTEM:** release-infra / ci
+- **SCOPE:** moderate
+- **WHAT:** Apply maximal-security hardening to CI + release, mirroring the bevy_rmmz_assets model: crates.io Trusted Publishing (OIDC, `id-token: write`, no stored registry token in steady state); all third-party GitHub Actions pinned to commit SHAs with version comments; least-privilege `permissions: {}` + per-job grants + `persist-credentials: false`; a `crates-io` environment gate on the publish job; pinned Rust toolchain via `rust-toolchain.toml` (1.95.0, minimal profile); Dependabot covering github-actions + cargo + npm; and a `cargo-deny` CI job (`deny.toml`: advisories, permissive-only license allowlist, wildcard/source bans). The one-time first publish of the ~20 new crates uses `CARGO_REGISTRY_TOKEN` in CI (Trusted Publishing can't create new crates), after which the token is removed and per-crate trusted publishers take over. An in-place dependency audit was run: 750 crates resolved, 100% permissive licenses, 0 vulnerabilities, 3 accepted transitive informational advisories.
+- **WHY:** A public crate's release pipeline is a high-value supply-chain target; OIDC removes the standing secret, SHA pins defeat tag-repointing attacks, least privilege limits blast radius, and cargo-deny continuously gates advisories/licenses/sources. Matches the security posture already established for bevy_rmmz_assets so the two projects are consistent.

@@ -1,0 +1,38 @@
+# release-plz — automated crates.io publishing for the brink workspace.
+# Docs: https://release-plz.dev/docs/config
+#
+# Versioning is unified: every published crate inherits `version.workspace =
+# true`, so release-plz bumps the single workspace version (and the matching
+# version fields in root `[workspace.dependencies]`) in lockstep. On a push to
+# `main` it opens/updates a "release PR" with the version bump + changelogs;
+# merging that PR publishes the changed crates to crates.io in dependency order
+# and creates per-crate git tags + GitHub releases.
+
+[workspace]
+# Generate/refresh CHANGELOG.md files from conventional commits.
+changelog_update = true
+# Create git tags + GitHub releases (the tags are what cargo-dist keys off of to
+# build binaries — see docs/releasing.md).
+git_tag_enable = true
+git_release_enable = true
+# Keep changelog noise down: dependency-only bumps don't warrant an entry.
+dependencies_update = false
+
+# --- Crates that must never reach crates.io --------------------------------
+# release-plz already honors `publish = false`, but listing them here keeps the
+# release PR and changelogs free of these crates.
+[[package]]
+name = "brink"
+release = false
+
+[[package]]
+name = "brink-web"
+release = false
+
+[[package]]
+name = "zed-brink"
+release = false
+
+[[package]]
+name = "brink-test-harness"
+release = false

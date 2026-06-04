@@ -5,16 +5,18 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
-brink-format = { path = "../brink-format" }
+brink-format = { workspace = true }
 icu_locale_core = { workspace = true }
 icu_plurals = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-xliff2 = { path = "../xliff2" }
+xliff2 = { workspace = true }
 
 [dev-dependencies]
 brink-converter = { path = "../brink-converter" }

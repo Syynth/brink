@@ -9,8 +9,11 @@ keywords.workspace = true
 categories.workspace = true
 description = "Runtime/VM for executing compiled ink stories"
 
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
-brink-format = { path = "../internal/brink-format" }
+brink-format = { workspace = true }
 thiserror.workspace = true
 
 [features]

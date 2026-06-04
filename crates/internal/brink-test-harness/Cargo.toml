@@ -8,11 +8,11 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-brink-runtime = { path = "../../brink-runtime", features = ["testing"] }
-brink-format = { path = "../brink-format", features = ["inkt"] }
-brink-converter = { path = "../brink-converter" }
-brink-json = { path = "../brink-json" }
-brink-compiler = { path = "../../brink-compiler" }
+brink-runtime = { workspace = true, features = ["testing"] }
+brink-format = { workspace = true, features = ["inkt"] }
+brink-converter = { workspace = true }
+brink-json = { workspace = true }
+brink-compiler = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

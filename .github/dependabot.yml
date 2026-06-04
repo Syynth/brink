@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # Keep the SHA-pinned GitHub Actions current (Dependabot bumps the pin + the
+  # trailing version comment together).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Rust dependencies (root Cargo.toml workspace deps + crate manifests).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # One PR for routine patch/minor bumps to cut review noise; majors stay
+      # individual so breaking changes get scrutiny.
+      cargo-minor:
+        update-types: ["minor", "patch"]
+
+  # JavaScript / pnpm workspace (brink-studio + web packages).
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor:
+        update-types: ["minor", "patch"]

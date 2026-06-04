@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-BRINK_CLI="./target/release/brink-cli"
+BRINK_CLI="./target/release/brink"
 BRINK_LOOP="./benchmarks/drivers/brink-loop/target/release/brink-loop"
 INKJS_DRIVER="./benchmarks/drivers/inkjs/driver.mjs"
 

@@ -5,12 +5,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
-brink-ir = { path = "../brink-ir" }
-brink-format = { path = "../brink-format" }
-brink-json = { path = "../brink-json" }
+brink-ir = { workspace = true }
+brink-format = { workspace = true }
+brink-json = { workspace = true }
 
 [lints]
 workspace = true
