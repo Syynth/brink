@@ -61,11 +61,20 @@ export interface PlayerSlice {
   /** Full choice index log for save/restore. */
   _choiceLog: number[];
 
+  /**
+   * Read-only runtime state dump for the State View — refreshed whenever the
+   * story advances. `null` until a story is running. Interim string form;
+   * structured snapshot tracked in issue #62.
+   */
+  debugState: string | null;
+
   loadStory(bytes: Uint8Array): void;
   chooseOption(index: number): void;
   resetStory(): void;
   /** Reveal the next line from the runtime (or show choices/end). */
   revealNext(): void;
+  /** Refresh `debugState` from the current runner (no-op without one). */
+  _refreshDebugState(): void;
   /** Free the current story runner's wasm memory (call on teardown). */
   disposePlayer(): void;
 
@@ -85,6 +94,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
   playerCanContinue: false,
   _runner: null,
   _choiceLog: [],
+  debugState: null,
   playerFullscreen: false,
   playerVisible: true,
 
@@ -169,10 +179,25 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
     get().revealNext();
   },
 
+  _refreshDebugState() {
+    const runner = get()._runner;
+    if (!runner) {
+      set({ debugState: null });
+      return;
+    }
+    try {
+      set({ debugState: runner.debugState() });
+    } catch {
+      // The runner can be mid-teardown or in an error state — never let the
+      // debug snapshot throw into the UI.
+      set({ debugState: null });
+    }
+  },
+
   disposePlayer() {
     const runner = get()._runner;
     if (runner) runner.free();
-    set({ _runner: null });
+    set({ _runner: null, debugState: null });
   },
 
   resetStory() {
@@ -214,6 +239,10 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerCanContinue: false,
       }));
     }
+
+    // Every visible advance funnels through here (load, reset, choose, and the
+    // tail of replay), so refreshing the State View snapshot here covers them all.
+    get()._refreshDebugState();
   },
 });
 
@@ -300,6 +329,7 @@ export function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void
           playerCanContinue: false,
           _choiceLog: choiceLog.slice(0, choiceIdx),
         });
+        get()._refreshDebugState();
         return;
       }
     }

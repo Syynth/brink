@@ -1,23 +1,34 @@
 import { memo } from "react";
+import { useStudioStore } from "./StoreContext.js";
 
 /**
- * State View — a read-only runtime debugger panel (globals, current location,
- * call stack, visit counts, transcript).
+ * State View — a read-only runtime debugger panel.
  *
- * Placeholder for now: the structured runtime introspection API it depends on
- * is tracked as a separate needs-design issue. This shell establishes the
- * activity-bar slot so the real view can drop in without further layout work.
+ * Interim: renders `Story::debug_state()` (status, current position, call
+ * stack, value stack, output buffer, globals, pending choices) as a raw text
+ * dump, refreshed whenever the story advances. The structured, name-resolved
+ * `DebugSnapshot` view is tracked in issue #62.
  */
 function StateViewInner() {
+  const debugState = useStudioStore((s) => s.debugState);
+
+  if (debugState === null) {
+    return (
+      <div className="state-view">
+        <div className="state-view-empty">
+          <p className="state-view-empty-title">No running story</p>
+          <p className="state-view-empty-hint">
+            Run a story in the player to inspect its variables, current location,
+            call stack, and visit counts here.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="state-view">
-      <div className="state-view-empty">
-        <p className="state-view-empty-title">State inspection coming soon</p>
-        <p className="state-view-empty-hint">
-          This panel will show the running story&apos;s variables, current
-          location, call stack, and visit counts.
-        </p>
-      </div>
+      <pre className="state-view-dump">{debugState}</pre>
     </div>
   );
 }
