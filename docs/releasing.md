@@ -73,21 +73,21 @@ token-based, then we switch to OIDC:
    `CARGO_REGISTRY_TOKEN:` line in `release-plz.yml`. All later releases
    authenticate via OIDC with nothing stored.
 
-### 3. Bootstrap cargo-dist
+### 3. cargo-dist (prebuilt binaries)
 
-The dist config lives in root `Cargo.toml` under `[workspace.metadata.dist]`,
-but the release workflow is **generated** by `dist` and version-locked to your
-install, so it must be generated locally:
+Already set up: `[workspace.metadata.dist]` in root `Cargo.toml` and the
+generated `.github/workflows/release.yml` build the `brink` (from `brink-cli`)
+and `brink-lsp` binaries for macOS (arm64/x64), Linux (x64), and Windows (x64),
+plus shell/PowerShell installers.
 
-```sh
-cargo install cargo-dist        # installs the `dist` binary
-dist init --yes                 # re-pins cargo-dist-version, writes
-                                # .github/workflows/release.yml
-git add .github/workflows/release.yml Cargo.toml
-```
+The dist workflow is **decoupled from crate publishing**: it triggers only on a
+unified `vX.Y.Z` tag (release-plz's per-crate tags like `brink-cli-v0.0.3` are
+intentionally ignored — pushing all 20 at once would collide with GitHub's
+3-tags-per-push limit). The trigger in `release.yml` is a manual narrowing; if
+you ever re-run `dist generate`/`dist init` it resets to `**[0-9]…` and must be
+re-narrowed to `v[0-9]+.[0-9]+.[0-9]+*`.
 
-Commit the generated `release.yml`. Re-run `dist init` after changing targets,
-installers, or upgrading `dist`.
+Re-run `dist init` only when changing targets/installers or upgrading `dist`.
 
 ## Release flow
 
@@ -96,10 +96,15 @@ installers, or upgrading `dist`.
 2. The **release-plz** workflow opens/updates a "release PR" with the bumped
    versions + `CHANGELOG.md` updates. Review it.
 3. Merge the release PR. release-plz publishes the changed crates to crates.io
-   in dependency order and pushes git tags + GitHub releases.
-4. The tag push fires the cargo-dist **release** workflow, which builds the
-   `brink-cli` / `brink-lsp` binaries for macOS (arm64/x64), Linux (x64), and
-   Windows (x64) and attaches them + shell/PowerShell installers to the release.
+   (over OIDC) in dependency order and pushes per-crate git tags + GitHub releases.
+4. **To ship binaries** for that version, push a unified tag:
+
+   ```sh
+   git tag v0.0.3 && git push origin v0.0.3
+   ```
+
+   That fires cargo-dist, which builds the `brink` / `brink-lsp` binaries +
+   installers and attaches them to a `v0.0.3` GitHub release.
 
 ## Adding a new published crate later
 

@@ -95,21 +95,24 @@ brink-syntax = { path = "crates/internal/brink-syntax", version = "0.0.2" }
 brink-test-harness = { path = "crates/internal/brink-test-harness" }
 xliff2 = { path = "crates/internal/xliff2", version = "0.0.2" }
 
-# cargo-dist / `dist`: prebuilt brink-cli & brink-lsp binaries on GitHub Releases.
-# This block is the *input* to `dist init`/`dist generate`. Run `dist init --yes`
-# once locally (see docs/releasing.md) to pin `cargo-dist-version` to your
-# installed `dist` and to generate `.github/workflows/release.yml`. dist ships
-# only the crates that build binaries (brink-cli, brink-lsp); every other
-# published crate is a library and is skipped automatically.
+# Config for 'dist'
 [workspace.metadata.dist]
-cargo-dist-version = "0.28.0"   # placeholder; `dist init` re-pins to your install
-ci = ["github"]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
 installers = ["shell", "powershell"]
-targets = [
-    "aarch64-apple-darwin",
-    "x86_64-apple-darwin",
-    "x86_64-unknown-linux-gnu",
-    "x86_64-pc-windows-msvc",
-]
-# PRs only run `dist plan`; the full build matrix runs on tag pushes.
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# Which actions to run on pull requests
 pr-run-mode = "plan"
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
