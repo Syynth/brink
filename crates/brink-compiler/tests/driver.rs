@@ -1878,3 +1878,55 @@ fn glue_in_choice_body_runtime_joins_text() {
         "expected glue to join choice text with gather text, got: {text:?}"
     );
 }
+
+// ── Malformed inline conditionals (regression for #44) ──────────────
+//
+// Per WritingWithInk.md and inkle's own Tests.cs, conditional *logic* and
+// conditions-on-each-branch only exist in the multiline block form. inklecate
+// rejects the inline forms below; brink currently compiles them and emits the
+// source as story text (silent miscompile). These assert the reference-correct
+// behaviour: a malformed inline conditional must be a compile error.
+
+/// `{ cond: ~ statement }` — a logic statement inside an inline conditional.
+/// Logic must live in a multiline block (`{ cond:\n    ~ ... \n}`), so the
+/// inline form is invalid ink and must error.
+///
+/// Currently brink silently compiles it and emits `~ x = 2` as story text.
+#[test]
+#[ignore = "known bug #44: silently compiled; emits `~ x = 2` as story text instead of erroring"]
+fn compile_error_inline_conditional_with_logic() {
+    let files: HashMap<&str, &str> = HashMap::from([(
+        "main.ink",
+        "VAR x = 0\n{ true: ~ x = 2 }\nValue {x}.\n-> END\n",
+    )]);
+    let err = compile_mem("main.ink", &files).expect_err(
+        "an inline conditional containing a `~` logic statement is invalid ink \
+         (logic belongs in a multiline block) and should be a compile error",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(!codes.is_empty(), "expected a diagnostic, got: {codes:?}");
+}
+
+/// `{ c1: a | c2: b | else }` — conditions on each branch, inline. Multi-branch
+/// switches with per-branch conditions only exist in the multiline block form
+/// (`{ - c1: a\n  - c2: b\n  - else: c }`), so the inline pipe form is invalid
+/// ink and must error.
+///
+/// Worse than a silent miscompile: brink currently PANICS lowering this
+/// (`backbone.rs`: "unexpected SyntaxKind in classify_body_child: ERROR")
+/// instead of surfacing a diagnostic.
+#[test]
+#[ignore = "known bug #44: PANICS in HIR lowering instead of emitting a diagnostic"]
+fn compile_error_inline_multi_branch_conditional() {
+    let files: HashMap<&str, &str> = HashMap::from([(
+        "main.ink",
+        "VAR n = 5\nIt is {n > 8: big|n > 4: medium|small}.\n-> END\n",
+    )]);
+    let err = compile_mem("main.ink", &files).expect_err(
+        "an inline conditional with conditions on each branch is invalid ink \
+         (multi-branch switches require the multiline block form) and should be \
+         a compile error",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(!codes.is_empty(), "expected a diagnostic, got: {codes:?}");
+}
