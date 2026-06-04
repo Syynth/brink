@@ -107,4 +107,4 @@ export type {
 
 export { ElementType as ElementTypeEnum } from "./types.js";
 
-export type { LayoutTier } from "./slices/layout.js";
+export type { LayoutTier, SidebarView } from "./slices/layout.js";
