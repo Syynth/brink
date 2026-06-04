@@ -202,6 +202,16 @@ html, body {
 #editor {
   flex: 1;
   overflow: auto;
+  /* Responsive manuscript metrics: full physical sizes when the editor pane is
+     wide, scaling down (cqi = 1% of the pane's inline size) as it narrows, so the
+     screenplay layout stays usable in a split pane or a small embed. The values
+     are consumed by .cm-content and the screenplay line styles below. */
+  container-type: inline-size;
+  --editor-margin: clamp(10px, 5cqi, 1in);
+  --indent-character: clamp(16px, 28cqi, 2.5in);
+  --indent-parenthetical: clamp(12px, 23cqi, 2in);
+  --indent-dialogue: clamp(10px, 18cqi, 1.5in);
+  --indent-dialogue-right: clamp(10px, 35cqi, 3in);
 }
 
 #editor .cm-editor {
@@ -241,9 +251,9 @@ html, body {
 #editor .cm-editor .cm-content {
   caret-color: var(--brink-accent);
   color: var(--brink-fg);
-  padding-left: 1in;
-  padding-right: 1in;
-  width: 8.5in;
+  padding-left: var(--editor-margin);
+  padding-right: var(--editor-margin);
+  width: 100%;
   max-width: 8.5in;
   box-sizing: border-box;
   border-right: 1px solid var(--brink-border);
@@ -253,10 +263,10 @@ html, body {
 .cm-line.brink-knot-header {
   font-weight: 700;
   border-top: 1px solid rgba(69, 71, 90, 0.6);
-  margin-left: -1in;
-  margin-right: -1in;
-  padding-left: 1in;
-  padding-right: 1in;
+  margin-left: calc(-1 * var(--editor-margin));
+  margin-right: calc(-1 * var(--editor-margin));
+  padding-left: var(--editor-margin);
+  padding-right: var(--editor-margin);
 }
 
 .cm-line.brink-stitch-header {
@@ -298,18 +308,18 @@ html, body {
   font-weight: 700;
   color: var(--brink-accent);
   text-transform: uppercase;
-  padding-left: 2.5in;
+  padding-left: var(--indent-character);
 }
 
 .cm-line.brink-parenthetical {
   font-style: italic;
   color: var(--brink-fg-dim);
-  padding-left: 2in;
+  padding-left: var(--indent-parenthetical);
 }
 
 .cm-line.brink-dialogue {
-  padding-left: 1.5in;
-  padding-right: calc(100% - 5in);
+  padding-left: var(--indent-dialogue);
+  padding-right: var(--indent-dialogue-right);
 }
 
 /* Hidden sigil widget — zero-width but in flow for cursor anchoring */
