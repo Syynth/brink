@@ -186,18 +186,109 @@ impl StoryRunner {
         *self.story.borrow_mut() = Some(story);
     }
 
-    /// Read-only snapshot of the runtime's current state for the studio State
-    /// View: status, current position, call stack, value stack, output buffer,
-    /// globals, and pending choices, as a human-readable string.
-    ///
-    /// Interim: surfaces `Story::debug_state` directly. The structured,
-    /// name-resolved `DebugSnapshot` API is tracked in issue #62.
-    pub fn debug_state(&self) -> Result<String, JsError> {
+    /// Structured, name-resolved snapshot of the runtime's current state for
+    /// the studio State View — status, current location, globals, call stack,
+    /// visit counts, pending choices, and rng. Returns JSON (`DebugState`).
+    pub fn debug_snapshot(&self) -> Result<String, JsError> {
         let borrow = self.story.borrow();
         let story = borrow
             .as_ref()
             .ok_or_else(|| JsError::new("story not initialized"))?;
-        Ok(story.debug_state())
+        let js = debug_snapshot_to_js(story.debug_snapshot());
+        serde_json::to_string(&js).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+}
+
+// ── Debug snapshot JSON mirror ───────────────────────────────────────
+
+#[derive(Serialize)]
+struct DebugStateJs {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_location: Option<String>,
+    turn_index: u32,
+    globals: Vec<DebugGlobalJs>,
+    call_stack: Vec<DebugFrameJs>,
+    visit_counts: Vec<DebugVisitJs>,
+    pending_choices: Vec<DebugChoiceJs>,
+    rng: DebugRngJs,
+}
+
+#[derive(Serialize)]
+struct DebugGlobalJs {
+    name: String,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct DebugFrameJs {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location: Option<String>,
+    temps: usize,
+}
+
+#[derive(Serialize)]
+struct DebugVisitJs {
+    path: String,
+    count: u32,
+}
+
+#[derive(Serialize)]
+struct DebugChoiceJs {
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DebugRngJs {
+    seed: i32,
+    previous: i32,
+}
+
+fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStateJs {
+    DebugStateJs {
+        status: s.status,
+        current_location: s.current_location,
+        turn_index: s.turn_index,
+        globals: s
+            .globals
+            .into_iter()
+            .map(|g| DebugGlobalJs {
+                name: g.name,
+                value: g.value,
+            })
+            .collect(),
+        call_stack: s
+            .call_stack
+            .into_iter()
+            .map(|f| DebugFrameJs {
+                kind: f.kind,
+                location: f.location,
+                temps: f.temps,
+            })
+            .collect(),
+        visit_counts: s
+            .visit_counts
+            .into_iter()
+            .map(|v| DebugVisitJs {
+                path: v.path,
+                count: v.count,
+            })
+            .collect(),
+        pending_choices: s
+            .pending_choices
+            .into_iter()
+            .map(|c| DebugChoiceJs {
+                text: c.text,
+                target: c.target,
+            })
+            .collect(),
+        rng: DebugRngJs {
+            seed: s.rng.seed,
+            previous: s.rng.previous,
+        },
     }
 }
 

@@ -50,10 +50,6 @@ pub(crate) struct LinkedContainer {
 pub(crate) struct GlobalSlot {
     #[expect(dead_code, reason = "needed for save/load serialization and debugging")]
     pub id: DefinitionId,
-    #[cfg_attr(
-        not(feature = "testing"),
-        expect(dead_code, reason = "needed for save/load serialization and debugging")
-    )]
     pub name: NameId,
     pub default: Value,
 }
@@ -200,6 +196,25 @@ impl Program {
     #[expect(clippy::cast_possible_truncation, reason = "global count fits in u32")]
     pub fn global_count(&self) -> u32 {
         self.globals.len() as u32
+    }
+
+    // ── Debug introspection name lookups (used by `debug_snapshot`) ──────────
+
+    /// Variable name for a global slot index.
+    pub(crate) fn global_slot_name(&self, idx: usize) -> Option<&str> {
+        self.globals.get(idx).map(|slot| self.name(slot.name))
+    }
+
+    /// Variable name for a global's defining `DefinitionId` (e.g. a
+    /// `VariablePointer` target).
+    pub(crate) fn global_var_name(&self, id: DefinitionId) -> Option<&str> {
+        let slot = self.resolve_global(id)?;
+        self.global_slot_name(slot as usize)
+    }
+
+    /// Display name for a list item by its `DefinitionId`.
+    pub(crate) fn list_item_name(&self, id: DefinitionId) -> Option<&str> {
+        self.list_item(id).map(|item| self.name(item.name))
     }
 }
 

@@ -197,3 +197,46 @@ export interface LineContext {
   has_tags: boolean;
   block_comment: boolean;
 }
+
+// ── Debug snapshot (State View) ──────────────────────────────────
+
+export interface DebugGlobal {
+  name: string;
+  value: string;
+}
+
+export interface DebugFrame {
+  /** root | function | tunnel | thread | external | eval */
+  kind: string;
+  /** Nearest named knot/stitch for this frame, if resolvable. */
+  location?: string;
+  temps: number;
+}
+
+export interface DebugVisit {
+  path: string;
+  count: number;
+}
+
+export interface DebugChoice {
+  text: string;
+  target?: string;
+}
+
+export interface DebugRng {
+  seed: number;
+  previous: number;
+}
+
+/** A read-only, name-resolved snapshot of the runtime's current state. */
+export interface DebugState {
+  /** active | waiting_for_choice | done | ended */
+  status: string;
+  current_location?: string;
+  turn_index: number;
+  globals: DebugGlobal[];
+  call_stack: DebugFrame[];
+  visit_counts: DebugVisit[];
+  pending_choices: DebugChoice[];
+  rng: DebugRng;
+}

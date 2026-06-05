@@ -11,7 +11,7 @@
 
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
-import type { Choice } from "@brink/wasm-types";
+import type { Choice, DebugState } from "@brink/wasm-types";
 import { StoryRunnerHandle } from "@brink/wasm";
 
 const SAVE_KEY = "brink-player-save";
@@ -62,11 +62,15 @@ export interface PlayerSlice {
   _choiceLog: number[];
 
   /**
-   * Read-only runtime state dump for the State View — refreshed whenever the
-   * story advances. `null` until a story is running. Interim string form;
-   * structured snapshot tracked in issue #62.
+   * Structured, name-resolved runtime snapshot for the State View — refreshed
+   * whenever the story advances. `null` until a story is running.
    */
-  debugState: string | null;
+  debugState: DebugState | null;
+  /**
+   * The snapshot from *before* the latest advance, so the State View can
+   * highlight what changed this step. `null` on the first snapshot.
+   */
+  prevDebugState: DebugState | null;
 
   loadStory(bytes: Uint8Array): void;
   chooseOption(index: number): void;
@@ -95,6 +99,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
   _runner: null,
   _choiceLog: [],
   debugState: null,
+  prevDebugState: null,
   playerFullscreen: false,
   playerVisible: true,
 
@@ -182,22 +187,24 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
   _refreshDebugState() {
     const runner = get()._runner;
     if (!runner) {
-      set({ debugState: null });
+      set({ debugState: null, prevDebugState: null });
       return;
     }
     try {
-      set({ debugState: runner.debugState() });
+      const next = runner.debugSnapshot();
+      // Carry the prior snapshot forward so the View can diff this step.
+      set((s) => ({ prevDebugState: s.debugState, debugState: next }));
     } catch {
       // The runner can be mid-teardown or in an error state — never let the
       // debug snapshot throw into the UI.
-      set({ debugState: null });
+      set({ debugState: null, prevDebugState: null });
     }
   },
 
   disposePlayer() {
     const runner = get()._runner;
     if (runner) runner.free();
-    set({ _runner: null, debugState: null });
+    set({ _runner: null, debugState: null, prevDebugState: null });
   },
 
   resetStory() {

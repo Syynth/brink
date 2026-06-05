@@ -865,6 +865,88 @@ fn tower_of_hanoi_step_sequence() {
     );
 }
 
+/// `debug_snapshot()` must resolve names from the program tables: globals by
+/// variable name, visit counts by knot path, and a known status string.
+#[test]
+fn debug_snapshot_resolves_names_and_state() {
+    // Story with a global `count` and a knot `knot` (tunneled once, looped via
+    // goto-to-self). Mirrors `goto_to_self_does_not_increment_visits_only`.
+    let json = r##"{
+        "inkVersion": 21,
+        "root": [
+            [ {"->t->": "knot"}, "done", null ],
+            "done",
+            {
+                "knot": [
+                    "ev", {"VAR?": "count"}, 1, "+", {"VAR=": "count", "re": true}, "/ev",
+                    "ev", {"VAR?": "count"}, "out", "/ev",
+                    "^ ",
+                    "ev", {"CNT?": ".^"}, "out", "/ev",
+                    "\n",
+                    "ev", {"VAR?": "count"}, 3, "<", "/ev",
+                    [
+                        {"->": ".^.b", "c": true},
+                        {"b": [{"->": ".^.^.^"}, {"->": ".^.^.^.22"}, null]}
+                    ],
+                    "nop",
+                    "\n",
+                    "ev", "void", "/ev",
+                    "->->",
+                    {"#f": 1}
+                ],
+                "global decl": [
+                    "ev", 0, {"VAR=": "count"}, "/ev",
+                    "end",
+                    null
+                ]
+            }
+        ],
+        "listDefs": {}
+    }"##;
+    let ink: InkJson = serde_json::from_str(json).unwrap();
+    let data = convert(&ink).unwrap();
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(&program, line_tables);
+    let _ = story.continue_maximally().unwrap();
+
+    let snap = story.debug_snapshot();
+
+    // Global resolved by name.
+    assert!(
+        snap.globals.iter().any(|g| g.name == "count"),
+        "expected global 'count', got {:?}",
+        snap.globals.iter().map(|g| &g.name).collect::<Vec<_>>()
+    );
+
+    // The knot was visited; its visit count is resolved to the path "knot".
+    assert!(
+        snap.visit_counts
+            .iter()
+            .any(|v| v.path == "knot" && v.count >= 1),
+        "expected visit count for 'knot', got {:?}",
+        snap.visit_counts
+            .iter()
+            .map(|v| (v.path.as_str(), v.count))
+            .collect::<Vec<_>>()
+    );
+
+    // Visit counts are sorted by path (determinism).
+    let paths: Vec<&str> = snap.visit_counts.iter().map(|v| v.path.as_str()).collect();
+    let mut sorted = paths.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, paths, "visit_counts must be sorted by path");
+
+    // Status is a known value.
+    assert!(
+        matches!(
+            snap.status,
+            "active" | "waiting_for_choice" | "done" | "ended"
+        ),
+        "unexpected status {:?}",
+        snap.status
+    );
+}
+
 /// External function with 0 args — fallback body should resolve correctly
 /// with the function-level fragment model.
 #[test]

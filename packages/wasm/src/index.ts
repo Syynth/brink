@@ -33,6 +33,7 @@ import type {
   IncludeInfo,
   Line,
   MoveResult,
+  DebugState,
 } from "@brink/wasm-types";
 
 // ── Wasm initialization ─────────────────────────────────────────
@@ -302,9 +303,9 @@ export class StoryRunnerHandle {
     this.runner.reset();
   }
 
-  /** Human-readable snapshot of the runtime's current state (State View). */
-  debugState(): string {
-    return this.runner.debug_state();
+  /** Structured, name-resolved snapshot of the runtime's current state. */
+  debugSnapshot(): DebugState {
+    return JSON.parse(this.runner.debug_snapshot()) as DebugState;
   }
 
   free(): void {

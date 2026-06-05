@@ -719,3 +719,19 @@
 - **SCOPE:** moderate
 - **WHAT:** Any studio (or other) feature work that requires modifying `brink-runtime` is split out into its own separate needs-design issue rather than implemented inline. Studio-side work proceeds against existing runtime/wasm capabilities or an interim approach until the runtime API is designed. Concretely: #56's State View ships an interim view over the existing `Story::debug_state()` string (via the runtime's pre-existing, purely-additive `testing` feature — no runtime source change); the structured `DebugSnapshot` runtime API becomes its own needs-design issue (#62).
 - **WHY:** The runtime is the trusted, oracle-validated core; changes carry correctness risk and deserve deliberate design before implementation. Bundling runtime changes into studio feature PRs couples UI iteration to runtime design and risks under-designed runtime APIs.
+
+## Studio gets two views: State (runtime) + Program Explorer (compiled)
+- **WHEN:** 2026-06-05
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-ui / wasm / runtime
+- **SCOPE:** architectural
+- **WHAT:** The studio gets two distinct, cross-linked activity-bar views: **State** (runtime/dynamic — live globals, current location, call stack, visit counts; issue #62) and **Program Explorer** (static/compiled program tables; new issue), aimed at compiler conformance + deep debugging. A shared wasm layer exposes the compiled program; the State View resolves names (knots/globals) from those tables. The two are designed together and cross-linked (e.g. a knot in the State call stack links to its container in the Program Explorer). The interim `testing`-feature hack from #56 is replaced with proper public APIs.
+- **WHY:** Runtime values and compiled structure are two different lenses on the same program; separating them keeps each legible, and sharing the program-table layer makes the debugger's names nice and enables cross-linking.
+
+## Program Explorer reuses brink-format's write_inkt for disasm/tables
+- **WHEN:** 2026-06-05
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-ui / wasm / brink-format
+- **SCOPE:** moderate
+- **WHAT:** The Program Explorer's disassembly + tables come from brink-format's existing `write_inkt` (`StoryData` → `.inkt` text), exposed over wasm — not a new disassembler. v1 renders the `.inkt` text dump (checksum, name table, globals, lists, externals, address paths, containers with opcode mnemonics + counting flags + path_hash). Structured/filterable/cross-linked tables are a follow-up. Shows only the actively compiled program; converter side-by-side diffing is deferred.
+- **WHY:** `write_inkt` already produces a full WAT-style mnemonic dump of every table; reusing it gives a complete inspector for almost no backend cost and matches the `.inkt` the corpus tooling already uses.
