@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+mod debug;
 mod error;
 mod linker;
 mod list_ops;
@@ -35,6 +36,7 @@ pub mod transcript;
 mod value_ops;
 mod vm;
 
+pub use debug::{DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit};
 pub use error::RuntimeError;
 pub use linker::link;
 pub use locale::{LocaleMode, apply_locale};

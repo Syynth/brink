@@ -1969,6 +1969,123 @@ impl<'p, R: StoryRng> Story<'p, R> {
         self.instances.keys().map(String::as_str).collect()
     }
 
+    /// A structured, name-resolved snapshot of the current runtime state for
+    /// the studio State View: status, current location, globals, call stack,
+    /// visit counts, pending choices, and rng. Read-only; built on demand and
+    /// not on any hot path. See [`DebugSnapshot`](crate::DebugSnapshot).
+    #[must_use]
+    pub fn debug_snapshot(&self) -> crate::DebugSnapshot {
+        use crate::debug::{
+            DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit, NameResolver,
+        };
+
+        let flow = &self.default.flow;
+        let ctx = &self.default_context;
+        let resolver = NameResolver::new(self.program);
+
+        let status = match self.default.status {
+            StoryStatus::Active => "active",
+            StoryStatus::WaitingForChoice => "waiting_for_choice",
+            StoryStatus::Done => "done",
+            StoryStatus::Ended => "ended",
+        };
+
+        let thread = flow.current_thread();
+
+        // Nearest named container the cursor is currently in (innermost-first).
+        let resolve_frame_location = |frame: &CallFrame| {
+            frame
+                .container_stack
+                .iter()
+                .rev()
+                .find_map(|cp| resolver.container_path(cp.container_idx))
+                .map(str::to_owned)
+        };
+
+        let current_location = thread.call_stack.last().and_then(resolve_frame_location);
+
+        // Globals, skipping unnamed slots.
+        let globals = ctx
+            .globals
+            .iter()
+            .enumerate()
+            .filter_map(|(i, value)| {
+                self.program.global_slot_name(i).map(|name| DebugGlobal {
+                    name: name.to_owned(),
+                    value: resolver.format_value(value),
+                })
+            })
+            .collect();
+
+        // Call stack, innermost (current) frame first.
+        let depth = thread.call_stack.len();
+        let mut call_stack = Vec::with_capacity(depth);
+        for i in (0..depth).rev() {
+            if let Some(frame) = thread.call_stack.get(i) {
+                let kind = match frame.frame_type {
+                    CallFrameType::Root => "root",
+                    CallFrameType::Function => "function",
+                    CallFrameType::Tunnel => "tunnel",
+                    CallFrameType::Thread => "thread",
+                    CallFrameType::External => "external",
+                    CallFrameType::FunctionEvalFromGame => "eval",
+                };
+                call_stack.push(DebugFrame {
+                    kind,
+                    location: resolve_frame_location(frame),
+                    temps: frame.temps.len(),
+                });
+            }
+        }
+
+        // Visit counts, resolved and sorted by path for determinism.
+        let mut visit_counts: Vec<DebugVisit> = ctx
+            .visit_counts
+            .iter()
+            .filter_map(|(id, &count)| {
+                resolver.def_path(*id).map(|path| DebugVisit {
+                    path: path.to_owned(),
+                    count,
+                })
+            })
+            .collect();
+        visit_counts.sort_by(|a, b| a.path.cmp(&b.path));
+
+        // Pending choices: visible texts (resolved) paired with target paths.
+        let visible_targets: Vec<DefinitionId> = flow
+            .pending_choices
+            .iter()
+            .filter(|pc| !pc.flags.is_invisible_default)
+            .map(|pc| pc.target_id)
+            .collect();
+        let pending_choices = self
+            .pending_choices()
+            .into_iter()
+            .enumerate()
+            .map(|(i, ch)| DebugChoice {
+                text: ch.text,
+                target: visible_targets
+                    .get(i)
+                    .and_then(|id| resolver.def_path(*id))
+                    .map(str::to_owned),
+            })
+            .collect();
+
+        DebugSnapshot {
+            status,
+            current_location,
+            turn_index: ctx.turn_index,
+            globals,
+            call_stack,
+            visit_counts,
+            pending_choices,
+            rng: DebugRng {
+                seed: ctx.rng_seed,
+                previous: ctx.previous_random,
+            },
+        }
+    }
+
     // ── Testing / instrumentation API ───────────────────────────────
 
     /// Dump the current execution state for debugging.
