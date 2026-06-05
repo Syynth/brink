@@ -240,3 +240,51 @@ export interface DebugState {
   pending_choices: DebugChoice[];
   rng: DebugRng;
 }
+
+// ── Program model (Program Explorer) ─────────────────────────────
+
+export interface ProgramGlobal {
+  name: string;
+  ty: string;
+  default: string;
+  mutable: boolean;
+}
+
+export interface ProgramListItem {
+  name: string;
+  ordinal: number;
+}
+
+export interface ProgramList {
+  name: string;
+  items: ProgramListItem[];
+}
+
+export interface ProgramExternal {
+  name: string;
+  arg_count: number;
+  fallback?: string;
+}
+
+/** A knot or stitch in the compiled-program tree. */
+export interface KnotNode {
+  path: string;
+  name: string;
+  /** "knot" | "stitch" */
+  kind: string;
+  /** Counting flags: "visits" | "turns" | "start_only" */
+  flags: string[];
+  path_hash: number;
+  /** Resolved bytecode disassembly, one mnemonic per entry. */
+  disasm: string[];
+  children: KnotNode[];
+}
+
+/** Structured view of the statically compiled program. */
+export interface ProgramModel {
+  checksum: string;
+  globals: ProgramGlobal[];
+  lists: ProgramList[];
+  externals: ProgramExternal[];
+  knots: KnotNode[];
+}
