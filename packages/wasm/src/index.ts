@@ -34,6 +34,7 @@ import type {
   Line,
   MoveResult,
   DebugState,
+  ProgramModel,
 } from "@brink/wasm-types";
 
 // ── Wasm initialization ─────────────────────────────────────────
@@ -308,9 +309,14 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.debug_snapshot()) as DebugState;
   }
 
-  /** The compiled program as `.inkt` text (Program Explorer): tables + disasm. */
+  /** The compiled program as `.inkt` text (Program Explorer raw toggle). */
   programInkt(): string {
     return this.runner.program_inkt();
+  }
+
+  /** Structured model of the compiled program (Program Explorer). */
+  programModel(): ProgramModel {
+    return JSON.parse(this.runner.program_model()) as ProgramModel;
   }
 
   free(): void {

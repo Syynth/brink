@@ -6,6 +6,8 @@ use rowan::{TextRange, TextSize};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+mod program_model;
+
 // ── Compilation ─────────────────────────────────────────────────────
 
 /// Compile ink source and return JSON with diagnostics or story data.
@@ -142,6 +144,14 @@ impl StoryRunner {
         brink_format::write_inkt(&self.data, &mut out)
             .map_err(|e| JsError::new(&format!("inkt error: {e}")))?;
         Ok(out)
+    }
+
+    /// Structured model of the compiled program for the Program Explorer:
+    /// globals / lists / externals tables plus a knot/stitch tree with
+    /// per-knot, name-resolved bytecode disassembly. Returns JSON.
+    pub fn program_model(&self) -> Result<String, JsError> {
+        let model = program_model::build(&self.data);
+        serde_json::to_string(&model).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     /// Continue the story maximally. Returns JSON array of `Line` objects.
