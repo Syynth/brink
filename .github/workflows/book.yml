@@ -3,9 +3,24 @@ name: Book
 on:
   push:
     branches: [main]
-    paths: [docs/book/**]
-  # Manual trigger: studio changes (the embedded playground) affect the deployed
-  # site without touching docs/book, so allow publishing on demand.
+    # The deploy stages the live embedded playground via `just book-assets`
+    # (wasm-pack build crates/brink-web + pnpm build of the studio), so any
+    # change to those sources must redeploy — not just docs/book edits. Filter
+    # to what actually feeds the build so unrelated merges (README, .github,
+    # tools, tests) don't trigger a rebuild. Path filters do source-level change
+    # detection *before* the expensive build, which is cheaper than hashing the
+    # built wasm/js (that would require building first).
+    paths:
+      - crates/**
+      - packages/**
+      - docs/book/**
+      - Cargo.toml
+      - Cargo.lock
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - justfile
+      - rust-toolchain.toml
+  # Manual trigger for anything the filter intentionally omits.
   workflow_dispatch:
 
 permissions: {}
