@@ -308,6 +308,11 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.debug_snapshot()) as DebugState;
   }
 
+  /** The compiled program as `.inkt` text (Program Explorer): tables + disasm. */
+  programInkt(): string {
+    return this.runner.program_inkt();
+  }
+
   free(): void {
     this.runner.free();
   }

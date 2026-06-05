@@ -92,6 +92,9 @@ pub struct StoryRunner {
     // self-referential borrow.
     program: Box<brink_runtime::Program>,
     base_line_tables: Vec<Vec<brink_format::LineEntry>>,
+    /// The decoded `StoryData`, retained for `program_inkt` (Program Explorer).
+    /// Independent owned value — `link` only borrows it.
+    data: brink_format::StoryData,
     // Safety: story borrows from program which is heap-pinned and never moved.
     // We only access story through &mut self methods (single-threaded wasm).
     story: RefCell<Option<brink_runtime::Story<'static, FastRng>>>,
@@ -126,8 +129,19 @@ impl StoryRunner {
         Ok(StoryRunner {
             program,
             base_line_tables: line_tables,
+            data,
             story: RefCell::new(Some(story)),
         })
+    }
+
+    /// The compiled program rendered as `.inkt` text for the Program Explorer:
+    /// checksum, name table, globals, lists, externals, address paths, and
+    /// containers with bytecode disassembly. Static for the loaded program.
+    pub fn program_inkt(&self) -> Result<String, JsError> {
+        let mut out = String::new();
+        brink_format::write_inkt(&self.data, &mut out)
+            .map_err(|e| JsError::new(&format!("inkt error: {e}")))?;
+        Ok(out)
     }
 
     /// Continue the story maximally. Returns JSON array of `Line` objects.
