@@ -71,6 +71,11 @@ export interface PlayerSlice {
    * highlight what changed this step. `null` on the first snapshot.
    */
   prevDebugState: DebugState | null;
+  /**
+   * The compiled program as `.inkt` text for the Program Explorer — captured
+   * once when a story loads (static for the program). `null` until loaded.
+   */
+  programInkt: string | null;
 
   loadStory(bytes: Uint8Array): void;
   chooseOption(index: number): void;
@@ -100,6 +105,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
   _choiceLog: [],
   debugState: null,
   prevDebugState: null,
+  programInkt: null,
   playerFullscreen: false,
   playerVisible: true,
 
@@ -119,6 +125,13 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
 
     try {
       const runner = new StoryRunnerHandle(bytes);
+      // The .inkt dump is static for the program — capture it once on load.
+      let programInkt: string | null = null;
+      try {
+        programInkt = runner.programInkt();
+      } catch {
+        programInkt = null;
+      }
       set({
         _runner: runner,
         playerText: [],
@@ -126,6 +139,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerEnded: false,
         playerCanContinue: false,
         _choiceLog: [],
+        programInkt,
       });
 
       // Check for saved state and replay
@@ -144,6 +158,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerEnded: true,
         playerCanContinue: false,
         _choiceLog: [],
+        programInkt: null,
       });
     }
   },
@@ -204,7 +219,7 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
   disposePlayer() {
     const runner = get()._runner;
     if (runner) runner.free();
-    set({ _runner: null, debugState: null, prevDebugState: null });
+    set({ _runner: null, debugState: null, prevDebugState: null, programInkt: null });
   },
 
   resetStory() {

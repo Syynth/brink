@@ -16,6 +16,7 @@ interface ViewDef {
 export const SIDEBAR_VIEWS: ViewDef[] = [
   { id: "binder", label: "Binder", icon: "☰" },
   { id: "state", label: "State", icon: "{}" },
+  { id: "program", label: "Program", icon: "⌗" },
 ];
 
 /** Display label for a sidebar view (used as the panel header title). */

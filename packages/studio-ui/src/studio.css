@@ -47,6 +47,23 @@
   overflow-y: auto;
   min-height: 0;
 }
+
+/* Program Explorer — compiled program (.inkt) dump */
+.brink-studio .program-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.brink-studio .program-view-dump {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--brink-fg);
+  white-space: pre;
+  tab-size: 2;
+}
 .brink-studio .state-view-empty {
   padding: 16px 14px;
   color: var(--brink-fg-dim);
