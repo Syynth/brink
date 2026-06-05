@@ -15,8 +15,15 @@ navigation, and screenplay mode, all driven by `@brink/wasm`.
   playback state persists to `localStorage` and replays on reload.
 - **Screenplay mode** — character lines (`@Name:<>`) and parentheticals
   (`(text)<>`) render with hidden sigils, name coloring, and depth indicators.
-- **Project navigation** — a binder tree of knots and stitches with drag-to-
-  reorder and structural edits, plus file tabs (pinned/unpinned) and symbol tabs.
+- **Project navigation** — a binder tree of knots and stitches (function knots
+  marked with a distinct icon) with drag-to-reorder and structural edits, plus
+  file tabs (pinned/unpinned) and symbol tabs.
+- **Activity-bar sidebar** — a VS Code-style icon column that swaps the left
+  dock between views; the binder is the first view, the state view the second.
+- **State view** — a read-only runtime debugger that surfaces the running
+  story's status, current position, call stack, globals, and pending choices,
+  refreshed as the story advances. (Interim raw dump; a structured,
+  name-resolved view is planned — see issue #62.)
 - **Line-element switching** — convert a line between narrative, choice, sticky
   choice, gather, and divert via keyboard or UI.
 
@@ -28,8 +35,8 @@ capability lives in libraries, each independently testable.
 | Package | Responsibility |
 |---------|----------------|
 | `@brink/studio` | app shell + entry point (Vite) |
-| `@brink/studio-ui` | React components: layout, binder, player, tabs, status bar |
-| `@brink/studio-store` | Zustand store — `editor` / `compile` / `tabs` / `player` / `binder` slices |
+| `@brink/studio-ui` | React components: layout, activity bar, binder, state view, player, tabs, status bar |
+| `@brink/studio-store` | Zustand store — `editor` / `compile` / `tabs` / `player` / `binder` / `layout` slices |
 | `@brink/ink-editor` | the CodeMirror 6 editor, state management, IDE extensions, screenplay sigils |
 | `@brink/ink-operations` | pure line-editing functions (no CM6, React, or wasm) |
 | `@brink/wasm` | ergonomic wrappers over the `brink-web` FFI |
