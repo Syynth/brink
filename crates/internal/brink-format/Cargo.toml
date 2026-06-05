@@ -14,7 +14,10 @@ all-features = true
 
 [features]
 default = []
-inkt = ["dep:pest", "dep:pest_derive"]
+# `inkt-write` exposes the dependency-free `.inkt` writer (`write_inkt`).
+# `inkt` adds the reader (`read_inkt`), which needs the `pest` parser.
+inkt-write = []
+inkt = ["inkt-write", "dep:pest", "dep:pest_derive"]
 
 [dependencies]
 bitflags = { workspace = true }

@@ -4,6 +4,7 @@ import { Binder } from "./Binder.js";
 import { EditorPane } from "./EditorPane.js";
 import { PlayerPane } from "./PlayerPane.js";
 import { StateView } from "./StateView.js";
+import { ProgramView } from "./ProgramView.js";
 import { ActivityBar, sidebarViewLabel } from "./ActivityBar.js";
 import { Toast } from "./Toast.js";
 import { useStudioStore } from "./StoreContext.js";
@@ -24,10 +25,17 @@ function App({ editorSlot }: { editorSlot: ReactNode }) {
   const rootRef = useRef<HTMLDivElement>(null);
   useTier(rootRef);
 
-  // The active sidebar view (Binder or State), shared by the wide dock and the
-  // compact drawer so the activity bar switches both the same way.
+  // The active sidebar view (Binder / State / Program), shared by the wide dock
+  // and the compact drawer so the activity bar switches both the same way.
   const sidebarTitle = sidebarViewLabel(activeSidebarView);
-  const sidebarBody = activeSidebarView === "binder" ? <Binder /> : <StateView />;
+  const sidebarBody =
+    activeSidebarView === "binder" ? (
+      <Binder />
+    ) : activeSidebarView === "state" ? (
+      <StateView />
+    ) : (
+      <ProgramView />
+    );
 
   const compact = tier !== "wide";
   const narrow = tier === "narrow";

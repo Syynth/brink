@@ -18,7 +18,9 @@ brink-runtime = { workspace = true }
 brink-syntax = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-ir = { workspace = true }
-brink-format = { workspace = true }
+# `inkt-write` exposes the dependency-free `.inkt` writer for the Program
+# Explorer (`StoryRunner::program_inkt`) — no `pest` reader pulled into the wasm.
+brink-format = { workspace = true, features = ["inkt-write"] }
 rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true

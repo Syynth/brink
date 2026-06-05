@@ -47,6 +47,118 @@
   overflow-y: auto;
   min-height: 0;
 }
+
+/* Program Explorer — structured compiled-program inspector */
+.brink-studio .program-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.brink-studio .pv-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--brink-border);
+  flex-shrink: 0;
+}
+.brink-studio .pv-checksum {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 11px;
+  color: var(--brink-fg-dim);
+}
+.brink-studio .pv-raw-toggle {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--brink-bg-panel);
+  color: var(--brink-fg-dim);
+  border: 1px solid var(--brink-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.brink-studio .pv-raw-toggle:hover { color: var(--brink-fg); }
+.brink-studio .pv-raw-toggle[aria-pressed="true"] {
+  color: var(--brink-accent);
+  border-color: var(--brink-accent);
+}
+.brink-studio .pv-body { flex: 1; min-height: 0; overflow-y: auto; }
+.brink-studio .program-view-dump {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 10px;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--brink-fg);
+  white-space: pre;
+  tab-size: 2;
+}
+.brink-studio .pv-ty { font-size: 10.5px; padding-right: 8px; }
+
+/* Lists */
+.brink-studio .pv-list { padding: 3px 0; }
+.brink-studio .pv-list-name { font-size: 12px; }
+.brink-studio .pv-list-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 2px;
+}
+.brink-studio .pv-list-item {
+  font-size: 11.5px;
+  color: var(--brink-teal);
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+}
+
+/* Knot tree */
+.brink-studio .pv-knot-header {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 8px;
+  background: none;
+  border: none;
+  color: var(--brink-fg);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+}
+.brink-studio .pv-knot-header:hover { background: var(--brink-bg-panel); }
+.brink-studio .pv-chevron { font-size: 9px; width: 10px; flex-shrink: 0; color: var(--brink-fg-dim); }
+.brink-studio .pv-knot-name { color: var(--brink-mauve); font-weight: 600; }
+.brink-studio .pv-knot-name.pv-stitch { color: var(--brink-teal); font-weight: 400; }
+.brink-studio .pv-flags {
+  font-size: 10px;
+  color: var(--brink-fg-dim);
+  font-style: italic;
+}
+.brink-studio .pv-knot-body { padding-right: 8px; padding-bottom: 4px; }
+.brink-studio .pv-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  padding: 2px 0;
+}
+.brink-studio .pv-disasm {
+  margin: 4px 0;
+  padding: 6px 8px;
+  background: var(--brink-bg);
+  border: 1px solid var(--brink-border);
+  border-radius: 4px;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--brink-fg);
+  white-space: pre;
+  overflow-x: auto;
+  tab-size: 2;
+}
 .brink-studio .state-view-empty {
   padding: 16px 14px;
   color: var(--brink-fg-dim);

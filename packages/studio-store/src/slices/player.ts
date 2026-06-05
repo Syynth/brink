@@ -11,7 +11,7 @@
 
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
-import type { Choice, DebugState } from "@brink/wasm-types";
+import type { Choice, DebugState, ProgramModel } from "@brink/wasm-types";
 import { StoryRunnerHandle } from "@brink/wasm";
 
 const SAVE_KEY = "brink-player-save";
@@ -71,6 +71,13 @@ export interface PlayerSlice {
    * highlight what changed this step. `null` on the first snapshot.
    */
   prevDebugState: DebugState | null;
+  /**
+   * Structured model of the compiled program for the Program Explorer —
+   * captured once when a story loads (static). `null` until loaded.
+   */
+  programModel: ProgramModel | null;
+  /** The compiled program as `.inkt` text — the Program Explorer's raw toggle. */
+  programInkt: string | null;
 
   loadStory(bytes: Uint8Array): void;
   chooseOption(index: number): void;
@@ -100,6 +107,8 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
   _choiceLog: [],
   debugState: null,
   prevDebugState: null,
+  programModel: null,
+  programInkt: null,
   playerFullscreen: false,
   playerVisible: true,
 
@@ -119,6 +128,19 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
 
     try {
       const runner = new StoryRunnerHandle(bytes);
+      // The program inspection is static for the program — capture once on load.
+      let programModel: ProgramModel | null = null;
+      let programInkt: string | null = null;
+      try {
+        programModel = runner.programModel();
+      } catch {
+        programModel = null;
+      }
+      try {
+        programInkt = runner.programInkt();
+      } catch {
+        programInkt = null;
+      }
       set({
         _runner: runner,
         playerText: [],
@@ -126,6 +148,8 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerEnded: false,
         playerCanContinue: false,
         _choiceLog: [],
+        programModel,
+        programInkt,
       });
 
       // Check for saved state and replay
@@ -144,6 +168,8 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
         playerEnded: true,
         playerCanContinue: false,
         _choiceLog: [],
+        programModel: null,
+        programInkt: null,
       });
     }
   },
@@ -204,7 +230,13 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
   disposePlayer() {
     const runner = get()._runner;
     if (runner) runner.free();
-    set({ _runner: null, debugState: null, prevDebugState: null });
+    set({
+      _runner: null,
+      debugState: null,
+      prevDebugState: null,
+      programModel: null,
+      programInkt: null,
+    });
   },
 
   resetStory() {

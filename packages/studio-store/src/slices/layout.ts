@@ -12,7 +12,7 @@ import type { StudioState } from "../index.js";
 export type LayoutTier = "wide" | "medium" | "narrow";
 
 /** Which view occupies the left sidebar dock (selected via the activity bar). */
-export type SidebarView = "binder" | "state";
+export type SidebarView = "binder" | "state" | "program";
 
 export interface LayoutSlice {
   /** Current responsive tier (set by the width observer). */

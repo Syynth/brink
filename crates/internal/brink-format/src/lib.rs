@@ -17,7 +17,7 @@ mod opcode;
 mod story;
 mod value;
 
-#[cfg(feature = "inkt")]
+#[cfg(any(feature = "inkt", feature = "inkt-write"))]
 mod inkt;
 
 pub use counting::CountingFlags;
@@ -45,5 +45,7 @@ pub use opcode::{ChoiceFlags, DecodeError, Opcode, SequenceKind};
 pub use story::StoryData;
 pub use value::{ListValue, Value, ValueType};
 
+#[cfg(any(feature = "inkt", feature = "inkt-write"))]
+pub use inkt::write_inkt;
 #[cfg(feature = "inkt")]
-pub use inkt::{InktParseError, read_inkt, write_inkt};
+pub use inkt::{InktParseError, read_inkt};
