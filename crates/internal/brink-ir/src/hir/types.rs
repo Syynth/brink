@@ -765,6 +765,8 @@ pub enum DiagnosticCode {
     E036,
     /// Syntax error reported by the parser (malformed source).
     E037,
+    /// Malformed `///` doc-comment tag on an `EXTERNAL` declaration.
+    E038,
 }
 
 impl DiagnosticCode {
@@ -809,6 +811,7 @@ impl DiagnosticCode {
             Self::E035 => "E035",
             Self::E036 => "E036",
             Self::E037 => "E037",
+            Self::E038 => "E038",
         }
     }
 
@@ -853,6 +856,7 @@ impl DiagnosticCode {
             Self::E035 => "name shadows a built-in function",
             Self::E036 => "expected diagnostic not produced",
             Self::E037 => "syntax error",
+            Self::E038 => "malformed doc-comment tag",
         }
     }
 
@@ -868,7 +872,8 @@ impl DiagnosticCode {
             | Self::E031
             | Self::E033
             | Self::E034
-            | Self::E035 => Severity::Warning,
+            | Self::E035
+            | Self::E038 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -914,6 +919,7 @@ impl DiagnosticCode {
             "E035" => Some(Self::E035),
             "E036" => Some(Self::E036),
             "E037" => Some(Self::E037),
+            "E038" => Some(Self::E038),
             _ => None,
         }
     }

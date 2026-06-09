@@ -2078,6 +2078,7 @@ dependencies = [
  "brink-syntax",
  "insta",
  "rowan",
+ "serde",
  "tracing",
 ]
 

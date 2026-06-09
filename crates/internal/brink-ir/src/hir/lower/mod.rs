@@ -12,6 +12,7 @@ mod content;
 mod context;
 mod decl;
 mod divert;
+mod doc_comment;
 mod expr;
 mod helpers;
 mod structure;
