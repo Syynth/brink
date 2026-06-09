@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use brink_analyzer::AnalysisResult;
 use brink_ir::FileId;
 use rowan::{TextRange, TextSize};
@@ -38,13 +40,21 @@ pub fn hover(
             brink_ir::SymbolKind::Temp => "temp variable",
         };
 
+        // Host-manifest enrichment: typed params / return / kind / doc for externals.
+        let meta = if info.kind == brink_ir::SymbolKind::External {
+            analysis.external_meta.get(&info.id)
+        } else {
+            None
+        };
+
         let params_str = if info.params.is_empty() {
             String::new()
         } else {
             let parts: Vec<_> = info
                 .params
                 .iter()
-                .map(|p| {
+                .enumerate()
+                .map(|(i, p)| {
                     let mut s = String::new();
                     if p.is_ref {
                         s.push_str("ref ");
@@ -53,16 +63,37 @@ pub fn hover(
                         s.push_str("-> ");
                     }
                     s.push_str(&p.name);
+                    if let Some(ty) = meta
+                        .and_then(|m| m.params.get(i))
+                        .and_then(|rp| rp.ty.as_ref())
+                    {
+                        let _ = write!(s, ": {}", ty.name);
+                    }
                     s
                 })
                 .collect();
             format!("({})", parts.join(", "))
         };
 
+        let ret_str = meta
+            .and_then(|m| m.returns.as_ref())
+            .map_or(String::new(), |t| format!(" -> {}", t.name));
+
+        let kind_tag = meta.map_or(String::new(), |m| match m.kind {
+            brink_ir::ExternalKind::Plain => String::new(),
+            brink_ir::ExternalKind::Query => " [query]".to_string(),
+            brink_ir::ExternalKind::Effect => " [effect]".to_string(),
+            brink_ir::ExternalKind::Presentation => " [presentation]".to_string(),
+        });
+
         let detail_str = info
             .detail
             .as_deref()
             .map_or(String::new(), |d| format!(" [{d}]"));
+
+        let doc_block = meta
+            .and_then(|m| m.doc.as_deref())
+            .map_or(String::new(), |d| format!("\n\n{d}"));
 
         let file_note = project_files
             .iter()
@@ -70,7 +101,7 @@ pub fn hover(
             .map_or(String::new(), |(_, p, _)| format!("\n\n*Defined in `{p}`*"));
 
         format!(
-            "**{kind_str}** `{}{params_str}`{detail_str}{file_note}",
+            "**{kind_str}** `{}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}",
             info.name
         )
     } else {
@@ -85,4 +116,31 @@ pub fn hover(
         .or_else(|| word_range_at_offset(source, offset));
 
     Some(HoverInfo { content, range })
+}
+
+#[cfg(test)]
+mod tests {
+    use rowan::TextSize;
+
+    use super::hover;
+    use crate::session::IdeSession;
+
+    #[test]
+    fn hover_shows_inline_types_kind_and_doc() {
+        let src = "/// Whether the player holds an item.\n/// @param item {bool}\n/// @returns {bool}\n/// @kind query\nEXTERNAL holds(item)\n-> END\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let pos = u32::try_from(src.find("holds(item)").expect("decl present")).expect("offset");
+        let info = hover(analysis, file_id, src, TextSize::from(pos), &[]).expect("hover");
+        assert!(info.content.contains("item: bool"), "{}", info.content);
+        assert!(info.content.contains("-> bool"), "{}", info.content);
+        assert!(info.content.contains("[query]"), "{}", info.content);
+        assert!(
+            info.content.contains("Whether the player holds an item."),
+            "{}",
+            info.content
+        );
+    }
 }

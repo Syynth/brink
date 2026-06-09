@@ -495,6 +495,7 @@ mod tests {
             index: SymbolIndex::default(),
             resolutions: Vec::new(),
             diagnostics: Vec::new(),
+            external_meta: std::collections::BTreeMap::new(),
         }
     }
 

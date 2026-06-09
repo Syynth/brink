@@ -146,7 +146,7 @@ mod tests {
 /// @param item {item_id}
 /// @returns {bool}
 /// @kind query
-EXTERNAL has(item)
+EXTERNAL holds(item)
 ";
         let (doc, malformed) = doc_of(src);
         let doc = doc.expect("doc present");
@@ -176,7 +176,7 @@ EXTERNAL has(item)
         let src = "\
 /// orphaned doc
 
-EXTERNAL has(item)
+EXTERNAL holds(item)
 ";
         let (doc, _) = doc_of(src);
         assert!(
@@ -191,7 +191,7 @@ EXTERNAL has(item)
         let src = "\
 /// kept
 // not a doc line
-EXTERNAL has(item)
+EXTERNAL holds(item)
 ";
         let (doc, _) = doc_of(src);
         assert!(doc.is_none(), "a plain // comment terminates the doc block");
@@ -202,7 +202,7 @@ EXTERNAL has(item)
         let src = "\
 /// @param item
 /// @returns {bool}
-EXTERNAL has(item)
+EXTERNAL holds(item)
 ";
         let (doc, malformed) = doc_of(src);
         let doc = doc.expect("doc present");
