@@ -84,4 +84,14 @@ pub enum RuntimeError {
 
     #[error("a function evaluation is already in progress on this flow")]
     AlreadyEvaluatingFunction,
+
+    /// `call_function` was given a name that resolves to no function/knot.
+    #[error("function not found: {0}")]
+    FunctionNotFound(String),
+
+    /// A function evaluated via the synchronous `call_function` path called an
+    /// external whose handler deferred (`Pending`) — it can't be resolved in a
+    /// one-shot synchronous call.
+    #[error("external '{0}' is async; cannot resolve during a synchronous call_function")]
+    AsyncExternalInCall(String),
 }

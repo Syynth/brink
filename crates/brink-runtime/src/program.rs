@@ -156,6 +156,16 @@ impl Program {
         self.globals.iter().map(|s| s.default.clone()).collect()
     }
 
+    /// Find the global variable slot index for a variable name, if declared.
+    /// Used by host-facing variable get/set (`Story::variable`/`set_variable`).
+    #[expect(clippy::cast_possible_truncation, reason = "global count fits in u32")]
+    pub fn global_index(&self, name: &str) -> Option<u32> {
+        self.globals
+            .iter()
+            .position(|slot| self.name(slot.name) == name)
+            .map(|i| i as u32)
+    }
+
     /// Get a list literal by index.
     pub(crate) fn list_literal(&self, idx: u16) -> &ListValue {
         &self.list_literals[idx as usize]
@@ -183,8 +193,13 @@ impl Program {
         self.external_fns.get(&id)
     }
 
+    // ── Public variable introspection (host-facing) ─────────────────────────
+    // `global_index` (above), `global_name`, and `global_count` form the
+    // host-facing variable-introspection set used by `Story::variable`/
+    // `set_variable` and consumers like the RMMZ var↔switch mapping. They were
+    // previously `testing`-gated; promoted to public per the State View plan.
+
     /// Resolve a global slot index to its variable name.
-    #[cfg(feature = "testing")]
     pub fn global_name(&self, idx: u32) -> Option<&str> {
         self.globals
             .get(idx as usize)
@@ -192,7 +207,6 @@ impl Program {
     }
 
     /// Number of global variable slots.
-    #[cfg(feature = "testing")]
     #[expect(clippy::cast_possible_truncation, reason = "global count fits in u32")]
     pub fn global_count(&self) -> u32 {
         self.globals.len() as u32

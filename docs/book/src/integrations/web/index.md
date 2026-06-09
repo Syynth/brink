@@ -48,10 +48,51 @@ One-shot, single-file compilation. Returns
 | `continue_single()` | produce one `Line` (typewriter reveal) |
 | `choose(index)` | select a choice by 0-based index |
 | `reset()` | return to the start without recompiling |
+| `bind_external(name, fn)` | bind an ink `EXTERNAL` to a synchronous JS callback |
+| `unbind_external(name)` | remove a previously bound external |
+| `set_lenient_unbound(bool)` | unbound externals resolve to `null` instead of using the ink fallback / erroring |
+| `get_var(name)` / `set_var(name, value)` | read/write a global ink variable by name |
+| `set_seed(n)` | set the RNG seed for reproducible `RANDOM`/shuffle (re-applied across `reset`) |
+| `save()` / `save_bytes()` | capture durable game state — JSON string (dev) or MessagePack bytes (release) |
+| `load(json)` / `load_bytes(bytes)` | reconcile a save back in; returns a `LoadReport` of anything dropped |
+| `call_function(name, ...args)` | evaluate an ink function from the host (engine→ink); returns its value |
 
 `Line` mirrors the native runtime: `{ type: "text"|"choices"|"done"|"end", text,
 tags, choices? }`. This is the same execution model as
 [the toolchain runtime](../../toolchain/concepts/execution-model.md), surfaced to JS.
+
+### External functions
+
+When a story calls `EXTERNAL roll(sides)`, the runner asks any binding
+registered under that name to resolve it. Arguments arrive as native JS values
+(number / boolean / string / null) and the return is read back the same way —
+an integer-valued number becomes an ink int, otherwise a float:
+
+```ts
+const runner = new StoryRunnerHandle(bytes);
+runner.bindExternal("roll", (sides) => 1 + Math.floor(Math.random() * Number(sides)));
+runner.bindExternal("play_sound", (id) => { audio.play(String(id)); }); // fire-and-forget
+```
+
+An external with no binding falls through to its ink fallback body (erroring if
+none exists), unless `setLenientUnbound(true)` is set — then it resolves to
+`null`, so content can call host verbs a given build doesn't know without
+dead-ending. A binding that throws resolves to `null` (the exception is not
+propagated into the VM).
+
+**Async bindings.** A binding may return a `Promise` — the story *suspends*
+until it resolves (inline timing like `~ camera("bow") ~ wait(2.0) ~ wreck()`,
+a targeting UI awaiting a click, a `fetch`). Drive such a story with the async
+continue methods, which await and resume transparently:
+
+```ts
+runner.bindExternal("wait", (secs) => new Promise((r) => setTimeout(r, Number(secs) * 1000)));
+const lines = await runner.continueStoryAsync(); // suspends across the wait
+```
+
+A rejected Promise unsticks the flow (resolves `null`) and rethrows. The
+synchronous `continueStory`/`continueSingle` error on a suspending binding — use
+`continueStoryAsync`/`continueSingleAsync` when bindings may be async.
 
 ### `EditorSession` — IDE queries
 

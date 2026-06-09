@@ -25,6 +25,23 @@ rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen = "0.2"
+# `js-sys` provides `Function`/`Array` for the synchronous external-function
+# binding boundary (ink EXTERNAL → JS callback). Values are hand-mapped to
+# native JS (number/bool/string/null), not serialized, so no serde-wasm-bindgen.
+js-sys = "0.3"
+# MessagePack (struct-map mode) for the compact `save_bytes`/`load_bytes`
+# release path; the `save`/`load` JSON path uses serde_json (above).
+rmp-serde = "1"
+# `console.warn` for the reentrancy guard and the throwing-binding warn — the
+# one logging path the crate otherwise lacks.
+web-sys = { version = "0.3", features = ["console"] }
+
+[dev-dependencies]
+# Drives the `#[wasm_bindgen_test]` suite (run via `wasm-pack test --node`),
+# which exercises the external-binding JS boundary end-to-end.
+wasm-bindgen-test = "0.3"
+# Lets the async wasm test `await` a JS `Promise` (`JsFuture`) on the Rust side.
+wasm-bindgen-futures = "0.4"
 
 [lints]
 workspace = true

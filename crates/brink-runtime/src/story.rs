@@ -1675,6 +1675,121 @@ impl<'p, R: StoryRng> Story<'p, R> {
         self.program
     }
 
+    // ── Variable access (host-facing) ───────────────────────────────
+
+    /// Read a global variable's current value by name. `None` if no global
+    /// with that name is declared. Reads the default flow's context.
+    pub fn variable(&self, name: &str) -> Option<&Value> {
+        let idx = self.program.global_index(name)?;
+        Some(self.default_context.global(idx))
+    }
+
+    /// Set a global variable by name, returning `false` (no-op) if no global
+    /// with that name is declared. Ink globals are dynamically typed, so the
+    /// host is responsible for passing a sensibly-typed value.
+    pub fn set_variable(&mut self, name: &str, value: Value) -> bool {
+        match self.program.global_index(name) {
+            Some(idx) => {
+                self.default_context.set_global(idx, value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Set the RNG seed for the default flow's context. Seeding makes
+    /// `RANDOM`/shuffle output reproducible — set it before running (or after
+    /// a reset) so two runs of the same story on different machines match.
+    pub fn set_rng_seed(&mut self, seed: i32) {
+        self.default_context.set_rng_seed(seed);
+    }
+
+    // ── Pausable stepping (async externals) ─────────────────────────
+
+    /// Advance the default flow by one step with a custom handler, surfacing a
+    /// deferred external as [`StepOutcome::AwaitingExternal`] rather than
+    /// erroring (unlike [`continue_single_with`](Self::continue_single_with)).
+    ///
+    /// On `AwaitingExternal`, resolve the pending call
+    /// ([`resolve_external`](Self::resolve_external), or
+    /// [`invoke_fallback`](Self::invoke_fallback)) and call `advance_with` again
+    /// to resume. Inspect the pending call via
+    /// [`pending_external_name`](Self::pending_external_name) /
+    /// [`pending_external_args`](Self::pending_external_args).
+    pub fn advance_with(
+        &mut self,
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<StepOutcome, RuntimeError> {
+        let resolver = self.resolver.as_deref();
+        self.default.advance::<R>(
+            self.program,
+            &self.line_tables,
+            &mut self.default_context,
+            handler,
+            resolver,
+        )
+    }
+
+    /// Name of the external the default flow is paused on, if any.
+    #[must_use]
+    pub fn pending_external_name(&self) -> Option<&str> {
+        self.default.pending_external_name(self.program)
+    }
+
+    /// Arguments of the external the default flow is paused on.
+    #[must_use]
+    pub fn pending_external_args(&self) -> &[Value] {
+        self.default.pending_external_args()
+    }
+
+    /// Evaluate an ink function by name from engine code, returning its value.
+    ///
+    /// Runs out-of-band on the default flow: output is isolated (the visible
+    /// story is untouched), and the call completes synchronously. Externals the
+    /// function calls are resolved inline by `handler`; an external the handler
+    /// defers ([`ExternalResult::Pending`]) can't be resolved in a synchronous
+    /// call and yields [`RuntimeError::AsyncExternalInCall`] (the paused eval is
+    /// cleaned up first).
+    ///
+    /// # Errors
+    /// [`RuntimeError::FunctionNotFound`] for an unknown name;
+    /// [`RuntimeError::AsyncExternalInCall`] if a called external defers; plus
+    /// any runtime error raised during evaluation.
+    pub fn call_function(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<Value, RuntimeError> {
+        let container_idx = self
+            .program
+            .find_address(name)
+            .ok_or_else(|| RuntimeError::FunctionNotFound(name.to_owned()))?
+            .0;
+        let resolver = self.resolver.as_deref();
+        let outcome = self.default.begin_function_eval::<R>(
+            self.program,
+            &self.line_tables,
+            &mut self.default_context,
+            handler,
+            container_idx,
+            args,
+            resolver,
+        )?;
+        match outcome {
+            FunctionEval::Returned(value) => Ok(value),
+            FunctionEval::AwaitingExternal => {
+                let name = self
+                    .default
+                    .pending_external_name(self.program)
+                    .map_or_else(|| name.to_owned(), ToOwned::to_owned);
+                self.default
+                    .abort_eval(self.program, &self.line_tables, resolver);
+                Err(RuntimeError::AsyncExternalInCall(name))
+            }
+        }
+    }
+
     /// Detach story state from the program, consuming the story.
     pub fn into_snapshot(self) -> (StorySnapshot<R>, Vec<Vec<brink_format::LineEntry>>) {
         let snapshot = StorySnapshot {

@@ -35,6 +35,8 @@ import type {
   MoveResult,
   DebugState,
   ProgramModel,
+  SaveState,
+  LoadReport,
 } from "@brink/wasm-types";
 
 // ── Wasm initialization ─────────────────────────────────────────
@@ -279,11 +281,86 @@ export class EditorSessionHandle {
 
 // ── Story runner ────────────────────────────────────────────────
 
+/** A value that can cross the ink↔JS external-binding boundary. */
+export type ExternalValue = number | boolean | string | null;
+
+/** An external-function binding: receives the call arguments as native JS
+ * values and returns a value (or nothing) back to the story. May be async —
+ * return a Promise and the story suspends until it resolves (drive with
+ * `continueAsync`/`continueSingleAsync`). */
+export type ExternalFn = (
+  ...args: ExternalValue[]
+) => ExternalValue | void | Promise<ExternalValue | void>;
+
 export class StoryRunnerHandle {
   private runner: StoryRunner;
 
   constructor(storyBytes: Uint8Array) {
     this.runner = new StoryRunner(storyBytes);
+  }
+
+  /** Bind an ink `EXTERNAL <name>(...)` to a synchronous JS callback.
+   * Re-binding the same name replaces the previous callback. */
+  bindExternal(name: string, fn: ExternalFn): void {
+    this.runner.bind_external(name, fn);
+  }
+
+  /** Remove a previously registered external binding. */
+  unbindExternal(name: string): void {
+    this.runner.unbind_external(name);
+  }
+
+  /** When `true`, an unbound external resolves to `null` instead of falling
+   * through to its ink fallback body / erroring. Default `false`. */
+  setLenientUnbound(lenient: boolean): void {
+    this.runner.set_lenient_unbound(lenient);
+  }
+
+  /** Read a global ink variable by name. `undefined` if no such variable is
+   * declared, `null` if it exists and holds null. */
+  getVar(name: string): ExternalValue | undefined {
+    return this.runner.get_var(name) as ExternalValue | undefined;
+  }
+
+  /** Set a global ink variable by name. Returns `false` if no such variable
+   * is declared. */
+  setVar(name: string, value: ExternalValue): boolean {
+    return this.runner.set_var(name, value);
+  }
+
+  /** Set the RNG seed for reproducible `RANDOM`/shuffle output. Applies now
+   * and is re-applied across `reset()`. Set before the first continue for a
+   * fully deterministic playthrough. */
+  setSeed(seed: number): void {
+    this.runner.set_seed(seed);
+  }
+
+  /** Capture durable game state as a typed object (dev/inspectable). */
+  save(): SaveState {
+    return JSON.parse(this.runner.save()) as SaveState;
+  }
+
+  /** Capture durable game state as a compact MessagePack blob (release). */
+  saveBytes(): Uint8Array {
+    return this.runner.save_bytes();
+  }
+
+  /** Reconcile a saved state into the running story; returns what couldn't be
+   * applied (empty `unknown_globals` = clean). Tolerant of story patches. */
+  load(state: SaveState): LoadReport {
+    return JSON.parse(this.runner.load(JSON.stringify(state))) as LoadReport;
+  }
+
+  /** Reconcile a MessagePack blob from `saveBytes()`. */
+  loadBytes(bytes: Uint8Array): LoadReport {
+    return JSON.parse(this.runner.load_bytes(bytes)) as LoadReport;
+  }
+
+  /** Evaluate an ink function from the host (engine→ink), out-of-band: the
+   * visible story is untouched. Externals it calls resolve through registered
+   * synchronous bindings. Returns the function's value. */
+  callFunction(name: string, ...args: ExternalValue[]): ExternalValue {
+    return this.runner.call_function(name, args) as ExternalValue;
   }
 
   continueStory(): Line[] {
@@ -294,6 +371,68 @@ export class StoryRunnerHandle {
   continueSingle(): Line {
     const json = this.runner.continue_single();
     return JSON.parse(json) as Line;
+  }
+
+  /** Continue maximally, awaiting any async (Promise-returning) bindings. Use
+   * this instead of `continueStory` when bindings may be async. */
+  async continueStoryAsync(): Promise<Line[]> {
+    const lines: Line[] = [];
+    for (;;) {
+      const line = await this.advanceAwaiting();
+      if (line.type === "text") {
+        lines.push(line);
+        continue;
+      }
+      lines.push(line); // terminal: done | choices | end
+      return lines;
+    }
+  }
+
+  /** Produce one line, awaiting any async binding hit along the way. */
+  async continueSingleAsync(): Promise<Line> {
+    return this.advanceAwaiting();
+  }
+
+  // ── Low-level async primitives (for custom drive loops) ──────────
+  // `continueStoryAsync`/`continueSingleAsync` are the ergonomic path; these
+  // expose the raw park/resolve so a host can drive it manually.
+
+  /** Advance one step; the line may be `{ type: "awaiting_external" }`. */
+  advanceOne(): Line {
+    return JSON.parse(this.runner.advance_one()) as Line;
+  }
+
+  /** Take the suspended async binding's Promise to await; `undefined` if none. */
+  takePendingPromise(): Promise<ExternalValue> | undefined {
+    const p = this.runner.take_pending_promise();
+    return p === undefined ? undefined : (p as Promise<ExternalValue>);
+  }
+
+  /** Resolve the parked external with a value (the awaited Promise result). */
+  resolveExternal(value: ExternalValue): void {
+    this.runner.resolve_external(value);
+  }
+
+  /** Step until a real line, transparently awaiting+resolving any suspended
+   * async binding (a Promise returned by a `bindExternal` callback). On a
+   * rejected Promise, resolves the external with `null` to unstick the flow,
+   * then rethrows so the host sees the failure. */
+  private async advanceAwaiting(): Promise<Line> {
+    for (;;) {
+      const line = JSON.parse(this.runner.advance_one()) as Line;
+      if (line.type !== "awaiting_external") {
+        return line;
+      }
+      const promise = this.runner.take_pending_promise() as Promise<ExternalValue>;
+      let value: ExternalValue;
+      try {
+        value = await promise;
+      } catch (err) {
+        this.runner.resolve_external(null); // unstick the parked flow
+        throw err;
+      }
+      this.runner.resolve_external(value ?? null);
+    }
   }
 
   choose(index: number): void {

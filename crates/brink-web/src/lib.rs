@@ -1,9 +1,13 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::sync::Arc;
 
+use brink_format::Value;
 use brink_ide::session::IdeSession;
-use brink_runtime::FastRng;
+use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng};
 use rowan::{TextRange, TextSize};
 use serde::Serialize;
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 mod program_model;
@@ -100,6 +104,28 @@ pub struct StoryRunner {
     // Safety: story borrows from program which is heap-pinned and never moved.
     // We only access story through &mut self methods (single-threaded wasm).
     story: RefCell<Option<brink_runtime::Story<'static, FastRng>>>,
+    /// Synchronous ink→engine external bindings: ink `EXTERNAL` name → JS
+    /// callback `(args) => value`. Built into a [`JsHandler`] on each
+    /// `continue_*` call. Single-threaded wasm, so a `RefCell` suffices.
+    bindings: RefCell<HashMap<String, js_sys::Function>>,
+    /// When `true`, an external with no registered binding resolves to `null`
+    /// (no-op) instead of falling through to its ink fallback body / erroring.
+    /// Lets shipped content call host verbs a given build doesn't know without
+    /// dead-ending. Default `false` (strict — current behavior).
+    lenient_unbound: Cell<bool>,
+    /// Explicit RNG seed, if the host set one. Re-applied on `reset` so re-runs
+    /// stay deterministic. `None` leaves the runtime default (0).
+    seed: Cell<Option<i32>>,
+    /// The `Promise` returned by an async binding the flow is parked on (the
+    /// `bindExternal` callback returned a thenable). Taken by the JS wrapper via
+    /// [`take_pending_promise`](Self::take_pending_promise), awaited, then fed
+    /// back through [`resolve_external`](Self::resolve_external). One slot —
+    /// single flow parks on at most one external.
+    pending_promise: RefCell<Option<js_sys::Promise>>,
+    /// Reentrancy guard: set while a VM-stepping method is running, so a binding
+    /// callback (or a second `continueAsync`) that re-enters gets a clean error
+    /// + `console.warn` instead of a `RefCell` double-borrow panic.
+    busy: Cell<bool>,
 }
 
 #[wasm_bindgen]
@@ -133,6 +159,11 @@ impl StoryRunner {
             base_line_tables: line_tables,
             data,
             story: RefCell::new(Some(story)),
+            bindings: RefCell::new(HashMap::new()),
+            lenient_unbound: Cell::new(false),
+            seed: Cell::new(None),
+            pending_promise: RefCell::new(None),
+            busy: Cell::new(false),
         })
     }
 
@@ -154,15 +185,158 @@ impl StoryRunner {
         serde_json::to_string(&model).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Register a synchronous external-function binding: when the story calls
+    /// `EXTERNAL <name>(...)`, `f` is invoked with the call arguments and its
+    /// return value is fed back to the story. Arguments arrive as native JS
+    /// values (number / boolean / string / null); the return is read back the
+    /// same way (an integer-valued number becomes an ink int, otherwise a
+    /// float).
+    ///
+    /// Re-registering the same name replaces the previous binding. A binding
+    /// that throws resolves to `null` (a thrown host callback is a bug; the
+    /// exception is not propagated into the VM).
+    pub fn bind_external(&self, name: &str, f: js_sys::Function) {
+        self.bindings.borrow_mut().insert(name.to_owned(), f);
+    }
+
+    /// Remove a previously registered external binding.
+    pub fn unbind_external(&self, name: &str) {
+        self.bindings.borrow_mut().remove(name);
+    }
+
+    /// Control how an external with **no** registered binding resolves.
+    /// `false` (default): fall through to the ink fallback body, erroring if
+    /// none exists. `true`: resolve to `null` (no-op), so content can call
+    /// host verbs this build doesn't know without dead-ending.
+    pub fn set_lenient_unbound(&self, lenient: bool) {
+        self.lenient_unbound.set(lenient);
+    }
+
+    /// Read a global ink variable by name as a native JS value. Returns
+    /// `undefined` if no such variable is declared, `null` if it exists and
+    /// holds null. (Non-scalar globals — lists — currently read as `null`.)
+    pub fn get_var(&self, name: &str) -> JsValue {
+        let borrow = self.story.borrow();
+        match borrow.as_ref().and_then(|s| s.variable(name)) {
+            Some(v) => value_to_js(v),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// Set a global ink variable by name from a native JS value
+    /// (number / boolean / string / null). Returns `false` if no such
+    /// variable is declared.
+    pub fn set_var(&self, name: &str, value: &JsValue) -> bool {
+        let v = js_to_value(value);
+        let mut borrow = self.story.borrow_mut();
+        borrow.as_mut().is_some_and(|s| s.set_variable(name, v))
+    }
+
+    /// Set the RNG seed, making `RANDOM`/shuffle output reproducible. Applies
+    /// immediately and is re-applied across [`reset`](Self::reset) so re-runs
+    /// stay deterministic. Set before the first `continue_*` for a fully
+    /// deterministic playthrough.
+    pub fn set_seed(&self, seed: i32) {
+        self.seed.set(Some(seed));
+        if let Some(story) = self.story.borrow_mut().as_mut() {
+            story.set_rng_seed(seed);
+        }
+    }
+
+    /// Capture the durable, name-keyed game state as a JSON string (globals,
+    /// visit/turn counts, turn index, RNG). Human-inspectable; store as-is in
+    /// localStorage / a save slot. Use [`save_bytes`](Self::save_bytes) for a
+    /// compact release blob. Does not capture execution position.
+    pub fn save(&self) -> Result<String, JsError> {
+        let borrow = self.story.borrow();
+        let story = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        serde_json::to_string(&story.save_state())
+            .map_err(|e| JsError::new(&format!("save error: {e}")))
+    }
+
+    /// Like [`save`](Self::save) but a compact `MessagePack` byte blob (release).
+    /// Same format as `save`; load with [`load_bytes`](Self::load_bytes).
+    pub fn save_bytes(&self) -> Result<Vec<u8>, JsError> {
+        let borrow = self.story.borrow();
+        let story = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        rmp_serde::to_vec_named(&story.save_state())
+            .map_err(|e| JsError::new(&format!("save error: {e}")))
+    }
+
+    /// Reconcile a JSON save (from [`save`](Self::save)) into the running
+    /// story. Returns a `LoadReport` JSON (`{ unknown_globals: [...] }`) of
+    /// saved globals the current story no longer has — empty means a clean
+    /// load. Tolerant of story patches.
+    pub fn load(&self, json: &str) -> Result<String, JsError> {
+        let state: brink_runtime::SaveState =
+            serde_json::from_str(json).map_err(|e| JsError::new(&format!("load error: {e}")))?;
+        self.apply_load(&state)
+    }
+
+    /// Like [`load`](Self::load) but from a `MessagePack` blob produced by
+    /// [`save_bytes`](Self::save_bytes).
+    pub fn load_bytes(&self, bytes: &[u8]) -> Result<String, JsError> {
+        let state: brink_runtime::SaveState =
+            rmp_serde::from_slice(bytes).map_err(|e| JsError::new(&format!("load error: {e}")))?;
+        self.apply_load(&state)
+    }
+
+    /// Evaluate an ink function from the host, out-of-band: the visible story is
+    /// untouched and the call returns synchronously. Arguments and the return
+    /// value are native JS values (number / boolean / string / null). Externals
+    /// the function calls resolve through the registered (synchronous) bindings.
+    ///
+    /// Errors if the function name is unknown, if a called external is async
+    /// (can't resolve synchronously), or on a runtime error.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "wasm-bindgen passes a JS array as an owned Vec across the boundary"
+    )]
+    pub fn call_function(&self, name: &str, args: Vec<JsValue>) -> Result<JsValue, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("call_function"))?;
+        let ink_args: Vec<Value> = args.iter().map(js_to_value).collect();
+        let bindings = self.bindings.borrow();
+        let handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound.get(),
+            pending: &self.pending_promise,
+        };
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let value = story
+            .call_function(name, &ink_args, &handler)
+            .map_err(|e| JsError::new(&format!("call_function error: {e}")))?;
+        Ok(value_to_js(&value))
+    }
+
     /// Continue the story maximally. Returns JSON array of `Line` objects.
+    ///
+    /// Errors if a binding suspends (returns a Promise) — use the async
+    /// `advance_one`/`resolve_external` path (or `@brink/wasm`'s `continueAsync`)
+    /// for stories with async bindings.
     pub fn continue_story(&self) -> Result<String, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("continue_story"))?;
+        let bindings = self.bindings.borrow();
+        let handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound.get(),
+            pending: &self.pending_promise,
+        };
         let mut borrow = self.story.borrow_mut();
         let story = borrow
             .as_mut()
             .ok_or_else(|| JsError::new("story not initialized"))?;
 
         let lines = story
-            .continue_maximally()
+            .continue_maximally_with(&handler)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
 
         let resp: Vec<LineJs> = lines.into_iter().map(line_to_js).collect();
@@ -171,19 +345,96 @@ impl StoryRunner {
     }
 
     /// Continue the story by a single line. Returns JSON for one `Line` object.
+    /// Errors on a suspending binding (see [`continue_story`](Self::continue_story)).
     pub fn continue_single(&self) -> Result<String, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("continue_single"))?;
+        let bindings = self.bindings.borrow();
+        let handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound.get(),
+            pending: &self.pending_promise,
+        };
         let mut borrow = self.story.borrow_mut();
         let story = borrow
             .as_mut()
             .ok_or_else(|| JsError::new("story not initialized"))?;
 
         let line = story
-            .continue_single()
+            .continue_single_with(&handler)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
 
         let resp = line_to_js(line);
 
         serde_json::to_string(&resp).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Advance one step, surfacing a suspended async binding instead of
+    /// erroring. Returns one `Line` JSON, or `{ "type": "awaiting_external",
+    /// "name": … }` when a binding returned a `Promise` — at which point the
+    /// caller takes it via [`take_pending_promise`](Self::take_pending_promise),
+    /// awaits it, calls [`resolve_external`](Self::resolve_external), and steps
+    /// again. (`@brink/wasm`'s `continueAsync` drives this loop for you.)
+    pub fn advance_one(&self) -> Result<String, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("advance_one"))?;
+        let bindings = self.bindings.borrow();
+        let handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound.get(),
+            pending: &self.pending_promise,
+        };
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+
+        let resp = match story
+            .advance_with(&handler)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?
+        {
+            brink_runtime::StepOutcome::Line(line) => line_to_js(line),
+            brink_runtime::StepOutcome::AwaitingExternal => LineJs {
+                r#type: "awaiting_external",
+                text: String::new(),
+                tags: Vec::new(),
+                choices: None,
+                name: story.pending_external_name().map(str::to_owned),
+            },
+        };
+        serde_json::to_string(&resp).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Resolve the external the flow is parked on with a native JS value
+    /// (the awaited result of an async binding's `Promise`). No-op if not
+    /// awaiting. Called by the JS wrapper between `advance_one` steps.
+    pub fn resolve_external(&self, value: &JsValue) {
+        if self.busy.get() {
+            web_sys::console::warn_1(&JsValue::from_str(
+                "brink: reentrant 'resolve_external' ignored",
+            ));
+            return;
+        }
+        let v = js_to_value(value);
+        if let Some(story) = self.story.borrow_mut().as_mut() {
+            story.resolve_external(v);
+        }
+    }
+
+    /// Take the `Promise` a suspended async binding returned, for the caller to
+    /// `await`. `undefined` if none is pending. After awaiting, feed the result
+    /// to [`resolve_external`](Self::resolve_external).
+    pub fn take_pending_promise(&self) -> JsValue {
+        if self.busy.get() {
+            web_sys::console::warn_1(&JsValue::from_str(
+                "brink: reentrant 'take_pending_promise' ignored",
+            ));
+            return JsValue::UNDEFINED;
+        }
+        self.pending_promise
+            .borrow_mut()
+            .take()
+            .map_or(JsValue::UNDEFINED, JsValue::from)
     }
 
     /// Choose an option by index.
@@ -205,8 +456,12 @@ impl StoryRunner {
         #[expect(unsafe_code)]
         let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
 
-        let story =
+        let mut story =
             brink_runtime::Story::<FastRng>::new(program_ref, self.base_line_tables.clone());
+        // Re-apply the host-set seed so a reset replays deterministically.
+        if let Some(seed) = self.seed.get() {
+            story.set_rng_seed(seed);
+        }
         *self.story.borrow_mut() = Some(story);
     }
 
@@ -221,6 +476,152 @@ impl StoryRunner {
         let js = debug_snapshot_to_js(story.debug_snapshot());
         serde_json::to_string(&js).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
+}
+
+// ── Save/load helper (not wasm-exported: takes a Rust SaveState) ─────
+
+impl StoryRunner {
+    /// Reconcile a decoded `SaveState` into the running story and return the
+    /// `LoadReport` as JSON. Shared by `load` (JSON) and `load_bytes` (msgpack).
+    fn apply_load(&self, state: &brink_runtime::SaveState) -> Result<String, JsError> {
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let report = story.load_state(state);
+        serde_json::to_string(&report).map_err(|e| JsError::new(&format!("load report error: {e}")))
+    }
+}
+
+// ── Reentrancy guard ─────────────────────────────────────────────────
+
+/// RAII guard for [`StoryRunner::busy`]. [`acquire`](Self::acquire) returns
+/// `None` if a VM-stepping method is already running (a binding callback or a
+/// concurrent driver re-entered), so the caller can warn + error cleanly
+/// instead of hitting a `RefCell` double-borrow panic. Clears the flag on drop,
+/// including on an early `?`/error return.
+struct BusyGuard<'a>(&'a Cell<bool>);
+
+impl<'a> BusyGuard<'a> {
+    fn acquire(flag: &'a Cell<bool>) -> Option<Self> {
+        if flag.get() {
+            return None;
+        }
+        flag.set(true);
+        Some(BusyGuard(flag))
+    }
+}
+
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+/// `console.warn` + the `JsError` returned when a stepping method is re-entered.
+fn reentrant_error(method: &str) -> JsError {
+    web_sys::console::warn_1(&JsValue::from_str(&format!(
+        "brink: reentrant '{method}' ignored — a binding callback or concurrent \
+         driver re-entered the runner"
+    )));
+    JsError::new("reentrant brink call")
+}
+
+// ── External-function bindings ───────────────────────────────────────
+
+/// [`ExternalFnHandler`] backed by the runner's registry of JS callbacks.
+///
+/// Resolves a bound external by invoking its JS function with the call
+/// arguments (as native JS values) and reading the return back into a
+/// [`Value`]. An unbound external either falls back to the ink body
+/// (`lenient = false`) or resolves to `null` (`lenient = true`).
+struct JsHandler<'a> {
+    bindings: &'a HashMap<String, js_sys::Function>,
+    lenient: bool,
+    /// Where an async binding's returned `Promise` is stashed so the JS wrapper
+    /// can await it (see [`StoryRunner::take_pending_promise`]).
+    pending: &'a RefCell<Option<js_sys::Promise>>,
+}
+
+impl ExternalFnHandler for JsHandler<'_> {
+    fn call(&self, name: &str, args: &[Value]) -> ExternalResult {
+        let Some(f) = self.bindings.get(name) else {
+            return if self.lenient {
+                ExternalResult::Resolved(Value::Null)
+            } else {
+                ExternalResult::Fallback
+            };
+        };
+        let js_args = js_sys::Array::new();
+        for a in args {
+            js_args.push(&value_to_js(a));
+        }
+        match f.apply(&JsValue::NULL, &js_args) {
+            Ok(ret) => {
+                // Unified async: a binding that returns a Promise suspends the
+                // flow. Stash the Promise; the JS wrapper awaits it and feeds
+                // the result back via `resolve_external`.
+                if ret.is_instance_of::<js_sys::Promise>() {
+                    *self.pending.borrow_mut() = Some(ret.unchecked_into::<js_sys::Promise>());
+                    ExternalResult::Pending
+                } else {
+                    ExternalResult::Resolved(js_to_value(&ret))
+                }
+            }
+            // A registered binding that throws is a host bug; don't propagate
+            // the JS exception into the VM — warn, resolve to null, carry on.
+            Err(e) => {
+                web_sys::console::warn_2(
+                    &JsValue::from_str(&format!("brink: binding '{name}' threw; resolving null:")),
+                    &e,
+                );
+                ExternalResult::Resolved(Value::Null)
+            }
+        }
+    }
+}
+
+/// Map an ink [`Value`] to a native JS value for a binding argument. Only the
+/// scalar variants cross the boundary; VM-internal variants (pointers, divert
+/// targets, fragment refs, lists) map to `null` for now.
+fn value_to_js(v: &Value) -> JsValue {
+    match v {
+        Value::Int(i) => JsValue::from_f64(f64::from(*i)),
+        Value::Float(f) => JsValue::from_f64(f64::from(*f)),
+        Value::Bool(b) => JsValue::from_bool(*b),
+        Value::String(s) => JsValue::from_str(s),
+        _ => JsValue::NULL,
+    }
+}
+
+/// Read a JS value returned from a binding back into an ink [`Value`].
+/// `null`/`undefined` → `Null`; booleans → `Bool`; an integer-valued finite
+/// number → `Int`, otherwise `Float`; strings → `String`. Anything else → `Null`.
+fn js_to_value(js: &JsValue) -> Value {
+    if js.is_null() || js.is_undefined() {
+        return Value::Null;
+    }
+    if let Some(b) = js.as_bool() {
+        return Value::Bool(b);
+    }
+    if let Some(n) = js.as_f64() {
+        if n.is_finite() && n.fract() == 0.0 && n.abs() <= f64::from(i32::MAX) {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "guarded: finite, integral, within i32 range"
+            )]
+            return Value::Int(n as i32);
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "ink floats are f32; JS numbers narrow to f32 at the boundary"
+        )]
+        return Value::Float(n as f32);
+    }
+    if let Some(s) = js.as_string() {
+        return Value::String(Arc::from(s));
+    }
+    Value::Null
 }
 
 // ── Debug snapshot JSON mirror ───────────────────────────────────────
@@ -323,6 +724,7 @@ fn line_to_js(line: brink_runtime::Line) -> LineJs {
             text,
             tags,
             choices: None,
+            name: None,
         },
         brink_runtime::Line::Choices {
             text,
@@ -342,18 +744,21 @@ fn line_to_js(line: brink_runtime::Line) -> LineJs {
                     })
                     .collect(),
             ),
+            name: None,
         },
         brink_runtime::Line::Done { text, tags } => LineJs {
             r#type: "done",
             text,
             tags,
             choices: None,
+            name: None,
         },
         brink_runtime::Line::End { text, tags } => LineJs {
             r#type: "end",
             text,
             tags,
             choices: None,
+            name: None,
         },
     }
 }
@@ -365,6 +770,9 @@ struct LineJs {
     tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     choices: Option<Vec<ChoiceJs>>,
+    /// External name for the `awaiting_external` variant; omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1974,5 +2382,197 @@ mod tests {
         // It carries the full file source (path-keyed), not byte ranges.
         assert!(other.get("new_source").is_some());
         assert!(other.get("start").is_none());
+    }
+}
+
+// ── External-binding wasm tests ──────────────────────────────────────
+//
+// Exercise the ink↔JS external-binding boundary end-to-end through the real
+// exported `StoryRunner` API. Gated to wasm32 so they build/run only under
+// `wasm-pack test --node` and never affect host `cargo test`.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod binding_wasm_tests {
+    use super::StoryRunner;
+    use js_sys::Function;
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// Compile inline ink source to `.inkb` bytes.
+    fn bytes(src: &str) -> Vec<u8> {
+        let out = brink_compiler::compile("main.ink", |_path| Ok(src.to_owned()))
+            .expect("test source compiles");
+        let mut b = Vec::new();
+        brink_format::write_inkb(&out.data, &mut b);
+        b
+    }
+
+    fn runner(src: &str) -> StoryRunner {
+        StoryRunner::new(&bytes(src))
+            .ok()
+            .expect("runner constructs")
+    }
+
+    fn cont(r: &StoryRunner) -> String {
+        r.continue_story().ok().expect("story continues")
+    }
+
+    #[wasm_bindgen_test]
+    fn pure_binding_inlined_into_text() {
+        let r = runner("EXTERNAL double(x)\nResult: {double(21)}.\n-> END\n");
+        r.bind_external("double", Function::new_with_args("x", "return x * 2"));
+        assert!(cont(&r).contains("Result: 42"));
+    }
+
+    #[wasm_bindgen_test]
+    fn string_return_marshals() {
+        let r = runner("EXTERNAL who()\nHello {who()}!\n-> END\n");
+        r.bind_external("who", Function::new_no_args("return \"world\""));
+        assert!(cont(&r).contains("Hello world!"));
+    }
+
+    #[wasm_bindgen_test]
+    fn unbound_external_strict_errors() {
+        let r = runner("EXTERNAL ping()\nA{ping()}B\n-> END\n");
+        assert!(
+            r.continue_story().is_err(),
+            "strict mode: unbound external with no fallback errors"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn unbound_external_lenient_resolves_null() {
+        let r = runner("EXTERNAL ping()\nA{ping()}B\n-> END\n");
+        r.set_lenient_unbound(true);
+        let text = cont(&r);
+        assert!(
+            text.contains('A') && text.contains('B'),
+            "lenient mode resolves to null without erroring; got {text:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn throwing_binding_resolves_null() {
+        let r = runner("EXTERNAL boom()\nX{boom()}Y\n-> END\n");
+        r.bind_external("boom", Function::new_no_args("throw new Error('nope')"));
+        let text = cont(&r);
+        assert!(
+            text.contains('X') && text.contains('Y'),
+            "a throwing binding resolves null, not a VM error; got {text:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn get_set_var_round_trip() {
+        let r = runner("VAR hp = 10\nHP {hp}.\n-> END\n");
+        assert_eq!(r.get_var("hp").as_f64(), Some(10.0));
+        assert!(r.set_var("hp", &JsValue::from_f64(3.0)));
+        assert_eq!(r.get_var("hp").as_f64(), Some(3.0));
+        assert!(r.get_var("missing").is_undefined());
+        assert!(!r.set_var("missing", &JsValue::from_f64(1.0)));
+        assert!(cont(&r).contains("HP 3."));
+    }
+
+    #[wasm_bindgen_test]
+    fn seed_is_deterministic_across_reset() {
+        let r = runner("{RANDOM(1, 1000)}\n-> END\n");
+        r.set_seed(7);
+        let first = cont(&r);
+        r.reset();
+        let second = cont(&r);
+        assert_eq!(
+            first, second,
+            "reset re-applies the seed -> identical RANDOM output"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn save_load_json_round_trip() {
+        let r = runner("VAR hp = 10\nHP {hp}.\n-> END\n");
+        assert!(r.set_var("hp", &JsValue::from_f64(3.0)));
+        let blob = r.save().ok().expect("save");
+        assert!(r.set_var("hp", &JsValue::from_f64(99.0)));
+        let report = r.load(&blob).ok().expect("load");
+        assert!(report.contains("unknown_globals"), "report JSON: {report}");
+        assert_eq!(r.get_var("hp").as_f64(), Some(3.0), "hp restored from save");
+    }
+
+    #[wasm_bindgen_test]
+    fn save_load_bytes_round_trip() {
+        let r = runner("VAR hp = 10\nHP {hp}.\n-> END\n");
+        assert!(r.set_var("hp", &JsValue::from_f64(7.0)));
+        let bytes = r.save_bytes().ok().expect("save_bytes");
+        assert!(r.set_var("hp", &JsValue::from_f64(1.0)));
+        r.load_bytes(&bytes).ok().expect("load_bytes");
+        assert_eq!(
+            r.get_var("hp").as_f64(),
+            Some(7.0),
+            "hp restored from bytes"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn call_function_pure() {
+        let r = runner("-> END\n=== function add(a, b) ===\n~ return a + b\n");
+        let v = r
+            .call_function("add", vec![JsValue::from_f64(2.0), JsValue::from_f64(3.0)])
+            .ok()
+            .expect("call");
+        assert_eq!(v.as_f64(), Some(5.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn call_function_uses_binding() {
+        let r =
+            runner("EXTERNAL dbl(x)\n-> END\n=== function scaled(n) ===\n~ return dbl(n) + 1\n");
+        r.bind_external("dbl", Function::new_with_args("x", "return x * 2"));
+        let v = r
+            .call_function("scaled", vec![JsValue::from_f64(10.0)])
+            .ok()
+            .expect("call");
+        assert_eq!(v.as_f64(), Some(21.0), "dbl(10) + 1");
+    }
+
+    /// A binding that returns a Promise suspends the flow; the driver awaits the
+    /// Promise, resolves the external, and resumes — end-to-end.
+    #[wasm_bindgen_test]
+    async fn async_binding_suspends_and_resolves() {
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen_futures::JsFuture;
+
+        let r = runner("EXTERNAL slow(x)\nGot {slow(20)}.\n-> END\n");
+        r.bind_external(
+            "slow",
+            Function::new_with_args("x", "return Promise.resolve(x + 22)"),
+        );
+
+        let mut text = String::new();
+        let mut suspended = false;
+        for _ in 0..50 {
+            let json = r.advance_one().ok().expect("advance_one");
+            let v: serde_json::Value = serde_json::from_str(&json).ok().expect("json");
+            let ty = v
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if ty == "awaiting_external" {
+                suspended = true;
+                let promise: js_sys::Promise =
+                    r.take_pending_promise().dyn_into().ok().expect("promise");
+                let value = JsFuture::from(promise).await.ok().expect("await");
+                r.resolve_external(&value);
+            } else {
+                if let Some(t) = v.get("text").and_then(serde_json::Value::as_str) {
+                    text.push_str(t);
+                }
+                if ty != "text" {
+                    break; // terminal
+                }
+            }
+        }
+        assert!(suspended, "flow should have suspended on the async binding");
+        assert!(
+            text.contains("Got 42."),
+            "resolved async value appears; got {text:?}"
+        );
     }
 }

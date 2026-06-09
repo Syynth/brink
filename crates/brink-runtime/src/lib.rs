@@ -30,12 +30,14 @@ mod locale;
 mod output;
 mod program;
 pub mod rng;
+mod save;
 mod state;
 mod story;
 pub mod transcript;
 mod value_ops;
 mod vm;
 
+pub use brink_format::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 pub use debug::{DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit};
 pub use error::RuntimeError;
 pub use linker::link;
