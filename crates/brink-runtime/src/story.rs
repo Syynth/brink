@@ -1697,6 +1697,13 @@ impl<'p, R: StoryRng> Story<'p, R> {
         }
     }
 
+    /// Set the RNG seed for the default flow's context. Seeding makes
+    /// `RANDOM`/shuffle output reproducible — set it before running (or after
+    /// a reset) so two runs of the same story on different machines match.
+    pub fn set_rng_seed(&mut self, seed: i32) {
+        self.default_context.set_rng_seed(seed);
+    }
+
     /// Detach story state from the program, consuming the story.
     pub fn into_snapshot(self) -> (StorySnapshot<R>, Vec<Vec<brink_format::LineEntry>>) {
         let snapshot = StorySnapshot {

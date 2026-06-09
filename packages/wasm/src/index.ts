@@ -322,6 +322,13 @@ export class StoryRunnerHandle {
     return this.runner.set_var(name, value);
   }
 
+  /** Set the RNG seed for reproducible `RANDOM`/shuffle output. Applies now
+   * and is re-applied across `reset()`. Set before the first continue for a
+   * fully deterministic playthrough. */
+  setSeed(seed: number): void {
+    this.runner.set_seed(seed);
+  }
+
   continueStory(): Line[] {
     const json = this.runner.continue_story();
     return JSON.parse(json) as Line[];

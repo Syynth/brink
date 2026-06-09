@@ -112,6 +112,9 @@ pub struct StoryRunner {
     /// Lets shipped content call host verbs a given build doesn't know without
     /// dead-ending. Default `false` (strict — current behavior).
     lenient_unbound: Cell<bool>,
+    /// Explicit RNG seed, if the host set one. Re-applied on `reset` so re-runs
+    /// stay deterministic. `None` leaves the runtime default (0).
+    seed: Cell<Option<i32>>,
 }
 
 #[wasm_bindgen]
@@ -147,6 +150,7 @@ impl StoryRunner {
             story: RefCell::new(Some(story)),
             bindings: RefCell::new(HashMap::new()),
             lenient_unbound: Cell::new(false),
+            seed: Cell::new(None),
         })
     }
 
@@ -215,6 +219,17 @@ impl StoryRunner {
         borrow.as_mut().is_some_and(|s| s.set_variable(name, v))
     }
 
+    /// Set the RNG seed, making `RANDOM`/shuffle output reproducible. Applies
+    /// immediately and is re-applied across [`reset`](Self::reset) so re-runs
+    /// stay deterministic. Set before the first `continue_*` for a fully
+    /// deterministic playthrough.
+    pub fn set_seed(&self, seed: i32) {
+        self.seed.set(Some(seed));
+        if let Some(story) = self.story.borrow_mut().as_mut() {
+            story.set_rng_seed(seed);
+        }
+    }
+
     /// Continue the story maximally. Returns JSON array of `Line` objects.
     pub fn continue_story(&self) -> Result<String, JsError> {
         let bindings = self.bindings.borrow();
@@ -276,8 +291,12 @@ impl StoryRunner {
         #[expect(unsafe_code)]
         let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
 
-        let story =
+        let mut story =
             brink_runtime::Story::<FastRng>::new(program_ref, self.base_line_tables.clone());
+        // Re-apply the host-set seed so a reset replays deterministically.
+        if let Some(seed) = self.seed.get() {
+            story.set_rng_seed(seed);
+        }
         *self.story.borrow_mut() = Some(story);
     }
 
@@ -2123,5 +2142,104 @@ mod tests {
         // It carries the full file source (path-keyed), not byte ranges.
         assert!(other.get("new_source").is_some());
         assert!(other.get("start").is_none());
+    }
+}
+
+// ── External-binding wasm tests ──────────────────────────────────────
+//
+// Exercise the ink↔JS external-binding boundary end-to-end through the real
+// exported `StoryRunner` API. Gated to wasm32 so they build/run only under
+// `wasm-pack test --node` and never affect host `cargo test`.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod binding_wasm_tests {
+    use super::StoryRunner;
+    use js_sys::Function;
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// Compile inline ink source to `.inkb` bytes.
+    fn bytes(src: &str) -> Vec<u8> {
+        let out = brink_compiler::compile("main.ink", |_path| Ok(src.to_owned()))
+            .expect("test source compiles");
+        let mut b = Vec::new();
+        brink_format::write_inkb(&out.data, &mut b);
+        b
+    }
+
+    fn runner(src: &str) -> StoryRunner {
+        StoryRunner::new(&bytes(src)).ok().expect("runner constructs")
+    }
+
+    fn cont(r: &StoryRunner) -> String {
+        r.continue_story().ok().expect("story continues")
+    }
+
+    #[wasm_bindgen_test]
+    fn pure_binding_inlined_into_text() {
+        let r = runner("EXTERNAL double(x)\nResult: {double(21)}.\n-> END\n");
+        r.bind_external("double", Function::new_with_args("x", "return x * 2"));
+        assert!(cont(&r).contains("Result: 42"));
+    }
+
+    #[wasm_bindgen_test]
+    fn string_return_marshals() {
+        let r = runner("EXTERNAL who()\nHello {who()}!\n-> END\n");
+        r.bind_external("who", Function::new_no_args("return \"world\""));
+        assert!(cont(&r).contains("Hello world!"));
+    }
+
+    #[wasm_bindgen_test]
+    fn unbound_external_strict_errors() {
+        let r = runner("EXTERNAL ping()\nA{ping()}B\n-> END\n");
+        assert!(
+            r.continue_story().is_err(),
+            "strict mode: unbound external with no fallback errors"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn unbound_external_lenient_resolves_null() {
+        let r = runner("EXTERNAL ping()\nA{ping()}B\n-> END\n");
+        r.set_lenient_unbound(true);
+        let text = cont(&r);
+        assert!(
+            text.contains('A') && text.contains('B'),
+            "lenient mode resolves to null without erroring; got {text:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn throwing_binding_resolves_null() {
+        let r = runner("EXTERNAL boom()\nX{boom()}Y\n-> END\n");
+        r.bind_external("boom", Function::new_no_args("throw new Error('nope')"));
+        let text = cont(&r);
+        assert!(
+            text.contains('X') && text.contains('Y'),
+            "a throwing binding resolves null, not a VM error; got {text:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn get_set_var_round_trip() {
+        let r = runner("VAR hp = 10\nHP {hp}.\n-> END\n");
+        assert_eq!(r.get_var("hp").as_f64(), Some(10.0));
+        assert!(r.set_var("hp", &JsValue::from_f64(3.0)));
+        assert_eq!(r.get_var("hp").as_f64(), Some(3.0));
+        assert!(r.get_var("missing").is_undefined());
+        assert!(!r.set_var("missing", &JsValue::from_f64(1.0)));
+        assert!(cont(&r).contains("HP 3."));
+    }
+
+    #[wasm_bindgen_test]
+    fn seed_is_deterministic_across_reset() {
+        let r = runner("{RANDOM(1, 1000)}\n-> END\n");
+        r.set_seed(7);
+        let first = cont(&r);
+        r.reset();
+        let second = cont(&r);
+        assert_eq!(
+            first, second,
+            "reset re-applies the seed -> identical RANDOM output"
+        );
     }
 }

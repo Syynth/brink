@@ -77,3 +77,72 @@ pub fn add_story_assets(
             line_tables: tables_handle,
         })
 }
+
+/// Host-side coverage for the runtime `Story` additions that back the
+/// `brink-web` external-binding foundation (Track A). These exercise the
+/// runtime contract directly (no Bevy, no wasm); the JS marshaling is covered
+/// by `brink-web`'s `wasm-bindgen-test` suite. Lives here because the runtime
+/// crate can't depend on the compiler (cycle), and this crate already has
+/// `compile_test_story`.
+mod runtime_story_api {
+    use super::compile_test_story;
+    use brink_format::Value;
+    use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng, Line, Story};
+
+    fn render(lines: Vec<Line>) -> String {
+        lines.iter().map(Line::text).collect()
+    }
+
+    #[test]
+    fn variable_get_set_by_name() {
+        let (program, tables, _ctx) = compile_test_story("VAR mood = 1\nMood {mood}.\n-> END\n");
+        let mut story = Story::<FastRng>::new(&program, tables);
+        assert_eq!(story.variable("mood"), Some(&Value::Int(1)));
+        assert!(story.set_variable("mood", Value::Int(5)));
+        assert_eq!(story.variable("mood"), Some(&Value::Int(5)));
+        // Unknown variable: read None, set is a no-op returning false.
+        assert!(!story.set_variable("nope", Value::Int(0)));
+        assert_eq!(story.variable("nope"), None);
+    }
+
+    #[test]
+    fn set_variable_reflected_in_output() {
+        let (program, tables, _ctx) = compile_test_story("VAR mood = 1\nMood {mood}.\n-> END\n");
+        let mut story = Story::<FastRng>::new(&program, tables);
+        story.set_variable("mood", Value::Int(7));
+        let text = render(story.continue_maximally().expect("continues"));
+        assert!(text.contains("Mood 7."), "got {text:?}");
+    }
+
+    #[test]
+    fn rng_seed_is_deterministic() {
+        let src = "{RANDOM(1, 1000)}\n-> END\n";
+        let run = |seed: i32| {
+            let (program, tables, _ctx) = compile_test_story(src);
+            let mut story = Story::<FastRng>::new(&program, tables);
+            story.set_rng_seed(seed);
+            render(story.continue_maximally().expect("continues"))
+        };
+        assert_eq!(run(42), run(42), "same seed -> identical RANDOM output");
+    }
+
+    #[test]
+    fn external_binding_resolves_via_continue_with() {
+        struct Doubler;
+        impl ExternalFnHandler for Doubler {
+            fn call(&self, name: &str, args: &[Value]) -> ExternalResult {
+                if name == "double" {
+                    let n = args.first().and_then(Value::as_int).unwrap_or(0);
+                    ExternalResult::Resolved(Value::Int(n * 2))
+                } else {
+                    ExternalResult::Fallback
+                }
+            }
+        }
+        let (program, tables, _ctx) =
+            compile_test_story("EXTERNAL double(x)\nResult: {double(21)}.\n-> END\n");
+        let mut story = Story::<FastRng>::new(&program, tables);
+        let text = render(story.continue_maximally_with(&Doubler).expect("continues"));
+        assert!(text.contains("Result: 42"), "got {text:?}");
+    }
+}
