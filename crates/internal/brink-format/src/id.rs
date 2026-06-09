@@ -36,7 +36,7 @@ const HASH_MASK: u64 = (1 << 56) - 1;
 /// A tagged 64-bit identifier for any definition in a compiled story.
 ///
 /// Layout: `[tag: 8 bits][hash: 56 bits]`
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DefinitionId(u64);
 
 impl DefinitionId {

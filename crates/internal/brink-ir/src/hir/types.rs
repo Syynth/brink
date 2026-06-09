@@ -767,6 +767,16 @@ pub enum DiagnosticCode {
     E037,
     /// Malformed `///` doc-comment tag on an `EXTERNAL` declaration.
     E038,
+
+    // ── Host manifest (external-function vocabulary) ─────────────
+    /// Registered host manifest disagrees with the ink `EXTERNAL` arity.
+    E039,
+    /// Doc-comment / manifest references an unknown semantic type.
+    E040,
+    /// External call argument type mismatches the manifest signature.
+    E041,
+    /// External call argument violates a closed-domain constraint.
+    E042,
 }
 
 impl DiagnosticCode {
@@ -812,6 +822,10 @@ impl DiagnosticCode {
             Self::E036 => "E036",
             Self::E037 => "E037",
             Self::E038 => "E038",
+            Self::E039 => "E039",
+            Self::E040 => "E040",
+            Self::E041 => "E041",
+            Self::E042 => "E042",
         }
     }
 
@@ -857,6 +871,10 @@ impl DiagnosticCode {
             Self::E036 => "expected diagnostic not produced",
             Self::E037 => "syntax error",
             Self::E038 => "malformed doc-comment tag",
+            Self::E039 => "manifest disagrees with EXTERNAL arity",
+            Self::E040 => "unknown semantic type",
+            Self::E041 => "external argument type mismatch",
+            Self::E042 => "external argument out of domain",
         }
     }
 
@@ -920,6 +938,10 @@ impl DiagnosticCode {
             "E036" => Some(Self::E036),
             "E037" => Some(Self::E037),
             "E038" => Some(Self::E038),
+            "E039" => Some(Self::E039),
+            "E040" => Some(Self::E040),
+            "E041" => Some(Self::E041),
+            "E042" => Some(Self::E042),
             _ => None,
         }
     }
