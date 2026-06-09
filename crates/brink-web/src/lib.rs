@@ -230,6 +230,48 @@ impl StoryRunner {
         }
     }
 
+    /// Capture the durable, name-keyed game state as a JSON string (globals,
+    /// visit/turn counts, turn index, RNG). Human-inspectable; store as-is in
+    /// localStorage / a save slot. Use [`save_bytes`](Self::save_bytes) for a
+    /// compact release blob. Does not capture execution position.
+    pub fn save(&self) -> Result<String, JsError> {
+        let borrow = self.story.borrow();
+        let story = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        serde_json::to_string(&story.save_state())
+            .map_err(|e| JsError::new(&format!("save error: {e}")))
+    }
+
+    /// Like [`save`](Self::save) but a compact `MessagePack` byte blob (release).
+    /// Same format as `save`; load with [`load_bytes`](Self::load_bytes).
+    pub fn save_bytes(&self) -> Result<Vec<u8>, JsError> {
+        let borrow = self.story.borrow();
+        let story = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        rmp_serde::to_vec_named(&story.save_state())
+            .map_err(|e| JsError::new(&format!("save error: {e}")))
+    }
+
+    /// Reconcile a JSON save (from [`save`](Self::save)) into the running
+    /// story. Returns a `LoadReport` JSON (`{ unknown_globals: [...] }`) of
+    /// saved globals the current story no longer has — empty means a clean
+    /// load. Tolerant of story patches.
+    pub fn load(&self, json: &str) -> Result<String, JsError> {
+        let state: brink_runtime::SaveState =
+            serde_json::from_str(json).map_err(|e| JsError::new(&format!("load error: {e}")))?;
+        self.apply_load(&state)
+    }
+
+    /// Like [`load`](Self::load) but from a `MessagePack` blob produced by
+    /// [`save_bytes`](Self::save_bytes).
+    pub fn load_bytes(&self, bytes: &[u8]) -> Result<String, JsError> {
+        let state: brink_runtime::SaveState =
+            rmp_serde::from_slice(bytes).map_err(|e| JsError::new(&format!("load error: {e}")))?;
+        self.apply_load(&state)
+    }
+
     /// Continue the story maximally. Returns JSON array of `Line` objects.
     pub fn continue_story(&self) -> Result<String, JsError> {
         let bindings = self.bindings.borrow();
@@ -310,6 +352,21 @@ impl StoryRunner {
             .ok_or_else(|| JsError::new("story not initialized"))?;
         let js = debug_snapshot_to_js(story.debug_snapshot());
         serde_json::to_string(&js).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+}
+
+// ── Save/load helper (not wasm-exported: takes a Rust SaveState) ─────
+
+impl StoryRunner {
+    /// Reconcile a decoded `SaveState` into the running story and return the
+    /// `LoadReport` as JSON. Shared by `load` (JSON) and `load_bytes` (msgpack).
+    fn apply_load(&self, state: &brink_runtime::SaveState) -> Result<String, JsError> {
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let report = story.load_state(state);
+        serde_json::to_string(&report).map_err(|e| JsError::new(&format!("load report error: {e}")))
     }
 }
 
@@ -2167,7 +2224,9 @@ mod binding_wasm_tests {
     }
 
     fn runner(src: &str) -> StoryRunner {
-        StoryRunner::new(&bytes(src)).ok().expect("runner constructs")
+        StoryRunner::new(&bytes(src))
+            .ok()
+            .expect("runner constructs")
     }
 
     fn cont(r: &StoryRunner) -> String {
@@ -2240,6 +2299,31 @@ mod binding_wasm_tests {
         assert_eq!(
             first, second,
             "reset re-applies the seed -> identical RANDOM output"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn save_load_json_round_trip() {
+        let r = runner("VAR hp = 10\nHP {hp}.\n-> END\n");
+        assert!(r.set_var("hp", &JsValue::from_f64(3.0)));
+        let blob = r.save().ok().expect("save");
+        assert!(r.set_var("hp", &JsValue::from_f64(99.0)));
+        let report = r.load(&blob).ok().expect("load");
+        assert!(report.contains("unknown_globals"), "report JSON: {report}");
+        assert_eq!(r.get_var("hp").as_f64(), Some(3.0), "hp restored from save");
+    }
+
+    #[wasm_bindgen_test]
+    fn save_load_bytes_round_trip() {
+        let r = runner("VAR hp = 10\nHP {hp}.\n-> END\n");
+        assert!(r.set_var("hp", &JsValue::from_f64(7.0)));
+        let bytes = r.save_bytes().ok().expect("save_bytes");
+        assert!(r.set_var("hp", &JsValue::from_f64(1.0)));
+        r.load_bytes(&bytes).ok().expect("load_bytes");
+        assert_eq!(
+            r.get_var("hp").as_f64(),
+            Some(7.0),
+            "hp restored from bytes"
         );
     }
 }

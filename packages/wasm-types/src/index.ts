@@ -50,6 +50,38 @@ export interface Choice {
   tags: string[];
 }
 
+// ── Save / load ─────────────────────────────────────────────────
+
+/** Durable, name-keyed game-state save (globals, visit/turn counts, turn
+ * index, RNG). Captures game state only — not execution position. Tolerant of
+ * story patches. Treat as an opaque blob unless inspecting in dev. */
+export interface SaveState {
+  /** Save-FORMAT version (not the story's). */
+  version: number;
+  /** Global variables by name. Each value is a tagged ink value
+   * (e.g. `{ Int: 10 }`, `{ String: "x" }`, `"Null"`). */
+  globals: Record<string, unknown>;
+  visits: VisitEntry[];
+  turns: VisitEntry[];
+  turn_index: number;
+  rng_seed: number;
+  previous_random: number;
+}
+
+/** A visit/turn count for one scope. `id` (a `"$tt_hash"` string) is the load
+ * key; `path` is an advisory author path present only for named scopes. */
+export interface VisitEntry {
+  id: string;
+  path?: string;
+  count: number;
+}
+
+/** What a load couldn't apply. Empty `unknown_globals` means a clean load;
+ * listed names are saved globals the current story no longer declares. */
+export interface LoadReport {
+  unknown_globals: string[];
+}
+
 // ── IDE types ───────────────────────────────────────────────────
 
 export interface CompletionItem {

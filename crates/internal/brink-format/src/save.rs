@@ -1,0 +1,76 @@
+//! Persistent, name-keyed save state for a story's game state.
+//!
+//! [`SaveState`] is the **durable** save format: globals, visit/turn counts,
+//! turn index, and RNG, keyed by stable identities (variable name; scope
+//! [`DefinitionId`]). It captures *game state only* — not execution position
+//! (call stack / PC), which can't be made version-tolerant — so a save
+//! survives a story recompile/patch as long as the relevant names/paths are
+//! unchanged. The runtime (`Story::save_state` / `load_state`) produces and
+//! reconciles it. See `docs/external-binding-foundation.md`.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::{DefinitionId, Value};
+
+/// Current [`SaveState`] format version. Bump when the *format* changes
+/// (independent of the story's own content); `version` lets a loader migrate.
+pub const SAVE_FORMAT_VERSION: u16 = 1;
+
+/// A persistent, name-keyed snapshot of a story's game state.
+///
+/// Globals are keyed by variable name; visit/turn counts by scope
+/// [`DefinitionId`] (which serializes as a stable `"$tt_hash"` string), with an
+/// advisory author path attached when the scope is named.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SaveState {
+    /// Save-format version (see [`SAVE_FORMAT_VERSION`]).
+    pub version: u16,
+    /// Global variables by name. `BTreeMap` for deterministic serialization.
+    pub globals: BTreeMap<String, Value>,
+    /// Visit counts by scope id, sorted by id for deterministic output.
+    pub visits: Vec<VisitEntry>,
+    /// Turn-since counts by scope id, sorted by id.
+    pub turns: Vec<VisitEntry>,
+    /// Global turn index.
+    pub turn_index: u32,
+    /// RNG seed.
+    pub rng_seed: i32,
+    /// Last drawn random value (so the RNG sequence resumes correctly).
+    pub previous_random: i32,
+}
+
+/// One visit/turn-count entry: a scope id and its count, plus (when the scope
+/// is a named knot/stitch) an advisory author path for human inspection. The
+/// `id` is the load key; `path` is cosmetic.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct VisitEntry {
+    /// The counted scope's definition id (load key).
+    pub id: DefinitionId,
+    /// Author path for a named scope, e.g. `"forest.clearing"`. Absent for
+    /// anonymous counted containers (gathers, choice points).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The count.
+    pub count: u32,
+}
+
+/// What `Story::load_state` couldn't apply, so a host can surface it rather
+/// than have data silently vanish. Globals whose name no longer exists are
+/// **dropped** (no slot to hold them) and reported here. Visit/turn counts are
+/// never dropped — counts for scopes the current program lacks are retained
+/// harmlessly (unused until/unless the scope returns), so they aren't reported.
+#[derive(Default, Clone, Debug, PartialEq, Serialize)]
+pub struct LoadReport {
+    /// Saved global names with no matching global in the current program.
+    pub unknown_globals: Vec<String>,
+}
+
+impl LoadReport {
+    /// Whether the load applied cleanly (nothing dropped).
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.unknown_globals.is_empty()
+    }
+}

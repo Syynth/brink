@@ -122,38 +122,69 @@ Maps name → index via `Program::global_name`/`global_count`, then
 
 ## Phase 1 — deterministic seeding
 
-`StoryRunner::new(story_bytes, seed: Option<i32>)` and `reset(seed: Option<i32>)`
-call `Context::set_rng_seed` when `Some` (default seed 0 — current behavior).
-Touches the `@brink/wasm` `StoryRunnerHandle` wrapper + the book playground
-call site (optional arg, backward compatible).
+`StoryRunner::set_seed(i32)` (not a constructor arg — the bytes carry no seed)
+applies immediately and is remembered so `reset()` re-applies it for
+deterministic replays. Backed by `Story::set_rng_seed` → `Context::set_rng_seed`.
+Default unset = runtime default (0). `@brink/wasm`: `setSeed`.
 
-## Phase 1 — save / load (persistence)
+## Phase 1 — save / load (persistent game state)
 
-### Runtime (`brink-runtime`)
-Derive `Serialize, Deserialize` (unconditionally, matching `Value`) across the
-state graph: `Context`, `FlowInstance`, `Flow`, `Thread`, `CallStack`/frames,
-`OutputBuffer`/`Fragment`/`OutputPart`, `PendingChoice`, `ChoiceDisplay`,
-`ChoiceFlags`, `StoryStatus`, `Stats`, and `DefinitionId` (in brink-format).
-`StorySnapshot` becomes serializable. The transient `eval: Option<EvalState>`
-on `FlowInstance` is **not** persisted (skip — only live mid-call).
+**Decided:** persist **game state only**, not execution position — because
+execution position (call stack / PC / output-buffer offsets) is inherently
+**build-locked** (a recompile shifts indices, so a position snapshot can only
+load against the identical program). Game state, keyed by stable identities,
+survives story patches. The runtime was designed around this persistent-Context
+model. (A future "resume mid-conversation" feature, if wanted, is a separate
+build-locked artifact or a version-tolerant choice-replay — out of scope here.)
 
-A versioned envelope (mirroring the `.brkt` checksum pattern):
+### Format (`brink-format`) — the durable, name-keyed `SaveState`
+
+A purpose-built wire type (not `Context`'s internal form), so it's
+version-tolerant and doesn't leak VM representation:
 
 ```rust
-struct SaveEnvelope { version: u16, program_checksum: u64, state: StorySnapshot }
+struct SaveState {
+    version: u16,                          // save-FORMAT version
+    globals: BTreeMap<String, Value>,      // by NAME (deterministic order)
+    visits: Vec<VisitEntry>,               // by scope DefinitionId, + advisory path
+    turns:  Vec<VisitEntry>,
+    turn_index: u32, rng_seed: i32, previous_random: i32,
+}
+struct VisitEntry { id: DefinitionId, path: Option<String>, count: u32 }
+struct LoadReport { unknown_globals: Vec<String> }
 ```
 
-`load` validates `program_checksum` against the current program and errors on
-mismatch (you can't resume a save against a changed story).
+Globals are name-keyed (readable, patch-tolerant). Visit/turn counts are keyed
+by **`DefinitionId`** — *not* path — because `def_path` only resolves *named*
+scopes, so path-keying would silently drop counts for anonymous counted
+containers (gathers, choice points), which are semantically real. `DefinitionId`
+is a recompile-stable hash of the path and serializes as a `"$tt_hash"` string;
+an advisory `path` is attached for named scopes (cosmetic, for dev inspection).
+Lives in `brink-format` (already has `serde` + `Value` + `DefinitionId`) so the
+runtime stays serde-free.
 
-### brink-web
-`save() -> Vec<u8>` (clone story → `into_snapshot` → serialize envelope);
-`load(bytes)` (deserialize → checksum-check → `from_snapshot`). The persistence
-*backend* (localStorage / IndexedDB / RMMZ save slot / Node fs) is the host's;
+### Runtime (`brink-runtime`)
+```rust
+impl Story {
+    fn save_state(&self) -> SaveState;                 // capture default flow's context
+    fn load_state(&mut self, &SaveState) -> LoadReport; // reconcile
+}
+```
+`load_state` reconciles, version-tolerantly: globals matched by name (unmatched
+→ reported in `LoadReport`, since they're genuinely dropped — no slot); visit/
+turn counts applied by id (scopes the program lacks are **retained**, not
+dropped, so nothing to report). No `program_checksum` gate — gating would defeat
+patch-tolerance.
+
+### brink-web — two transports over the one format
+- `save() -> String` / `load(json) -> LoadReport-json` — JSON (dev, inspectable).
+- `save_bytes() -> Vec<u8>` / `load_bytes(bytes) -> LoadReport-json` — MessagePack
+  (struct-map mode, via `rmp-serde`; release, compact, still field-name-tolerant).
+
+`@brink/wasm`: `save()→SaveState` (typed) / `saveBytes()→Uint8Array`,
+`load(SaveState)→LoadReport` / `loadBytes(Uint8Array)→LoadReport`. The
+persistence *backend* (localStorage / RMMZ slot / Node fs) is the host's;
 `brink-react` wires auto-persist.
-
-This is the largest Phase-1 piece (serde across the state graph) and lands
-last.
 
 ## Phase 2 — suspend / await (designed-in, additive)
 
@@ -179,14 +210,17 @@ The sync `bind_external` signature is unchanged — Phase 2 is purely additive.
 
 ## Implementation order (one commit each)
 
-1. **brink-web sync bindings** — `JsHandler` + `bind_external` + switch to
-   `continue_*_with` + serde-wasm-bindgen Value boundary + unbound policy.
-2. **Name-based var get/set** — runtime `Story::variable`/`set_variable` +
+1. ✅ **brink-web sync bindings** — `JsHandler` + `bind_external` + switch to
+   `continue_*_with` + hand-mapped `Value`↔JS boundary + unbound policy.
+2. ✅ **Name-based var get/set** — runtime `Story::variable`/`set_variable`
+   (+ `Program::global_index`, `global_name`/`global_count` ungated) +
    web `get_var`/`set_var`.
-3. **Seeding** — `new`/`reset` seed arg + TS wrapper + playground call site.
-4. **Save/load** — runtime serde derives + envelope + web `save`/`load`.
-5. **(Phase 2) Suspend** — awaiting-external line + `resolve_external` + wrapper
+3. ✅ **Seeding** — `Story::set_rng_seed`, web `set_seed` (reset-stable).
+4. ✅ **Save/load** — `SaveState`/`LoadReport` in brink-format, `Story::save_state`/
+   `load_state`, web `save`/`save_bytes`/`load`/`load_bytes` (JSON + MessagePack).
+5. ⬜ **(Phase 2) Suspend** — awaiting-external line + `resolve_external` + wrapper
    async sugar.
 
-Each step is independently shippable; `brink-react` and the RMMZ adapter build
-on the cumulative surface.
+Slices 1–4 landed with host (`bevy-brink`) + `wasm-bindgen-test` (`brink-web`,
+run via `wasm-pack test --node`) coverage. Each step is independently shippable;
+`brink-react` and the RMMZ adapter build on the cumulative surface.

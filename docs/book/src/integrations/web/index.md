@@ -51,6 +51,10 @@ One-shot, single-file compilation. Returns
 | `bind_external(name, fn)` | bind an ink `EXTERNAL` to a synchronous JS callback |
 | `unbind_external(name)` | remove a previously bound external |
 | `set_lenient_unbound(bool)` | unbound externals resolve to `null` instead of using the ink fallback / erroring |
+| `get_var(name)` / `set_var(name, value)` | read/write a global ink variable by name |
+| `set_seed(n)` | set the RNG seed for reproducible `RANDOM`/shuffle (re-applied across `reset`) |
+| `save()` / `save_bytes()` | capture durable game state — JSON string (dev) or MessagePack bytes (release) |
+| `load(json)` / `load_bytes(bytes)` | reconcile a save back in; returns a `LoadReport` of anything dropped |
 
 `Line` mirrors the native runtime: `{ type: "text"|"choices"|"done"|"end", text,
 tags, choices? }`. This is the same execution model as

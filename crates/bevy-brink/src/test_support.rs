@@ -89,6 +89,10 @@ mod runtime_story_api {
     use brink_format::Value;
     use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng, Line, Story};
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "test helper takes ownership of the produced lines"
+    )]
     fn render(lines: Vec<Line>) -> String {
         lines.iter().map(Line::text).collect()
     }
@@ -144,5 +148,55 @@ mod runtime_story_api {
         let mut story = Story::<FastRng>::new(&program, tables);
         let text = render(story.continue_maximally_with(&Doubler).expect("continues"));
         assert!(text.contains("Result: 42"), "got {text:?}");
+    }
+
+    #[test]
+    fn save_load_round_trips_globals() {
+        let src = "VAR mood = 1\nVAR who = \"a\"\nMood {mood} {who}.\n-> END\n";
+        let (program, tables, _ctx) = compile_test_story(src);
+        let mut s1 = Story::<FastRng>::new(&program, tables.clone());
+        s1.set_variable("mood", Value::Int(9));
+        s1.set_variable("who", Value::from("bob"));
+        let save = s1.save_state();
+
+        let mut s2 = Story::<FastRng>::new(&program, tables);
+        let report = s2.load_state(&save);
+        assert!(report.is_clean(), "clean load: {report:?}");
+        assert_eq!(s2.variable("mood"), Some(&Value::Int(9)));
+        assert_eq!(s2.variable("who").and_then(Value::as_str), Some("bob"));
+    }
+
+    #[test]
+    fn load_reports_globals_the_program_lacks() {
+        let (pa, ta, _) = compile_test_story("VAR foo = 1\n-> END\n");
+        let mut sa = Story::<FastRng>::new(&pa, ta);
+        sa.set_variable("foo", Value::Int(5));
+        let save = sa.save_state();
+
+        // A different story with no `foo`: the saved global is reported, not applied.
+        let (pb, tb, _) = compile_test_story("VAR bar = 2\n-> END\n");
+        let mut sb = Story::<FastRng>::new(&pb, tb);
+        let report = sb.load_state(&save);
+        assert_eq!(report.unknown_globals, vec!["foo".to_string()]);
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn visit_counts_survive_round_trip() {
+        // Referencing {start} makes `start` a counted scope.
+        let src = "-> start\n=== start ===\nVisits: {start}.\n-> END\n";
+        let (program, tables, _) = compile_test_story(src);
+        let mut s1 = Story::<FastRng>::new(&program, tables.clone());
+        let _ = s1.continue_maximally().expect("continues");
+        let save = s1.save_state();
+        assert!(!save.visits.is_empty(), "a visit count should be recorded");
+
+        let mut s2 = Story::<FastRng>::new(&program, tables);
+        s2.load_state(&save);
+        assert_eq!(
+            s2.save_state().visits,
+            save.visits,
+            "visit counts round-trip"
+        );
     }
 }

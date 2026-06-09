@@ -35,6 +35,8 @@ import type {
   MoveResult,
   DebugState,
   ProgramModel,
+  SaveState,
+  LoadReport,
 } from "@brink/wasm-types";
 
 // ── Wasm initialization ─────────────────────────────────────────
@@ -327,6 +329,27 @@ export class StoryRunnerHandle {
    * fully deterministic playthrough. */
   setSeed(seed: number): void {
     this.runner.set_seed(seed);
+  }
+
+  /** Capture durable game state as a typed object (dev/inspectable). */
+  save(): SaveState {
+    return JSON.parse(this.runner.save()) as SaveState;
+  }
+
+  /** Capture durable game state as a compact MessagePack blob (release). */
+  saveBytes(): Uint8Array {
+    return this.runner.save_bytes();
+  }
+
+  /** Reconcile a saved state into the running story; returns what couldn't be
+   * applied (empty `unknown_globals` = clean). Tolerant of story patches. */
+  load(state: SaveState): LoadReport {
+    return JSON.parse(this.runner.load(JSON.stringify(state))) as LoadReport;
+  }
+
+  /** Reconcile a MessagePack blob from `saveBytes()`. */
+  loadBytes(bytes: Uint8Array): LoadReport {
+    return JSON.parse(this.runner.load_bytes(bytes)) as LoadReport;
   }
 
   continueStory(): Line[] {

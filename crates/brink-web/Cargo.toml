@@ -29,6 +29,9 @@ wasm-bindgen = "0.2"
 # binding boundary (ink EXTERNAL → JS callback). Values are hand-mapped to
 # native JS (number/bool/string/null), not serialized, so no serde-wasm-bindgen.
 js-sys = "0.3"
+# MessagePack (struct-map mode) for the compact `save_bytes`/`load_bytes`
+# release path; the `save`/`load` JSON path uses serde_json (above).
+rmp-serde = "1"
 
 [dev-dependencies]
 # Drives the `#[wasm_bindgen_test]` suite (run via `wasm-pack test --node`),
