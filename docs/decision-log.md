@@ -735,3 +735,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The Program Explorer's disassembly + tables come from brink-format's existing `write_inkt` (`StoryData` → `.inkt` text), exposed over wasm — not a new disassembler. v1 renders the `.inkt` text dump (checksum, name table, globals, lists, externals, address paths, containers with opcode mnemonics + counting flags + path_hash). Structured/filterable/cross-linked tables are a follow-up. Shows only the actively compiled program; converter side-by-side diffing is deferred.
 - **WHY:** `write_inkt` already produces a full WAT-style mnemonic dump of every table; reusing it gives a complete inspector for almost no backend cost and matches the `.inkt` the corpus tooling already uses.
+
+## External-binding work splits into a runtime/web foundation track and a deferred tooling-manifest track
+- **WHEN:** 2026-06-09
+- **PROJECT:** brink
+- **SYSTEM:** cross-system (runtime / brink-web / brink-studio / analyzer)
+- **SCOPE:** architectural
+- **WHAT:** External-function binding for brink's consumers (Rust app, folklore web, RPG Maker MZ via NW.js, eventual server module) is structured as two parallel tracks. Track A (foundation): expose the runtime `ExternalFnHandler` to JS as sync bindings, with suspend/await designed-in as an additive Phase-2 step; name-based variable get/set; byte serialization + versioned save format for save/load persistence; deterministic seed control. Track B (tooling): a host-capability manifest — a serializable host-vocabulary schema (signature/base types, semantic/refined types, live value providers + widgets) feeding analyzer, runtime, and studio (see `docs/host-capability-manifest.md`). Track B is deferred and NOT a prerequisite for Track A.
+- **WHY:** The manifest is additive over a bind-by-name + `Value` boundary (both already true in the runtime), so it can attach later without a rewrite; its value is author-time tooling, separable from the runtime/web binding plumbing that the web consumers are actually blocked on. Splitting lets the foundation ship first. Also corrected mid-discussion: variable get/set and in-memory state capture/restore already exist in the runtime (index-based `Context` accessors; `into_snapshot`/`from_snapshot`) — only byte-serialization persistence is genuinely new.
