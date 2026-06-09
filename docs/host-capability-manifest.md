@@ -1,10 +1,11 @@
 # Host Capability Manifest (design — Track B)
 
-**Status:** design-stage, deferred. This is the head of the "tooling /
-analyzer extensibility" track (Track B). It is **not** a prerequisite for the
+**Status:** Tier 1 + closed Tier 2 **implemented** (see "Implementation status"
+below); Tier 3 deferred. This is the head of the "tooling / analyzer
+extensibility" track (Track B). It is **not** a prerequisite for the
 external-function binding foundation (Track A — runtime/web binding, save/load
 persistence, name-based variable access, seeding). The manifest is additive
-over a bind-by-name + `Value` boundary, so it can attach later without a
+over a bind-by-name + `Value` boundary, so it attached without a runtime
 rewrite. See `docs/decision-log.md` for the two-track split.
 
 ## Why this exists
@@ -270,27 +271,62 @@ manifest — track it separately if/when wanted.
   `EditorSession::set_host_manifest`; merged in `brink_analyzer::analyze`;
   surfaced by existing `brink-ide` queries.
 
-## Open design forks (remaining)
+## Implementation status (MVP landed)
 
-1. **`SymbolInfo` enrichment in place vs. a parallel `host_meta` side-table** —
-   widen `SymbolInfo`/`ParamInfo` with optional types/doc, or keep a separate
-   map keyed by external name. (Implementation detail; decide in the plan.)
-2. **`analyze()` parameter vs. `ProjectDb` input** — does the manifest ride in
-   the db inputs like files, or pass as an explicit `analyze(files, manifest)`
-   argument? (Implementation detail.)
-3. **Tier-3 completions: push-cache vs. async provider** — host pushes value
+The **Tier 1 + closed Tier 2 MVP** is implemented. What shipped:
+
+- **Schema** (`brink-ir`, `src/host_manifest.rs`): `HostManifest`,
+  `ManifestExternal`, `ManifestParam`, `SemanticTypeDef`, `Constraint`
+  (`enum`/`regex`/`range`), `TypeRef`, `BaseType`, `ExternalKind` — serde types.
+  Plus inline `ExternalDoc` (the `///` counterpart).
+- **Inline `///` parsing** (`brink-ir` HIR lowering, `doc_comment.rs`): walks
+  the `EXTERNAL_DECL` leading trivia, parses `@param`/`@returns`/`@kind`
+  (`@widget` reserved, ignored); stored in a parallel `external_docs` map on the
+  per-file `SymbolManifest`. Malformed tags → E038 (warning).
+- **Merge + diagnostics** (`brink-analyzer`, `external_check.rs`): inline +
+  registered merged into `AnalysisResult.external_meta` (keyed by
+  `DefinitionId`; **inline wins**). Diagnostics: E039 manifest↔ink arity
+  disagreement, E040 unknown semantic type, E041 call-site literal type
+  mismatch, E042 closed-domain (enum/range) violation. Literals-only — no false
+  positives on dynamic values.
+- **Severity flag** (`ExternalCheckSeverity { Error (default), Off }`) plumbed
+  through `analyze_with_options`, `IdeSession::set_external_check`,
+  `EditorSession::set_external_check`, and `brink-compiler::compile_with_options`
+  (the "compiler flag"). `Off` suppresses diagnostics but still builds
+  enrichment.
+- **Surfacing**: hover + signature help (`brink-ide`) and completion detail
+  (`brink-web`) show typed params / return / kind / doc. `compile_project`
+  carries the registered manifest so diagnostics appear in compile output.
+- **Registration**: `EditorSession::set_host_manifest(json)` /
+  `clear_host_manifest` / `set_external_check`; TS schema mirror in
+  `@brink/wasm-types`; handle methods in `@brink/wasm`.
+
+**Resolved forks:** (1) metadata lives in side-tables (`SymbolManifest.
+external_docs` per-file; `AnalysisResult.external_meta` merged) — `SymbolInfo`
+stays lean; (2) the manifest is an explicit `analyze_with_options(files, opts)`
+argument (non-breaking: `analyze(files)` delegates with defaults), not a
+`ProjectDb` input.
+
+**Deferred to follow-ups:**
+
+- **insert-`EXTERNAL` code-action** — the `brink-ide` code-action query is
+  currently source-only; making it manifest-aware is its own pass.
+- **Regex constraint enforcement** — `Constraint::Regex` is stored and surfaced
+  but not checked (no regex dependency at the MVP); enum + range are enforced.
+- **`Warning` severity level** — the flag is `Error`/`Off` at the MVP (the
+  shared `Diagnostic` type has no per-instance severity; a `Warning` middle
+  ground would need one).
+- **Reserved-keyword external names** — an external named with an ink operator
+  keyword (e.g. `EXTERNAL has(...)` — `has` is the list operator) currently
+  mis-parses; use non-keyword names. Tracked separately.
+
+## Remaining design forks (Tier 3+)
+
+1. **Tier-3 completions: push-cache vs. async provider** — host pushes value
    sets into the session on change (sync completions; lean this) vs. the session
    calls out mid-query. Only relevant once Tier 3 is built.
-4. **Manifest generation** — generating registered entries from host source
+2. **Manifest generation** — generating registered entries from host source
    (e.g. an RMMZ plugin's commands) is a nice-to-have, not required.
-
-## MVP
-
-Inline `///` tags + registered semantic-type vocabulary → **Tier 1 + closed
-Tier 2**: type-mismatch diagnostics, enum/pattern/range validation, richer
-completion/hover/signature, and the insert-`EXTERNAL` code-action — all on the
-existing analysis pipeline. Tier 3 (live providers + host-rendered widgets) is
-the later, host-protocol phase.
 
 ## Phasing
 
