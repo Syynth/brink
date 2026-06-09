@@ -882,6 +882,38 @@ impl EditorSession {
         self.session.remove_file(path);
     }
 
+    /// Register (or replace) the host-capability manifest from a JSON string,
+    /// then re-analyze. The manifest describes the host's external-function
+    /// vocabulary (types, semantic types) for author-time validation and
+    /// richer hover/completion. Tooling-only — never affects the runtime.
+    pub fn set_host_manifest(&mut self, json: &str) -> Result<(), JsError> {
+        let manifest: brink_ir::HostManifest = serde_json::from_str(json)
+            .map_err(|e| JsError::new(&format!("invalid host manifest: {e}")))?;
+        self.session.set_host_manifest(manifest);
+        Ok(())
+    }
+
+    /// Clear any registered host manifest, then re-analyze.
+    pub fn clear_host_manifest(&mut self) {
+        self.session.clear_host_manifest();
+    }
+
+    /// Set the severity policy for manifest-driven external diagnostics:
+    /// `"error"` (default — a registered manifest is binding) or `"off"`.
+    pub fn set_external_check(&mut self, level: &str) -> Result<(), JsError> {
+        let severity = match level {
+            "error" => brink_analyzer::ExternalCheckSeverity::Error,
+            "off" => brink_analyzer::ExternalCheckSeverity::Off,
+            other => {
+                return Err(JsError::new(&format!(
+                    "unknown external-check level `{other}` (expected \"error\" or \"off\")"
+                )));
+            }
+        };
+        self.session.set_external_check(severity);
+        Ok(())
+    }
+
     /// Switch the active file for IDE queries. Returns false if the file is not loaded.
     /// Clears any active view context (view is file-specific).
     pub fn set_active_file(&mut self, path: &str) -> bool {
@@ -1027,18 +1059,24 @@ impl EditorSession {
     /// Compile the project using all loaded files. Returns JSON `CompileResult`.
     pub fn compile_project(&self, entry: &str) -> String {
         let session = &self.session;
-        let result = brink_compiler::compile(entry, |path| {
-            session
-                .file_id(path)
-                .and_then(|id| session.source(id))
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!("file not found: {path}"),
-                    )
-                })
-        });
+        // Carry the registered host manifest into compilation so its
+        // diagnostics (type/arity/domain) surface alongside compiler output.
+        let result = brink_compiler::compile_with_options(
+            entry,
+            |path| {
+                session
+                    .file_id(path)
+                    .and_then(|id| session.source(id))
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("file not found: {path}"),
+                        )
+                    })
+            },
+            session.analysis_options(),
+        );
 
         // Convert a diagnostic against its OWN file's source (offsets are
         // file-relative) and attach that file's path, so an INCLUDEd file's
@@ -1202,7 +1240,8 @@ impl EditorSession {
             .map(|info| CompletionItemJs {
                 name: info.name.clone(),
                 kind: symbol_kind_str(info.kind).to_owned(),
-                detail: info.detail.clone(),
+                // Externals get a typed signature from the host manifest, if any.
+                detail: external_detail(analysis, info).or_else(|| info.detail.clone()),
             })
             .collect();
 
@@ -1930,6 +1969,39 @@ struct CompletionItemJs {
     name: String,
     kind: String,
     detail: Option<String>,
+}
+
+/// Build a typed signature detail for an external from host-manifest metadata,
+/// e.g. `(item: bool) -> bool [query]`. `None` for non-externals or externals
+/// without registered/inline metadata.
+fn external_detail(
+    analysis: &brink_analyzer::AnalysisResult,
+    info: &brink_ir::SymbolInfo,
+) -> Option<String> {
+    if info.kind != brink_ir::SymbolKind::External {
+        return None;
+    }
+    let meta = analysis.external_meta.get(&info.id)?;
+    let params = meta
+        .params
+        .iter()
+        .map(|p| match &p.ty {
+            Some(ty) => format!("{}: {}", p.name, ty.name),
+            None => p.name.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ret = meta
+        .returns
+        .as_ref()
+        .map_or(String::new(), |t| format!(" -> {}", t.name));
+    let kind = match meta.kind {
+        brink_ir::ExternalKind::Plain => "",
+        brink_ir::ExternalKind::Query => " [query]",
+        brink_ir::ExternalKind::Effect => " [effect]",
+        brink_ir::ExternalKind::Presentation => " [presentation]",
+    };
+    Some(format!("({params}){ret}{kind}"))
 }
 
 #[derive(Serialize)]

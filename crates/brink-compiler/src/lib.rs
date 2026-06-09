@@ -7,6 +7,7 @@
 
 mod driver;
 
+pub use brink_driver::AnalysisOptions;
 pub use brink_ir::FileId;
 
 use brink_format::StoryData;
@@ -47,6 +48,21 @@ where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
     driver::compile(entry, read_file)
+}
+
+/// Compile with explicit analysis options — e.g. a registered host-capability
+/// manifest and external-check severity (the "compiler flag, error by
+/// default"). Manifest-driven diagnostics are surfaced as compile warnings or
+/// errors per the severity policy.
+pub fn compile_with_options<F>(
+    entry: &str,
+    read_file: F,
+    options: AnalysisOptions,
+) -> Result<CompileOutput, CompileError>
+where
+    F: FnMut(&str) -> Result<String, io::Error>,
+{
+    driver::compile_with_options(entry, read_file, options)
 }
 
 /// Compile an ink story to the ink.json format (same as inklecate output).
