@@ -35,13 +35,20 @@ export interface SemanticToken {
 
 // ── Runtime ─────────────────────────────────────────────────────
 
-export type LineType = "text" | "done" | "choices" | "end";
+export type LineType =
+  | "text"
+  | "done"
+  | "choices"
+  | "end"
+  | "awaiting_external";
 
 export interface Line {
   type: LineType;
   text: string;
   tags: string[];
   choices?: Choice[];
+  /** External name, present only on an `awaiting_external` line. */
+  name?: string;
 }
 
 export interface Choice {

@@ -186,21 +186,36 @@ patch-tolerance.
 persistence *backend* (localStorage / RMMZ slot / Node fs) is the host's;
 `brink-react` wires auto-persist.
 
-## Phase 2 — suspend / await (designed-in, additive)
+## Phase 2 — suspend / await (✅ landed)
 
-For inline timing (`~ camera("bow") ~ wait(2.0) ~ wreck()`), a binding can't
-answer synchronously. Reuse the runtime's existing pause-resume:
+For inline timing (`~ camera("bow") ~ wait(2.0) ~ wreck()`), a UI awaiting a
+click, or a `fetch`, a binding can't answer synchronously. Built on the
+runtime's existing pause-resume, **unified** with the sync surface:
 
-- An async binding makes the handler return `ExternalResult::Pending`.
-- `continue_*` surfaces a new line variant `{ type: "awaiting_external", name,
-  args }` instead of erroring.
-- JS does its async work, calls `runner.resolve_external(value)`, then resumes
-  `continue_*`.
+- `bindExternal(name, fn)` is unchanged — if `fn` returns a **Promise**, the
+  flow suspends (no separate `bindAsync`). `JsHandler` detects a thenable return
+  (`is_instance_of::<js_sys::Promise>`), stashes it, and returns
+  `ExternalResult::Pending`.
+- Runtime: `Story::advance_with(handler) -> StepOutcome` surfaces
+  `AwaitingExternal` (vs. `continue_*_with`, which error), plus
+  `pending_external_name`/`args` delegations.
+- brink-web: `advance_one()` returns a `{ type: "awaiting_external", name }`
+  JSON line on suspend; `take_pending_promise()` hands the Promise to JS;
+  `resolve_external(value)` feeds the awaited result back. The sync
+  `continue_story`/`continue_single` are unchanged (they still error on a
+  suspending binding — use the async path).
+- `@brink/wasm`: `continueStoryAsync()` / `continueSingleAsync()` drive
+  advance→`take_pending_promise`→`await`→`resolve_external`→resume, so authors
+  just `await runner.continueStoryAsync()` with `async (args) => …` bindings.
+  Low-level `advanceOne`/`takePendingPromise`/`resolveExternal` exposed for
+  custom loops.
 
 Correlation is trivial (single flow = single pending external — the runner is
-the key, like bevy's flow entity). The `@brink/wasm` wrapper hides the
-park→await→resolve→continue loop so authors register an `async (args)=>value`.
-The sync `bind_external` signature is unchanged — Phase 2 is purely additive.
+the key). **Rejection**: `continueStoryAsync` resolves the external with `null`
+to unstick the flow, then rethrows so the host sees the error. **Reentrancy**:
+a `busy` guard turns a binding callback that re-enters a stepping method (or a
+second concurrent `continueAsync`) into a `console.warn` + clean `JsError`
+rather than a `RefCell` panic.
 
 ## Phase 3 — engine → ink (✅ landed)
 
@@ -226,10 +241,13 @@ Powers a Studio "evaluate function" panel + host-driven logic.
    `load_state`, web `save`/`save_bytes`/`load`/`load_bytes` (JSON + MessagePack).
 5. ✅ **(Phase 3) engine→ink `call_function`** — `Story::call_function` +
    web `call_function` (native-JS args/return), sync, single-flow.
-6. ⬜ **(Phase 2) Suspend** — async ink→engine via unified Promise-detecting
-   `bindExternal`: handler returns `Pending`, `continue` surfaces an
-   `awaiting_external` line, `@brink/wasm` drives park→await→resolve→resume.
+6. ✅ **(Phase 2) Suspend** — async ink→engine via unified Promise-detecting
+   `bindExternal`: handler returns `Pending`, `advance_one` surfaces an
+   `awaiting_external` line, `@brink/wasm` drives park→await→resolve→resume;
+   reentrancy guard + rejection handling.
 
-Slices 1–5 landed with host (`bevy-brink`) + `wasm-bindgen-test` (`brink-web`,
-run via `wasm-pack test --node`) coverage. Each step is independently shippable;
-`brink-react` and the RMMZ adapter build on the cumulative surface.
+All slices landed with host (`bevy-brink`) + `wasm-bindgen-test` (`brink-web`,
+run via `wasm-pack test --node`) coverage, and the `@brink/wasm` /
+`@brink/wasm-types` surface typechecks via brink-studio. Each step is
+independently shippable; `brink-react` and the RMMZ adapter build on the
+cumulative surface. **Track A is complete.**

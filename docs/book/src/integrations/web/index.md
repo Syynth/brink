@@ -78,8 +78,21 @@ An external with no binding falls through to its ink fallback body (erroring if
 none exists), unless `setLenientUnbound(true)` is set — then it resolves to
 `null`, so content can call host verbs a given build doesn't know without
 dead-ending. A binding that throws resolves to `null` (the exception is not
-propagated into the VM). Asynchronous bindings (suspend-and-resume) are a
-planned addition; today bindings must return synchronously.
+propagated into the VM).
+
+**Async bindings.** A binding may return a `Promise` — the story *suspends*
+until it resolves (inline timing like `~ camera("bow") ~ wait(2.0) ~ wreck()`,
+a targeting UI awaiting a click, a `fetch`). Drive such a story with the async
+continue methods, which await and resume transparently:
+
+```ts
+runner.bindExternal("wait", (secs) => new Promise((r) => setTimeout(r, Number(secs) * 1000)));
+const lines = await runner.continueStoryAsync(); // suspends across the wait
+```
+
+A rejected Promise unsticks the flow (resolves `null`) and rethrows. The
+synchronous `continueStory`/`continueSingle` error on a suspending binding — use
+`continueStoryAsync`/`continueSingleAsync` when bindings may be async.
 
 ### `EditorSession` — IDE queries
 

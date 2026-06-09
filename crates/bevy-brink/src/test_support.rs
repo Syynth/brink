@@ -247,4 +247,48 @@ mod runtime_story_api {
             "got {err:?}"
         );
     }
+
+    #[test]
+    fn advance_with_surfaces_and_resumes_pending_external() {
+        use brink_runtime::StepOutcome;
+        // Defers `wait` (Pending) — the runtime pause/resume the async web path
+        // is built on, exercised here without any JS.
+        struct Pauser;
+        impl ExternalFnHandler for Pauser {
+            fn call(&self, name: &str, _args: &[Value]) -> ExternalResult {
+                if name == "wait" {
+                    ExternalResult::Pending
+                } else {
+                    ExternalResult::Fallback
+                }
+            }
+        }
+        let (program, tables, _) = compile_test_story("EXTERNAL wait(x)\nGot {wait(5)}.\n-> END\n");
+        let mut story = Story::<FastRng>::new(&program, tables);
+
+        let mut text = String::new();
+        let mut parked = false;
+        for _ in 0..50 {
+            match story.advance_with(&Pauser).expect("advance") {
+                StepOutcome::Line(line) => {
+                    let terminal = line.is_terminal();
+                    text.push_str(line.text());
+                    if terminal {
+                        break;
+                    }
+                }
+                StepOutcome::AwaitingExternal => {
+                    assert_eq!(story.pending_external_name(), Some("wait"));
+                    assert_eq!(story.pending_external_args().to_vec(), vec![Value::Int(5)]);
+                    story.resolve_external(Value::Int(7));
+                    parked = true;
+                }
+            }
+        }
+        assert!(parked, "flow should have parked on the external");
+        assert!(
+            text.contains("Got 7."),
+            "resolved value appears; got {text:?}"
+        );
+    }
 }
