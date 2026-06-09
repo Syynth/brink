@@ -55,6 +55,7 @@ One-shot, single-file compilation. Returns
 | `set_seed(n)` | set the RNG seed for reproducible `RANDOM`/shuffle (re-applied across `reset`) |
 | `save()` / `save_bytes()` | capture durable game state — JSON string (dev) or MessagePack bytes (release) |
 | `load(json)` / `load_bytes(bytes)` | reconcile a save back in; returns a `LoadReport` of anything dropped |
+| `call_function(name, ...args)` | evaluate an ink function from the host (engine→ink); returns its value |
 
 `Line` mirrors the native runtime: `{ type: "text"|"choices"|"done"|"end", text,
 tags, choices? }`. This is the same execution model as

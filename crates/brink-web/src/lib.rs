@@ -272,6 +272,34 @@ impl StoryRunner {
         self.apply_load(&state)
     }
 
+    /// Evaluate an ink function from the host, out-of-band: the visible story is
+    /// untouched and the call returns synchronously. Arguments and the return
+    /// value are native JS values (number / boolean / string / null). Externals
+    /// the function calls resolve through the registered (synchronous) bindings.
+    ///
+    /// Errors if the function name is unknown, if a called external is async
+    /// (can't resolve synchronously), or on a runtime error.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "wasm-bindgen passes a JS array as an owned Vec across the boundary"
+    )]
+    pub fn call_function(&self, name: &str, args: Vec<JsValue>) -> Result<JsValue, JsError> {
+        let ink_args: Vec<Value> = args.iter().map(js_to_value).collect();
+        let bindings = self.bindings.borrow();
+        let handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound.get(),
+        };
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let value = story
+            .call_function(name, &ink_args, &handler)
+            .map_err(|e| JsError::new(&format!("call_function error: {e}")))?;
+        Ok(value_to_js(&value))
+    }
+
     /// Continue the story maximally. Returns JSON array of `Line` objects.
     pub fn continue_story(&self) -> Result<String, JsError> {
         let bindings = self.bindings.borrow();
@@ -2325,5 +2353,27 @@ mod binding_wasm_tests {
             Some(7.0),
             "hp restored from bytes"
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn call_function_pure() {
+        let r = runner("-> END\n=== function add(a, b) ===\n~ return a + b\n");
+        let v = r
+            .call_function("add", vec![JsValue::from_f64(2.0), JsValue::from_f64(3.0)])
+            .ok()
+            .expect("call");
+        assert_eq!(v.as_f64(), Some(5.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn call_function_uses_binding() {
+        let r =
+            runner("EXTERNAL dbl(x)\n-> END\n=== function scaled(n) ===\n~ return dbl(n) + 1\n");
+        r.bind_external("dbl", Function::new_with_args("x", "return x * 2"));
+        let v = r
+            .call_function("scaled", vec![JsValue::from_f64(10.0)])
+            .ok()
+            .expect("call");
+        assert_eq!(v.as_f64(), Some(21.0), "dbl(10) + 1");
     }
 }

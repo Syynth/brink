@@ -352,6 +352,13 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.load_bytes(bytes)) as LoadReport;
   }
 
+  /** Evaluate an ink function from the host (engine→ink), out-of-band: the
+   * visible story is untouched. Externals it calls resolve through registered
+   * synchronous bindings. Returns the function's value. */
+  callFunction(name: string, ...args: ExternalValue[]): ExternalValue {
+    return this.runner.call_function(name, args) as ExternalValue;
+  }
+
   continueStory(): Line[] {
     const json = this.runner.continue_story();
     return JSON.parse(json) as Line[];

@@ -1704,6 +1704,54 @@ impl<'p, R: StoryRng> Story<'p, R> {
         self.default_context.set_rng_seed(seed);
     }
 
+    /// Evaluate an ink function by name from engine code, returning its value.
+    ///
+    /// Runs out-of-band on the default flow: output is isolated (the visible
+    /// story is untouched), and the call completes synchronously. Externals the
+    /// function calls are resolved inline by `handler`; an external the handler
+    /// defers ([`ExternalResult::Pending`]) can't be resolved in a synchronous
+    /// call and yields [`RuntimeError::AsyncExternalInCall`] (the paused eval is
+    /// cleaned up first).
+    ///
+    /// # Errors
+    /// [`RuntimeError::FunctionNotFound`] for an unknown name;
+    /// [`RuntimeError::AsyncExternalInCall`] if a called external defers; plus
+    /// any runtime error raised during evaluation.
+    pub fn call_function(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<Value, RuntimeError> {
+        let container_idx = self
+            .program
+            .find_address(name)
+            .ok_or_else(|| RuntimeError::FunctionNotFound(name.to_owned()))?
+            .0;
+        let resolver = self.resolver.as_deref();
+        let outcome = self.default.begin_function_eval::<R>(
+            self.program,
+            &self.line_tables,
+            &mut self.default_context,
+            handler,
+            container_idx,
+            args,
+            resolver,
+        )?;
+        match outcome {
+            FunctionEval::Returned(value) => Ok(value),
+            FunctionEval::AwaitingExternal => {
+                let name = self
+                    .default
+                    .pending_external_name(self.program)
+                    .map_or_else(|| name.to_owned(), ToOwned::to_owned);
+                self.default
+                    .abort_eval(self.program, &self.line_tables, resolver);
+                Err(RuntimeError::AsyncExternalInCall(name))
+            }
+        }
+    }
+
     /// Detach story state from the program, consuming the story.
     pub fn into_snapshot(self) -> (StorySnapshot<R>, Vec<Vec<brink_format::LineEntry>>) {
         let snapshot = StorySnapshot {

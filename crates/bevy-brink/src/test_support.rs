@@ -199,4 +199,52 @@ mod runtime_story_api {
             "visit counts round-trip"
         );
     }
+
+    #[test]
+    fn call_function_returns_value() {
+        use brink_runtime::FallbackHandler;
+        let src = "-> END\n=== function add(a, b) ===\n~ return a + b\n";
+        let (program, tables, _) = compile_test_story(src);
+        let mut story = Story::<FastRng>::new(&program, tables);
+        let v = story
+            .call_function("add", &[Value::Int(2), Value::Int(3)], &FallbackHandler)
+            .expect("calls");
+        assert_eq!(v, Value::Int(5));
+    }
+
+    #[test]
+    fn call_function_resolves_external_via_handler() {
+        struct Doubler;
+        impl ExternalFnHandler for Doubler {
+            fn call(&self, name: &str, args: &[Value]) -> ExternalResult {
+                if name == "dbl" {
+                    let n = args.first().and_then(Value::as_int).unwrap_or(0);
+                    ExternalResult::Resolved(Value::Int(n * 2))
+                } else {
+                    ExternalResult::Fallback
+                }
+            }
+        }
+        let src = "EXTERNAL dbl(x)\n-> END\n=== function scaled(n) ===\n~ return dbl(n) + 1\n";
+        let (program, tables, _) = compile_test_story(src);
+        let mut story = Story::<FastRng>::new(&program, tables);
+        let v = story
+            .call_function("scaled", &[Value::Int(10)], &Doubler)
+            .expect("calls");
+        assert_eq!(v, Value::Int(21), "dbl(10) + 1");
+    }
+
+    #[test]
+    fn call_function_unknown_errors() {
+        use brink_runtime::{FallbackHandler, RuntimeError};
+        let (program, tables, _) = compile_test_story("-> END\n");
+        let mut story = Story::<FastRng>::new(&program, tables);
+        let err = story
+            .call_function("nope", &[], &FallbackHandler)
+            .unwrap_err();
+        assert!(
+            matches!(err, RuntimeError::FunctionNotFound(_)),
+            "got {err:?}"
+        );
+    }
 }

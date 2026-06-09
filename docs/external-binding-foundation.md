@@ -202,11 +202,17 @@ the key, like bevy's flow entity). The `@brink/wasm` wrapper hides the
 park→await→resolve→continue loop so authors register an `async (args)=>value`.
 The sync `bind_external` signature is unchanged — Phase 2 is purely additive.
 
-## Phase 3 — engine → ink (later)
+## Phase 3 — engine → ink (✅ landed)
 
-`call_function(name, args) -> value` over `begin_function_eval` /
-`resume_function_eval`, resolving sync JS bindings inline (powers a Studio
-"evaluate function" panel + host-driven logic). Deferred design-in only.
+`Story::call_function(name, args, handler) -> Value` over `begin_function_eval`,
+on the default flow: output isolated, visible story untouched, synchronous.
+Externals the function calls resolve through the (synchronous) handler inline; a
+called external that defers (`Pending`) yields `RuntimeError::AsyncExternalInCall`
+after cleaning up the paused eval (sync `call_function` can't await — matching
+bevy-brink's `AsyncExternalUnsupported`). brink-web `call_function(name, args)`
+takes/returns native JS values; `@brink/wasm` `callFunction(name, ...args)`.
+Single-flow (the default flow); multi-flow is an additive future option.
+Powers a Studio "evaluate function" panel + host-driven logic.
 
 ## Implementation order (one commit each)
 
@@ -218,9 +224,12 @@ The sync `bind_external` signature is unchanged — Phase 2 is purely additive.
 3. ✅ **Seeding** — `Story::set_rng_seed`, web `set_seed` (reset-stable).
 4. ✅ **Save/load** — `SaveState`/`LoadReport` in brink-format, `Story::save_state`/
    `load_state`, web `save`/`save_bytes`/`load`/`load_bytes` (JSON + MessagePack).
-5. ⬜ **(Phase 2) Suspend** — awaiting-external line + `resolve_external` + wrapper
-   async sugar.
+5. ✅ **(Phase 3) engine→ink `call_function`** — `Story::call_function` +
+   web `call_function` (native-JS args/return), sync, single-flow.
+6. ⬜ **(Phase 2) Suspend** — async ink→engine via unified Promise-detecting
+   `bindExternal`: handler returns `Pending`, `continue` surfaces an
+   `awaiting_external` line, `@brink/wasm` drives park→await→resolve→resume.
 
-Slices 1–4 landed with host (`bevy-brink`) + `wasm-bindgen-test` (`brink-web`,
+Slices 1–5 landed with host (`bevy-brink`) + `wasm-bindgen-test` (`brink-web`,
 run via `wasm-pack test --node`) coverage. Each step is independently shippable;
 `brink-react` and the RMMZ adapter build on the cumulative surface.
