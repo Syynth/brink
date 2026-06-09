@@ -12,9 +12,13 @@
 use std::collections::BTreeMap;
 
 use brink_format::DefinitionId;
+use brink_ir::hir::{
+    Block, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertTarget, Expr, HirFile,
+    Path, Sequence, Stmt, StringPart,
+};
 use brink_ir::{
-    BaseType, Constraint, Diagnostic, DiagnosticCode, ExternalDoc, ExternalKind, SemanticTypeDef,
-    SymbolIndex, SymbolInfo, SymbolKind, TypeRef,
+    BaseType, Constraint, Diagnostic, DiagnosticCode, ExternalDoc, ExternalKind, FileId,
+    SemanticTypeDef, SymbolIndex, SymbolInfo, SymbolKind, TypeRef,
 };
 
 /// Severity policy for manifest-driven external checks. Configurable as a
@@ -192,6 +196,313 @@ fn resolve_type(
         base: None,
         constraint: None,
     })
+}
+
+// ─── Call-site literal checks (E041 type, E042 closed-domain) ───────────
+
+/// Walk the HIR and check literal arguments at external call sites against the
+/// merged [`ExternalMeta`]. Only literal arguments are checked (ink is
+/// dynamically typed); non-literals and untyped params are skipped, so there
+/// are no false positives. Returns the diagnostics (caller gates on severity).
+pub fn check_call_sites(
+    files: &[(FileId, &HirFile)],
+    name_to_meta: &BTreeMap<&str, &ExternalMeta>,
+) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    if name_to_meta.is_empty() {
+        return diags;
+    }
+    for &(file_id, hir) in files {
+        let mut visit = |path: &Path, args: &[Expr]| {
+            check_call(file_id, path, args, name_to_meta, &mut diags);
+        };
+        walk_block(&hir.root_content, &mut visit);
+        for knot in &hir.knots {
+            walk_block(&knot.body, &mut visit);
+            for stitch in &knot.stitches {
+                walk_block(&stitch.body, &mut visit);
+            }
+        }
+    }
+    diags
+}
+
+fn walk_block(block: &Block, visit: &mut dyn FnMut(&Path, &[Expr])) {
+    for stmt in &block.stmts {
+        walk_stmt(stmt, visit);
+    }
+}
+
+fn walk_stmt(stmt: &Stmt, visit: &mut dyn FnMut(&Path, &[Expr])) {
+    match stmt {
+        Stmt::Content(c) => walk_content(c, visit),
+        Stmt::Divert(d) => walk_target(&d.target, visit),
+        Stmt::TunnelCall(t) => {
+            for target in &t.targets {
+                walk_target(target, visit);
+            }
+        }
+        Stmt::ThreadStart(t) => walk_target(&t.target, visit),
+        Stmt::TempDecl(t) => {
+            if let Some(e) = &t.value {
+                walk_expr(e, visit);
+            }
+        }
+        Stmt::Assignment(a) => walk_expr(&a.value, visit),
+        Stmt::Return(r) => {
+            if let Some(e) = &r.value {
+                walk_expr(e, visit);
+            }
+            for e in &r.onwards_args {
+                walk_expr(e, visit);
+            }
+        }
+        Stmt::ChoiceSet(cs) => walk_choice_set(cs, visit),
+        Stmt::LabeledBlock(b) => walk_block(b, visit),
+        Stmt::Conditional(c) => walk_conditional(c, visit),
+        Stmt::Sequence(s) => walk_sequence(s, visit),
+        Stmt::ExprStmt(e) => walk_expr(e, visit),
+        Stmt::EndOfLine => {}
+    }
+}
+
+fn walk_target(target: &DivertTarget, visit: &mut dyn FnMut(&Path, &[Expr])) {
+    for e in &target.args {
+        walk_expr(e, visit);
+    }
+}
+
+fn walk_content(content: &Content, visit: &mut dyn FnMut(&Path, &[Expr])) {
+    for part in &content.parts {
+        match part {
+            ContentPart::Interpolation(e) => walk_expr(e, visit),
+            ContentPart::InlineConditional(c) => walk_conditional(c, visit),
+            ContentPart::InlineSequence(s) => walk_sequence(s, visit),
+            ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
+        }
+    }
+}
+
+fn walk_conditional(cond: &Conditional, visit: &mut dyn FnMut(&Path, &[Expr])) {
+    if let CondKind::Switch(e) = &cond.kind {
+        walk_expr(e, visit);
+    }
+    for branch in &cond.branches {
+        if let Some(e) = &branch.condition {
+            walk_expr(e, visit);
+        }
+        walk_block(&branch.body, visit);
+    }
+}
+
+fn walk_sequence(seq: &Sequence, visit: &mut dyn FnMut(&Path, &[Expr])) {
+    for branch in &seq.branches {
+        walk_block(branch, visit);
+    }
+}
+
+fn walk_choice_set(cs: &ChoiceSet, visit: &mut dyn FnMut(&Path, &[Expr])) {
+    for choice in &cs.choices {
+        if let Some(e) = &choice.condition {
+            walk_expr(e, visit);
+        }
+        for content in [
+            &choice.start_content,
+            &choice.bracket_content,
+            &choice.inner_content,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            walk_content(content, visit);
+        }
+        walk_block(&choice.body, visit);
+    }
+    walk_block(&cs.continuation, visit);
+}
+
+fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Path, &[Expr])) {
+    match expr {
+        Expr::Call(path, args) => {
+            visit(path, args);
+            for arg in args {
+                walk_expr(arg, visit);
+            }
+        }
+        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => walk_expr(inner, visit),
+        Expr::Infix(lhs, _, rhs) => {
+            walk_expr(lhs, visit);
+            walk_expr(rhs, visit);
+        }
+        Expr::String(s) => {
+            for part in &s.parts {
+                if let StringPart::Interpolation(e) = part {
+                    walk_expr(e, visit);
+                }
+            }
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Null
+        | Expr::Path(_)
+        | Expr::DivertTarget(_)
+        | Expr::ListLiteral(_) => {}
+    }
+}
+
+fn check_call(
+    file: FileId,
+    path: &Path,
+    args: &[Expr],
+    name_to_meta: &BTreeMap<&str, &ExternalMeta>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let name = path
+        .segments
+        .iter()
+        .map(|n| n.text.as_str())
+        .collect::<Vec<_>>()
+        .join(".");
+    let Some(meta) = name_to_meta.get(name.as_str()) else {
+        return; // not an external we have metadata for
+    };
+    for (i, arg) in args.iter().enumerate() {
+        let Some(param) = meta.params.get(i) else {
+            continue; // surplus args — arity is checked elsewhere
+        };
+        let Some(ty) = &param.ty else {
+            continue; // untyped param — nothing to check
+        };
+        check_literal_arg(file, path, &name, arg, ty, diags);
+    }
+}
+
+/// Check one literal argument against a resolved param type. Non-literals are
+/// ignored (literals-only). A type mismatch suppresses the domain check.
+fn check_literal_arg(
+    file: FileId,
+    path: &Path,
+    call: &str,
+    arg: &Expr,
+    ty: &ResolvedType,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if let (Some(lit), Some(expected)) = (literal_base(arg), ty.base)
+        && !compatible(lit, expected)
+    {
+        diags.push(Diagnostic {
+            file,
+            range: path.range,
+            message: format!(
+                "{}: `{call}` expects {} but a {} literal was passed",
+                DiagnosticCode::E041.title(),
+                base_name(expected),
+                base_name(lit),
+            ),
+            code: DiagnosticCode::E041,
+        });
+        return;
+    }
+    if let Some(constraint) = &ty.constraint {
+        check_constraint(file, path, call, &ty.name, arg, constraint, diags);
+    }
+}
+
+/// The base type of a literal expression, or `None` if not a literal.
+fn literal_base(expr: &Expr) -> Option<BaseType> {
+    match expr {
+        Expr::Int(_) => Some(BaseType::Int),
+        Expr::Float(_) => Some(BaseType::Float),
+        Expr::Bool(_) => Some(BaseType::Bool),
+        Expr::String(_) => Some(BaseType::String),
+        _ => None,
+    }
+}
+
+/// Whether a literal of base `lit` is acceptable for a param of base
+/// `expected`. Int widens to Float; otherwise an exact match is required.
+fn compatible(lit: BaseType, expected: BaseType) -> bool {
+    lit == expected || (lit == BaseType::Int && expected == BaseType::Float)
+}
+
+fn base_name(base: BaseType) -> &'static str {
+    match base {
+        BaseType::String => "string",
+        BaseType::Int => "int",
+        BaseType::Float => "float",
+        BaseType::Bool => "bool",
+        BaseType::Void => "void",
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "range bounds are small integers; f64 comparison is exact in practice"
+)]
+fn check_constraint(
+    file: FileId,
+    path: &Path,
+    call: &str,
+    type_name: &str,
+    arg: &Expr,
+    constraint: &Constraint,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match constraint {
+        Constraint::Enum { values } => {
+            if let Some(s) = plain_string_value(arg)
+                && !values.iter().any(|v| v == s)
+            {
+                diags.push(Diagnostic {
+                    file,
+                    range: path.range,
+                    message: format!(
+                        "{}: `{s}` is not a valid `{type_name}` value for `{call}`",
+                        DiagnosticCode::E042.title(),
+                    ),
+                    code: DiagnosticCode::E042,
+                });
+            }
+        }
+        Constraint::Range { min, max } => {
+            if let Some(v) = numeric_value(arg)
+                && (min.is_some_and(|m| v < m as f64) || max.is_some_and(|m| v > m as f64))
+            {
+                diags.push(Diagnostic {
+                    file,
+                    range: path.range,
+                    message: format!(
+                        "{}: value out of range for `{type_name}` on `{call}`",
+                        DiagnosticCode::E042.title(),
+                    ),
+                    code: DiagnosticCode::E042,
+                });
+            }
+        }
+        // Regex enforcement is deferred (no regex dependency at the MVP); the
+        // pattern is still surfaced to the IDE via ExternalMeta.
+        Constraint::Regex { .. } => {}
+    }
+}
+
+/// The string value of a plain (non-interpolated) string literal.
+fn plain_string_value(expr: &Expr) -> Option<&str> {
+    let Expr::String(s) = expr else { return None };
+    match s.parts.as_slice() {
+        [] => Some(""),
+        [StringPart::Literal(text)] => Some(text),
+        _ => None, // interpolated — value not statically known
+    }
+}
+
+/// The numeric value of an int/float literal as `f64`.
+fn numeric_value(expr: &Expr) -> Option<f64> {
+    match expr {
+        Expr::Int(n) => Some(f64::from(*n)),
+        Expr::Float(f) => Some(f.to_f64()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -460,5 +771,156 @@ mod tests {
         );
         assert!(diags.is_empty(), "Off suppresses diagnostics");
         assert!(!metas.is_empty(), "enrichment still built when Off");
+    }
+
+    // ── Call-site literal checks (E041, E042) ────────────────────
+
+    use brink_ir::hir::{
+        Block, Expr, HirFile, Name, Path as HirPath, Stmt, StringExpr, StringPart,
+    };
+
+    fn rng() -> TextRange {
+        TextRange::new(TextSize::new(0), TextSize::new(1))
+    }
+
+    /// A HIR file whose root content is a single `~ name(args)` expression statement.
+    fn hir_calling(name: &str, args: Vec<Expr>) -> HirFile {
+        let path = HirPath {
+            segments: vec![Name {
+                text: name.to_string(),
+                range: rng(),
+            }],
+            range: rng(),
+        };
+        HirFile {
+            root_content: Block {
+                label: None,
+                stmts: vec![Stmt::ExprStmt(Expr::Call(path, args))],
+                container_id: None,
+            },
+            knots: Vec::new(),
+            variables: Vec::new(),
+            constants: Vec::new(),
+            lists: Vec::new(),
+            externals: Vec::new(),
+            includes: Vec::new(),
+        }
+    }
+
+    fn typed_meta(ty: ResolvedType) -> ExternalMeta {
+        ExternalMeta {
+            doc: None,
+            kind: ExternalKind::default(),
+            returns: None,
+            params: vec![ResolvedParam {
+                name: "x".to_string(),
+                ty: Some(ty),
+            }],
+        }
+    }
+
+    fn run_call_check(call: &str, args: Vec<Expr>, meta: &ExternalMeta) -> Vec<Diagnostic> {
+        let hir = hir_calling(call, args);
+        let mut n2m: BTreeMap<&str, &ExternalMeta> = BTreeMap::new();
+        n2m.insert(call, meta);
+        check_call_sites(&[(FileId(0), &hir)], &n2m)
+    }
+
+    fn string_lit(s: &str) -> Expr {
+        Expr::String(StringExpr {
+            parts: vec![StringPart::Literal(s.to_string())],
+        })
+    }
+
+    #[test]
+    fn type_mismatch_emits_e041() {
+        let meta = typed_meta(ResolvedType {
+            name: "string".to_string(),
+            base: Some(BaseType::String),
+            constraint: None,
+        });
+        let diags = run_call_check("tint", vec![Expr::Int(5)], &meta);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E041);
+    }
+
+    #[test]
+    fn matching_literal_no_diagnostic() {
+        let meta = typed_meta(ResolvedType {
+            name: "string".to_string(),
+            base: Some(BaseType::String),
+            constraint: None,
+        });
+        let diags = run_call_check("tint", vec![string_lit("ok")], &meta);
+        assert!(diags.is_empty(), "matching string literal: {diags:?}");
+    }
+
+    #[test]
+    fn int_widens_to_float_param() {
+        let meta = typed_meta(ResolvedType {
+            name: "float".to_string(),
+            base: Some(BaseType::Float),
+            constraint: None,
+        });
+        let diags = run_call_check("scale", vec![Expr::Int(3)], &meta);
+        assert!(
+            diags.is_empty(),
+            "int literal accepted for float param: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn non_literal_arg_skipped() {
+        // A variable reference is not a literal — never flagged (literals-only).
+        let meta = typed_meta(ResolvedType {
+            name: "string".to_string(),
+            base: Some(BaseType::String),
+            constraint: None,
+        });
+        let var = Expr::Path(HirPath {
+            segments: vec![Name {
+                text: "v".to_string(),
+                range: rng(),
+            }],
+            range: rng(),
+        });
+        let diags = run_call_check("tint", vec![var], &meta);
+        assert!(
+            diags.is_empty(),
+            "non-literal arg is not checked: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn enum_violation_emits_e042() {
+        let meta = typed_meta(ResolvedType {
+            name: "item_id".to_string(),
+            base: Some(BaseType::String),
+            constraint: Some(Constraint::Enum {
+                values: vec!["sword".into(), "shield".into()],
+            }),
+        });
+        let bad = run_call_check("give", vec![string_lit("banana")], &meta);
+        assert_eq!(bad.len(), 1);
+        assert_eq!(bad[0].code, DiagnosticCode::E042);
+        let ok = run_call_check("give", vec![string_lit("sword")], &meta);
+        assert!(ok.is_empty(), "valid enum value: {ok:?}");
+    }
+
+    #[test]
+    fn range_violation_emits_e042() {
+        let meta = typed_meta(ResolvedType {
+            name: "percent".to_string(),
+            base: Some(BaseType::Int),
+            constraint: Some(Constraint::Range {
+                min: Some(0),
+                max: Some(100),
+            }),
+        });
+        let bad = run_call_check("set", vec![Expr::Int(150)], &meta);
+        assert_eq!(bad.len(), 1);
+        assert_eq!(bad[0].code, DiagnosticCode::E042);
+        let ok = run_call_check("set", vec![Expr::Int(50)], &meta);
+        assert!(ok.is_empty(), "in-range value: {ok:?}");
     }
 }

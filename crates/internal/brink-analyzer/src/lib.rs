@@ -84,6 +84,15 @@ pub fn analyze_with_options(
     );
     diagnostics.extend(ext_diags);
 
+    // Call-site literal checks (type mismatch, closed domain) over the HIR.
+    if opts.external_check != ExternalCheckSeverity::Off {
+        let name_to_meta: BTreeMap<&str, &ExternalMeta> = external_meta
+            .iter()
+            .filter_map(|(id, meta)| index.symbols.get(id).map(|s| (s.name.as_str(), meta)))
+            .collect();
+        diagnostics.extend(external_check::check_call_sites(&hir_inputs, &name_to_meta));
+    }
+
     AnalysisResult {
         index,
         resolutions,
