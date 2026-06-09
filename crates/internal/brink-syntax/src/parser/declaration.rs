@@ -42,14 +42,17 @@ pub(crate) fn external_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(EXTERNAL_DECL);
     p.bump(); // KW_EXTERNAL
     p.skip_ws();
+    // Ink keywords are contextual — an external may be named after an operator
+    // keyword (e.g. `EXTERNAL has(item)`). C# `IdentifierWithMetadata` imposes
+    // no reserved-word check, so `has`/`and`/`mod`/etc. are valid names here.
     p.start_node(IDENTIFIER);
-    p.expect(IDENT);
+    p.expect_ident_or_keyword();
     p.finish_node();
     p.skip_ws();
     p.expect(L_PAREN);
     p.skip_ws();
 
-    if p.current() == IDENT {
+    if p.at_ident_or_keyword() {
         function_param_list(p);
     }
 
@@ -66,7 +69,7 @@ pub(crate) fn external_declaration(p: &mut Parser<'_, '_>) {
 fn function_param_list(p: &mut Parser<'_, '_>) {
     p.start_node(FUNCTION_PARAM_LIST);
     p.start_node(IDENTIFIER);
-    p.bump(); // first identifier
+    p.bump(); // first identifier (IDENT or contextual keyword)
     p.finish_node();
     loop {
         p.skip_ws();
@@ -75,7 +78,7 @@ fn function_param_list(p: &mut Parser<'_, '_>) {
         }
         p.skip_ws();
         p.start_node(IDENTIFIER);
-        p.expect(IDENT);
+        p.expect_ident_or_keyword();
         p.finish_node();
     }
     p.finish_node();
