@@ -310,6 +310,18 @@ export class StoryRunnerHandle {
     this.runner.set_lenient_unbound(lenient);
   }
 
+  /** Read a global ink variable by name. `undefined` if no such variable is
+   * declared, `null` if it exists and holds null. */
+  getVar(name: string): ExternalValue | undefined {
+    return this.runner.get_var(name) as ExternalValue | undefined;
+  }
+
+  /** Set a global ink variable by name. Returns `false` if no such variable
+   * is declared. */
+  setVar(name: string, value: ExternalValue): boolean {
+    return this.runner.set_var(name, value);
+  }
+
   continueStory(): Line[] {
     const json = this.runner.continue_story();
     return JSON.parse(json) as Line[];

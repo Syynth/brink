@@ -195,6 +195,26 @@ impl StoryRunner {
         self.lenient_unbound.set(lenient);
     }
 
+    /// Read a global ink variable by name as a native JS value. Returns
+    /// `undefined` if no such variable is declared, `null` if it exists and
+    /// holds null. (Non-scalar globals — lists — currently read as `null`.)
+    pub fn get_var(&self, name: &str) -> JsValue {
+        let borrow = self.story.borrow();
+        match borrow.as_ref().and_then(|s| s.variable(name)) {
+            Some(v) => value_to_js(v),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// Set a global ink variable by name from a native JS value
+    /// (number / boolean / string / null). Returns `false` if no such
+    /// variable is declared.
+    pub fn set_var(&self, name: &str, value: &JsValue) -> bool {
+        let v = js_to_value(value);
+        let mut borrow = self.story.borrow_mut();
+        borrow.as_mut().is_some_and(|s| s.set_variable(name, v))
+    }
+
     /// Continue the story maximally. Returns JSON array of `Line` objects.
     pub fn continue_story(&self) -> Result<String, JsError> {
         let bindings = self.bindings.borrow();

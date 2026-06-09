@@ -1675,6 +1675,28 @@ impl<'p, R: StoryRng> Story<'p, R> {
         self.program
     }
 
+    // ── Variable access (host-facing) ───────────────────────────────
+
+    /// Read a global variable's current value by name. `None` if no global
+    /// with that name is declared. Reads the default flow's context.
+    pub fn variable(&self, name: &str) -> Option<&Value> {
+        let idx = self.program.global_index(name)?;
+        Some(self.default_context.global(idx))
+    }
+
+    /// Set a global variable by name, returning `false` (no-op) if no global
+    /// with that name is declared. Ink globals are dynamically typed, so the
+    /// host is responsible for passing a sensibly-typed value.
+    pub fn set_variable(&mut self, name: &str, value: Value) -> bool {
+        match self.program.global_index(name) {
+            Some(idx) => {
+                self.default_context.set_global(idx, value);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Detach story state from the program, consuming the story.
     pub fn into_snapshot(self) -> (StorySnapshot<R>, Vec<Vec<brink_format::LineEntry>>) {
         let snapshot = StorySnapshot {
