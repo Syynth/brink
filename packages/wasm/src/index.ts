@@ -279,11 +279,35 @@ export class EditorSessionHandle {
 
 // ── Story runner ────────────────────────────────────────────────
 
+/** A value that can cross the ink↔JS external-binding boundary. */
+export type ExternalValue = number | boolean | string | null;
+
+/** A synchronous external-function binding: receives the call arguments as
+ * native JS values and returns a value (or nothing) back to the story. */
+export type ExternalFn = (...args: ExternalValue[]) => ExternalValue | void;
+
 export class StoryRunnerHandle {
   private runner: StoryRunner;
 
   constructor(storyBytes: Uint8Array) {
     this.runner = new StoryRunner(storyBytes);
+  }
+
+  /** Bind an ink `EXTERNAL <name>(...)` to a synchronous JS callback.
+   * Re-binding the same name replaces the previous callback. */
+  bindExternal(name: string, fn: ExternalFn): void {
+    this.runner.bind_external(name, fn);
+  }
+
+  /** Remove a previously registered external binding. */
+  unbindExternal(name: string): void {
+    this.runner.unbind_external(name);
+  }
+
+  /** When `true`, an unbound external resolves to `null` instead of falling
+   * through to its ink fallback body / erroring. Default `false`. */
+  setLenientUnbound(lenient: boolean): void {
+    this.runner.set_lenient_unbound(lenient);
   }
 
   continueStory(): Line[] {

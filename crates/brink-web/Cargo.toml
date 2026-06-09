@@ -25,6 +25,10 @@ rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen = "0.2"
+# `js-sys` provides `Function`/`Array` for the synchronous external-function
+# binding boundary (ink EXTERNAL → JS callback). Values are hand-mapped to
+# native JS (number/bool/string/null), not serialized, so no serde-wasm-bindgen.
+js-sys = "0.3"
 
 [lints]
 workspace = true

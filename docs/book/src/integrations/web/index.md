@@ -48,10 +48,33 @@ One-shot, single-file compilation. Returns
 | `continue_single()` | produce one `Line` (typewriter reveal) |
 | `choose(index)` | select a choice by 0-based index |
 | `reset()` | return to the start without recompiling |
+| `bind_external(name, fn)` | bind an ink `EXTERNAL` to a synchronous JS callback |
+| `unbind_external(name)` | remove a previously bound external |
+| `set_lenient_unbound(bool)` | unbound externals resolve to `null` instead of using the ink fallback / erroring |
 
 `Line` mirrors the native runtime: `{ type: "text"|"choices"|"done"|"end", text,
 tags, choices? }`. This is the same execution model as
 [the toolchain runtime](../../toolchain/concepts/execution-model.md), surfaced to JS.
+
+### External functions
+
+When a story calls `EXTERNAL roll(sides)`, the runner asks any binding
+registered under that name to resolve it. Arguments arrive as native JS values
+(number / boolean / string / null) and the return is read back the same way —
+an integer-valued number becomes an ink int, otherwise a float:
+
+```ts
+const runner = new StoryRunnerHandle(bytes);
+runner.bindExternal("roll", (sides) => 1 + Math.floor(Math.random() * Number(sides)));
+runner.bindExternal("play_sound", (id) => { audio.play(String(id)); }); // fire-and-forget
+```
+
+An external with no binding falls through to its ink fallback body (erroring if
+none exists), unless `setLenientUnbound(true)` is set — then it resolves to
+`null`, so content can call host verbs a given build doesn't know without
+dead-ending. A binding that throws resolves to `null` (the exception is not
+propagated into the VM). Asynchronous bindings (suspend-and-resume) are a
+planned addition; today bindings must return synchronously.
 
 ### `EditorSession` — IDE queries
 

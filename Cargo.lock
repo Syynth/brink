@@ -2163,6 +2163,7 @@ dependencies = [
  "brink-ir",
  "brink-runtime",
  "brink-syntax",
+ "js-sys",
  "rowan",
  "serde",
  "serde_json",

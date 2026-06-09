@@ -1,7 +1,10 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::sync::Arc;
 
+use brink_format::Value;
 use brink_ide::session::IdeSession;
-use brink_runtime::FastRng;
+use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng};
 use rowan::{TextRange, TextSize};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -100,6 +103,15 @@ pub struct StoryRunner {
     // Safety: story borrows from program which is heap-pinned and never moved.
     // We only access story through &mut self methods (single-threaded wasm).
     story: RefCell<Option<brink_runtime::Story<'static, FastRng>>>,
+    /// Synchronous ink→engine external bindings: ink `EXTERNAL` name → JS
+    /// callback `(args) => value`. Built into a [`JsHandler`] on each
+    /// `continue_*` call. Single-threaded wasm, so a `RefCell` suffices.
+    bindings: RefCell<HashMap<String, js_sys::Function>>,
+    /// When `true`, an external with no registered binding resolves to `null`
+    /// (no-op) instead of falling through to its ink fallback body / erroring.
+    /// Lets shipped content call host verbs a given build doesn't know without
+    /// dead-ending. Default `false` (strict — current behavior).
+    lenient_unbound: Cell<bool>,
 }
 
 #[wasm_bindgen]
@@ -133,6 +145,8 @@ impl StoryRunner {
             base_line_tables: line_tables,
             data,
             story: RefCell::new(Some(story)),
+            bindings: RefCell::new(HashMap::new()),
+            lenient_unbound: Cell::new(false),
         })
     }
 
@@ -154,15 +168,47 @@ impl StoryRunner {
         serde_json::to_string(&model).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Register a synchronous external-function binding: when the story calls
+    /// `EXTERNAL <name>(...)`, `f` is invoked with the call arguments and its
+    /// return value is fed back to the story. Arguments arrive as native JS
+    /// values (number / boolean / string / null); the return is read back the
+    /// same way (an integer-valued number becomes an ink int, otherwise a
+    /// float).
+    ///
+    /// Re-registering the same name replaces the previous binding. A binding
+    /// that throws resolves to `null` (a thrown host callback is a bug; the
+    /// exception is not propagated into the VM).
+    pub fn bind_external(&self, name: &str, f: js_sys::Function) {
+        self.bindings.borrow_mut().insert(name.to_owned(), f);
+    }
+
+    /// Remove a previously registered external binding.
+    pub fn unbind_external(&self, name: &str) {
+        self.bindings.borrow_mut().remove(name);
+    }
+
+    /// Control how an external with **no** registered binding resolves.
+    /// `false` (default): fall through to the ink fallback body, erroring if
+    /// none exists. `true`: resolve to `null` (no-op), so content can call
+    /// host verbs this build doesn't know without dead-ending.
+    pub fn set_lenient_unbound(&self, lenient: bool) {
+        self.lenient_unbound.set(lenient);
+    }
+
     /// Continue the story maximally. Returns JSON array of `Line` objects.
     pub fn continue_story(&self) -> Result<String, JsError> {
+        let bindings = self.bindings.borrow();
+        let handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound.get(),
+        };
         let mut borrow = self.story.borrow_mut();
         let story = borrow
             .as_mut()
             .ok_or_else(|| JsError::new("story not initialized"))?;
 
         let lines = story
-            .continue_maximally()
+            .continue_maximally_with(&handler)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
 
         let resp: Vec<LineJs> = lines.into_iter().map(line_to_js).collect();
@@ -172,13 +218,18 @@ impl StoryRunner {
 
     /// Continue the story by a single line. Returns JSON for one `Line` object.
     pub fn continue_single(&self) -> Result<String, JsError> {
+        let bindings = self.bindings.borrow();
+        let handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound.get(),
+        };
         let mut borrow = self.story.borrow_mut();
         let story = borrow
             .as_mut()
             .ok_or_else(|| JsError::new("story not initialized"))?;
 
         let line = story
-            .continue_single()
+            .continue_single_with(&handler)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
 
         let resp = line_to_js(line);
@@ -221,6 +272,84 @@ impl StoryRunner {
         let js = debug_snapshot_to_js(story.debug_snapshot());
         serde_json::to_string(&js).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
+}
+
+// ── External-function bindings ───────────────────────────────────────
+
+/// [`ExternalFnHandler`] backed by the runner's registry of JS callbacks.
+///
+/// Resolves a bound external by invoking its JS function with the call
+/// arguments (as native JS values) and reading the return back into a
+/// [`Value`]. An unbound external either falls back to the ink body
+/// (`lenient = false`) or resolves to `null` (`lenient = true`).
+struct JsHandler<'a> {
+    bindings: &'a HashMap<String, js_sys::Function>,
+    lenient: bool,
+}
+
+impl ExternalFnHandler for JsHandler<'_> {
+    fn call(&self, name: &str, args: &[Value]) -> ExternalResult {
+        let Some(f) = self.bindings.get(name) else {
+            return if self.lenient {
+                ExternalResult::Resolved(Value::Null)
+            } else {
+                ExternalResult::Fallback
+            };
+        };
+        let js_args = js_sys::Array::new();
+        for a in args {
+            js_args.push(&value_to_js(a));
+        }
+        match f.apply(&JsValue::NULL, &js_args) {
+            Ok(ret) => ExternalResult::Resolved(js_to_value(&ret)),
+            // A registered binding that throws is a host bug; don't propagate
+            // the JS exception into the VM — resolve to null and carry on.
+            Err(_) => ExternalResult::Resolved(Value::Null),
+        }
+    }
+}
+
+/// Map an ink [`Value`] to a native JS value for a binding argument. Only the
+/// scalar variants cross the boundary; VM-internal variants (pointers, divert
+/// targets, fragment refs, lists) map to `null` for now.
+fn value_to_js(v: &Value) -> JsValue {
+    match v {
+        Value::Int(i) => JsValue::from_f64(f64::from(*i)),
+        Value::Float(f) => JsValue::from_f64(f64::from(*f)),
+        Value::Bool(b) => JsValue::from_bool(*b),
+        Value::String(s) => JsValue::from_str(s),
+        _ => JsValue::NULL,
+    }
+}
+
+/// Read a JS value returned from a binding back into an ink [`Value`].
+/// `null`/`undefined` → `Null`; booleans → `Bool`; an integer-valued finite
+/// number → `Int`, otherwise `Float`; strings → `String`. Anything else → `Null`.
+fn js_to_value(js: &JsValue) -> Value {
+    if js.is_null() || js.is_undefined() {
+        return Value::Null;
+    }
+    if let Some(b) = js.as_bool() {
+        return Value::Bool(b);
+    }
+    if let Some(n) = js.as_f64() {
+        if n.is_finite() && n.fract() == 0.0 && n.abs() <= f64::from(i32::MAX) {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "guarded: finite, integral, within i32 range"
+            )]
+            return Value::Int(n as i32);
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "ink floats are f32; JS numbers narrow to f32 at the boundary"
+        )]
+        return Value::Float(n as f32);
+    }
+    if let Some(s) = js.as_string() {
+        return Value::String(Arc::from(s));
+    }
+    Value::Null
 }
 
 // ── Debug snapshot JSON mirror ───────────────────────────────────────
