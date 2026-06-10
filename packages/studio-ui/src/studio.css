@@ -188,6 +188,38 @@
   font-size: 12px;
   line-height: 1.5;
 }
+/* Session placeholder — session-bound views with no story session (§7.6) */
+.brink-studio .session-placeholder {
+  padding: 16px 14px;
+  color: var(--brink-fg-dim);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.brink-studio .session-placeholder-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brink-fg);
+}
+.brink-studio .session-placeholder-hint {
+  margin: 0 0 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.brink-studio .session-placeholder-start {
+  background: var(--brink-bg-panel);
+  color: var(--brink-accent);
+  border: 1px solid var(--brink-border);
+  border-radius: 4px;
+  padding: 4px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.brink-studio .session-placeholder-start:hover {
+  background: var(--brink-border);
+}
 /* Sections */
 .brink-studio .sv-section {
   border-bottom: 1px solid var(--brink-border);

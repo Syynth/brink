@@ -1,0 +1,93 @@
+/**
+ * Story session lifecycle commands (docs/studio-shell-spec.md §7.6, §6).
+ *
+ * Commands own session mutation: views (PlayerPane, StateView, …) dispatch
+ * these by id and never call the session slice's actions directly. The `when`
+ * predicates close over the store and gate by session status — they also
+ * drive palette enablement (and, later, strip badges and status-bar state).
+ *
+ * Registered at the app boundary (main.tsx) and extracted here so the gating
+ * is unit-testable without the bootstrap.
+ */
+
+import type { CommandRegistry } from "@brink/studio-shell";
+import type { StudioStore } from "@brink/studio-store";
+import { sessionCanContinue } from "@brink/studio-store";
+
+/**
+ * Register `story.start` / `story.restart` / `story.stop` / `story.choose` /
+ * `story.continue` against `store`. Returns a disposer that unregisters all.
+ */
+export function registerStoryCommands(
+  commands: CommandRegistry,
+  store: StudioStore,
+): () => void {
+  // The program a session can (re)start on: the latest successful compile,
+  // falling back to the current session's own program — a failed compile
+  // nulls `storyBytes` but must not strand the session (spec §7.6).
+  const programBytes = (): Uint8Array | null => {
+    const state = store.getState();
+    return state.storyBytes ?? state._sessionBytes;
+  };
+
+  const disposers = [
+    commands.register({
+      id: "story.start",
+      title: "Story: Start",
+      when: () =>
+        store.getState().sessionStatus === "none" && programBytes() !== null,
+      run: () => {
+        const bytes = programBytes();
+        if (bytes) store.getState().startSession(bytes);
+      },
+    }),
+
+    commands.register({
+      id: "story.restart",
+      title: "Story: Restart",
+      when: () => store.getState().sessionStatus !== "none" || programBytes() !== null,
+      run: () => {
+        const state = store.getState();
+        if (state._runner !== null) {
+          state.restartSession();
+          return;
+        }
+        // No live runner (status "none", or "error" from a failed load) —
+        // restart means a fresh start on the available program.
+        const bytes = programBytes();
+        if (bytes) state.startSession(bytes);
+      },
+    }),
+
+    commands.register({
+      id: "story.stop",
+      title: "Story: Stop",
+      when: () => store.getState().sessionStatus !== "none",
+      run: () => store.getState().stopSession(),
+    }),
+
+    commands.register({
+      id: "story.choose",
+      title: "Story: Choose",
+      when: () => store.getState().sessionStatus === "awaiting-choice",
+      run: (args) => {
+        const index =
+          typeof args === "number"
+            ? args
+            : (args as { index?: number } | undefined)?.index;
+        if (typeof index === "number") store.getState().chooseOption(index);
+      },
+    }),
+
+    commands.register({
+      id: "story.continue",
+      title: "Story: Continue",
+      when: () => sessionCanContinue(store.getState().sessionStatus),
+      run: () => store.getState().revealNext(),
+    }),
+  ];
+
+  return () => {
+    for (const dispose of disposers) dispose();
+  };
+}
