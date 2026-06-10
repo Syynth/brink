@@ -1240,8 +1240,9 @@ impl EditorSession {
             .map(|info| CompletionItemJs {
                 name: info.name.clone(),
                 kind: symbol_kind_str(info.kind).to_owned(),
-                // Externals get a typed signature from the host manifest, if any.
-                detail: external_detail(analysis, info).or_else(|| info.detail.clone()),
+                // Callables get a typed signature from /// docs or the host
+                // manifest, if any; otherwise the kind-derived detail.
+                detail: typed_detail(analysis, info).or_else(|| info.detail.clone()),
             })
             .collect();
 
@@ -1971,17 +1972,27 @@ struct CompletionItemJs {
     detail: Option<String>,
 }
 
-/// Build a typed signature detail for an external from host-manifest metadata,
-/// e.g. `(item: bool) -> bool [query]`. `None` for non-externals or externals
-/// without registered/inline metadata.
-fn external_detail(
+/// Build a typed signature detail for a callable (external, knot, stitch)
+/// from its symbol metadata, e.g. `(item: bool) -> bool [query]`. `None` when
+/// the symbol has no type-bearing metadata, so plain symbols keep their
+/// kind-derived detail (e.g. `function`).
+fn typed_detail(
     analysis: &brink_analyzer::AnalysisResult,
     info: &brink_ir::SymbolInfo,
 ) -> Option<String> {
-    if info.kind != brink_ir::SymbolKind::External {
+    if !matches!(
+        info.kind,
+        brink_ir::SymbolKind::External | brink_ir::SymbolKind::Knot | brink_ir::SymbolKind::Stitch
+    ) {
         return None;
     }
     let meta = analysis.symbol_meta.get(&info.id)?;
+    let has_types = meta.params.iter().any(|p| p.ty.is_some())
+        || meta.returns.is_some()
+        || meta.kind != brink_ir::ExternalKind::Plain;
+    if !has_types {
+        return None;
+    }
     let params = meta
         .params
         .iter()
