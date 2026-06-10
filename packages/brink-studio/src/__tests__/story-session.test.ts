@@ -47,7 +47,8 @@ describe("session slice split", () => {
     expect(s.sessionText).toEqual([]);
     expect(s.sessionChoices).toEqual([]);
     expect(s._runner).toBeNull();
-    expect(s.playerFullscreen).toBe(false);
+    // playerFullscreen is gone too (#86): maximize is a shell feature now.
+    expect(s).not.toHaveProperty("playerFullscreen");
 
     // The legacy PlayerSlice session fields are gone — the session is its
     // own object now.

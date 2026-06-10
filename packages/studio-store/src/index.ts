@@ -12,7 +12,6 @@ import type { EditorSlice } from "./slices/editor.js";
 import type { CompileSlice } from "./slices/compile.js";
 import type { TabsSlice } from "./slices/tabs.js";
 import type { SessionSlice } from "./slices/session.js";
-import type { PlayerSlice } from "./slices/player.js";
 import type { BinderSlice } from "./slices/binder.js";
 import type { OutputSlice } from "./slices/output.js";
 import type { InkEditorHandle, EditorStateManager, ProjectSession } from "./types.js";
@@ -21,7 +20,6 @@ import { createEditorSlice } from "./slices/editor.js";
 import { createCompileSlice } from "./slices/compile.js";
 import { createTabsSlice } from "./slices/tabs.js";
 import { createSessionSlice } from "./slices/session.js";
-import { createPlayerSlice } from "./slices/player.js";
 import { createBinderSlice } from "./slices/binder.js";
 import { createOutputSlice } from "./slices/output.js";
 
@@ -32,7 +30,6 @@ export interface StudioState
     CompileSlice,
     TabsSlice,
     SessionSlice,
-    PlayerSlice,
     BinderSlice,
     OutputSlice {
   // Non-reactive refs — imperative handles that don't trigger re-renders
@@ -59,7 +56,6 @@ export const createStudioStore = () =>
       ...createCompileSlice(...args),
       ...createTabsSlice(...args),
       ...createSessionSlice(...args),
-      ...createPlayerSlice(...args),
       ...createBinderSlice(...args),
       ...createOutputSlice(...args),
 

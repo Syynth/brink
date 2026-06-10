@@ -35,7 +35,7 @@ export interface ShellLayoutState {
   open: Record<DockSectionId, string | null>;
   /** Last dock sizes in px — restored when a collapsed dock reopens. */
   dockSizes: Record<Dock, number>;
-  /** Maximized tool window — placeholder until maximize lands (#86). */
+  /** Maximized tool window: covers the editor area until restored (§5.4). */
   maximized: string | null;
 
   // ── Transient compact-tier presentation (reset on tier change) ──
@@ -59,6 +59,8 @@ export interface ShellLayoutState {
   toggleToolWindow(id: string): void;
   /** Re-dock a tool window; if it was open, it opens in the new section. */
   moveToolWindow(id: string, dock: Dock, section: Section): void;
+  /** Maximize a tool window over the editor area, or restore it (§5.4). */
+  toggleMaximize(id: string): void;
   /** Remember a dock's size (px) so reopening restores it. */
   setDockSize(dock: Dock, px: number): void;
   /** Set the responsive tier; dismisses transient overlay/drawer state. */
@@ -208,6 +210,14 @@ export function createShellLayoutStore(): ShellLayoutStore {
           open[toKey] = id;
         }
         return { placements, open };
+      });
+    },
+
+    toggleMaximize(id) {
+      set((s) => {
+        if (s.maximized === id) return { maximized: null };
+        if (s.placements[id] === undefined) return {};
+        return { maximized: id };
       });
     },
 
