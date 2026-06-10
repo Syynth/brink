@@ -71,7 +71,7 @@ pub struct ResolvedType {
 /// severity policy is `Off`.
 pub fn analyze_externals(
     index: &SymbolIndex,
-    inline_docs: &BTreeMap<String, DocBlock>,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
     types: &BTreeMap<String, SemanticTypeDef>,
     registered: &BTreeMap<String, &brink_ir::ManifestExternal>,
     severity: ExternalCheckSeverity,
@@ -88,7 +88,7 @@ pub fn analyze_externals(
     externals.sort_by_key(|info| (info.file.0, info.range.start()));
 
     for info in externals {
-        let inline = inline_docs.get(&info.name);
+        let inline = inline_docs.get(&(SymbolKind::External, info.name.clone()));
         let reg = registered.get(&info.name).copied();
         if inline.is_none() && reg.is_none() {
             continue; // no enrichment for this external
@@ -571,7 +571,7 @@ mod tests {
         let index = index_with_external("has", &["item"]);
         let mut docs = BTreeMap::new();
         docs.insert(
-            "has".to_string(),
+            (SymbolKind::External, "has".to_string()),
             inline(&[("item", "bool")], Some("bool"), Some(ExternalKind::Query)),
         );
         let (metas, diags) = analyze_externals(
@@ -642,7 +642,7 @@ mod tests {
         registered.insert("has".to_string(), &reg_ext);
         let mut docs = BTreeMap::new();
         docs.insert(
-            "has".to_string(),
+            (SymbolKind::External, "has".to_string()),
             inline(&[("item", "bool")], Some("bool"), Some(ExternalKind::Query)),
         );
 
@@ -677,7 +677,7 @@ mod tests {
         );
         let mut docs = BTreeMap::new();
         docs.insert(
-            "give".to_string(),
+            (SymbolKind::External, "give".to_string()),
             inline(&[("item", "item_id")], None, None),
         );
 
@@ -701,7 +701,10 @@ mod tests {
     fn unknown_semantic_type_emits_e040() {
         let index = index_with_external("foo", &["x"]);
         let mut docs = BTreeMap::new();
-        docs.insert("foo".to_string(), inline(&[("x", "bogus")], None, None));
+        docs.insert(
+            (SymbolKind::External, "foo".to_string()),
+            inline(&[("x", "bogus")], None, None),
+        );
 
         let (metas, diags) = analyze_externals(
             &index,
@@ -760,7 +763,10 @@ mod tests {
     fn severity_off_suppresses_diagnostics_but_keeps_meta() {
         let index = index_with_external("foo", &["x"]);
         let mut docs = BTreeMap::new();
-        docs.insert("foo".to_string(), inline(&[("x", "bogus")], None, None));
+        docs.insert(
+            (SymbolKind::External, "foo".to_string()),
+            inline(&[("x", "bogus")], None, None),
+        );
 
         let (metas, diags) = analyze_externals(
             &index,

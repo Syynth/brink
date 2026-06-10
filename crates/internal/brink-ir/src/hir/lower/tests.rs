@@ -53,13 +53,14 @@ impl LowerSink for TestSink {
         crate::hir::lower::Diagnosed::test_token()
     }
 
-    fn declare_with(
+    fn declare_full(
         &mut self,
         kind: SymbolKind,
         name: &str,
         _range: TextRange,
         _params: Vec<ParamInfo>,
         _detail: Option<String>,
+        _doc: Option<DocBlock>,
     ) {
         self.symbols.push((kind, name.to_string()));
     }

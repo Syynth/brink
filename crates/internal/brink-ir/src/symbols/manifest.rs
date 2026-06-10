@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use rowan::TextRange;
 
-use super::Scope;
+use super::{Scope, SymbolKind};
 use crate::host_manifest::DocBlock;
 
 /// Per-file symbol collection for cross-file resolution by the analyzer.
@@ -28,10 +28,12 @@ pub struct SymbolManifest {
     pub locals: Vec<LocalSymbol>,
     /// Unresolved references (divert targets, variable accesses).
     pub unresolved: Vec<UnresolvedRef>,
-    /// Inline `///` doc-comment metadata for externals, keyed by external name.
-    /// Parallel to `externals`; kept off `DeclaredSymbol` so the shared symbol
-    /// type stays lean. Merged with the registered manifest by the analyzer.
-    pub external_docs: BTreeMap<String, DocBlock>,
+    /// Inline `///` doc-comment metadata for declarations, keyed by
+    /// `(kind, declared name)` — stitch names are qualified (`knot.stitch`),
+    /// matching how they're declared. Kept off `DeclaredSymbol` so the shared
+    /// symbol type stays lean. For externals, merged with the registered
+    /// host manifest by the analyzer.
+    pub docs: BTreeMap<(SymbolKind, String), DocBlock>,
 }
 
 /// A symbol declared in this file.

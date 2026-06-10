@@ -6,7 +6,7 @@ use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::doc_comment::parse_doc_comment;
 use super::super::helpers::name_from_ident;
 use super::DeclareSymbols;
-use crate::{DiagnosticCode, ExternalDecl, ParamInfo};
+use crate::{DiagnosticCode, ExternalDecl, ParamInfo, SymbolKind};
 
 impl DeclareSymbols for ast::ExternalDecl {
     type Output = ExternalDecl;
@@ -43,7 +43,14 @@ impl DeclareSymbols for ast::ExternalDecl {
             sink.diagnose(range, DiagnosticCode::E038);
         }
 
-        sink.declare_external(&name.text, name.range, param_infos, doc);
+        sink.declare_full(
+            SymbolKind::External,
+            &name.text,
+            name.range,
+            param_infos,
+            None,
+            doc,
+        );
 
         #[expect(
             clippy::cast_possible_truncation,

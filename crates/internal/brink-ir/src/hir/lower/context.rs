@@ -84,10 +84,10 @@ pub trait LowerSink {
 
     /// Declare a symbol with no params or detail.
     fn declare(&mut self, kind: SymbolKind, name: &str, range: TextRange) {
-        self.declare_with(kind, name, range, Vec::new(), None);
+        self.declare_full(kind, name, range, Vec::new(), None, None);
     }
 
-    /// Declare a symbol with full metadata.
+    /// Declare a symbol with params and detail but no doc.
     fn declare_with(
         &mut self,
         kind: SymbolKind,
@@ -95,20 +95,21 @@ pub trait LowerSink {
         range: TextRange,
         params: Vec<ParamInfo>,
         detail: Option<String>,
-    );
+    ) {
+        self.declare_full(kind, name, range, params, detail, None);
+    }
 
-    /// Declare an external function, optionally carrying inline `///` doc
-    /// metadata. The default implementation drops the doc and declares a
-    /// plain external; production sinks override to retain it.
-    fn declare_external(
+    /// Declare a symbol with full metadata, optionally carrying inline `///`
+    /// doc-comment metadata.
+    fn declare_full(
         &mut self,
+        kind: SymbolKind,
         name: &str,
         range: TextRange,
         params: Vec<ParamInfo>,
-        _doc: Option<DocBlock>,
-    ) {
-        self.declare_with(SymbolKind::External, name, range, params, None);
-    }
+        detail: Option<String>,
+        doc: Option<DocBlock>,
+    );
 
     /// Register a local variable (param or temp) scoped to a container.
     fn add_local(&mut self, local: LocalSymbol);
@@ -160,13 +161,14 @@ impl LowerSink for EffectSink {
         Diagnosed { _private: () }
     }
 
-    fn declare_with(
+    fn declare_full(
         &mut self,
         kind: SymbolKind,
         name: &str,
         range: TextRange,
         params: Vec<ParamInfo>,
         detail: Option<String>,
+        doc: Option<DocBlock>,
     ) {
         let sym = DeclaredSymbol {
             name: name.to_string(),
@@ -186,23 +188,8 @@ impl LowerSink for EffectSink {
             // Param and Temp are registered via add_local, not declare.
             SymbolKind::Param | SymbolKind::Temp => {}
         }
-    }
-
-    fn declare_external(
-        &mut self,
-        name: &str,
-        range: TextRange,
-        params: Vec<ParamInfo>,
-        doc: Option<DocBlock>,
-    ) {
-        self.manifest.externals.push(DeclaredSymbol {
-            name: name.to_string(),
-            range,
-            params,
-            detail: None,
-        });
         if let Some(doc) = doc {
-            self.manifest.external_docs.insert(name.to_string(), doc);
+            self.manifest.docs.insert((kind, name.to_string()), doc);
         }
     }
 

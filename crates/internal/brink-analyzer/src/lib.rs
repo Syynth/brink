@@ -19,7 +19,7 @@ pub use external_check::{ExternalCheckSeverity, ExternalMeta, ResolvedParam, Res
 use brink_format::DefinitionId;
 use brink_ir::{
     Diagnostic, DocBlock, HirFile, HostManifest, ManifestExternal, SemanticTypeDef, SymbolIndex,
-    SymbolManifest,
+    SymbolKind, SymbolManifest,
 };
 
 /// Tooling options for analysis: the registered host manifest and the
@@ -101,12 +101,14 @@ pub fn analyze_with_options(
     }
 }
 
-/// Collect inline `///` external docs across all files, keyed by external name.
-fn collect_inline_docs(files: &[(FileId, &SymbolManifest)]) -> BTreeMap<String, DocBlock> {
+/// Collect inline `///` docs across all files, keyed by `(kind, declared name)`.
+fn collect_inline_docs(
+    files: &[(FileId, &SymbolManifest)],
+) -> BTreeMap<(SymbolKind, String), DocBlock> {
     let mut out = BTreeMap::new();
     for &(_id, manifest) in files {
-        for (name, doc) in &manifest.external_docs {
-            out.insert(name.clone(), doc.clone());
+        for (key, doc) in &manifest.docs {
+            out.insert(key.clone(), doc.clone());
         }
     }
     out
