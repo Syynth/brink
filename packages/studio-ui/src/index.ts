@@ -4,7 +4,13 @@ export { StoreProvider, useStudioStore, useStudioStoreApi } from "./StoreContext
 export { App } from "./App.js";
 export { Binder, computeReorder } from "./Binder.js";
 export { FileTabBar } from "./FileTabBar.js";
-export { StatusBar } from "./StatusBar.js";
+export {
+  CompileStatusSegment,
+  CursorSegment,
+  ElementSegment,
+  KeyHintsSegment,
+  StorySegment,
+} from "./StatusBar.js";
 export { PlayerPane } from "./PlayerPane.js";
 export { StateView } from "./StateView.js";
 export { ProgramView } from "./ProgramView.js";

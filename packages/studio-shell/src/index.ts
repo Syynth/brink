@@ -25,10 +25,17 @@ export {
   ShellProvider,
   useShell,
   useShellLayout,
+  useStatusBarItems,
   useToolWindows,
   type ShellContextValue,
   type ShellProviderProps,
 } from "./shell-context.js";
+export {
+  StatusBarRegistry,
+  statusBarGroups,
+  type StatusBarAlignment,
+  type StatusBarItemDescriptor,
+} from "./statusbar.js";
 export { Overlay, type OverlayProps } from "./overlay.js";
 export { CommandPalette, PALETTE_COMMAND_ID, filterCommands } from "./palette.js";
 export {
@@ -49,7 +56,7 @@ export {
   type ShellLayoutStore,
 } from "./layout-store.js";
 export { registerViewToggleCommands, viewToggleCommandId } from "./view-commands.js";
-export { ShellFrame, type ShellFrameProps } from "./regions.js";
+export { ShellFrame, ShellStatusBar, type ShellFrameProps } from "./regions.js";
 export { useTier } from "./use-tier.js";
 export {
   EDITOR_REVEAL_COMMAND_ID,

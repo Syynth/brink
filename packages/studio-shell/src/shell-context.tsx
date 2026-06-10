@@ -23,6 +23,7 @@ import type { CommandRegistry } from "./command.js";
 import { Keymap, loadKeymapOverrides, type KeymapOverrides } from "./keymap.js";
 import { attachKeyHandler } from "./keyhandler.js";
 import { ToolWindowRegistry, type ToolWindowDescriptor } from "./toolwindow.js";
+import { StatusBarRegistry, type StatusBarItemDescriptor } from "./statusbar.js";
 import {
   createShellLayoutStore,
   type ShellLayoutState,
@@ -35,6 +36,7 @@ export interface ShellContextValue {
   keymap: Keymap;
   isMac: boolean;
   toolWindows: ToolWindowRegistry;
+  statusBarItems: StatusBarRegistry;
   layout: ShellLayoutStore;
 }
 
@@ -44,6 +46,8 @@ export interface ShellProviderProps {
   commands: CommandRegistry;
   /** Tool-window registry; omit for shells without docks (tests). */
   toolWindows?: ToolWindowRegistry;
+  /** Status-bar item registry (§7.3); omit for shells without one (tests). */
+  statusBarItems?: StatusBarRegistry;
   /** Override storage for keymap overrides (tests); defaults to localStorage. */
   storage?: Pick<Storage, "getItem">;
   /** Override platform detection (tests). */
@@ -54,6 +58,7 @@ export interface ShellProviderProps {
 export function ShellProvider({
   commands,
   toolWindows,
+  statusBarItems,
   storage,
   isMac,
   children,
@@ -63,6 +68,8 @@ export function ShellProvider({
   // Stable registry/store instances for the provider's lifetime.
   const [fallbackToolWindows] = useState(() => new ToolWindowRegistry());
   const registry = toolWindows ?? fallbackToolWindows;
+  const [fallbackStatusBarItems] = useState(() => new StatusBarRegistry());
+  const statusBar = statusBarItems ?? fallbackStatusBarItems;
   const [layout] = useState<ShellLayoutStore>(() => createShellLayoutStore());
 
   // Overrides load once per provider; the Settings document (Phase 5) will
@@ -114,8 +121,15 @@ export function ShellProvider({
   );
 
   const value = useMemo<ShellContextValue>(
-    () => ({ commands, keymap, isMac: mac, toolWindows: registry, layout }),
-    [commands, keymap, mac, registry, layout],
+    () => ({
+      commands,
+      keymap,
+      isMac: mac,
+      toolWindows: registry,
+      statusBarItems: statusBar,
+      layout,
+    }),
+    [commands, keymap, mac, registry, statusBar, layout],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
@@ -143,6 +157,19 @@ export function useToolWindows(): ToolWindowDescriptor[] {
     setList(toolWindows.list());
     return toolWindows.onDidChange(() => setList(toolWindows.list()));
   }, [toolWindows]);
+  return list;
+}
+
+/** The registered status-bar items, in registration order (reactive). */
+export function useStatusBarItems(): StatusBarItemDescriptor[] {
+  const { statusBarItems } = useShell();
+  const [list, setList] = useState<StatusBarItemDescriptor[]>(() =>
+    statusBarItems.list(),
+  );
+  useEffect(() => {
+    setList(statusBarItems.list());
+    return statusBarItems.onDidChange(() => setList(statusBarItems.list()));
+  }, [statusBarItems]);
   return list;
 }
 

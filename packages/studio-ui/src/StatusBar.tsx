@@ -1,4 +1,15 @@
-import { memo, useCallback, useRef, useState } from "react";
+/**
+ * Status-bar segments (docs/studio-shell-spec.md §7.3).
+ *
+ * Each segment is a component registered into the shell's StatusBarRegistry
+ * at bootstrap (brink-studio/main.tsx) — the shell renders the bar region
+ * (ShellStatusBar) without knowing what the segments are. Left group: app
+ * status (compile, story session). Right group: editor context (cursor,
+ * element type + conversion dropdown, key hints).
+ */
+
+import { useCallback, useState } from "react";
+import { useShell, viewToggleCommandId } from "@brink/studio-shell";
 import { useStudioStore } from "./StoreContext.js";
 import { ElementDropdown } from "./ElementDropdown.js";
 import type { LineInfo } from "@brink/studio-store";
@@ -32,7 +43,7 @@ function elementLabel(info: LineInfo): string {
     (info.type === ElementTypeEnum.Choice || info.type === ElementTypeEnum.Gather) &&
     info.depth > 1
   ) {
-    label += ` \u00b7 ${info.depth}`;
+    label += ` · ${info.depth}`;
   }
   if (info.type === ElementTypeEnum.Choice && info.sticky) {
     label += " (+)";
@@ -40,45 +51,22 @@ function elementLabel(info: LineInfo): string {
   return label;
 }
 
-// ── Component ──────────────────────────────────────────────────────
+// ── Left group ──────────────────────────────────────────────────────
 
-function StatusBarInner() {
-  const cursor = useStudioStore((s) => s.cursor);
-  const lineInfo = useStudioStore((s) => s.currentLineInfo);
-  const hints = useStudioStore((s) => s.currentLineHints);
+/**
+ * Compile status: error/warning counts (or a quiet check when clean).
+ * Clicking opens the Problems tool window once it exists (#84) — until that
+ * command is registered the segment renders non-interactive.
+ */
+export function CompileStatusSegment() {
   const diagnostics = useStudioStore((s) => s.diagnostics);
-  const convertLine = useStudioStore((s) => s.convertLineToType);
+  const { commands } = useShell();
 
-  const [dropdownVisible, setDropdownVisible] = useState(false);
-  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
+  const problemsCommand = viewToggleCommandId("problems");
+  const clickable = commands.get(problemsCommand) !== undefined;
 
-  const handleElementClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (btnRef.current) {
-      setAnchorRect(btnRef.current.getBoundingClientRect());
-    }
-    setDropdownVisible((v) => !v);
-  }, []);
-
-  const handleSelect = useCallback(
-    (sigil: string) => {
-      setDropdownVisible(false);
-      convertLine(sigil);
-    },
-    [convertLine],
-  );
-
-  const handleDismiss = useCallback(() => {
-    setDropdownVisible(false);
-  }, []);
-
-  // Key hints
-  const hintText = hints.map((h) => `${h.key}: ${h.hint}`).join("  \u00b7  ");
-
-  // Diagnostics
-  let diagText = "";
-  let diagClass = "brink-status-diag";
+  let text = "✓";
+  let className = "brink-status-diag";
   if (diagnostics.errors > 0 || diagnostics.warnings > 0) {
     const parts: string[] = [];
     if (diagnostics.errors > 0) {
@@ -87,36 +75,107 @@ function StatusBarInner() {
     if (diagnostics.warnings > 0) {
       parts.push(`${diagnostics.warnings} warning${diagnostics.warnings > 1 ? "s" : ""}`);
     }
-    diagText = parts.join(", ");
-    diagClass += diagnostics.errors > 0 ? " has-errors" : " has-warnings";
+    text = parts.join(", ");
+    className += diagnostics.errors > 0 ? " has-errors" : " has-warnings";
   }
 
+  if (!clickable) return <span className={className}>{text}</span>;
   return (
-    <div className="brink-statusbar">
-      <div className="brink-status-left">
-        <span className="brink-status-keyhint">{hintText}</span>
-      </div>
-      <div className="brink-status-right">
-        <span className={diagClass}>{diagText}</span>
-        <button
-          ref={btnRef}
-          className="brink-status-element-btn"
-          onClick={handleElementClick}
-        >
-          {lineInfo ? elementLabel(lineInfo) : "Blank"}
-        </button>
-        <span className="brink-status-cursor">
-          {cursor.line}:{cursor.col}
-        </span>
-      </div>
-      <ElementDropdown
-        visible={dropdownVisible}
-        onSelect={handleSelect}
-        onDismiss={handleDismiss}
-        anchorRect={anchorRect}
-      />
-    </div>
+    <button className={className + " clickable"} onClick={() => commands.dispatch(problemsCommand)}>
+      {text}
+    </button>
   );
 }
 
-export const StatusBar = memo(StatusBarInner);
+const STORY_STATUS_LABELS: Record<string, string> = {
+  none: "no story",
+  running: "running",
+  "awaiting-choice": "awaiting choice",
+  done: "done",
+  ended: "ended",
+  error: "error",
+};
+
+/** Story session status (spec §7.6); click restarts when that makes sense. */
+export function StorySegment() {
+  const status = useStudioStore((s) => s.sessionStatus);
+  const { commands } = useShell();
+
+  const label = STORY_STATUS_LABELS[status] ?? status;
+  const canRestart = commands.isEnabled("story.restart");
+  const body = (
+    <>
+      <span className={`brink-status-story-dot status-${status}`} />
+      {label}
+    </>
+  );
+
+  if (!canRestart) return <span className="brink-status-story">{body}</span>;
+  return (
+    <button
+      className="brink-status-story clickable"
+      title="Restart story"
+      onClick={() => commands.dispatch("story.restart")}
+    >
+      {body}
+    </button>
+  );
+}
+
+// ── Right group ─────────────────────────────────────────────────────
+
+export function CursorSegment() {
+  const cursor = useStudioStore((s) => s.cursor);
+  return (
+    <span className="brink-status-cursor">
+      {cursor.line}:{cursor.col}
+    </span>
+  );
+}
+
+/** Element type label + the conversion dropdown (on the overlay primitive). */
+export function ElementSegment() {
+  const lineInfo = useStudioStore((s) => s.currentLineInfo);
+  const convertLine = useStudioStore((s) => s.convertLineToType);
+
+  const [open, setOpen] = useState(false);
+  // The anchor is state (not a ref) so the Overlay re-renders once the
+  // button exists and repositions via floating-ui's autoUpdate from then on.
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
+
+  const handleSelect = useCallback(
+    (sigil: string) => {
+      setOpen(false);
+      convertLine(sigil);
+    },
+    [convertLine],
+  );
+
+  return (
+    <>
+      <button
+        ref={setAnchor}
+        className="brink-status-element-btn"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {lineInfo ? elementLabel(lineInfo) : "Blank"}
+      </button>
+      <ElementDropdown
+        open={open}
+        anchor={anchor}
+        onSelect={handleSelect}
+        onDismiss={() => setOpen(false)}
+      />
+    </>
+  );
+}
+
+export function KeyHintsSegment() {
+  const hints = useStudioStore((s) => s.currentLineHints);
+  if (hints.length === 0) return null;
+  return (
+    <span className="brink-status-keyhint">
+      {hints.map((h) => `${h.key}: ${h.hint}`).join("  ·  ")}
+    </span>
+  );
+}

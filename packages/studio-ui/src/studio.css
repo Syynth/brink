@@ -683,23 +683,8 @@
 .brink-studio .brink-tab-input.error {
   border-color: var(--brink-red);
 }
-/* Status bar */
-.brink-studio .brink-statusbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 2px 12px;
-  font-size: 12px;
-  color: var(--brink-fg-dim);
-  background: var(--brink-bg-surface);
-  border-top: 1px solid var(--brink-border);
-}
-.brink-studio .brink-status-left,
-.brink-studio .brink-status-right {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-}
+/* Status bar — segments live in the shell's full-width region
+   (.shell-statusbar, spec §7.3); these style the segment internals. */
 .brink-studio .brink-status-keyhint {
   opacity: 0.7;
 }
@@ -726,13 +711,8 @@
 }
 /* Element type dropdown */
 .brink-studio .brink-element-dropdown {
-  position: fixed;
-  background: var(--brink-bg-panel);
-  border: 1px solid var(--brink-border);
-  border-radius: 6px;
+  /* Positioning + panel chrome come from the shell overlay (.shell-overlay). */
   padding: 4px;
-  z-index: 200;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   min-width: 160px;
 }
 .brink-studio .brink-element-dropdown-item {
@@ -1398,4 +1378,71 @@
   padding: 10px 14px;
   font-size: 13px;
   color: var(--brink-fg-dim);
+}
+
+/* Shell status bar region (spec §7.3) — full shell width, bottom-most. */
+.brink-studio .shell-statusbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--brink-fg-dim);
+  background: var(--brink-bg-surface);
+  border-top: 1px solid var(--brink-border);
+  flex: none;
+}
+.brink-studio .shell-statusbar-group {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  min-width: 0;
+}
+.brink-studio .shell-statusbar-item {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.brink-studio .shell-statusbar-item button {
+  background: none;
+  border: none;
+  font: inherit;
+  color: inherit;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.brink-studio .shell-statusbar-item .clickable {
+  cursor: pointer;
+}
+.brink-studio .shell-statusbar-item .clickable:hover {
+  color: var(--brink-fg);
+}
+
+/* Story session segment (spec §7.6 status) */
+.brink-studio .brink-status-story {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.brink-studio .brink-status-story-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brink-fg-dim);
+}
+.brink-studio .brink-status-story-dot.status-running {
+  background: var(--brink-green);
+}
+.brink-studio .brink-status-story-dot.status-awaiting-choice {
+  background: var(--brink-yellow);
+}
+.brink-studio .brink-status-story-dot.status-done,
+.brink-studio .brink-status-story-dot.status-ended {
+  background: var(--brink-teal);
+}
+.brink-studio .brink-status-story-dot.status-error {
+  background: var(--brink-red);
 }
