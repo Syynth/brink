@@ -93,7 +93,8 @@ Default placement, mapped from existing components:
 | **Problems** | tool window | bottom dock, start | *new* (data exists in `CompileSlice` diagnostics) | Clickable diagnostics list → jumps editor to location. Status-bar error/warning segment opens it. |
 | **Output / compile log** | tool window | bottom dock, end | *new* | Compile timings, wasm/runtime errors that aren't source diagnostics. Replaces nothing; today this information is dropped. |
 | **Search** | tool window | left dock, start | *new, later phase* | Project-wide find/replace. In the strip from day one only if trivially stubbed; otherwise added when implemented. |
-| **Program Explorer** | tool window | bottom dock or right dock (user-movable) | [ProgramView.tsx](../packages/studio-ui/src/ProgramView.tsx) | Stays a tool window for now (matches its current sidebar life). **Open question §9.1:** promote the raw `.inkt` dump to a read-only editor document. |
+| **Program Explorer** | tool window | bottom dock or right dock (user-movable) | [ProgramView.tsx](../packages/studio-ui/src/ProgramView.tsx) | Resolved (§9.1): the structured tables (globals/lists/externals/knot tree) stay a tool window; the raw `.inkt` dump toggle leaves it in Phase 4 (see Compiled Output below). |
+| **Compiled Output** (`.inkt` dump) | editor document (read-only) | editor area | the dump toggle inside ProgramView | Phase 4: a read-only document tab with a minimal CM6 `.inkt` mode, gaining search/folding/selection. Disassembly-view precedent. |
 | **Story transcript** | tool window | bottom dock | *future* | Append-only transcript view; listed to validate the model, not scheduled. |
 | Ink files | editor document | editor area | [EditorPane.tsx](../packages/studio-ui/src/EditorPane.tsx) + CM6 | Tabbed via [FileTabBar.tsx](../packages/studio-ui/src/FileTabBar.tsx), which becomes the per-group tab bar. |
 
@@ -165,6 +166,16 @@ interface Command {
   slice owner, view-toggle commands generated from the tool-window registry).
 - One global key handler resolves keybindings → command dispatch. No component-level
   `onKeyDown` for chrome behavior.
+- **Keymap layer (required from Phase 1):** the key handler never reads
+  `command.keybinding` directly — it resolves through a keymap table built from the
+  registry's defaults, with a **user-override JSON** (localStorage, no editing UI) merged
+  over the defaults. Resolved §9.3: the indirection is cheap now and expensive to
+  retrofit, and with it in place the override merge costs almost nothing. A full
+  keymap-editing UI stays out of scope for all phases.
+- **Hamburger menu (resolved §9.2):** a single icon at the top of the left strip
+  (JetBrains new-UI placement) opens a grouped menu *generated from the command
+  registry* — no hand-maintained menu structure, embed-friendly, and the same registry
+  could feed a native menu bar in a future desktop shell. There is no in-page menu bar.
 - The **palette** is a shell overlay listing enabled commands, fuzzy-filtered, showing
   keybindings. **Quick-open** reuses the same overlay component with a different provider
   (binder items instead of commands).
@@ -245,19 +256,21 @@ Each phase lands independently; the studio remains shippable after every phase.
 - **Phase 0 — this spec.** Review, revise, approve.
 - **Phase 1 — shell skeleton.** `studio-shell` package: regions, docks+strips
   (click-to-toggle only), `ShellLayoutSlice`, tool-window + status-bar registries,
-  `CommandRegistry` + global key handler + palette. Existing components registered as-is:
+  `CommandRegistry` + global key handler resolving through the keymap layer (defaults +
+  user-override JSON, §6) + palette. Existing components registered as-is:
   Binder/Search-less left dock, Player right, State View right-end, Program Explorer
   bottom. App.tsx's pane logic is deleted; tiers reimplemented per §5.3. *Visual parity is
   not a goal; structural correctness is.*
 - **Phase 2 — fill the regions.** Problems tool window (from existing diagnostics),
   Output log, status bar segments wired to commands, quick-open over binder items,
-  maximize (replacing `playerFullscreen`).
+  maximize (replacing `playerFullscreen`), hamburger menu generated from the registry.
 - **Phase 3 — drag & persistence.** Strip-icon drag-to-re-dock, layout persistence,
   notification service replacing Toast.
 - **Phase 4 — editor groups.** Split support in the editor area (vertical first),
-  per-group tab bars from FileTabBar, `Mod-\` split command. Until this phase the editor
-  area is a single group — the shell API is written for groups from day one so this is
-  additive.
+  per-group tab bars from FileTabBar, `Mod-\` split command, read-only document support
+  with the Compiled Output (`.inkt`) tab moving out of the Program Explorer. Until this
+  phase the editor area is a single group — the shell API is written for groups from day
+  one so this is additive.
 - **Phase 5 — polish & theme.** Semantic token layer, light theme, CSS decomposition
   completes, Search tool window.
 
@@ -265,20 +278,24 @@ What is **kept** throughout: Zustand slices (editor/compile/tabs/player/binder),
 the CM6 stack and its keybindings, player/debug domain logic, binder tree logic,
 the wasm data flow, `useTier`.
 
-## 9. Open questions
+## 9. Resolved questions (2026-06-10)
 
-1. **Program Explorer's final form.** Tool window (status quo) vs. read-only editor
-   document ("compiled output" tab, like a disassembly view in a real IDE). Document-tab
-   fits the model better (it's content you read, not a tool you glance at) but means
-   building read-only document support in Phase 4 rather than reusing the tool window for
-   free. Default if undecided: stays a tool window through Phase 3; revisit at Phase 4.
-2. **Menu bar.** Neither tier of the current app has one; Zed and Inky do (native).
-   A web app can have a slim in-page menu bar or rely entirely on palette + strips.
-   Default: no menu bar; palette is the command surface. Revisit if discoverability
-   suffers.
-3. **Keybinding remapping.** Registry stores a single default binding per command; user
-   remapping is out of scope for all phases here. Flagged so the `Command` shape doesn't
-   preclude it.
+All three open questions were resolved with the user; details in the decision log
+("Studio shell spec: open questions resolved").
+
+1. **Program Explorer: split.** The structured tables stay a tool window; the raw `.inkt`
+   dump becomes the read-only **Compiled Output** editor document in Phase 4 (§4, §8).
+   Rationale: tables are glanceable lookup (tool-window behavior); the dump is a long
+   searchable text artifact that earns CM6 search/folding as a document.
+2. **Menu bar: none — registry-driven hamburger instead.** A single icon at the top of
+   the left strip opens a grouped menu generated from the command registry (§6, Phase 2).
+   Rationale: menus exist for discoverability; an in-page bar costs vertical space and is
+   wrong in embeds, while the hamburger patches the palette's discoverability hole
+   nearly free.
+3. **Keybindings: keymap layer + JSON override, no UI.** Phase 1's key handler resolves
+   through a keymap table (registry defaults merged with a user-override JSON, no editing
+   UI; §6). Full keymap UI remains out of scope. Rationale: with the layer specced anyway
+   the override merge is nearly free — cheap now, annoying later.
 
 ## 10. Non-goals
 
