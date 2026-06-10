@@ -13,6 +13,7 @@
     "paths": {
       "@brink/ink-operations": ["../ink-operations/src/index.ts"],
       "@brink/wasm-types": ["../wasm-types/src/index.ts"],
+      "@brink/studio-shell": ["../studio-shell/src/index.ts"],
       "@brink/studio-store": ["../studio-store/src/index.ts"]
     }
   },

@@ -61,6 +61,7 @@ export function chordFromEvent(event: KeyboardEvent, isMac: boolean): Chord | nu
 
 export class Keymap {
   private readonly byChord = new Map<string, string>();
+  private readonly byCommand = new Map<string, Chord>();
 
   /**
    * Build the resolution table: command defaults, with overrides winning.
@@ -78,7 +79,10 @@ export class Keymap {
         : command.keybinding;
       if (binding === null || binding === undefined) continue;
       const chord = parseKeybinding(binding);
-      if (chord !== null) keymap.byChord.set(chordId(chord), command.id);
+      if (chord !== null) {
+        keymap.byChord.set(chordId(chord), command.id);
+        keymap.byCommand.set(command.id, chord);
+      }
     }
     return keymap;
   }
@@ -87,10 +91,32 @@ export class Keymap {
     return this.byChord.get(chordId(chord));
   }
 
+  /** Effective (post-override) chord for a command — for shortcut hints. */
+  bindingFor(commandId: string): Chord | undefined {
+    return this.byCommand.get(commandId);
+  }
+
   resolveEvent(event: KeyboardEvent, isMac: boolean): string | undefined {
     const chord = chordFromEvent(event, isMac);
     return chord === null ? undefined : this.resolveChord(chord);
   }
+}
+
+/** Human-readable chord, e.g. "⌘⇧P" on macOS, "Ctrl+Shift+P" elsewhere. */
+export function formatChord(chord: Chord, isMac: boolean): string {
+  const key =
+    chord.key.length === 1
+      ? chord.key.toUpperCase()
+      : chord.key.charAt(0).toUpperCase() + chord.key.slice(1);
+  if (isMac) {
+    return (chord.mod ? "⌘" : "") + (chord.alt ? "⌥" : "") + (chord.shift ? "⇧" : "") + key;
+  }
+  const parts: string[] = [];
+  if (chord.mod) parts.push("Ctrl");
+  if (chord.alt) parts.push("Alt");
+  if (chord.shift) parts.push("Shift");
+  parts.push(key);
+  return parts.join("+");
 }
 
 /** Load overrides from storage. Never throws; malformed payloads yield {}. */

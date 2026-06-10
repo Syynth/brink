@@ -7,6 +7,7 @@ import { StateView } from "./StateView.js";
 import { ProgramView } from "./ProgramView.js";
 import { ActivityBar, sidebarViewLabel } from "./ActivityBar.js";
 import { Toast } from "./Toast.js";
+import { CommandPalette } from "@brink/studio-shell";
 import { useStudioStore } from "./StoreContext.js";
 import { useTier } from "./useTier.js";
 
@@ -165,6 +166,7 @@ function App({ editorSlot }: { editorSlot: ReactNode }) {
         )}
       </div>
 
+      <CommandPalette />
       <Toast />
     </div>
   );
