@@ -1209,10 +1209,7 @@ mod tests {
             .find(|s| s.kind == kind && s.name == name)
             .expect("symbol in index")
             .id;
-        result
-            .symbol_meta
-            .get(&id)
-            .expect("meta for symbol")
+        result.symbol_meta.get(&id).expect("meta for symbol")
     }
 
     #[test]

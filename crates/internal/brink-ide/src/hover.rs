@@ -40,12 +40,9 @@ pub fn hover(
             brink_ir::SymbolKind::Temp => "temp variable",
         };
 
-        // Host-manifest enrichment: typed params / return / kind / doc for externals.
-        let meta = if info.kind == brink_ir::SymbolKind::External {
-            analysis.symbol_meta.get(&info.id)
-        } else {
-            None
-        };
+        // Symbol-metadata enrichment: docs and typed params/returns for
+        // externals, knots, and stitches; initializer info for VAR/CONST.
+        let meta = analysis.symbol_meta.get(&info.id);
 
         let params_str = if info.params.is_empty() {
             String::new()
@@ -79,6 +76,20 @@ pub fn hover(
             .and_then(|m| m.returns.as_ref())
             .map_or(String::new(), |t| format!(" -> {}", t.name));
 
+        // Initializer info: `health: int`, `SPEED: float = 0.5`.
+        let value_str = meta
+            .and_then(|m| m.value.as_ref())
+            .map_or(String::new(), |v| {
+                let mut s = String::new();
+                if let Some(ty) = v.ty {
+                    let _ = write!(s, ": {}", ty.name());
+                }
+                if let Some(text) = &v.value_text {
+                    let _ = write!(s, " = {text}");
+                }
+                s
+            });
+
         let kind_tag = meta.map_or(String::new(), |m| match m.kind {
             brink_ir::ExternalKind::Plain => String::new(),
             brink_ir::ExternalKind::Query => " [query]".to_string(),
@@ -101,7 +112,7 @@ pub fn hover(
             .map_or(String::new(), |(_, p, _)| format!("\n\n*Defined in `{p}`*"));
 
         format!(
-            "**{kind_str}** `{}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}",
+            "**{kind_str}** `{}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}",
             info.name
         )
     } else {
@@ -124,6 +135,67 @@ mod tests {
 
     use super::hover;
     use crate::session::IdeSession;
+
+    /// Hover content for the first occurrence of `needle` in `src`.
+    fn hover_at(src: &str, needle: &str) -> String {
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let pos = u32::try_from(src.find(needle).expect("needle present")).expect("offset");
+        hover(analysis, file_id, src, TextSize::from(pos), &[])
+            .expect("hover")
+            .content
+    }
+
+    #[test]
+    fn hover_shows_function_knot_doc_and_types() {
+        let src = "\
+/// Damage roll for an attack.
+/// @param weapon {int}
+/// @returns {int}
+== function damage(weapon) ==
+~ return weapon
+";
+        let content = hover_at(src, "damage(weapon)");
+        assert!(content.contains("**knot**"), "{content}");
+        assert!(content.contains("weapon: int"), "{content}");
+        assert!(content.contains("-> int"), "{content}");
+        assert!(content.contains("[function]"), "{content}");
+        assert!(content.contains("Damage roll for an attack."), "{content}");
+    }
+
+    #[test]
+    fn hover_shows_var_inferred_type_and_doc() {
+        let src = "/// Player health.\nVAR health = 100\n-> END\n";
+        let content = hover_at(src, "health = 100");
+        assert!(content.contains("`health: int`"), "{content}");
+        assert!(content.contains("Player health."), "{content}");
+        assert!(
+            !content.contains(" = 100"),
+            "VARs don't show values: {content}"
+        );
+    }
+
+    #[test]
+    fn hover_shows_const_type_and_value() {
+        let src = "CONST SPEED = 0.5\n-> END\n";
+        let content = hover_at(src, "SPEED");
+        assert!(content.contains("`SPEED: float = 0.5`"), "{content}");
+    }
+
+    #[test]
+    fn hover_shows_stitch_doc() {
+        let src = "\
+== hub ==
+intro
+/// The market square.
+= market
+stalls
+";
+        let content = hover_at(src, "market\n");
+        assert!(content.contains("**stitch**"), "{content}");
+        assert!(content.contains("The market square."), "{content}");
+    }
 
     #[test]
     fn hover_shows_inline_types_kind_and_doc() {
