@@ -94,6 +94,13 @@ pub fn analyze_with_options(
     diagnostics.extend(callable_diags);
     symbol_meta.extend(callable_meta);
 
+    // VAR/CONST initializer info + LIST docs (presentational, no diagnostics).
+    symbol_meta.extend(external_check::infer_value_meta(
+        &hir_inputs,
+        &index,
+        &inline_docs,
+    ));
+
     // Call-site literal checks (type mismatch, closed domain) over the HIR.
     // Externals only — knot/stitch metadata is presentational, not binding.
     if opts.external_check != ExternalCheckSeverity::Off {

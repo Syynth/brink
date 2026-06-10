@@ -1,8 +1,11 @@
-//! Host-capability-manifest enrichment + checks over external functions.
+//! Symbol metadata enrichment: host-manifest checks for externals, doc/type
+//! enrichment for knots and stitches, and initializer info for VAR/CONST.
 //!
-//! Merges inline `///` doc-comments (parsed during HIR lowering) with the
-//! registered [`HostManifest`] into per-external [`SymbolMeta`] (keyed by
-//! `DefinitionId`), and emits manifest-driven diagnostics. Tooling /
+//! For externals, merges inline `///` doc-comments (parsed during HIR
+//! lowering) with the registered [`HostManifest`] into [`SymbolMeta`] (keyed
+//! by `DefinitionId`), and emits manifest-driven diagnostics. Knots/stitches
+//! get doc-only enrichment ([`enrich_callables`]); VAR/CONST/LIST get
+//! initializer-derived value info ([`infer_value_meta`]). Tooling /
 //! author-time only — the runtime and codegen never see any of this.
 //!
 //! The enrichment map is always built (the IDE consumes it for hover /
@@ -265,6 +268,152 @@ pub fn enrich_callables(
         diags.clear();
     }
     (metas, diags)
+}
+
+/// Build VAR/CONST/LIST metadata: initializer-inferred types, CONST display
+/// values, and attached `///` docs. Purely presentational — ink variables are
+/// dynamically retyped at runtime, so this never produces diagnostics.
+pub fn infer_value_meta(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
+) -> BTreeMap<DefinitionId, SymbolMeta> {
+    let mut metas: BTreeMap<DefinitionId, SymbolMeta> = BTreeMap::new();
+
+    for &(_file_id, hir) in files {
+        for v in &hir.variables {
+            add_value_meta(
+                &mut metas,
+                index,
+                inline_docs,
+                SymbolKind::Variable,
+                &v.name.text,
+                Some(&v.value),
+                false,
+            );
+        }
+        for c in &hir.constants {
+            add_value_meta(
+                &mut metas,
+                index,
+                inline_docs,
+                SymbolKind::Constant,
+                &c.name.text,
+                Some(&c.value),
+                true,
+            );
+        }
+        // Lists carry docs only — there is nothing to infer.
+        for l in &hir.lists {
+            add_value_meta(
+                &mut metas,
+                index,
+                inline_docs,
+                SymbolKind::List,
+                &l.name.text,
+                None,
+                false,
+            );
+        }
+    }
+    metas
+}
+
+/// Insert a [`SymbolMeta`] for one VAR/CONST/LIST declaration, if it has a
+/// doc or an inferable initializer.
+fn add_value_meta(
+    metas: &mut BTreeMap<DefinitionId, SymbolMeta>,
+    index: &SymbolIndex,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
+    kind: SymbolKind,
+    name: &str,
+    init: Option<&Expr>,
+    show_value: bool,
+) {
+    let doc = inline_docs
+        .get(&(kind, name.to_string()))
+        .and_then(|d| d.doc.clone());
+    let ty = init.and_then(infer_literal_type);
+    let value_text = if show_value {
+        init.and_then(literal_display)
+    } else {
+        None
+    };
+    if doc.is_none() && ty.is_none() && value_text.is_none() {
+        return;
+    }
+    let Some(id) = index.by_name.get(name).and_then(|ids| {
+        ids.iter()
+            .copied()
+            .find(|id| index.symbols.get(id).is_some_and(|s| s.kind == kind))
+    }) else {
+        return;
+    };
+    let value = (ty.is_some() || value_text.is_some()).then_some(ValueMeta { ty, value_text });
+    metas.insert(
+        id,
+        SymbolMeta {
+            doc,
+            kind: ExternalKind::Plain,
+            returns: None,
+            params: Vec::new(),
+            value,
+        },
+    );
+}
+
+/// The [`InferredType`] of an initializer literal, or `None` for anything
+/// whose type isn't statically obvious (calls, references, arithmetic).
+fn infer_literal_type(expr: &Expr) -> Option<InferredType> {
+    match expr {
+        Expr::Int(_) => Some(InferredType::Int),
+        Expr::Float(_) => Some(InferredType::Float),
+        Expr::Bool(_) => Some(InferredType::Bool),
+        Expr::String(_) => Some(InferredType::String),
+        Expr::DivertTarget(_) => Some(InferredType::Divert),
+        Expr::ListLiteral(_) => Some(InferredType::List),
+        Expr::Prefix(brink_ir::hir::PrefixOp::Negate, inner) => match inner.as_ref() {
+            Expr::Int(_) | Expr::Float(_) => infer_literal_type(inner),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Display text for a literal initializer (CONST hover), e.g. `0.5`,
+/// `"sword"`, `-> hub`. `None` for non-literals and interpolated strings.
+fn literal_display(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Int(n) => Some(n.to_string()),
+        Expr::Float(f) => Some(float_display(f.to_f64())),
+        Expr::Bool(b) => Some(b.to_string()),
+        Expr::String(_) => plain_string_value(expr).map(|s| format!("\"{s}\"")),
+        Expr::DivertTarget(p) => Some(format!("-> {}", path_display(p))),
+        Expr::Prefix(brink_ir::hir::PrefixOp::Negate, inner) => match inner.as_ref() {
+            Expr::Int(_) | Expr::Float(_) => literal_display(inner).map(|s| format!("-{s}")),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Format a float for display, keeping a trailing `.0` so it still reads as
+/// a float (`1.0`, not `1`).
+fn float_display(v: f64) -> String {
+    let s = v.to_string();
+    if s.contains('.') || s.contains('e') || s.contains("inf") || s.contains("NaN") {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
+fn path_display(path: &Path) -> String {
+    path.segments
+        .iter()
+        .map(|n| n.text.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// Resolve a [`TypeRef`] to a [`ResolvedType`], emitting E040 for an unknown
@@ -1035,6 +1184,111 @@ mod tests {
         );
         assert!(metas.is_empty());
         assert!(diags.is_empty());
+    }
+
+    // ── VAR/CONST/LIST value metadata ────────────────────────────
+
+    /// Parse, lower, and fully analyze a single source file.
+    fn analyze_source(src: &str) -> crate::AnalysisResult {
+        let parsed = brink_syntax::parse(src);
+        let tree = parsed.tree();
+        let (hir, manifest, diags) = brink_ir::hir::lower(FileId(0), &tree);
+        assert!(diags.is_empty(), "lowering diagnostics: {diags:?}");
+        crate::analyze(&[(FileId(0), &hir, &manifest)])
+    }
+
+    fn meta_by_name<'a>(
+        result: &'a crate::AnalysisResult,
+        kind: SymbolKind,
+        name: &str,
+    ) -> &'a SymbolMeta {
+        let id = result
+            .index
+            .symbols
+            .values()
+            .find(|s| s.kind == kind && s.name == name)
+            .expect("symbol in index")
+            .id;
+        result
+            .symbol_meta
+            .get(&id)
+            .expect("meta for symbol")
+    }
+
+    #[test]
+    fn var_initializer_types_are_inferred() {
+        let result = analyze_source(
+            "VAR health = 100\nVAR speed = 0.5\nVAR alive = true\nVAR name = \"Ada\"\n",
+        );
+        let ty = |name: &str| {
+            meta_by_name(&result, SymbolKind::Variable, name)
+                .value
+                .as_ref()
+                .expect("value meta")
+                .ty
+        };
+        assert_eq!(ty("health"), Some(InferredType::Int));
+        assert_eq!(ty("speed"), Some(InferredType::Float));
+        assert_eq!(ty("alive"), Some(InferredType::Bool));
+        assert_eq!(ty("name"), Some(InferredType::String));
+        // VARs never get display values — only CONSTs do.
+        assert!(
+            meta_by_name(&result, SymbolKind::Variable, "health")
+                .value
+                .as_ref()
+                .is_some_and(|v| v.value_text.is_none())
+        );
+    }
+
+    #[test]
+    fn const_gets_type_and_display_value() {
+        let result = analyze_source(
+            "CONST SPEED = 0.5\nCONST LIVES = -3\nCONST NAME = \"Ada\"\nCONST WHOLE = 1.0\n",
+        );
+        let value = |name: &str| {
+            meta_by_name(&result, SymbolKind::Constant, name)
+                .value
+                .clone()
+                .expect("value meta")
+        };
+        assert_eq!(value("SPEED").ty, Some(InferredType::Float));
+        assert_eq!(value("SPEED").value_text.as_deref(), Some("0.5"));
+        assert_eq!(value("LIVES").ty, Some(InferredType::Int));
+        assert_eq!(value("LIVES").value_text.as_deref(), Some("-3"));
+        assert_eq!(value("NAME").value_text.as_deref(), Some("\"Ada\""));
+        assert_eq!(
+            value("WHOLE").value_text.as_deref(),
+            Some("1.0"),
+            "whole floats keep a trailing .0"
+        );
+    }
+
+    #[test]
+    fn docs_attach_to_values_and_lists() {
+        let result = analyze_source(
+            "/// Player health.\nVAR health = 100\n/// Mood states.\nLIST mood = happy, sad\n",
+        );
+        assert_eq!(
+            meta_by_name(&result, SymbolKind::Variable, "health")
+                .doc
+                .as_deref(),
+            Some("Player health.")
+        );
+        let list_meta = meta_by_name(&result, SymbolKind::List, "mood");
+        assert_eq!(list_meta.doc.as_deref(), Some("Mood states."));
+        assert!(list_meta.value.is_none(), "lists carry docs only");
+    }
+
+    #[test]
+    fn divert_target_initializer_infers_divert() {
+        let result = analyze_source("VAR exit = -> hub\n== hub ==\ntext\n-> DONE\n");
+        assert_eq!(
+            meta_by_name(&result, SymbolKind::Variable, "exit")
+                .value
+                .as_ref()
+                .and_then(|v| v.ty),
+            Some(InferredType::Divert)
+        );
     }
 
     // ── Call-site literal checks (E041, E042) ────────────────────
