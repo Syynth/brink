@@ -765,7 +765,7 @@ pub enum DiagnosticCode {
     E036,
     /// Syntax error reported by the parser (malformed source).
     E037,
-    /// Malformed `///` doc-comment tag on an `EXTERNAL` declaration.
+    /// Malformed `///` doc-comment tag on a declaration.
     E038,
 
     // ── Host manifest (external-function vocabulary) ─────────────
@@ -777,6 +777,9 @@ pub enum DiagnosticCode {
     E041,
     /// External call argument violates a closed-domain constraint.
     E042,
+    /// Well-formed `///` doc-comment tag that doesn't apply to this
+    /// declaration kind (e.g. `@kind` on a knot, `@param` on a VAR).
+    E043,
 }
 
 impl DiagnosticCode {
@@ -826,6 +829,7 @@ impl DiagnosticCode {
             Self::E040 => "E040",
             Self::E041 => "E041",
             Self::E042 => "E042",
+            Self::E043 => "E043",
         }
     }
 
@@ -875,6 +879,7 @@ impl DiagnosticCode {
             Self::E040 => "unknown semantic type",
             Self::E041 => "external argument type mismatch",
             Self::E042 => "external argument out of domain",
+            Self::E043 => "doc-comment tag not applicable to this declaration",
         }
     }
 
@@ -891,7 +896,8 @@ impl DiagnosticCode {
             | Self::E033
             | Self::E034
             | Self::E035
-            | Self::E038 => Severity::Warning,
+            | Self::E038
+            | Self::E043 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -942,6 +948,7 @@ impl DiagnosticCode {
             "E040" => Some(Self::E040),
             "E041" => Some(Self::E041),
             "E042" => Some(Self::E042),
+            "E043" => Some(Self::E043),
             _ => None,
         }
     }
