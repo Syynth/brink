@@ -200,6 +200,73 @@ pub fn analyze_externals(
     (metas, diags)
 }
 
+/// Build doc/type enrichment for knots and stitches from their inline `///`
+/// docs. Signature tags (`@param` / `@returns`) resolve against the same
+/// semantic-type vocabulary as externals (E040 on unknown types), but unlike
+/// externals there are no call-site checks — callable metadata is
+/// presentational only.
+pub fn enrich_callables(
+    index: &SymbolIndex,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
+    types: &BTreeMap<String, SemanticTypeDef>,
+    severity: ExternalCheckSeverity,
+) -> (BTreeMap<DefinitionId, SymbolMeta>, Vec<Diagnostic>) {
+    let mut metas: BTreeMap<DefinitionId, SymbolMeta> = BTreeMap::new();
+    let mut diags: Vec<Diagnostic> = Vec::new();
+
+    // Deterministic order for diagnostics: sort callables by (file, offset).
+    let mut callables: Vec<&SymbolInfo> = index
+        .symbols
+        .values()
+        .filter(|info| matches!(info.kind, SymbolKind::Knot | SymbolKind::Stitch))
+        .collect();
+    callables.sort_by_key(|info| (info.file.0, info.range.start()));
+
+    for info in callables {
+        let Some(inline) = inline_docs.get(&(info.kind, info.name.clone())) else {
+            continue;
+        };
+
+        // `@param` tags match declared params by name; unmatched tags are
+        // ignored (same leniency as externals).
+        let params = info
+            .params
+            .iter()
+            .map(|p| {
+                let tref = inline
+                    .params
+                    .iter()
+                    .find(|(n, _)| n == &p.name)
+                    .map(|(_, t)| t);
+                ResolvedParam {
+                    name: p.name.clone(),
+                    ty: tref.and_then(|t| resolve_type(t, types, info, &mut diags)),
+                }
+            })
+            .collect();
+        let returns = inline
+            .returns
+            .as_ref()
+            .and_then(|t| resolve_type(t, types, info, &mut diags));
+
+        metas.insert(
+            info.id,
+            SymbolMeta {
+                doc: inline.doc.clone(),
+                kind: ExternalKind::Plain,
+                returns,
+                params,
+                value: None,
+            },
+        );
+    }
+
+    if severity == ExternalCheckSeverity::Off {
+        diags.clear();
+    }
+    (metas, diags)
+}
+
 /// Resolve a [`TypeRef`] to a [`ResolvedType`], emitting E040 for an unknown
 /// semantic type. Returns `None` for an unspecified (empty) ref.
 fn resolve_type(
@@ -229,7 +296,7 @@ fn resolve_type(
         file: info.file,
         range: info.range,
         message: format!(
-            "{}: `{}` (on external `{}`)",
+            "{}: `{}` (on `{}`)",
             DiagnosticCode::E040.title(),
             t.0.trim(),
             info.name,
@@ -822,6 +889,152 @@ mod tests {
         );
         assert!(diags.is_empty(), "Off suppresses diagnostics");
         assert!(!metas.is_empty(), "enrichment still built when Off");
+    }
+
+    // ── Callable (knot/stitch) doc enrichment ────────────────────
+
+    /// An index with one function knot and one (qualified) stitch.
+    fn index_with_callables() -> SymbolIndex {
+        let mut m = SymbolManifest::default();
+        m.knots.push(DeclaredSymbol {
+            name: "damage".to_string(),
+            range: TextRange::new(TextSize::new(0), TextSize::new(6)),
+            params: vec![ParamInfo {
+                name: "weapon".to_string(),
+                is_ref: false,
+                is_divert: false,
+            }],
+            detail: Some("function".to_string()),
+        });
+        m.stitches.push(DeclaredSymbol {
+            name: "hub.market".to_string(),
+            range: TextRange::new(TextSize::new(10), TextSize::new(16)),
+            params: Vec::new(),
+            detail: None,
+        });
+        merge_manifests(&[(FileId(0), &m)]).0
+    }
+
+    fn meta_for_kind<'a>(
+        metas: &'a BTreeMap<DefinitionId, SymbolMeta>,
+        index: &SymbolIndex,
+        kind: SymbolKind,
+        name: &str,
+    ) -> &'a SymbolMeta {
+        let id = index
+            .symbols
+            .values()
+            .find(|s| s.kind == kind && s.name == name)
+            .expect("symbol in index")
+            .id;
+        metas.get(&id).expect("meta for symbol")
+    }
+
+    #[test]
+    fn knot_doc_enriches_meta_with_resolved_types() {
+        let index = index_with_callables();
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            (SymbolKind::Knot, "damage".to_string()),
+            DocBlock {
+                doc: Some("Damage roll.".to_string()),
+                params: vec![("weapon".to_string(), TypeRef("item_id".to_string()))],
+                returns: Some(TypeRef("int".to_string())),
+                kind: None,
+            },
+        );
+        let mut types = BTreeMap::new();
+        types.insert(
+            "item_id".to_string(),
+            SemanticTypeDef {
+                name: "item_id".to_string(),
+                base: BaseType::String,
+                constraint: None,
+            },
+        );
+
+        let (metas, diags) = enrich_callables(&index, &docs, &types, ExternalCheckSeverity::Error);
+        assert!(diags.is_empty(), "known types: {diags:?}");
+        let meta = meta_for_kind(&metas, &index, SymbolKind::Knot, "damage");
+        assert_eq!(meta.doc.as_deref(), Some("Damage roll."));
+        assert_eq!(meta.kind, ExternalKind::Plain);
+        assert_eq!(
+            meta.params[0].ty.as_ref().and_then(|t| t.base),
+            Some(BaseType::String)
+        );
+        assert_eq!(
+            meta.returns.as_ref().and_then(|t| t.base),
+            Some(BaseType::Int)
+        );
+    }
+
+    #[test]
+    fn stitch_doc_keyed_by_qualified_name() {
+        let index = index_with_callables();
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            (SymbolKind::Stitch, "hub.market".to_string()),
+            DocBlock {
+                doc: Some("The market square.".to_string()),
+                params: Vec::new(),
+                returns: None,
+                kind: None,
+            },
+        );
+        let (metas, diags) = enrich_callables(
+            &index,
+            &docs,
+            &BTreeMap::new(),
+            ExternalCheckSeverity::Error,
+        );
+        assert!(diags.is_empty());
+        let meta = meta_for_kind(&metas, &index, SymbolKind::Stitch, "hub.market");
+        assert_eq!(meta.doc.as_deref(), Some("The market square."));
+    }
+
+    #[test]
+    fn unknown_semantic_type_on_knot_emits_e040() {
+        let index = index_with_callables();
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            (SymbolKind::Knot, "damage".to_string()),
+            DocBlock {
+                doc: None,
+                params: vec![("weapon".to_string(), TypeRef("bogus".to_string()))],
+                returns: None,
+                kind: None,
+            },
+        );
+        let (metas, diags) = enrich_callables(
+            &index,
+            &docs,
+            &BTreeMap::new(),
+            ExternalCheckSeverity::Error,
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E040);
+        // Meta still built with an unresolved param type.
+        let meta = meta_for_kind(&metas, &index, SymbolKind::Knot, "damage");
+        assert!(meta.params[0].ty.as_ref().is_some_and(|t| t.base.is_none()));
+
+        // Severity Off keeps the meta but suppresses the diagnostic.
+        let (metas, diags) =
+            enrich_callables(&index, &docs, &BTreeMap::new(), ExternalCheckSeverity::Off);
+        assert!(diags.is_empty());
+        assert!(!metas.is_empty());
+    }
+
+    #[test]
+    fn undocumented_callables_get_no_meta() {
+        let index = index_with_callables();
+        let (metas, diags) = enrich_callables(
+            &index,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            ExternalCheckSeverity::Error,
+        );
+        assert!(metas.is_empty());
+        assert!(diags.is_empty());
     }
 
     // ── Call-site literal checks (E041, E042) ────────────────────

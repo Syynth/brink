@@ -78,7 +78,7 @@ pub fn analyze_with_options(
     // Host-manifest enrichment + checks (tooling/author-time only).
     let inline_docs = collect_inline_docs(&manifest_inputs);
     let (types, registered) = manifest_maps(opts.host_manifest.as_ref());
-    let (symbol_meta, ext_diags) = external_check::analyze_externals(
+    let (mut symbol_meta, ext_diags) = external_check::analyze_externals(
         &index,
         &inline_docs,
         &types,
@@ -86,6 +86,13 @@ pub fn analyze_with_options(
         opts.external_check,
     );
     diagnostics.extend(ext_diags);
+
+    // Knot/stitch doc enrichment (presentational; shares the semantic-type
+    // vocabulary, so unknown types still diagnose).
+    let (callable_meta, callable_diags) =
+        external_check::enrich_callables(&index, &inline_docs, &types, opts.external_check);
+    diagnostics.extend(callable_diags);
+    symbol_meta.extend(callable_meta);
 
     // Call-site literal checks (type mismatch, closed domain) over the HIR.
     // Externals only — knot/stitch metadata is presentational, not binding.
