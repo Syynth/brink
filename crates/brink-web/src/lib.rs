@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use brink_format::Value;
@@ -803,13 +803,27 @@ struct ViewContext {
     trailing_newline: bool,
 }
 
+/// A document handle's state: the file it addresses plus an optional
+/// sub-file view context (fragment handles).
+struct DocState {
+    path: String,
+    view: Option<ViewContext>,
+}
+
 #[wasm_bindgen]
 pub struct EditorSession {
     session: IdeSession,
-    /// The active file path for IDE queries.
+    /// The active file path for IDE queries (legacy singleton API).
     active_path: String,
-    /// Optional sub-file view context for focused editing.
+    /// Optional sub-file view context for focused editing (legacy singleton API).
     view: Option<ViewContext>,
+    /// Open document handles, keyed by id. `BTreeMap` for deterministic
+    /// iteration order (project rule: never iterate a `HashMap` where order
+    /// can affect output).
+    docs: BTreeMap<u32, DocState>,
+    /// Next document-handle id. Starts at 1 — 0 is the "invalid handle"
+    /// sentinel returned by `open_document`/`open_fragment` on failure.
+    next_doc_id: u32,
 }
 
 impl Default for EditorSession {
@@ -827,6 +841,8 @@ impl EditorSession {
             session: IdeSession::new(),
             active_path: "main.ink".to_owned(),
             view: None,
+            docs: BTreeMap::new(),
+            next_doc_id: 1,
         }
     }
 
@@ -835,38 +851,18 @@ impl EditorSession {
     /// When a view context is active, `source` is treated as a fragment that
     /// gets spliced into the full file at `[view.start, view.end)`.
     pub fn update_source(&mut self, source: &str) {
-        if let Some(ref mut view) = self.view {
+        if let Some(view) = self.view {
             let full = self
                 .session
                 .file_id(&self.active_path)
                 .and_then(|id| self.session.source(id).map(str::to_owned))
                 .unwrap_or_default();
-            let start = view.start as usize;
-            let end = (view.end as usize).min(full.len());
-
-            let after = &full[end..];
-            // If the original boundary had a newline separator and the fragment
-            // doesn't end with one, insert a newline to prevent merging.
-            let needs_sep = view.trailing_newline
-                && !source.ends_with('\n')
-                && !after.starts_with('\n')
-                && !after.is_empty();
-            let sep = if needs_sep { "\n" } else { "" };
-            let mut spliced = String::with_capacity(start + source.len() + sep.len() + after.len());
-            spliced.push_str(&full[..start]);
-            spliced.push_str(source);
-            spliced.push_str(sep);
-            spliced.push_str(after);
-            // view.end tracks only the fragment, NOT the separator.
-            // The separator lives at full[view.end] and is preserved across splices.
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "ink files are always < 4GB"
-            )]
-            {
-                view.end = view.start + source.len() as u32;
+            let outcome = splice_fragment(&full, &view, source);
+            if let Some(v) = &mut self.view {
+                v.end = outcome.new_view_end;
             }
-            self.session.update_and_analyze(&self.active_path, spliced);
+            self.session
+                .update_and_analyze(&self.active_path, outcome.spliced);
         } else {
             self.session
                 .update_and_analyze(&self.active_path, source.to_owned());
@@ -942,6 +938,240 @@ impl EditorSession {
     /// context is active, or the full file otherwise. Returns a JSON string.
     pub fn get_view_source(&self) -> String {
         self.get_view_source_impl(&self.active_path, self.view.as_ref())
+    }
+
+    // ── Document handles ────────────────────────────────────────────
+    //
+    // Multi-document addressing: each handle pairs a file path with an
+    // optional fragment view, so N live editor views can issue IDE queries
+    // independently. The legacy active-file/view-context singleton above is
+    // untouched by everything below. See the `*_doc` query variants.
+
+    /// Open a full-file document handle on `path`. Returns the handle id,
+    /// or `0` (never a valid id) if the file is not loaded.
+    pub fn open_document(&mut self, path: &str) -> u32 {
+        if self.session.file_id(path).is_none() {
+            return 0;
+        }
+        self.insert_doc(DocState {
+            path: path.to_owned(),
+            view: None,
+        })
+    }
+
+    /// Open a fragment document handle scoping `path` to `[start, end)`
+    /// (UTF-16 offsets, same convention as `set_view_context`). Returns the
+    /// handle id, or `0` (never a valid id) if the file is not loaded.
+    pub fn open_fragment(&mut self, path: &str, start: u32, end: u32) -> u32 {
+        if self.session.file_id(path).is_none() {
+            return 0;
+        }
+        let view = self.compute_view_context(path, start, end);
+        self.insert_doc(DocState {
+            path: path.to_owned(),
+            view: Some(view),
+        })
+    }
+
+    /// Close a document handle. Returns `false` if the handle was unknown.
+    pub fn close_document(&mut self, doc: u32) -> bool {
+        self.docs.remove(&doc).is_some()
+    }
+
+    /// Replace a document's content: full-file replace for file handles,
+    /// fragment splice for fragment handles (the handle's own view range is
+    /// updated to cover the new fragment). Reparses, lowers, and analyzes.
+    ///
+    /// Returns a change-spec JSON object `{path, start, end, text?}`
+    /// describing what actually changed in the file, in UTF-16 **file**
+    /// coordinates: `[start, end)` is the replaced range of the file's
+    /// previous content. The inserted text is the `source` argument the
+    /// caller already has — unless `text` is present, in which case the
+    /// fragment splice appended a `\n` separator and `text` carries what was
+    /// actually inserted (`source` + `"\n"`). Returns `"null"` for an
+    /// unknown handle.
+    ///
+    /// Other handles on the same file keep their ranges as-is; rebasing
+    /// sibling fragment views from the change spec is the caller's job.
+    pub fn update_document(&mut self, doc: u32, source: &str) -> String {
+        let Some(state) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        let path = state.path.clone();
+        let view = state.view;
+        let full = self
+            .session
+            .file_id(&path)
+            .and_then(|id| self.session.source(id).map(str::to_owned))
+            .unwrap_or_default();
+
+        let spec = if let Some(view) = view {
+            let outcome = splice_fragment(&full, &view, source);
+            if let Some(v) = self.docs.get_mut(&doc).and_then(|s| s.view.as_mut()) {
+                v.end = outcome.new_view_end;
+            }
+            let spec = ChangeSpecJs {
+                path: path.clone(),
+                start: byte_to_utf16(&full, outcome.replaced_start),
+                end: byte_to_utf16(&full, outcome.replaced_end),
+                text: outcome.inserted_separator.then(|| format!("{source}\n")),
+            };
+            self.session.update_and_analyze(&path, outcome.spliced);
+            spec
+        } else {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "ink files are always < 4GB"
+            )]
+            let full_len = full.len() as u32;
+            let spec = ChangeSpecJs {
+                path: path.clone(),
+                start: 0,
+                end: byte_to_utf16(&full, full_len),
+                text: None,
+            };
+            self.session.update_and_analyze(&path, source.to_owned());
+            spec
+        };
+        serde_json::to_string(&spec).unwrap_or_default()
+    }
+
+    // ── Document-handle query variants ──────────────────────────────
+    //
+    // Same offset conventions as the singleton queries above (UTF-16,
+    // view-relative per handle) and same JSON response shapes. An unknown
+    // handle returns the same empty sentinel as a missing file.
+
+    /// Get the source text for a document handle's view (fragment or full
+    /// file). Returns a JSON string, or `"null"` for an unknown handle.
+    pub fn get_view_source_doc(&self, doc: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        self.get_view_source_impl(&d.path, d.view.as_ref())
+    }
+
+    /// Compute per-line context for a document handle. Returns JSON array of `LineContext`.
+    pub fn line_contexts_doc(&self, doc: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "[]".to_owned();
+        };
+        self.line_contexts_impl(&d.path, d.view.as_ref())
+    }
+
+    /// Compute semantic tokens for a document handle. Returns JSON array of tokens.
+    pub fn semantic_tokens_doc(&self, doc: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "[]".to_owned();
+        };
+        self.semantic_tokens_impl(&d.path, d.view.as_ref())
+    }
+
+    /// Compute completions for a document handle at the given offset. Returns JSON array.
+    pub fn completions_doc(&self, doc: u32, offset: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "[]".to_owned();
+        };
+        self.completions_impl(&d.path, d.view.as_ref(), offset)
+    }
+
+    /// Compute hover info for a document handle at the given offset. Returns JSON or "null".
+    pub fn hover_doc(&self, doc: u32, offset: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        self.hover_impl(&d.path, d.view.as_ref(), offset)
+    }
+
+    /// Compute goto-definition for a document handle at the given offset. Returns JSON or "null".
+    pub fn goto_definition_doc(&self, doc: u32, offset: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        self.goto_definition_impl(&d.path, d.view.as_ref(), offset)
+    }
+
+    /// Find all references for a document handle. Returns JSON array.
+    pub fn find_references_doc(&self, doc: u32, offset: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "[]".to_owned();
+        };
+        self.find_references_impl(&d.path, d.view.as_ref(), offset)
+    }
+
+    /// Check if rename is possible for a document handle. Returns JSON or "null".
+    pub fn prepare_rename_doc(&self, doc: u32, offset: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        self.prepare_rename_impl(&d.path, d.view.as_ref(), offset)
+    }
+
+    /// Compute rename edits for a document handle. Returns JSON array or "null".
+    pub fn rename_doc(&self, doc: u32, offset: u32, new_name: &str) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        self.rename_impl(&d.path, d.view.as_ref(), offset, new_name)
+    }
+
+    /// Compute code actions for a document handle. Returns JSON array.
+    pub fn code_actions_doc(&self, doc: u32, offset: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "[]".to_owned();
+        };
+        self.code_actions_impl(&d.path, d.view.as_ref(), offset)
+    }
+
+    /// Compute inlay hints for a document handle. Returns JSON array.
+    pub fn inlay_hints_doc(&self, doc: u32, start: u32, end: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "[]".to_owned();
+        };
+        self.inlay_hints_impl(&d.path, d.view.as_ref(), start, end)
+    }
+
+    /// Compute signature help for a document handle. Returns JSON or "null".
+    pub fn signature_help_doc(&self, doc: u32, offset: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        self.signature_help_impl(&d.path, d.view.as_ref(), offset)
+    }
+
+    /// Compute folding ranges for a document handle. Returns JSON array.
+    pub fn folding_ranges_doc(&self, doc: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "[]".to_owned();
+        };
+        self.folding_ranges_impl(&d.path, d.view.as_ref())
+    }
+
+    /// Compute document symbols (outline) for a document handle. Returns JSON array.
+    pub fn document_symbols_doc(&self, doc: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "[]".to_owned();
+        };
+        self.document_symbols_impl(&d.path)
+    }
+
+    /// Convert a line element for a document handle. Returns JSON text edit or "null".
+    ///
+    /// Target values: `"narrative"`, `"choice"`, `"sticky_choice"`, `"gather"`, `"choice_body"`.
+    pub fn convert_element_doc(&self, doc: u32, offset: u32, target: &str) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "null".to_owned();
+        };
+        self.convert_element_impl(&d.path, d.view.as_ref(), offset, target)
+    }
+
+    /// Format a document handle's file (sort knots). Returns the formatted
+    /// source as a JSON string.
+    pub fn format_document_doc(&self, doc: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "\"\"".to_owned();
+        };
+        self.format_document_impl(&d.path)
     }
 
     /// Get the current active file path.
@@ -1364,6 +1594,15 @@ impl EditorSession {
 // entry. Both funnel into the same `*_impl` bodies below.
 
 impl EditorSession {
+    /// Allocate the next handle id and insert `state`. Ids are monotonically
+    /// increasing and never reused within a session.
+    fn insert_doc(&mut self, state: DocState) -> u32 {
+        let id = self.next_doc_id;
+        self.next_doc_id += 1;
+        self.docs.insert(id, state);
+        id
+    }
+
     /// Source text of a file, if loaded.
     fn source_of(&self, path: &str) -> Option<&str> {
         self.session
@@ -2039,11 +2278,80 @@ fn floor_char_boundary(s: &str, i: usize) -> usize {
     i
 }
 
+// ── Fragment splicing ───────────────────────────────────────────────
+
+/// Result of splicing a fragment into its full file.
+struct SpliceOutcome {
+    /// The new full file content.
+    spliced: String,
+    /// New byte end of the fragment within the file (excludes any separator).
+    new_view_end: u32,
+    /// Byte start of the replaced range in the old file content.
+    replaced_start: u32,
+    /// Byte end (exclusive) of the replaced range in the old file content.
+    replaced_end: u32,
+    /// Whether a `\n` separator was appended after the fragment.
+    inserted_separator: bool,
+}
+
+/// Splice `source` into `full` over the view's `[start, end)` byte range.
+///
+/// If the original boundary had a newline separator and the fragment doesn't
+/// end with one, a `\n` separator is inserted after the fragment to prevent
+/// merging with the next section. `new_view_end` tracks only the fragment,
+/// NOT the separator — the separator lives at `spliced[new_view_end]` and is
+/// preserved across splices.
+fn splice_fragment(full: &str, view: &ViewContext, source: &str) -> SpliceOutcome {
+    let start = (view.start as usize).min(full.len());
+    let end = (view.end as usize).clamp(start, full.len());
+
+    let after = &full[end..];
+    // If the original boundary had a newline separator and the fragment
+    // doesn't end with one, insert a newline to prevent merging.
+    let needs_sep = view.trailing_newline
+        && !source.ends_with('\n')
+        && !after.starts_with('\n')
+        && !after.is_empty();
+    let sep = if needs_sep { "\n" } else { "" };
+    let mut spliced = String::with_capacity(start + source.len() + sep.len() + after.len());
+    spliced.push_str(&full[..start]);
+    spliced.push_str(source);
+    spliced.push_str(sep);
+    spliced.push_str(after);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "ink files are always < 4GB"
+    )]
+    SpliceOutcome {
+        spliced,
+        new_view_end: view.start + source.len() as u32,
+        replaced_start: start as u32,
+        replaced_end: end as u32,
+        inserted_separator: needs_sep,
+    }
+}
+
 // ── Serialization types ─────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct ProjectFileJs {
     path: String,
+}
+
+/// Change spec returned by `update_document`, describing what actually
+/// changed in the underlying file in UTF-16 **file** coordinates. `[start,
+/// end)` is the replaced range of the file's previous content. The inserted
+/// text is the caller's `source` argument, except when `text` is present —
+/// then a fragment splice appended a `\n` separator and `text` carries the
+/// actually-inserted text. Consumed by sibling editor views to live-mirror
+/// the change as a CM6 change spec.
+#[derive(Serialize)]
+struct ChangeSpecJs {
+    path: String,
+    start: u32,
+    end: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
 }
 
 #[derive(Serialize)]
