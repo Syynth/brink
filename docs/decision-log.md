@@ -856,3 +856,11 @@
 - **SCOPE:** architectural
 - **WHAT:** Before editor groups (#90), replace the wasm EditorSession's single-active-file + singleton view-context API with explicit document handles (open_document / open_fragment / update_document / queries by DocId) — filed as #122, sequenced first in Phase 4. Shell work builds on the handle API; #90/#91/#120 consume it.
 - **WHY:** The active-file session was a singleton shortcut; building editor groups on it would propagate focus-gated IDE features, a module-global session ref, and flush choreography into every document consumer. The underlying brink-ide layer is already file-addressed, so the assumption is wasm-boundary veneer — fixing it there is the correct fix at the right layer, and it makes fragment⇄file live mirroring fall out of the API's change specs instead of needing CM6 workarounds.
+
+## Editor split duplicates the active editor (VS Code exact)
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-shell
+- **SCOPE:** moderate
+- **WHAT:** Mod-\ split duplicates the active editor into the new group with live same-document mirroring (CM6 sync-dispatch), matching VS Code exactly — rather than an empty-group placeholder or moving the tab. Plain open/reveal focuses an existing tab wherever it lives; duplicates arise only from explicit actions (split, future "open to the side"). The fragment⇄file overlap (symbol tab + full-file tab of one file) live-mirrors via the #122 change specs where possible, refresh-on-focus otherwise. In scope for #90.
+- **WHY:** VS Code is the structural reference (standing decision) and its split semantics are the familiar ones; the cost shrank once #122's handle API made update change-specs explicit — live mirroring consumes them directly instead of needing CM6 workarounds.
