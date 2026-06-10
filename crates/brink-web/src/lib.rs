@@ -1047,8 +1047,8 @@ impl EditorSession {
             return "[]".to_owned();
         };
 
-        let syms = brink_ide::document::document_symbols(hir, manifest);
         let source = self.session.source(file_id).unwrap_or("");
+        let syms = brink_ide::document::document_symbols(hir, manifest, source);
         let items: Vec<DocumentSymbolJs> = syms
             .into_iter()
             .map(|s| convert_document_symbol(s, source))
@@ -1144,8 +1144,8 @@ impl EditorSession {
                 continue;
             };
 
-            let syms = brink_ide::document::document_symbols(hir, manifest);
             let source = db.source(id).unwrap_or("");
+            let syms = brink_ide::document::document_symbols(hir, manifest, source);
             let items: Vec<DocumentSymbolJs> = syms
                 .into_iter()
                 .map(|s| convert_document_symbol(s, source))
@@ -1555,8 +1555,8 @@ impl EditorSession {
             return "[]".to_owned();
         };
 
-        let syms = brink_ide::document::document_symbols(hir, manifest);
         let source = self.session.source(file_id).unwrap_or("");
+        let syms = brink_ide::document::document_symbols(hir, manifest, source);
         let items: Vec<DocumentSymbolJs> = syms
             .into_iter()
             .map(|s| convert_document_symbol(s, source))
