@@ -12,11 +12,13 @@ export interface Command {
   /** Palette display title, e.g. "View: Toggle Player". */
   title: string;
   /**
-   * Default keybinding, e.g. "Mod-J" (Mod = Cmd on macOS, Ctrl elsewhere).
-   * Resolution goes through the keymap layer, which merges user overrides —
-   * never read this field to handle keys directly.
+   * Default keybinding(s), e.g. "Mod-J" or ["Mod-Shift-P", "F1"] (Mod = Cmd
+   * on macOS, Ctrl elsewhere). Several defaults exist because browsers
+   * reserve different chords (#107); the first is the primary shown in
+   * hints. Resolution goes through the keymap layer, which merges user
+   * overrides — never read this field to handle keys directly.
    */
-  keybinding?: string;
+  keybinding?: string | readonly string[];
   /** Enablement predicate, consulted at dispatch and when listing. */
   when?: () => boolean;
   run(args?: unknown): void | Promise<void>;

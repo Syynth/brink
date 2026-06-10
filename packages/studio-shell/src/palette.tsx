@@ -62,7 +62,10 @@ export function CommandPalette() {
       commands.register({
         id: PALETTE_COMMAND_ID,
         title: "Command Palette",
-        keybinding: "Mod-Shift-P",
+        // Firefox reserves Mod-Shift-P (private browsing) and never delivers
+        // it to content (#107) — Mod-Shift-L is the cross-browser alternate;
+        // F1 works thanks to the keyhandler's function-key exemption.
+        keybinding: ["Mod-Shift-P", "Mod-Shift-L", "F1"],
         run: () => {
           setOpen((wasOpen) => !wasOpen);
           setQuery("");

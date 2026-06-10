@@ -192,16 +192,16 @@ describe("attachKeyHandler", () => {
   it("skips modifier-less chords from editable targets", () => {
     const registry = new CommandRegistry();
     const run = vi.fn();
-    registry.register(cmd("a.plain", { keybinding: "F2", run }));
+    registry.register(cmd("a.plain", { keybinding: "M", run }));
     const keymap = Keymap.fromCommands(registry.list());
     const detach = attachKeyHandler(window, registry, keymap, { isMac: false });
 
     const input = document.createElement("input");
     document.body.appendChild(input);
-    press({ key: "F2" }, input);
+    press({ key: "m" }, input);
     expect(run).not.toHaveBeenCalled();
 
-    press({ key: "F2" }, document.body);
+    press({ key: "m" }, document.body);
     expect(run).toHaveBeenCalledOnce();
 
     input.remove();
@@ -213,5 +213,59 @@ describe("attachKeyHandler", () => {
     detach();
     press({ key: "j", ctrlKey: true });
     expect(run).not.toHaveBeenCalled();
+  });
+});
+
+describe("multi-binding keymap (#107)", () => {
+  const commands = [{ id: "palette.toggle", keybinding: ["Mod-Shift-P", "Mod-Shift-L", "F1"] as const }];
+
+  it("resolves every default binding; bindingFor returns the primary", () => {
+    const keymap = Keymap.fromCommands(commands);
+    expect(keymap.resolveChord({ key: "p", mod: true, shift: true, alt: false })).toBe("palette.toggle");
+    expect(keymap.resolveChord({ key: "l", mod: true, shift: true, alt: false })).toBe("palette.toggle");
+    expect(keymap.resolveChord({ key: "f1", mod: false, shift: false, alt: false })).toBe("palette.toggle");
+    expect(keymap.bindingFor("palette.toggle")).toEqual({ key: "p", mod: true, shift: true, alt: false });
+  });
+
+  it("a string override replaces the whole default set", () => {
+    const keymap = Keymap.fromCommands(commands, { "palette.toggle": "Mod-K" });
+    expect(keymap.resolveChord({ key: "p", mod: true, shift: true, alt: false })).toBeUndefined();
+    expect(keymap.resolveChord({ key: "f1", mod: false, shift: false, alt: false })).toBeUndefined();
+    expect(keymap.resolveChord({ key: "k", mod: true, shift: false, alt: false })).toBe("palette.toggle");
+  });
+
+  it("array overrides and array values in the stored JSON work", () => {
+    const keymap = Keymap.fromCommands(commands, { "palette.toggle": ["Mod-K", "F2"] });
+    expect(keymap.resolveChord({ key: "k", mod: true, shift: false, alt: false })).toBe("palette.toggle");
+    expect(keymap.resolveChord({ key: "f2", mod: false, shift: false, alt: false })).toBe("palette.toggle");
+
+    const overrides = loadKeymapOverrides({
+      getItem: () => JSON.stringify({ "palette.toggle": ["Mod-K", "F2"], bad: [1, 2] }),
+    });
+    expect(overrides).toEqual({ "palette.toggle": ["Mod-K", "F2"] });
+  });
+
+  it("function keys fire from editable targets; letters still do not", () => {
+    const registry = new CommandRegistry();
+    const run = vi.fn();
+    registry.register(cmd("a.fn", { keybinding: "F1", run }));
+    registry.register(cmd("a.letter", { keybinding: "X", run }));
+    const keymap = Keymap.fromCommands(registry.list());
+    const detach = attachKeyHandler(window, registry, keymap, { isMac: false });
+
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    const press = (key: string) => {
+      const ev = new KeyboardEvent("keydown", { key, cancelable: true, bubbles: true });
+      input.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    };
+    expect(press("x")).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+    expect(press("F1")).toBe(true);
+    expect(run).toHaveBeenCalledOnce();
+
+    input.remove();
+    detach();
   });
 });
