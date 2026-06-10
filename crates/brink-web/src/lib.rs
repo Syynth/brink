@@ -789,6 +789,7 @@ struct ChoiceJs {
 /// A view context scopes the editor to a sub-region of a file.
 /// When active, `update_source` splices the fragment into the full file
 /// at `[start, end)`, and IDE responses adjust offsets relative to the view.
+#[derive(Clone, Copy)]
 struct ViewContext {
     /// Byte offset where the view begins in the full file.
     start: u32,
@@ -929,58 +930,7 @@ impl EditorSession {
     /// Set a view context scoping the editor to `[start, end)` of the active file.
     /// IDE queries will adjust offsets relative to this range.
     pub fn set_view_context(&mut self, start: u32, end: u32) {
-        // Boundary offsets are UTF-16 code units; convert to bytes for the
-        // internal byte-indexed logic below (and stored ViewContext range).
-        let (start, end) = match self.active_source() {
-            Some(s) => (utf16_to_byte(s, start), utf16_to_byte(s, end)),
-            None => (start, end),
-        };
-        // Check if there's a newline right at `end` (the separator between this
-        // section and the next). If so, we'll ensure it's preserved after splices.
-        // Trim trailing blank lines from the view range and check if there's a
-        // newline separator at the boundary that should be preserved across splices.
-        let (end, trailing_newline) = self
-            .session
-            .file_id(&self.active_path)
-            .and_then(|id| self.session.source(id))
-            .map_or((end, false), |s| {
-                let e = (end as usize).min(s.len());
-                let start_usize = (start as usize).min(e);
-                let view = &s[start_usize..e];
-                // Trim trailing newlines (keep at most one)
-                let trimmed = view.trim_end_matches('\n');
-                let keep = if trimmed.len() < view.len() {
-                    trimmed.len() + 1
-                } else {
-                    view.len()
-                };
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "ink files are always < 4GB"
-                )]
-                let trimmed_end = (start_usize + keep).min(e) as u32;
-                // Check if there's a newline right after the trimmed end
-                let has_nl = s.as_bytes().get(trimmed_end as usize) == Some(&b'\n')
-                    || (trimmed_end > 0
-                        && s.as_bytes().get((trimmed_end as usize).wrapping_sub(1))
-                            == Some(&b'\n'));
-                (trimmed_end, has_nl)
-            });
-
-        let start_line = self
-            .session
-            .file_id(&self.active_path)
-            .and_then(|id| self.session.source(id))
-            .map_or(0, |s| {
-                let byte_start = (start as usize).min(s.len());
-                count_newlines(&s[..byte_start])
-            });
-        self.view = Some(ViewContext {
-            start,
-            end,
-            start_line,
-            trailing_newline,
-        });
+        self.view = Some(self.compute_view_context(&self.active_path, start, end));
     }
 
     /// Clear the view context, returning to full-file mode.
@@ -991,19 +941,7 @@ impl EditorSession {
     /// Get the source text for the current view. Returns the fragment if a view
     /// context is active, or the full file otherwise. Returns a JSON string.
     pub fn get_view_source(&self) -> String {
-        let source = self
-            .session
-            .file_id(&self.active_path)
-            .and_then(|id| self.session.source(id));
-        match (source, &self.view) {
-            (Some(s), Some(v)) => {
-                let start = (v.start as usize).min(s.len());
-                let end = (v.end as usize).min(s.len());
-                serde_json::to_string(&s[start..end]).unwrap_or_default()
-            }
-            (Some(s), None) => serde_json::to_string(s).unwrap_or_default(),
-            _ => "null".to_owned(),
-        }
+        self.get_view_source_impl(&self.active_path, self.view.as_ref())
     }
 
     /// Get the current active file path.
@@ -1163,454 +1101,74 @@ impl EditorSession {
 
     /// Compute per-line context from the HIR. Returns JSON array of `LineContext`.
     pub fn line_contexts(&self) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "[]".to_owned();
-        };
-        let (Some(hir), Some(source), Some(root)) = (
-            self.session.hir(file_id),
-            self.session.source(file_id),
-            self.session.syntax_root(file_id),
-        ) else {
-            return "[]".to_owned();
-        };
-
-        let contexts = brink_ide::line_context::line_contexts(hir, source, &root);
-        if let Some(v) = &self.view {
-            let start = v.start_line as usize;
-            let end_line = self.view_end_line().map_or(contexts.len(), |l| l as usize);
-            let slice = &contexts[start..end_line.min(contexts.len())];
-            serde_json::to_string(slice).unwrap_or_default()
-        } else {
-            serde_json::to_string(&contexts).unwrap_or_default()
-        }
+        self.line_contexts_impl(&self.active_path, self.view.as_ref())
     }
 
     /// Compute semantic tokens. Returns JSON array of tokens.
     pub fn semantic_tokens(&self) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "[]".to_owned();
-        };
-        let (Some(analysis), Some(source), Some(root)) = (
-            self.session.analysis(),
-            self.session.source(file_id),
-            self.session.syntax_root(file_id),
-        ) else {
-            return "[]".to_owned();
-        };
-
-        let raw = brink_ide::semantic_tokens::semantic_tokens(source, &root, analysis, file_id);
-
-        let tokens: Vec<TokenJs> = raw
-            .iter()
-            .filter_map(|t| {
-                let line = self.to_relative_line(t.line)?;
-                Some(TokenJs {
-                    line,
-                    start_char: t.start_char,
-                    length: t.length,
-                    token_type: t.token_type,
-                    modifiers: t.modifiers,
-                })
-            })
-            .collect();
-
-        serde_json::to_string(&tokens).unwrap_or_default()
+        self.semantic_tokens_impl(&self.active_path, self.view.as_ref())
     }
 
     /// Compute completions at the given byte offset. Returns JSON array.
     pub fn completions(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "[]".to_owned();
-        };
-        let (Some(analysis), Some(source)) =
-            (self.session.analysis(), self.session.source(file_id))
-        else {
-            return "[]".to_owned();
-        };
-
-        let abs_offset = self.to_absolute(offset);
-        let ctx = brink_ide::detect_completion_context(source, abs_offset as usize);
-        let scope = brink_ide::cursor_scope(source, abs_offset as usize);
-
-        let items: Vec<CompletionItemJs> = analysis
-            .index
-            .symbols
-            .values()
-            .filter(|info| brink_ide::is_visible_in_context(&ctx, info, &scope))
-            .map(|info| CompletionItemJs {
-                name: info.name.clone(),
-                kind: symbol_kind_str(info.kind).to_owned(),
-                // Callables get a typed signature from /// docs or the host
-                // manifest, if any; otherwise the kind-derived detail.
-                detail: typed_detail(analysis, info).or_else(|| info.detail.clone()),
-            })
-            .collect();
-
-        serde_json::to_string(&items).unwrap_or_default()
+        self.completions_impl(&self.active_path, self.view.as_ref(), offset)
     }
 
     /// Compute hover info at the given byte offset. Returns JSON or "null".
     pub fn hover(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "null".to_owned();
-        };
-        let (Some(analysis), Some(source)) =
-            (self.session.analysis(), self.session.source(file_id))
-        else {
-            return "null".to_owned();
-        };
-
-        let project_files = [(file_id, self.active_path.clone(), source.to_owned())];
-
-        let abs_offset = self.to_absolute(offset);
-        match brink_ide::hover::hover(
-            analysis,
-            file_id,
-            source,
-            TextSize::new(abs_offset),
-            &project_files,
-        ) {
-            Some(info) => {
-                let js = HoverInfoJs {
-                    content: info.content,
-                    start: info.range.and_then(|r| self.to_relative(r.start().into())),
-                    end: info.range.and_then(|r| self.to_relative(r.end().into())),
-                };
-                serde_json::to_string(&js).unwrap_or_default()
-            }
-            None => "null".to_owned(),
-        }
+        self.hover_impl(&self.active_path, self.view.as_ref(), offset)
     }
 
     /// Compute goto-definition at the given byte offset. Returns JSON or "null".
     pub fn goto_definition(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "null".to_owned();
-        };
-        let Some(analysis) = self.session.analysis() else {
-            return "null".to_owned();
-        };
-
-        let abs_offset = self.to_absolute(offset);
-        match brink_ide::navigation::goto_definition(analysis, file_id, TextSize::new(abs_offset)) {
-            Some(loc) => {
-                let db = self.session.db();
-                let file_path = db.file_path(loc.file).unwrap_or_default().to_owned();
-                let (start, end) = if loc.file == file_id {
-                    // Same file: adjust to view-relative UTF-16 offsets
-                    (
-                        self.to_relative(loc.range.start().into())
-                            .unwrap_or(loc.range.start().into()),
-                        self.to_relative(loc.range.end().into())
-                            .unwrap_or(loc.range.end().into()),
-                    )
-                } else {
-                    // Cross-file: convert bytes to UTF-16 in the target file
-                    let src = self.session.source(loc.file).unwrap_or("");
-                    (
-                        byte_to_utf16(src, loc.range.start().into()),
-                        byte_to_utf16(src, loc.range.end().into()),
-                    )
-                };
-                let js = LocationJs {
-                    file: file_path,
-                    start,
-                    end,
-                };
-                serde_json::to_string(&js).unwrap_or_default()
-            }
-            None => "null".to_owned(),
-        }
+        self.goto_definition_impl(&self.active_path, self.view.as_ref(), offset)
     }
 
     /// Find all references. Returns JSON array.
     pub fn find_references(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "[]".to_owned();
-        };
-        let Some(analysis) = self.session.analysis() else {
-            return "[]".to_owned();
-        };
-
-        let abs_offset = self.to_absolute(offset);
-        let refs = brink_ide::navigation::find_references(
-            analysis,
-            file_id,
-            TextSize::new(abs_offset),
-            true,
-        );
-
-        let db = self.session.db();
-        let items: Vec<LocationJs> = refs
-            .iter()
-            .filter_map(|loc| {
-                if loc.file == file_id {
-                    // Same file: adjust offsets, filter out-of-view
-                    let start = self.to_relative(loc.range.start().into())?;
-                    let end = self.to_relative(loc.range.end().into())?;
-                    Some(LocationJs {
-                        file: db.file_path(loc.file).unwrap_or_default().to_owned(),
-                        start,
-                        end,
-                    })
-                } else {
-                    // Cross-file: convert bytes to UTF-16 in the target file
-                    let src = self.session.source(loc.file).unwrap_or("");
-                    Some(LocationJs {
-                        file: db.file_path(loc.file).unwrap_or_default().to_owned(),
-                        start: byte_to_utf16(src, loc.range.start().into()),
-                        end: byte_to_utf16(src, loc.range.end().into()),
-                    })
-                }
-            })
-            .collect();
-
-        serde_json::to_string(&items).unwrap_or_default()
+        self.find_references_impl(&self.active_path, self.view.as_ref(), offset)
     }
 
     /// Check if rename is possible. Returns JSON or "null".
     pub fn prepare_rename(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "null".to_owned();
-        };
-        let Some(analysis) = self.session.analysis() else {
-            return "null".to_owned();
-        };
-
-        let abs_offset = self.to_absolute(offset);
-        match brink_ide::rename::prepare_rename(analysis, file_id, TextSize::new(abs_offset)) {
-            Some(range) => {
-                let start = self.to_relative(range.start().into());
-                let end = self.to_relative(range.end().into());
-                match (start, end) {
-                    (Some(s), Some(e)) => {
-                        let js = LocationJs {
-                            file: self.active_path.clone(),
-                            start: s,
-                            end: e,
-                        };
-                        serde_json::to_string(&js).unwrap_or_default()
-                    }
-                    _ => "null".to_owned(),
-                }
-            }
-            None => "null".to_owned(),
-        }
+        self.prepare_rename_impl(&self.active_path, self.view.as_ref(), offset)
     }
 
     /// Compute rename edits. Returns JSON array or "null".
     pub fn rename(&self, offset: u32, new_name: &str) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "null".to_owned();
-        };
-        let Some(analysis) = self.session.analysis() else {
-            return "null".to_owned();
-        };
-
-        let abs_offset = self.to_absolute(offset);
-        match brink_ide::rename::rename(analysis, file_id, TextSize::new(abs_offset), new_name) {
-            Some(result) => {
-                let edits: Vec<FileEditJs> = result
-                    .edits
-                    .iter()
-                    .filter_map(|e| {
-                        let start = self.to_relative(e.range.start().into())?;
-                        let end = self.to_relative(e.range.end().into())?;
-                        Some(FileEditJs {
-                            start,
-                            end,
-                            new_text: e.new_text.clone(),
-                        })
-                    })
-                    .collect();
-                serde_json::to_string(&edits).unwrap_or_default()
-            }
-            None => "null".to_owned(),
-        }
+        self.rename_impl(&self.active_path, self.view.as_ref(), offset, new_name)
     }
 
     /// Compute code actions. Returns JSON array.
     pub fn code_actions(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "[]".to_owned();
-        };
-        let Some(source) = self.session.source(file_id) else {
-            return "[]".to_owned();
-        };
-
-        let abs_offset = self.to_absolute(offset);
-        let actions = brink_ide::code_actions::code_actions(source, abs_offset as usize);
-
-        let items: Vec<CodeActionJs> = actions
-            .iter()
-            .map(|a| CodeActionJs {
-                title: a.title.clone(),
-                kind: code_action_kind_str(&a.kind).to_owned(),
-            })
-            .collect();
-
-        serde_json::to_string(&items).unwrap_or_default()
+        self.code_actions_impl(&self.active_path, self.view.as_ref(), offset)
     }
 
     /// Compute inlay hints. Returns JSON array.
     pub fn inlay_hints(&self, start: u32, end: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "[]".to_owned();
-        };
-        let (Some(analysis), Some(root)) =
-            (self.session.analysis(), self.session.syntax_root(file_id))
-        else {
-            return "[]".to_owned();
-        };
-
-        let abs_start = self.to_absolute(start);
-        let abs_end = self.to_absolute(end);
-        let range = TextRange::new(TextSize::new(abs_start), TextSize::new(abs_end));
-        let hints = brink_ide::inlay_hints::inlay_hints(&root, analysis, range);
-
-        let items: Vec<InlayHintJs> = hints
-            .iter()
-            .filter_map(|h| {
-                let offset = self.to_relative(h.offset.into())?;
-                Some(InlayHintJs {
-                    offset,
-                    label: h.label.clone(),
-                    kind: inlay_hint_kind_str(&h.kind).to_owned(),
-                    padding_right: h.padding_right,
-                })
-            })
-            .collect();
-
-        serde_json::to_string(&items).unwrap_or_default()
+        self.inlay_hints_impl(&self.active_path, self.view.as_ref(), start, end)
     }
 
     /// Compute signature help. Returns JSON or "null".
     pub fn signature_help(&self, offset: u32) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "null".to_owned();
-        };
-        let (Some(analysis), Some(source)) =
-            (self.session.analysis(), self.session.source(file_id))
-        else {
-            return "null".to_owned();
-        };
-
-        let abs_offset = self.to_absolute(offset);
-        match brink_ide::signature::signature_help(analysis, source, abs_offset as usize) {
-            Some(info) => {
-                let js = SignatureInfoJs {
-                    label: info.label,
-                    documentation: info.documentation,
-                    parameters: info
-                        .parameters
-                        .iter()
-                        .map(|p| ParamLabelJs {
-                            label: p.label.clone(),
-                        })
-                        .collect(),
-                    active_parameter: info.active_parameter,
-                };
-                serde_json::to_string(&js).unwrap_or_default()
-            }
-            None => "null".to_owned(),
-        }
+        self.signature_help_impl(&self.active_path, self.view.as_ref(), offset)
     }
 
     /// Compute folding ranges. Returns JSON array.
     pub fn folding_ranges(&self) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "[]".to_owned();
-        };
-        let (Some(hir), Some(source)) = (self.session.hir(file_id), self.session.source(file_id))
-        else {
-            return "[]".to_owned();
-        };
-
-        let ranges = brink_ide::folding::folding_ranges(hir, source);
-
-        let items: Vec<FoldRangeJs> = ranges
-            .iter()
-            .filter_map(|r| {
-                let start_line = self.to_relative_line(r.start_line)?;
-                let end_line = self.to_relative_line(r.end_line)?;
-                Some(FoldRangeJs {
-                    start_line,
-                    end_line,
-                    collapsed_text: r.collapsed_text.clone(),
-                    from_line_start: r.from_line_start,
-                })
-            })
-            .collect();
-
-        serde_json::to_string(&items).unwrap_or_default()
+        self.folding_ranges_impl(&self.active_path, self.view.as_ref())
     }
 
     /// Compute document symbols (outline). Returns JSON array.
     pub fn document_symbols(&self) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "[]".to_owned();
-        };
-        let (Some(hir), Some(manifest)) =
-            (self.session.hir(file_id), self.session.manifest(file_id))
-        else {
-            return "[]".to_owned();
-        };
-
-        let source = self.session.source(file_id).unwrap_or("");
-        let syms = brink_ide::document::document_symbols(hir, manifest, source);
-        let items: Vec<DocumentSymbolJs> = syms
-            .into_iter()
-            .map(|s| convert_document_symbol(s, source))
-            .collect();
-
-        serde_json::to_string(&items).unwrap_or_default()
+        self.document_symbols_impl(&self.active_path)
     }
 
     /// Convert a line element to a different type. Returns JSON text edit or "null".
     ///
     /// Target values: `"narrative"`, `"choice"`, `"sticky_choice"`, `"gather"`, `"choice_body"`.
     pub fn convert_element(&self, offset: u32, target: &str) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "null".to_owned();
-        };
-        let (Some(hir), Some(source), Some(root)) = (
-            self.session.hir(file_id),
-            self.session.source(file_id),
-            self.session.syntax_root(file_id),
-        ) else {
-            return "null".to_owned();
-        };
-
-        let convert_target = match target {
-            "narrative" => brink_ide::line_convert::ConvertTarget::Narrative,
-            "choice" => brink_ide::line_convert::ConvertTarget::Choice { sticky: false },
-            "sticky_choice" => brink_ide::line_convert::ConvertTarget::Choice { sticky: true },
-            "gather" => brink_ide::line_convert::ConvertTarget::Gather,
-            "choice_body" => brink_ide::line_convert::ConvertTarget::ChoiceBody,
-            _ => return "null".to_owned(),
-        };
-
-        let abs_offset = self.to_absolute(offset);
-        match brink_ide::line_convert::convert_element(
-            source,
-            hir,
-            &root,
-            abs_offset,
-            convert_target,
-        ) {
-            Some(edit) => match (self.to_relative(edit.from), self.to_relative(edit.to)) {
-                (Some(from), Some(to)) => {
-                    let adjusted = brink_ide::line_convert::TextEdit {
-                        from,
-                        to,
-                        insert: edit.insert,
-                    };
-                    serde_json::to_string(&adjusted).unwrap_or_default()
-                }
-                _ => "null".to_owned(),
-            },
-            None => "null".to_owned(),
-        }
+        self.convert_element_impl(&self.active_path, self.view.as_ref(), offset, target)
     }
 
     /// Get resolved INCLUDE paths for a file. Returns JSON `[{path, resolved, loaded}]`.
@@ -1642,15 +1200,7 @@ impl EditorSession {
 
     /// Format the document (sort knots). Returns the formatted source as a JSON string.
     pub fn format_document(&self) -> String {
-        let Some(file_id) = self.session.file_id(&self.active_path) else {
-            return "\"\"".to_owned();
-        };
-        let Some(source) = self.session.source(file_id) else {
-            return "\"\"".to_owned();
-        };
-
-        let formatted = brink_ide::sort_knots_in_source(source);
-        serde_json::to_string(&formatted).unwrap_or_default()
+        self.format_document_impl(&self.active_path)
     }
 
     /// Reorder a stitch within its parent knot. Returns JSON `MoveResult` or error string.
@@ -1807,26 +1357,31 @@ impl EditorSession {
 }
 
 // ── View context helpers (private, not wasm-exported) ───────────────
+//
+// Every IDE query is parameterized over `(path, view)` — the file being
+// addressed and an optional sub-file view context. The legacy singleton API
+// passes `(active_path, view)`; the document-handle API passes the handle's
+// entry. Both funnel into the same `*_impl` bodies below.
 
 impl EditorSession {
-    /// Source text of the active file, if loaded.
-    fn active_source(&self) -> Option<&str> {
+    /// Source text of a file, if loaded.
+    fn source_of(&self, path: &str) -> Option<&str> {
         self.session
-            .file_id(&self.active_path)
+            .file_id(path)
             .and_then(|id| self.session.source(id))
     }
 
     /// Convert a UTF-16 view-relative offset (the boundary convention) to a
     /// file-absolute **byte** offset for `brink-ide`/rowan.
     ///
-    /// When a view context is active the offset is relative to the displayed
+    /// When a view context is given the offset is relative to the displayed
     /// fragment (`source[view.start..view.end]`); otherwise it's relative to
     /// the whole file.
-    fn to_absolute(&self, offset: u32) -> u32 {
-        let Some(source) = self.active_source() else {
+    fn to_absolute(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> u32 {
+        let Some(source) = self.source_of(path) else {
             return offset;
         };
-        match self.view.as_ref() {
+        match view {
             Some(v) => {
                 let start = floor_char_boundary(source, v.start as usize);
                 let end = floor_char_boundary(source, (v.end as usize).max(start));
@@ -1844,9 +1399,9 @@ impl EditorSession {
     /// Convert a file-absolute **byte** offset (from `brink-ide`) to a
     /// UTF-16 view-relative offset for the editor.
     /// Returns `None` if the offset is outside the view range.
-    fn to_relative(&self, offset: u32) -> Option<u32> {
-        let source = self.active_source()?;
-        match self.view.as_ref() {
+    fn to_relative(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> Option<u32> {
+        let source = self.source_of(path)?;
+        match view {
             Some(v) => {
                 if offset < v.start || offset > v.end {
                     return None;
@@ -1866,21 +1421,559 @@ impl EditorSession {
 
     /// Convert a file-absolute line number (0-based) to a view-relative line.
     /// Returns `None` if the line is before the view start.
-    fn to_relative_line(&self, line: u32) -> Option<u32> {
-        self.view.as_ref().map_or(Some(line), |v| {
+    fn to_relative_line(view: Option<&ViewContext>, line: u32) -> Option<u32> {
+        view.map_or(Some(line), |v| {
             (line >= v.start_line).then(|| line - v.start_line)
         })
     }
 
     /// Compute the end line of the view in the current source.
-    fn view_end_line(&self) -> Option<u32> {
-        let v = self.view.as_ref()?;
-        let source = self
-            .session
-            .file_id(&self.active_path)
-            .and_then(|id| self.session.source(id))?;
-        let byte_end = (v.end as usize).min(source.len());
+    fn view_end_line(&self, path: &str, view: &ViewContext) -> Option<u32> {
+        let source = self.source_of(path)?;
+        let byte_end = (view.end as usize).min(source.len());
         Some(count_newlines(&source[..byte_end]))
+    }
+
+    /// Compute a `ViewContext` scoping `path` to `[start, end)` (UTF-16
+    /// offsets): converts the boundary offsets to bytes, trims trailing blank
+    /// lines (keeping at most one newline), detects the newline separator at
+    /// the boundary, and records the 0-based start line.
+    fn compute_view_context(&self, path: &str, start: u32, end: u32) -> ViewContext {
+        // Boundary offsets are UTF-16 code units; convert to bytes for the
+        // internal byte-indexed logic below (and stored ViewContext range).
+        let (start, end) = match self.source_of(path) {
+            Some(s) => (utf16_to_byte(s, start), utf16_to_byte(s, end)),
+            None => (start, end),
+        };
+        // Check if there's a newline right at `end` (the separator between this
+        // section and the next). If so, we'll ensure it's preserved after splices.
+        // Trim trailing blank lines from the view range and check if there's a
+        // newline separator at the boundary that should be preserved across splices.
+        let (end, trailing_newline) = self.source_of(path).map_or((end, false), |s| {
+            let e = (end as usize).min(s.len());
+            let start_usize = (start as usize).min(e);
+            let view = &s[start_usize..e];
+            // Trim trailing newlines (keep at most one)
+            let trimmed = view.trim_end_matches('\n');
+            let keep = if trimmed.len() < view.len() {
+                trimmed.len() + 1
+            } else {
+                view.len()
+            };
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "ink files are always < 4GB"
+            )]
+            let trimmed_end = (start_usize + keep).min(e) as u32;
+            // Check if there's a newline right after the trimmed end
+            let has_nl = s.as_bytes().get(trimmed_end as usize) == Some(&b'\n')
+                || (trimmed_end > 0
+                    && s.as_bytes().get((trimmed_end as usize).wrapping_sub(1)) == Some(&b'\n'));
+            (trimmed_end, has_nl)
+        });
+
+        let start_line = self.source_of(path).map_or(0, |s| {
+            let byte_start = (start as usize).min(s.len());
+            count_newlines(&s[..byte_start])
+        });
+        ViewContext {
+            start,
+            end,
+            start_line,
+            trailing_newline,
+        }
+    }
+}
+
+// ── IDE query implementations (private, parameterized) ──────────────
+
+impl EditorSession {
+    fn line_contexts_impl(&self, path: &str, view: Option<&ViewContext>) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let (Some(hir), Some(source), Some(root)) = (
+            self.session.hir(file_id),
+            self.session.source(file_id),
+            self.session.syntax_root(file_id),
+        ) else {
+            return "[]".to_owned();
+        };
+
+        let contexts = brink_ide::line_context::line_contexts(hir, source, &root);
+        if let Some(v) = view {
+            let start = v.start_line as usize;
+            let end_line = self
+                .view_end_line(path, v)
+                .map_or(contexts.len(), |l| l as usize);
+            let slice = &contexts[start..end_line.min(contexts.len())];
+            serde_json::to_string(slice).unwrap_or_default()
+        } else {
+            serde_json::to_string(&contexts).unwrap_or_default()
+        }
+    }
+
+    fn semantic_tokens_impl(&self, path: &str, view: Option<&ViewContext>) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let (Some(analysis), Some(source), Some(root)) = (
+            self.session.analysis(),
+            self.session.source(file_id),
+            self.session.syntax_root(file_id),
+        ) else {
+            return "[]".to_owned();
+        };
+
+        let raw = brink_ide::semantic_tokens::semantic_tokens(source, &root, analysis, file_id);
+
+        let tokens: Vec<TokenJs> = raw
+            .iter()
+            .filter_map(|t| {
+                let line = Self::to_relative_line(view, t.line)?;
+                Some(TokenJs {
+                    line,
+                    start_char: t.start_char,
+                    length: t.length,
+                    token_type: t.token_type,
+                    modifiers: t.modifiers,
+                })
+            })
+            .collect();
+
+        serde_json::to_string(&tokens).unwrap_or_default()
+    }
+
+    fn completions_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let (Some(analysis), Some(source)) =
+            (self.session.analysis(), self.session.source(file_id))
+        else {
+            return "[]".to_owned();
+        };
+
+        let abs_offset = self.to_absolute(path, view, offset);
+        let ctx = brink_ide::detect_completion_context(source, abs_offset as usize);
+        let scope = brink_ide::cursor_scope(source, abs_offset as usize);
+
+        let items: Vec<CompletionItemJs> = analysis
+            .index
+            .symbols
+            .values()
+            .filter(|info| brink_ide::is_visible_in_context(&ctx, info, &scope))
+            .map(|info| CompletionItemJs {
+                name: info.name.clone(),
+                kind: symbol_kind_str(info.kind).to_owned(),
+                // Callables get a typed signature from /// docs or the host
+                // manifest, if any; otherwise the kind-derived detail.
+                detail: typed_detail(analysis, info).or_else(|| info.detail.clone()),
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    fn hover_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "null".to_owned();
+        };
+        let (Some(analysis), Some(source)) =
+            (self.session.analysis(), self.session.source(file_id))
+        else {
+            return "null".to_owned();
+        };
+
+        let project_files = [(file_id, path.to_owned(), source.to_owned())];
+
+        let abs_offset = self.to_absolute(path, view, offset);
+        match brink_ide::hover::hover(
+            analysis,
+            file_id,
+            source,
+            TextSize::new(abs_offset),
+            &project_files,
+        ) {
+            Some(info) => {
+                let js = HoverInfoJs {
+                    content: info.content,
+                    start: info
+                        .range
+                        .and_then(|r| self.to_relative(path, view, r.start().into())),
+                    end: info
+                        .range
+                        .and_then(|r| self.to_relative(path, view, r.end().into())),
+                };
+                serde_json::to_string(&js).unwrap_or_default()
+            }
+            None => "null".to_owned(),
+        }
+    }
+
+    fn goto_definition_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "null".to_owned();
+        };
+        let Some(analysis) = self.session.analysis() else {
+            return "null".to_owned();
+        };
+
+        let abs_offset = self.to_absolute(path, view, offset);
+        match brink_ide::navigation::goto_definition(analysis, file_id, TextSize::new(abs_offset)) {
+            Some(loc) => {
+                let db = self.session.db();
+                let file_path = db.file_path(loc.file).unwrap_or_default().to_owned();
+                let (start, end) = if loc.file == file_id {
+                    // Same file: adjust to view-relative UTF-16 offsets
+                    (
+                        self.to_relative(path, view, loc.range.start().into())
+                            .unwrap_or(loc.range.start().into()),
+                        self.to_relative(path, view, loc.range.end().into())
+                            .unwrap_or(loc.range.end().into()),
+                    )
+                } else {
+                    // Cross-file: convert bytes to UTF-16 in the target file
+                    let src = self.session.source(loc.file).unwrap_or("");
+                    (
+                        byte_to_utf16(src, loc.range.start().into()),
+                        byte_to_utf16(src, loc.range.end().into()),
+                    )
+                };
+                let js = LocationJs {
+                    file: file_path,
+                    start,
+                    end,
+                };
+                serde_json::to_string(&js).unwrap_or_default()
+            }
+            None => "null".to_owned(),
+        }
+    }
+
+    fn find_references_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let Some(analysis) = self.session.analysis() else {
+            return "[]".to_owned();
+        };
+
+        let abs_offset = self.to_absolute(path, view, offset);
+        let refs = brink_ide::navigation::find_references(
+            analysis,
+            file_id,
+            TextSize::new(abs_offset),
+            true,
+        );
+
+        let db = self.session.db();
+        let items: Vec<LocationJs> = refs
+            .iter()
+            .filter_map(|loc| {
+                if loc.file == file_id {
+                    // Same file: adjust offsets, filter out-of-view
+                    let start = self.to_relative(path, view, loc.range.start().into())?;
+                    let end = self.to_relative(path, view, loc.range.end().into())?;
+                    Some(LocationJs {
+                        file: db.file_path(loc.file).unwrap_or_default().to_owned(),
+                        start,
+                        end,
+                    })
+                } else {
+                    // Cross-file: convert bytes to UTF-16 in the target file
+                    let src = self.session.source(loc.file).unwrap_or("");
+                    Some(LocationJs {
+                        file: db.file_path(loc.file).unwrap_or_default().to_owned(),
+                        start: byte_to_utf16(src, loc.range.start().into()),
+                        end: byte_to_utf16(src, loc.range.end().into()),
+                    })
+                }
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    fn prepare_rename_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "null".to_owned();
+        };
+        let Some(analysis) = self.session.analysis() else {
+            return "null".to_owned();
+        };
+
+        let abs_offset = self.to_absolute(path, view, offset);
+        match brink_ide::rename::prepare_rename(analysis, file_id, TextSize::new(abs_offset)) {
+            Some(range) => {
+                let start = self.to_relative(path, view, range.start().into());
+                let end = self.to_relative(path, view, range.end().into());
+                match (start, end) {
+                    (Some(s), Some(e)) => {
+                        let js = LocationJs {
+                            file: path.to_owned(),
+                            start: s,
+                            end: e,
+                        };
+                        serde_json::to_string(&js).unwrap_or_default()
+                    }
+                    _ => "null".to_owned(),
+                }
+            }
+            None => "null".to_owned(),
+        }
+    }
+
+    fn rename_impl(
+        &self,
+        path: &str,
+        view: Option<&ViewContext>,
+        offset: u32,
+        new_name: &str,
+    ) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "null".to_owned();
+        };
+        let Some(analysis) = self.session.analysis() else {
+            return "null".to_owned();
+        };
+
+        let abs_offset = self.to_absolute(path, view, offset);
+        match brink_ide::rename::rename(analysis, file_id, TextSize::new(abs_offset), new_name) {
+            Some(result) => {
+                let edits: Vec<FileEditJs> = result
+                    .edits
+                    .iter()
+                    .filter_map(|e| {
+                        let start = self.to_relative(path, view, e.range.start().into())?;
+                        let end = self.to_relative(path, view, e.range.end().into())?;
+                        Some(FileEditJs {
+                            start,
+                            end,
+                            new_text: e.new_text.clone(),
+                        })
+                    })
+                    .collect();
+                serde_json::to_string(&edits).unwrap_or_default()
+            }
+            None => "null".to_owned(),
+        }
+    }
+
+    fn code_actions_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let Some(source) = self.session.source(file_id) else {
+            return "[]".to_owned();
+        };
+
+        let abs_offset = self.to_absolute(path, view, offset);
+        let actions = brink_ide::code_actions::code_actions(source, abs_offset as usize);
+
+        let items: Vec<CodeActionJs> = actions
+            .iter()
+            .map(|a| CodeActionJs {
+                title: a.title.clone(),
+                kind: code_action_kind_str(&a.kind).to_owned(),
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    fn inlay_hints_impl(
+        &self,
+        path: &str,
+        view: Option<&ViewContext>,
+        start: u32,
+        end: u32,
+    ) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let (Some(analysis), Some(root)) =
+            (self.session.analysis(), self.session.syntax_root(file_id))
+        else {
+            return "[]".to_owned();
+        };
+
+        let abs_start = self.to_absolute(path, view, start);
+        let abs_end = self.to_absolute(path, view, end);
+        let range = TextRange::new(TextSize::new(abs_start), TextSize::new(abs_end));
+        let hints = brink_ide::inlay_hints::inlay_hints(&root, analysis, range);
+
+        let items: Vec<InlayHintJs> = hints
+            .iter()
+            .filter_map(|h| {
+                let offset = self.to_relative(path, view, h.offset.into())?;
+                Some(InlayHintJs {
+                    offset,
+                    label: h.label.clone(),
+                    kind: inlay_hint_kind_str(&h.kind).to_owned(),
+                    padding_right: h.padding_right,
+                })
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    fn signature_help_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "null".to_owned();
+        };
+        let (Some(analysis), Some(source)) =
+            (self.session.analysis(), self.session.source(file_id))
+        else {
+            return "null".to_owned();
+        };
+
+        let abs_offset = self.to_absolute(path, view, offset);
+        match brink_ide::signature::signature_help(analysis, source, abs_offset as usize) {
+            Some(info) => {
+                let js = SignatureInfoJs {
+                    label: info.label,
+                    documentation: info.documentation,
+                    parameters: info
+                        .parameters
+                        .iter()
+                        .map(|p| ParamLabelJs {
+                            label: p.label.clone(),
+                        })
+                        .collect(),
+                    active_parameter: info.active_parameter,
+                };
+                serde_json::to_string(&js).unwrap_or_default()
+            }
+            None => "null".to_owned(),
+        }
+    }
+
+    fn folding_ranges_impl(&self, path: &str, view: Option<&ViewContext>) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let (Some(hir), Some(source)) = (self.session.hir(file_id), self.session.source(file_id))
+        else {
+            return "[]".to_owned();
+        };
+
+        let ranges = brink_ide::folding::folding_ranges(hir, source);
+
+        let items: Vec<FoldRangeJs> = ranges
+            .iter()
+            .filter_map(|r| {
+                let start_line = Self::to_relative_line(view, r.start_line)?;
+                let end_line = Self::to_relative_line(view, r.end_line)?;
+                Some(FoldRangeJs {
+                    start_line,
+                    end_line,
+                    collapsed_text: r.collapsed_text.clone(),
+                    from_line_start: r.from_line_start,
+                })
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    fn document_symbols_impl(&self, path: &str) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let (Some(hir), Some(manifest)) =
+            (self.session.hir(file_id), self.session.manifest(file_id))
+        else {
+            return "[]".to_owned();
+        };
+
+        let source = self.session.source(file_id).unwrap_or("");
+        let syms = brink_ide::document::document_symbols(hir, manifest, source);
+        let items: Vec<DocumentSymbolJs> = syms
+            .into_iter()
+            .map(|s| convert_document_symbol(s, source))
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    fn convert_element_impl(
+        &self,
+        path: &str,
+        view: Option<&ViewContext>,
+        offset: u32,
+        target: &str,
+    ) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "null".to_owned();
+        };
+        let (Some(hir), Some(source), Some(root)) = (
+            self.session.hir(file_id),
+            self.session.source(file_id),
+            self.session.syntax_root(file_id),
+        ) else {
+            return "null".to_owned();
+        };
+
+        let convert_target = match target {
+            "narrative" => brink_ide::line_convert::ConvertTarget::Narrative,
+            "choice" => brink_ide::line_convert::ConvertTarget::Choice { sticky: false },
+            "sticky_choice" => brink_ide::line_convert::ConvertTarget::Choice { sticky: true },
+            "gather" => brink_ide::line_convert::ConvertTarget::Gather,
+            "choice_body" => brink_ide::line_convert::ConvertTarget::ChoiceBody,
+            _ => return "null".to_owned(),
+        };
+
+        let abs_offset = self.to_absolute(path, view, offset);
+        match brink_ide::line_convert::convert_element(
+            source,
+            hir,
+            &root,
+            abs_offset,
+            convert_target,
+        ) {
+            Some(edit) => match (
+                self.to_relative(path, view, edit.from),
+                self.to_relative(path, view, edit.to),
+            ) {
+                (Some(from), Some(to)) => {
+                    let adjusted = brink_ide::line_convert::TextEdit {
+                        from,
+                        to,
+                        insert: edit.insert,
+                    };
+                    serde_json::to_string(&adjusted).unwrap_or_default()
+                }
+                _ => "null".to_owned(),
+            },
+            None => "null".to_owned(),
+        }
+    }
+
+    fn format_document_impl(&self, path: &str) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "\"\"".to_owned();
+        };
+        let Some(source) = self.session.source(file_id) else {
+            return "\"\"".to_owned();
+        };
+
+        let formatted = brink_ide::sort_knots_in_source(source);
+        serde_json::to_string(&formatted).unwrap_or_default()
+    }
+
+    fn get_view_source_impl(&self, path: &str, view: Option<&ViewContext>) -> String {
+        let source = self.source_of(path);
+        match (source, view) {
+            (Some(s), Some(v)) => {
+                let start = (v.start as usize).min(s.len());
+                let end = (v.end as usize).min(s.len());
+                serde_json::to_string(&s[start..end]).unwrap_or_default()
+            }
+            (Some(s), None) => serde_json::to_string(s).unwrap_or_default(),
+            _ => "null".to_owned(),
+        }
     }
 }
 
