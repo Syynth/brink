@@ -63,6 +63,13 @@ export {
 } from "./layout-store.js";
 export { registerViewToggleCommands, viewToggleCommandId } from "./view-commands.js";
 export {
+  LAYOUT_STORAGE_KEY,
+  attachLayoutPersistence,
+  loadLayoutSnapshot,
+  snapshotLayout,
+  type LayoutSnapshot,
+} from "./layout-persistence.js";
+export {
   DRAG_THRESHOLD_PX,
   StripDragGesture,
   exceedsDragThreshold,
