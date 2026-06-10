@@ -32,7 +32,18 @@ export function attachKeyHandler(
     if (event.defaultPrevented) return;
     const chord = chordFromEvent(event, isMac);
     if (chord === null) return;
-    if (!chord.mod && !chord.alt && isEditableTarget(event.target)) return;
+    // Modifier-less chords never fire from editable targets — typing keys
+    // belong to the editor. Function keys are exempt: they never insert
+    // text, so suppressing them buys no safety (#107; VS Code behaves the
+    // same — F-keys work globally).
+    if (
+      !chord.mod &&
+      !chord.alt &&
+      !isFunctionKey(chord.key) &&
+      isEditableTarget(event.target)
+    ) {
+      return;
+    }
     const commandId = keymap.resolveChord(chord);
     if (commandId === undefined) return;
     if (registry.dispatch(commandId)) {
@@ -45,6 +56,10 @@ export function attachKeyHandler(
   return () => {
     target.removeEventListener("keydown", onKeyDown as EventListener);
   };
+}
+
+function isFunctionKey(key: string): boolean {
+  return /^f([1-9]|1[0-9]|2[0-4])$/.test(key);
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {

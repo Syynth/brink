@@ -17,8 +17,11 @@ export interface Chord {
   alt: boolean;
 }
 
-/** command id → keybinding, or null to unbind the default. */
-export type KeymapOverrides = Record<string, string | null>;
+/**
+ * command id → keybinding(s) replacing the command's whole default set, or
+ * null to unbind entirely.
+ */
+export type KeymapOverrides = Record<string, string | readonly string[] | null>;
 
 export const KEYMAP_STORAGE_KEY = "brink-studio.keymap.v1";
 
@@ -65,11 +68,15 @@ export class Keymap {
 
   /**
    * Build the resolution table: command defaults, with overrides winning.
-   * An override for an unknown command id is ignored; an unparsable binding
-   * leaves the command unbound (lenient, like the loader).
+   * Commands may carry several default bindings (browsers reserve different
+   * chords — Firefox eats Mod-Shift-P; see #107); every parsed chord
+   * resolves, the first is the "primary" shown in hints. An override
+   * (string or array) replaces the whole default set; null unbinds; an
+   * override for an unknown command id is ignored; unparsable bindings are
+   * skipped (lenient, like the loader).
    */
   static fromCommands(
-    commands: readonly { id: string; keybinding?: string }[],
+    commands: readonly { id: string; keybinding?: string | readonly string[] }[],
     overrides: KeymapOverrides = {},
   ): Keymap {
     const keymap = new Keymap();
@@ -78,10 +85,15 @@ export class Keymap {
         ? overrides[command.id]
         : command.keybinding;
       if (binding === null || binding === undefined) continue;
-      const chord = parseKeybinding(binding);
-      if (chord !== null) {
+      const bindings = typeof binding === "string" ? [binding] : binding;
+      for (const one of bindings) {
+        const chord = parseKeybinding(one);
+        if (chord === null) continue;
         keymap.byChord.set(chordId(chord), command.id);
-        keymap.byCommand.set(command.id, chord);
+        // First parsed binding is the primary for display.
+        if (!keymap.byCommand.has(command.id)) {
+          keymap.byCommand.set(command.id, chord);
+        }
       }
     }
     return keymap;
@@ -91,7 +103,7 @@ export class Keymap {
     return this.byChord.get(chordId(chord));
   }
 
-  /** Effective (post-override) chord for a command — for shortcut hints. */
+  /** Effective (post-override) primary chord for a command — for hints. */
   bindingFor(commandId: string): Chord | undefined {
     return this.byCommand.get(commandId);
   }
@@ -139,7 +151,11 @@ export function loadKeymapOverrides(storage: Pick<Storage, "getItem">): KeymapOv
 
   const overrides: KeymapOverrides = {};
   for (const [id, value] of Object.entries(parsed)) {
-    if (typeof value === "string" || value === null) overrides[id] = value;
+    if (typeof value === "string" || value === null) {
+      overrides[id] = value;
+    } else if (Array.isArray(value) && value.every((v) => typeof v === "string")) {
+      overrides[id] = value as string[];
+    }
   }
   return overrides;
 }
