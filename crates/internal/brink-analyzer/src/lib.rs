@@ -18,7 +18,7 @@ pub use external_check::{ExternalCheckSeverity, ExternalMeta, ResolvedParam, Res
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    Diagnostic, ExternalDoc, HirFile, HostManifest, ManifestExternal, SemanticTypeDef, SymbolIndex,
+    Diagnostic, DocBlock, HirFile, HostManifest, ManifestExternal, SemanticTypeDef, SymbolIndex,
     SymbolManifest,
 };
 
@@ -102,7 +102,7 @@ pub fn analyze_with_options(
 }
 
 /// Collect inline `///` external docs across all files, keyed by external name.
-fn collect_inline_docs(files: &[(FileId, &SymbolManifest)]) -> BTreeMap<String, ExternalDoc> {
+fn collect_inline_docs(files: &[(FileId, &SymbolManifest)]) -> BTreeMap<String, DocBlock> {
     let mut out = BTreeMap::new();
     for &(_id, manifest) in files {
         for (name, doc) in &manifest.external_docs {

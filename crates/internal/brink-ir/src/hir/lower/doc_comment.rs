@@ -1,22 +1,22 @@
-//! Parsing of `///` JSDoc-style doc-comments on `EXTERNAL` declarations.
+//! Parsing of `///` JSDoc-style doc-comments on declarations.
 //!
 //! Comments are trivia in the green tree (no grammar involvement), so we walk
 //! the tokens immediately preceding a declaration to collect the contiguous
 //! block of `///` lines, then parse the `@param` / `@returns` / `@kind` tags
-//! into an [`ExternalDoc`]. Like Rust doc-comments, codegen ignores these —
+//! into a [`DocBlock`]. Like Rust doc-comments, codegen ignores these —
 //! only the analyzer/IDE consume them.
 
 use brink_syntax::{SyntaxKind, SyntaxNode};
 use rowan::TextRange;
 
-use crate::{ExternalDoc, ExternalKind, TypeRef};
+use crate::{DocBlock, ExternalKind, TypeRef};
 
-/// Parse the `///` doc-comment block preceding `node` into an [`ExternalDoc`].
+/// Parse the `///` doc-comment block preceding `node` into a [`DocBlock`].
 ///
 /// Returns the doc (if any tags or text were found) plus the source ranges of
 /// any malformed tags, for the caller to diagnose.
 #[must_use]
-pub fn parse_external_doc(node: &SyntaxNode) -> (Option<ExternalDoc>, Vec<TextRange>) {
+pub fn parse_doc_comment(node: &SyntaxNode) -> (Option<DocBlock>, Vec<TextRange>) {
     let lines = collect_doc_lines(node);
     if lines.is_empty() {
         return (None, Vec::new());
@@ -60,10 +60,10 @@ fn collect_doc_lines(node: &SyntaxNode) -> Vec<(String, TextRange)> {
     out
 }
 
-/// Parse collected `///` lines into an [`ExternalDoc`], returning the ranges of
+/// Parse collected `///` lines into a [`DocBlock`], returning the ranges of
 /// malformed tags.
-fn parse_lines(lines: &[(String, TextRange)]) -> (Option<ExternalDoc>, Vec<TextRange>) {
-    let mut doc = ExternalDoc::default();
+fn parse_lines(lines: &[(String, TextRange)]) -> (Option<DocBlock>, Vec<TextRange>) {
+    let mut doc = DocBlock::default();
     let mut free: Vec<String> = Vec::new();
     let mut malformed: Vec<TextRange> = Vec::new();
 
@@ -129,14 +129,14 @@ mod tests {
     use brink_syntax::parse;
 
     /// Parse `src`, find the first `EXTERNAL_DECL`, and parse its doc.
-    fn doc_of(src: &str) -> (Option<ExternalDoc>, Vec<TextRange>) {
+    fn doc_of(src: &str) -> (Option<DocBlock>, Vec<TextRange>) {
         let parsed = parse(src);
         let node = parsed
             .syntax()
             .descendants()
             .find(|n| n.kind() == SyntaxKind::EXTERNAL_DECL)
             .expect("source should contain an EXTERNAL declaration");
-        parse_external_doc(&node)
+        parse_doc_comment(&node)
     }
 
     #[test]

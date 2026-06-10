@@ -8,7 +8,7 @@
 //!
 //! Metadata comes from two sources that the analyzer merges:
 //! 1. inline `///` doc-comments on `EXTERNAL` declarations (parsed during HIR
-//!    lowering into [`ExternalDoc`]), and
+//!    lowering into [`DocBlock`]), and
 //! 2. a registered [`HostManifest`] (host-owned, project-wide), deserialized
 //!    from JSON.
 
@@ -157,14 +157,15 @@ impl ExternalKind {
 
 // ─── Inline source-resident doc (parsed from `///` comments) ────────────
 
-/// Metadata parsed from the `///` doc-comment block on an `EXTERNAL`
-/// declaration. The inline counterpart of [`ManifestExternal`], minus type
-/// *definitions* (those only come from a registered [`HostManifest`]).
+/// Metadata parsed from the `///` doc-comment block preceding a declaration
+/// (`EXTERNAL`, knot, stitch, `VAR`, `CONST`, `LIST`). For externals it is the
+/// inline counterpart of [`ManifestExternal`], minus type *definitions* (those
+/// only come from a registered [`HostManifest`]).
 ///
 /// Carries only [`TypeRef`]s (resolved against semantic types at merge time),
 /// so it stays `Eq` and can live on a per-file `DeclaredSymbol`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ExternalDoc {
+pub struct DocBlock {
     /// Free-text documentation (non-tag lines), joined by newlines.
     pub doc: Option<String>,
     /// `@param <name> {<type>}` entries, in source order.

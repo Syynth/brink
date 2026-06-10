@@ -5,7 +5,7 @@
 
 use rowan::TextRange;
 
-use crate::host_manifest::ExternalDoc;
+use crate::host_manifest::DocBlock;
 use crate::symbols::{DeclaredSymbol, LocalSymbol, RefKind, UnresolvedRef};
 use crate::{Diagnostic, DiagnosticCode, FileId, ParamInfo, Scope, SymbolKind, SymbolManifest};
 
@@ -105,7 +105,7 @@ pub trait LowerSink {
         name: &str,
         range: TextRange,
         params: Vec<ParamInfo>,
-        _doc: Option<ExternalDoc>,
+        _doc: Option<DocBlock>,
     ) {
         self.declare_with(SymbolKind::External, name, range, params, None);
     }
@@ -193,7 +193,7 @@ impl LowerSink for EffectSink {
         name: &str,
         range: TextRange,
         params: Vec<ParamInfo>,
-        doc: Option<ExternalDoc>,
+        doc: Option<DocBlock>,
     ) {
         self.manifest.externals.push(DeclaredSymbol {
             name: name.to_string(),

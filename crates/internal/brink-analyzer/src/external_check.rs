@@ -17,7 +17,7 @@ use brink_ir::hir::{
     Path, Sequence, Stmt, StringPart,
 };
 use brink_ir::{
-    BaseType, Constraint, Diagnostic, DiagnosticCode, ExternalDoc, ExternalKind, FileId,
+    BaseType, Constraint, Diagnostic, DiagnosticCode, DocBlock, ExternalKind, FileId,
     SemanticTypeDef, SymbolIndex, SymbolInfo, SymbolKind, TypeRef,
 };
 
@@ -71,7 +71,7 @@ pub struct ResolvedType {
 /// severity policy is `Off`.
 pub fn analyze_externals(
     index: &SymbolIndex,
-    inline_docs: &BTreeMap<String, ExternalDoc>,
+    inline_docs: &BTreeMap<String, DocBlock>,
     types: &BTreeMap<String, SemanticTypeDef>,
     registered: &BTreeMap<String, &brink_ir::ManifestExternal>,
     severity: ExternalCheckSeverity,
@@ -509,7 +509,7 @@ fn numeric_value(expr: &Expr) -> Option<f64> {
 #[expect(clippy::cast_possible_truncation, reason = "test helper ranges")]
 mod tests {
     use brink_ir::{
-        DeclaredSymbol, ExternalDoc, ManifestExternal, ManifestParam, ParamInfo, SemanticTypeDef,
+        DeclaredSymbol, DocBlock, ManifestExternal, ManifestParam, ParamInfo, SemanticTypeDef,
         SymbolManifest, TypeRef,
     };
     use brink_ir::{DiagnosticCode, FileId};
@@ -554,8 +554,8 @@ mod tests {
         params: &[(&str, &str)],
         returns: Option<&str>,
         kind: Option<ExternalKind>,
-    ) -> ExternalDoc {
-        ExternalDoc {
+    ) -> DocBlock {
+        DocBlock {
             doc: None,
             params: params
                 .iter()
