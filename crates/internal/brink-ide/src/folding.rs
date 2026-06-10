@@ -18,12 +18,23 @@ pub fn folding_ranges(hir: &HirFile, source: &str) -> Vec<FoldRange> {
     // Root-level block content
     collect_block_folds(&hir.root_content, source, &idx, &mut ranges);
 
-    for knot in &hir.knots {
-        push_fold(knot.ptr.text_range(), None, source, &idx, &mut ranges);
+    for (ki, knot) in hir.knots.iter().enumerate() {
+        // Clamp the fold before the next declaration's doc block — the syntax
+        // node swallows all trailing trivia up to the next header, and
+        // folding a knot must not hide the next knot's docs.
+        let next_knot_start = hir.knots.get(ki + 1).map(|n| n.ptr.text_range().start());
+        let knot_range = clamp_before_next_docs(source, knot.ptr.text_range(), next_knot_start);
+        push_fold(knot_range, None, source, &idx, &mut ranges);
         collect_block_folds(&knot.body, source, &idx, &mut ranges);
 
-        for stitch in &knot.stitches {
-            push_fold(stitch.ptr.text_range(), None, source, &idx, &mut ranges);
+        for (si, stitch) in knot.stitches.iter().enumerate() {
+            let next_start = knot
+                .stitches
+                .get(si + 1)
+                .map_or(knot_range.end(), |n| n.ptr.text_range().start());
+            let stitch_range =
+                clamp_before_next_docs(source, stitch.ptr.text_range(), Some(next_start));
+            push_fold(stitch_range, None, source, &idx, &mut ranges);
             collect_block_folds(&stitch.body, source, &idx, &mut ranges);
         }
     }
@@ -31,6 +42,22 @@ pub fn folding_ranges(hir: &HirFile, source: &str) -> Vec<FoldRange> {
     collect_doc_comment_folds(source, &mut ranges);
 
     ranges
+}
+
+/// Clamp a declaration's range end before the next declaration's attached
+/// `///` doc block, so folding it never hides the next declaration's docs.
+fn clamp_before_next_docs(
+    source: &str,
+    range: TextRange,
+    next_decl_start: Option<rowan::TextSize>,
+) -> TextRange {
+    let end = next_decl_start.map_or(range.end(), |next| {
+        let next_owned = crate::doc_extended_start(source, next.into());
+        range.end().min(rowan::TextSize::from(
+            u32::try_from(next_owned).unwrap_or(u32::MAX),
+        ))
+    });
+    TextRange::new(range.start().min(end), end)
 }
 
 /// Emit a fold range for each contiguous multi-line `///` doc-comment block,
@@ -250,6 +277,31 @@ mod tests {
         assert!(
             ranges.contains(&(3, 4)),
             "knot fold still anchored on its header: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn knot_fold_stops_before_next_knots_docs() {
+        let src = "\
+=== carrying ===
+~ return 1
+
+/// Uniform random.
+/// @returns {int}
+=== roll ===
+~ return 0
+";
+        let ranges = ranges_for(src);
+        // carrying's fold (anchored line 0) must end before roll's doc block
+        // (line 3), not swallow it as trailing trivia.
+        let carrying = ranges
+            .iter()
+            .find(|&&(s, _)| s == 0)
+            .copied()
+            .expect("carrying fold");
+        assert!(
+            carrying.1 < 3,
+            "carrying fold must not hide roll's docs: {ranges:?}"
         );
     }
 
