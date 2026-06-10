@@ -96,10 +96,39 @@ Default placement, mapped from existing components:
 | **Program Explorer** | tool window | bottom dock or right dock (user-movable) | [ProgramView.tsx](../packages/studio-ui/src/ProgramView.tsx) | Resolved (§10.1): the structured tables (globals/lists/externals/knot tree) stay a tool window; the raw `.inkt` dump toggle leaves it in Phase 4 (see Compiled Output below). |
 | **Compiled Output** (`.inkt` dump) | editor document (read-only) | editor area | the dump toggle inside ProgramView | Phase 4: a read-only document tab with a minimal CM6 `.inkt` mode, gaining search/folding/selection. Disassembly-view precedent. |
 | **Story transcript** | tool window | bottom dock | *future* | Append-only transcript view; listed to validate the model, not scheduled. |
+| **Story Graph** | editor document (custom-rendered) | editor area | *new* | Phase 6: visual story-structure explorer — see §4.1. |
 | Ink files | editor document | editor area | [EditorPane.tsx](../packages/studio-ui/src/EditorPane.tsx) + CM6 | Tabbed via [FileTabBar.tsx](../packages/studio-ui/src/FileTabBar.tsx), which becomes the per-group tab bar. |
 
 The **Toast** system is replaced by the shell notification service (§7.5) in Phase 3;
 until then the existing component mounts in the shell unchanged.
+
+### 4.1 Story Graph document
+
+A pan/zoom graph of the story's structure, opened as an editor document. It is the
+reason Phase 4's document support must be **component-based, not text-only**: Compiled
+Output is a CM6 text document, the Story Graph is a custom-rendered one — both implement
+the same document-type API.
+
+- **Granularity:** one node per knot by default; expanding a knot reveals its stitches as
+  a nested subgraph. Whole-project graph (the analyzer index is cross-file); per-file
+  scoping is a possible later view option.
+- **Edges:** plain diverts (solid), choice targets (aggregated from the weave up to the
+  owning knot/stitch, distinct style), and tunnels/threads (dashed — control returns to
+  the caller). `END`/`DONE` appear as pseudo-nodes. Function-call edges are excluded; a
+  default-off toggle is a possible later addition.
+- **Data:** a new **story-graph query** in the analyzer/IDE layer, exposed over wasm:
+  nodes (id, qualified name, file, span, kind) and edges (from, to, kind), recomputed on
+  compile like the outline. Node/edge ordering must be deterministic (sorted — the
+  HashMap-iteration rule applies). This is the one cross-crate dependency.
+- **Rendering:** auto-layout via a layered engine (ELK or dagre — handles cycles);
+  candidate React graph layer is react-flow/xyflow. Library choice is an implementation
+  decision, but layout must run off the render path and node count is capped-by-collapse
+  (knots start collapsed) per the unbounded-growth guard.
+- **Interaction:** pan/zoom; click a node to jump the editor to its source span;
+  expand/collapse knots. **Live story overlay:** while a story runs, the current location
+  node is highlighted and nodes show visit-count badges (the same name-resolved debug
+  state the State View consumes). Read-only — authoring actions from the graph (create
+  knot, drag-to-divert) are out of scope and would be a separate spec.
 
 ## 5. Behavior
 
@@ -363,13 +392,17 @@ Each phase lands independently; the studio remains shippable after every phase.
 - **Phase 3 — drag & persistence.** Strip-icon drag-to-re-dock, layout persistence,
   notification service (§7.5) replacing Toast.
 - **Phase 4 — editor groups.** Split support in the editor area (vertical first),
-  per-group tab bars from FileTabBar, `Mod-\` split command, read-only document support
-  with the Compiled Output (`.inkt`) tab moving out of the Program Explorer. Until this
-  phase the editor area is a single group — the shell API is written for groups from day
-  one so this is additive.
+  per-group tab bars from FileTabBar, `Mod-\` split command, and **component-based
+  document support** — a document-type API implemented by both text documents (CM6; the
+  Compiled Output `.inkt` tab moves out of the Program Explorer here) and custom-rendered
+  documents (consumed by the Story Graph in Phase 6). Until this phase the editor area is
+  a single group — the shell API is written for groups from day one so this is additive.
 - **Phase 5 — polish, theme & embedder API.** Semantic token layer, light theme, CSS
   decomposition completes, Search tool window, embedder extension API exposure (§8:
   `StudioExtensions` mount config, `StudioApi`, `StudioPublicState`).
+- **Phase 6 — Story Graph.** The story-graph extraction query (analyzer/IDE layer,
+  wasm-exposed) and the custom-rendered document (§4.1): auto-layout, expand/collapse,
+  click-to-jump, live story overlay.
 
 What is **kept** throughout: Zustand slices (editor/compile/tabs/player/binder),
 the CM6 stack and its keybindings, player/debug domain logic, binder tree logic,
