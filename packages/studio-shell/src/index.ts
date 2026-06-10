@@ -1,10 +1,11 @@
 /**
  * @brink/studio-shell — IDE shell infrastructure for brink-studio.
  *
- * Phases 1.1–1.3 of docs/studio-shell-spec.md: command registry, keymap
- * layer, global key handler, overlay primitive (§7.7), command palette,
- * tool-window registry (§7.1), shell layout store, region components
- * (docks/strips, §3/§5), and generated view-toggle commands (§5.2).
+ * Phase 1 of docs/studio-shell-spec.md: command registry, keymap layer,
+ * global key handler, overlay primitive (§7.7), command palette, tool-window
+ * registry (§7.1), shell layout store, region components (docks/strips,
+ * §3/§5), generated view-toggle commands (§5.2), and the Location/navigation
+ * protocol (§6.1).
  */
 
 export { CommandRegistry, HOST_ID_PREFIX, type Command } from "./command.js";
@@ -50,3 +51,16 @@ export {
 export { registerViewToggleCommands, viewToggleCommandId } from "./view-commands.js";
 export { ShellFrame, type ShellFrameProps } from "./regions.js";
 export { useTier } from "./use-tier.js";
+export {
+  EDITOR_REVEAL_COMMAND_ID,
+  LocationResolvers,
+  VIEW_REVEAL_COMMAND_ID,
+  ViewRevealHandlers,
+  resolveQualifiedSymbol,
+  type Location,
+  type LocationResolver,
+  type OutlineFileLike,
+  type OutlineSymbolLike,
+  type SourceLocation,
+  type Span,
+} from "./location.js";

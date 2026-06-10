@@ -12,7 +12,17 @@ import {
   InMemoryFileProvider,
 } from "@brink/ink-editor";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
-import { CommandRegistry, ShellProvider, ToolWindowRegistry } from "@brink/studio-shell";
+import {
+  CommandRegistry,
+  EDITOR_REVEAL_COMMAND_ID,
+  LocationResolvers,
+  ShellProvider,
+  ToolWindowRegistry,
+  VIEW_REVEAL_COMMAND_ID,
+  ViewRevealHandlers,
+  resolveQualifiedSymbol,
+  type Location as ShellLocation,
+} from "@brink/studio-shell";
 import {
   App,
   Binder,
@@ -311,6 +321,47 @@ async function main(): Promise<void> {
     when: () => store.getState().storyBytes !== null,
     run: () => store.getState().resetStory(),
   });
+
+  // Navigation protocol (spec §6.1): resolvers translate Locations toward
+  // source; editor.reveal opens the file and scrolls to the span. The symbol
+  // resolver reads the latest compile outline; program/session resolvers
+  // land with their consumers (#91, State View links).
+  const locations = new LocationResolvers();
+  locations.register("symbol", (location) =>
+    location.kind === "symbol"
+      ? resolveQualifiedSymbol(store.getState().outline, location.name)
+      : null,
+  );
+  const revealHandlers = new ViewRevealHandlers();
+  commands.register({
+    id: EDITOR_REVEAL_COMMAND_ID,
+    title: "Editor: Reveal Location",
+    run: (args) => {
+      const target = locations.resolve(args as ShellLocation);
+      const manager = store.getState()._stateManager;
+      if (target === null || manager === null) return;
+      void manager.openTab({ kind: "file" as const, path: target.file }, true).then(() => {
+        const tabs = [...manager.getTabs()];
+        const activeTab = manager.getActiveTab();
+        store.setState({ tabs, activeTabId: activeTab.id });
+        const view = manager.getView();
+        view.dispatch({
+          selection: { anchor: target.span.start },
+          effects: EditorView.scrollIntoView(target.span.start, { y: "center" }),
+        });
+        view.focus();
+      });
+    },
+  });
+  commands.register({
+    id: VIEW_REVEAL_COMMAND_ID,
+    title: "View: Reveal Item",
+    run: (args) => {
+      const { viewId, item } = (args ?? {}) as { viewId?: string; item?: unknown };
+      if (typeof viewId === "string") revealHandlers.reveal(viewId, item);
+    },
+  });
+
   // Exposed for e2e/manual verification, like __brinkView.
   (window as unknown as Record<string, unknown>).__brinkCommands = commands;
 
