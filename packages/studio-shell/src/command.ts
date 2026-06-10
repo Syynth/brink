@@ -27,6 +27,7 @@ export const HOST_ID_PREFIX = "host.";
 
 export class CommandRegistry {
   private readonly commands = new Map<string, Command>();
+  private readonly changeListeners = new Set<() => void>();
 
   /**
    * Register a command. Throws on duplicate ids and on built-ins claiming the
@@ -42,9 +43,26 @@ export class CommandRegistry {
       throw new Error(`duplicate command id "${command.id}"`);
     }
     this.commands.set(command.id, command);
+    this.notifyChange();
     return () => {
-      this.commands.delete(command.id);
+      if (this.commands.delete(command.id)) this.notifyChange();
     };
+  }
+
+  /**
+   * Subscribe to registrations/unregistrations. Components register commands
+   * at mount, so keymaps and menus rebuild from this. Returns an unsubscribe
+   * function.
+   */
+  onDidChange(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => {
+      this.changeListeners.delete(listener);
+    };
+  }
+
+  private notifyChange(): void {
+    for (const listener of this.changeListeners) listener();
   }
 
   get(id: string): Command | undefined {

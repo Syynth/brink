@@ -1189,3 +1189,76 @@
    than crushing the text column. */
 .brink-studio .editor .cm-content { min-width: 22rem; }
 .brink-studio .editor .cm-scroller { overflow-x: auto; }
+
+/* Shell overlay primitive (studio-shell §7.7) — transient surfaces. The
+   palette is the first consumer; context menus/popovers migrate onto it as
+   they're touched. Quiet per the Zed direction: hairline border, no scrim. */
+.brink-studio .shell-overlay {
+  background: var(--brink-bg-panel);
+  border: 1px solid var(--brink-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  z-index: 60;
+}
+.brink-studio .shell-overlay.anchored {
+  position: absolute;
+}
+.brink-studio .shell-overlay.centered {
+  position: fixed;
+  top: 10%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, 90vw);
+}
+
+/* Command palette */
+.brink-studio .shell-palette {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.brink-studio .shell-palette-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--brink-border);
+  outline: none;
+  color: var(--brink-fg);
+  font: inherit;
+  font-size: 14px;
+  padding: 10px 14px;
+}
+.brink-studio .shell-palette-input::placeholder {
+  color: var(--brink-fg-dim);
+}
+.brink-studio .shell-palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.brink-studio .shell-palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  font-size: 13px;
+  color: var(--brink-fg);
+  cursor: pointer;
+}
+.brink-studio .shell-palette-item.selected {
+  background: var(--brink-bg-surface);
+  color: var(--brink-accent);
+}
+.brink-studio .shell-palette-item .binding {
+  color: var(--brink-fg-dim);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.brink-studio .shell-palette-empty {
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--brink-fg-dim);
+}

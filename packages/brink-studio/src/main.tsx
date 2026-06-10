@@ -12,12 +12,7 @@ import {
   InMemoryFileProvider,
 } from "@brink/ink-editor";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
-import {
-  attachKeyHandler,
-  CommandRegistry,
-  Keymap,
-  loadKeymapOverrides,
-} from "@brink/studio-shell";
+import { CommandRegistry, ShellProvider } from "@brink/studio-shell";
 import { App, StoreProvider } from "@brink/studio-ui";
 import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
@@ -61,10 +56,9 @@ interface RootProps {
   studioOptions: BrinkStudioOptions;
   updateListener: Extension;
   commands: CommandRegistry;
-  keymap: Keymap;
 }
 
-function Root({ store, project, studioOptions, updateListener, commands, keymap }: RootProps) {
+function Root({ store, project, studioOptions, updateListener, commands }: RootProps) {
   const editorRef = useRef<InkEditorHandle>(null);
   const managerRef = useRef<EditorStateManager | null>(null);
 
@@ -176,13 +170,6 @@ function Root({ store, project, studioOptions, updateListener, commands, keymap 
     }
   }, [store, project, manager]);
 
-  // Global key handler: keybindings resolve through the keymap (defaults +
-  // user overrides) to command dispatch — never directly to functions.
-  useEffect(
-    () => attachKeyHandler(window, commands, keymap),
-    [commands, keymap],
-  );
-
   // Tear down the wasm session + story runner when the app unmounts. The
   // standalone playground never unmounts, but the embeddable/host case does —
   // this keeps the lifecycle owned instead of leaking the cached parse/HIR.
@@ -195,21 +182,23 @@ function Root({ store, project, studioOptions, updateListener, commands, keymap 
   );
 
   return (
-    <StoreProvider store={store}>
-      <App
-        editorSlot={
-          <InkEditor
-            ref={editorRef}
-            studioOptions={fullOptions.current}
-            initialState={initialState}
-            onCursorChange={onCursorChange}
-            onLineInfoChange={onLineInfoChange}
-            onCompileResult={onCompileResult}
-            onDocEdited={onDocEdited}
-          />
-        }
-      />
-    </StoreProvider>
+    <ShellProvider commands={commands}>
+      <StoreProvider store={store}>
+        <App
+          editorSlot={
+            <InkEditor
+              ref={editorRef}
+              studioOptions={fullOptions.current}
+              initialState={initialState}
+              onCursorChange={onCursorChange}
+              onLineInfoChange={onLineInfoChange}
+              onCompileResult={onCompileResult}
+              onDocEdited={onDocEdited}
+            />
+          }
+        />
+      </StoreProvider>
+    </ShellProvider>
   );
 }
 
@@ -238,9 +227,8 @@ async function main(): Promise<void> {
   const studioOptions = project.createStudioOptions();
   const store = createStudioStore();
 
-  // Shell command registry (spec §6). These first registrations prove the
-  // registry → keymap → key handler path; view/layout commands land with the
-  // dock shell (#80) and palette (#79).
+  // Shell command registry (spec §6). ShellProvider owns the keymap and the
+  // global key handler; view/layout commands land with the dock shell (#80).
   const commands = new CommandRegistry();
   commands.register({
     id: "player.toggleVisible",
@@ -254,10 +242,6 @@ async function main(): Promise<void> {
     when: () => store.getState().storyBytes !== null,
     run: () => store.getState().resetStory(),
   });
-  const keymap = Keymap.fromCommands(
-    commands.list(),
-    loadKeymapOverrides(window.localStorage),
-  );
   // Exposed for e2e/manual verification, like __brinkView.
   (window as unknown as Record<string, unknown>).__brinkCommands = commands;
 
@@ -305,7 +289,6 @@ async function main(): Promise<void> {
       studioOptions={studioOptions}
       updateListener={updateListener}
       commands={commands}
-      keymap={keymap}
     />,
   );
 }
