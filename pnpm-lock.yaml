@@ -23,6 +23,9 @@ importers:
       '@brink/ink-operations':
         specifier: workspace:*
         version: link:../ink-operations
+      '@brink/studio-shell':
+        specifier: workspace:*
+        version: link:../studio-shell
       '@brink/studio-store':
         specifier: workspace:*
         version: link:../studio-store
@@ -144,6 +147,8 @@ importers:
       '@brink/wasm-types':
         specifier: workspace:*
         version: link:../wasm-types
+
+  packages/studio-shell: {}
 
   packages/studio-store:
     dependencies:

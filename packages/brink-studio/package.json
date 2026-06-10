@@ -16,6 +16,7 @@
     "@brink/wasm": "workspace:*",
     "@brink/ink-operations": "workspace:*",
     "@brink/ink-editor": "workspace:*",
+    "@brink/studio-shell": "workspace:*",
     "@brink/studio-store": "workspace:*",
     "@brink/studio-ui": "workspace:*",
     "@codemirror/autocomplete": "^6.18.6",
