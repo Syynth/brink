@@ -124,12 +124,29 @@ function buildLineDecos(view: EditorView): DecorationSet {
   const infos = view.state.field(elementTypeField);
   const builder = new RangeSetBuilder<Decoration>();
 
+  // Section starts: each knot header line, or — when a contiguous /// doc
+  // block precedes it — the first doc line. The doc block is part of the
+  // knot, so the dividing rule sits above it.
+  const sectionStarts = new Set<number>();
+  for (let i = 1; i <= view.state.doc.lines; i++) {
+    const info = infos[i - 1];
+    if (!info || info.type !== ElementType.KnotHeader) continue;
+    let first = i;
+    for (let j = i - 1; j >= 1; j--) {
+      if (view.state.doc.line(j).text.trimStart().startsWith("///")) first = j;
+      else break;
+    }
+    sectionStarts.add(first);
+  }
+
   for (let i = 1; i <= view.state.doc.lines; i++) {
     const line = view.state.doc.line(i);
     const info = infos[i - 1];
     if (!info || info.type === ElementType.Blank) continue;
 
-    const cls = elementClass(info.type);
+    const cls = sectionStarts.has(i)
+      ? `${elementClass(info.type)} brink-section-start`
+      : elementClass(info.type);
     const attrs: Record<string, string> = { class: cls };
 
     // Indent choices/gathers at depth > 1
