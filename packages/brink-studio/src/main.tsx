@@ -204,8 +204,28 @@ function Root({ store, project, studioOptions, updateListener, commands }: RootP
 
 // ── Bootstrap ──────────────────────────────────────────────────
 
+// HMR guard (dev only). Under Vite HMR an update that reaches this entry
+// re-executes the whole module, so without a guard each edit stacks another
+// createRoot() on #app and orphans the previous wasm EditorSession. The old
+// instance's dispose hook unmounts its root *before* the new instance mounts
+// (Root's unmount effect already disposes the player and frees the wasm
+// session — HMR just never triggered it). The generation counter lets a
+// superseded main() — disposed while still awaiting init — bail out instead
+// of mounting a second root.
+interface HotData {
+  generation?: number;
+  teardown?: () => void;
+}
+const hotData = import.meta.hot?.data as HotData | undefined;
+const generation = hotData ? (hotData.generation = (hotData.generation ?? 0) + 1) : 0;
+
+function superseded(): boolean {
+  return hotData !== undefined && hotData.generation !== generation;
+}
+
 async function main(): Promise<void> {
   await initWasm();
+  if (superseded()) return;
 
   const loading = document.getElementById("loading");
   if (loading) loading.remove();
@@ -223,6 +243,10 @@ async function main(): Promise<void> {
   const provider = new InMemoryFileProvider(files);
   const project = new ProjectSession({ provider, entryFile: "main.ink" });
   await project.initialize();
+  if (superseded()) {
+    project.destroy();
+    return;
+  }
 
   const studioOptions = project.createStudioOptions();
   const store = createStudioStore();
@@ -291,6 +315,18 @@ async function main(): Promise<void> {
       commands={commands}
     />,
   );
+
+  if (hotData) {
+    // Unmounting runs Root's cleanup effect: disposePlayer + project.destroy.
+    hotData.teardown = () => root.unmount();
+  }
 }
 
 main();
+
+if (import.meta.hot) {
+  import.meta.hot.dispose((data: HotData) => {
+    data.teardown?.();
+    data.teardown = undefined;
+  });
+}
