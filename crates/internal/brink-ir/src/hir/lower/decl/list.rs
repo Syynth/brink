@@ -3,6 +3,7 @@
 use brink_syntax::ast::{self, AstNode};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
+use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::{make_name, name_from_ident};
 use super::DeclareSymbols;
 use crate::{DiagnosticCode, ListDecl, ListMember, SymbolKind};
@@ -22,7 +23,16 @@ impl DeclareSymbols for ast::ListDecl {
         let name =
             name_from_ident(&ident).ok_or_else(|| sink.diagnose(range, DiagnosticCode::E008))?;
         let list_name_text = name.text.clone();
-        sink.declare(SymbolKind::List, &list_name_text, name.range);
+        let (doc, issues) = parse_doc_comment(self.syntax(), DocPolicy::VALUE);
+        issues.diagnose(sink);
+        sink.declare_full(
+            SymbolKind::List,
+            &list_name_text,
+            name.range,
+            Vec::new(),
+            None,
+            doc,
+        );
 
         let members: Vec<ListMember> = self
             .definition()

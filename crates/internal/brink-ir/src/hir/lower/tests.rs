@@ -291,3 +291,113 @@ fn accumulator_logic_line_with_call_emits_eol() {
     // so just verify it compiles and doesn't panic.
     let _ = block;
 }
+
+// ─── Doc-comment attachment tests ───────────────────────────────────
+
+/// Lower a complete file and return its manifest + diagnostics.
+fn lower_full(source: &str) -> (SymbolManifest, Vec<Diagnostic>) {
+    let parsed = parse(source);
+    let tree = parsed.tree();
+    let (_hir, manifest, diags) = crate::hir::lower(FileId(0), &tree);
+    (manifest, diags)
+}
+
+#[test]
+fn docs_attach_to_all_declaration_kinds() {
+    let source = "\
+/// An external.
+EXTERNAL ping(x)
+/// A variable.
+VAR health = 100
+/// A constant.
+CONST SPEED = 0.5
+/// A list.
+LIST mood = happy, sad
+/// A knot.
+== hub ==
+intro
+/// A nested stitch.
+= market
+stalls
+/// A function knot.
+== function damage(weapon) ==
+~ return 1
+";
+    let (manifest, diags) = lower_full(source);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    let doc_text = |kind: SymbolKind, name: &str| {
+        manifest
+            .docs
+            .get(&(kind, name.to_string()))
+            .unwrap_or_else(|| panic!("doc for {kind:?} {name}"))
+            .doc
+            .clone()
+    };
+    assert_eq!(
+        doc_text(SymbolKind::External, "ping").as_deref(),
+        Some("An external.")
+    );
+    assert_eq!(
+        doc_text(SymbolKind::Variable, "health").as_deref(),
+        Some("A variable.")
+    );
+    assert_eq!(
+        doc_text(SymbolKind::Constant, "SPEED").as_deref(),
+        Some("A constant.")
+    );
+    assert_eq!(
+        doc_text(SymbolKind::List, "mood").as_deref(),
+        Some("A list.")
+    );
+    assert_eq!(
+        doc_text(SymbolKind::Knot, "hub").as_deref(),
+        Some("A knot.")
+    );
+    assert_eq!(
+        doc_text(SymbolKind::Stitch, "hub.market").as_deref(),
+        Some("A nested stitch."),
+        "nested stitch docs are keyed by qualified name"
+    );
+    assert_eq!(
+        doc_text(SymbolKind::Knot, "damage").as_deref(),
+        Some("A function knot.")
+    );
+}
+
+#[test]
+fn inapplicable_tags_emit_e043() {
+    let source = "\
+/// @kind query
+== hub ==
+intro
+/// @param x {int}
+VAR health = 100
+";
+    let (manifest, diags) = lower_full(source);
+    let e043: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E043)
+        .collect();
+    assert_eq!(e043.len(), 2, "one E043 per inapplicable tag: {diags:?}");
+    // The dropped tags leave no doc content behind.
+    assert!(
+        !manifest
+            .docs
+            .contains_key(&(SymbolKind::Knot, "hub".to_string())),
+        "tag-only block with all tags dropped attaches nothing"
+    );
+}
+
+#[test]
+fn undocumented_declarations_have_no_doc_entries() {
+    let source = "\
+EXTERNAL ping(x)
+VAR health = 100
+== hub ==
+intro
+";
+    let (manifest, diags) = lower_full(source);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(manifest.docs.is_empty());
+}

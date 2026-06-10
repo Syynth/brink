@@ -9,6 +9,7 @@ use crate::{
 
 use super::super::block::LowerBlock;
 use super::super::context::{LowerScope, LowerSink, Lowered};
+use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::{make_name, name_from_ident};
 use super::stitch::lower_stitch;
 
@@ -46,12 +47,15 @@ pub(super) fn lower_knot(
     } else {
         None
     };
-    sink.declare_with(
+    let (doc, issues) = parse_doc_comment(knot.syntax(), DocPolicy::CALLABLE);
+    issues.diagnose(sink);
+    sink.declare_full(
         SymbolKind::Knot,
         &name_text,
         ident.syntax().text_range(),
         param_infos,
         detail,
+        doc,
     );
 
     scope.current_knot = Some(name_text.clone());

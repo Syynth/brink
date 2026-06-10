@@ -3,7 +3,7 @@
 use brink_syntax::ast::{self, AstNode};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
-use super::super::doc_comment::parse_doc_comment;
+use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::name_from_ident;
 use super::DeclareSymbols;
 use crate::{DiagnosticCode, ExternalDecl, ParamInfo, SymbolKind};
@@ -38,10 +38,8 @@ impl DeclareSymbols for ast::ExternalDecl {
 
         // Parse the inline `///` doc-comment block (if any) and report any
         // malformed tags. Codegen ignores the doc — it's tooling metadata.
-        let (doc, malformed) = parse_doc_comment(self.syntax());
-        for range in malformed {
-            sink.diagnose(range, DiagnosticCode::E038);
-        }
+        let (doc, issues) = parse_doc_comment(self.syntax(), DocPolicy::EXTERNAL);
+        issues.diagnose(sink);
 
         sink.declare_full(
             SymbolKind::External,
