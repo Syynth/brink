@@ -31,6 +31,8 @@ import type {
   ConvertTarget,
   TextEdit,
   IncludeInfo,
+  DocumentId,
+  DocumentChangeSpec,
   Line,
   MoveResult,
   DebugState,
@@ -138,6 +140,132 @@ export class EditorSessionHandle {
     const json = this.session.get_view_source();
     const result = JSON.parse(json);
     return result ?? null;
+  }
+
+  // ── Document handles (multi-document API) ─────────────────────
+  //
+  // Each handle pairs a file path with an optional fragment view, so N
+  // live editor views can issue IDE queries independently of the legacy
+  // active-file/view-context singleton above. Offsets are UTF-16 and
+  // view-relative per handle, like the singleton queries.
+
+  /** Open a full-file document handle. Returns null if the file is not loaded. */
+  openDocument(path: string): DocumentId | null {
+    const id = this.session.open_document(path);
+    return id === 0 ? null : id;
+  }
+
+  /**
+   * Open a fragment document handle scoping `path` to `[start, end)` (UTF-16
+   * offsets, like setViewContext). Returns null if the file is not loaded.
+   */
+  openFragment(path: string, start: number, end: number): DocumentId | null {
+    const id = this.session.open_fragment(path, start, end);
+    return id === 0 ? null : id;
+  }
+
+  /** Close a document handle. Returns false if the handle was unknown. */
+  closeDocument(doc: DocumentId): boolean {
+    return this.session.close_document(doc);
+  }
+
+  /**
+   * Replace a document's content: full-file replace for file handles,
+   * fragment splice for fragment handles. Returns a change spec describing
+   * what actually changed in the file (UTF-16 file coordinates) for
+   * live-mirroring sibling views, or null for an unknown handle.
+   */
+  updateDocument(doc: DocumentId, source: string): DocumentChangeSpec | null {
+    const json = this.session.update_document(doc, source);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
+  /** Get the source text for a handle's view (fragment or full file). */
+  getViewSourceDoc(doc: DocumentId): string | null {
+    const json = this.session.get_view_source_doc(doc);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
+  getLineContextsDoc(doc: DocumentId): LineContext[] {
+    const json = this.session.line_contexts_doc(doc);
+    return JSON.parse(json) as LineContext[];
+  }
+
+  getSemanticTokensDoc(doc: DocumentId): SemanticToken[] {
+    const json = this.session.semantic_tokens_doc(doc);
+    return JSON.parse(json) as SemanticToken[];
+  }
+
+  getCompletionsDoc(doc: DocumentId, offset: number): CompletionItem[] {
+    const json = this.session.completions_doc(doc, offset);
+    return JSON.parse(json) as CompletionItem[];
+  }
+
+  getHoverDoc(doc: DocumentId, offset: number): HoverInfo | null {
+    const json = this.session.hover_doc(doc, offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
+  gotoDefinitionDoc(doc: DocumentId, offset: number): Location | null {
+    const json = this.session.goto_definition_doc(doc, offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
+  findReferencesDoc(doc: DocumentId, offset: number): Location[] {
+    const json = this.session.find_references_doc(doc, offset);
+    return JSON.parse(json) as Location[];
+  }
+
+  prepareRenameDoc(doc: DocumentId, offset: number): Location | null {
+    const json = this.session.prepare_rename_doc(doc, offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
+  doRenameDoc(doc: DocumentId, offset: number, newName: string): FileEdit[] {
+    const json = this.session.rename_doc(doc, offset, newName);
+    return JSON.parse(json) as FileEdit[];
+  }
+
+  getCodeActionsDoc(doc: DocumentId, offset: number): CodeAction[] {
+    const json = this.session.code_actions_doc(doc, offset);
+    return JSON.parse(json) as CodeAction[];
+  }
+
+  getInlayHintsDoc(doc: DocumentId, start: number, end: number): InlayHint[] {
+    const json = this.session.inlay_hints_doc(doc, start, end);
+    return JSON.parse(json) as InlayHint[];
+  }
+
+  getSignatureHelpDoc(doc: DocumentId, offset: number): SignatureInfo | null {
+    const json = this.session.signature_help_doc(doc, offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
+  getFoldingRangesDoc(doc: DocumentId): FoldRange[] {
+    const json = this.session.folding_ranges_doc(doc);
+    return JSON.parse(json) as FoldRange[];
+  }
+
+  getDocumentSymbolsDoc(doc: DocumentId): DocumentSymbol[] {
+    const json = this.session.document_symbols_doc(doc);
+    return JSON.parse(json) as DocumentSymbol[];
+  }
+
+  convertElementDoc(doc: DocumentId, offset: number, target: ConvertTarget): TextEdit | null {
+    const json = this.session.convert_element_doc(doc, offset, target);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
+  formatDocumentDoc(doc: DocumentId): string {
+    const json = this.session.format_document_doc(doc);
+    return JSON.parse(json) as string;
   }
 
   listFiles(): ProjectFile[] {
