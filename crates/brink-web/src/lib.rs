@@ -1981,7 +1981,7 @@ fn external_detail(
     if info.kind != brink_ir::SymbolKind::External {
         return None;
     }
-    let meta = analysis.external_meta.get(&info.id)?;
+    let meta = analysis.symbol_meta.get(&info.id)?;
     let params = meta
         .params
         .iter()

@@ -1,7 +1,7 @@
 //! Host-capability-manifest enrichment + checks over external functions.
 //!
 //! Merges inline `///` doc-comments (parsed during HIR lowering) with the
-//! registered [`HostManifest`] into per-external [`ExternalMeta`] (keyed by
+//! registered [`HostManifest`] into per-external [`SymbolMeta`] (keyed by
 //! `DefinitionId`), and emits manifest-driven diagnostics. Tooling /
 //! author-time only — the runtime and codegen never see any of this.
 //!
@@ -32,19 +32,63 @@ pub enum ExternalCheckSeverity {
     Off,
 }
 
-/// Per-external merged metadata, surfaced to the IDE and used by the
-/// call-site checks. Keyed by the external's `DefinitionId` on the
-/// `AnalysisResult`.
+/// Per-symbol merged metadata (docs, types, values), surfaced to the IDE and
+/// used by the call-site checks. Keyed by the symbol's `DefinitionId` on the
+/// `AnalysisResult`. For externals this merges inline docs with the registered
+/// host manifest; knots/stitches carry inline docs only; VAR/CONST add an
+/// inferred initializer value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ExternalMeta {
+pub struct SymbolMeta {
     /// Free-text documentation.
     pub doc: Option<String>,
-    /// Presentation/effect category (informational).
+    /// Presentation/effect category (informational; externals only —
+    /// `Plain` everywhere else).
     pub kind: ExternalKind,
     /// Resolved return type, if specified.
     pub returns: Option<ResolvedType>,
     /// Resolved parameter types, by ink declaration order.
     pub params: Vec<ResolvedParam>,
+    /// Initializer-derived value info (VAR/CONST only).
+    pub value: Option<ValueMeta>,
+}
+
+/// Initializer-derived metadata for a VAR or CONST declaration. Purely
+/// presentational — ink variables are dynamically retyped at runtime, so this
+/// never drives diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueMeta {
+    /// Type inferred from the initializer literal, if it is one.
+    pub ty: Option<InferredType>,
+    /// Display text of the initializer value (CONST only), e.g. `"0.5"`.
+    pub value_text: Option<String>,
+}
+
+/// The type of a VAR/CONST initializer literal. Deliberately separate from
+/// the host-manifest `BaseType` vocabulary — `Divert`/`List` are ink runtime
+/// concepts that must not leak into the manifest serialization schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferredType {
+    Int,
+    Float,
+    Bool,
+    String,
+    Divert,
+    List,
+}
+
+impl InferredType {
+    /// Display name, as shown in hover (e.g. `health: int`).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::Bool => "bool",
+            Self::String => "string",
+            Self::Divert => "divert",
+            Self::List => "list",
+        }
+    }
 }
 
 /// A merged parameter: name (from the ink declaration) and resolved type.
@@ -75,8 +119,8 @@ pub fn analyze_externals(
     types: &BTreeMap<String, SemanticTypeDef>,
     registered: &BTreeMap<String, &brink_ir::ManifestExternal>,
     severity: ExternalCheckSeverity,
-) -> (BTreeMap<DefinitionId, ExternalMeta>, Vec<Diagnostic>) {
-    let mut metas: BTreeMap<DefinitionId, ExternalMeta> = BTreeMap::new();
+) -> (BTreeMap<DefinitionId, SymbolMeta>, Vec<Diagnostic>) {
+    let mut metas: BTreeMap<DefinitionId, SymbolMeta> = BTreeMap::new();
     let mut diags: Vec<Diagnostic> = Vec::new();
 
     // Deterministic order for diagnostics: sort externals by (file, offset).
@@ -140,11 +184,12 @@ pub fn analyze_externals(
 
         metas.insert(
             info.id,
-            ExternalMeta {
+            SymbolMeta {
                 doc,
                 kind,
                 returns,
                 params,
+                value: None,
             },
         );
     }
@@ -201,12 +246,12 @@ fn resolve_type(
 // ─── Call-site literal checks (E041 type, E042 closed-domain) ───────────
 
 /// Walk the HIR and check literal arguments at external call sites against the
-/// merged [`ExternalMeta`]. Only literal arguments are checked (ink is
+/// merged [`SymbolMeta`]. Only literal arguments are checked (ink is
 /// dynamically typed); non-literals and untyped params are skipped, so there
 /// are no false positives. Returns the diagnostics (caller gates on severity).
 pub fn check_call_sites(
     files: &[(FileId, &HirFile)],
-    name_to_meta: &BTreeMap<&str, &ExternalMeta>,
+    name_to_meta: &BTreeMap<&str, &SymbolMeta>,
 ) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     if name_to_meta.is_empty() {
@@ -355,7 +400,7 @@ fn check_call(
     file: FileId,
     path: &Path,
     args: &[Expr],
-    name_to_meta: &BTreeMap<&str, &ExternalMeta>,
+    name_to_meta: &BTreeMap<&str, &SymbolMeta>,
     diags: &mut Vec<Diagnostic>,
 ) {
     let name = path
@@ -481,7 +526,7 @@ fn check_constraint(
             }
         }
         // Regex enforcement is deferred (no regex dependency at the MVP); the
-        // pattern is still surfaced to the IDE via ExternalMeta.
+        // pattern is still surfaced to the IDE via SymbolMeta.
         Constraint::Regex { .. } => {}
     }
 }
@@ -537,10 +582,10 @@ mod tests {
     }
 
     fn meta_for<'a>(
-        metas: &'a BTreeMap<DefinitionId, ExternalMeta>,
+        metas: &'a BTreeMap<DefinitionId, SymbolMeta>,
         index: &SymbolIndex,
         name: &str,
-    ) -> &'a ExternalMeta {
+    ) -> &'a SymbolMeta {
         let id = index
             .symbols
             .values()
@@ -813,8 +858,8 @@ mod tests {
         }
     }
 
-    fn typed_meta(ty: ResolvedType) -> ExternalMeta {
-        ExternalMeta {
+    fn typed_meta(ty: ResolvedType) -> SymbolMeta {
+        SymbolMeta {
             doc: None,
             kind: ExternalKind::default(),
             returns: None,
@@ -822,12 +867,13 @@ mod tests {
                 name: "x".to_string(),
                 ty: Some(ty),
             }],
+            value: None,
         }
     }
 
-    fn run_call_check(call: &str, args: Vec<Expr>, meta: &ExternalMeta) -> Vec<Diagnostic> {
+    fn run_call_check(call: &str, args: Vec<Expr>, meta: &SymbolMeta) -> Vec<Diagnostic> {
         let hir = hir_calling(call, args);
-        let mut n2m: BTreeMap<&str, &ExternalMeta> = BTreeMap::new();
+        let mut n2m: BTreeMap<&str, &SymbolMeta> = BTreeMap::new();
         n2m.insert(call, meta);
         check_call_sites(&[(FileId(0), &hir)], &n2m)
     }

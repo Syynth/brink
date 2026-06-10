@@ -211,10 +211,10 @@ mod tests {
         // Enrichment is surfaced.
         assert!(
             analysis
-                .external_meta
+                .symbol_meta
                 .values()
                 .any(|m| m.kind == ExternalKind::Presentation),
-            "external_meta should carry the registered kind"
+            "symbol_meta should carry the registered kind"
         );
         // The closed-domain (enum) violation on the literal "nope" is flagged.
         assert!(
@@ -243,9 +243,6 @@ mod tests {
             "Off should suppress manifest diagnostics"
         );
         // ...but enrichment is still built.
-        assert!(
-            !analysis.external_meta.is_empty(),
-            "meta built even when Off"
-        );
+        assert!(!analysis.symbol_meta.is_empty(), "meta built even when Off");
     }
 }

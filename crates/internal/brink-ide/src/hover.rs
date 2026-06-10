@@ -42,7 +42,7 @@ pub fn hover(
 
         // Host-manifest enrichment: typed params / return / kind / doc for externals.
         let meta = if info.kind == brink_ir::SymbolKind::External {
-            analysis.external_meta.get(&info.id)
+            analysis.symbol_meta.get(&info.id)
         } else {
             None
         };

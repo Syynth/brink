@@ -37,7 +37,7 @@ pub fn signature_help(
     })?;
 
     // Host-manifest enrichment: typed params / return / doc for externals.
-    let meta = analysis.external_meta.get(&info.id);
+    let meta = analysis.symbol_meta.get(&info.id);
 
     let param_labels: Vec<ParamLabel> = info
         .params

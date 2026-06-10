@@ -14,7 +14,9 @@ use std::collections::BTreeMap;
 
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
-pub use external_check::{ExternalCheckSeverity, ExternalMeta, ResolvedParam, ResolvedType};
+pub use external_check::{
+    ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType, SymbolMeta, ValueMeta,
+};
 
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -41,9 +43,10 @@ pub struct AnalysisResult {
     pub resolutions: ResolutionMap,
     /// Diagnostics produced during analysis (duplicate definitions, unresolved refs, etc.).
     pub diagnostics: Vec<Diagnostic>,
-    /// Per-external host-manifest enrichment, keyed by `DefinitionId`. Empty
-    /// when no manifest is registered and no inline `///` docs are present.
-    pub external_meta: BTreeMap<DefinitionId, ExternalMeta>,
+    /// Per-symbol metadata enrichment (docs, resolved types, initializer
+    /// values), keyed by `DefinitionId`. Empty when no host manifest is
+    /// registered and no inline `///` docs are present.
+    pub symbol_meta: BTreeMap<DefinitionId, SymbolMeta>,
 }
 
 /// Run cross-file semantic analysis with default options (no host manifest).
@@ -75,7 +78,7 @@ pub fn analyze_with_options(
     // Host-manifest enrichment + checks (tooling/author-time only).
     let inline_docs = collect_inline_docs(&manifest_inputs);
     let (types, registered) = manifest_maps(opts.host_manifest.as_ref());
-    let (external_meta, ext_diags) = external_check::analyze_externals(
+    let (symbol_meta, ext_diags) = external_check::analyze_externals(
         &index,
         &inline_docs,
         &types,
@@ -85,10 +88,15 @@ pub fn analyze_with_options(
     diagnostics.extend(ext_diags);
 
     // Call-site literal checks (type mismatch, closed domain) over the HIR.
+    // Externals only — knot/stitch metadata is presentational, not binding.
     if opts.external_check != ExternalCheckSeverity::Off {
-        let name_to_meta: BTreeMap<&str, &ExternalMeta> = external_meta
+        let name_to_meta: BTreeMap<&str, &SymbolMeta> = symbol_meta
             .iter()
-            .filter_map(|(id, meta)| index.symbols.get(id).map(|s| (s.name.as_str(), meta)))
+            .filter_map(|(id, meta)| {
+                index.symbols.get(id).and_then(|s| {
+                    (s.kind == SymbolKind::External).then_some((s.name.as_str(), meta))
+                })
+            })
             .collect();
         diagnostics.extend(external_check::check_call_sites(&hir_inputs, &name_to_meta));
     }
@@ -97,7 +105,7 @@ pub fn analyze_with_options(
         index,
         resolutions,
         diagnostics,
-        external_meta,
+        symbol_meta,
     }
 }
 
