@@ -84,9 +84,11 @@ interface StripProps {
 }
 
 /**
- * One icon button per tool window placed on this dock (section start→end,
- * registration order within). Clicks dispatch the generated toggle command —
- * never the store directly — so the palette stays the source of truth.
+ * One icon button per tool window placed on this dock, clustered by section:
+ * start-section icons at the strip's start, end-section icons anchored at the
+ * strip's far end (JetBrains-style halves), registration order within each.
+ * Clicks dispatch the generated toggle command — never the store directly —
+ * so the palette stays the source of truth.
  * Re-docking (drag, §5.1) is the exception: it goes through the drag
  * controller straight to the layout store, like a splitter drag.
  *
@@ -98,6 +100,40 @@ function Strip({ dock, items, placements, open, drag }: StripProps) {
   const { commands, keymap, isMac } = useShell();
   const dropMode = drag.dragging !== null;
   if (items.length === 0 && !dropMode) return null;
+
+  const renderButton = (d: ToolWindowDescriptor) => {
+    const placement = placements[d.id];
+    const active = placement !== undefined && open[dockSectionId(placement)] === d.id;
+    const chord = keymap.bindingFor(viewToggleCommandId(d.id));
+    const tooltip = chord ? `${d.title} (${formatChord(chord, isMac)})` : d.title;
+    // Badge is a component (see ToolWindowDescriptor.badge): it subscribes
+    // to the app's own store, so counts stay live without re-rendering
+    // the strip itself.
+    const Badge = d.badge;
+    return (
+      <button
+        key={d.id}
+        type="button"
+        className={"shell-strip-btn" + (active ? " active" : "")}
+        title={tooltip}
+        aria-label={d.title}
+        aria-pressed={active}
+        onClick={() => {
+          // The pointerup that ends a drag still fires a click on the
+          // capturing button — a re-dock must not also toggle.
+          if (drag.consumeClickSuppression()) return;
+          commands.dispatch(viewToggleCommandId(d.id));
+        }}
+        {...drag.handlersFor(d)}
+      >
+        {d.icon}
+        {Badge && <Badge />}
+      </button>
+    );
+  };
+
+  const startItems = items.filter((d) => placements[d.id]?.section !== "end");
+  const endItems = items.filter((d) => placements[d.id]?.section === "end");
   return (
     <div
       className={`shell-strip shell-strip-${dock}` + (dropMode ? " drop-mode" : "")}
@@ -105,36 +141,12 @@ function Strip({ dock, items, placements, open, drag }: StripProps) {
       aria-label={`${dock} dock`}
       aria-orientation={dock === "bottom" ? "horizontal" : "vertical"}
     >
-      {items.map((d) => {
-        const placement = placements[d.id];
-        const active = placement !== undefined && open[dockSectionId(placement)] === d.id;
-        const chord = keymap.bindingFor(viewToggleCommandId(d.id));
-        const tooltip = chord ? `${d.title} (${formatChord(chord, isMac)})` : d.title;
-        // Badge is a component (see ToolWindowDescriptor.badge): it subscribes
-        // to the app's own store, so counts stay live without re-rendering
-        // the strip itself.
-        const Badge = d.badge;
-        return (
-          <button
-            key={d.id}
-            type="button"
-            className={"shell-strip-btn" + (active ? " active" : "")}
-            title={tooltip}
-            aria-label={d.title}
-            aria-pressed={active}
-            onClick={() => {
-              // The pointerup that ends a drag still fires a click on the
-              // capturing button — a re-dock must not also toggle.
-              if (drag.consumeClickSuppression()) return;
-              commands.dispatch(viewToggleCommandId(d.id));
-            }}
-            {...drag.handlersFor(d)}
-          >
-            {d.icon}
-            {Badge && <Badge />}
-          </button>
-        );
-      })}
+      <div className="shell-strip-section shell-strip-section-start">
+        {startItems.map(renderButton)}
+      </div>
+      <div className="shell-strip-section shell-strip-section-end">
+        {endItems.map(renderButton)}
+      </div>
       {dropMode && (
         <>
           <div

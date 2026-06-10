@@ -143,7 +143,9 @@ the same document-type API.
 
 ### 5.1 Strips
 
-- One icon per tool window, in section order (start section icons at the strip's start).
+- One icon per tool window, clustered by section: start-section icons at the strip's
+  start, end-section icons anchored at the strip's far end (JetBrains-style halves),
+  registration order within each cluster.
 - Click: toggle that tool window (open-in-section / collapse).
 - Drag: ghost icon follows cursor; valid drop targets are the six sections; drop re-docks.
   Strips highlight the target section on hover. (Drag ships in Phase 3, not MVP — §9.)
