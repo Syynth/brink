@@ -64,6 +64,10 @@ impl DocIssues {
 
 /// Parse the `///` doc-comment block preceding `node` into a [`DocBlock`].
 ///
+/// Editor note: per the decision log, a doc block is structurally part of the
+/// declaration it precedes — folding, structural moves, and view slices must
+/// keep them together.
+///
 /// Returns the doc (if any tags or text were found) plus the source ranges of
 /// any malformed or policy-inapplicable tags, for the caller to diagnose.
 #[must_use]

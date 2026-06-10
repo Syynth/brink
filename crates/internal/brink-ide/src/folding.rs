@@ -28,7 +28,42 @@ pub fn folding_ranges(hir: &HirFile, source: &str) -> Vec<FoldRange> {
         }
     }
 
+    collect_doc_comment_folds(source, &mut ranges);
+
     ranges
+}
+
+/// Emit a fold range for each contiguous multi-line `///` doc-comment block,
+/// so long docs can collapse independently of the declaration they precede.
+/// (The declaration's own fold starts at its header, so it can never hide a
+/// doc block sitting above it.)
+fn collect_doc_comment_folds(source: &str, out: &mut Vec<FoldRange>) {
+    let mut run_start: Option<u32> = None;
+    let mut prev_line = 0u32;
+    for (i, line) in source.lines().enumerate() {
+        let line_no = u32::try_from(i).unwrap_or(u32::MAX);
+        if line.trim_start().starts_with("///") {
+            run_start.get_or_insert(line_no);
+            prev_line = line_no;
+        } else if let Some(start) = run_start.take()
+            && prev_line > start
+        {
+            out.push(FoldRange {
+                start_line: start,
+                end_line: prev_line,
+                collapsed_text: None,
+            });
+        }
+    }
+    if let Some(start) = run_start
+        && prev_line > start
+    {
+        out.push(FoldRange {
+            start_line: start,
+            end_line: prev_line,
+            collapsed_text: None,
+        });
+    }
 }
 
 fn push_fold(
@@ -182,5 +217,49 @@ fn collect_content_part_folds(
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::folding_ranges;
+
+    fn ranges_for(src: &str) -> Vec<(u32, u32)> {
+        let parsed = brink_syntax::parse(src);
+        let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
+        folding_ranges(&hir, src)
+            .iter()
+            .map(|r| (r.start_line, r.end_line))
+            .collect()
+    }
+
+    #[test]
+    fn multi_line_doc_blocks_get_their_own_fold() {
+        let src = "\
+/// Damage roll.
+/// @param weapon {int}
+/// @returns {int}
+== function damage(weapon) ==
+~ return 1
+";
+        let ranges = ranges_for(src);
+        assert!(
+            ranges.contains(&(0, 2)),
+            "doc block lines 0-2 fold: {ranges:?}"
+        );
+        assert!(
+            ranges.contains(&(3, 4)),
+            "knot fold still anchored on its header: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn single_line_docs_do_not_fold() {
+        let src = "/// one line\n== hub ==\ntext\nmore\n";
+        let ranges = ranges_for(src);
+        assert!(
+            !ranges.iter().any(|&(s, _)| s == 0),
+            "single-line doc block has nothing to fold: {ranges:?}"
+        );
     }
 }
