@@ -48,6 +48,9 @@ would have to be rebuilt on top of it, and layouts degrade.
 - **Command** — a named action (`player.restart`, `view.toggle.problems`). Keybindings,
   palette entries, strip clicks, menu items, and buttons all dispatch commands; nothing
   binds a key directly to a function.
+- **Story session** — one live story/VM instance: compiled program + runner handle +
+  transcript + debug state + status. Some surfaces are **session-bound** (§7.6): they
+  render against the current session and show a placeholder when none exists.
 
 ## 3. Region layout
 
@@ -101,6 +104,11 @@ Default placement, mapped from existing components:
 
 The **Toast** system is replaced by the shell notification service (§7.5) in Phase 3;
 until then the existing component mounts in the shell unchanged.
+
+**Session-bound surfaces:** Player, State View, the Story Graph's live overlay, the
+future Story transcript, and the status bar's story segment all render against the story
+session (§7.6). Everything else is compile-bound (driven by the latest compile result)
+or static.
 
 ### 4.1 Story Graph document
 
@@ -310,6 +318,39 @@ interface Notification {
 - **Out of scope:** progress notifications (compile/story status lives in the status
   bar, §7.3) and do-not-disturb modes.
 
+### 7.6 Story session
+
+The **story session** is the studio's handle on a live VM instance, and it is a
+first-class model object — not a side effect of the Player. Today the `PlayerSlice` owns
+the `StoryRunnerHandle` and the State View piggybacks on its `debugState`; that bundles
+two things with different lifetimes (the session vs. the player's *UI* state — scroll,
+fullscreen, choice hover), violating separate-concerns-by-ownership. The session is
+extracted into its own slice/model in Phase 2.
+
+```
+status: none → running → awaiting-choice → (done | ended | error)
+```
+
+- **Contents:** the running program identity, runner handle, append-only transcript,
+  name-resolved debug state, recorded choice history, status.
+- **Session-bound views** (see §4) select from the session and never own or create it.
+  With no session, they render a placeholder with a `story.start` affordance. Views are
+  not auto-opened/closed by session lifecycle — the user controls layout; only content
+  reacts.
+- **Commands own the lifecycle:** `story.start`, `story.restart`, `story.stop`,
+  `story.choose` — with `when` predicates over session status (§6), which also drive
+  strip badges and status-bar state. No view mutates the session directly.
+- **Recompile-while-running** (formalizing current behavior, per Inky): a successful
+  compile invalidates the VM but not the session intent — the session restarts on the new
+  program and replays the recorded choice history. If replay diverges (a recorded choice
+  index no longer valid), the replay truncates at the divergence point and a notification
+  (§7.5) says so. A failed compile leaves the existing session running on the old
+  program, with the status bar showing the error state.
+- **Single session at MVP.** The runtime supports multiple flows (`FlowInstance`;
+  bevy-brink runs per-flow), so multi-session is a plausible future — the contract keys
+  session-bound views to *the active session* rather than a global, so extending to a
+  session selector later is additive, not a rework.
+
 ## 8. Embedder extension API
 
 brink-studio is embedded programmatically (the embedded playground today; RPG Maker MZ
@@ -358,7 +399,7 @@ interface StudioApi {
 ```
 
 `StudioPublicState` is an explicit, versioned subset: active file, cursor/element info,
-diagnostics summary, compile status, story status. Anything a host needs that isn't in it
+diagnostics summary, compile status, story session status (§7.6). Anything a host needs that isn't in it
 is a deliberate API addition, not a store leak.
 
 **Motivating example (Track B synergy):** the RPG Maker functions panel renders the
@@ -388,7 +429,8 @@ Each phase lands independently; the studio remains shippable after every phase.
   not a goal; structural correctness is.*
 - **Phase 2 — fill the regions.** Problems tool window (from existing diagnostics),
   Output log, status bar segments wired to commands, quick-open over binder items,
-  maximize (replacing `playerFullscreen`), hamburger menu generated from the registry.
+  maximize (replacing `playerFullscreen`), hamburger menu generated from the registry,
+  story session model extracted from `PlayerSlice` with lifecycle commands (§7.6).
 - **Phase 3 — drag & persistence.** Strip-icon drag-to-re-dock, layout persistence,
   notification service (§7.5) replacing Toast.
 - **Phase 4 — editor groups.** Split support in the editor area (vertical first),
