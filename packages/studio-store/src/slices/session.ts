@@ -222,6 +222,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         programModel: null,
         programInkt: null,
       });
+      get().appendOutput("story", `Load error: ${msg}`);
     }
   },
 
@@ -274,6 +275,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         sessionText: [...state.sessionText, `Choose error: ${msg}`],
         sessionChoices: [],
       }));
+      get().appendOutput("story", `Choose error: ${msg}`);
       return;
     }
 
@@ -313,6 +315,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
         sessionText: [...state.sessionText, `Runtime error: ${msg}`],
         sessionChoices: [],
       }));
+      get().appendOutput("story", `Runtime error: ${msg}`);
     }
 
     // Every visible advance funnels through here (start, restart, choose, and
@@ -439,6 +442,7 @@ export function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void
         sessionChoices: [],
         sessionStatus: "error",
       });
+      get().appendOutput("story", `Runtime error: ${msg}`);
       get()._refreshDebugState();
       return;
     }

@@ -1,21 +1,42 @@
 /**
  * Compile slice — outline, diagnostics, and compiled story bytes.
  *
- * Updated on debounced compile cycles.
+ * Updated on debounced compile cycles. Alongside the summary counts (status
+ * bar, strip badge), the full structured diagnostic list is stored for the
+ * Problems tool window (docs/studio-shell-spec.md §4) — rows resolve to
+ * source Locations and dispatch `editor.reveal` (§6.1).
  */
 
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
-import type { FileOutline } from "@brink/wasm-types";
+import type { Diagnostic, FileOutline } from "@brink/wasm-types";
+
+/**
+ * Canonical Problems ordering (deterministic): file path, then start offset,
+ * then errors before warnings, then end offset and message as tiebreakers.
+ */
+export function sortDiagnostics(diagnostics: readonly Diagnostic[]): Diagnostic[] {
+  return [...diagnostics].sort((a, b) => {
+    if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+    if (a.start !== b.start) return a.start - b.start;
+    if (a.severity !== b.severity) return a.severity === "Error" ? -1 : 1;
+    if (a.end !== b.end) return a.end - b.end;
+    if (a.message !== b.message) return a.message < b.message ? -1 : 1;
+    return 0;
+  });
+}
 
 export interface CompileSlice {
   outline: FileOutline[];
   diagnostics: { errors: number; warnings: number };
+  /** Full diagnostic list from the latest compile, in canonical order. */
+  diagnosticsList: Diagnostic[];
   storyBytes: Uint8Array | null;
 
   setCompileResult(
     outline: FileOutline[],
     diagnostics: { errors: number; warnings: number },
+    diagnosticsList: Diagnostic[],
     storyBytes: Uint8Array | null,
   ): void;
   compile(): void;
@@ -25,10 +46,11 @@ export interface CompileSlice {
 export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice> = (set, get) => ({
   outline: [],
   diagnostics: { errors: 0, warnings: 0 },
+  diagnosticsList: [],
   storyBytes: null,
 
-  setCompileResult(outline, diagnostics, storyBytes) {
-    set({ outline, diagnostics, storyBytes });
+  setCompileResult(outline, diagnostics, diagnosticsList, storyBytes) {
+    set({ outline, diagnostics, diagnosticsList: sortDiagnostics(diagnosticsList), storyBytes });
   },
 
   compile() {

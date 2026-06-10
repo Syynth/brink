@@ -100,7 +100,10 @@ function Strip({ dock, items, placements, open }: StripProps) {
         const active = placement !== undefined && open[dockSectionId(placement)] === d.id;
         const chord = keymap.bindingFor(viewToggleCommandId(d.id));
         const tooltip = chord ? `${d.title} (${formatChord(chord, isMac)})` : d.title;
-        const badge = d.badge?.();
+        // Badge is a component (see ToolWindowDescriptor.badge): it subscribes
+        // to the app's own store, so counts stay live without re-rendering
+        // the strip itself.
+        const Badge = d.badge;
         return (
           <button
             key={d.id}
@@ -112,9 +115,7 @@ function Strip({ dock, items, placements, open }: StripProps) {
             onClick={() => commands.dispatch(viewToggleCommandId(d.id))}
           >
             {d.icon}
-            {badge !== undefined && badge > 0 && (
-              <span className="shell-strip-badge">{badge}</span>
-            )}
+            {Badge && <Badge />}
           </button>
         );
       })}

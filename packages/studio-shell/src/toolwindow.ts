@@ -51,8 +51,15 @@ export interface ToolWindowDescriptor {
   defaultPlacement: Placement;
   /** Whether the window starts open in its section. */
   defaultOpen: boolean;
-  /** Optional strip badge (e.g. Problems error count). */
-  badge?: () => number | undefined;
+  /**
+   * Optional strip badge (spec §5.1 — e.g. Problems error count), as a
+   * component rather than a value selector: the registering app provides a
+   * component that subscribes to its own store and renders the count bubble
+   * (typically `<span className="shell-strip-badge">{n}</span>`) or null.
+   * This keeps badges reactive (the strip re-renders only on layout/registry
+   * changes) without the shell depending on any app store (spec §7.2).
+   */
+  badge?: ComponentType;
   /** The window's content. Rendered below the shell's chrome header. */
   component: ComponentType;
 }

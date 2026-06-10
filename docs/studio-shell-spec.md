@@ -261,10 +261,16 @@ interface ToolWindowDescriptor {
   icon: ReactNode;
   defaultPlacement: { dock: "left" | "right" | "bottom"; section: "start" | "end" };
   defaultOpen: boolean;
-  badge?: (state: StudioState) => number | undefined;
+  badge?: ComponentType;            // strip badge, e.g. Problems error count (§5.1)
   component: ComponentType;
 }
 ```
+
+The badge is a *component*, not a value selector: the registering app supplies a
+component that subscribes to its own store and renders the count bubble (or null).
+This keeps badge counts reactive while the shell stays store-agnostic (§7.2) — a
+`(state: StudioState) => number` selector would either couple the shell to the
+studio store or go stale between strip re-renders.
 
 Registered statically at startup. The shell renders strips/docks purely from the registry
 plus a new `ShellLayoutSlice` (replaces today's `LayoutSlice` fields `activeSidebarView`,

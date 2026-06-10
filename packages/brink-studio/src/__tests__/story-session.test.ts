@@ -270,7 +270,7 @@ describe("recompile-while-running", () => {
 
     // What main.tsx does on a failed compile: record diagnostics with null
     // bytes and do NOT touch the session.
-    store.getState().setCompileResult([], { errors: 1, warnings: 0 }, null);
+    store.getState().setCompileResult([], { errors: 1, warnings: 0 }, [], null);
 
     const s = store.getState();
     expect(s.storyBytes).toBeNull();

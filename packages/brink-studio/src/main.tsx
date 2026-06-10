@@ -31,7 +31,10 @@ import {
   CursorSegment,
   ElementSegment,
   KeyHintsSegment,
+  OutputView,
   PlayerPane,
+  ProblemsBadge,
+  ProblemsView,
   ProgramView,
   StateView,
   StorySegment,
@@ -114,6 +117,40 @@ const PROGRAM_ICON = (
   </svg>
 );
 
+const PROBLEMS_ICON = (
+  <svg {...iconProps}>
+    <circle cx="8" cy="8" r="6" />
+    <path d="M8 5v3.5M8 10.8v.2" />
+  </svg>
+);
+
+const OUTPUT_ICON = (
+  <svg {...iconProps}>
+    <path d="M3 4.5l3 3-3 3M8.5 11.5H13" />
+  </svg>
+);
+
+// ── Compile log messages (Output tool window, spec §4) ─────────────
+//
+// One formatter shared by both compile callbacks so they stay in sync.
+// CompileResult carries no timing, so entries log outcome + counts.
+
+function compileLogMessage(
+  ok: boolean,
+  errors: number,
+  warnings: number,
+  error: string | undefined,
+): string {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  if (ok) {
+    return warnings > 0
+      ? `Compile succeeded (${plural(warnings, "warning")})`
+      : "Compile succeeded";
+  }
+  const summary = `Compile failed (${plural(errors, "error")})`;
+  return error ? `${summary}: ${error}` : summary;
+}
+
 // ── Root component ─────────────────────────────────────────────
 
 interface RootProps {
@@ -166,7 +203,8 @@ function Root({
       ? new Uint8Array(result.story_bytes)
       : null;
 
-    state.setCompileResult(outline, { errors, warnings }, storyBytes);
+    state.setCompileResult(outline, { errors, warnings }, result.warnings ?? [], storyBytes);
+    state.appendOutput("compile", compileLogMessage(result.ok, errors, warnings, result.error));
 
     // Recompile-while-running (spec §7.6): a successful compile auto-starts
     // the session on the new program through the same code path as the
@@ -207,7 +245,11 @@ function Root({
           ? new Uint8Array(result.story_bytes)
           : null;
 
-        state.setCompileResult(outline, { errors, warnings }, storyBytes);
+        state.setCompileResult(outline, { errors, warnings }, result.warnings ?? [], storyBytes);
+        state.appendOutput(
+          "compile",
+          compileLogMessage(result.ok, errors, warnings, result.error),
+        );
         // Same recompile-while-running contract as onCompileResult above.
         if (storyBytes) {
           state.startSession(storyBytes);
@@ -401,8 +443,12 @@ async function main(): Promise<void> {
 
   // Tool-window registry (spec §7.1, §4). Registration order is the stable,
   // user-visible Mod-N ordering: Binder Mod-1, Player Mod-2, State Mod-3,
-  // Program Mod-4. The shell never imports these components — they are
-  // registered into it here, at the app boundary.
+  // Program Mod-4, Problems Mod-5, Output Mod-6. The shell never imports
+  // these components — they are registered into it here, at the app boundary.
+  //
+  // Bottom-dock sharing: Program Explorer and Problems both default to
+  // bottom/start (spec §4) — a section holds multiple windows, one open at a
+  // time, the strip tabs between them. Output takes bottom/end.
   const toolWindows = new ToolWindowRegistry();
   toolWindows.register({
     id: "binder",
@@ -435,6 +481,23 @@ async function main(): Promise<void> {
     defaultPlacement: { dock: "bottom", section: "start" },
     defaultOpen: false,
     component: ProgramView,
+  });
+  toolWindows.register({
+    id: "problems",
+    title: "Problems",
+    icon: PROBLEMS_ICON,
+    defaultPlacement: { dock: "bottom", section: "start" },
+    defaultOpen: false,
+    badge: ProblemsBadge,
+    component: ProblemsView,
+  });
+  toolWindows.register({
+    id: "output",
+    title: "Output",
+    icon: OUTPUT_ICON,
+    defaultPlacement: { dock: "bottom", section: "end" },
+    defaultOpen: false,
+    component: OutputView,
   });
 
   // Status-bar segments (spec §7.3). Higher priority renders further left

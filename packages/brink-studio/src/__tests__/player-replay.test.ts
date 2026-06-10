@@ -22,6 +22,7 @@ function makeHarness(runner: Record<string, unknown>, choiceLog: number[]) {
     toastMessage: null,
     revealNext: vi.fn(),
     _refreshDebugState: vi.fn(),
+    appendOutput: vi.fn(),
   };
   const get = () => state as never;
   const set = (partial: unknown) => {

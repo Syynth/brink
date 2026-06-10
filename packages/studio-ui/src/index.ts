@@ -14,6 +14,15 @@ export {
 export { PlayerPane } from "./PlayerPane.js";
 export { StateView } from "./StateView.js";
 export { ProgramView } from "./ProgramView.js";
+export {
+  ProblemsView,
+  ProblemsBadge,
+  buildProblemRows,
+  diagnosticLocation,
+  offsetToLineCol,
+  type ProblemRow,
+} from "./ProblemsView.js";
+export { OutputView, formatOutputTimestamp } from "./OutputView.js";
 export { EditorPane } from "./EditorPane.js";
 export { ElementDropdown } from "./ElementDropdown.js";
 export { Toast } from "./Toast.js";
