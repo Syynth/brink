@@ -840,3 +840,11 @@
 - **STATUS:** tentative
 - **WHAT:** The Player is expected to eventually move from a right-dock tool window to an editor-area document (a session tab, openable in a split for the Inky two-up), revisited when Phase 4's component-based document support lands (#90). Until then it stays a tool window. Amends the spec's §4 placement.
 - **WHY:** A play session reads as content-you-open, not a glanceable tool — the same rule that split the Program Explorer. VS Code's markdown preview (live companion to the edited file, lives in an editor split) is the direct precedent. Decisive for later: multi-session/multi-flow (§7.6) maps naturally to multiple player tabs and awkwardly to one tool window with a session selector.
+
+## Player-as-document confirmed (was tentative)
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-shell
+- **SCOPE:** moderate
+- **WHAT:** The 2026-06-10 tentative entry "Player may become an editor document rather than a tool window" is upgraded to a standing decision — the user confirmed ("I'm sure I DO want player as document") after using the Phase 1–3 shell. Implementation filed as #120, sequenced after #90 (document API + editor groups, with #91 as the simpler first document consumer). Spec §4 updated.
+- **WHY:** Unchanged from the tentative entry: play sessions are content-you-open; markdown-preview precedent; multi-session maps to tabs. Confirmation came from hands-on use of the dock-based interim rather than at the originally planned Phase-4 revisit point.

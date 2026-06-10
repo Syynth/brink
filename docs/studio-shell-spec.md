@@ -91,7 +91,7 @@ Default placement, mapped from existing components:
 | Surface | Kind | Default home | Today | Notes |
 |---|---|---|---|---|
 | **Binder** | tool window | left dock, start | [Binder.tsx](../packages/studio-ui/src/Binder.tsx) (928 LOC) | Open by default. Component gets decomposed (tree / selection / DnD / context menu) during migration, not before. |
-| **Player** | tool window | right dock, start | [PlayerPane.tsx](../packages/studio-ui/src/PlayerPane.tsx) | Open by default (Inky two-up). Maximize replaces today's `playerFullscreen`. **Tentative** (decision log 2026-06-10): expected to become an editor *document* (session tab, opened in a split) — revisit when Phase 4 document support lands (#90); multi-session (§7.6) maps to player tabs. |
+| **Player** | tool window | right dock, start | [PlayerPane.tsx](../packages/studio-ui/src/PlayerPane.tsx) | Open by default (Inky two-up). Maximize replaces today's `playerFullscreen`. **Confirmed** (decision log 2026-06-10): becomes an editor *document* (session tab, opened in a split — #120, after #90); multi-session (§7.6) maps to player tabs; the tool window is the interim. |
 | **State View** (debugger) | tool window | right dock, end | [StateView.tsx](../packages/studio-ui/src/StateView.tsx) | Closed by default; opens when a story is running and the user toggles it. Pairs vertically with Player. |
 | **Problems** | tool window | bottom dock, start | *new* (data exists in `CompileSlice` diagnostics) | Clickable diagnostics list → `editor.reveal` (§6.1). Status-bar error/warning segment opens it. |
 | **Output / compile log** | tool window | bottom dock, end | *new* | Compile timings, wasm/runtime errors that aren't source diagnostics. Replaces nothing; today this information is dropped. |
