@@ -25,5 +25,6 @@ export {
 export { OutputView, formatOutputTimestamp } from "./OutputView.js";
 export { EditorPane } from "./EditorPane.js";
 export { ElementDropdown } from "./ElementDropdown.js";
+export { QuickOpen, QUICK_OPEN_COMMAND_ID, buildQuickOpenItems } from "./QuickOpen.js";
 export { Toast } from "./Toast.js";
 export { BinderContextMenu } from "./BinderContextMenu.js";
