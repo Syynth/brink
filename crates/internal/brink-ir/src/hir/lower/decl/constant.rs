@@ -3,6 +3,7 @@
 use brink_syntax::ast::{self, AstNode};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
+use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::expr::LowerExpr;
 use super::super::helpers::name_from_ident;
 use super::DeclareSymbols;
@@ -22,7 +23,16 @@ impl DeclareSymbols for ast::ConstDecl {
             .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E006))?;
         let name =
             name_from_ident(&ident).ok_or_else(|| sink.diagnose(range, DiagnosticCode::E006))?;
-        sink.declare(SymbolKind::Constant, &name.text, name.range);
+        let (doc, issues) = parse_doc_comment(self.syntax(), DocPolicy::VALUE);
+        issues.diagnose(sink);
+        sink.declare_full(
+            SymbolKind::Constant,
+            &name.text,
+            name.range,
+            Vec::new(),
+            None,
+            doc,
+        );
 
         let value = if let Some(e) = self.value() {
             e.lower_expr(scope, sink).unwrap_or(Expr::Null)

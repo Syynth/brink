@@ -464,6 +464,8 @@ fn merge_manifest_into(dst: &mut SymbolManifest, src: &SymbolManifest) {
     dst.list_items.extend(src.list_items.iter().cloned());
     dst.locals.extend(src.locals.iter().cloned());
     dst.unresolved.extend(src.unresolved.iter().cloned());
+    dst.docs
+        .extend(src.docs.iter().map(|(k, v)| (k.clone(), v.clone())));
 }
 
 /// Resolve an INCLUDE path relative to the including file's directory.

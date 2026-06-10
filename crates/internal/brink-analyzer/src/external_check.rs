@@ -1,8 +1,11 @@
-//! Host-capability-manifest enrichment + checks over external functions.
+//! Symbol metadata enrichment: host-manifest checks for externals, doc/type
+//! enrichment for knots and stitches, and initializer info for VAR/CONST.
 //!
-//! Merges inline `///` doc-comments (parsed during HIR lowering) with the
-//! registered [`HostManifest`] into per-external [`ExternalMeta`] (keyed by
-//! `DefinitionId`), and emits manifest-driven diagnostics. Tooling /
+//! For externals, merges inline `///` doc-comments (parsed during HIR
+//! lowering) with the registered [`HostManifest`] into [`SymbolMeta`] (keyed
+//! by `DefinitionId`), and emits manifest-driven diagnostics. Knots/stitches
+//! get doc-only enrichment ([`enrich_callables`]); VAR/CONST/LIST get
+//! initializer-derived value info ([`infer_value_meta`]). Tooling /
 //! author-time only — the runtime and codegen never see any of this.
 //!
 //! The enrichment map is always built (the IDE consumes it for hover /
@@ -17,7 +20,7 @@ use brink_ir::hir::{
     Path, Sequence, Stmt, StringPart,
 };
 use brink_ir::{
-    BaseType, Constraint, Diagnostic, DiagnosticCode, ExternalDoc, ExternalKind, FileId,
+    BaseType, Constraint, Diagnostic, DiagnosticCode, DocBlock, ExternalKind, FileId,
     SemanticTypeDef, SymbolIndex, SymbolInfo, SymbolKind, TypeRef,
 };
 
@@ -32,19 +35,63 @@ pub enum ExternalCheckSeverity {
     Off,
 }
 
-/// Per-external merged metadata, surfaced to the IDE and used by the
-/// call-site checks. Keyed by the external's `DefinitionId` on the
-/// `AnalysisResult`.
+/// Per-symbol merged metadata (docs, types, values), surfaced to the IDE and
+/// used by the call-site checks. Keyed by the symbol's `DefinitionId` on the
+/// `AnalysisResult`. For externals this merges inline docs with the registered
+/// host manifest; knots/stitches carry inline docs only; VAR/CONST add an
+/// inferred initializer value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ExternalMeta {
+pub struct SymbolMeta {
     /// Free-text documentation.
     pub doc: Option<String>,
-    /// Presentation/effect category (informational).
+    /// Presentation/effect category (informational; externals only —
+    /// `Plain` everywhere else).
     pub kind: ExternalKind,
     /// Resolved return type, if specified.
     pub returns: Option<ResolvedType>,
     /// Resolved parameter types, by ink declaration order.
     pub params: Vec<ResolvedParam>,
+    /// Initializer-derived value info (VAR/CONST only).
+    pub value: Option<ValueMeta>,
+}
+
+/// Initializer-derived metadata for a VAR or CONST declaration. Purely
+/// presentational — ink variables are dynamically retyped at runtime, so this
+/// never drives diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueMeta {
+    /// Type inferred from the initializer literal, if it is one.
+    pub ty: Option<InferredType>,
+    /// Display text of the initializer value (CONST only), e.g. `"0.5"`.
+    pub value_text: Option<String>,
+}
+
+/// The type of a VAR/CONST initializer literal. Deliberately separate from
+/// the host-manifest `BaseType` vocabulary — `Divert`/`List` are ink runtime
+/// concepts that must not leak into the manifest serialization schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferredType {
+    Int,
+    Float,
+    Bool,
+    String,
+    Divert,
+    List,
+}
+
+impl InferredType {
+    /// Display name, as shown in hover (e.g. `health: int`).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::Bool => "bool",
+            Self::String => "string",
+            Self::Divert => "divert",
+            Self::List => "list",
+        }
+    }
 }
 
 /// A merged parameter: name (from the ink declaration) and resolved type.
@@ -71,12 +118,12 @@ pub struct ResolvedType {
 /// severity policy is `Off`.
 pub fn analyze_externals(
     index: &SymbolIndex,
-    inline_docs: &BTreeMap<String, ExternalDoc>,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
     types: &BTreeMap<String, SemanticTypeDef>,
     registered: &BTreeMap<String, &brink_ir::ManifestExternal>,
     severity: ExternalCheckSeverity,
-) -> (BTreeMap<DefinitionId, ExternalMeta>, Vec<Diagnostic>) {
-    let mut metas: BTreeMap<DefinitionId, ExternalMeta> = BTreeMap::new();
+) -> (BTreeMap<DefinitionId, SymbolMeta>, Vec<Diagnostic>) {
+    let mut metas: BTreeMap<DefinitionId, SymbolMeta> = BTreeMap::new();
     let mut diags: Vec<Diagnostic> = Vec::new();
 
     // Deterministic order for diagnostics: sort externals by (file, offset).
@@ -88,7 +135,7 @@ pub fn analyze_externals(
     externals.sort_by_key(|info| (info.file.0, info.range.start()));
 
     for info in externals {
-        let inline = inline_docs.get(&info.name);
+        let inline = inline_docs.get(&(SymbolKind::External, info.name.clone()));
         let reg = registered.get(&info.name).copied();
         if inline.is_none() && reg.is_none() {
             continue; // no enrichment for this external
@@ -140,11 +187,12 @@ pub fn analyze_externals(
 
         metas.insert(
             info.id,
-            ExternalMeta {
+            SymbolMeta {
                 doc,
                 kind,
                 returns,
                 params,
+                value: None,
             },
         );
     }
@@ -153,6 +201,219 @@ pub fn analyze_externals(
         diags.clear();
     }
     (metas, diags)
+}
+
+/// Build doc/type enrichment for knots and stitches from their inline `///`
+/// docs. Signature tags (`@param` / `@returns`) resolve against the same
+/// semantic-type vocabulary as externals (E040 on unknown types), but unlike
+/// externals there are no call-site checks — callable metadata is
+/// presentational only.
+pub fn enrich_callables(
+    index: &SymbolIndex,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
+    types: &BTreeMap<String, SemanticTypeDef>,
+    severity: ExternalCheckSeverity,
+) -> (BTreeMap<DefinitionId, SymbolMeta>, Vec<Diagnostic>) {
+    let mut metas: BTreeMap<DefinitionId, SymbolMeta> = BTreeMap::new();
+    let mut diags: Vec<Diagnostic> = Vec::new();
+
+    // Deterministic order for diagnostics: sort callables by (file, offset).
+    let mut callables: Vec<&SymbolInfo> = index
+        .symbols
+        .values()
+        .filter(|info| matches!(info.kind, SymbolKind::Knot | SymbolKind::Stitch))
+        .collect();
+    callables.sort_by_key(|info| (info.file.0, info.range.start()));
+
+    for info in callables {
+        let Some(inline) = inline_docs.get(&(info.kind, info.name.clone())) else {
+            continue;
+        };
+
+        // `@param` tags match declared params by name; unmatched tags are
+        // ignored (same leniency as externals).
+        let params = info
+            .params
+            .iter()
+            .map(|p| {
+                let tref = inline
+                    .params
+                    .iter()
+                    .find(|(n, _)| n == &p.name)
+                    .map(|(_, t)| t);
+                ResolvedParam {
+                    name: p.name.clone(),
+                    ty: tref.and_then(|t| resolve_type(t, types, info, &mut diags)),
+                }
+            })
+            .collect();
+        let returns = inline
+            .returns
+            .as_ref()
+            .and_then(|t| resolve_type(t, types, info, &mut diags));
+
+        metas.insert(
+            info.id,
+            SymbolMeta {
+                doc: inline.doc.clone(),
+                kind: ExternalKind::Plain,
+                returns,
+                params,
+                value: None,
+            },
+        );
+    }
+
+    if severity == ExternalCheckSeverity::Off {
+        diags.clear();
+    }
+    (metas, diags)
+}
+
+/// Build VAR/CONST/LIST metadata: initializer-inferred types, CONST display
+/// values, and attached `///` docs. Purely presentational — ink variables are
+/// dynamically retyped at runtime, so this never produces diagnostics.
+pub fn infer_value_meta(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
+) -> BTreeMap<DefinitionId, SymbolMeta> {
+    let mut metas: BTreeMap<DefinitionId, SymbolMeta> = BTreeMap::new();
+
+    for &(_file_id, hir) in files {
+        for v in &hir.variables {
+            add_value_meta(
+                &mut metas,
+                index,
+                inline_docs,
+                SymbolKind::Variable,
+                &v.name.text,
+                Some(&v.value),
+                false,
+            );
+        }
+        for c in &hir.constants {
+            add_value_meta(
+                &mut metas,
+                index,
+                inline_docs,
+                SymbolKind::Constant,
+                &c.name.text,
+                Some(&c.value),
+                true,
+            );
+        }
+        // Lists carry docs only — there is nothing to infer.
+        for l in &hir.lists {
+            add_value_meta(
+                &mut metas,
+                index,
+                inline_docs,
+                SymbolKind::List,
+                &l.name.text,
+                None,
+                false,
+            );
+        }
+    }
+    metas
+}
+
+/// Insert a [`SymbolMeta`] for one VAR/CONST/LIST declaration, if it has a
+/// doc or an inferable initializer.
+fn add_value_meta(
+    metas: &mut BTreeMap<DefinitionId, SymbolMeta>,
+    index: &SymbolIndex,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
+    kind: SymbolKind,
+    name: &str,
+    init: Option<&Expr>,
+    show_value: bool,
+) {
+    let doc = inline_docs
+        .get(&(kind, name.to_string()))
+        .and_then(|d| d.doc.clone());
+    let ty = init.and_then(infer_literal_type);
+    let value_text = if show_value {
+        init.and_then(literal_display)
+    } else {
+        None
+    };
+    if doc.is_none() && ty.is_none() && value_text.is_none() {
+        return;
+    }
+    let Some(id) = index.by_name.get(name).and_then(|ids| {
+        ids.iter()
+            .copied()
+            .find(|id| index.symbols.get(id).is_some_and(|s| s.kind == kind))
+    }) else {
+        return;
+    };
+    let value = (ty.is_some() || value_text.is_some()).then_some(ValueMeta { ty, value_text });
+    metas.insert(
+        id,
+        SymbolMeta {
+            doc,
+            kind: ExternalKind::Plain,
+            returns: None,
+            params: Vec::new(),
+            value,
+        },
+    );
+}
+
+/// The [`InferredType`] of an initializer literal, or `None` for anything
+/// whose type isn't statically obvious (calls, references, arithmetic).
+fn infer_literal_type(expr: &Expr) -> Option<InferredType> {
+    match expr {
+        Expr::Int(_) => Some(InferredType::Int),
+        Expr::Float(_) => Some(InferredType::Float),
+        Expr::Bool(_) => Some(InferredType::Bool),
+        Expr::String(_) => Some(InferredType::String),
+        Expr::DivertTarget(_) => Some(InferredType::Divert),
+        Expr::ListLiteral(_) => Some(InferredType::List),
+        Expr::Prefix(brink_ir::hir::PrefixOp::Negate, inner) => match inner.as_ref() {
+            Expr::Int(_) | Expr::Float(_) => infer_literal_type(inner),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Display text for a literal initializer (CONST hover), e.g. `0.5`,
+/// `"sword"`, `-> hub`. `None` for non-literals and interpolated strings.
+fn literal_display(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Int(n) => Some(n.to_string()),
+        Expr::Float(f) => Some(float_display(f.to_f64())),
+        Expr::Bool(b) => Some(b.to_string()),
+        Expr::String(_) => plain_string_value(expr).map(|s| format!("\"{s}\"")),
+        Expr::DivertTarget(p) => Some(format!("-> {}", path_display(p))),
+        Expr::Prefix(brink_ir::hir::PrefixOp::Negate, inner) => match inner.as_ref() {
+            Expr::Int(_) | Expr::Float(_) => literal_display(inner).map(|s| format!("-{s}")),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Format a float for display, keeping a trailing `.0` so it still reads as
+/// a float (`1.0`, not `1`).
+fn float_display(v: f64) -> String {
+    let s = v.to_string();
+    if s.contains('.') || s.contains('e') || s.contains("inf") || s.contains("NaN") {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
+fn path_display(path: &Path) -> String {
+    path.segments
+        .iter()
+        .map(|n| n.text.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// Resolve a [`TypeRef`] to a [`ResolvedType`], emitting E040 for an unknown
@@ -184,7 +445,7 @@ fn resolve_type(
         file: info.file,
         range: info.range,
         message: format!(
-            "{}: `{}` (on external `{}`)",
+            "{}: `{}` (on `{}`)",
             DiagnosticCode::E040.title(),
             t.0.trim(),
             info.name,
@@ -201,12 +462,12 @@ fn resolve_type(
 // ─── Call-site literal checks (E041 type, E042 closed-domain) ───────────
 
 /// Walk the HIR and check literal arguments at external call sites against the
-/// merged [`ExternalMeta`]. Only literal arguments are checked (ink is
+/// merged [`SymbolMeta`]. Only literal arguments are checked (ink is
 /// dynamically typed); non-literals and untyped params are skipped, so there
 /// are no false positives. Returns the diagnostics (caller gates on severity).
 pub fn check_call_sites(
     files: &[(FileId, &HirFile)],
-    name_to_meta: &BTreeMap<&str, &ExternalMeta>,
+    name_to_meta: &BTreeMap<&str, &SymbolMeta>,
 ) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     if name_to_meta.is_empty() {
@@ -355,7 +616,7 @@ fn check_call(
     file: FileId,
     path: &Path,
     args: &[Expr],
-    name_to_meta: &BTreeMap<&str, &ExternalMeta>,
+    name_to_meta: &BTreeMap<&str, &SymbolMeta>,
     diags: &mut Vec<Diagnostic>,
 ) {
     let name = path
@@ -481,7 +742,7 @@ fn check_constraint(
             }
         }
         // Regex enforcement is deferred (no regex dependency at the MVP); the
-        // pattern is still surfaced to the IDE via ExternalMeta.
+        // pattern is still surfaced to the IDE via SymbolMeta.
         Constraint::Regex { .. } => {}
     }
 }
@@ -509,7 +770,7 @@ fn numeric_value(expr: &Expr) -> Option<f64> {
 #[expect(clippy::cast_possible_truncation, reason = "test helper ranges")]
 mod tests {
     use brink_ir::{
-        DeclaredSymbol, ExternalDoc, ManifestExternal, ManifestParam, ParamInfo, SemanticTypeDef,
+        DeclaredSymbol, DocBlock, ManifestExternal, ManifestParam, ParamInfo, SemanticTypeDef,
         SymbolManifest, TypeRef,
     };
     use brink_ir::{DiagnosticCode, FileId};
@@ -537,10 +798,10 @@ mod tests {
     }
 
     fn meta_for<'a>(
-        metas: &'a BTreeMap<DefinitionId, ExternalMeta>,
+        metas: &'a BTreeMap<DefinitionId, SymbolMeta>,
         index: &SymbolIndex,
         name: &str,
-    ) -> &'a ExternalMeta {
+    ) -> &'a SymbolMeta {
         let id = index
             .symbols
             .values()
@@ -554,8 +815,8 @@ mod tests {
         params: &[(&str, &str)],
         returns: Option<&str>,
         kind: Option<ExternalKind>,
-    ) -> ExternalDoc {
-        ExternalDoc {
+    ) -> DocBlock {
+        DocBlock {
             doc: None,
             params: params
                 .iter()
@@ -571,7 +832,7 @@ mod tests {
         let index = index_with_external("has", &["item"]);
         let mut docs = BTreeMap::new();
         docs.insert(
-            "has".to_string(),
+            (SymbolKind::External, "has".to_string()),
             inline(&[("item", "bool")], Some("bool"), Some(ExternalKind::Query)),
         );
         let (metas, diags) = analyze_externals(
@@ -642,7 +903,7 @@ mod tests {
         registered.insert("has".to_string(), &reg_ext);
         let mut docs = BTreeMap::new();
         docs.insert(
-            "has".to_string(),
+            (SymbolKind::External, "has".to_string()),
             inline(&[("item", "bool")], Some("bool"), Some(ExternalKind::Query)),
         );
 
@@ -677,7 +938,7 @@ mod tests {
         );
         let mut docs = BTreeMap::new();
         docs.insert(
-            "give".to_string(),
+            (SymbolKind::External, "give".to_string()),
             inline(&[("item", "item_id")], None, None),
         );
 
@@ -701,7 +962,10 @@ mod tests {
     fn unknown_semantic_type_emits_e040() {
         let index = index_with_external("foo", &["x"]);
         let mut docs = BTreeMap::new();
-        docs.insert("foo".to_string(), inline(&[("x", "bogus")], None, None));
+        docs.insert(
+            (SymbolKind::External, "foo".to_string()),
+            inline(&[("x", "bogus")], None, None),
+        );
 
         let (metas, diags) = analyze_externals(
             &index,
@@ -760,7 +1024,10 @@ mod tests {
     fn severity_off_suppresses_diagnostics_but_keeps_meta() {
         let index = index_with_external("foo", &["x"]);
         let mut docs = BTreeMap::new();
-        docs.insert("foo".to_string(), inline(&[("x", "bogus")], None, None));
+        docs.insert(
+            (SymbolKind::External, "foo".to_string()),
+            inline(&[("x", "bogus")], None, None),
+        );
 
         let (metas, diags) = analyze_externals(
             &index,
@@ -771,6 +1038,254 @@ mod tests {
         );
         assert!(diags.is_empty(), "Off suppresses diagnostics");
         assert!(!metas.is_empty(), "enrichment still built when Off");
+    }
+
+    // ── Callable (knot/stitch) doc enrichment ────────────────────
+
+    /// An index with one function knot and one (qualified) stitch.
+    fn index_with_callables() -> SymbolIndex {
+        let mut m = SymbolManifest::default();
+        m.knots.push(DeclaredSymbol {
+            name: "damage".to_string(),
+            range: TextRange::new(TextSize::new(0), TextSize::new(6)),
+            params: vec![ParamInfo {
+                name: "weapon".to_string(),
+                is_ref: false,
+                is_divert: false,
+            }],
+            detail: Some("function".to_string()),
+        });
+        m.stitches.push(DeclaredSymbol {
+            name: "hub.market".to_string(),
+            range: TextRange::new(TextSize::new(10), TextSize::new(16)),
+            params: Vec::new(),
+            detail: None,
+        });
+        merge_manifests(&[(FileId(0), &m)]).0
+    }
+
+    fn meta_for_kind<'a>(
+        metas: &'a BTreeMap<DefinitionId, SymbolMeta>,
+        index: &SymbolIndex,
+        kind: SymbolKind,
+        name: &str,
+    ) -> &'a SymbolMeta {
+        let id = index
+            .symbols
+            .values()
+            .find(|s| s.kind == kind && s.name == name)
+            .expect("symbol in index")
+            .id;
+        metas.get(&id).expect("meta for symbol")
+    }
+
+    #[test]
+    fn knot_doc_enriches_meta_with_resolved_types() {
+        let index = index_with_callables();
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            (SymbolKind::Knot, "damage".to_string()),
+            DocBlock {
+                doc: Some("Damage roll.".to_string()),
+                params: vec![("weapon".to_string(), TypeRef("item_id".to_string()))],
+                returns: Some(TypeRef("int".to_string())),
+                kind: None,
+            },
+        );
+        let mut types = BTreeMap::new();
+        types.insert(
+            "item_id".to_string(),
+            SemanticTypeDef {
+                name: "item_id".to_string(),
+                base: BaseType::String,
+                constraint: None,
+            },
+        );
+
+        let (metas, diags) = enrich_callables(&index, &docs, &types, ExternalCheckSeverity::Error);
+        assert!(diags.is_empty(), "known types: {diags:?}");
+        let meta = meta_for_kind(&metas, &index, SymbolKind::Knot, "damage");
+        assert_eq!(meta.doc.as_deref(), Some("Damage roll."));
+        assert_eq!(meta.kind, ExternalKind::Plain);
+        assert_eq!(
+            meta.params[0].ty.as_ref().and_then(|t| t.base),
+            Some(BaseType::String)
+        );
+        assert_eq!(
+            meta.returns.as_ref().and_then(|t| t.base),
+            Some(BaseType::Int)
+        );
+    }
+
+    #[test]
+    fn stitch_doc_keyed_by_qualified_name() {
+        let index = index_with_callables();
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            (SymbolKind::Stitch, "hub.market".to_string()),
+            DocBlock {
+                doc: Some("The market square.".to_string()),
+                params: Vec::new(),
+                returns: None,
+                kind: None,
+            },
+        );
+        let (metas, diags) = enrich_callables(
+            &index,
+            &docs,
+            &BTreeMap::new(),
+            ExternalCheckSeverity::Error,
+        );
+        assert!(diags.is_empty());
+        let meta = meta_for_kind(&metas, &index, SymbolKind::Stitch, "hub.market");
+        assert_eq!(meta.doc.as_deref(), Some("The market square."));
+    }
+
+    #[test]
+    fn unknown_semantic_type_on_knot_emits_e040() {
+        let index = index_with_callables();
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            (SymbolKind::Knot, "damage".to_string()),
+            DocBlock {
+                doc: None,
+                params: vec![("weapon".to_string(), TypeRef("bogus".to_string()))],
+                returns: None,
+                kind: None,
+            },
+        );
+        let (metas, diags) = enrich_callables(
+            &index,
+            &docs,
+            &BTreeMap::new(),
+            ExternalCheckSeverity::Error,
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E040);
+        // Meta still built with an unresolved param type.
+        let meta = meta_for_kind(&metas, &index, SymbolKind::Knot, "damage");
+        assert!(meta.params[0].ty.as_ref().is_some_and(|t| t.base.is_none()));
+
+        // Severity Off keeps the meta but suppresses the diagnostic.
+        let (metas, diags) =
+            enrich_callables(&index, &docs, &BTreeMap::new(), ExternalCheckSeverity::Off);
+        assert!(diags.is_empty());
+        assert!(!metas.is_empty());
+    }
+
+    #[test]
+    fn undocumented_callables_get_no_meta() {
+        let index = index_with_callables();
+        let (metas, diags) = enrich_callables(
+            &index,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            ExternalCheckSeverity::Error,
+        );
+        assert!(metas.is_empty());
+        assert!(diags.is_empty());
+    }
+
+    // ── VAR/CONST/LIST value metadata ────────────────────────────
+
+    /// Parse, lower, and fully analyze a single source file.
+    fn analyze_source(src: &str) -> crate::AnalysisResult {
+        let parsed = brink_syntax::parse(src);
+        let tree = parsed.tree();
+        let (hir, manifest, diags) = brink_ir::hir::lower(FileId(0), &tree);
+        assert!(diags.is_empty(), "lowering diagnostics: {diags:?}");
+        crate::analyze(&[(FileId(0), &hir, &manifest)])
+    }
+
+    fn meta_by_name<'a>(
+        result: &'a crate::AnalysisResult,
+        kind: SymbolKind,
+        name: &str,
+    ) -> &'a SymbolMeta {
+        let id = result
+            .index
+            .symbols
+            .values()
+            .find(|s| s.kind == kind && s.name == name)
+            .expect("symbol in index")
+            .id;
+        result.symbol_meta.get(&id).expect("meta for symbol")
+    }
+
+    #[test]
+    fn var_initializer_types_are_inferred() {
+        let result = analyze_source(
+            "VAR health = 100\nVAR speed = 0.5\nVAR alive = true\nVAR name = \"Ada\"\n",
+        );
+        let ty = |name: &str| {
+            meta_by_name(&result, SymbolKind::Variable, name)
+                .value
+                .as_ref()
+                .expect("value meta")
+                .ty
+        };
+        assert_eq!(ty("health"), Some(InferredType::Int));
+        assert_eq!(ty("speed"), Some(InferredType::Float));
+        assert_eq!(ty("alive"), Some(InferredType::Bool));
+        assert_eq!(ty("name"), Some(InferredType::String));
+        // VARs never get display values — only CONSTs do.
+        assert!(
+            meta_by_name(&result, SymbolKind::Variable, "health")
+                .value
+                .as_ref()
+                .is_some_and(|v| v.value_text.is_none())
+        );
+    }
+
+    #[test]
+    fn const_gets_type_and_display_value() {
+        let result = analyze_source(
+            "CONST SPEED = 0.5\nCONST LIVES = -3\nCONST NAME = \"Ada\"\nCONST WHOLE = 1.0\n",
+        );
+        let value = |name: &str| {
+            meta_by_name(&result, SymbolKind::Constant, name)
+                .value
+                .clone()
+                .expect("value meta")
+        };
+        assert_eq!(value("SPEED").ty, Some(InferredType::Float));
+        assert_eq!(value("SPEED").value_text.as_deref(), Some("0.5"));
+        assert_eq!(value("LIVES").ty, Some(InferredType::Int));
+        assert_eq!(value("LIVES").value_text.as_deref(), Some("-3"));
+        assert_eq!(value("NAME").value_text.as_deref(), Some("\"Ada\""));
+        assert_eq!(
+            value("WHOLE").value_text.as_deref(),
+            Some("1.0"),
+            "whole floats keep a trailing .0"
+        );
+    }
+
+    #[test]
+    fn docs_attach_to_values_and_lists() {
+        let result = analyze_source(
+            "/// Player health.\nVAR health = 100\n/// Mood states.\nLIST mood = happy, sad\n",
+        );
+        assert_eq!(
+            meta_by_name(&result, SymbolKind::Variable, "health")
+                .doc
+                .as_deref(),
+            Some("Player health.")
+        );
+        let list_meta = meta_by_name(&result, SymbolKind::List, "mood");
+        assert_eq!(list_meta.doc.as_deref(), Some("Mood states."));
+        assert!(list_meta.value.is_none(), "lists carry docs only");
+    }
+
+    #[test]
+    fn divert_target_initializer_infers_divert() {
+        let result = analyze_source("VAR exit = -> hub\n== hub ==\ntext\n-> DONE\n");
+        assert_eq!(
+            meta_by_name(&result, SymbolKind::Variable, "exit")
+                .value
+                .as_ref()
+                .and_then(|v| v.ty),
+            Some(InferredType::Divert)
+        );
     }
 
     // ── Call-site literal checks (E041, E042) ────────────────────
@@ -807,8 +1322,8 @@ mod tests {
         }
     }
 
-    fn typed_meta(ty: ResolvedType) -> ExternalMeta {
-        ExternalMeta {
+    fn typed_meta(ty: ResolvedType) -> SymbolMeta {
+        SymbolMeta {
             doc: None,
             kind: ExternalKind::default(),
             returns: None,
@@ -816,12 +1331,13 @@ mod tests {
                 name: "x".to_string(),
                 ty: Some(ty),
             }],
+            value: None,
         }
     }
 
-    fn run_call_check(call: &str, args: Vec<Expr>, meta: &ExternalMeta) -> Vec<Diagnostic> {
+    fn run_call_check(call: &str, args: Vec<Expr>, meta: &SymbolMeta) -> Vec<Diagnostic> {
         let hir = hir_calling(call, args);
-        let mut n2m: BTreeMap<&str, &ExternalMeta> = BTreeMap::new();
+        let mut n2m: BTreeMap<&str, &SymbolMeta> = BTreeMap::new();
         n2m.insert(call, meta);
         check_call_sites(&[(FileId(0), &hir)], &n2m)
     }

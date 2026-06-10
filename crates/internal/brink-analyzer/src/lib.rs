@@ -14,12 +14,14 @@ use std::collections::BTreeMap;
 
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
-pub use external_check::{ExternalCheckSeverity, ExternalMeta, ResolvedParam, ResolvedType};
+pub use external_check::{
+    ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType, SymbolMeta, ValueMeta,
+};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    Diagnostic, ExternalDoc, HirFile, HostManifest, ManifestExternal, SemanticTypeDef, SymbolIndex,
-    SymbolManifest,
+    Diagnostic, DocBlock, HirFile, HostManifest, ManifestExternal, SemanticTypeDef, SymbolIndex,
+    SymbolKind, SymbolManifest,
 };
 
 /// Tooling options for analysis: the registered host manifest and the
@@ -41,9 +43,10 @@ pub struct AnalysisResult {
     pub resolutions: ResolutionMap,
     /// Diagnostics produced during analysis (duplicate definitions, unresolved refs, etc.).
     pub diagnostics: Vec<Diagnostic>,
-    /// Per-external host-manifest enrichment, keyed by `DefinitionId`. Empty
-    /// when no manifest is registered and no inline `///` docs are present.
-    pub external_meta: BTreeMap<DefinitionId, ExternalMeta>,
+    /// Per-symbol metadata enrichment (docs, resolved types, initializer
+    /// values), keyed by `DefinitionId`. Empty when no host manifest is
+    /// registered and no inline `///` docs are present.
+    pub symbol_meta: BTreeMap<DefinitionId, SymbolMeta>,
 }
 
 /// Run cross-file semantic analysis with default options (no host manifest).
@@ -75,7 +78,7 @@ pub fn analyze_with_options(
     // Host-manifest enrichment + checks (tooling/author-time only).
     let inline_docs = collect_inline_docs(&manifest_inputs);
     let (types, registered) = manifest_maps(opts.host_manifest.as_ref());
-    let (external_meta, ext_diags) = external_check::analyze_externals(
+    let (mut symbol_meta, ext_diags) = external_check::analyze_externals(
         &index,
         &inline_docs,
         &types,
@@ -84,11 +87,30 @@ pub fn analyze_with_options(
     );
     diagnostics.extend(ext_diags);
 
+    // Knot/stitch doc enrichment (presentational; shares the semantic-type
+    // vocabulary, so unknown types still diagnose).
+    let (callable_meta, callable_diags) =
+        external_check::enrich_callables(&index, &inline_docs, &types, opts.external_check);
+    diagnostics.extend(callable_diags);
+    symbol_meta.extend(callable_meta);
+
+    // VAR/CONST initializer info + LIST docs (presentational, no diagnostics).
+    symbol_meta.extend(external_check::infer_value_meta(
+        &hir_inputs,
+        &index,
+        &inline_docs,
+    ));
+
     // Call-site literal checks (type mismatch, closed domain) over the HIR.
+    // Externals only — knot/stitch metadata is presentational, not binding.
     if opts.external_check != ExternalCheckSeverity::Off {
-        let name_to_meta: BTreeMap<&str, &ExternalMeta> = external_meta
+        let name_to_meta: BTreeMap<&str, &SymbolMeta> = symbol_meta
             .iter()
-            .filter_map(|(id, meta)| index.symbols.get(id).map(|s| (s.name.as_str(), meta)))
+            .filter_map(|(id, meta)| {
+                index.symbols.get(id).and_then(|s| {
+                    (s.kind == SymbolKind::External).then_some((s.name.as_str(), meta))
+                })
+            })
             .collect();
         diagnostics.extend(external_check::check_call_sites(&hir_inputs, &name_to_meta));
     }
@@ -97,16 +119,18 @@ pub fn analyze_with_options(
         index,
         resolutions,
         diagnostics,
-        external_meta,
+        symbol_meta,
     }
 }
 
-/// Collect inline `///` external docs across all files, keyed by external name.
-fn collect_inline_docs(files: &[(FileId, &SymbolManifest)]) -> BTreeMap<String, ExternalDoc> {
+/// Collect inline `///` docs across all files, keyed by `(kind, declared name)`.
+fn collect_inline_docs(
+    files: &[(FileId, &SymbolManifest)],
+) -> BTreeMap<(SymbolKind, String), DocBlock> {
     let mut out = BTreeMap::new();
     for &(_id, manifest) in files {
-        for (name, doc) in &manifest.external_docs {
-            out.insert(name.clone(), doc.clone());
+        for (key, doc) in &manifest.docs {
+            out.insert(key.clone(), doc.clone());
         }
     }
     out

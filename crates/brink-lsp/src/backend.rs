@@ -892,7 +892,7 @@ impl LanguageServer for Backend {
         };
 
         let idx = LineIndex::new(source);
-        let domain_symbols = brink_ide::document::document_symbols(hir, manifest);
+        let domain_symbols = brink_ide::document::document_symbols(hir, manifest, source);
 
         let symbols = domain_symbols
             .into_iter()

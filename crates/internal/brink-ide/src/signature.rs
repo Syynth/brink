@@ -37,7 +37,7 @@ pub fn signature_help(
     })?;
 
     // Host-manifest enrichment: typed params / return / doc for externals.
-    let meta = analysis.external_meta.get(&info.id);
+    let meta = analysis.symbol_meta.get(&info.id);
 
     let param_labels: Vec<ParamLabel> = info
         .params
@@ -108,5 +108,31 @@ mod tests {
         let sig = signature_help(analysis, src, offset).expect("signature");
         assert!(sig.label.contains("item: bool"), "label: {}", sig.label);
         assert!(sig.label.contains("-> bool"), "label: {}", sig.label);
+    }
+
+    #[test]
+    fn signature_help_shows_function_knot_doc_and_types() {
+        let src = "\
+/// Damage roll for an attack.
+/// @param weapon {int}
+/// @returns {int}
+== function damage(weapon) ==
+~ return weapon
+== main ==
+~ temp x = damage(3)
+-> END
+";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let offset = src.find("damage(3)").expect("call present") + 7; // inside parens
+        let sig = signature_help(analysis, src, offset).expect("signature");
+        assert!(sig.label.contains("weapon: int"), "label: {}", sig.label);
+        assert!(sig.label.contains("-> int"), "label: {}", sig.label);
+        assert_eq!(
+            sig.documentation.as_deref(),
+            Some("Damage roll for an attack.")
+        );
     }
 }

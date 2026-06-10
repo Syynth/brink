@@ -6,6 +6,7 @@ use crate::{Block, ContainerPtr, DiagnosticCode, Knot, ParamInfo, Stitch, Symbol
 
 use super::super::block::LowerBlock;
 use super::super::context::{LowerScope, LowerSink, Lowered};
+use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::make_name;
 use super::knot::lower_knot_params;
 
@@ -37,12 +38,15 @@ pub(super) fn lower_top_level_stitch(
             is_divert: p.is_divert,
         })
         .collect();
-    sink.declare_with(
+    let (doc, issues) = parse_doc_comment(stitch.syntax(), DocPolicy::CALLABLE);
+    issues.diagnose(sink);
+    sink.declare_full(
         SymbolKind::Stitch,
         &name_text,
         ident.syntax().text_range(),
         param_infos,
         None,
+        doc,
     );
 
     scope.current_knot = Some(name_text.clone());
@@ -103,12 +107,15 @@ pub(super) fn lower_stitch(
             is_divert: p.is_divert,
         })
         .collect();
-    sink.declare_with(
+    let (doc, issues) = parse_doc_comment(stitch.syntax(), DocPolicy::CALLABLE);
+    issues.diagnose(sink);
+    sink.declare_full(
         SymbolKind::Stitch,
         &qualified,
         ident.syntax().text_range(),
         param_infos,
         None,
+        doc,
     );
     for p in &params {
         sink.add_local(LocalSymbol {

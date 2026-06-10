@@ -22,5 +22,6 @@ pub use completion::{
 pub use formatting::{format_region, sort_knots_in_source, sort_stitches_in_knot};
 pub use line_index::LineIndex;
 pub use text::{
-    builtin_hover_text, diff_to_edits, find_call_context, word_at_offset, word_range_at_offset,
+    builtin_hover_text, diff_to_edits, doc_extended_start, find_call_context, word_at_offset,
+    word_range_at_offset,
 };

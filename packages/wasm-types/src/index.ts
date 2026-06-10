@@ -133,6 +133,9 @@ export interface FoldRange {
   start_line: number;
   end_line: number;
   collapsed_text?: string;
+  /** Whole-line declaration fold (docs + header + body): fold from the start
+   *  of start_line and render the hidden header as the placeholder. */
+  from_line_start?: boolean;
 }
 
 export interface DocumentSymbol {

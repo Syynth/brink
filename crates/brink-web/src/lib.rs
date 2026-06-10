@@ -1047,8 +1047,8 @@ impl EditorSession {
             return "[]".to_owned();
         };
 
-        let syms = brink_ide::document::document_symbols(hir, manifest);
         let source = self.session.source(file_id).unwrap_or("");
+        let syms = brink_ide::document::document_symbols(hir, manifest, source);
         let items: Vec<DocumentSymbolJs> = syms
             .into_iter()
             .map(|s| convert_document_symbol(s, source))
@@ -1144,8 +1144,8 @@ impl EditorSession {
                 continue;
             };
 
-            let syms = brink_ide::document::document_symbols(hir, manifest);
             let source = db.source(id).unwrap_or("");
+            let syms = brink_ide::document::document_symbols(hir, manifest, source);
             let items: Vec<DocumentSymbolJs> = syms
                 .into_iter()
                 .map(|s| convert_document_symbol(s, source))
@@ -1240,8 +1240,9 @@ impl EditorSession {
             .map(|info| CompletionItemJs {
                 name: info.name.clone(),
                 kind: symbol_kind_str(info.kind).to_owned(),
-                // Externals get a typed signature from the host manifest, if any.
-                detail: external_detail(analysis, info).or_else(|| info.detail.clone()),
+                // Callables get a typed signature from /// docs or the host
+                // manifest, if any; otherwise the kind-derived detail.
+                detail: typed_detail(analysis, info).or_else(|| info.detail.clone()),
             })
             .collect();
 
@@ -1536,6 +1537,7 @@ impl EditorSession {
                     start_line,
                     end_line,
                     collapsed_text: r.collapsed_text.clone(),
+                    from_line_start: r.from_line_start,
                 })
             })
             .collect();
@@ -1554,8 +1556,8 @@ impl EditorSession {
             return "[]".to_owned();
         };
 
-        let syms = brink_ide::document::document_symbols(hir, manifest);
         let source = self.session.source(file_id).unwrap_or("");
+        let syms = brink_ide::document::document_symbols(hir, manifest, source);
         let items: Vec<DocumentSymbolJs> = syms
             .into_iter()
             .map(|s| convert_document_symbol(s, source))
@@ -1971,17 +1973,27 @@ struct CompletionItemJs {
     detail: Option<String>,
 }
 
-/// Build a typed signature detail for an external from host-manifest metadata,
-/// e.g. `(item: bool) -> bool [query]`. `None` for non-externals or externals
-/// without registered/inline metadata.
-fn external_detail(
+/// Build a typed signature detail for a callable (external, knot, stitch)
+/// from its symbol metadata, e.g. `(item: bool) -> bool [query]`. `None` when
+/// the symbol has no type-bearing metadata, so plain symbols keep their
+/// kind-derived detail (e.g. `function`).
+fn typed_detail(
     analysis: &brink_analyzer::AnalysisResult,
     info: &brink_ir::SymbolInfo,
 ) -> Option<String> {
-    if info.kind != brink_ir::SymbolKind::External {
+    if !matches!(
+        info.kind,
+        brink_ir::SymbolKind::External | brink_ir::SymbolKind::Knot | brink_ir::SymbolKind::Stitch
+    ) {
         return None;
     }
-    let meta = analysis.external_meta.get(&info.id)?;
+    let meta = analysis.symbol_meta.get(&info.id)?;
+    let has_types = meta.params.iter().any(|p| p.ty.is_some())
+        || meta.returns.is_some()
+        || meta.kind != brink_ir::ExternalKind::Plain;
+    if !has_types {
+        return None;
+    }
     let params = meta
         .params
         .iter()
@@ -2055,6 +2067,10 @@ struct FoldRangeJs {
     end_line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     collapsed_text: Option<String>,
+    /// Whole-line declaration fold (docs + header + body); the editor folds
+    /// from the start of `start_line` and renders a header placeholder.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    from_line_start: bool,
 }
 
 #[derive(Serialize)]

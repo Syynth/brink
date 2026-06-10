@@ -23,18 +23,26 @@ VAR explored = ()
 
 // ── helpers ────────────────────────────────────────────────────────
 
+/// Whether the pack contains the given Gear item.
 === function carrying(item) ===
 ~ return pack ? item
 
+/// Uniform random integer between lo and hi (inclusive).
+/// @param lo {int}
+/// @param hi {int}
+/// @returns {int}
 === function roll(lo, hi) ===
 ~ return RANDOM(lo, hi)
 
+/// Burn the torch down by n notches, clamping at zero.
+/// @param n {int}
 === function spend_torch(n) ===
 ~ torch = torch - n
 { torch < 0:
     ~ torch = 0
 }
 
+/// A short prose description of the torch's current state.
 === function torch_desc() ===
 {
     - torch <= 0: has guttered out — you fight blind
@@ -42,6 +50,9 @@ VAR explored = ()
     - else: holds steady
 }
 
+/// Attack damage for one round: a 2–4 roll, modified by the sword, the
+/// golem's known weakness, boons and curses, and fighting in the dark.
+/// @returns {int}
 === function damage() ===
 ~ temp d = roll(2, 4)
 { carrying(sword):

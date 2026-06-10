@@ -453,6 +453,10 @@
 /* Screenplay element line styles */
 .brink-studio .cm-line.brink-knot-header {
   font-weight: 700;
+}
+/* The rule dividing knots sits at the knot's ownership start: its header,
+   or the first line of its /// doc block when documented. */
+.brink-studio .cm-line.brink-section-start {
   border-top: 1px solid rgba(69, 71, 90, 0.6);
   margin-left: calc(-1 * var(--editor-margin));
   margin-right: calc(-1 * var(--editor-margin));
@@ -460,6 +464,15 @@
   padding-right: var(--editor-margin);
 }
 .brink-studio .cm-line.brink-stitch-header {
+  font-weight: 700;
+}
+/* Collapsed declaration fold: renders the hidden knot/stitch header */
+.brink-studio .brink-fold-decl {
+  cursor: pointer;
+  color: var(--brink-fg-dim);
+}
+.brink-studio .brink-fold-decl-header {
+  color: var(--brink-mauve);
   font-weight: 700;
 }
 .brink-studio .cm-line.brink-choice {

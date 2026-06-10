@@ -52,7 +52,7 @@ pub struct ParamInfo {
 }
 
 /// The kind of a declared symbol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SymbolKind {
     Knot,
     Stitch,

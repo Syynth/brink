@@ -154,3 +154,87 @@ pub fn diff_to_edits(old: &str, new: &str) -> Vec<(TextRange, String)> {
     let range = TextRange::new(TextSize::from(0), TextSize::from(len));
     vec![(range, new.to_owned())]
 }
+
+/// Byte offset where a declaration's *ownership* starts: the start of the
+/// contiguous `///` doc-comment block immediately above the declaration at
+/// `decl_start`, or `decl_start` itself if there is none.
+///
+/// Mirrors the attachment rule of `parse_doc_comment` in brink-ir: contiguous
+/// `///` lines directly above the declaration, broken by a blank line or a
+/// plain `//` comment. Per the decision log, a doc block is structurally part
+/// of its declaration — folding, structural moves, and view slices use this
+/// to keep them together.
+#[must_use]
+pub fn doc_extended_start(source: &str, decl_start: usize) -> usize {
+    let decl_start = decl_start.min(source.len());
+    // Start of the line containing the declaration.
+    let mut line_start = source[..decl_start].rfind('\n').map_or(0, |i| i + 1);
+    let mut extended = None;
+    while line_start > 0 {
+        let prev_newline = line_start - 1;
+        let prev_start = source[..prev_newline].rfind('\n').map_or(0, |i| i + 1);
+        if source[prev_start..prev_newline]
+            .trim_start()
+            .starts_with("///")
+        {
+            extended = Some(prev_start);
+            line_start = prev_start;
+        } else {
+            break;
+        }
+    }
+    extended.unwrap_or(decl_start)
+}
+
+#[cfg(test)]
+mod doc_extended_start_tests {
+    use super::doc_extended_start;
+
+    #[test]
+    fn extends_over_contiguous_doc_block() {
+        let src = "text\n/// one\n/// two\n=== k ===\n";
+        let decl = src.find("=== k ===").expect("decl");
+        assert_eq!(
+            doc_extended_start(src, decl),
+            src.find("/// one").expect("doc")
+        );
+    }
+
+    #[test]
+    fn no_docs_returns_decl_start() {
+        let src = "text\n=== k ===\n";
+        let decl = src.find("=== k ===").expect("decl");
+        assert_eq!(doc_extended_start(src, decl), decl);
+    }
+
+    #[test]
+    fn blank_line_breaks_attachment() {
+        let src = "/// orphan\n\n=== k ===\n";
+        let decl = src.find("=== k ===").expect("decl");
+        assert_eq!(doc_extended_start(src, decl), decl);
+    }
+
+    #[test]
+    fn plain_comment_breaks_attachment() {
+        let src = "/// kept\n// plain\n=== k ===\n";
+        let decl = src.find("=== k ===").expect("decl");
+        assert_eq!(doc_extended_start(src, decl), decl);
+    }
+
+    #[test]
+    fn doc_block_at_file_start() {
+        let src = "/// top\n=== k ===\n";
+        let decl = src.find("=== k ===").expect("decl");
+        assert_eq!(doc_extended_start(src, decl), 0);
+    }
+
+    #[test]
+    fn indented_doc_lines_attach() {
+        let src = "=== k ===\n  /// indented\n= s\n";
+        let decl = src.find("= s").expect("decl");
+        assert_eq!(
+            doc_extended_start(src, decl),
+            src.find("  ///").expect("doc")
+        );
+    }
+}

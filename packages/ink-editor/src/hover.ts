@@ -27,31 +27,15 @@ export function hoverExtension(options: HoverOptions): Extension {
         const dom = document.createElement("div");
         dom.className = "brink-hover-tooltip";
 
-        // Render content as simple text with line breaks
+        // Render content line by line with inline markdown spans
         const lines = info!.content.split("\n");
         for (const line of lines) {
-          const p = document.createElement("div");
           if (line.startsWith("```")) {
             // Skip code fence markers
             continue;
           }
-          if (line.startsWith("**") && line.endsWith("**")) {
-            const strong = document.createElement("strong");
-            strong.textContent = line.slice(2, -2);
-            p.appendChild(strong);
-          } else {
-            // Render inline code
-            const parts = line.split(/`([^`]+)`/);
-            for (let i = 0; i < parts.length; i++) {
-              if (i % 2 === 1) {
-                const code = document.createElement("code");
-                code.textContent = parts[i];
-                p.appendChild(code);
-              } else if (parts[i]) {
-                p.appendChild(document.createTextNode(parts[i]));
-              }
-            }
-          }
+          const p = document.createElement("div");
+          renderInline(line, p);
           dom.appendChild(p);
         }
 
@@ -59,4 +43,38 @@ export function hoverExtension(options: HoverOptions): Extension {
       },
     };
   });
+}
+
+/**
+ * Render a line of hover markdown (inline `code`, **bold**, *italic*) into
+ * `into`. Bold/italic contents are rendered recursively, so one level of
+ * nesting like *Defined in `path`* works.
+ */
+function renderInline(line: string, into: HTMLElement): void {
+  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)/g;
+  let last = 0;
+  for (const m of line.matchAll(re)) {
+    const idx = m.index ?? 0;
+    if (idx > last) {
+      into.appendChild(document.createTextNode(line.slice(last, idx)));
+    }
+    const tok = m[0];
+    if (tok.startsWith("`")) {
+      const code = document.createElement("code");
+      code.textContent = tok.slice(1, -1);
+      into.appendChild(code);
+    } else if (tok.startsWith("**")) {
+      const strong = document.createElement("strong");
+      renderInline(tok.slice(2, -2), strong);
+      into.appendChild(strong);
+    } else {
+      const em = document.createElement("em");
+      renderInline(tok.slice(1, -1), em);
+      into.appendChild(em);
+    }
+    last = idx + tok.length;
+  }
+  if (last < line.length) {
+    into.appendChild(document.createTextNode(line.slice(last)));
+  }
 }
