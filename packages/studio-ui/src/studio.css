@@ -1150,6 +1150,7 @@
 /* Dock strips — narrow icon bars along the shell edges (spec §5.1). One
    monochrome icon per tool window, accent for the active (open) one. */
 .brink-studio .shell-strip {
+  position: relative; /* anchors the drag drop zones (§5.1) */
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1207,6 +1208,81 @@
   font-weight: 700;
   line-height: 13px;
   text-align: center;
+}
+
+/* Strip-icon drag-to-re-dock (spec §5.1). While a drag is active every
+   strip enters drop mode: subtle emphasis, and its two sections overlay as
+   drop zones (visual only — hit-testing is rect math, so the zones take no
+   pointer events). The hovered zone gets .active. */
+.brink-studio .shell-strip.drop-mode {
+  background: var(--brink-bg-surface);
+}
+.brink-studio .shell-strip.drop-mode .shell-strip-btn {
+  cursor: grabbing;
+}
+.brink-studio .shell-strip-dropzone {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  border: 1px dashed var(--brink-border);
+  border-radius: 5px;
+}
+.brink-studio .shell-strip-left .shell-strip-dropzone,
+.brink-studio .shell-strip-right .shell-strip-dropzone {
+  left: 3px;
+  right: 3px;
+}
+.brink-studio .shell-strip-left .shell-strip-dropzone-start,
+.brink-studio .shell-strip-right .shell-strip-dropzone-start {
+  top: 3px;
+  bottom: calc(50% + 2px);
+}
+.brink-studio .shell-strip-left .shell-strip-dropzone-end,
+.brink-studio .shell-strip-right .shell-strip-dropzone-end {
+  top: calc(50% + 2px);
+  bottom: 3px;
+}
+.brink-studio .shell-strip-bottom .shell-strip-dropzone {
+  top: 3px;
+  bottom: 3px;
+}
+.brink-studio .shell-strip-bottom .shell-strip-dropzone-start {
+  left: 3px;
+  right: calc(50% + 2px);
+}
+.brink-studio .shell-strip-bottom .shell-strip-dropzone-end {
+  left: calc(50% + 2px);
+  right: 3px;
+}
+.brink-studio .shell-strip-dropzone.active {
+  border-color: var(--brink-accent);
+  background: color-mix(in srgb, var(--brink-accent) 16%, transparent);
+}
+
+/* Drag ghost: icon + title chip following the cursor (positioned by the
+   drag controller via transform; top-left origin). Above everything. */
+.brink-studio .shell-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 500;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  background: var(--brink-bg-panel);
+  border: 1px solid var(--brink-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  color: var(--brink-fg);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.brink-studio .shell-drag-ghost-icon {
+  display: flex;
+  align-items: center;
+  color: var(--brink-fg-dim);
 }
 
 /* Fullscreen tool window (player fullscreen; proper maximize is #86). */
