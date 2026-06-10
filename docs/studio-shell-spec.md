@@ -93,13 +93,14 @@ Default placement, mapped from existing components:
 | **Binder** | tool window | left dock, start | [Binder.tsx](../packages/studio-ui/src/Binder.tsx) (928 LOC) | Open by default. Component gets decomposed (tree / selection / DnD / context menu) during migration, not before. |
 | **Player** | tool window | right dock, start | [PlayerPane.tsx](../packages/studio-ui/src/PlayerPane.tsx) | Open by default (Inky two-up). Maximize replaces today's `playerFullscreen`. |
 | **State View** (debugger) | tool window | right dock, end | [StateView.tsx](../packages/studio-ui/src/StateView.tsx) | Closed by default; opens when a story is running and the user toggles it. Pairs vertically with Player. |
-| **Problems** | tool window | bottom dock, start | *new* (data exists in `CompileSlice` diagnostics) | Clickable diagnostics list → jumps editor to location. Status-bar error/warning segment opens it. |
+| **Problems** | tool window | bottom dock, start | *new* (data exists in `CompileSlice` diagnostics) | Clickable diagnostics list → `editor.reveal` (§6.1). Status-bar error/warning segment opens it. |
 | **Output / compile log** | tool window | bottom dock, end | *new* | Compile timings, wasm/runtime errors that aren't source diagnostics. Replaces nothing; today this information is dropped. |
 | **Search** | tool window | left dock, start | *new, later phase* | Project-wide find/replace. In the strip from day one only if trivially stubbed; otherwise added when implemented. |
 | **Program Explorer** | tool window | bottom dock or right dock (user-movable) | [ProgramView.tsx](../packages/studio-ui/src/ProgramView.tsx) | Resolved (§10.1): the structured tables (globals/lists/externals/knot tree) stay a tool window; the raw `.inkt` dump toggle leaves it in Phase 4 (see Compiled Output below). |
 | **Compiled Output** (`.inkt` dump) | editor document (read-only) | editor area | the dump toggle inside ProgramView | Phase 4: a read-only document tab with a minimal CM6 `.inkt` mode, gaining search/folding/selection. Disassembly-view precedent. |
 | **Story transcript** | tool window | bottom dock | *future* | Append-only transcript view; listed to validate the model, not scheduled. |
 | **Story Graph** | editor document (custom-rendered) | editor area | *new* | Phase 6: visual story-structure explorer — see §4.1. |
+| **Settings** | editor document | editor area | *new* | Phase 5: theme choice, keymap-override JSON editing, diagnostic severity flags. VS Code precedent (settings as a document tab, not a modal). |
 | Ink files | editor document | editor area | [EditorPane.tsx](../packages/studio-ui/src/EditorPane.tsx) + CM6 | Tabbed via [FileTabBar.tsx](../packages/studio-ui/src/FileTabBar.tsx), which becomes the per-group tab bar. |
 
 The **Toast** system is replaced by the shell notification service (§7.5) in Phase 3;
@@ -132,8 +133,8 @@ the same document-type API.
   candidate React graph layer is react-flow/xyflow. Library choice is an implementation
   decision, but layout must run off the render path and node count is capped-by-collapse
   (knots start collapsed) per the unbounded-growth guard.
-- **Interaction:** pan/zoom; click a node to jump the editor to its source span;
-  expand/collapse knots. **Live story overlay:** while a story runs, the current location
+- **Interaction:** pan/zoom; click a node to navigate to its source (`editor.reveal`,
+  §6.1); expand/collapse knots. **Live story overlay:** while a story runs, the current location
   node is highlighted and nodes show visit-count badges (the same name-resolved debug
   state the State View consumes). Read-only — authoring actions from the graph (create
   knot, drag-to-divert) are out of scope and would be a separate spec.
@@ -217,6 +218,37 @@ interface Command {
   (binder items instead of commands).
 - Buttons/menus/strip icons call `dispatch(commandId)` — never feature functions directly —
   so the palette is automatically complete.
+
+### 6.1 Locations and navigation
+
+Cross-surface linking ("click the thing, go to the thing") is one shared protocol, not
+per-view behavior. The studio has four address spaces, and navigation is translation
+between them:
+
+```ts
+type Location =
+  | { kind: "source"; file: FileId; span: Span }          // what the editor understands
+  | { kind: "symbol"; name: QualifiedName }               // knot / knot.stitch
+  | { kind: "program"; address: ProgramPath }             // container path / bytecode addr
+  | { kind: "session"; ref: SessionRef };                 // transcript entry, stack frame
+```
+
+- **Resolvers translate toward source.** A small resolver registry maps
+  symbol → source (compile result), program → source (debug info), and
+  session → program (runtime state). Views emit whatever space they naturally have;
+  nobody duplicates translation. MVP implements the source and symbol resolvers;
+  program/session resolvers land with their consumers (Compiled Output links, State View
+  stack frames).
+- **`editor.reveal(location)`** is the navigation verb: resolve to source, open the file,
+  scroll, flash-highlight the span. Problems rows, graph nodes, quick-open hits, and
+  State View frames all dispatch it. Routing through the command registry means host
+  panels (§8) get navigation via `dispatch` with no new `StudioApi` surface.
+- **Reverse reveal:** `view.reveal(viewId, item)` — "Reveal in Binder", "Reveal in
+  Graph" from the editor cursor. The generic command is part of this concept; each view
+  implements its receiver when the view lands (Binder Phase 2, Graph Phase 6).
+- **Follow-selection is deferred.** Auto-syncing a view to the editor cursor (JetBrains'
+  "link with editor" toggles) is explicitly not specced — navigation is always an
+  explicit user action for now.
 
 ## 7. Shell infrastructure
 
@@ -351,6 +383,18 @@ status: none → running → awaiting-choice → (done | ended | error)
   session-bound views to *the active session* rather than a global, so extending to a
   session selector later is additive, not a rework.
 
+### 7.7 Overlay primitive
+
+One shared floating/anchored-positioning primitive (candidate: floating-ui) under every
+transient surface: the command palette, context menus
+([BinderContextMenu.tsx](../packages/studio-ui/src/BinderContextMenu.tsx)), the element
+conversion dropdown ([ElementDropdown.tsx](../packages/studio-ui/src/ElementDropdown.tsx)
+— whose manual `position: fixed` rect-tracking is exactly the fragility this replaces),
+the notification bell popover, and strip tooltips. It owns anchoring, flipping at
+viewport edges, dismiss-on-outside-click/Escape, and focus return. Lands in Phase 1
+(the palette needs it on day one); existing one-off implementations migrate to it as
+their components are touched, not as a big-bang.
+
 ## 8. Embedder extension API
 
 brink-studio is embedded programmatically (the embedded playground today; RPG Maker MZ
@@ -423,7 +467,9 @@ Each phase lands independently; the studio remains shippable after every phase.
 - **Phase 1 — shell skeleton.** `studio-shell` package: regions, docks+strips
   (click-to-toggle only), `ShellLayoutSlice`, tool-window + status-bar registries,
   `CommandRegistry` + global key handler resolving through the keymap layer (defaults +
-  user-override JSON, §6) + palette. Existing components registered as-is:
+  user-override JSON, §6) + palette on the shared overlay primitive (§7.7), and the
+  `Location`/`editor.reveal` navigation protocol (§6.1, source + symbol resolvers).
+  Existing components registered as-is:
   Binder/Search-less left dock, Player right, State View right-end, Program Explorer
   bottom. App.tsx's pane logic is deleted; tiers reimplemented per §5.3. *Visual parity is
   not a goal; structural correctness is.*
@@ -440,8 +486,9 @@ Each phase lands independently; the studio remains shippable after every phase.
   documents (consumed by the Story Graph in Phase 6). Until this phase the editor area is
   a single group — the shell API is written for groups from day one so this is additive.
 - **Phase 5 — polish, theme & embedder API.** Semantic token layer, light theme, CSS
-  decomposition completes, Search tool window, embedder extension API exposure (§8:
-  `StudioExtensions` mount config, `StudioApi`, `StudioPublicState`).
+  decomposition completes, Search tool window, Settings document (theme, keymap JSON,
+  severity flags), embedder extension API exposure (§8: `StudioExtensions` mount config,
+  `StudioApi`, `StudioPublicState`).
 - **Phase 6 — Story Graph.** The story-graph extraction query (analyzer/IDE layer,
   wasm-exposed) and the custom-rendered document (§4.1): auto-layout, expand/collapse,
   click-to-jump, live story overlay.
