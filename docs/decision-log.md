@@ -759,3 +759,67 @@
 - **SCOPE:** moderate
 - **WHAT:** Settled four implementation decisions for the host-capability-manifest MVP (Tier 1 + closed Tier 2). (1) **Static check scope = literals only:** type-mismatch and closed-domain (enum/regex/range) diagnostics evaluate only literal arguments; CONST/VAR type inference is deferred. (2) **Severity is a flag, default = error:** manifest-driven diagnostics (type mismatch, closed-domain, manifest↔ink arity disagreement, unknown semantic type) have configurable severity `{ Error (default), Warning, Off }`, surfaced as a compiler option and an IDE setter. (3) **Metadata placement = side-table + explicit arg:** merged per-external metadata lives in a new `ExternalMeta` map keyed by `DefinitionId` on `AnalysisResult` (kept off the shared `SymbolInfo`); the registered manifest reaches the analyzer as an explicit `analyze(…)` argument, not via `ProjectDb` inputs. Inline `///` docs ride a parallel `external_docs` map on the per-file `SymbolManifest` (off `DeclaredSymbol`) for the same reason. (4) **Smaller defaults:** one project-wide registered manifest per session; `@kind` is informational-only at MVP (hover, no diagnostic); the `///` parser is lenient (unknown/`@widget` tags ignored, malformed `@param` warns via E038 on that external only); `set_host_manifest` returns a clean error on bad JSON.
 - **WHY:** Literal-only checking is sound with zero false positives and needs no inference pass — ink is dynamically typed, so most argument types aren't statically knowable. Error-by-default matches the author expectation that a registered manifest is binding, and is safe (no manifest ⇒ no diagnostics ⇒ existing builds unaffected); the flag leaves room to downgrade. Side-table placement follows "separate concerns by ownership" — the metadata is external-specific and optional, so it doesn't belong on the symbol type used everywhere; and an explicit arg is clearer than smuggling project-wide host data through per-file db inputs.
+
+## Studio shell redesign direction
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-ui / studio-store
+- **SCOPE:** architectural
+- **WHAT:** Redesign brink-studio as a principled ink IDE. Structural reference is VS Code's region model (named regions: edge docks, editor groups, status bar; views are the movable unit; everything routes through a command registry + palette). Docking affordance follows JetBrains tool-window strips (icon strips on left/right/bottom edges, each strip with two sections; drag icons between strips to re-dock; tool windows live only in edge docks, editor always center). Visual language follows Zed (quiet, low-chrome). Inky remains the domain reference: editor⇄player two-up is the default layout. Free-form docking libraries (dockview/golden-layout) rejected. Process: written spec (docs/studio-shell-spec.md) reviewed before implementation.
+- **WHY:** The current UI's problem is absence of principle, not missing features — panels are hardcoded slots with no region contract and no command system. VS Code is the only candidate with published UX guidelines, so its region model does the design thinking for us; JetBrains' strips are the best-discoverable affordance for view docking; Zed's restraint suits a writing-focused tool; free-form docking adds machinery without IDE discipline and lets layouts degrade.
+
+## Studio shell spec: open questions resolved (Program Explorer, menus, keybindings)
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-ui / studio-shell
+- **SCOPE:** moderate
+- **WHAT:** (1) Program Explorer splits: the structured tables (globals/lists/externals/knot tree) remain a tool window; the raw .inkt dump becomes a read-only "Compiled Output" editor document in Phase 4 with a minimal CM6 mode. (2) No menu bar: command discoverability via a registry-generated hamburger menu (grouped commands), embed-friendly; the same registry could feed a native menu bar in a future desktop shell. (3) Keybindings: the Phase 1 key handler resolves through a keymap table built from registry defaults, with a user-override JSON (no UI) merged over defaults from day one; a full keymap-editing UI stays out of scope.
+- **WHY:** (1) Tools-you-glance-at vs content-you-read: the tables are glanceable lookup (tool-window behavior), the dump is a long searchable text artifact that gains CM6 search/folding as an editor tab — the disassembly-view precedent. (2) Menu bars exist for discoverability; an in-page bar costs permanent vertical space and is wrong in embeds, while a registry-driven hamburger patches the palette's discoverability hole nearly free. (3) With the keymap layer specced anyway, the marginal cost of JSON overrides is small enough that deferring buys nothing — cheap now, annoying later; the indirection itself is the part that's expensive to retrofit.
+
+## Studio shell: notification service replaces Toast
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-shell / studio-ui
+- **SCOPE:** moderate
+- **WHAT:** The one-off Toast is replaced (Phase 3) by a shell notification service: severity-tiered model (info 5s / warning 8s / error sticky), stacked bottom-right (max 3 visible, overflow collapser, hover pauses dismissal), status-bar bell with unread badge and a capped session history (~100). Notification actions dispatch commands only — no raw callbacks (Binder's undo toast becomes a `binder.undo` action). Progress notifications and do-not-disturb are out of scope. Spec §7.5.
+- **WHY:** A real IDE needs more than one transient message slot, and missed toasts must be recoverable (hence the bell/history). Command-only actions keep the everything-routes-through-commands invariant and the model serializable; the history cap follows the unbounded-growth guard principle.
+
+## Studio shell: embedder extension API (host-provided panels), not a plugin system
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-shell / cross-system (RMMZ embedding, Track B)
+- **SCOPE:** architectural
+- **WHAT:** Hosts embedding brink-studio (e.g. RPG Maker MZ — planned "RPG Maker functions panel") can register their own tool windows, commands, and status-bar items at mount time via a `StudioExtensions` config feeding the same registries as built-ins, with mandatory `host.<vendor>.` id namespacing. Host components get a curated `StudioApi` facade (insertText at cursor, dispatch, notify, select/subscribe over an explicit `StudioPublicState`) — never the raw store. Contract shapes are baked into the Phase 1 registries; public exposure lands Phase 5. Explicitly NOT a plugin system (no dynamic loading/marketplace/sandboxing — the host is trusted code that owns the page). Amends the spec's earlier non-goal ("registries are internal APIs"). Spec §8.
+- **WHY:** Host-specific panels (RPG Maker functions) cannot be built into the studio, and the host already runs code in the page — so mount-time registration into existing registries gives extension for near-zero machinery. The facade follows the consumer-first API principle (store internals stay changeable); shapes-early/expose-late makes the public contract a thin door instead of a retrofit while letting docking/persistence stabilize before hosts depend on them. Dovetails with Track B: the functions panel renders the registered host-capability manifest with click-to-insert.
+
+## Studio shell: Story Graph document (visual story explorer)
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-shell / brink-analyzer / brink-ide (graph query)
+- **SCOPE:** moderate
+- **WHAT:** A Story Graph opens as a custom-rendered editor document (not a tool window): one node per knot, expanding to stitches; whole-project scope; edges are diverts (solid), choice targets (aggregated up from the weave), and tunnels/threads (dashed), with END/DONE pseudo-nodes; function-call edges excluded (possible default-off toggle later). Interaction: pan/zoom, click-to-jump to source, and a live story overlay (current-location highlight + visit-count badges while running). Read-only — authoring from the graph would be a separate spec. Requires a new deterministic story-graph query (analyzer/IDE layer, wasm-exposed) — the one cross-crate dependency. Lands as Phase 6, after Phase 4's document support, which is now explicitly component-based (text/CM6 and custom-rendered documents share one document-type API). Spec §4.1.
+- **WHY:** Exploring story structure visually is content you open and read — document semantics, not glanceable-tool semantics. Knots-first granularity keeps large stories legible with drill-down; the three selected edge kinds are the story-flow backbone while function calls are usually noise; the live overlay reuses debug state the State View already has, giving the graph debugging value for free.
+
+## Studio shell: story session as a first-class concept; session-bound views
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-shell / studio-store
+- **SCOPE:** architectural
+- **WHAT:** The live story/VM instance becomes a first-class "story session" model (program identity, runner handle, transcript, debug state, choice history, status: none→running→awaiting-choice→done/ended/error), extracted from PlayerSlice in Phase 2. Player, State View, the Story Graph's live overlay, the future transcript view, and the status bar story segment are "session-bound": they select from the session, render a placeholder with a start affordance when none exists, and never own/create/mutate it — lifecycle belongs to commands (story.start/restart/stop/choose with `when` predicates). Recompile-while-running is formalized: successful compile restarts the session on the new program and replays recorded choices, truncating with a notification on divergence; failed compile leaves the old session running. Single session at MVP; views key to "the active session" so multi-session/flows extend additively. Spec §7.6.
+- **WHY:** Several surfaces all tie directly into a running story, and leaving that implicit reproduces today's bundling (PlayerSlice owns the runner, State View piggybacks) — the session and the player's UI state have different lifetimes, so separate-concerns-by-ownership demands the split. Naming the concept gives the command system its `when` predicates, the inventory a session-bound/compile-bound distinction, and formalizes the already-implemented Inky-style choice replay instead of leaving it folklore.
+
+## Studio shell: Location/navigation protocol; Settings document; shared overlay primitive
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-shell / studio-ui
+- **SCOPE:** architectural (navigation); minor (settings, overlay)
+- **WHAT:** (1) Cross-surface linking is one protocol, not per-view behavior: a `Location` union over the studio's four address spaces (source span | symbol | program address | session ref) with a resolver registry translating toward source; `editor.reveal(location)` is the navigation verb dispatched by Problems rows, graph nodes, quick-open, State View frames; reverse `view.reveal(viewId, item)` ("Reveal in Binder/Graph") is specced now with receivers shipping per view; follow-selection auto-sync explicitly deferred. MVP resolvers: source + symbol; program/session resolvers land with their consumers. Spec §6.1. (2) A Settings editor document (theme, keymap-override JSON, diagnostic severity flags) in Phase 5 — VS Code settings-as-document precedent. (3) A shared anchored-overlay primitive (candidate: floating-ui) under palette/context menus/element dropdown/bell popover, landing Phase 1 with one-offs migrating as touched. Spec §7.7.
+- **WHY:** (1) The spec already said "click → jump" in four places ad-hoc; naming the address spaces makes every cross-link the same operation, kills per-view translation duplication, and — because it's command-routed — gives embedder host panels navigation through `dispatch` with zero new API surface. (2) Theme/keymap/severity features already specced had no home. (3) ElementDropdown's manual rect-tracking was one of the original ad-hoc complaints; the palette needs correct overlay behavior on day one anyway, so one primitive serves all transient surfaces.
+
+## Studio shell implementation scoped as 20 issues across 6 phase milestones
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** process / studio-shell
+- **SCOPE:** moderate (process)
+- **WHAT:** Shell implementation filed as 20 issues (#78–#97), each sized to one worktree (merges with the studio working), grouped by six GitHub milestones ("Shell Phase 1 — Skeleton" … "Shell Phase 6 — Story Graph") rather than an umbrella checklist issue; all added to board #6 in Todo with dependency notes in each body. Pre-existing overlaps cross-referenced: #76 (Problems panel) is superseded by #84 when it lands; #69 (click-to-source from State View / Program Explorer) becomes resolver additions on top of #81's navigation protocol.
+- **WHY:** Issue granularity must match the per-issue-worktree, sequential-merge workflow — phase-sized issues are too big to merge green, and ultra-fine slices can't be verified by running the studio. Milestones chosen over an umbrella issue for native per-phase progress tracking.
