@@ -13,3 +13,6 @@ test-results/
 
 # Catch build artifacts under any excluded sub-crate (e.g. zed-brink, benchmark drivers)
 **/target/
+
+# Per-machine Claude session tooling (worktrees, preview launch configs)
+.claude/
