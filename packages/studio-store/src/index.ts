@@ -14,6 +14,7 @@ import type { TabsSlice } from "./slices/tabs.js";
 import type { SessionSlice } from "./slices/session.js";
 import type { PlayerSlice } from "./slices/player.js";
 import type { BinderSlice } from "./slices/binder.js";
+import type { OutputSlice } from "./slices/output.js";
 import type { InkEditorHandle, EditorStateManager, ProjectSession } from "./types.js";
 
 import { createEditorSlice } from "./slices/editor.js";
@@ -22,6 +23,7 @@ import { createTabsSlice } from "./slices/tabs.js";
 import { createSessionSlice } from "./slices/session.js";
 import { createPlayerSlice } from "./slices/player.js";
 import { createBinderSlice } from "./slices/binder.js";
+import { createOutputSlice } from "./slices/output.js";
 
 // ── Combined state ──────────────────────────────────────────────────
 
@@ -31,7 +33,8 @@ export interface StudioState
     TabsSlice,
     SessionSlice,
     PlayerSlice,
-    BinderSlice {
+    BinderSlice,
+    OutputSlice {
   // Non-reactive refs — imperative handles that don't trigger re-renders
   _editorRef: InkEditorHandle | null;
   _stateManager: EditorStateManager | null;
@@ -58,6 +61,7 @@ export const createStudioStore = () =>
       ...createSessionSlice(...args),
       ...createPlayerSlice(...args),
       ...createBinderSlice(...args),
+      ...createOutputSlice(...args),
 
       // Non-reactive refs
       _editorRef: null,
@@ -99,6 +103,16 @@ export {
   REPLAY_DIVERGED_MESSAGE,
   type SessionStatus,
 } from "./slices/session.js";
+
+// Problems ordering (canonical sort, unit-testable pure helper).
+export { sortDiagnostics } from "./slices/compile.js";
+
+// Output log (Output tool window, spec §4) — entries + growth cap.
+export {
+  OUTPUT_LOG_LIMIT,
+  type OutputEntry,
+  type OutputSource,
+} from "./slices/output.js";
 
 export type {
   ElementType,

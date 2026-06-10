@@ -1446,3 +1446,122 @@
 .brink-studio .brink-status-story-dot.status-error {
   background: var(--brink-red);
 }
+
+/* ── Problems tool window (spec §4) ───────────────────────────────── */
+
+.brink-studio .problems-view {
+  height: 100%;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.brink-studio .problems-empty {
+  margin: 0;
+  padding: 14px 12px;
+  color: var(--brink-fg-dim);
+}
+.brink-studio .problems-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+.brink-studio .problems-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 12px;
+  background: transparent;
+  border: none;
+  font: inherit;
+  color: var(--brink-fg);
+  text-align: left;
+  cursor: pointer;
+}
+.brink-studio .problems-row:hover {
+  background: var(--brink-bg-panel);
+}
+.brink-studio .problems-severity {
+  flex-shrink: 0;
+  font-size: 9px;
+  line-height: inherit;
+}
+.brink-studio .problems-severity.is-error { color: var(--brink-red); }
+.brink-studio .problems-severity.is-warning { color: var(--brink-yellow); }
+.brink-studio .problems-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brink-studio .problems-location {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--brink-fg-dim);
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 11px;
+}
+
+/* ── Output tool window (spec §4) ─────────────────────────────────── */
+
+.brink-studio .output-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+}
+.brink-studio .output-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--brink-border);
+  flex-shrink: 0;
+}
+.brink-studio .output-clear {
+  background: var(--brink-bg-panel);
+  color: var(--brink-fg-dim);
+  border: 1px solid var(--brink-border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.brink-studio .output-clear:hover:not(:disabled) { color: var(--brink-fg); }
+.brink-studio .output-clear:disabled { opacity: 0.5; cursor: default; }
+.brink-studio .output-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+}
+.brink-studio .output-empty {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--brink-fg-dim);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+.brink-studio .output-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 12px;
+}
+.brink-studio .output-time {
+  flex-shrink: 0;
+  color: var(--brink-fg-dim);
+}
+.brink-studio .output-source {
+  flex-shrink: 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.brink-studio .output-source-compile { color: var(--brink-accent); }
+.brink-studio .output-source-story { color: var(--brink-mauve); }
+.brink-studio .output-message {
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--brink-fg);
+}

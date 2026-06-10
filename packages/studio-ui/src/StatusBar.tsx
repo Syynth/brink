@@ -55,8 +55,9 @@ function elementLabel(info: LineInfo): string {
 
 /**
  * Compile status: error/warning counts (or a quiet check when clean).
- * Clicking opens the Problems tool window once it exists (#84) — until that
- * command is registered the segment renders non-interactive.
+ * Clicking toggles the Problems tool window (#84) via its generated
+ * `view.toggle.problems` command — if that command isn't registered (e.g. a
+ * host shell without Problems), the segment renders non-interactive.
  */
 export function CompileStatusSegment() {
   const diagnostics = useStudioStore((s) => s.diagnostics);
