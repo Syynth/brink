@@ -92,10 +92,6 @@ export interface PlayerSlice {
   /** Player fullscreen mode — hides the editor pane. */
   playerFullscreen: boolean;
   togglePlayerFullscreen(): void;
-
-  /** Whether the player pane is visible. */
-  playerVisible: boolean;
-  togglePlayerVisible(): void;
 }
 
 export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> = (set, get) => ({
@@ -110,14 +106,9 @@ export const createPlayerSlice: StateCreator<StudioState, [], [], PlayerSlice> =
   programModel: null,
   programInkt: null,
   playerFullscreen: false,
-  playerVisible: true,
 
   togglePlayerFullscreen() {
     set((state) => ({ playerFullscreen: !state.playerFullscreen }));
-  },
-
-  togglePlayerVisible() {
-    set((state) => ({ playerVisible: !state.playerVisible }));
   },
 
   loadStory(bytes) {

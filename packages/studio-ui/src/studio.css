@@ -22,14 +22,17 @@
   height: 100%;
 }
 
-/* Binder pane */
-.brink-studio .binder-pane {
+/* Tool-window chrome (studio-shell #80) — slim header above the registered
+   component, carrying over the old .binder-pane .header look. */
+.brink-studio .shell-toolwindow {
   height: 100%;
   background: var(--brink-bg-surface);
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
-.brink-studio .binder-pane .header {
+.brink-studio .shell-toolwindow .header {
   padding: 8px 12px;
   font-size: 13px;
   font-weight: 600;
@@ -40,6 +43,17 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-shrink: 0;
+}
+.brink-studio .shell-toolwindow-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.brink-studio .shell-toolwindow-body > * {
+  flex: 1;
+  min-height: 0;
 }
 /* State view — read-only runtime debugger panel */
 .brink-studio .state-view {
@@ -907,6 +921,27 @@
   width: 2px;
   left: 1px;
 }
+/* Horizontal variant — separators in vertical groups (bottom dock, dock
+   sections). Same hairline, rotated. */
+.brink-studio .brink-resize-handle-h {
+  width: auto;
+  height: 5px;
+}
+.brink-studio .brink-resize-handle-h::after {
+  left: 0;
+  right: 0;
+  top: 2px;
+  bottom: auto;
+  width: auto;
+  height: 1px;
+}
+.brink-studio .brink-resize-handle-h:hover::after,
+.brink-studio .brink-resize-handle-h[data-resize-handle-active]::after {
+  width: auto;
+  height: 2px;
+  top: 1px;
+  left: 0;
+}
 /* Panel toggle button */
 .brink-studio .brink-panel-toggle {
   background: none;
@@ -1056,7 +1091,7 @@
   color: var(--brink-fg);
 }
 
-/* ── Responsive layout (split → drawer → tabbed) ──────────────────── */
+/* ── Shell regions (studio-shell #80: strips, docks, tiers) ───────── */
 
 .brink-studio {
   display: flex;
@@ -1071,7 +1106,98 @@
   display: flex;
 }
 
+/* The editor row + bottom dock column between the side strips. */
+.brink-studio .shell-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.brink-studio .shell-rows {
+  flex: 1;
+  min-height: 0;
+}
 .brink-studio .studio-panes {
+  height: 100%;
+}
+.brink-studio .shell-dock,
+.brink-studio .shell-dock-sections {
+  height: 100%;
+  min-height: 0;
+}
+
+/* Dock strips — narrow icon bars along the shell edges (spec §5.1). One
+   monochrome icon per tool window, accent for the active (open) one. */
+.brink-studio .shell-strip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  background: var(--brink-bg-panel);
+}
+.brink-studio .shell-strip-left,
+.brink-studio .shell-strip-right {
+  flex-direction: column;
+  width: 36px;
+  padding: 6px 0;
+}
+.brink-studio .shell-strip-left { border-right: 1px solid var(--brink-border); }
+.brink-studio .shell-strip-right { border-left: 1px solid var(--brink-border); }
+.brink-studio .shell-strip-bottom {
+  flex-direction: row;
+  height: 32px;
+  padding: 0 6px;
+  border-top: 1px solid var(--brink-border);
+}
+.brink-studio .shell-strip-btn {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--brink-fg-dim);
+  border: none;
+  border-radius: 5px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.brink-studio .shell-strip-btn:hover {
+  background: var(--brink-border);
+  color: var(--brink-fg);
+}
+.brink-studio .shell-strip-btn.active {
+  color: var(--brink-accent);
+  background: var(--brink-bg-surface);
+}
+.brink-studio .shell-strip-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--brink-red);
+  color: var(--brink-bg);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+}
+
+/* Fullscreen tool window (player fullscreen; proper maximize is #86). */
+.brink-studio .shell-fullscreen {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.brink-studio .shell-fullscreen > * {
   flex: 1;
   min-height: 0;
 }
@@ -1099,46 +1225,6 @@
 }
 .brink-studio .studio-iconbtn:hover { background: var(--brink-border); }
 
-/* Activity bar — vertical view switcher to the left of the sidebar dock */
-.brink-studio .studio-activitybar {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 4px;
-  flex-shrink: 0;
-  background: var(--brink-bg-panel);
-  border-right: 1px solid var(--brink-border);
-}
-.brink-studio .studio-activitybar-btn {
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: var(--brink-fg-dim);
-  border: none;
-  border-left: 2px solid transparent;
-  border-radius: 4px;
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-}
-.brink-studio .studio-activitybar-btn:hover { background: var(--brink-border); }
-.brink-studio .studio-activitybar-btn.active {
-  color: var(--brink-fg);
-  border-left-color: var(--brink-accent);
-  background: var(--brink-bg-surface);
-}
-
-/* Drawer hosts the activity bar + active view side by side */
-.brink-studio .drawer-inner {
-  display: flex;
-  height: 100%;
-}
-.brink-studio .drawer-inner .binder-pane { flex: 1; min-width: 0; }
-
 .brink-studio .studio-segmented {
   display: inline-flex;
   border: 1px solid var(--brink-border);
@@ -1160,7 +1246,7 @@
   font-weight: 600;
 }
 
-/* Binder slide-over drawer */
+/* Slide-over dock drawers (medium tier; left dock also in narrow) */
 .brink-studio .studio-scrim {
   position: absolute;
   inset: 0;
@@ -1172,22 +1258,29 @@
 }
 .brink-studio .studio-scrim.open { opacity: 1; pointer-events: auto; }
 
-.brink-studio .binder-drawer {
+.brink-studio .shell-drawer {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 0;
   width: min(280px, 82%);
-  transform: translateX(-100%);
   transition: transform 0.18s ease;
   z-index: 50;
+  background: var(--brink-bg-surface);
+}
+.brink-studio .shell-drawer-left {
+  left: 0;
+  transform: translateX(-100%);
   box-shadow: 2px 0 14px rgba(0, 0, 0, 0.45);
 }
-.brink-studio .binder-drawer.open { transform: translateX(0); }
-.brink-studio .binder-drawer .binder-pane { height: 100%; }
+.brink-studio .shell-drawer-right {
+  right: 0;
+  transform: translateX(100%);
+  box-shadow: -2px 0 14px rgba(0, 0, 0, 0.45);
+}
+.brink-studio .shell-drawer.open { transform: translateX(0); }
 
-/* Player overlay (narrow Story tab) */
-.brink-studio .player-overlay {
+/* Full tool-window overlays (narrow tier) */
+.brink-studio .shell-overlay-view {
   position: absolute;
   inset: 0;
   z-index: 30;
@@ -1195,8 +1288,7 @@
   transform: translateX(100%);
   transition: transform 0.18s ease;
 }
-.brink-studio .player-overlay.open { transform: translateX(0); }
-.brink-studio .player-overlay .player-pane { height: 100%; }
+.brink-studio .shell-overlay-view.open { transform: translateX(0); }
 
 /* Editor content floor — below the minimum, scroll within the pane rather
    than crushing the text column. */
