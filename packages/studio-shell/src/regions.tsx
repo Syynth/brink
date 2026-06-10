@@ -17,8 +17,14 @@
 
 import { useMemo, type ReactNode } from "react";
 import { Group, Panel, Separator, type PanelSize } from "react-resizable-panels";
-import { useShell, useShellLayout, useToolWindows } from "./shell-context.js";
+import {
+  useShell,
+  useShellLayout,
+  useStatusBarItems,
+  useToolWindows,
+} from "./shell-context.js";
 import { formatChord } from "./keymap.js";
+import { statusBarGroups, type StatusBarItemDescriptor } from "./statusbar.js";
 import { viewToggleCommandId } from "./view-commands.js";
 import {
   dockSectionId,
@@ -113,6 +119,43 @@ function Strip({ dock, items, placements, open }: StripProps) {
         );
       })}
     </div>
+  );
+}
+
+// ── Status bar ──────────────────────────────────────────────────────
+
+function StatusBarItem({ descriptor }: { descriptor: StatusBarItemDescriptor }) {
+  const Segment = descriptor.component;
+  return (
+    <div className="shell-statusbar-item" data-statusbar-item={descriptor.id}>
+      <Segment />
+    </div>
+  );
+}
+
+/**
+ * The status bar region (spec §7.3): full shell width at the very bottom,
+ * below docks and strips. Renders two segment groups purely from the
+ * status-bar registry — left/right, each ordered by descending priority
+ * (higher = further left within its group, ties by registration order; see
+ * statusBarGroups). The shell never knows what the segments are.
+ */
+export function ShellStatusBar() {
+  const items = useStatusBarItems();
+  const groups = useMemo(() => statusBarGroups(items), [items]);
+  return (
+    <footer className="shell-statusbar" role="status" aria-label="Status bar">
+      <div className="shell-statusbar-group shell-statusbar-left">
+        {groups.left.map((d) => (
+          <StatusBarItem key={d.id} descriptor={d} />
+        ))}
+      </div>
+      <div className="shell-statusbar-group shell-statusbar-right">
+        {groups.right.map((d) => (
+          <StatusBarItem key={d.id} descriptor={d} />
+        ))}
+      </div>
+    </footer>
   );
 }
 
@@ -383,6 +426,10 @@ export function ShellFrame({ editorSlot, fullscreenToolWindow = null }: ShellFra
             </div>
           ))}
       </div>
+
+      {/* Status bar (spec §3, §7.3): the bottom-most shell region, full
+          width — below the docks, strips, and editor row above. */}
+      <ShellStatusBar />
     </>
   );
 }

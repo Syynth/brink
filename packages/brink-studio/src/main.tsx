@@ -17,6 +17,7 @@ import {
   EDITOR_REVEAL_COMMAND_ID,
   LocationResolvers,
   ShellProvider,
+  StatusBarRegistry,
   ToolWindowRegistry,
   VIEW_REVEAL_COMMAND_ID,
   ViewRevealHandlers,
@@ -26,9 +27,14 @@ import {
 import {
   App,
   Binder,
+  CompileStatusSegment,
+  CursorSegment,
+  ElementSegment,
+  KeyHintsSegment,
   PlayerPane,
   ProgramView,
   StateView,
+  StorySegment,
   StoreProvider,
 } from "@brink/studio-ui";
 import { EditorView } from "@codemirror/view";
@@ -117,9 +123,18 @@ interface RootProps {
   updateListener: Extension;
   commands: CommandRegistry;
   toolWindows: ToolWindowRegistry;
+  statusBarItems: StatusBarRegistry;
 }
 
-function Root({ store, project, studioOptions, updateListener, commands, toolWindows }: RootProps) {
+function Root({
+  store,
+  project,
+  studioOptions,
+  updateListener,
+  commands,
+  toolWindows,
+  statusBarItems,
+}: RootProps) {
   const editorRef = useRef<InkEditorHandle>(null);
   const managerRef = useRef<EditorStateManager | null>(null);
 
@@ -250,7 +265,11 @@ function Root({ store, project, studioOptions, updateListener, commands, toolWin
   );
 
   return (
-    <ShellProvider commands={commands} toolWindows={toolWindows}>
+    <ShellProvider
+      commands={commands}
+      toolWindows={toolWindows}
+      statusBarItems={statusBarItems}
+    >
       <StoreProvider store={store}>
         <App
           editorSlot={
@@ -418,6 +437,40 @@ async function main(): Promise<void> {
     component: ProgramView,
   });
 
+  // Status-bar segments (spec §7.3). Higher priority renders further left
+  // within its group. Left: app status; right: editor context.
+  const statusBarItems = new StatusBarRegistry();
+  statusBarItems.register({
+    id: "status.compile",
+    alignment: "left",
+    priority: 20,
+    component: CompileStatusSegment,
+  });
+  statusBarItems.register({
+    id: "status.story",
+    alignment: "left",
+    priority: 10,
+    component: StorySegment,
+  });
+  statusBarItems.register({
+    id: "status.cursor",
+    alignment: "right",
+    priority: 30,
+    component: CursorSegment,
+  });
+  statusBarItems.register({
+    id: "status.element",
+    alignment: "right",
+    priority: 20,
+    component: ElementSegment,
+  });
+  statusBarItems.register({
+    id: "status.keyhints",
+    alignment: "right",
+    priority: 10,
+    component: KeyHintsSegment,
+  });
+
   // Create the updateListener eagerly so it can be shared between
   // InkEditor (for the initial state) and EditorStateManager (for
   // tab-switch states). It reads callbacks from the store, so it
@@ -463,6 +516,7 @@ async function main(): Promise<void> {
       updateListener={updateListener}
       commands={commands}
       toolWindows={toolWindows}
+      statusBarItems={statusBarItems}
     />,
   );
 
