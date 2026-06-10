@@ -1537,6 +1537,7 @@ impl EditorSession {
                     start_line,
                     end_line,
                     collapsed_text: r.collapsed_text.clone(),
+                    from_line_start: r.from_line_start,
                 })
             })
             .collect();
@@ -2066,6 +2067,10 @@ struct FoldRangeJs {
     end_line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     collapsed_text: Option<String>,
+    /// Whole-line declaration fold (docs + header + body); the editor folds
+    /// from the start of `start_line` and renders a header placeholder.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    from_line_start: bool,
 }
 
 #[derive(Serialize)]
