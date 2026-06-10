@@ -6,6 +6,8 @@ export { Binder, computeReorder } from "./Binder.js";
 export { FileTabBar } from "./FileTabBar.js";
 export { StatusBar } from "./StatusBar.js";
 export { PlayerPane } from "./PlayerPane.js";
+export { StateView } from "./StateView.js";
+export { ProgramView } from "./ProgramView.js";
 export { EditorPane } from "./EditorPane.js";
 export { ElementDropdown } from "./ElementDropdown.js";
 export { Toast } from "./Toast.js";

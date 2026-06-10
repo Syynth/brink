@@ -12,8 +12,15 @@ import {
   InMemoryFileProvider,
 } from "@brink/ink-editor";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
-import { CommandRegistry, ShellProvider } from "@brink/studio-shell";
-import { App, StoreProvider } from "@brink/studio-ui";
+import { CommandRegistry, ShellProvider, ToolWindowRegistry } from "@brink/studio-shell";
+import {
+  App,
+  Binder,
+  PlayerPane,
+  ProgramView,
+  StateView,
+  StoreProvider,
+} from "@brink/studio-ui";
 import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import {
@@ -48,6 +55,48 @@ A figure steps into the light.
 -> END
 `;
 
+// ── Tool-window icons ──────────────────────────────────────────
+//
+// Simple monochrome inline SVGs (currentColor) for the dock strips.
+
+const iconProps = {
+  width: 16,
+  height: 16,
+  viewBox: "0 0 16 16",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.5,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+  "aria-hidden": true,
+} as const;
+
+const BINDER_ICON = (
+  <svg {...iconProps}>
+    <path d="M3 3.5h10M3 6.5h10M5.5 9.5h7.5M5.5 12.5h7.5" />
+  </svg>
+);
+
+const PLAYER_ICON = (
+  <svg {...iconProps}>
+    <path d="M5 3.5v9l8-4.5z" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+const STATE_ICON = (
+  <svg {...iconProps}>
+    <path d="M6 2.5c-1.6 0-1.8 1.2-1.8 2.7S3.9 7.6 2.5 8c1.4.4 1.7 1.3 1.7 2.8S4.4 13.5 6 13.5" />
+    <path d="M10 2.5c1.6 0 1.8 1.2 1.8 2.7s.3 2.4 1.7 2.8c-1.4.4-1.7 1.3-1.7 2.8s-.2 2.7-1.8 2.7" />
+  </svg>
+);
+
+const PROGRAM_ICON = (
+  <svg {...iconProps}>
+    <rect x="4.5" y="4.5" width="7" height="7" rx="1" />
+    <path d="M6.5 1.5v3M9.5 1.5v3M6.5 11.5v3M9.5 11.5v3M1.5 6.5h3M1.5 9.5h3M11.5 6.5h3M11.5 9.5h3" />
+  </svg>
+);
+
 // ── Root component ─────────────────────────────────────────────
 
 interface RootProps {
@@ -56,9 +105,10 @@ interface RootProps {
   studioOptions: BrinkStudioOptions;
   updateListener: Extension;
   commands: CommandRegistry;
+  toolWindows: ToolWindowRegistry;
 }
 
-function Root({ store, project, studioOptions, updateListener, commands }: RootProps) {
+function Root({ store, project, studioOptions, updateListener, commands, toolWindows }: RootProps) {
   const editorRef = useRef<InkEditorHandle>(null);
   const managerRef = useRef<EditorStateManager | null>(null);
 
@@ -182,7 +232,7 @@ function Root({ store, project, studioOptions, updateListener, commands }: RootP
   );
 
   return (
-    <ShellProvider commands={commands}>
+    <ShellProvider commands={commands} toolWindows={toolWindows}>
       <StoreProvider store={store}>
         <App
           editorSlot={
@@ -228,14 +278,9 @@ async function main(): Promise<void> {
   const store = createStudioStore();
 
   // Shell command registry (spec §6). ShellProvider owns the keymap and the
-  // global key handler; view/layout commands land with the dock shell (#80).
+  // global key handler, and generates the `view.toggle.<id>` commands
+  // (Mod-1…9 by registration order) from the tool-window registry below.
   const commands = new CommandRegistry();
-  commands.register({
-    id: "player.toggleVisible",
-    title: "View: Toggle Player",
-    keybinding: "Mod-J",
-    run: () => store.getState().togglePlayerVisible(),
-  });
   commands.register({
     id: "story.restart",
     title: "Story: Restart",
@@ -244,6 +289,44 @@ async function main(): Promise<void> {
   });
   // Exposed for e2e/manual verification, like __brinkView.
   (window as unknown as Record<string, unknown>).__brinkCommands = commands;
+
+  // Tool-window registry (spec §7.1, §4). Registration order is the stable,
+  // user-visible Mod-N ordering: Binder Mod-1, Player Mod-2, State Mod-3,
+  // Program Mod-4. The shell never imports these components — they are
+  // registered into it here, at the app boundary.
+  const toolWindows = new ToolWindowRegistry();
+  toolWindows.register({
+    id: "binder",
+    title: "Binder",
+    icon: BINDER_ICON,
+    defaultPlacement: { dock: "left", section: "start" },
+    defaultOpen: true,
+    component: Binder,
+  });
+  toolWindows.register({
+    id: "player",
+    title: "Player",
+    icon: PLAYER_ICON,
+    defaultPlacement: { dock: "right", section: "start" },
+    defaultOpen: true,
+    component: PlayerPane,
+  });
+  toolWindows.register({
+    id: "state",
+    title: "State View",
+    icon: STATE_ICON,
+    defaultPlacement: { dock: "right", section: "end" },
+    defaultOpen: false,
+    component: StateView,
+  });
+  toolWindows.register({
+    id: "program",
+    title: "Program Explorer",
+    icon: PROGRAM_ICON,
+    defaultPlacement: { dock: "bottom", section: "start" },
+    defaultOpen: false,
+    component: ProgramView,
+  });
 
   // Create the updateListener eagerly so it can be shared between
   // InkEditor (for the initial state) and EditorStateManager (for
@@ -289,6 +372,7 @@ async function main(): Promise<void> {
       studioOptions={studioOptions}
       updateListener={updateListener}
       commands={commands}
+      toolWindows={toolWindows}
     />,
   );
 }
