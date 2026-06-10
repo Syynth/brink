@@ -2,7 +2,15 @@ use brink_analyzer::AnalysisResult;
 use brink_ir::FileId;
 use brink_syntax::ast::{AstNode as _, KnotDef, StitchDef};
 
+use crate::doc_extended_start;
 use crate::rename::FileEdit;
+
+/// A declaration's region start for slicing: extended backward over its
+/// attached `///` doc block, so docs travel with the declaration they
+/// document (per the decision log).
+fn decl_region_start(source: &str, node: &brink_syntax::SyntaxNode) -> usize {
+    doc_extended_start(source, node.text_range().start().into())
+}
 
 /// Errors that can occur during structural move operations.
 #[derive(Debug, thiserror::Error)]
@@ -87,24 +95,21 @@ pub fn reorder_stitch(
         }
     };
 
-    // Compute the end of the knot region (start of next knot or EOF).
-    let knot_end: usize = if ki + 1 < knots.len() {
-        knots[ki + 1].syntax().text_range().start().into()
-    } else {
-        source.len()
-    };
+    // Compute the end of the knot region (next knot's ownership start or EOF).
+    let knot_end: usize = knot_end_offset(source, &knots, ki);
 
-    // Build stitch slices: each stitch owns text from its start to the next stitch
-    // (or to the end of the knot region for the last one).
-    let last_ast_end: usize = stitches
-        .last()
-        .map_or(knot_end, |s| s.syntax().text_range().end().into());
+    // Build stitch slices: each stitch owns text from its ownership start
+    // (including its doc block) to the next stitch's ownership start (or to
+    // the end of the knot region for the last one).
+    let last_ast_end: usize = stitches.last().map_or(knot_end, |s| {
+        usize::from(s.syntax().text_range().end()).min(knot_end)
+    });
 
     let mut slices: Vec<&str> = Vec::with_capacity(stitches.len());
     for (i, stitch) in stitches.iter().enumerate() {
-        let start: usize = stitch.syntax().text_range().start().into();
+        let start: usize = decl_region_start(source, stitch.syntax());
         let end: usize = if i + 1 < stitches.len() {
-            stitches[i + 1].syntax().text_range().start().into()
+            decl_region_start(source, stitches[i + 1].syntax())
         } else {
             last_ast_end
         };
@@ -115,7 +120,7 @@ pub fn reorder_stitch(
     slices.swap(si, target_idx);
 
     // Reassemble: preamble (before first stitch) + reordered slices + trailing.
-    let region_start: usize = stitches[0].syntax().text_range().start().into();
+    let region_start: usize = decl_region_start(source, stitches[0].syntax());
     let trailing = &source[last_ast_end..knot_end];
 
     let mut result = String::with_capacity(source.len());
@@ -134,7 +139,8 @@ pub fn reorder_stitch(
 /// Move a knot up or down in the top-level knot list.
 ///
 /// Pure text slice/reassemble — swaps adjacent knot slices.
-/// Each knot owns text from its start to the next knot's start (or EOF).
+/// Each knot owns text from its ownership start (its `///` doc block, if any)
+/// to the next knot's ownership start (or EOF).
 /// Preamble (text before the first knot) is preserved.
 pub fn reorder_knot(
     source: &str,
@@ -169,18 +175,15 @@ pub fn reorder_knot(
         }
     };
 
-    // Preamble: everything before the first knot.
-    let preamble_end: usize = knots[0].syntax().text_range().start().into();
+    // Preamble: everything before the first knot's ownership region.
+    let preamble_end: usize = decl_region_start(source, knots[0].syntax());
 
-    // Build knot slices: each knot owns text from its start to the next knot's start (or EOF).
+    // Build knot slices: each knot owns text from its ownership start
+    // (including its doc block) to the next knot's ownership start (or EOF).
     let mut slices: Vec<&str> = Vec::with_capacity(knots.len());
     for (i, knot) in knots.iter().enumerate() {
-        let start: usize = knot.syntax().text_range().start().into();
-        let end: usize = if i + 1 < knots.len() {
-            knots[i + 1].syntax().text_range().start().into()
-        } else {
-            source.len()
-        };
+        let start: usize = decl_region_start(source, knot.syntax());
+        let end: usize = knot_end_offset(source, &knots, i);
         slices.push(&source[start..end]);
     }
 
@@ -260,28 +263,25 @@ pub fn reorder_stitches(
         .collect();
     let new_order = resolve_permutation(&names, order)?;
 
-    // Build stitch slices (each owns text from its start to the next stitch's
-    // start, or to the end of the knot region for the last one).
-    let knot_end: usize = if ki + 1 < knots.len() {
-        knots[ki + 1].syntax().text_range().start().into()
-    } else {
-        source.len()
-    };
-    let last_ast_end: usize = stitches
-        .last()
-        .map_or(knot_end, |s| s.syntax().text_range().end().into());
+    // Build stitch slices (each owns text from its ownership start — including
+    // its doc block — to the next stitch's ownership start, or to the end of
+    // the knot region for the last one).
+    let knot_end: usize = knot_end_offset(source, &knots, ki);
+    let last_ast_end: usize = stitches.last().map_or(knot_end, |s| {
+        usize::from(s.syntax().text_range().end()).min(knot_end)
+    });
     let mut slices: Vec<&str> = Vec::with_capacity(stitches.len());
     for (i, stitch) in stitches.iter().enumerate() {
-        let start: usize = stitch.syntax().text_range().start().into();
+        let start: usize = decl_region_start(source, stitch.syntax());
         let end: usize = if i + 1 < stitches.len() {
-            stitches[i + 1].syntax().text_range().start().into()
+            decl_region_start(source, stitches[i + 1].syntax())
         } else {
             last_ast_end
         };
         slices.push(&source[start..end]);
     }
 
-    let region_start: usize = stitches[0].syntax().text_range().start().into();
+    let region_start: usize = decl_region_start(source, stitches[0].syntax());
     let trailing = &source[last_ast_end..knot_end];
 
     let mut result = String::with_capacity(source.len());
@@ -312,15 +312,11 @@ pub fn reorder_knots(source: &str, order: &[String]) -> Result<String, MoveError
         .collect();
     let new_order = resolve_permutation(&names, order)?;
 
-    let preamble_end: usize = knots[0].syntax().text_range().start().into();
+    let preamble_end: usize = decl_region_start(source, knots[0].syntax());
     let mut slices: Vec<&str> = Vec::with_capacity(knots.len());
     for (i, knot) in knots.iter().enumerate() {
-        let start: usize = knot.syntax().text_range().start().into();
-        let end: usize = if i + 1 < knots.len() {
-            knots[i + 1].syntax().text_range().start().into()
-        } else {
-            source.len()
-        };
+        let start: usize = decl_region_start(source, knot.syntax());
+        let end: usize = knot_end_offset(source, &knots, i);
         slices.push(&source[start..end]);
     }
 
@@ -524,7 +520,8 @@ pub fn move_stitch(
 
     // Find source knot and stitch.
     let (ski, src_knot_node) = find_knot(&knots, src_knot).ok_or(MoveError::SourceNotFound)?;
-    let (_, dest_knot_node) = find_knot(&knots, dest_knot).ok_or(MoveError::DestinationNotFound)?;
+    let (dki, dest_knot_node) =
+        find_knot(&knots, dest_knot).ok_or(MoveError::DestinationNotFound)?;
 
     // Check for name collision in destination.
     if let Some(body) = dest_knot_node.body()
@@ -546,15 +543,16 @@ pub fn move_stitch(
         name: stitch_name.to_owned(),
     })?;
 
-    // Extract the stitch text slice.
-    let stitch_start: usize = stitch.syntax().text_range().start().into();
+    // Extract the stitch text slice (ownership region: doc block included,
+    // clamped before the next stitch's doc block).
+    let stitch_start: usize = decl_region_start(source, stitch.syntax());
     let src_knot_end: usize = knot_end_offset(source, &knots, ski);
     let stitch_end: usize = if si + 1 < stitches.len() {
-        stitches[si + 1].syntax().text_range().start().into()
+        decl_region_start(source, stitches[si + 1].syntax())
     } else {
-        stitches
-            .last()
-            .map_or(src_knot_end, |s| s.syntax().text_range().end().into())
+        stitches.last().map_or(src_knot_end, |s| {
+            usize::from(s.syntax().text_range().end()).min(src_knot_end)
+        })
     };
 
     let stitch_text = &source[stitch_start..stitch_end];
@@ -564,20 +562,21 @@ pub fn move_stitch(
     let new_qual = format!("{dest_knot}.{stitch_name}");
     let mut ref_edits = compute_reference_edits(source, analysis, file_id, &old_qual, &new_qual);
 
-    // Find the insertion point: end of destination knot's last stitch, or end of
-    // knot body if no stitches.
+    // Find the insertion point: end of the destination knot's region, clamped
+    // before the next knot's doc block (node ends swallow trailing trivia).
+    let dest_region_end = knot_end_offset(source, &knots, dki);
     let insert_offset = if let Some(body) = dest_knot_node.body() {
         let dest_stitches: Vec<_> = body.stitches().collect();
         if let Some(last) = dest_stitches.last() {
             let end: usize = last.syntax().text_range().end().into();
-            end
+            end.min(dest_region_end)
         } else {
             let end: usize = dest_knot_node.syntax().text_range().end().into();
-            end
+            end.min(dest_region_end)
         }
     } else {
         let end: usize = dest_knot_node.syntax().text_range().end().into();
-        end
+        end.min(dest_region_end)
     };
 
     // Build the new source by:
@@ -684,14 +683,14 @@ pub fn promote_stitch_to_knot(
         name: stitch_name.to_owned(),
     })?;
 
-    let stitch_start: usize = stitch.syntax().text_range().start().into();
+    let stitch_start: usize = decl_region_start(source, stitch.syntax());
     let knot_region_end: usize = knot_end_offset(source, &knots, ki);
     let stitch_end: usize = if si + 1 < stitches.len() {
-        stitches[si + 1].syntax().text_range().start().into()
+        decl_region_start(source, stitches[si + 1].syntax())
     } else {
-        stitches
-            .last()
-            .map_or(knot_region_end, |s| s.syntax().text_range().end().into())
+        stitches.last().map_or(knot_region_end, |s| {
+            usize::from(s.syntax().text_range().end()).min(knot_region_end)
+        })
     };
 
     let stitch_text = &source[stitch_start..stitch_end];
@@ -749,7 +748,7 @@ pub fn demote_knot_to_stitch(
     let knots: Vec<_> = tree.knots().collect();
 
     let (ki, knot) = find_knot(&knots, knot_name).ok_or(MoveError::SourceNotFound)?;
-    let (_, dest) = find_knot(&knots, dest_knot).ok_or(MoveError::DestinationNotFound)?;
+    let (dki, dest) = find_knot(&knots, dest_knot).ok_or(MoveError::DestinationNotFound)?;
 
     // Error if the knot has sub-stitches.
     if let Some(body) = knot.body()
@@ -770,7 +769,7 @@ pub fn demote_knot_to_stitch(
         });
     }
 
-    let knot_start: usize = knot.syntax().text_range().start().into();
+    let knot_start: usize = decl_region_start(source, knot.syntax());
     let knot_end: usize = knot_end_offset(source, &knots, ki);
     let knot_text = &source[knot_start..knot_end];
 
@@ -782,19 +781,21 @@ pub fn demote_knot_to_stitch(
     let new_qual = format!("{dest_knot}.{knot_name}");
     let ref_edits = compute_reference_edits(source, analysis, file_id, &old_qual, &new_qual);
 
-    // Find insertion point in destination knot.
+    // Find insertion point in destination knot, clamped before the next
+    // knot's doc block (node ends swallow trailing trivia).
+    let dest_region_end = knot_end_offset(source, &knots, dki);
     let dest_insert = if let Some(body) = dest.body() {
         let dest_stitches: Vec<_> = body.stitches().collect();
         if let Some(last) = dest_stitches.last() {
             let end: usize = last.syntax().text_range().end().into();
-            end
+            end.min(dest_region_end)
         } else {
             let end: usize = dest.syntax().text_range().end().into();
-            end
+            end.min(dest_region_end)
         }
     } else {
         let end: usize = dest.syntax().text_range().end().into();
-        end
+        end.min(dest_region_end)
     };
 
     // Build new source. Handle ordering: if the knot being demoted is before
@@ -848,28 +849,28 @@ pub fn demote_knot_to_stitch(
 // ── Header rewriting helpers ────────────────────────────────────────
 
 /// Rewrite a stitch header line (`= name` or `= name(params)`) to a knot
-/// header (`=== name ===` or `=== name(params) ===`).
+/// header (`=== name ===` or `=== name(params) ===`). Leading `///` doc lines
+/// (the stitch's ownership region includes its doc block) pass through
+/// unchanged before the header.
 fn rewrite_stitch_to_knot_header(stitch_text: &str, _name: &str) -> String {
     let mut result = String::with_capacity(stitch_text.len() + 10);
-    let mut lines = stitch_text.lines();
+    let mut header_done = false;
 
-    if let Some(header_line) = lines.next() {
-        // Parse the stitch header: `= name` or `= name(params)`
-        let trimmed = header_line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix('=') {
-            let rest = rest.trim_start();
-            // rest is "name" or "name(params)"
-            result.push_str("=== ");
-            result.push_str(rest.trim_end());
-            result.push_str(" ===");
-        } else {
-            // Shouldn't happen, but preserve the line.
-            result.push_str(header_line);
+    for line in stitch_text.lines() {
+        if !header_done {
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed.strip_prefix('=') {
+                // The stitch header: `= name` or `= name(params)`
+                let rest = rest.trim_start();
+                result.push_str("=== ");
+                result.push_str(rest.trim_end());
+                result.push_str(" ===");
+                result.push('\n');
+                header_done = true;
+                continue;
+            }
+            // Leading doc/comment lines before the header pass through.
         }
-        result.push('\n');
-    }
-
-    for line in lines {
         result.push_str(line);
         result.push('\n');
     }
@@ -883,24 +884,28 @@ fn rewrite_stitch_to_knot_header(stitch_text: &str, _name: &str) -> String {
 }
 
 /// Rewrite a knot header line (`=== name ===` or `=== name(params) ===`)
-/// to a stitch header (`= name` or `= name(params)`).
+/// to a stitch header (`= name` or `= name(params)`). Leading `///` doc lines
+/// (the knot's ownership region includes its doc block) pass through
+/// unchanged before the header.
 fn rewrite_knot_to_stitch_header(knot_text: &str, _name: &str) -> String {
     let mut result = String::with_capacity(knot_text.len());
-    let mut lines = knot_text.lines();
+    let mut header_done = false;
 
-    if let Some(header_line) = lines.next() {
-        let trimmed = header_line.trim_start();
-        // Strip leading ='s
-        let rest = trimmed.trim_start_matches('=').trim_start();
-        // Strip trailing ='s
-        let rest = rest.trim_end().trim_end_matches('=').trim_end();
-        // rest is "name" or "name(params)" or "function name(params)"
-        result.push_str("= ");
-        result.push_str(rest);
-        result.push('\n');
-    }
-
-    for line in lines {
+    for line in knot_text.lines() {
+        if !header_done {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with('=') {
+                // Strip leading and trailing ='s around "name(params)".
+                let rest = trimmed.trim_start_matches('=').trim_start();
+                let rest = rest.trim_end().trim_end_matches('=').trim_end();
+                result.push_str("= ");
+                result.push_str(rest);
+                result.push('\n');
+                header_done = true;
+                continue;
+            }
+            // Leading doc/comment lines before the header pass through.
+        }
         result.push_str(line);
         result.push('\n');
     }
@@ -928,10 +933,11 @@ fn find_stitch<'a>(stitches: &'a [StitchDef], name: &str) -> Option<(usize, &'a 
         .find(|(_, s)| s.header().and_then(|h| h.name()).as_deref() == Some(name))
 }
 
-/// Get the byte offset where a knot's text region ends (start of next knot or EOF).
+/// Get the byte offset where a knot's text region ends: the start of the next
+/// knot's ownership region (its doc block, if any) or EOF.
 fn knot_end_offset(source: &str, knots: &[KnotDef], ki: usize) -> usize {
     if ki + 1 < knots.len() {
-        knots[ki + 1].syntax().text_range().start().into()
+        decl_region_start(source, knots[ki + 1].syntax())
     } else {
         source.len()
     }
@@ -942,6 +948,157 @@ fn knot_end_offset(source: &str, knots: &[KnotDef], ki: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── doc-block attachment tests ──────────────────────────────────
+
+    /// Analysis for a single file, for ops that need reference edits.
+    fn analyzed(src: &str) -> AnalysisResult {
+        let parsed = brink_syntax::parse(src);
+        let (hir, manifest, _) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        brink_analyzer::analyze(&[(FileId(0), &hir, &manifest)])
+    }
+
+    #[test]
+    fn reorder_knot_carries_doc_block() {
+        let source = "\
+=== alpha ===
+Alpha.
+/// Beta's doc.
+=== beta ===
+Beta.
+";
+        let result = reorder_knot(source, "beta", Direction::Up).unwrap();
+        let doc = result.find("/// Beta's doc.").unwrap();
+        let beta = result.find("=== beta ===").unwrap();
+        let alpha = result.find("=== alpha ===").unwrap();
+        assert!(
+            doc < beta && beta < alpha,
+            "doc travels with beta: {result}"
+        );
+        assert!(
+            result.starts_with("/// Beta's doc.\n=== beta ==="),
+            "doc stays directly attached: {result}"
+        );
+    }
+
+    #[test]
+    fn reorder_knots_keeps_each_doc_attached() {
+        let source = "\
+/// A doc.
+=== a ===
+A.
+/// B doc.
+=== b ===
+B.
+";
+        let result = reorder_knots(source, &["b", "a"].map(String::from)).unwrap();
+        assert!(
+            result.contains("/// B doc.\n=== b ==="),
+            "b keeps its doc: {result}"
+        );
+        assert!(
+            result.contains("/// A doc.\n=== a ==="),
+            "a keeps its doc: {result}"
+        );
+    }
+
+    #[test]
+    fn reorder_stitch_carries_doc_block() {
+        let source = "\
+=== k ===
+= alpha
+Alpha.
+/// Beta's doc.
+= beta
+Beta.
+";
+        let result = reorder_stitch(source, "k", "beta", Direction::Up).unwrap();
+        assert!(
+            result.contains("/// Beta's doc.\n= beta"),
+            "doc stays attached to beta: {result}"
+        );
+        assert!(
+            result.find("= beta").unwrap() < result.find("= alpha").unwrap(),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn move_stitch_carries_doc_and_leaves_neighbors() {
+        let source = "\
+=== src ===
+/// Mine.
+= movable
+Content.
+/// Stays here.
+= keeper
+Kept.
+=== dst ===
+Dest.
+";
+        let analysis = analyzed(source);
+        let result = move_stitch(source, &analysis, FileId(0), "src", "movable", "dst").unwrap();
+        let s = &result.new_source;
+        assert!(
+            s.contains("/// Mine.\n= movable"),
+            "doc travels with the moved stitch: {s}"
+        );
+        assert!(
+            s.contains("/// Stays here.\n= keeper"),
+            "the neighbor keeps its doc: {s}"
+        );
+        let dst = s.find("=== dst ===").unwrap();
+        assert!(
+            s.find("/// Mine.").unwrap() > dst,
+            "moved doc lives in the destination knot: {s}"
+        );
+    }
+
+    #[test]
+    fn promote_stitch_keeps_doc_above_new_knot_header() {
+        let source = "\
+=== parent ===
+Intro.
+/// Promoted doc.
+= riser
+Body.
+";
+        let analysis = analyzed(source);
+        let result =
+            promote_stitch_to_knot(source, &analysis, FileId(0), "parent", "riser").unwrap();
+        assert!(
+            result
+                .new_source
+                .contains("/// Promoted doc.\n=== riser ==="),
+            "doc precedes the promoted header: {}",
+            result.new_source
+        );
+    }
+
+    #[test]
+    fn demote_knot_keeps_doc_and_does_not_steal_neighbors() {
+        let source = "\
+=== dest ===
+Dest.
+/// Sinking doc.
+=== sinker ===
+Body.
+/// Neighbor doc.
+=== neighbor ===
+N.
+";
+        let analysis = analyzed(source);
+        let result = demote_knot_to_stitch(source, &analysis, FileId(0), "sinker", "dest").unwrap();
+        let s = &result.new_source;
+        assert!(
+            s.contains("/// Sinking doc.\n= sinker"),
+            "doc precedes the demoted header: {s}"
+        );
+        assert!(
+            s.contains("/// Neighbor doc.\n=== neighbor ==="),
+            "the following knot keeps its doc: {s}"
+        );
+    }
 
     // ── reorder_stitch tests ────────────────────────────────────────
 
