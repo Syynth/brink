@@ -13,6 +13,7 @@ import { useRef, type ReactNode } from "react";
 import { CommandPalette, ShellFrame, useShellLayout, useTier } from "@brink/studio-shell";
 import { EditorPane } from "./EditorPane.js";
 import { Toast } from "./Toast.js";
+import { QuickOpen } from "./QuickOpen.js";
 import { useStudioStore } from "./StoreContext.js";
 
 function App({ editorSlot }: { editorSlot: ReactNode }) {
@@ -31,6 +32,7 @@ function App({ editorSlot }: { editorSlot: ReactNode }) {
         fullscreenToolWindow={fullscreen ? "player" : null}
       />
       <CommandPalette />
+      <QuickOpen />
       <Toast />
     </div>
   );

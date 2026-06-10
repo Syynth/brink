@@ -39,6 +39,12 @@ export {
 export { Overlay, type OverlayProps } from "./overlay.js";
 export { CommandPalette, PALETTE_COMMAND_ID, filterCommands } from "./palette.js";
 export {
+  QuickPick,
+  rankQuickPickItems,
+  type QuickPickItem,
+  type QuickPickProps,
+} from "./quickpick.js";
+export {
   DOCK_SECTION_IDS,
   ToolWindowRegistry,
   dockSectionId,
