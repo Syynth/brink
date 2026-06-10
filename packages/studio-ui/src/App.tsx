@@ -14,12 +14,8 @@ import { CommandPalette, ShellFrame, useShellLayout, useTier } from "@brink/stud
 import { EditorPane } from "./EditorPane.js";
 import { Toast } from "./Toast.js";
 import { QuickOpen } from "./QuickOpen.js";
-import { useStudioStore } from "./StoreContext.js";
 
 function App({ editorSlot }: { editorSlot: ReactNode }) {
-  // playerFullscreen survives the shell migration as-is: the player tool
-  // window covers the whole shell. Proper tool-window maximize is #86.
-  const fullscreen = useStudioStore((s) => s.playerFullscreen);
   const tier = useShellLayout((s) => s.tier);
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -27,10 +23,7 @@ function App({ editorSlot }: { editorSlot: ReactNode }) {
 
   return (
     <div className="brink-studio" data-tier={tier} ref={rootRef}>
-      <ShellFrame
-        editorSlot={<EditorPane>{editorSlot}</EditorPane>}
-        fullscreenToolWindow={fullscreen ? "player" : null}
-      />
+      <ShellFrame editorSlot={<EditorPane>{editorSlot}</EditorPane>} />
       <CommandPalette />
       <QuickOpen />
       <Toast />

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type ReactNode } from "react";
-import { useShell } from "@brink/studio-shell";
+import { useShell, useShellLayout } from "@brink/studio-shell";
 import { sessionCanContinue } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 
@@ -95,9 +95,8 @@ function PlayerPane() {
   const status = useStudioStore((s) => s.sessionStatus);
   const text = useStudioStore((s) => s.sessionText);
   const choices = useStudioStore((s) => s.sessionChoices);
-  const fullscreen = useStudioStore((s) => s.playerFullscreen);
-  const toggleFullscreen = useStudioStore((s) => s.togglePlayerFullscreen);
   const { commands } = useShell();
+  const maximized = useShellLayout((s) => s.maximized) === "player";
 
   const ended = status === "ended" || status === "error";
   const hasPending = sessionCanContinue(status);
@@ -167,8 +166,11 @@ function PlayerPane() {
           <button className="btn-restart" onClick={handleRestart}>
             Restart
           </button>
-          <button onClick={toggleFullscreen} title={fullscreen ? "Exit fullscreen" : "Fullscreen"}>
-            {fullscreen ? "\u25a3" : "\u25a1"}
+          <button
+            onClick={() => commands.dispatch("view.maximize", "player")}
+            title={maximized ? "Restore (Esc)" : "Maximize"}
+          >
+            {maximized ? "\u25a3" : "\u25a1"}
           </button>
         </div>
       </div>

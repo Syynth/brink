@@ -15,7 +15,7 @@
  * Tool windows keep their state in the store and may relocate/remount.
  */
 
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
 import { Group, Panel, Separator, type PanelSize } from "react-resizable-panels";
 import {
   useShell,
@@ -26,6 +26,7 @@ import {
 import { formatChord } from "./keymap.js";
 import { statusBarGroups, type StatusBarItemDescriptor } from "./statusbar.js";
 import { viewToggleCommandId } from "./view-commands.js";
+import { HamburgerMenu } from "./menu.js";
 import {
   dockSectionId,
   type Dock,
@@ -37,11 +38,6 @@ import {
 export interface ShellFrameProps {
   /** The editor area content (always center, never remounted). */
   editorSlot: ReactNode;
-  /**
-   * When set, that tool window covers the whole shell (today's player
-   * fullscreen). Proper maximize is issue #86.
-   */
-  fullscreenToolWindow?: string | null;
 }
 
 // ── Tool-window chrome ──────────────────────────────────────────────
@@ -162,7 +158,7 @@ export function ShellStatusBar() {
 
 // ── Shell frame ─────────────────────────────────────────────────────
 
-export function ShellFrame({ editorSlot, fullscreenToolWindow = null }: ShellFrameProps) {
+export function ShellFrame({ editorSlot }: ShellFrameProps) {
   const { layout } = useShell();
   const descriptors = useToolWindows();
   const tier = useShellLayout((s) => s.tier);
@@ -170,6 +166,20 @@ export function ShellFrame({ editorSlot, fullscreenToolWindow = null }: ShellFra
   const open = useShellLayout((s) => s.open);
   const drawers = useShellLayout((s) => s.drawers);
   const narrowView = useShellLayout((s) => s.narrowView);
+  const maximized = useShellLayout((s) => s.maximized);
+
+  // Maximize restore (spec §5.4): Escape anywhere brings the layout back.
+  // Capture-phase so it wins over focused widgets; skips handled events.
+  useEffect(() => {
+    if (maximized === null) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      layout.getState().toggleMaximize(maximized);
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [maximized, layout]);
 
   const byId = useMemo(
     () => new Map(descriptors.map((d) => [d.id, d])),
@@ -228,12 +238,13 @@ export function ShellFrame({ editorSlot, fullscreenToolWindow = null }: ShellFra
     );
   };
 
-  // Fullscreen (today's playerFullscreen): only that tool window, full bleed.
-  // The editor unmounts here, exactly like the pre-shell App.tsx behavior.
-  if (fullscreenToolWindow !== null) {
+  // Maximized (spec §5.4): only that tool window, full bleed. The editor
+  // unmounts here, matching the old playerFullscreen behavior; Escape (or
+  // re-dispatching view.maximize) restores the previous layout untouched.
+  if (maximized !== null && byId.has(maximized)) {
     return (
       <div className="studio-body">
-        <div className="shell-fullscreen">{renderToolWindow(fullscreenToolWindow)}</div>
+        <div className="shell-fullscreen">{renderToolWindow(maximized)}</div>
       </div>
     );
   }
@@ -317,7 +328,10 @@ export function ShellFrame({ editorSlot, fullscreenToolWindow = null }: ShellFra
 
       <div className="studio-body">
         {!narrow && (
-          <Strip dock="left" items={stripItems.left} placements={placements} open={open} />
+          <div className="shell-rail-left">
+            <HamburgerMenu />
+            <Strip dock="left" items={stripItems.left} placements={placements} open={open} />
+          </div>
         )}
 
         <div className="shell-main">

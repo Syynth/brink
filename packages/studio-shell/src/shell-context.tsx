@@ -120,6 +120,20 @@ export function ShellProvider({
     [commands, keymap, mac],
   );
 
+  // Tool-window maximize (spec §5.4): a shell feature, not a player feature.
+  // Dispatched with the tool-window id as args; Escape restores (ShellFrame).
+  useEffect(
+    () =>
+      commands.register({
+        id: "view.maximize",
+        title: "View: Toggle Maximized Tool Window",
+        run: (args) => {
+          if (typeof args === "string") layout.getState().toggleMaximize(args);
+        },
+      }),
+    [commands, layout],
+  );
+
   const value = useMemo<ShellContextValue>(
     () => ({
       commands,

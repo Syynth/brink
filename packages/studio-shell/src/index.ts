@@ -63,6 +63,7 @@ export {
 } from "./layout-store.js";
 export { registerViewToggleCommands, viewToggleCommandId } from "./view-commands.js";
 export { ShellFrame, ShellStatusBar, type ShellFrameProps } from "./regions.js";
+export { HamburgerMenu, groupCommandsForMenu, type MenuGroup } from "./menu.js";
 export { useTier } from "./use-tier.js";
 export {
   EDITOR_REVEAL_COMMAND_ID,
