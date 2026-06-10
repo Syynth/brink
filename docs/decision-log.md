@@ -831,3 +831,12 @@
 - **SCOPE:** moderate
 - **WHAT:** A declaration's contiguous preceding `///` doc-comment block is part of that declaration for editor-structural purposes — folding, structural moves (reorder/promote/demote), and knot-view slices. Tooling must never visually or textually detach a doc block from its declaration. For folding specifically (amended 2026-06-10 after seeing both rendered): a documented knot/stitch folds as a *single region* spanning docs + header + body, with the collapsed line rendering the hidden header (e.g. `=== function damage() === ⋯`); undocumented declarations fold from their header as before, and standalone doc blocks (VAR/CONST/EXTERNAL) still fold on their own. The knot divider rule also sits at the ownership start (above the docs).
 - **WHY:** Doc comments document the declaration they precede; leaving them dangling above a folded knot (or detaching them during knot reordering) breaks that attachment and silently corrupts authored documentation.
+
+## Player may become an editor document rather than a tool window
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-shell
+- **SCOPE:** moderate
+- **STATUS:** tentative
+- **WHAT:** The Player is expected to eventually move from a right-dock tool window to an editor-area document (a session tab, openable in a split for the Inky two-up), revisited when Phase 4's component-based document support lands (#90). Until then it stays a tool window. Amends the spec's §4 placement.
+- **WHY:** A play session reads as content-you-open, not a glanceable tool — the same rule that split the Program Explorer. VS Code's markdown preview (live companion to the edited file, lives in an editor split) is the direct precedent. Decisive for later: multi-session/multi-flow (§7.6) maps naturally to multiple player tabs and awkwardly to one tool window with a session selector.
