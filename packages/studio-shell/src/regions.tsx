@@ -5,6 +5,11 @@
  * registry plus the layout store: strips on the left/right/bottom edges,
  * edge docks with two sections each, and the editor area always center.
  *
+ * Strip icons are draggable to any of the six dock sections (§5.1, #87):
+ * ShellFrame owns the drag controller (useStripDrag) and the ghost chip;
+ * strips render the drop zones while a drag is active. See strip-drag.ts
+ * for the gesture and the layout-store-vs-command design note.
+ *
  * Tier presentation (spec §5.3): wide docks everything; medium turns the
  * side docks into slide-over drawers (bottom stays docked, strips stay);
  * narrow is editor-only with a compact topbar (left-dock drawer toggle +
@@ -27,6 +32,7 @@ import { formatChord } from "./keymap.js";
 import { statusBarGroups, type StatusBarItemDescriptor } from "./statusbar.js";
 import { viewToggleCommandId } from "./view-commands.js";
 import { HamburgerMenu } from "./menu.js";
+import { useStripDrag, type StripDragController } from "./strip-drag.js";
 import {
   dockSectionId,
   type Dock,
@@ -74,19 +80,27 @@ interface StripProps {
   items: ToolWindowDescriptor[];
   placements: Record<string, Placement>;
   open: Record<DockSectionId, string | null>;
+  drag: StripDragController;
 }
 
 /**
  * One icon button per tool window placed on this dock (section start→end,
  * registration order within). Clicks dispatch the generated toggle command —
  * never the store directly — so the palette stays the source of truth.
+ * Re-docking (drag, §5.1) is the exception: it goes through the drag
+ * controller straight to the layout store, like a splitter drag.
+ *
+ * While a drag is active the strip enters drop mode: it renders even when it
+ * has no icons (every dock section is a valid target), and overlays its two
+ * sections as drop zones.
  */
-function Strip({ dock, items, placements, open }: StripProps) {
+function Strip({ dock, items, placements, open, drag }: StripProps) {
   const { commands, keymap, isMac } = useShell();
-  if (items.length === 0) return null;
+  const dropMode = drag.dragging !== null;
+  if (items.length === 0 && !dropMode) return null;
   return (
     <div
-      className={`shell-strip shell-strip-${dock}`}
+      className={`shell-strip shell-strip-${dock}` + (dropMode ? " drop-mode" : "")}
       role="toolbar"
       aria-label={`${dock} dock`}
       aria-orientation={dock === "bottom" ? "horizontal" : "vertical"}
@@ -108,13 +122,31 @@ function Strip({ dock, items, placements, open }: StripProps) {
             title={tooltip}
             aria-label={d.title}
             aria-pressed={active}
-            onClick={() => commands.dispatch(viewToggleCommandId(d.id))}
+            onClick={() => {
+              // The pointerup that ends a drag still fires a click on the
+              // capturing button — a re-dock must not also toggle.
+              if (drag.consumeClickSuppression()) return;
+              commands.dispatch(viewToggleCommandId(d.id));
+            }}
+            {...drag.handlersFor(d)}
           >
             {d.icon}
             {Badge && <Badge />}
           </button>
         );
       })}
+      {dropMode && (
+        <>
+          <div
+            className="shell-strip-dropzone shell-strip-dropzone-start"
+            data-zone={`${dock}.start`}
+          />
+          <div
+            className="shell-strip-dropzone shell-strip-dropzone-end"
+            data-zone={`${dock}.end`}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -167,6 +199,10 @@ export function ShellFrame({ editorSlot }: ShellFrameProps) {
   const drawers = useShellLayout((s) => s.drawers);
   const narrowView = useShellLayout((s) => s.narrowView);
   const maximized = useShellLayout((s) => s.maximized);
+
+  // Strip-icon drag-to-re-dock (§5.1, #87). Transient interaction state —
+  // lives here, not in the layout store; only the drop touches the store.
+  const drag = useStripDrag(layout);
 
   // Maximize restore (spec §5.4): Escape anywhere brings the layout back.
   // Capture-phase so it wins over focused widgets; skips handled events.
@@ -330,7 +366,13 @@ export function ShellFrame({ editorSlot }: ShellFrameProps) {
         {!narrow && (
           <div className="shell-rail-left">
             <HamburgerMenu />
-            <Strip dock="left" items={stripItems.left} placements={placements} open={open} />
+            <Strip
+              dock="left"
+              items={stripItems.left}
+              placements={placements}
+              open={open}
+              drag={drag}
+            />
           </div>
         )}
 
@@ -395,12 +437,19 @@ export function ShellFrame({ editorSlot }: ShellFrameProps) {
               items={stripItems.bottom}
               placements={placements}
               open={open}
+              drag={drag}
             />
           )}
         </div>
 
         {!narrow && (
-          <Strip dock="right" items={stripItems.right} placements={placements} open={open} />
+          <Strip
+            dock="right"
+            items={stripItems.right}
+            placements={placements}
+            open={open}
+            drag={drag}
+          />
         )}
 
         {compact && (
@@ -440,6 +489,17 @@ export function ShellFrame({ editorSlot }: ShellFrameProps) {
               <ToolWindowChrome descriptor={d} />
             </div>
           ))}
+
+        {/* Drag ghost (§5.1): icon + title chip following the cursor.
+            Fixed-positioned but rendered in the shell tree (not portaled),
+            like Overlay, so the .brink-studio design tokens apply; the
+            controller moves it imperatively on pointermove. */}
+        {drag.dragging !== null && (
+          <div className="shell-drag-ghost" ref={drag.setGhostElement} aria-hidden="true">
+            <span className="shell-drag-ghost-icon">{drag.dragging.icon}</span>
+            <span>{drag.dragging.title}</span>
+          </div>
+        )}
       </div>
 
       {/* Status bar (spec §3, §7.3): the bottom-most shell region, full

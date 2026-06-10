@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "brink-studio",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@brink/studio", "dev", "--port", "5279", "--strictPort"],
+      "port": 5279
+    }
+  ]
+}
