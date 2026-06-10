@@ -156,6 +156,31 @@ export interface CodeAction {
   kind: string;
 }
 
+// ── Document handles (multi-document EditorSession) ─────────────
+
+/**
+ * Opaque document-handle id returned by `EditorSession.openDocument` /
+ * `openFragment`. At the wasm boundary `0` is the "file not loaded"
+ * sentinel and never a valid handle.
+ */
+export type DocumentId = number;
+
+/**
+ * What an `updateDocument` call actually changed in the underlying file,
+ * in UTF-16 **file** coordinates. `[start, end)` is the replaced range of
+ * the file's previous content. The inserted text is the `source` argument
+ * the caller already has — unless `text` is present, in which case a
+ * fragment splice appended a `\n` separator and `text` carries the
+ * actually-inserted text (`source` + `"\n"`). Sibling editor views of the
+ * same file can apply this directly as a CM6 change spec.
+ */
+export interface DocumentChangeSpec {
+  path: string;
+  start: number;
+  end: number;
+  text?: string;
+}
+
 // ── Structural move types ───────────────────────────────────────
 
 export interface CrossFileEdit {
