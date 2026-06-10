@@ -12,6 +12,12 @@ import {
   InMemoryFileProvider,
 } from "@brink/ink-editor";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
+import {
+  attachKeyHandler,
+  CommandRegistry,
+  Keymap,
+  loadKeymapOverrides,
+} from "@brink/studio-shell";
 import { App, StoreProvider } from "@brink/studio-ui";
 import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
@@ -54,9 +60,11 @@ interface RootProps {
   project: ProjectSession;
   studioOptions: BrinkStudioOptions;
   updateListener: Extension;
+  commands: CommandRegistry;
+  keymap: Keymap;
 }
 
-function Root({ store, project, studioOptions, updateListener }: RootProps) {
+function Root({ store, project, studioOptions, updateListener, commands, keymap }: RootProps) {
   const editorRef = useRef<InkEditorHandle>(null);
   const managerRef = useRef<EditorStateManager | null>(null);
 
@@ -168,6 +176,13 @@ function Root({ store, project, studioOptions, updateListener }: RootProps) {
     }
   }, [store, project, manager]);
 
+  // Global key handler: keybindings resolve through the keymap (defaults +
+  // user overrides) to command dispatch — never directly to functions.
+  useEffect(
+    () => attachKeyHandler(window, commands, keymap),
+    [commands, keymap],
+  );
+
   // Tear down the wasm session + story runner when the app unmounts. The
   // standalone playground never unmounts, but the embeddable/host case does —
   // this keeps the lifecycle owned instead of leaking the cached parse/HIR.
@@ -223,6 +238,29 @@ async function main(): Promise<void> {
   const studioOptions = project.createStudioOptions();
   const store = createStudioStore();
 
+  // Shell command registry (spec §6). These first registrations prove the
+  // registry → keymap → key handler path; view/layout commands land with the
+  // dock shell (#80) and palette (#79).
+  const commands = new CommandRegistry();
+  commands.register({
+    id: "player.toggleVisible",
+    title: "View: Toggle Player",
+    keybinding: "Mod-J",
+    run: () => store.getState().togglePlayerVisible(),
+  });
+  commands.register({
+    id: "story.restart",
+    title: "Story: Restart",
+    when: () => store.getState().storyBytes !== null,
+    run: () => store.getState().resetStory(),
+  });
+  const keymap = Keymap.fromCommands(
+    commands.list(),
+    loadKeymapOverrides(window.localStorage),
+  );
+  // Exposed for e2e/manual verification, like __brinkView.
+  (window as unknown as Record<string, unknown>).__brinkCommands = commands;
+
   // Create the updateListener eagerly so it can be shared between
   // InkEditor (for the initial state) and EditorStateManager (for
   // tab-switch states). It reads callbacks from the store, so it
@@ -266,6 +304,8 @@ async function main(): Promise<void> {
       project={project}
       studioOptions={studioOptions}
       updateListener={updateListener}
+      commands={commands}
+      keymap={keymap}
     />,
   );
 }
