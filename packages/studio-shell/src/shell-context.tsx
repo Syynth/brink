@@ -16,10 +16,12 @@ import {
   useEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { useStore } from "zustand";
 import type { CommandRegistry } from "./command.js";
+import { NotificationCenter, type NotificationState } from "./notifications.js";
 import { Keymap, loadKeymapOverrides, type KeymapOverrides } from "./keymap.js";
 import { attachKeyHandler } from "./keyhandler.js";
 import { ToolWindowRegistry, type ToolWindowDescriptor } from "./toolwindow.js";
@@ -39,6 +41,7 @@ export interface ShellContextValue {
   toolWindows: ToolWindowRegistry;
   statusBarItems: StatusBarRegistry;
   layout: ShellLayoutStore;
+  notifications: NotificationCenter;
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null);
@@ -49,6 +52,12 @@ export interface ShellProviderProps {
   toolWindows?: ToolWindowRegistry;
   /** Status-bar item registry (§7.3); omit for shells without one (tests). */
   statusBarItems?: StatusBarRegistry;
+  /**
+   * Notification center (§7.5); omit to let the provider own one. Pass an
+   * instance when producers outside the React tree need it (e.g. main.tsx
+   * injecting the store→shell notifier bridge).
+   */
+  notifications?: NotificationCenter;
   /** Override storage for keymap overrides (tests); defaults to localStorage. */
   storage?: Pick<Storage, "getItem">;
   /** Override storage for layout persistence (tests); defaults to localStorage. */
@@ -62,6 +71,7 @@ export function ShellProvider({
   commands,
   toolWindows,
   statusBarItems,
+  notifications,
   storage,
   layoutStorage,
   isMac,
@@ -74,6 +84,8 @@ export function ShellProvider({
   const registry = toolWindows ?? fallbackToolWindows;
   const [fallbackStatusBarItems] = useState(() => new StatusBarRegistry());
   const statusBar = statusBarItems ?? fallbackStatusBarItems;
+  const [fallbackNotifications] = useState(() => new NotificationCenter());
+  const notificationCenter = notifications ?? fallbackNotifications;
   // Layout: restore the persisted snapshot before the first render; the
   // registry-sync effect below then drops unknown ids / seeds new ones
   // (spec §7.1). Persistence is debounced writes of the durable subset.
@@ -159,8 +171,9 @@ export function ShellProvider({
       toolWindows: registry,
       statusBarItems: statusBar,
       layout,
+      notifications: notificationCenter,
     }),
-    [commands, keymap, mac, registry, statusBar, layout],
+    [commands, keymap, mac, registry, statusBar, layout, notificationCenter],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
@@ -189,6 +202,20 @@ export function useToolWindows(): ToolWindowDescriptor[] {
     return toolWindows.onDidChange(() => setList(toolWindows.list()));
   }, [toolWindows]);
   return list;
+}
+
+/** The shell's notification center (spec §7.5). */
+export function useNotifications(): NotificationCenter {
+  return useShell().notifications;
+}
+
+/** Reactive notification snapshot: visible toasts, overflow, history, unread. */
+export function useNotificationState(): NotificationState {
+  const { notifications } = useShell();
+  return useSyncExternalStore(
+    (onChange) => notifications.onDidChange(onChange),
+    () => notifications.getState(),
+  );
 }
 
 /** The registered status-bar items, in registration order (reactive). */

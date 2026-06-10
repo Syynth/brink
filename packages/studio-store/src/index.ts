@@ -23,6 +23,25 @@ import { createSessionSlice } from "./slices/session.js";
 import { createBinderSlice } from "./slices/binder.js";
 import { createOutputSlice } from "./slices/output.js";
 
+// ── Notifications (store → shell bridge) ────────────────────────────
+
+/**
+ * A notification request raised by a slice (binder undo, replay divergence).
+ *
+ * The store sits below the shell (spec §7.2), so it cannot import the
+ * notification service — instead the app boundary (main.tsx) injects a
+ * notifier callback via `setNotifier`, and slices emit this plain-data shape.
+ * It is structurally assignable to the shell's `NotificationInput` (§7.5):
+ * command-only actions, no callbacks.
+ */
+export interface StoreNotification {
+  severity: "info" | "warning" | "error";
+  message: string;
+  /** Origin tag, e.g. "binder", "story". */
+  source?: string;
+  actions?: { label: string; commandId: string; args?: unknown }[];
+}
+
 // ── Combined state ──────────────────────────────────────────────────
 
 export interface StudioState
@@ -36,12 +55,16 @@ export interface StudioState
   _editorRef: InkEditorHandle | null;
   _stateManager: EditorStateManager | null;
   _project: ProjectSession | null;
+  /** Injected notifier (see StoreNotification); null until the app binds it. */
+  _notify: ((notification: StoreNotification) => void) | null;
 
   initialize(
     project: ProjectSession,
     stateManager: EditorStateManager,
     editorRef: InkEditorHandle,
   ): void;
+  /** Bind the shell notifier bridge (main.tsx, at bootstrap). */
+  setNotifier(notify: (notification: StoreNotification) => void): void;
 }
 
 // ── Store factory ───────────────────────────────────────────────────
@@ -63,6 +86,11 @@ export const createStudioStore = () =>
       _editorRef: null,
       _stateManager: null,
       _project: null,
+      _notify: null,
+
+      setNotifier(notify) {
+        set({ _notify: notify });
+      },
 
       // Initialization — binds imperative handles and syncs initial state
       initialize(project, stateManager, editorRef) {

@@ -6,13 +6,19 @@
  * shell layout store (both owned by ShellProvider; tool windows are
  * registered at bootstrap in brink-studio/main.tsx). This component only
  * provides the root element (tier observer + data-tier for CSS), the editor
- * slot, and the app-level transient surfaces (palette, toast).
+ * slot, and the app-level transient surfaces (palette, quick-open, the
+ * notification stack §7.5).
  */
 
 import { useRef, type ReactNode } from "react";
-import { CommandPalette, ShellFrame, useShellLayout, useTier } from "@brink/studio-shell";
+import {
+  CommandPalette,
+  NotificationStack,
+  ShellFrame,
+  useShellLayout,
+  useTier,
+} from "@brink/studio-shell";
 import { EditorPane } from "./EditorPane.js";
-import { Toast } from "./Toast.js";
 import { QuickOpen } from "./QuickOpen.js";
 
 function App({ editorSlot }: { editorSlot: ReactNode }) {
@@ -26,7 +32,7 @@ function App({ editorSlot }: { editorSlot: ReactNode }) {
       <ShellFrame editorSlot={<EditorPane>{editorSlot}</EditorPane>} />
       <CommandPalette />
       <QuickOpen />
-      <Toast />
+      <NotificationStack />
     </div>
   );
 }
