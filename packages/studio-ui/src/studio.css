@@ -1314,6 +1314,24 @@
   padding: 0 6px;
   border-top: 1px solid var(--brink-border);
 }
+/* Icons cluster by section: start-section icons at the strip's start,
+   end-section icons anchored at the far end (JetBrains-style halves). */
+.brink-studio .shell-strip-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.brink-studio .shell-strip-bottom .shell-strip-section {
+  flex-direction: row;
+}
+.brink-studio .shell-strip-section-end {
+  margin-top: auto;
+}
+.brink-studio .shell-strip-bottom .shell-strip-section-end {
+  margin-top: 0;
+  margin-left: auto;
+}
 .brink-studio .shell-strip-btn {
   position: relative;
   width: 28px;
