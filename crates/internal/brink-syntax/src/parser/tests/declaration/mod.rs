@@ -23,6 +23,24 @@ fn external_with_params() {
     check("EXTERNAL myFunc(a, b, c)\n");
 }
 
+/// Ink keywords are contextual — an external may be named after an operator
+/// keyword (e.g. `has`, the `Has` list operator). C# `IdentifierWithMetadata`
+/// imposes no reserved-word check, so these are valid names in this position.
+#[test]
+fn external_keyword_name() {
+    check("EXTERNAL has(item)\n");
+}
+
+#[test]
+fn external_keyword_name_with_doc() {
+    check("/// doc\nEXTERNAL has(item)\n");
+}
+
+#[test]
+fn external_keyword_params() {
+    check("EXTERNAL myFunc(and, or, mod)\n");
+}
+
 #[test]
 fn var_declaration() {
     check("VAR x = 5\n");
