@@ -92,7 +92,11 @@ fn collect_param_hints(
 
     let Some(info) = info else { return };
 
-    for (arg, param) in args.iter().zip(&info.params) {
+    // Typed params (from `///` doc tags or the host manifest) render as
+    // `name: type`; untyped params keep the bare `name:` form.
+    let meta = analysis.symbol_meta.get(&info.id);
+
+    for (i, (arg, param)) in args.iter().zip(&info.params).enumerate() {
         // Skip hint if the argument text already matches the parameter name
         let arg_text = arg.syntax().text().to_string();
         let arg_text = arg_text.trim();
@@ -100,12 +104,19 @@ fn collect_param_hints(
             continue;
         }
 
-        let label = if param.is_ref {
-            format!("ref {}:", param.name)
+        let prefix = if param.is_ref {
+            "ref "
         } else if param.is_divert {
-            format!("-> {}:", param.name)
+            "-> "
         } else {
-            format!("{}:", param.name)
+            ""
+        };
+        let ty = meta
+            .and_then(|m| m.params.get(i))
+            .and_then(|rp| rp.ty.as_ref());
+        let label = match ty {
+            Some(ty) => format!("{prefix}{}: {}", param.name, ty.name),
+            None => format!("{prefix}{}:", param.name),
         };
 
         hints.push(InlayHint {
@@ -114,5 +125,41 @@ fn collect_param_hints(
             kind: InlayHintKind::Parameter,
             padding_right: true,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rowan::{TextRange, TextSize};
+
+    use super::inlay_hints;
+    use crate::session::IdeSession;
+
+    #[test]
+    fn typed_param_hints_include_type_untyped_keep_colon() {
+        let src = "\
+/// @param weapon {int}
+== function damage(weapon) ==
+~ return weapon
+== function heal(amount) ==
+~ return amount
+== main ==
+~ temp x = damage(3)
+~ temp y = heal(4)
+-> END
+";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax::parse(src);
+        let hints = inlay_hints(
+            &parsed.syntax(),
+            analysis,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+        );
+        let labels: Vec<_> = hints.iter().map(|h| h.label.as_str()).collect();
+        assert!(labels.contains(&"weapon: int"), "{labels:?}");
+        assert!(labels.contains(&"amount:"), "{labels:?}");
     }
 }
