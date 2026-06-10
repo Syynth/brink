@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, type ReactNode } from "react";
+import { useShell } from "@brink/studio-shell";
+import { sessionCanContinue } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 
 // ── Character colors ────────────────────────────────────────────
@@ -88,16 +90,17 @@ function renderLine(line: string): ReactNode {
 // ── Component ───────────────────────────────────────────────────
 
 function PlayerPane() {
-  const text = useStudioStore((s) => s.playerText);
-  const choices = useStudioStore((s) => s.playerChoices);
-  const ended = useStudioStore((s) => s.playerEnded);
-  const hasPending = useStudioStore((s) => s.playerCanContinue);
-  const chooseOption = useStudioStore((s) => s.chooseOption);
-  const resetStory = useStudioStore((s) => s.resetStory);
-  const compile = useStudioStore((s) => s.compile);
-  const revealNext = useStudioStore((s) => s.revealNext);
+  // Session-bound view (spec §7.6): selects from the story session and never
+  // mutates it — every interaction dispatches a command.
+  const status = useStudioStore((s) => s.sessionStatus);
+  const text = useStudioStore((s) => s.sessionText);
+  const choices = useStudioStore((s) => s.sessionChoices);
   const fullscreen = useStudioStore((s) => s.playerFullscreen);
   const toggleFullscreen = useStudioStore((s) => s.togglePlayerFullscreen);
+  const { commands } = useShell();
+
+  const ended = status === "ended" || status === "error";
+  const hasPending = sessionCanContinue(status);
 
   const playerRef = useRef<HTMLDivElement>(null);
 
@@ -109,23 +112,49 @@ function PlayerPane() {
   }, [text, choices, ended, hasPending]);
 
   const handleRun = useCallback(() => {
-    compile();
-  }, [compile]);
+    commands.dispatch("compile.run");
+  }, [commands]);
 
   const handleRestart = useCallback(() => {
-    resetStory();
-  }, [resetStory]);
+    commands.dispatch("story.restart");
+  }, [commands]);
 
   const handleChoice = useCallback(
     (index: number) => {
-      chooseOption(index);
+      commands.dispatch("story.choose", index);
     },
-    [chooseOption],
+    [commands],
   );
 
   const handleContinue = useCallback(() => {
-    revealNext();
-  }, [revealNext]);
+    commands.dispatch("story.continue");
+  }, [commands]);
+
+  const handleStart = useCallback(() => {
+    commands.dispatch("story.start");
+  }, [commands]);
+
+  // No session: placeholder with a start affordance instead of stale content.
+  if (status === "none") {
+    return (
+      <div className="player-pane">
+        <div className="header">
+          <span>Story</span>
+        </div>
+        <div className="player">
+          <div className="session-placeholder">
+            <p className="session-placeholder-title">No story session</p>
+            <p className="session-placeholder-hint">
+              Start the story to play it here.
+            </p>
+            <button className="session-placeholder-start" onClick={handleStart}>
+              Start story
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="player-pane">

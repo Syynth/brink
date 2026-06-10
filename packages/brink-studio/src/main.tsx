@@ -40,6 +40,7 @@ import {
   buildContext,
 } from "@brink/ink-editor";
 import type { BrinkStudioOptions } from "@brink/ink-editor";
+import { registerStoryCommands } from "./story-commands.js";
 import toppledTemple from "./stories/toppled-temple.ink.txt?raw";
 
 const MAIN_INK = `INCLUDE toppled-temple.ink
@@ -152,8 +153,14 @@ function Root({ store, project, studioOptions, updateListener, commands, toolWin
 
     state.setCompileResult(outline, { errors, warnings }, storyBytes);
 
+    // Recompile-while-running (spec §7.6): a successful compile auto-starts
+    // the session on the new program through the same code path as the
+    // story.start command — startSession replays the recorded choice log,
+    // truncating with a notification on divergence. A failed compile takes
+    // the `storyBytes === null` branch and leaves the existing session
+    // running on the old program.
     if (storyBytes) {
-      state.loadStory(storyBytes);
+      state.startSession(storyBytes);
     }
   }, [store, project]);
 
@@ -186,8 +193,9 @@ function Root({ store, project, studioOptions, updateListener, commands, toolWin
           : null;
 
         state.setCompileResult(outline, { errors, warnings }, storyBytes);
+        // Same recompile-while-running contract as onCompileResult above.
         if (storyBytes) {
-          state.loadStory(storyBytes);
+          state.startSession(storyBytes);
         }
       },
       onNavigateToFile(location: Location) {
@@ -235,7 +243,7 @@ function Root({ store, project, studioOptions, updateListener, commands, toolWin
   // this keeps the lifecycle owned instead of leaking the cached parse/HIR.
   useEffect(
     () => () => {
-      store.getState().disposePlayer();
+      store.getState().disposeSession();
       project.destroy();
     },
     [store, project],
@@ -315,11 +323,18 @@ async function main(): Promise<void> {
   // global key handler, and generates the `view.toggle.<id>` commands
   // (Mod-1…9 by registration order) from the tool-window registry below.
   const commands = new CommandRegistry();
+
+  // Story session lifecycle (spec §7.6): story.start / restart / stop /
+  // choose / continue, gated by session status. Commands own the session —
+  // views dispatch these instead of mutating it.
+  registerStoryCommands(commands, store);
+
+  // Recompile on demand (the player's "Run" button). A successful compile
+  // auto-starts the session via onCompileResult below.
   commands.register({
-    id: "story.restart",
-    title: "Story: Restart",
-    when: () => store.getState().storyBytes !== null,
-    run: () => store.getState().resetStory(),
+    id: "compile.run",
+    title: "Compile: Run",
+    run: () => store.getState().compile(),
   });
 
   // Navigation protocol (spec §6.1): resolvers translate Locations toward

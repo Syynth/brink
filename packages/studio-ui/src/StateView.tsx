@@ -1,18 +1,27 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
+import { useShell } from "@brink/studio-shell";
 import { useStudioStore } from "./StoreContext.js";
 
 /**
  * State View — a read-only runtime debugger.
  *
- * Renders the structured `DebugState` snapshot (status, current location,
- * globals, call stack, visit counts, pending choices, rng), refreshed whenever
- * the story advances. Values that changed since the previous step are
- * highlighted (diffed against `prevDebugState`).
+ * Session-bound (spec §7.6): renders the structured `DebugState` snapshot
+ * (status, current location, globals, call stack, visit counts, pending
+ * choices, rng) from the story session, refreshed whenever the story
+ * advances. Values that changed since the previous step are highlighted
+ * (diffed against `prevDebugState`). With no session, a placeholder with a
+ * `story.start` affordance is shown instead.
  */
 function StateViewInner() {
+  const sessionStatus = useStudioStore((s) => s.sessionStatus);
   const debugState = useStudioStore((s) => s.debugState);
   const prevDebugState = useStudioStore((s) => s.prevDebugState);
+  const { commands } = useShell();
   const [visitFilter, setVisitFilter] = useState("");
+
+  const handleStart = useCallback(() => {
+    commands.dispatch("story.start");
+  }, [commands]);
 
   // Globals whose value changed since the previous snapshot.
   const changedGlobals = useMemo(() => {
@@ -24,6 +33,24 @@ function StateViewInner() {
     }
     return changed;
   }, [debugState, prevDebugState]);
+
+  // All hooks above; conditional renders below (Rules of Hooks).
+  if (sessionStatus === "none") {
+    return (
+      <div className="state-view">
+        <div className="session-placeholder">
+          <p className="session-placeholder-title">No story session</p>
+          <p className="session-placeholder-hint">
+            Start the story to inspect its variables, current location, call
+            stack, and visit counts here.
+          </p>
+          <button className="session-placeholder-start" onClick={handleStart}>
+            Start story
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!debugState) {
     return (

@@ -1,7 +1,7 @@
 /**
  * @brink/studio-store — Zustand store for brink-studio React migration.
  *
- * Combines domain slices (editor, compile, tabs, player, binder) into a
+ * Combines domain slices (editor, compile, tabs, session, player, binder) into a
  * single store. Non-reactive refs (prefixed with _) hold imperative handles
  * that should not trigger re-renders.
  */
@@ -11,6 +11,7 @@ import { create } from "zustand";
 import type { EditorSlice } from "./slices/editor.js";
 import type { CompileSlice } from "./slices/compile.js";
 import type { TabsSlice } from "./slices/tabs.js";
+import type { SessionSlice } from "./slices/session.js";
 import type { PlayerSlice } from "./slices/player.js";
 import type { BinderSlice } from "./slices/binder.js";
 import type { InkEditorHandle, EditorStateManager, ProjectSession } from "./types.js";
@@ -18,6 +19,7 @@ import type { InkEditorHandle, EditorStateManager, ProjectSession } from "./type
 import { createEditorSlice } from "./slices/editor.js";
 import { createCompileSlice } from "./slices/compile.js";
 import { createTabsSlice } from "./slices/tabs.js";
+import { createSessionSlice } from "./slices/session.js";
 import { createPlayerSlice } from "./slices/player.js";
 import { createBinderSlice } from "./slices/binder.js";
 
@@ -27,6 +29,7 @@ export interface StudioState
   extends EditorSlice,
     CompileSlice,
     TabsSlice,
+    SessionSlice,
     PlayerSlice,
     BinderSlice {
   // Non-reactive refs — imperative handles that don't trigger re-renders
@@ -52,6 +55,7 @@ export const createStudioStore = () =>
       ...createEditorSlice(...args),
       ...createCompileSlice(...args),
       ...createTabsSlice(...args),
+      ...createSessionSlice(...args),
       ...createPlayerSlice(...args),
       ...createBinderSlice(...args),
 
@@ -87,8 +91,14 @@ export type StudioStore = ReturnType<typeof createStudioStore>;
 
 // ── Re-exports ──────────────────────────────────────────────────────
 
-// Exposed for unit testing the replay loop's termination guard.
-export { replayChoices } from "./slices/player.js";
+// Exposed for unit testing the replay loop's termination + divergence
+// behavior (spec §7.6).
+export {
+  replayChoices,
+  sessionCanContinue,
+  REPLAY_DIVERGED_MESSAGE,
+  type SessionStatus,
+} from "./slices/session.js";
 
 export type {
   ElementType,
