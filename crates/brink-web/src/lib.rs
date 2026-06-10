@@ -2872,6 +2872,197 @@ mod tests {
         assert!(other.get("new_source").is_some());
         assert!(other.get("start").is_none());
     }
+
+    // ── Document handles (#122) ─────────────────────────────────────
+
+    fn json(s: &str) -> serde_json::Value {
+        serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn two_handles_on_different_files_query_independently() {
+        let mut s = EditorSession::new();
+        s.update_file("a.ink", "=== alpha ===\nA line\n-> END\n");
+        s.update_file("b.ink", "hello b\n=== beta ===\nB line\n-> END\n");
+        // No set_active_file: the singleton still points at the unloaded
+        // default, proving handles don't depend on it.
+        let da = s.open_document("a.ink");
+        let db = s.open_document("b.ink");
+        assert_ne!(da, 0);
+        assert_ne!(db, 0);
+        assert_ne!(da, db);
+        assert_eq!(s.active_file(), "main.ink");
+
+        // hover over each file's knot name resolves per-handle.
+        // a.ink: `alpha` at offsets 4..9; b.ink: `beta` at 12..16.
+        let ha = s.hover_doc(da, 5);
+        let hb = s.hover_doc(db, 13);
+        assert!(ha.contains("alpha"), "hover via handle a: {ha}");
+        assert!(hb.contains("beta"), "hover via handle b: {hb}");
+
+        // line_contexts are file-specific per handle.
+        let la = json(&s.line_contexts_doc(da));
+        let lb = json(&s.line_contexts_doc(db));
+        assert_eq!(la[0]["element"], "knot_header", "a.ink starts with a knot");
+        assert_eq!(lb[0]["element"], "narrative", "b.ink starts with narrative");
+
+        // completions work through a handle with no active file set.
+        let ca = json(&s.completions_doc(da, 0));
+        let names: Vec<&str> = ca
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|i| i["name"].as_str())
+            .collect();
+        assert!(names.contains(&"alpha"), "completions: {names:?}");
+        assert!(names.contains(&"beta"), "completions: {names:?}");
+
+        // The singleton queries still target the (unloaded) active file.
+        assert_eq!(s.line_contexts(), "[]");
+    }
+
+    #[test]
+    fn fragment_update_splices_and_reports_change_spec() {
+        // é = 2 bytes / 1 UTF-16 unit: every offset past it differs between
+        // byte and UTF-16 coordinates, proving the spec is UTF-16.
+        //   bytes: "é intro\n"(0..9) "=== a ===\n"(9..19) "A line\n"(19..26)
+        //          "=== b ===\n"(26..36) "B line\n"(36..43)
+        //   utf16: 0..8 / 8..18 / 18..25 / 25..35 / 35..42
+        let full = "é intro\n=== a ===\nA line\n=== b ===\nB line\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", full);
+
+        let file_doc = s.open_document("main.ink");
+        // Fragment over knot `a`: UTF-16 [8, 25).
+        let frag = s.open_fragment("main.ink", 8, 25);
+        assert_ne!(file_doc, 0);
+        assert_ne!(frag, 0);
+        assert_eq!(
+            s.get_view_source_doc(frag),
+            serde_json::to_string("=== a ===\nA line\n").unwrap()
+        );
+
+        // Update the fragment WITHOUT a trailing newline: the splice inserts
+        // a `\n` separator, and the spec must carry the actually-inserted
+        // text (source + "\n").
+        let spec = json(&s.update_document(frag, "=== a ===\nA new"));
+        assert_eq!(spec["path"], "main.ink");
+        assert_eq!(spec["start"], 8, "UTF-16 start of replaced range");
+        assert_eq!(spec["end"], 25, "UTF-16 end of replaced range");
+        assert_eq!(
+            spec["text"], "=== a ===\nA new\n",
+            "separator nuance: actually-inserted text differs from source"
+        );
+
+        let expected = "é intro\n=== a ===\nA new\n=== b ===\nB line\n";
+        assert_eq!(
+            s.get_file_source("main.ink"),
+            serde_json::to_string(expected).unwrap()
+        );
+        // The full-file handle on the same file sees the spliced content.
+        assert_eq!(
+            s.get_view_source_doc(file_doc),
+            serde_json::to_string(expected).unwrap()
+        );
+        // The fragment handle's own view tracked the new fragment extent
+        // (excluding the separator).
+        assert_eq!(
+            s.get_view_source_doc(frag),
+            serde_json::to_string("=== a ===\nA new").unwrap()
+        );
+
+        // Update again WITH a trailing newline: no separator inserted (one
+        // already follows the fragment), so no `text` in the spec. New file
+        // coords: fragment is bytes [9, 24) = UTF-16 [8, 23).
+        let spec = json(&s.update_document(frag, "=== a ===\nA two"));
+        assert_eq!(spec["start"], 8);
+        assert_eq!(spec["end"], 23);
+        assert!(
+            spec.get("text").is_none(),
+            "no separator inserted -> no text field: {spec}"
+        );
+        assert_eq!(
+            s.get_file_source("main.ink"),
+            serde_json::to_string("é intro\n=== a ===\nA two\n=== b ===\nB line\n").unwrap()
+        );
+    }
+
+    #[test]
+    fn full_file_handle_update_reports_whole_file_spec() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "é one\n"); // 7 bytes, 6 UTF-16 units
+        let d = s.open_document("main.ink");
+
+        let spec = json(&s.update_document(d, "two\n"));
+        assert_eq!(spec["path"], "main.ink");
+        assert_eq!(spec["start"], 0);
+        assert_eq!(spec["end"], 6, "whole previous file range, in UTF-16");
+        assert!(spec.get("text").is_none());
+        assert_eq!(
+            s.get_file_source("main.ink"),
+            serde_json::to_string("two\n").unwrap()
+        );
+    }
+
+    #[test]
+    fn close_reopen_handle_lifecycle() {
+        let mut s = EditorSession::new();
+        s.update_file("a.ink", "=== alpha ===\nA\n-> END\n");
+
+        // Unknown files don't get handles.
+        assert_eq!(s.open_document("nope.ink"), 0);
+        assert_eq!(s.open_fragment("nope.ink", 0, 1), 0);
+
+        let d1 = s.open_document("a.ink");
+        assert_eq!(d1, 1, "ids start at 1");
+        assert!(s.close_document(d1));
+        assert!(!s.close_document(d1), "double close reports unknown");
+
+        // Closed handles answer with the same sentinels as a missing file.
+        assert_eq!(s.hover_doc(d1, 5), "null");
+        assert_eq!(s.line_contexts_doc(d1), "[]");
+        assert_eq!(s.get_view_source_doc(d1), "null");
+        assert_eq!(s.update_document(d1, "x"), "null");
+
+        // Reopen: a fresh id, never a reused one.
+        let d2 = s.open_document("a.ink");
+        assert_ne!(d2, 0);
+        assert_ne!(d2, d1, "handle ids are not reused");
+        assert_ne!(s.get_view_source_doc(d2), "null");
+    }
+
+    #[test]
+    fn singleton_api_unaffected_by_handle_operations() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== a ===\nA line\n=== b ===\nB line\n");
+        s.update_file("other.ink", "hello\n");
+        assert!(s.set_active_file("main.ink"));
+        // Singleton view over knot `a`: UTF-16 [0, 17).
+        s.set_view_context(0, 17);
+        let before = s.get_view_source();
+        assert_eq!(
+            before,
+            serde_json::to_string("=== a ===\nA line\n").unwrap()
+        );
+
+        // Handle operations on another file leave the singleton alone.
+        let d = s.open_document("other.ink");
+        let _ = s.update_document(d, "world\n");
+        assert!(s.close_document(d));
+        assert_eq!(s.active_file(), "main.ink");
+        assert_eq!(s.get_view_source(), before);
+
+        // The singleton splice path still works after handle traffic.
+        s.update_source("=== a ===\nA edit");
+        assert_eq!(
+            s.get_file_source("main.ink"),
+            serde_json::to_string("=== a ===\nA edit\n=== b ===\nB line\n").unwrap()
+        );
+        assert_eq!(
+            s.get_view_source(),
+            serde_json::to_string("=== a ===\nA edit").unwrap()
+        );
+    }
 }
 
 // ── External-binding wasm tests ──────────────────────────────────────
