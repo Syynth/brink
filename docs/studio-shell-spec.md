@@ -93,14 +93,13 @@ Default placement, mapped from existing components:
 | **Problems** | tool window | bottom dock, start | *new* (data exists in `CompileSlice` diagnostics) | Clickable diagnostics list → jumps editor to location. Status-bar error/warning segment opens it. |
 | **Output / compile log** | tool window | bottom dock, end | *new* | Compile timings, wasm/runtime errors that aren't source diagnostics. Replaces nothing; today this information is dropped. |
 | **Search** | tool window | left dock, start | *new, later phase* | Project-wide find/replace. In the strip from day one only if trivially stubbed; otherwise added when implemented. |
-| **Program Explorer** | tool window | bottom dock or right dock (user-movable) | [ProgramView.tsx](../packages/studio-ui/src/ProgramView.tsx) | Resolved (§9.1): the structured tables (globals/lists/externals/knot tree) stay a tool window; the raw `.inkt` dump toggle leaves it in Phase 4 (see Compiled Output below). |
+| **Program Explorer** | tool window | bottom dock or right dock (user-movable) | [ProgramView.tsx](../packages/studio-ui/src/ProgramView.tsx) | Resolved (§10.1): the structured tables (globals/lists/externals/knot tree) stay a tool window; the raw `.inkt` dump toggle leaves it in Phase 4 (see Compiled Output below). |
 | **Compiled Output** (`.inkt` dump) | editor document (read-only) | editor area | the dump toggle inside ProgramView | Phase 4: a read-only document tab with a minimal CM6 `.inkt` mode, gaining search/folding/selection. Disassembly-view precedent. |
 | **Story transcript** | tool window | bottom dock | *future* | Append-only transcript view; listed to validate the model, not scheduled. |
 | Ink files | editor document | editor area | [EditorPane.tsx](../packages/studio-ui/src/EditorPane.tsx) + CM6 | Tabbed via [FileTabBar.tsx](../packages/studio-ui/src/FileTabBar.tsx), which becomes the per-group tab bar. |
 
-The **Toast** system is replaced by a shell notification service (bottom-right, stacking,
-command-actionable) in a later phase; until then the existing component mounts in the shell
-unchanged.
+The **Toast** system is replaced by the shell notification service (§7.5) in Phase 3;
+until then the existing component mounts in the shell unchanged.
 
 ## 5. Behavior
 
@@ -109,7 +108,7 @@ unchanged.
 - One icon per tool window, in section order (start section icons at the strip's start).
 - Click: toggle that tool window (open-in-section / collapse).
 - Drag: ghost icon follows cursor; valid drop targets are the six sections; drop re-docks.
-  Strips highlight the target section on hover. (Drag ships in Phase 3, not MVP — §8.)
+  Strips highlight the target section on hover. (Drag ships in Phase 3, not MVP — §9.)
 - Icons show badges where meaningful (Problems: error count).
 
 ### 5.2 Keyboard
@@ -169,10 +168,10 @@ interface Command {
 - **Keymap layer (required from Phase 1):** the key handler never reads
   `command.keybinding` directly — it resolves through a keymap table built from the
   registry's defaults, with a **user-override JSON** (localStorage, no editing UI) merged
-  over the defaults. Resolved §9.3: the indirection is cheap now and expensive to
+  over the defaults. Resolved §10.3: the indirection is cheap now and expensive to
   retrofit, and with it in place the override merge costs almost nothing. A full
   keymap-editing UI stays out of scope for all phases.
-- **Hamburger menu (resolved §9.2):** a single icon at the top of the left strip
+- **Hamburger menu (resolved §10.2):** a single icon at the top of the left strip
   (JetBrains new-UI placement) opens a grouped menu *generated from the command
   registry* — no hand-maintained menu structure, embed-friendly, and the same registry
   could feed a native menu bar in a future desktop shell. There is no in-page menu bar.
@@ -182,7 +181,7 @@ interface Command {
 - Buttons/menus/strip icons call `dispatch(commandId)` — never feature functions directly —
   so the palette is automatically complete.
 
-## 7. Shell state, registry, and theming
+## 7. Shell infrastructure
 
 ### 7.1 View registry
 
@@ -249,7 +248,104 @@ windows: id, alignment, priority, component):
   strip icons monochrome with an accent for the active state, density closer to a writing
   tool than to JetBrains.
 
-## 8. Migration plan
+### 7.5 Notification service
+
+Replaces [Toast.tsx](../packages/studio-ui/src/Toast.tsx) (single message, fixed 5s
+dismiss, ad-hoc undo callback) in Phase 3.
+
+```ts
+interface Notification {
+  id: string;
+  severity: "info" | "warning" | "error";
+  message: string;
+  source?: string;        // "binder", "compiler", "host.<vendor>" — shown subdued
+  actions?: { label: string; commandId: string; args?: unknown }[];
+  timeoutMs?: number;     // defaults by severity: info 5s, warning 8s, error sticky
+}
+```
+
+- **API:** a shell `notify(n): NotificationHandle` service (handle supports
+  dismiss/update). Callable from feature slices and from host extensions via the
+  `StudioApi` facade (§8).
+- **Actions dispatch commands only** — no raw callbacks. This keeps the model
+  serializable and consistent with §6 ("nothing binds a key directly to a function"
+  applies to notification buttons too). The Binder's undo toast becomes a notification
+  whose action dispatches `binder.undo`.
+- **Presentation:** stacked bottom-right above the status bar, newest on top, max 3
+  visible with an overflow "+N more" collapser. Hover pauses auto-dismiss. Styling per
+  the Zed direction — quiet, hairline border, severity shown by an accent edge, not a
+  filled background.
+- **History:** a bell item in the status bar's right group with an unread badge; click
+  opens a popover listing the session's notifications (cleared on demand). The history is
+  capped (e.g. 100 entries, oldest dropped) per the unbounded-growth guard principle.
+- **Out of scope:** progress notifications (compile/story status lives in the status
+  bar, §7.3) and do-not-disturb modes.
+
+## 8. Embedder extension API
+
+brink-studio is embedded programmatically (the embedded playground today; RPG Maker MZ
+planned). An embedding host already runs its own code in the page and mounts the studio —
+so hosts can be allowed to provide their own surfaces (e.g. an **"RPG Maker functions
+panel"** that cannot be built into the studio) without anything resembling a plugin
+system. The extension point is **mount-time registration into the same registries the
+built-ins use** — no dynamic loading, no marketplace, no sandboxing, no separate
+extension code path.
+
+### 8.1 Contract
+
+```ts
+interface StudioExtensions {
+  toolWindows?: ToolWindowDescriptor[];   // §7.1 shape; ids must be "host.<vendor>.<name>"
+  commands?: Command[];                   // §6 shape; same id namespacing
+  statusBarItems?: StatusBarItem[];       // §7.3 shape; same id namespacing
+}
+```
+
+Passed once at mount alongside the existing initialization wiring. Rules:
+
+- **Namespacing:** host ids must carry the `host.<vendor>.` prefix; registration
+  validates this and rejects collisions with a clean error. Built-in ids never use the
+  prefix.
+- **Equal citizens:** host tool windows dock, toggle, drag, persist, and appear in
+  strips/palette/hamburger exactly like built-ins. Layout persistence already drops
+  unknown ids silently on load (§7.1), which handles a host removing a panel between
+  sessions.
+- **React components:** host views are React components (the host bundles the studio and
+  therefore React). A DOM-mount escape hatch (`mount(el: HTMLElement)`) for non-React
+  hosts is a possible later addition, not in scope.
+
+### 8.2 StudioApi facade
+
+Host components receive a **curated facade** via React context — never the raw Zustand
+store (consumer-first API principle: store internals stay free to change):
+
+```ts
+interface StudioApi {
+  insertText(text: string): void;                 // at cursor in the active editor
+  dispatch(commandId: string, args?: unknown): void;
+  notify(n: Notification): NotificationHandle;    // §7.5
+  select<T>(sel: (s: StudioPublicState) => T): T; // + subscribe(sel, cb)
+}
+```
+
+`StudioPublicState` is an explicit, versioned subset: active file, cursor/element info,
+diagnostics summary, compile status, story status. Anything a host needs that isn't in it
+is a deliberate API addition, not a store leak.
+
+**Motivating example (Track B synergy):** the RPG Maker functions panel renders the
+host-capability manifest the host already registers via `set_host_manifest`
+(see [host-capability-manifest.md](host-capability-manifest.md)), with click-to-insert of
+`EXTERNAL` declarations and call snippets through `insertText`.
+
+### 8.3 Timing
+
+The registries are written to these contract shapes **from Phase 1** (namespaced ids,
+descriptor discipline, command-only actions) so the public exposure is a thin door, not a
+retrofit. The exposure itself — `StudioExtensions` mount config, `StudioApi`,
+`StudioPublicState`, and their documentation — lands in **Phase 5**, once docking and
+persistence are stable enough to promise hosts a non-churning contract.
+
+## 9. Migration plan
 
 Each phase lands independently; the studio remains shippable after every phase.
 
@@ -265,26 +361,27 @@ Each phase lands independently; the studio remains shippable after every phase.
   Output log, status bar segments wired to commands, quick-open over binder items,
   maximize (replacing `playerFullscreen`), hamburger menu generated from the registry.
 - **Phase 3 — drag & persistence.** Strip-icon drag-to-re-dock, layout persistence,
-  notification service replacing Toast.
+  notification service (§7.5) replacing Toast.
 - **Phase 4 — editor groups.** Split support in the editor area (vertical first),
   per-group tab bars from FileTabBar, `Mod-\` split command, read-only document support
   with the Compiled Output (`.inkt`) tab moving out of the Program Explorer. Until this
   phase the editor area is a single group — the shell API is written for groups from day
   one so this is additive.
-- **Phase 5 — polish & theme.** Semantic token layer, light theme, CSS decomposition
-  completes, Search tool window.
+- **Phase 5 — polish, theme & embedder API.** Semantic token layer, light theme, CSS
+  decomposition completes, Search tool window, embedder extension API exposure (§8:
+  `StudioExtensions` mount config, `StudioApi`, `StudioPublicState`).
 
 What is **kept** throughout: Zustand slices (editor/compile/tabs/player/binder),
 the CM6 stack and its keybindings, player/debug domain logic, binder tree logic,
 the wasm data flow, `useTier`.
 
-## 9. Resolved questions (2026-06-10)
+## 10. Resolved questions (2026-06-10)
 
 All three open questions were resolved with the user; details in the decision log
 ("Studio shell spec: open questions resolved").
 
 1. **Program Explorer: split.** The structured tables stay a tool window; the raw `.inkt`
-   dump becomes the read-only **Compiled Output** editor document in Phase 4 (§4, §8).
+   dump becomes the read-only **Compiled Output** editor document in Phase 4 (§4, §9).
    Rationale: tables are glanceable lookup (tool-window behavior); the dump is a long
    searchable text artifact that earns CM6 search/folding as a document.
 2. **Menu bar: none — registry-driven hamburger instead.** A single icon at the top of
@@ -297,10 +394,12 @@ All three open questions were resolved with the user; details in the decision lo
    UI; §6). Full keymap UI remains out of scope. Rationale: with the layer specced anyway
    the override merge is nearly free — cheap now, annoying later.
 
-## 10. Non-goals
+## 11. Non-goals
 
 - Free-form docking, floating tool windows, multi-window. (Floating/undocked tool windows
   are a JetBrains feature we deliberately skip — edge docks only.)
-- A plugin/extension system. The registries are internal APIs, not public extension points.
+- A third-party **plugin** system: dynamic loading, a marketplace, sandboxing, untrusted
+  code. The embedder extension API (§8) is a build-time contract for the host that mounts
+  the studio — the host is trusted code that already owns the page.
 - Mobile-first redesign — the narrow tier remains a degraded presentation, not a product.
 - Replacing CodeMirror, the store, or the wasm pipeline.
