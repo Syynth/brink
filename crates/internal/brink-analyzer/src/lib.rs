@@ -5,14 +5,32 @@
 //! duplicate detection, type checking). Both `brink-compiler` and `brink-lsp`
 //! consume the analysis result.
 
+mod external_check;
 mod manifest;
 mod resolve;
 mod validate;
 
+use std::collections::BTreeMap;
+
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
+pub use external_check::{ExternalCheckSeverity, ExternalMeta, ResolvedParam, ResolvedType};
 
-use brink_ir::{Diagnostic, HirFile, SymbolIndex, SymbolManifest};
+use brink_format::DefinitionId;
+use brink_ir::{
+    Diagnostic, ExternalDoc, HirFile, HostManifest, ManifestExternal, SemanticTypeDef, SymbolIndex,
+    SymbolManifest,
+};
+
+/// Tooling options for analysis: the registered host manifest and the
+/// severity policy for its external checks. Defaults to no manifest.
+#[derive(Debug, Clone, Default)]
+pub struct AnalysisOptions {
+    /// The registered host-capability manifest, if any.
+    pub host_manifest: Option<HostManifest>,
+    /// Severity policy for manifest-driven external diagnostics.
+    pub external_check: ExternalCheckSeverity,
+}
 
 /// The output of cross-file semantic analysis.
 #[derive(Debug, Clone)]
@@ -23,14 +41,25 @@ pub struct AnalysisResult {
     pub resolutions: ResolutionMap,
     /// Diagnostics produced during analysis (duplicate definitions, unresolved refs, etc.).
     pub diagnostics: Vec<Diagnostic>,
+    /// Per-external host-manifest enrichment, keyed by `DefinitionId`. Empty
+    /// when no manifest is registered and no inline `///` docs are present.
+    pub external_meta: BTreeMap<DefinitionId, ExternalMeta>,
 }
 
-/// Run cross-file semantic analysis on a set of lowered files.
+/// Run cross-file semantic analysis with default options (no host manifest).
 ///
 /// Each entry is a `(FileId, HirFile, SymbolManifest)` tuple produced by
-/// per-file HIR lowering. Returns the unified symbol index, resolution map,
-/// and any diagnostics.
+/// per-file HIR lowering.
 pub fn analyze(files: &[(FileId, &HirFile, &SymbolManifest)]) -> AnalysisResult {
+    analyze_with_options(files, &AnalysisOptions::default())
+}
+
+/// Run cross-file semantic analysis with explicit tooling options, including
+/// an optional host-capability manifest and its external-check severity.
+pub fn analyze_with_options(
+    files: &[(FileId, &HirFile, &SymbolManifest)],
+    opts: &AnalysisOptions,
+) -> AnalysisResult {
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
         .iter()
         .map(|&(id, _hir, manifest)| (id, manifest))
@@ -43,9 +72,63 @@ pub fn analyze(files: &[(FileId, &HirFile, &SymbolManifest)]) -> AnalysisResult 
     diagnostics.extend(resolve_diags);
     diagnostics.extend(validate::validate(&hir_inputs));
 
+    // Host-manifest enrichment + checks (tooling/author-time only).
+    let inline_docs = collect_inline_docs(&manifest_inputs);
+    let (types, registered) = manifest_maps(opts.host_manifest.as_ref());
+    let (external_meta, ext_diags) = external_check::analyze_externals(
+        &index,
+        &inline_docs,
+        &types,
+        &registered,
+        opts.external_check,
+    );
+    diagnostics.extend(ext_diags);
+
+    // Call-site literal checks (type mismatch, closed domain) over the HIR.
+    if opts.external_check != ExternalCheckSeverity::Off {
+        let name_to_meta: BTreeMap<&str, &ExternalMeta> = external_meta
+            .iter()
+            .filter_map(|(id, meta)| index.symbols.get(id).map(|s| (s.name.as_str(), meta)))
+            .collect();
+        diagnostics.extend(external_check::check_call_sites(&hir_inputs, &name_to_meta));
+    }
+
     AnalysisResult {
         index,
         resolutions,
         diagnostics,
+        external_meta,
     }
+}
+
+/// Collect inline `///` external docs across all files, keyed by external name.
+fn collect_inline_docs(files: &[(FileId, &SymbolManifest)]) -> BTreeMap<String, ExternalDoc> {
+    let mut out = BTreeMap::new();
+    for &(_id, manifest) in files {
+        for (name, doc) in &manifest.external_docs {
+            out.insert(name.clone(), doc.clone());
+        }
+    }
+    out
+}
+
+/// Build lookup maps from the registered manifest: semantic types by name and
+/// registered externals by name.
+fn manifest_maps(
+    manifest: Option<&HostManifest>,
+) -> (
+    BTreeMap<String, SemanticTypeDef>,
+    BTreeMap<String, &ManifestExternal>,
+) {
+    let mut types = BTreeMap::new();
+    let mut registered = BTreeMap::new();
+    if let Some(manifest) = manifest {
+        for ty in &manifest.types {
+            types.insert(ty.name.clone(), ty.clone());
+        }
+        for ext in &manifest.externals {
+            registered.insert(ext.name.clone(), ext);
+        }
+    }
+    (types, registered)
 }

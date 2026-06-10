@@ -4,24 +4,31 @@
 //! bridge. It owns the project database and caches analysis results,
 //! avoiding redundant reparsing on every query call.
 
-use brink_analyzer::AnalysisResult;
+use brink_analyzer::{AnalysisOptions, AnalysisResult, ExternalCheckSeverity};
 use brink_db::ProjectDb;
-use brink_ir::{FileId, HirFile, SymbolManifest};
+use brink_ir::{FileId, HirFile, HostManifest, SymbolManifest};
 
 /// A snapshot of analysis inputs, cloned out of the db for background analysis.
 pub struct IdeSnapshot {
     inputs: Vec<(FileId, HirFile, SymbolManifest)>,
+    host_manifest: Option<HostManifest>,
+    external_check: ExternalCheckSeverity,
 }
 
 impl IdeSnapshot {
-    /// Run cross-file analysis on the snapshot.
+    /// Run cross-file analysis on the snapshot, including any registered
+    /// host-capability manifest.
     pub fn analyze(&self) -> AnalysisResult {
         let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = self
             .inputs
             .iter()
             .map(|(id, hir, manifest)| (*id, hir, manifest))
             .collect();
-        brink_analyzer::analyze(&refs)
+        let opts = AnalysisOptions {
+            host_manifest: self.host_manifest.clone(),
+            external_check: self.external_check,
+        };
+        brink_analyzer::analyze_with_options(&refs, &opts)
     }
 }
 
@@ -29,6 +36,10 @@ impl IdeSnapshot {
 pub struct IdeSession {
     db: ProjectDb,
     analysis: Option<AnalysisResult>,
+    /// The registered host-capability manifest (tooling/author-time), if any.
+    host_manifest: Option<HostManifest>,
+    /// Severity policy for manifest-driven external checks.
+    external_check: ExternalCheckSeverity,
 }
 
 impl IdeSession {
@@ -37,7 +48,34 @@ impl IdeSession {
         Self {
             db: ProjectDb::new(),
             analysis: None,
+            host_manifest: None,
+            external_check: ExternalCheckSeverity::default(),
         }
+    }
+
+    /// Register (or replace) the host-capability manifest, then re-analyze.
+    pub fn set_host_manifest(&mut self, manifest: HostManifest) {
+        self.host_manifest = Some(manifest);
+        self.reanalyze();
+    }
+
+    /// Clear the registered host manifest, then re-analyze.
+    pub fn clear_host_manifest(&mut self) {
+        self.host_manifest = None;
+        self.reanalyze();
+    }
+
+    /// Set the severity policy for manifest-driven external checks, then
+    /// re-analyze.
+    pub fn set_external_check(&mut self, severity: ExternalCheckSeverity) {
+        self.external_check = severity;
+        self.reanalyze();
+    }
+
+    /// Re-run analysis on the current inputs (e.g. after a manifest change).
+    fn reanalyze(&mut self) {
+        let result = self.snapshot().analyze();
+        self.apply_analysis(result);
     }
 
     /// Add or update a source file in the database.
@@ -55,6 +93,8 @@ impl IdeSession {
     pub fn snapshot(&self) -> IdeSnapshot {
         IdeSnapshot {
             inputs: self.db.analysis_inputs(),
+            host_manifest: self.host_manifest.clone(),
+            external_check: self.external_check,
         }
     }
 
@@ -80,6 +120,15 @@ impl IdeSession {
     /// Get the cached analysis result.
     pub fn analysis(&self) -> Option<&AnalysisResult> {
         self.analysis.as_ref()
+    }
+
+    /// The current analysis options (registered host manifest + external-check
+    /// severity), for callers that run their own analysis/compile pass.
+    pub fn analysis_options(&self) -> AnalysisOptions {
+        AnalysisOptions {
+            host_manifest: self.host_manifest.clone(),
+            external_check: self.external_check,
+        }
     }
 
     /// Look up a file's ID by path.
@@ -116,5 +165,87 @@ impl IdeSession {
 impl Default for IdeSession {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use brink_ir::{
+        BaseType, Constraint, DiagnosticCode, ExternalKind, HostManifest, ManifestExternal,
+        ManifestParam, SemanticTypeDef, TypeRef,
+    };
+
+    use super::{ExternalCheckSeverity, IdeSession};
+
+    fn color_manifest() -> HostManifest {
+        HostManifest {
+            externals: vec![ManifestExternal {
+                name: "tint".into(),
+                params: vec![ManifestParam {
+                    name: "c".into(),
+                    ty: TypeRef("color".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Presentation,
+                doc: None,
+            }],
+            types: vec![SemanticTypeDef {
+                name: "color".into(),
+                base: BaseType::String,
+                constraint: Some(Constraint::Enum {
+                    values: vec!["#FF0000".into()],
+                }),
+            }],
+        }
+    }
+
+    const SRC: &str = "EXTERNAL tint(c)\n~ tint(\"nope\")\n-> END\n";
+
+    #[test]
+    fn registered_manifest_drives_checks_and_enrichment() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.ink", SRC.to_string());
+        session.set_host_manifest(color_manifest());
+        let analysis = session.analysis().expect("analysis");
+
+        // Enrichment is surfaced.
+        assert!(
+            analysis
+                .external_meta
+                .values()
+                .any(|m| m.kind == ExternalKind::Presentation),
+            "external_meta should carry the registered kind"
+        );
+        // The closed-domain (enum) violation on the literal "nope" is flagged.
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E042),
+            "expected E042, got {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn external_check_off_suppresses_diagnostics() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.ink", SRC.to_string());
+        session.set_external_check(ExternalCheckSeverity::Off);
+        session.set_host_manifest(color_manifest());
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E042),
+            "Off should suppress manifest diagnostics"
+        );
+        // ...but enrichment is still built.
+        assert!(
+            !analysis.external_meta.is_empty(),
+            "meta built even when Off"
+        );
     }
 }

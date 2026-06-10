@@ -1,10 +1,11 @@
 # Host Capability Manifest (design — Track B)
 
-**Status:** design-stage, deferred. This is the head of the "tooling /
-analyzer extensibility" track (Track B). It is **not** a prerequisite for the
+**Status:** Tier 1 + closed Tier 2 **implemented** (see "Implementation status"
+below); Tier 3 deferred. This is the head of the "tooling / analyzer
+extensibility" track (Track B). It is **not** a prerequisite for the
 external-function binding foundation (Track A — runtime/web binding, save/load
 persistence, name-based variable access, seeding). The manifest is additive
-over a bind-by-name + `Value` boundary, so it can attach later without a
+over a bind-by-name + `Value` boundary, so it attached without a runtime
 rewrite. See `docs/decision-log.md` for the two-track split.
 
 ## Why this exists
@@ -20,15 +21,85 @@ asks from the consuming projects:
 - **author-time validation, completions, and widgets** for host verbs (the
   "make the analyzer / studio do more sophisticated things" ambition)
 
-All of these are served by one declarative artifact: a **manifest describing
-the host's external vocabulary**, consumed three ways — by the **analyzer/IDE**
-(author-time), by the **runtime binding registry** (run-time, optional), and by
-**brink-studio** (tooling). This is net-new beyond ink (Inkle's
-`BindExternalFunction` is bind-by-name with no schema).
+All of these are served by describing the host's external vocabulary. It is
+**tooling / author-time only** — consumed **two ways**: by the **analyzer/IDE**
+(diagnostics, completion, hover, signature) and by **brink-studio** (widgets,
+host data). It is **never** consumed by the runtime or by compiler codegen:
+every seemingly-runtime use turns out to live elsewhere — arg validation is
+author-time (the analyzer); presentation/effect routing is realized in the
+host's binding *implementations*, not the VM; and the "use the ink fallback body
+if it exists, else null" refinement reads `Program` metadata, not the manifest.
+So the runtime keeps Track A's bind-by-name + `Value` boundary untouched. This
+is net-new beyond ink (Inkle's `BindExternalFunction` is bind-by-name, no schema).
 
 It is, in effect, a **serializable type-checking + editor-affordance schema for
 the host boundary** — scoped to ink external call sites, not a general type
 system for ink.
+
+## Authoring: two sources that merge
+
+Metadata comes from **two sources**, merged by the analyzer into one enriched
+symbol index. **Inline wins** for a given external on conflict; an inline
+reference to an undefined registered type is a diagnostic.
+
+**1. Inline doc-comments** (source-resident, per-external) — JSDoc-style `///`
+tags on the `EXTERNAL` declaration, co-located so the `.ink` file is
+self-contained:
+
+```ink
+/// Whether the player holds an item.
+/// @param item {item_id}
+/// @returns {bool}
+/// @kind query
+EXTERNAL has(item)
+```
+
+`///` doc-comments are recognized from the existing `LINE_COMMENT` trivia (no
+grammar change); HIR lowering walks the `EXTERNAL_DECL`'s leading trivia and
+parses the `@param`/`@returns`/`@kind`/`@widget` tags + free-text doc. Like Rust
+doc-comments, codegen ignores them — only tooling consumes them.
+
+**2. Registered manifest** (host-owned, project-wide, dynamic) — supplied via
+`EditorSession::set_host_manifest(json)` for what doesn't belong in one file:
+**semantic type *definitions*** (what `item_id` / `color` / an enum *are* — the
+vocabulary that inline `@param … {item_id}` references), **Tier-3 value
+providers / host editors**, and **bulk/generated** per-external entries (e.g. an
+RMMZ plugin emitting 50 verbs). Per-external signatures *may* also be registered
+(for generated verbs) rather than annotated inline.
+
+| Metadata | Home |
+|---|---|
+| Per-external param types, return, `@kind`, doc, widget ref | inline (or registered, if generated) |
+| Semantic type *definitions* (item_id, color, enums) | registered (project-wide vocab) |
+| Value providers, host-rendered editors | registered (host-owned) |
+
+The author always still writes `EXTERNAL foo(x)` in ink (existence + arity, for
+the compiler) — the manifest/inline annotations only *enrich* it. So nothing
+downstream (compiler, runtime, another host) ever depends on the manifest; a
+manifest/ink arity disagreement is a diagnostic.
+
+## Concrete integration (where it bolts into the pipeline)
+
+It rides the **same `ProjectDb → analyze → SymbolIndex → IDE queries` pipeline
+that source files already use** — no LSP crate; `brink-ide` is the query layer.
+
+| Concern | Owner |
+|---|---|
+| `HostManifest` schema (Rust, serde) + inline `ExternalDoc` | `brink-ir` (next to `SymbolInfo`/`SymbolKind`) |
+| TS mirror of the schema | `@brink/wasm-types` |
+| Parse inline `///` tags → `ExternalDoc` | `brink-ir` HIR lowering (from `EXTERNAL_DECL` trivia) |
+| Register the manifest | host → `EditorSession::set_host_manifest` → `IdeSession`/`ProjectDb` |
+| Merge both sources, enrich `SymbolInfo`, new diagnostics | `brink_analyzer::analyze` |
+| Surface it (completion/hover/signature/diagnostics + code-action) | `brink-ide` (mostly already reads `index.symbols`) |
+| Widgets / broker host data | brink-studio + a host-callback path — **Tier 3, separate, later** |
+
+The analyzer already models externals as `SymbolInfo` and **arity-checks call
+sites** — it just has no types to check against (ink `EXTERNAL` carries only
+names). The manifest fills exactly that hole: enrich `SymbolInfo.params` with
+types (in place or via a parallel `host_meta` table — TBD), add a type-mismatch
+diagnostic, add vocabulary symbols for registered-but-undeclared verbs, and a
+code-action to insert the `EXTERNAL` declaration from a manifest entry. The
+existing completion/hover/signature queries get richer for free.
 
 ## Architecture: a scoped slice of LSP
 
@@ -180,30 +251,82 @@ value provider, "host renders an editor" instead of "host answers a query."
 
 ## Runtime relationship (Track A)
 
-Track A needs to preserve **nothing special** for the manifest: bind-by-name +
-`Value` as the boundary type (both already true) is all the manifest assumes.
-The manifest's runtime-relevant bits — arg validation, fallback policy,
-presentation/effect routing — are all layerable later without changing
-`bind_external`. So the binding plumbing and the manifest proceed in parallel.
+**The runtime never sees the manifest** (see "Why this exists"). Track A's
+bind-by-name + `Value` boundary stays untouched. The presentation/effect tag is
+informational tooling metadata (studio can group/label "effect" verbs); routing
+those to an authoritative reducer is the *host's* binding implementation, not a
+VM concern. The nuanced fallback ("use the ink body if it exists, else null") is
+a runtime-intrinsic refinement on `Program` metadata, independent of the
+manifest — track it separately if/when wanted.
 
-The one genuine runtime seam the manifest may eventually feed: the
-presentation/effect tag and var↔host mappings, if the runtime registry consumes
-them (which effects to execute server-side; how to sync RMMZ vars). Still
-additive: ship binding without tags, add tag-awareness later.
+## Resolved (this design pass)
 
-## Open design forks (for when Track B is picked up)
+- **Scope: tooling/author-time only** — analyzer + studio; never runtime or
+  compiler codegen.
+- **Manifest ↔ ink `EXTERNAL`:** additive enrichment; the author always
+  declares `EXTERNAL` in ink, the manifest/inline tags add types/semantics/docs.
+- **Two sources** (inline `///` JSDoc + registered), merged; **inline wins**.
+- **Syntax:** JSDoc-style `///` + `@param`/`@returns`/`@kind`/`@widget` tags.
+- **Integration:** `HostManifest` in `brink-ir`; registered via
+  `EditorSession::set_host_manifest`; merged in `brink_analyzer::analyze`;
+  surfaced by existing `brink-ide` queries.
 
-1. **Push-cache vs. async provider.** `EditorSession.completions()` is sync
-   today. Live game-DB completions either (a) have the host **push** value sets
-   into the session on change (keeps completions sync; fine for a not-huge game
-   DB) or (b) make completions **async** so the session calls out mid-query
-   (more general, more plumbing). Lean (a).
-2. **Manifest authoring vs. generation.** The static tiers are hand-authored by
-   whoever writes the host↔ink plugin. Generating the manifest from host source
-   (e.g. an RMMZ plugin's declared commands) is a nice-to-have, not required.
-3. **Where the manifest type lives.** Likely a small shared crate/schema so the
-   analyzer (Rust) and the host adapters (JS) agree on the format; the static
-   tiers are plain serializable data.
+## Implementation status (MVP landed)
+
+The **Tier 1 + closed Tier 2 MVP** is implemented. What shipped:
+
+- **Schema** (`brink-ir`, `src/host_manifest.rs`): `HostManifest`,
+  `ManifestExternal`, `ManifestParam`, `SemanticTypeDef`, `Constraint`
+  (`enum`/`regex`/`range`), `TypeRef`, `BaseType`, `ExternalKind` — serde types.
+  Plus inline `ExternalDoc` (the `///` counterpart).
+- **Inline `///` parsing** (`brink-ir` HIR lowering, `doc_comment.rs`): walks
+  the `EXTERNAL_DECL` leading trivia, parses `@param`/`@returns`/`@kind`
+  (`@widget` reserved, ignored); stored in a parallel `external_docs` map on the
+  per-file `SymbolManifest`. Malformed tags → E038 (warning).
+- **Merge + diagnostics** (`brink-analyzer`, `external_check.rs`): inline +
+  registered merged into `AnalysisResult.external_meta` (keyed by
+  `DefinitionId`; **inline wins**). Diagnostics: E039 manifest↔ink arity
+  disagreement, E040 unknown semantic type, E041 call-site literal type
+  mismatch, E042 closed-domain (enum/range) violation. Literals-only — no false
+  positives on dynamic values.
+- **Severity flag** (`ExternalCheckSeverity { Error (default), Off }`) plumbed
+  through `analyze_with_options`, `IdeSession::set_external_check`,
+  `EditorSession::set_external_check`, and `brink-compiler::compile_with_options`
+  (the "compiler flag"). `Off` suppresses diagnostics but still builds
+  enrichment.
+- **Surfacing**: hover + signature help (`brink-ide`) and completion detail
+  (`brink-web`) show typed params / return / kind / doc. `compile_project`
+  carries the registered manifest so diagnostics appear in compile output.
+- **Registration**: `EditorSession::set_host_manifest(json)` /
+  `clear_host_manifest` / `set_external_check`; TS schema mirror in
+  `@brink/wasm-types`; handle methods in `@brink/wasm`.
+
+**Resolved forks:** (1) metadata lives in side-tables (`SymbolManifest.
+external_docs` per-file; `AnalysisResult.external_meta` merged) — `SymbolInfo`
+stays lean; (2) the manifest is an explicit `analyze_with_options(files, opts)`
+argument (non-breaking: `analyze(files)` delegates with defaults), not a
+`ProjectDb` input.
+
+**Deferred to follow-ups:**
+
+- **insert-`EXTERNAL` code-action** — the `brink-ide` code-action query is
+  currently source-only; making it manifest-aware is its own pass.
+- **Regex constraint enforcement** — `Constraint::Regex` is stored and surfaced
+  but not checked (no regex dependency at the MVP); enum + range are enforced.
+- **`Warning` severity level** — the flag is `Error`/`Off` at the MVP (the
+  shared `Diagnostic` type has no per-instance severity; a `Warning` middle
+  ground would need one).
+- **Reserved-keyword external names** — an external named with an ink operator
+  keyword (e.g. `EXTERNAL has(...)` — `has` is the list operator) currently
+  mis-parses; use non-keyword names. Tracked separately.
+
+## Remaining design forks (Tier 3+)
+
+1. **Tier-3 completions: push-cache vs. async provider** — host pushes value
+   sets into the session on change (sync completions; lean this) vs. the session
+   calls out mid-query. Only relevant once Tier 3 is built.
+2. **Manifest generation** — generating registered entries from host source
+   (e.g. an RMMZ plugin's commands) is a nice-to-have, not required.
 
 ## Phasing
 

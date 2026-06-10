@@ -5,6 +5,7 @@
 
 use rowan::TextRange;
 
+use crate::host_manifest::ExternalDoc;
 use crate::symbols::{DeclaredSymbol, LocalSymbol, RefKind, UnresolvedRef};
 use crate::{Diagnostic, DiagnosticCode, FileId, ParamInfo, Scope, SymbolKind, SymbolManifest};
 
@@ -96,6 +97,19 @@ pub trait LowerSink {
         detail: Option<String>,
     );
 
+    /// Declare an external function, optionally carrying inline `///` doc
+    /// metadata. The default implementation drops the doc and declares a
+    /// plain external; production sinks override to retain it.
+    fn declare_external(
+        &mut self,
+        name: &str,
+        range: TextRange,
+        params: Vec<ParamInfo>,
+        _doc: Option<ExternalDoc>,
+    ) {
+        self.declare_with(SymbolKind::External, name, range, params, None);
+    }
+
     /// Register a local variable (param or temp) scoped to a container.
     fn add_local(&mut self, local: LocalSymbol);
 
@@ -171,6 +185,24 @@ impl LowerSink for EffectSink {
             SymbolKind::ListItem => self.manifest.list_items.push(sym),
             // Param and Temp are registered via add_local, not declare.
             SymbolKind::Param | SymbolKind::Temp => {}
+        }
+    }
+
+    fn declare_external(
+        &mut self,
+        name: &str,
+        range: TextRange,
+        params: Vec<ParamInfo>,
+        doc: Option<ExternalDoc>,
+    ) {
+        self.manifest.externals.push(DeclaredSymbol {
+            name: name.to_string(),
+            range,
+            params,
+            detail: None,
+        });
+        if let Some(doc) = doc {
+            self.manifest.external_docs.insert(name.to_string(), doc);
         }
     }
 

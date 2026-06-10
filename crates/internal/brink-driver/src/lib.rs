@@ -11,7 +11,7 @@ mod discover;
 use std::collections::HashMap;
 use std::io;
 
-pub use brink_analyzer::AnalysisResult;
+pub use brink_analyzer::{AnalysisOptions, AnalysisResult};
 pub use brink_db::ProjectDb;
 pub use brink_ir::FileId;
 pub use diagnostics::DiagnosticReport;
@@ -21,6 +21,7 @@ pub use discover::DiscoverError;
 pub struct Driver {
     db: ProjectDb,
     analysis: Option<AnalysisResult>,
+    analysis_options: AnalysisOptions,
 }
 
 impl Driver {
@@ -29,12 +30,25 @@ impl Driver {
         Self {
             db: ProjectDb::new(),
             analysis: None,
+            analysis_options: AnalysisOptions::default(),
         }
     }
 
     /// Create a driver from an existing database.
     pub fn from_db(db: ProjectDb) -> Self {
-        Self { db, analysis: None }
+        Self {
+            db,
+            analysis: None,
+            analysis_options: AnalysisOptions::default(),
+        }
+    }
+
+    /// Set the analysis options (e.g. a registered host manifest + external
+    /// check severity) used by [`analyze`](Self::analyze). Invalidates any
+    /// cached analysis.
+    pub fn set_analysis_options(&mut self, options: AnalysisOptions) {
+        self.analysis_options = options;
+        self.analysis = None;
     }
 
     /// Borrow the underlying database.
@@ -82,7 +96,10 @@ impl Driver {
                 .collect();
 
             tracing::info!(files = files.len(), "running cross-file analysis");
-            self.analysis = Some(brink_analyzer::analyze(&files));
+            self.analysis = Some(brink_analyzer::analyze_with_options(
+                &files,
+                &self.analysis_options,
+            ));
         }
         self.analysis.as_ref().expect("just set above")
     }

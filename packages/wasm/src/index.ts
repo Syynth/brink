@@ -37,6 +37,7 @@ import type {
   ProgramModel,
   SaveState,
   LoadReport,
+  HostManifest,
 } from "@brink/wasm-types";
 
 // ── Wasm initialization ─────────────────────────────────────────
@@ -90,6 +91,28 @@ export class EditorSessionHandle {
 
   removeFile(path: string): void {
     this.session.remove_file(path);
+  }
+
+  /**
+   * Register (or replace) the host-capability manifest, then re-analyze.
+   * Describes the host's external-function vocabulary for author-time
+   * validation and richer hover/completion. Throws on an invalid manifest.
+   */
+  setHostManifest(manifest: HostManifest): void {
+    this.session.set_host_manifest(JSON.stringify(manifest));
+  }
+
+  /** Clear any registered host manifest, then re-analyze. */
+  clearHostManifest(): void {
+    this.session.clear_host_manifest();
+  }
+
+  /**
+   * Set the severity of manifest-driven external diagnostics: `"error"`
+   * (default — a registered manifest is binding) or `"off"`.
+   */
+  setExternalCheck(level: "error" | "off"): void {
+    this.session.set_external_check(level);
   }
 
   setActiveFile(path: string): boolean {

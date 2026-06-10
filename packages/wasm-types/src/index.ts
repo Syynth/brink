@@ -327,3 +327,53 @@ export interface ProgramModel {
   externals: ProgramExternal[];
   knots: KnotNode[];
 }
+
+// ── Host capability manifest (tooling / author-time) ────────────
+//
+// Mirrors `brink_ir::host_manifest`. Authored by the host and passed as JSON
+// to `EditorSession.setHostManifest`. Describes the host's external-function
+// vocabulary for author-time validation and richer hover/completion. Never
+// affects the runtime or codegen. See docs/host-capability-manifest.md.
+
+/** A base type keyword, or the name of a registered semantic type. */
+export type TypeRef = string;
+
+/** The underlying base types at an external boundary. */
+export type BaseType = "string" | "int" | "float" | "bool" | "void";
+
+/** Presentation/effect category of an external (informational). */
+export type ExternalKind = "query" | "effect" | "presentation" | "plain";
+
+/** A closed-domain constraint, checkable against literal arguments. */
+export type Constraint =
+  | { kind: "enum"; values: string[] }
+  | { kind: "regex"; pattern: string }
+  | { kind: "range"; min?: number | null; max?: number | null };
+
+/** A flat-nominal semantic type: a base type plus one optional constraint. */
+export interface SemanticTypeDef {
+  name: string;
+  base: BaseType;
+  constraint?: Constraint | null;
+}
+
+/** A registered external parameter. */
+export interface ManifestParam {
+  name: string;
+  ty?: TypeRef;
+}
+
+/** A registered external-function signature. */
+export interface ManifestExternal {
+  name: string;
+  params?: ManifestParam[];
+  returns?: TypeRef;
+  kind?: ExternalKind;
+  doc?: string | null;
+}
+
+/** The host-owned, project-wide external vocabulary. */
+export interface HostManifest {
+  externals?: ManifestExternal[];
+  types?: SemanticTypeDef[];
+}

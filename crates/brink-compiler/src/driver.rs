@@ -2,13 +2,17 @@
 
 use std::io;
 
-use brink_driver::Driver;
+use brink_driver::{AnalysisOptions, Driver};
 use tracing::info;
 
 use crate::{CompileError, CompileOutput, LirOutput};
 
 /// Run the full compilation pipeline through LIR lowering.
-fn compile_lir<F>(entry: &str, read_file: F) -> Result<LirOutput, CompileError>
+fn compile_lir<F>(
+    entry: &str,
+    read_file: F,
+    options: AnalysisOptions,
+) -> Result<LirOutput, CompileError>
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
@@ -16,6 +20,7 @@ where
 
     // ── Pass 1-2: Discover, parse, and lower all files ──────────────
     let mut driver = Driver::new();
+    driver.set_analysis_options(options);
     driver.discover(entry, read_file)?;
 
     let file_count = driver.db().file_ids().count();
@@ -68,7 +73,7 @@ pub fn compile_to_lir<F>(entry: &str, read_file: F) -> Result<LirOutput, Compile
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
-    compile_lir(entry, read_file)
+    compile_lir(entry, read_file, AnalysisOptions::default())
 }
 
 /// Run the full compilation pipeline.
@@ -76,7 +81,21 @@ pub fn compile<F>(entry: &str, read_file: F) -> Result<CompileOutput, CompileErr
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
-    let lir_output = compile_lir(entry, read_file)?;
+    compile_with_options(entry, read_file, AnalysisOptions::default())
+}
+
+/// Run the full compilation pipeline with explicit analysis options — e.g. a
+/// registered host-capability manifest and its external-check severity, so
+/// manifest-driven diagnostics surface in the compile output.
+pub fn compile_with_options<F>(
+    entry: &str,
+    read_file: F,
+    options: AnalysisOptions,
+) -> Result<CompileOutput, CompileError>
+where
+    F: FnMut(&str) -> Result<String, io::Error>,
+{
+    let lir_output = compile_lir(entry, read_file, options)?;
 
     // ── Pass 6b: Codegen ────────────────────────────────────────────
     Ok(CompileOutput {

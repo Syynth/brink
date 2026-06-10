@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+
 use rowan::TextRange;
 
 use super::Scope;
+use crate::host_manifest::ExternalDoc;
 
 /// Per-file symbol collection for cross-file resolution by the analyzer.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -25,6 +28,10 @@ pub struct SymbolManifest {
     pub locals: Vec<LocalSymbol>,
     /// Unresolved references (divert targets, variable accesses).
     pub unresolved: Vec<UnresolvedRef>,
+    /// Inline `///` doc-comment metadata for externals, keyed by external name.
+    /// Parallel to `externals`; kept off `DeclaredSymbol` so the shared symbol
+    /// type stays lean. Merged with the registered manifest by the analyzer.
+    pub external_docs: BTreeMap<String, ExternalDoc>,
 }
 
 /// A symbol declared in this file.

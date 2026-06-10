@@ -85,6 +85,7 @@ mod tests {
             index: brink_ir::SymbolIndex::default(),
             resolutions: Vec::new(),
             diagnostics: Vec::new(),
+            external_meta: std::collections::BTreeMap::new(),
         }
     }
 
