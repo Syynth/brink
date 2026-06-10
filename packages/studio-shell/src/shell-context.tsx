@@ -29,6 +29,7 @@ import {
   type ShellLayoutState,
   type ShellLayoutStore,
 } from "./layout-store.js";
+import { attachLayoutPersistence, loadLayoutSnapshot } from "./layout-persistence.js";
 import { registerViewToggleCommands } from "./view-commands.js";
 
 export interface ShellContextValue {
@@ -50,6 +51,8 @@ export interface ShellProviderProps {
   statusBarItems?: StatusBarRegistry;
   /** Override storage for keymap overrides (tests); defaults to localStorage. */
   storage?: Pick<Storage, "getItem">;
+  /** Override storage for layout persistence (tests); defaults to localStorage. */
+  layoutStorage?: Pick<Storage, "getItem" | "setItem">;
   /** Override platform detection (tests). */
   isMac?: boolean;
   children: ReactNode;
@@ -60,6 +63,7 @@ export function ShellProvider({
   toolWindows,
   statusBarItems,
   storage,
+  layoutStorage,
   isMac,
   children,
 }: ShellProviderProps) {
@@ -70,7 +74,20 @@ export function ShellProvider({
   const registry = toolWindows ?? fallbackToolWindows;
   const [fallbackStatusBarItems] = useState(() => new StatusBarRegistry());
   const statusBar = statusBarItems ?? fallbackStatusBarItems;
-  const [layout] = useState<ShellLayoutStore>(() => createShellLayoutStore());
+  // Layout: restore the persisted snapshot before the first render; the
+  // registry-sync effect below then drops unknown ids / seeds new ones
+  // (spec §7.1). Persistence is debounced writes of the durable subset.
+  const [layout] = useState<ShellLayoutStore>(() => {
+    const store = createShellLayoutStore();
+    const snapshot = loadLayoutSnapshot(layoutStorage ?? window.localStorage);
+    if (snapshot !== null) store.setState(snapshot);
+    return store;
+  });
+
+  useEffect(
+    () => attachLayoutPersistence(layout, layoutStorage ?? window.localStorage),
+    [layout, layoutStorage],
+  );
 
   // Overrides load once per provider; the Settings document (Phase 5) will
   // own editing them and can force a remount/reload.
