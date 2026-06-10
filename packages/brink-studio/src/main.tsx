@@ -16,6 +16,8 @@ import {
   CommandRegistry,
   EDITOR_REVEAL_COMMAND_ID,
   LocationResolvers,
+  NotificationBell,
+  NotificationCenter,
   ShellProvider,
   StatusBarRegistry,
   ToolWindowRegistry,
@@ -161,6 +163,7 @@ interface RootProps {
   commands: CommandRegistry;
   toolWindows: ToolWindowRegistry;
   statusBarItems: StatusBarRegistry;
+  notifications: NotificationCenter;
 }
 
 function Root({
@@ -171,6 +174,7 @@ function Root({
   commands,
   toolWindows,
   statusBarItems,
+  notifications,
 }: RootProps) {
   const editorRef = useRef<InkEditorHandle>(null);
   const managerRef = useRef<EditorStateManager | null>(null);
@@ -311,6 +315,7 @@ function Root({
       commands={commands}
       toolWindows={toolWindows}
       statusBarItems={statusBarItems}
+      notifications={notifications}
     >
       <StoreProvider store={store}>
         <App
@@ -398,6 +403,23 @@ async function main(): Promise<void> {
     run: () => store.getState().compile(),
   });
 
+  // Notification service (spec §7.5). The center is created here — not
+  // inside ShellProvider — because the store→shell bridge below needs it
+  // before React mounts: slices emit plain-data StoreNotifications through
+  // the injected notifier (the store sits below the shell and cannot import
+  // it; spec §7.2 layering).
+  const notifications = new NotificationCenter();
+  store.getState().setNotifier((n) => void notifications.notify(n));
+
+  // Binder undo as a command (spec §7.5): the post-move notification's Undo
+  // button dispatches this — actions carry command ids, never callbacks.
+  commands.register({
+    id: "binder.undo",
+    title: "Binder: Undo Last Operation",
+    when: () => store.getState().undoStack.length > 0,
+    run: () => void store.getState().undo(),
+  });
+
   // Navigation protocol (spec §6.1): resolvers translate Locations toward
   // source; editor.reveal opens the file and scrolls to the span. The symbol
   // resolver reads the latest compile outline; program/session resolvers
@@ -440,6 +462,7 @@ async function main(): Promise<void> {
 
   // Exposed for e2e/manual verification, like __brinkView.
   (window as unknown as Record<string, unknown>).__brinkCommands = commands;
+  (window as unknown as Record<string, unknown>).__brinkNotifications = notifications;
 
   // Tool-window registry (spec §7.1, §4). Registration order is the stable,
   // user-visible Mod-N ordering: Binder Mod-1, Player Mod-2, State Mod-3,
@@ -533,6 +556,15 @@ async function main(): Promise<void> {
     priority: 10,
     component: KeyHintsSegment,
   });
+  // Notification bell (spec §7.5): rightmost in the right group. The
+  // component lives in studio-shell (it only needs shell context) but is
+  // registered here with the rest — the shell never registers itself.
+  statusBarItems.register({
+    id: "status.notifications",
+    alignment: "right",
+    priority: 5,
+    component: NotificationBell,
+  });
 
   // Create the updateListener eagerly so it can be shared between
   // InkEditor (for the initial state) and EditorStateManager (for
@@ -580,6 +612,7 @@ async function main(): Promise<void> {
       commands={commands}
       toolWindows={toolWindows}
       statusBarItems={statusBarItems}
+      notifications={notifications}
     />,
   );
 

@@ -4,8 +4,8 @@
  * Phase 1 of docs/studio-shell-spec.md: command registry, keymap layer,
  * global key handler, overlay primitive (§7.7), command palette, tool-window
  * registry (§7.1), shell layout store, region components (docks/strips,
- * §3/§5), generated view-toggle commands (§5.2), and the Location/navigation
- * protocol (§6.1).
+ * §3/§5), generated view-toggle commands (§5.2), the Location/navigation
+ * protocol (§6.1), and the notification service (§7.5).
  */
 
 export { CommandRegistry, HOST_ID_PREFIX, type Command } from "./command.js";
@@ -23,6 +23,8 @@ export {
 export { attachKeyHandler, type KeyHandlerOptions } from "./keyhandler.js";
 export {
   ShellProvider,
+  useNotificationState,
+  useNotifications,
   useShell,
   useShellLayout,
   useStatusBarItems,
@@ -30,6 +32,20 @@ export {
   type ShellContextValue,
   type ShellProviderProps,
 } from "./shell-context.js";
+export {
+  MAX_VISIBLE_NOTIFICATIONS,
+  NOTIFICATION_HISTORY_LIMIT,
+  NotificationCenter,
+  SEVERITY_TIMEOUTS,
+  type Notification,
+  type NotificationAction,
+  type NotificationCenterOptions,
+  type NotificationHandle,
+  type NotificationInput,
+  type NotificationSeverity,
+  type NotificationState,
+} from "./notifications.js";
+export { NotificationBell, NotificationStack } from "./notification-ui.js";
 export {
   StatusBarRegistry,
   statusBarGroups,

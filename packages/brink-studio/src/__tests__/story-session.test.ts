@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createStudioStore } from "@brink/studio-store";
+import { createStudioStore, REPLAY_DIVERGED_MESSAGE } from "@brink/studio-store";
 import { CommandRegistry } from "@brink/studio-shell";
 import { registerStoryCommands } from "../story-commands.js";
 
@@ -289,12 +289,20 @@ describe("recompile-while-running", () => {
     // unreachable) — it must truncate and notify rather than loop or crash.
     localStorage.setItem("brink-player-save", JSON.stringify({ choiceLog: [0] }));
     const store = createStudioStore();
+    const notify = vi.fn();
+    store.getState().setNotifier(notify);
 
     store.getState().startSession(new Uint8Array([1]));
 
     const s = store.getState();
     expect(s.sessionStatus).toBe("ended"); // mock story ends at once
     expect(s._choiceLog).toEqual([]);
-    expect(s.toastMessage).not.toBeNull();
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        severity: "warning",
+        source: "story",
+        message: REPLAY_DIVERGED_MESSAGE,
+      }),
+    );
   });
 });

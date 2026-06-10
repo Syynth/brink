@@ -1,6 +1,12 @@
 /**
- * Binder slice — collapsed state, multi-select, undo stack, and toast
- * for the file/symbol tree.
+ * Binder slice — collapsed state, multi-select, and undo stack for the
+ * file/symbol tree.
+ *
+ * Structural operations announce themselves through the injected notifier
+ * (`_notify`, see StoreNotification in ../index.ts): the post-move
+ * notification carries an Undo action that dispatches the `binder.undo`
+ * command (registered at the app boundary, gated on a non-empty undo stack) —
+ * command-only actions per spec §7.5, and the store stays shell-free.
  */
 
 import type { StateCreator } from "zustand";
@@ -21,8 +27,6 @@ export interface BinderSlice {
   selectedKeys: Set<string>;
   focusedKey: string | null;
   undoStack: UndoEntry[];
-  toastMessage: string | null;
-  toastUndoAction: (() => void) | null;
 
   toggleCollapsed(key: string): void;
   selectKey(key: string, multi: boolean): void;
@@ -34,7 +38,6 @@ export interface BinderSlice {
     affectedPaths: string[],
   ): Promise<void>;
   undo(): Promise<void>;
-  dismissToast(): void;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -61,8 +64,6 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
   selectedKeys: new Set<string>(),
   focusedKey: null,
   undoStack: [],
-  toastMessage: null,
-  toastUndoAction: null,
 
   toggleCollapsed(key) {
     const next = new Set(get().collapsed);
@@ -157,12 +158,13 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     // 6. Trigger recompile (refreshes outline)
     editorRef.triggerCompile();
 
-    // 7. Set toast
-    const self = get();
-    set({
-      undoStack,
-      toastMessage: description,
-      toastUndoAction: () => self.undo(),
+    // 7. Notify, with Undo dispatching the binder.undo command (spec §7.5).
+    set({ undoStack });
+    get()._notify?.({
+      severity: "info",
+      source: "binder",
+      message: description,
+      actions: [{ label: "Undo", commandId: "binder.undo" }],
     });
   },
 
@@ -194,14 +196,11 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     // Trigger recompile
     editorRef.triggerCompile();
 
-    set({
-      undoStack: stack,
-      toastMessage: `Undid: ${entry.description}`,
-      toastUndoAction: null,
+    set({ undoStack: stack });
+    get()._notify?.({
+      severity: "info",
+      source: "binder",
+      message: `Undid: ${entry.description}`,
     });
-  },
-
-  dismissToast() {
-    set({ toastMessage: null, toastUndoAction: null });
   },
 });

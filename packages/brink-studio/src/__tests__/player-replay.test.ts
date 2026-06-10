@@ -10,8 +10,9 @@ import { replayChoices, REPLAY_DIVERGED_MESSAGE } from "@brink/studio-store";
 //    UI thread (#7).
 // 2. Divergence (spec §7.6): when a recorded choice no longer applies, the
 //    history is *truncated at the divergence point* (not discarded wholesale),
-//    the session stays at the position it reached, and the interim Toast
-//    carries the divergence notification.
+//    the session stays at the position it reached, and a "warning" from
+//    source "story" goes through the injected notifier (`_notify`, the
+//    store→shell notification bridge, spec §7.5).
 
 type Line = { type: string; text: string; tags: string[]; choices?: { index: number; text: string; tags: string[] }[] };
 
@@ -19,7 +20,7 @@ function makeHarness(runner: Record<string, unknown>, choiceLog: number[]) {
   let state: Record<string, unknown> = {
     _runner: runner,
     _choiceLog: choiceLog,
-    toastMessage: null,
+    _notify: vi.fn(),
     revealNext: vi.fn(),
     _refreshDebugState: vi.fn(),
     appendOutput: vi.fn(),
@@ -31,6 +32,13 @@ function makeHarness(runner: Record<string, unknown>, choiceLog: number[]) {
   };
   return { get, set, getState: () => state };
 }
+
+/** The divergence warning the bridge must receive (severity + source pinned). */
+const DIVERGED_NOTIFICATION = {
+  severity: "warning",
+  source: "story",
+  message: REPLAY_DIVERGED_MESSAGE,
+};
 
 describe("replayChoices", () => {
   beforeEach(() => {
@@ -60,7 +68,7 @@ describe("replayChoices", () => {
     expect(h.getState()._choiceLog).toEqual([]);
     expect(h.getState().sessionStatus).toBe("done");
     expect(h.getState().sessionText).toEqual(["stuck"]);
-    expect(h.getState().toastMessage).toBe(REPLAY_DIVERGED_MESSAGE);
+    expect(h.getState()._notify).toHaveBeenCalledWith(DIVERGED_NOTIFICATION);
   });
 
   it("replays a valid log: applies the saved choice without truncating or notifying", () => {
@@ -77,12 +85,12 @@ describe("replayChoices", () => {
     replayChoices(h.set as never, h.get as never, [0]);
 
     // The single saved choice is applied; the log isn't discarded, no
-    // divergence toast fires, and the player resumes via revealNext().
+    // divergence notification fires, and the player resumes via revealNext().
     expect(runner.choose).toHaveBeenCalledWith(0);
     expect(runner.reset).not.toHaveBeenCalled();
     expect(h.getState().sessionText).toContain("> Go");
     expect(h.getState()._choiceLog).toEqual([0]);
-    expect(h.getState().toastMessage).toBeNull();
+    expect(h.getState()._notify).not.toHaveBeenCalled();
     expect((h.getState().revealNext as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
   });
 
@@ -113,7 +121,7 @@ describe("replayChoices", () => {
     expect(runner.choose).toHaveBeenCalledTimes(1);
     expect(h.getState().sessionStatus).toBe("ended");
     expect(h.getState()._choiceLog).toEqual([0]); // truncated to what was consumed
-    expect(h.getState().toastMessage).toBe(REPLAY_DIVERGED_MESSAGE);
+    expect(h.getState()._notify).toHaveBeenCalledWith(DIVERGED_NOTIFICATION);
     // The persisted log matches the truncation.
     expect(JSON.parse(localStorage.getItem("brink-player-save")!)).toEqual({ choiceLog: [0] });
   });
@@ -142,7 +150,7 @@ describe("replayChoices", () => {
     expect(h.getState()._choiceLog).toEqual([]);
     expect(h.getState().sessionStatus).toBe("awaiting-choice");
     expect(h.getState().sessionChoices).toEqual(offered);
-    expect(h.getState().toastMessage).toBe(REPLAY_DIVERGED_MESSAGE);
+    expect(h.getState()._notify).toHaveBeenCalledWith(DIVERGED_NOTIFICATION);
   });
 
   it("truncates with an error status when the runtime throws mid-replay", () => {
@@ -167,6 +175,6 @@ describe("replayChoices", () => {
     expect(h.getState().sessionStatus).toBe("error");
     expect(h.getState()._choiceLog).toEqual([0]);
     expect((h.getState().sessionText as string[]).join("\n")).toContain("vm exploded");
-    expect(h.getState().toastMessage).toBe(REPLAY_DIVERGED_MESSAGE);
+    expect(h.getState()._notify).toHaveBeenCalledWith(DIVERGED_NOTIFICATION);
   });
 });

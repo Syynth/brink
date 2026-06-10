@@ -19,8 +19,8 @@
  * to localStorage. On `startSession` (including the recompile auto-start),
  * a saved log is replayed silently to restore the previous position. If the
  * program changed and a recorded choice no longer applies, the replay
- * truncates at the divergence point and notifies via the interim Toast
- * (spec §7.6; the notification service §7.5 replaces Toast in Phase 3).
+ * truncates at the divergence point and raises a warning through the injected
+ * notifier (`_notify` → shell notification service, spec §7.5/§7.6).
  */
 
 import type { StateCreator } from "zustand";
@@ -365,11 +365,20 @@ type SetFn = {
 type GetFn = () => StudioState;
 
 /**
- * The divergence notification (spec §7.6). Surfaced through the existing
- * Toast as an interim until the notification service (§7.5, #89) lands.
+ * The divergence notification (spec §7.6). Raised as a "warning" from source
+ * "story" through the notification service (spec §7.5).
  */
 export const REPLAY_DIVERGED_MESSAGE =
   "Story changed — replay diverged; choice history truncated.";
+
+/** Raise the divergence warning through the injected notifier (spec §7.5). */
+function notifyDiverged(get: GetFn): void {
+  get()._notify?.({
+    severity: "warning",
+    source: "story",
+    message: REPLAY_DIVERGED_MESSAGE,
+  });
+}
 
 /**
  * Replay a recorded choice log silently — run through the story using the
@@ -390,7 +399,7 @@ export function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void
   let choiceIdx = 0;
 
   // Truncate the recorded history at the divergence point: keep the prefix
-  // that was consumed, persist it, and notify (interim Toast, see #89).
+  // that was consumed, persist it, and notify (spec §7.5 warning).
   const truncateLog = (): void => {
     const kept = choiceLog.slice(0, choiceIdx);
     if (kept.length > 0) {
@@ -398,11 +407,8 @@ export function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void
     } else {
       clearStorage();
     }
-    set({
-      _choiceLog: kept,
-      toastMessage: REPLAY_DIVERGED_MESSAGE,
-      toastUndoAction: null,
-    });
+    set({ _choiceLog: kept });
+    notifyDiverged(get);
   };
 
   // Hard backstop only (see the budget note below): something is pathological
@@ -410,11 +416,8 @@ export function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void
   const bailToFresh = (): void => {
     clearStorage();
     runner.reset();
-    set({
-      _choiceLog: [],
-      toastMessage: REPLAY_DIVERGED_MESSAGE,
-      toastUndoAction: null,
-    });
+    set({ _choiceLog: [] });
+    notifyDiverged(get);
     get().revealNext();
   };
 
