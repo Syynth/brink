@@ -501,13 +501,21 @@
   font-weight: 700;
 }
 /* The rule dividing knots sits at the knot's ownership start: its header,
-   or the first line of its /// doc block when documented. */
+   or the first line of its /// doc block when documented. Drawn with a
+   pseudo-element spanning past the editor margins so the line's own box
+   (incl. CM6's base .cm-line padding) is untouched — negative margins with
+   compensating padding shifted these lines 4px left (#113). */
 .brink-studio .cm-line.brink-section-start {
+  position: relative;
+}
+.brink-studio .cm-line.brink-section-start::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(-1 * var(--editor-margin));
+  right: calc(-1 * var(--editor-margin));
   border-top: 1px solid rgba(69, 71, 90, 0.6);
-  margin-left: calc(-1 * var(--editor-margin));
-  margin-right: calc(-1 * var(--editor-margin));
-  padding-left: var(--editor-margin);
-  padding-right: var(--editor-margin);
+  pointer-events: none;
 }
 .brink-studio .cm-line.brink-stitch-header {
   font-weight: 700;
