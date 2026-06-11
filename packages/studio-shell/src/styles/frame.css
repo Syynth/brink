@@ -9,6 +9,11 @@
   display: flex;
   flex-direction: column;
   position: relative;
+  /* The shell owns its base colors — nothing may inherit the embedding
+     page's (the pre-mount loading screen in index.html is Mocha-dark;
+     a light theme must not show it through transparent regions). */
+  background: var(--bs-editor-bg);
+  color: var(--bs-fg);
 }
 
 .brink-studio .studio-body {
