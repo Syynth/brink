@@ -35,6 +35,11 @@ jobs:
   release:
     name: Version PR / publish
     runs-on: ubuntu-latest
+    # GitHub environment scoping the npm OIDC trust: the trusted-publisher
+    # config on npmjs.com names this environment, so only jobs running in it
+    # can publish. Protection rules (required reviewers, branch limits) can
+    # be attached under Settings -> Environments -> npm.
+    environment: npm
     permissions:
       contents: write # push the version PR branch + git tags
       pull-requests: write # open/update the version PR
