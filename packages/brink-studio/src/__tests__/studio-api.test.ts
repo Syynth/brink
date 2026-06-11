@@ -80,6 +80,7 @@ describe("StudioPublicState (select)", () => {
       diagnostics: { errors: 2, warnings: 1 },
       compileStatus: "errors",
       sessionStatus: "none",
+      dirtyFiles: 0,
     });
   });
 

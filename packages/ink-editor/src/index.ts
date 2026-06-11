@@ -27,6 +27,10 @@ export type { DocTarget, DocumentCallbacks, KeyHint } from "./document-sessions.
 export { ProjectSession } from "./project-session.js";
 export type { ProjectSessionOptions } from "./project-session.js";
 
+// File-change egress (issues #154/#137): the shared notify seam.
+export { FileChangeHub } from "./file-change-hub.js";
+export type { FileChange, FileChangeType, FileChangeHubOptions } from "./file-change-hub.js";
+
 // Provider
 export { InMemoryFileProvider } from "./provider.js";
 export type { FileProvider } from "./provider.js";

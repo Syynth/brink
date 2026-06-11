@@ -257,7 +257,11 @@ describe("binder notification bridge", () => {
     };
     const notify = vi.fn<(n: StoreNotification) => void>();
     store.setState({
-      _project: { getSession: () => session } as never,
+      _project: {
+        getSession: () => session,
+        // The shared apply-edits seam (#137) structural ops route through.
+        applyEdit: (path: string, source: string) => session.updateFile(path, source),
+      } as never,
       _documents: { invalidateFile: vi.fn(), triggerCompile: vi.fn() } as never,
     });
     store.getState().setNotifier(notify);

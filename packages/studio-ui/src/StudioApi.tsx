@@ -61,6 +61,14 @@ export interface StudioPublicState {
   compileStatus: "ok" | "errors";
   /** Story session status (spec §7.6); "none" when no session exists. */
   sessionStatus: SessionStatus;
+  /**
+   * Count of files whose session content diverges from the last-saved /
+   * last-notified baseline (#154). A cheap derived summary — `0` means
+   * everything is synced with the host; per-file detail (and contents)
+   * live behind the facade (`getDirtyFiles` / `getFiles`), never in state.
+   * Additive field — the version stays 1 per the versioning policy.
+   */
+  dirtyFiles: number;
 }
 
 /** The store inputs the public state derives from (for change detection). */
@@ -70,6 +78,7 @@ interface PublicInputs {
   currentLineInfo: StudioState["currentLineInfo"];
   diagnostics: StudioState["diagnostics"];
   sessionStatus: SessionStatus;
+  dirtyFiles: number;
 }
 
 function publicInputs(s: StudioState): PublicInputs {
@@ -79,6 +88,7 @@ function publicInputs(s: StudioState): PublicInputs {
     currentLineInfo: s.currentLineInfo,
     diagnostics: s.diagnostics,
     sessionStatus: s.sessionStatus,
+    dirtyFiles: s.dirtyFiles,
   };
 }
 
@@ -88,7 +98,8 @@ function sameInputs(a: PublicInputs, b: PublicInputs): boolean {
     a.cursor === b.cursor &&
     a.currentLineInfo === b.currentLineInfo &&
     a.diagnostics === b.diagnostics &&
-    a.sessionStatus === b.sessionStatus
+    a.sessionStatus === b.sessionStatus &&
+    a.dirtyFiles === b.dirtyFiles
   );
 }
 
@@ -108,6 +119,7 @@ export function derivePublicState(s: StudioState): StudioPublicState {
     diagnostics: s.diagnostics,
     compileStatus: s.diagnostics.errors > 0 ? "errors" : "ok",
     sessionStatus: s.sessionStatus,
+    dirtyFiles: s.dirtyFiles,
   };
 }
 
@@ -134,6 +146,18 @@ export interface StudioApi {
    * Returns an unsubscribe function.
    */
   subscribe<T>(sel: (s: StudioPublicState) => T, cb: (value: T) => void): () => void;
+  /**
+   * Snapshot of every project file's current session content, by path
+   * (#154 pull egress). Contents deliberately do NOT live in
+   * `StudioPublicState` — they are big and change per keystroke; pull them
+   * on demand (or receive pushes via the `onFilesChanged` mount option).
+   */
+  getFiles(): Record<string, string>;
+  /**
+   * Paths whose session content diverges from the last-saved/last-notified
+   * baseline — the per-file detail behind `StudioPublicState.dirtyFiles`.
+   */
+  getDirtyFiles(): string[];
 }
 
 export interface StudioApiDeps {
@@ -184,6 +208,12 @@ export function createStudioApi({ store, commands, notifications }: StudioApiDep
           cb(next);
         }
       });
+    },
+    getFiles() {
+      return store.getState()._project?.getFiles() ?? {};
+    },
+    getDirtyFiles() {
+      return store.getState()._project?.dirtyPaths() ?? [];
     },
   };
 }
