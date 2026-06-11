@@ -41,7 +41,8 @@
   },
   "scripts": {
     "build": "tsup && node scripts/copy-wasm.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepack": "pnpm run build"
   },
   "devDependencies": {
     "@brink/wasm-types": "workspace:*",

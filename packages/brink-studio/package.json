@@ -49,7 +49,8 @@
     "build:embed": "vite build --config vite.config.embed.ts",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepack": "pnpm run build"
   },
   "dependencies": {
     "@brink-lang/web": "workspace:^"
