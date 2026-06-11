@@ -19,7 +19,8 @@ import { mountStudio } from "@brink/studio";
 const handle = await mountStudio(document.getElementById("app")!, {
   files: { "main.ink": "-> start\n=== start ===\nHello.\n-> END\n" },
   entryFile: "main.ink",
-  extensions: myExtensions, // optional, see below
+  extensions: myExtensions,   // optional, see below
+  hostManifest: myManifest,   // optional: the host-capability manifest, see below
 });
 
 // later:
@@ -30,6 +31,13 @@ handle.unmount(); // unmount React, dispose editor views, free the wasm session
 `mountStudio` performs the whole bootstrap: wasm init, project session,
 store, registries, navigation wiring, default layout. It is the only way to
 mount the studio — the standalone playground app is itself a caller.
+
+`hostManifest` registers the host-capability manifest
+([host-capability-manifest.md](host-capability-manifest.md)) before the
+first compile, so manifest-driven diagnostics (literal type mismatches,
+arity disagreements — toggleable in Settings via the external-check flag),
+hover, and completions are live from the start. The host owns this data; the
+wasm session itself stays unexposed.
 
 ## `StudioExtensions` — host surfaces (spec §8.1)
 
@@ -144,22 +152,59 @@ relevant store changes, so identity selectors don't spuriously fire.
 
 `createExampleExtension` (shipped in `@brink/studio`, mounted by the
 playground; `?ext=none` loads without it) validates the RPG Maker MZ story:
-a panel listing the host's external vocabulary with click-to-insert.
+a panel that browses the external vocabulary the host already provides. The
+host registers its capability manifest at mount (`hostManifest`), the panel
+renders that same manifest's metadata — signature, doc comment, kind — and
+click inserts **only a call site** (`~ fn(args)`) at the cursor. It never
+inserts `EXTERNAL` declarations: the host functions are already declared in
+the story (or a dedicated declarations file); the panel's job is browsing
+the catalog, not declaring it.
 
 ```tsx
-import { mountStudio, useStudioApi, type StudioApi, type StudioExtensions } from "@brink/studio";
+import {
+  mountStudio,
+  useStudioApi,
+  type HostManifest,
+  type StudioApi,
+  type StudioExtensions,
+} from "@brink/studio";
+
+// The host's vocabulary — the same object feeds the analyzer (diagnostics,
+// hover, completion) and the panel below.
+const manifest: HostManifest = {
+  types: [{ name: "item_id", base: "string" }],
+  externals: [
+    {
+      name: "has_item",
+      params: [{ name: "item", ty: "item_id" }],
+      returns: "bool",
+      kind: "query",
+      doc: "True if the party carries the item.",
+    },
+    // …
+  ],
+};
 
 function HostFunctionsPanel() {
   const api = useStudioApi();
   return (
-    <button
-      onClick={() => {
-        api.insertText('EXTERNAL has_item(item_id)\n~ has_item(item_id)\n');
-        api.notify({ severity: "info", source: "my host", message: "Inserted has_item" });
-      }}
-    >
-      has_item(item_id)
-    </button>
+    <ul>
+      {(manifest.externals ?? []).map((ext) => (
+        <li key={ext.name}>
+          <button
+            onClick={() => {
+              const args = (ext.params ?? []).map((p) => p.name).join(", ");
+              api.insertText(`~ ${ext.name}(${args})\n`); // a call — never EXTERNAL
+              api.notify({ severity: "info", source: "my host", message: `Inserted ${ext.name}` });
+            }}
+          >
+            {ext.name}({(ext.params ?? []).map((p) => `${p.name}: ${p.ty}`).join(", ")})
+            {ext.returns && ext.returns !== "void" ? ` -> ${ext.returns}` : ""}
+            <small>{ext.doc}</small>
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -181,15 +226,15 @@ const extensions = (api: StudioApi): StudioExtensions => ({
   }],
 });
 
-await mountStudio(el, { files, entryFile: "main.ink", extensions });
+await mountStudio(el, { files, entryFile: "main.ink", extensions, hostManifest: manifest });
 ```
 
-A real host would render the host-capability manifest it already registers
-via `set_host_manifest` (see
-[host-capability-manifest.md](host-capability-manifest.md) — Track B): the
-manifest gives the analyzer/IDE diagnostics and hover for host verbs, and
-the same vocabulary feeds the panel's list, with `insertText` closing the
-authoring loop.
+The manifest (see
+[host-capability-manifest.md](host-capability-manifest.md) — Track B) gives
+the analyzer/IDE diagnostics, hover, and completion for host verbs, and the
+same vocabulary feeds the panel's list, with `insertText` closing the
+authoring loop. The story carries the matching `EXTERNAL` declarations —
+the panel surfaces what is already defined.
 
 ## What is deliberately NOT exposed
 
