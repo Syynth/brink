@@ -125,10 +125,15 @@ the same document-type API.
   owning knot/stitch, distinct style), and tunnels/threads (dashed — control returns to
   the caller). `END`/`DONE` appear as pseudo-nodes. Function-call edges are excluded; a
   default-off toggle is a possible later addition.
-- **Data:** a new **story-graph query** in the analyzer/IDE layer, exposed over wasm:
-  nodes (id, qualified name, file, span, kind) and edges (from, to, kind), recomputed on
-  compile like the outline. Node/edge ordering must be deterministic (sorted — the
-  HashMap-iteration rule applies). This is the one cross-crate dependency.
+- **Data:** landed (#96) — the **story-graph query** lives in
+  `brink_ide::story_graph` (divert targets resolved through the analyzer's resolution
+  map, the same machinery as goto-definition), exposed as `story_graph()` on the wasm
+  `EditorSession` and `getStoryGraph()` on `EditorSessionHandle` (`StoryGraph` in
+  `@brink/wasm-types`): nodes (id = qualified name, kind knot/stitch/end/done, file,
+  UTF-16 name span, stitch parent id) and edges (from, to, kind
+  divert/choice/tunnel/thread), recomputed per call like the outline. Ordering is
+  deterministic (nodes sorted by id, edges deduplicated and sorted by from/to/kind —
+  the HashMap-iteration rule). Returns `null` before the first analysis.
 - **Rendering:** auto-layout via a layered engine (ELK or dagre — handles cycles);
   candidate React graph layer is react-flow/xyflow. Library choice is an implementation
   decision, but layout must run off the render path and node count is capped-by-collapse
