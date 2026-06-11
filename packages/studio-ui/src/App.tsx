@@ -16,6 +16,7 @@ import {
   NotificationStack,
   ShellFrame,
   useShellLayout,
+  useThemeId,
   useTier,
 } from "@brink/studio-shell";
 import { QuickOpen } from "./QuickOpen.js";
@@ -23,12 +24,15 @@ import { NewFilePrompt } from "./NewFilePrompt.js";
 
 function App() {
   const tier = useShellLayout((s) => s.tier);
+  // Theme (spec §7.4): the persisted selection is read by the ThemeService
+  // before the first render, so data-theme is right on the initial paint.
+  const themeId = useThemeId();
 
   const rootRef = useRef<HTMLDivElement>(null);
   useTier(rootRef);
 
   return (
-    <div className="brink-studio" data-tier={tier} ref={rootRef}>
+    <div className="brink-studio" data-tier={tier} data-theme={themeId} ref={rootRef}>
       <ShellFrame />
       <CommandPalette />
       <QuickOpen />

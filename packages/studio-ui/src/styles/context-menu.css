@@ -1,0 +1,53 @@
+/* Context menu (binder right-click; submenu support).
+   Split from the studio.css monolith (#92). Scoped under .brink-studio;
+   colors reference only the semantic --bs-* tokens (spec §7.4). */
+
+/* Context menu */
+.brink-studio .brink-context-menu {
+  position: fixed;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 300;
+  box-shadow: 0 4px 12px var(--bs-shadow);
+  min-width: 160px;
+}
+.brink-studio .brink-context-menu-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--bs-fg);
+  cursor: pointer;
+  border-radius: 3px;
+  user-select: none;
+  position: relative;
+}
+.brink-studio .brink-context-menu-item:hover {
+  background: var(--bs-list-active-bg);
+}
+.brink-studio .brink-context-menu-item.disabled {
+  color: var(--bs-fg-muted);
+  opacity: 0.5;
+  cursor: default;
+}
+.brink-studio .brink-context-menu-item.disabled:hover {
+  background: none;
+}
+.brink-studio .brink-context-menu-separator {
+  height: 1px;
+  background: var(--bs-border);
+  margin: 4px 6px;
+}
+.brink-studio .brink-context-menu-arrow {
+  font-size: 8px;
+  color: var(--bs-fg-muted);
+  margin-left: 12px;
+}
+.brink-studio .brink-context-submenu {
+  position: absolute;
+  left: 100%;
+  top: 0;
+}

@@ -1,0 +1,15 @@
+/* @brink/studio-shell styles — aggregator, side-effect imported from
+   index.ts. Theme files define the semantic --bs-* token values
+   (spec §7.4); component files reference tokens only. Feature-area styles
+   (binder, player, …) live in @brink/studio-ui. */
+
+@import "./themes/mocha.css";
+@import "./themes/latte.css";
+
+@import "./frame.css";
+@import "./toolwindow.css";
+@import "./editor-area.css";
+@import "./overlay.css";
+@import "./menu.css";
+@import "./statusbar.css";
+@import "./notifications.css";

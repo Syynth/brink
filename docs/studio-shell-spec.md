@@ -332,13 +332,28 @@ windows: id, alignment, priority, component):
 ### 7.4 Theming
 
 - Keep plain CSS + custom properties (no Tailwind/CSS-in-JS migration).
-- Introduce a **semantic token layer**: components reference only semantic tokens
-  (`--bs-editor-bg`, `--bs-dock-bg`, `--bs-strip-icon-active`, `--bs-status-fg`, …);
-  a theme file maps palette → semantic tokens. Current Catppuccin Mocha becomes the first
-  theme; a light theme validates the layer (and is the test that no component hardcodes a
-  color).
-- Split the monolithic [studio.css](../packages/studio-ui/src/studio.css) per component as
-  components are touched during migration — not as a big-bang rewrite.
+- **Semantic token layer** (landed with #92): components reference only semantic
+  `--bs-*` tokens; theme files map a private palette onto them. The set is ~35 tokens
+  in four groups: surfaces/chrome (`--bs-editor-bg`, `--bs-surface-bg`, `--bs-panel-bg`,
+  `--bs-fg`, `--bs-fg-muted`, `--bs-border`, `--bs-accent`, `--bs-on-accent`,
+  `--bs-hover-bg`, `--bs-list-active-bg`, `--bs-scrim`, `--bs-shadow`,
+  `--bs-shadow-strong`), severity/status (`--bs-error`, `--bs-warning`, `--bs-success`,
+  `--bs-info`), story symbols (`--bs-symbol-{file,knot,stitch,function}`), and syntax
+  (`--bs-syn-*`, one per `tok-*` class). Alpha variants (hovers, selections, glows)
+  derive in component CSS via `color-mix()` over tokens — themes define base colors only.
+- **Theme mechanism:** themes are CSS files in
+  [studio-shell/src/styles/themes/](../packages/studio-shell/src/styles/themes/) defining
+  the tokens under a `[data-theme="<id>"]` scope on the `.brink-studio` root; Catppuccin
+  Mocha (theme #1) doubles as the bare-class default/fallback, Catppuccin Latte is the
+  light theme proving no component hardcodes a color. A `ThemeService` in studio-shell
+  owns the registry (ids + labels), the current selection, and persistence
+  (`brink-studio.theme.v1`, read synchronously before first paint); it generates
+  palette-discoverable `theme.select.<id>` commands. Switching flips the root's
+  `data-theme` attribute — runtime, no reload. The Settings document (#93) consumes
+  `list()` / `current` / `select()` / `onDidChange()`.
+- The studio.css monolith is gone (#92): shell-region styles live in
+  `studio-shell/src/styles/`, feature styles in `studio-ui/src/styles/`, each package
+  side-effect importing its own aggregator `index.css`.
 - Visual direction per Zed: 1px hairline borders only where regions meet, no boxes-in-boxes,
   strip icons monochrome with an accent for the active state, density closer to a writing
   tool than to JetBrains.

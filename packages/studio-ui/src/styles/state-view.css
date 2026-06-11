@@ -1,0 +1,160 @@
+/* State View — runtime debugger panel + session placeholder (spec §7.6).
+   Split from the studio.css monolith (#92). Scoped under .brink-studio;
+   colors reference only the semantic --bs-* tokens (spec §7.4). */
+
+/* State view — read-only runtime debugger panel */
+.brink-studio .state-view {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.brink-studio .state-view-empty {
+  padding: 16px 14px;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .state-view-empty-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bs-fg);
+}
+.brink-studio .state-view-empty-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+/* Session placeholder — session-bound views with no story session (§7.6) */
+.brink-studio .session-placeholder {
+  padding: 16px 14px;
+  color: var(--bs-fg-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.brink-studio .session-placeholder-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bs-fg);
+}
+.brink-studio .session-placeholder-hint {
+  margin: 0 0 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.brink-studio .session-placeholder-start {
+  background: var(--bs-panel-bg);
+  color: var(--bs-accent);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  padding: 4px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.brink-studio .session-placeholder-start:hover {
+  background: var(--bs-hover-bg);
+}
+/* Sections */
+.brink-studio .sv-section {
+  border-bottom: 1px solid var(--bs-border);
+}
+.brink-studio .sv-section-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  color: var(--bs-fg-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-align: left;
+}
+.brink-studio .sv-section-header:hover { color: var(--bs-fg); }
+.brink-studio .sv-chevron { font-size: 9px; width: 10px; }
+.brink-studio .sv-section-body { padding: 2px 10px 8px; }
+
+/* Rows + tables */
+.brink-studio .sv-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.brink-studio .sv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.brink-studio .sv-table td { padding: 2px 0; vertical-align: top; }
+.brink-studio .sv-table td.sv-val { text-align: left; padding-left: 10px; }
+.brink-studio .sv-key { color: var(--bs-fg-muted); white-space: nowrap; }
+.brink-studio .sv-val { color: var(--bs-fg); word-break: break-word; }
+.brink-studio .sv-mono,
+.brink-studio .sv-num {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 11.5px;
+}
+.brink-studio .sv-num { color: var(--bs-syn-number); }
+.brink-studio .sv-path { color: var(--bs-symbol-knot); font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 11.5px; }
+.brink-studio .sv-dim { color: var(--bs-fg-muted); }
+.brink-studio .sv-empty { margin: 2px 0; font-size: 12px; color: var(--bs-fg-muted); font-style: italic; }
+
+/* Badges */
+.brink-studio .sv-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg-muted);
+  white-space: nowrap;
+}
+.brink-studio .sv-status-active { color: var(--bs-success); border-color: var(--bs-success); }
+.brink-studio .sv-status-waiting_for_choice { color: var(--bs-warning); border-color: var(--bs-warning); }
+.brink-studio .sv-status-done,
+.brink-studio .sv-status-ended { color: var(--bs-fg-muted); }
+.brink-studio .sv-frame-function { color: var(--bs-info); }
+.brink-studio .sv-frame-tunnel { color: var(--bs-symbol-function); }
+.brink-studio .sv-frame-thread { color: var(--bs-accent); }
+.brink-studio .sv-frame-external,
+.brink-studio .sv-frame-eval { color: var(--bs-warning); }
+
+/* Call stack + choices */
+.brink-studio .sv-stack,
+.brink-studio .sv-choices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.brink-studio .sv-frame {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+/* Filter input */
+.brink-studio .sv-filter {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 2px 0 6px;
+  padding: 3px 6px;
+  font-size: 11.5px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  color: var(--bs-fg);
+}
+
+/* Change-highlighting — what moved/changed this step */
+.brink-studio .sv-changed,
+.brink-studio .sv-changed-row td {
+  background: color-mix(in srgb, var(--bs-warning) 22%, transparent);
+  border-radius: 3px;
+}
+.brink-studio .sv-changed-row td:first-child { color: var(--bs-warning); }

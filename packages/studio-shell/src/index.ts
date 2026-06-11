@@ -8,6 +8,8 @@
  * protocol (§6.1), and the notification service (§7.5).
  */
 
+import "./styles/index.css";
+
 export { CommandRegistry, HOST_ID_PREFIX, type Command } from "./command.js";
 export {
   Keymap,
@@ -30,10 +32,19 @@ export {
   useShell,
   useShellLayout,
   useStatusBarItems,
+  useThemeId,
   useToolWindows,
   type ShellContextValue,
   type ShellProviderProps,
 } from "./shell-context.js";
+export {
+  BUILTIN_THEMES,
+  THEME_STORAGE_KEY,
+  ThemeService,
+  registerThemeCommands,
+  themeSelectCommandId,
+  type ThemeDescriptor,
+} from "./theme.js";
 export {
   DocumentTypeRegistry,
   documentKey,

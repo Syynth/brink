@@ -1,0 +1,44 @@
+/* Status bar region (spec §7.3) — full shell width, bottom-most.
+   Split from the studio.css monolith (#92). Scoped under .brink-studio;
+   colors reference only the semantic --bs-* tokens (spec §7.4). */
+
+/* Shell status bar region (spec §7.3) — full shell width, bottom-most. */
+.brink-studio .shell-statusbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--bs-fg-muted);
+  background: var(--bs-surface-bg);
+  border-top: 1px solid var(--bs-border);
+  flex: none;
+}
+.brink-studio .shell-statusbar-group {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  min-width: 0;
+}
+.brink-studio .shell-statusbar-item {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.brink-studio .shell-statusbar-item button {
+  background: none;
+  border: none;
+  font: inherit;
+  color: inherit;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.brink-studio .shell-statusbar-item .clickable {
+  cursor: pointer;
+}
+.brink-studio .shell-statusbar-item .clickable:hover {
+  color: var(--bs-fg);
+}

@@ -1,4 +1,4 @@
-import "./studio.css";
+import "./styles/index.css";
 
 export { StoreProvider, useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 export { App } from "./App.js";

@@ -41,6 +41,7 @@ import {
 } from "./layout-store.js";
 import { attachLayoutPersistence, loadLayoutSnapshot } from "./layout-persistence.js";
 import { registerViewToggleCommands } from "./view-commands.js";
+import { ThemeService, registerThemeCommands } from "./theme.js";
 
 export interface ShellContextValue {
   commands: CommandRegistry;
@@ -52,6 +53,7 @@ export interface ShellContextValue {
   editorGroups: EditorGroupsStore;
   layout: ShellLayoutStore;
   notifications: NotificationCenter;
+  themes: ThemeService;
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null);
@@ -76,6 +78,12 @@ export interface ShellProviderProps {
    * injecting the store→shell notifier bridge).
    */
   notifications?: NotificationCenter;
+  /**
+   * Theme service (§7.4); omit to let the provider own one over the
+   * built-in themes. Pass an instance to register custom themes or to
+   * inject test storage.
+   */
+  themes?: ThemeService;
   /** Override storage for keymap overrides (tests); defaults to localStorage. */
   storage?: Pick<Storage, "getItem">;
   /** Override storage for layout persistence (tests); defaults to localStorage. */
@@ -92,6 +100,7 @@ export function ShellProvider({
   documents,
   editorGroups,
   notifications,
+  themes,
   storage,
   layoutStorage,
   isMac,
@@ -112,6 +121,11 @@ export function ShellProvider({
   const groups = editorGroups ?? fallbackEditorGroups;
   const [fallbackNotifications] = useState(() => new NotificationCenter());
   const notificationCenter = notifications ?? fallbackNotifications;
+  // Theme service (§7.4): constructing reads the persisted selection, so
+  // the root's data-theme is right on the first paint (like the layout
+  // snapshot restore below).
+  const [fallbackThemes] = useState(() => new ThemeService());
+  const themeService = themes ?? fallbackThemes;
   // Layout: restore the persisted snapshot before the first render; the
   // registry-sync effect below then drops unknown ids / seeds new ones
   // (spec §7.1). Persistence is debounced writes of the durable subset.
@@ -189,6 +203,12 @@ export function ShellProvider({
     [commands, groups],
   );
 
+  // Theme commands (§7.4): theme.select.<id>, palette-discoverable.
+  useEffect(
+    () => registerThemeCommands(commands, themeService),
+    [commands, themeService],
+  );
+
   const value = useMemo<ShellContextValue>(
     () => ({
       commands,
@@ -200,6 +220,7 @@ export function ShellProvider({
       editorGroups: groups,
       layout,
       notifications: notificationCenter,
+      themes: themeService,
     }),
     [
       commands,
@@ -211,6 +232,7 @@ export function ShellProvider({
       groups,
       layout,
       notificationCenter,
+      themeService,
     ],
   );
 
@@ -262,6 +284,15 @@ export function useDocumentTypes(): DocumentTypeDescriptor[] {
 /** The shell's notification center (spec §7.5). */
 export function useNotifications(): NotificationCenter {
   return useShell().notifications;
+}
+
+/** The current theme id (reactive) — the root's data-theme value (§7.4). */
+export function useThemeId(): string {
+  const { themes } = useShell();
+  return useSyncExternalStore(
+    (onChange) => themes.onDidChange(onChange),
+    () => themes.current,
+  );
 }
 
 /** Reactive notification snapshot: visible toasts, overflow, history, unread. */

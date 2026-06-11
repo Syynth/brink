@@ -1,0 +1,330 @@
+/* Ink editor — manuscript metrics, screenplay line styles, CM6 chrome (gutters, selection, panels incl. search, tooltips), syntax token classes.
+   Split from the studio.css monolith (#92). Scoped under .brink-studio;
+   colors reference only the semantic --bs-* tokens (spec §7.4). */
+
+.brink-studio .editor {
+  flex: 1;
+  overflow: auto;
+  /* Responsive manuscript metrics: full physical sizes when the editor pane is
+     wide, scaling down (cqi = 1% of the pane's inline size) as it narrows, so the
+     screenplay layout stays usable in a split pane or a small embed. The values
+     are consumed by .cm-content and the screenplay line styles below. */
+  container-type: inline-size;
+  --editor-margin: clamp(10px, 5cqi, 1in);
+  --indent-character: clamp(16px, 28cqi, 2.5in);
+  --indent-parenthetical: clamp(12px, 23cqi, 2in);
+  --indent-dialogue: clamp(10px, 18cqi, 1.5in);
+  --indent-dialogue-right: clamp(10px, 35cqi, 3in);
+}
+.brink-studio .editor .cm-editor {
+  height: 100%;
+  background: var(--bs-editor-bg);
+}
+.brink-studio .editor .cm-editor .cm-scroller {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.brink-studio .editor .cm-editor .cm-gutters {
+  background: var(--bs-editor-bg);
+  border-right: 1px solid var(--bs-border);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .editor .cm-editor .cm-activeLineGutter {
+  background: var(--bs-surface-bg);
+}
+.brink-studio .editor .cm-editor .cm-activeLine {
+  background: color-mix(in srgb, var(--bs-surface-bg) 60%, transparent);
+}
+.brink-studio .editor .cm-editor .cm-selectionBackground,
+.brink-studio .editor .cm-editor.cm-focused .cm-selectionBackground {
+  background: color-mix(in srgb, var(--bs-accent) 25%, transparent) !important;
+}
+.brink-studio .editor .cm-editor .cm-cursor {
+  border-left-color: var(--bs-accent);
+}
+.brink-studio .editor .cm-editor .cm-content {
+  caret-color: var(--bs-accent);
+  color: var(--bs-fg);
+  padding-left: var(--editor-margin);
+  padding-right: var(--editor-margin);
+  width: 100%;
+  max-width: 8.5in;
+  box-sizing: border-box;
+  border-right: 1px solid var(--bs-border);
+}
+/* Screenplay element line styles */
+.brink-studio .cm-line.brink-knot-header {
+  font-weight: 700;
+}
+/* The rule dividing knots sits at the knot's ownership start: its header,
+   or the first line of its /// doc block when documented. Drawn with a
+   pseudo-element spanning past the editor margins so the line's own box
+   (incl. CM6's base .cm-line padding) is untouched — negative margins with
+   compensating padding shifted these lines 4px left (#113). */
+.brink-studio .cm-line.brink-section-start {
+  position: relative;
+}
+.brink-studio .cm-line.brink-section-start::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(-1 * var(--editor-margin));
+  right: calc(-1 * var(--editor-margin));
+  border-top: 1px solid color-mix(in srgb, var(--bs-border) 60%, transparent);
+  pointer-events: none;
+}
+.brink-studio .cm-line.brink-stitch-header {
+  font-weight: 700;
+}
+/* Collapsed declaration fold: renders the hidden knot/stitch header */
+.brink-studio .brink-fold-decl {
+  cursor: pointer;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .brink-fold-decl-header {
+  color: var(--bs-symbol-knot);
+  font-weight: 700;
+}
+.brink-studio .cm-line.brink-choice {
+  color: var(--bs-accent);
+}
+.brink-studio .cm-line.brink-gather {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .cm-line.brink-divert {
+}
+.brink-studio .cm-line.brink-logic,
+.brink-studio .cm-line.brink-var-decl {
+  opacity: 0.7;
+}
+.brink-studio .cm-line.brink-comment {
+  font-style: italic;
+  opacity: 0.5;
+}
+.brink-studio .cm-line.brink-include,
+.brink-studio .cm-line.brink-external {
+  opacity: 0.7;
+}
+.brink-studio .cm-line.brink-tag {
+  color: var(--bs-fg-muted);
+}
+/* Screenplay: character / parenthetical / dialogue */
+.brink-studio .cm-line.brink-character {
+  font-weight: 700;
+  color: var(--bs-accent);
+  text-transform: uppercase;
+  padding-left: var(--indent-character);
+}
+.brink-studio .cm-line.brink-parenthetical {
+  font-style: italic;
+  color: var(--bs-fg-muted);
+  padding-left: var(--indent-parenthetical);
+}
+.brink-studio .cm-line.brink-dialogue {
+  padding-left: var(--indent-dialogue);
+  padding-right: var(--indent-dialogue-right);
+}
+/* Hidden sigil widget — zero-width but in flow for cursor anchoring */
+.brink-studio .brink-hidden-sigil {
+  display: inline;
+  width: 0;
+  overflow: hidden;
+  font-size: 0;
+}
+/* Depth sigil widget */
+.brink-studio .brink-depth-sigil {
+  opacity: 0.7;
+}
+/* Choice bracket styling */
+.brink-studio .brink-choice-bracket {
+  background: color-mix(in srgb, var(--bs-accent) 8%, transparent);
+}
+/* Semantic token classes */
+.brink-studio .tok-namespace { color: var(--bs-syn-namespace); }
+.brink-studio .tok-function { color: var(--bs-syn-function); }
+.brink-studio .tok-variable { color: var(--bs-syn-variable); }
+.brink-studio .tok-string { color: var(--bs-syn-string); }
+.brink-studio .tok-number { color: var(--bs-syn-number); }
+.brink-studio .tok-keyword { color: var(--bs-syn-keyword); font-weight: 600; }
+.brink-studio .tok-operator { color: var(--bs-syn-operator); }
+.brink-studio .tok-comment { color: var(--bs-syn-comment); font-style: italic; }
+.brink-studio .tok-enum { color: var(--bs-syn-enum); }
+.brink-studio .tok-enumMember { color: var(--bs-syn-enum); }
+.brink-studio .tok-parameter { color: var(--bs-syn-parameter); }
+.brink-studio .tok-decorator { color: var(--bs-syn-decorator); }
+.brink-studio .tok-label { color: var(--bs-syn-label); }
+/* CM6 lint panel overrides */
+.brink-studio .cm-panel.cm-panel-lint {
+  background: var(--bs-surface-bg);
+  border-top: 1px solid var(--bs-border);
+}
+.brink-studio .cm-diagnostic-error { border-left-color: var(--bs-error); }
+.brink-studio .cm-diagnostic-warning { border-left-color: var(--bs-warning); }
+/* CM6 chrome — panels (search), buttons, fields, tooltips, match
+   highlights. CM6 ships hardcoded light/dark base styles; the brink theme
+   no longer pins `dark: true`, so every visible piece of chrome is themed
+   here from the semantic tokens instead (spec §7.4). */
+.brink-studio .cm-editor .cm-panels {
+  background: var(--bs-surface-bg);
+  color: var(--bs-fg);
+}
+.brink-studio .cm-editor .cm-panels-top { border-bottom: 1px solid var(--bs-border); }
+.brink-studio .cm-editor .cm-panels-bottom { border-top: 1px solid var(--bs-border); }
+.brink-studio .cm-editor .cm-panel input[type="checkbox"] {
+  accent-color: var(--bs-accent);
+}
+.brink-studio .cm-editor .cm-textfield {
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg);
+}
+.brink-studio .cm-editor .cm-textfield:focus {
+  border-color: var(--bs-accent);
+  outline: none;
+}
+.brink-studio .cm-editor .cm-button {
+  background-image: none;
+  background-color: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.brink-studio .cm-editor .cm-button:active,
+.brink-studio .cm-editor .cm-button:hover {
+  background-image: none;
+  background-color: var(--bs-hover-bg);
+}
+.brink-studio .cm-editor .cm-panel button[name="close"] {
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+}
+.brink-studio .cm-editor .cm-panel button[name="close"]:hover {
+  color: var(--bs-fg);
+}
+.brink-studio .cm-editor .cm-searchMatch {
+  background: color-mix(in srgb, var(--bs-accent) 25%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--bs-accent) 50%, transparent);
+}
+.brink-studio .cm-editor .cm-searchMatch.cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--bs-warning) 40%, transparent);
+}
+.brink-studio .cm-editor .cm-selectionMatch {
+  background: color-mix(in srgb, var(--bs-success) 20%, transparent);
+}
+.brink-studio .cm-editor .cm-matchingBracket,
+.brink-studio .cm-editor.cm-focused .cm-matchingBracket {
+  background: color-mix(in srgb, var(--bs-accent) 25%, transparent);
+}
+.brink-studio .cm-editor .cm-nonmatchingBracket,
+.brink-studio .cm-editor.cm-focused .cm-nonmatchingBracket {
+  background: color-mix(in srgb, var(--bs-error) 25%, transparent);
+}
+.brink-studio .cm-editor .cm-foldPlaceholder {
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .cm-editor .cm-tooltip {
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg);
+}
+.brink-studio .cm-editor .cm-tooltip-autocomplete ul li[aria-selected] {
+  background: var(--bs-list-active-bg);
+  color: var(--bs-accent);
+}
+.brink-studio .cm-editor .cm-completionMatchedText {
+  text-decoration: none;
+  color: var(--bs-accent);
+}
+.brink-studio .cm-editor .cm-completionDetail {
+  color: var(--bs-fg-muted);
+}
+
+/* Hover tooltip */
+.brink-studio .brink-hover-tooltip {
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 13px;
+  max-width: 500px;
+  line-height: 1.5;
+}
+.brink-studio .brink-hover-tooltip code {
+  background: var(--bs-surface-bg);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 12px;
+}
+.brink-studio .brink-hover-tooltip strong {
+  color: var(--bs-accent);
+}
+/* Inlay hints */
+.brink-studio .brink-inlay-hint {
+  color: var(--bs-fg-muted);
+  font-size: 0.85em;
+  font-style: italic;
+  background: color-mix(in srgb, var(--bs-fg-muted) 15%, transparent);
+  border-radius: 2px;
+  padding: 0 3px;
+  margin-left: 2px;
+}
+/* Signature help */
+.brink-studio .brink-signature-help {
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 13px;
+}
+.brink-studio .brink-sig-active-param {
+  color: var(--bs-accent);
+  font-weight: 600;
+  text-decoration: underline;
+}
+.brink-studio .brink-sig-doc {
+  margin-top: 4px;
+  color: var(--bs-fg-muted);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+/* Reference highlights */
+.brink-studio .brink-reference-highlight {
+  background: color-mix(in srgb, var(--bs-accent) 20%, transparent);
+  border-bottom: 1px solid var(--bs-accent);
+}
+/* Code actions menu */
+.brink-studio .brink-code-actions-menu {
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 100;
+  box-shadow: 0 4px 12px var(--bs-shadow);
+  min-width: 200px;
+}
+.brink-studio .brink-code-action-item {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--bs-fg);
+  padding: 6px 10px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.brink-studio .brink-code-action-item:hover {
+  background: var(--bs-list-active-bg);
+}
+
+/* Editor content floor — below the minimum, scroll within the pane rather
+   than crushing the text column. */
+.brink-studio .editor .cm-content { min-width: 22rem; }
+.brink-studio .editor .cm-scroller { overflow-x: auto; }

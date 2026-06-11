@@ -1,0 +1,93 @@
+/* Player document (#120) — story text, choices, end marker.
+   Split from the studio.css monolith (#92). Scoped under .brink-studio;
+   colors reference only the semantic --bs-* tokens (spec §7.4). */
+
+/* Player pane */
+.brink-studio .player-pane {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.brink-studio .player-pane .header {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bs-fg-muted);
+  background: var(--bs-surface-bg);
+  border-bottom: 1px solid var(--bs-border);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.brink-studio .player-pane .header .toolbar {
+  display: flex;
+  gap: 6px;
+}
+.brink-studio .player-pane .header button {
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.brink-studio .player-pane .header button:hover {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .player {
+  flex: 1;
+  overflow: auto;
+  padding: 24px 40px;
+  max-width: 8in;
+  margin: 0 auto;
+  box-sizing: border-box;
+  font-family: "Georgia", "Palatino Linotype", "Book Antiqua", serif;
+}
+.brink-studio .player .story-text p {
+  margin-bottom: 12px;
+  line-height: 1.8;
+  font-size: 17px;
+  letter-spacing: 0.01em;
+}
+.brink-studio .player .choices {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.brink-studio .player .choices button {
+  background: var(--bs-panel-bg);
+  color: var(--bs-accent);
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-size: 16px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.brink-studio .player .choices button:hover {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .player .end-marker {
+  margin-top: 16px;
+  padding: 8px;
+  text-align: center;
+  color: var(--bs-fg-muted);
+  font-style: italic;
+  font-size: 13px;
+}
+.brink-studio .player .error {
+  color: var(--bs-error);
+  font-family: monospace;
+  font-size: 13px;
+  padding: 8px;
+  background: color-mix(in srgb, var(--bs-error) 10%, transparent);
+  border-radius: 4px;
+  margin-top: 8px;
+}
