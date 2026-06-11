@@ -55,6 +55,14 @@ export {
   type ProblemRow,
 } from "./ProblemsView.js";
 export { OutputView, formatOutputTimestamp } from "./OutputView.js";
+export {
+  SEARCH_DEBOUNCE_MS,
+  SEARCH_FOCUS_COMMAND_ID,
+  SEARCH_TOOL_WINDOW_ID,
+  SearchCommands,
+  SearchView,
+  registerSearchFocusCommand,
+} from "./SearchView.js";
 export { ElementDropdown } from "./ElementDropdown.js";
 export { QuickOpen, QUICK_OPEN_COMMAND_ID, buildQuickOpenItems } from "./QuickOpen.js";
 export { BinderContextMenu } from "./BinderContextMenu.js";

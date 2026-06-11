@@ -46,7 +46,9 @@ import {
   ProblemsBadge,
   ProblemsView,
   ProgramView,
+  SEARCH_TOOL_WINDOW_ID,
   SETTINGS_TYPE_ID,
+  SearchView,
   SettingsDocument,
   StateView,
   StorySegment,
@@ -130,6 +132,13 @@ const PROBLEMS_ICON = (
 const OUTPUT_ICON = (
   <svg {...iconProps}>
     <path d="M3 4.5l3 3-3 3M8.5 11.5H13" />
+  </svg>
+);
+
+const SEARCH_ICON = (
+  <svg {...iconProps}>
+    <circle cx="7" cy="7" r="4.5" />
+    <path d="M10.3 10.3L14 14" />
   </svg>
 );
 
@@ -449,13 +458,15 @@ async function main(): Promise<void> {
 
   // Tool-window registry (spec §7.1, §4). Registration order is the stable,
   // user-visible Mod-N ordering: Binder Mod-1, State Mod-2, Program Mod-3,
-  // Problems Mod-4, Output Mod-5. (The Player is an editor document now —
-  // #120 — not a tool window.) The shell never imports these components —
-  // they are registered into it here, at the app boundary.
+  // Problems Mod-4, Output Mod-5, Search Mod-6. (The Player is an editor
+  // document now — #120 — not a tool window.) Search registers last so the
+  // established mnemonics stay put (#94). The shell never imports these
+  // components — they are registered into it here, at the app boundary.
   //
-  // Bottom-dock sharing: Program Explorer and Problems both default to
+  // Dock-section sharing: Program Explorer and Problems both default to
   // bottom/start (spec §4) — a section holds multiple windows, one open at a
-  // time, the strip tabs between them. Output takes bottom/end.
+  // time, the strip tabs between them. Output takes bottom/end; Search
+  // shares left/start with the Binder the same way.
   const toolWindows = new ToolWindowRegistry();
   toolWindows.register({
     id: "binder",
@@ -497,6 +508,18 @@ async function main(): Promise<void> {
     defaultPlacement: { dock: "bottom", section: "end" },
     defaultOpen: false,
     component: OutputView,
+  });
+  // Search (#94): project-wide find/replace, sharing left/start with the
+  // Binder (the strip tabs between them). Closed by default; opened by
+  // search.focus (Mod-Shift-F, registered by <SearchCommands/> in App) or
+  // its generated Mod-6 toggle.
+  toolWindows.register({
+    id: SEARCH_TOOL_WINDOW_ID,
+    title: "Search",
+    icon: SEARCH_ICON,
+    defaultPlacement: { dock: "left", section: "start" },
+    defaultOpen: false,
+    component: SearchView,
   });
 
   // Status-bar segments (spec §7.3). Higher priority renders further left

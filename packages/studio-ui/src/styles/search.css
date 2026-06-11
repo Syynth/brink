@@ -1,0 +1,300 @@
+/* Search tool window (issue #94, spec §4).
+   Scoped under .brink-studio; colors reference only the semantic --bs-*
+   tokens (spec §7.4), so both themes render correctly. */
+
+.brink-studio .search-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+}
+
+/* ── Query / replace form ─────────────────────────────────────────── */
+
+.brink-studio .search-form {
+  flex-shrink: 0;
+  padding: 8px 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--bs-border) 60%, transparent);
+}
+
+.brink-studio .search-query-block {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.brink-studio .search-replace-toggle {
+  flex-shrink: 0;
+  width: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.brink-studio .search-replace-toggle:hover {
+  background: var(--bs-hover-bg);
+}
+
+.brink-studio .search-chevron {
+  display: inline-block;
+  font-size: 8px;
+  line-height: 1;
+  transform: rotate(90deg);
+  transition: transform 80ms ease;
+}
+.brink-studio .search-chevron.collapsed {
+  transform: rotate(0deg);
+}
+
+.brink-studio .search-fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.brink-studio .search-input-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.brink-studio .search-input,
+.brink-studio .search-replace-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 12px;
+  color: var(--bs-fg);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  padding: 3px 6px;
+}
+.brink-studio .search-input:focus,
+.brink-studio .search-replace-input:focus {
+  outline: 1px solid var(--bs-accent);
+  outline-offset: -1px;
+}
+.brink-studio .search-input::placeholder,
+.brink-studio .search-replace-input::placeholder {
+  color: var(--bs-fg-muted);
+}
+
+.brink-studio .search-options {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.brink-studio .search-option {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 4px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+}
+.brink-studio .search-option:hover {
+  background: var(--bs-hover-bg);
+  color: var(--bs-fg);
+}
+.brink-studio .search-option.active {
+  background: color-mix(in srgb, var(--bs-accent) 16%, transparent);
+  color: var(--bs-accent);
+}
+
+.brink-studio .search-replace-all {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 3px 8px;
+  background: var(--bs-panel-bg);
+  color: var(--bs-accent);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.brink-studio .search-replace-all:hover:not(:disabled) {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .search-replace-all:disabled {
+  color: var(--bs-fg-muted);
+  cursor: default;
+}
+
+.brink-studio .search-error {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--bs-error);
+}
+
+/* Inline replace-all confirmation */
+.brink-studio .search-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: color-mix(in srgb, var(--bs-warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--bs-warning) 40%, transparent);
+  border-radius: 4px;
+}
+.brink-studio .search-confirm-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--bs-fg);
+}
+.brink-studio .search-confirm-yes,
+.brink-studio .search-confirm-no {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--bs-border);
+  cursor: pointer;
+}
+.brink-studio .search-confirm-yes {
+  background: var(--bs-accent);
+  color: var(--bs-on-accent);
+  border-color: var(--bs-accent);
+}
+.brink-studio .search-confirm-no {
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg);
+}
+
+/* ── Results ──────────────────────────────────────────────────────── */
+
+.brink-studio .search-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.brink-studio .search-empty,
+.brink-studio .search-capped {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .search-capped {
+  color: var(--bs-warning);
+  padding-bottom: 0;
+}
+
+.brink-studio .search-file-list,
+.brink-studio .search-match-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.brink-studio .search-file-list {
+  padding: 4px 0;
+}
+
+.brink-studio .search-file-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  background: transparent;
+  border: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--bs-fg);
+  text-align: left;
+  cursor: pointer;
+}
+.brink-studio .search-file-header:hover {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .search-file-header .search-chevron {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .search-file-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brink-studio .search-file-count {
+  margin-left: auto;
+  flex-shrink: 0;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg-muted);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 16px;
+  text-align: center;
+}
+
+.brink-studio .search-result-row {
+  display: flex;
+  align-items: center;
+}
+.brink-studio .search-result-row:hover {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .search-result-row.selected {
+  background: var(--bs-list-active-bg);
+}
+
+.brink-studio .search-result-line {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  padding: 2px 8px 2px 26px;
+  background: transparent;
+  border: none;
+  font: inherit;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 11px;
+  color: var(--bs-fg-muted);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+.brink-studio .search-line-match {
+  background: color-mix(in srgb, var(--bs-accent) 25%, transparent);
+  color: var(--bs-fg);
+  border-radius: 2px;
+}
+
+.brink-studio .search-row-replace {
+  flex-shrink: 0;
+  visibility: hidden;
+  padding: 0 6px;
+  background: transparent;
+  border: none;
+  color: var(--bs-fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.brink-studio .search-result-row:hover .search-row-replace,
+.brink-studio .search-result-row.selected .search-row-replace {
+  visibility: visible;
+}
+.brink-studio .search-row-replace:hover {
+  color: var(--bs-accent);
+}
