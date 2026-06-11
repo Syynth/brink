@@ -1,18 +1,27 @@
-// Component
-export { InkEditor } from "./InkEditor.js";
-export type { InkEditorProps, InkEditorHandle, KeyHint } from "./InkEditor.js";
-
-// Editor internals (used by store and for state management)
+// Editor extension bundle (per-view options; see document-sessions.ts)
 export { brinkStudio } from "./extensions.js";
 export type { BrinkStudioOptions } from "./extensions.js";
 
 // Types for line classification
-export { elementTypeField, ElementType, setEditorSession } from "./element-type.js";
+export { elementTypeField, ElementType } from "./element-type.js";
 export type { LineInfo } from "./element-type.js";
 
-// State management
-export { EditorStateManager } from "./state-manager.js";
-export type { TabTarget, TabInfo } from "./state-manager.js";
+// Per-view wasm document handles (issue #122 / #90)
+export {
+  DocHandle,
+  documentHandleFacet,
+  syncAnnotation,
+} from "./document-handle.js";
+export type { DocumentHandleSlot } from "./document-handle.js";
+
+// Per-(document, group) view management
+export {
+  DocumentSessions,
+  docKeyFor,
+  docTitleFor,
+  parseDocKey,
+} from "./document-sessions.js";
+export type { DocTarget, DocumentCallbacks, KeyHint } from "./document-sessions.js";
 
 // Project session
 export { ProjectSession } from "./project-session.js";
@@ -30,3 +39,4 @@ export { convertLineToType, CONVERTIBLE_TYPES, extractLineContent, getLineSigilR
 
 // Transition helpers (for external update listeners)
 export { getHintsForElement, lineHasContent, buildContext } from "./transitions.js";
+export type { ElementConverter } from "./transitions.js";

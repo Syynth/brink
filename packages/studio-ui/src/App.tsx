@@ -2,15 +2,15 @@
  * App — thin composition over the studio shell (spec §3, issue #80).
  *
  * The old hardcoded three-pane layout is gone: ShellFrame renders strips,
- * docks, and the editor area purely from the tool-window registry plus the
- * shell layout store (both owned by ShellProvider; tool windows are
- * registered at bootstrap in brink-studio/main.tsx). This component only
- * provides the root element (tier observer + data-tier for CSS), the editor
- * slot, and the app-level transient surfaces (palette, quick-open, the
- * notification stack §7.5).
+ * docks, and the editor area (groups + per-group tab bars, §7.8) purely from
+ * the shell registries and stores — tool windows and document types are
+ * registered at bootstrap in brink-studio/main.tsx. This component only
+ * provides the root element (tier observer + data-tier for CSS) and the
+ * app-level transient surfaces (palette, quick-open, the new-file prompt,
+ * the notification stack §7.5).
  */
 
-import { useRef, type ReactNode } from "react";
+import { useRef } from "react";
 import {
   CommandPalette,
   NotificationStack,
@@ -18,10 +18,10 @@ import {
   useShellLayout,
   useTier,
 } from "@brink/studio-shell";
-import { EditorPane } from "./EditorPane.js";
 import { QuickOpen } from "./QuickOpen.js";
+import { NewFilePrompt } from "./NewFilePrompt.js";
 
-function App({ editorSlot }: { editorSlot: ReactNode }) {
+function App() {
   const tier = useShellLayout((s) => s.tier);
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -29,9 +29,10 @@ function App({ editorSlot }: { editorSlot: ReactNode }) {
 
   return (
     <div className="brink-studio" data-tier={tier} ref={rootRef}>
-      <ShellFrame editorSlot={<EditorPane>{editorSlot}</EditorPane>} />
+      <ShellFrame />
       <CommandPalette />
       <QuickOpen />
+      <NewFilePrompt />
       <NotificationStack />
     </div>
   );

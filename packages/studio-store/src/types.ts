@@ -43,30 +43,12 @@ export interface KeyHint {
   hint: string;
 }
 
-// ── Tab types ────────────────────────────────────────────────────────
+// ── Document targets ─────────────────────────────────────────────────
 
 export type TabTarget =
   | { kind: "file"; path: string }
   | { kind: "symbol"; path: string; name: string; start: number; end: number };
 
-export interface TabInfo {
-  id: string;
-  target: TabTarget;
-  pinned: boolean;
-  label: string;
-}
-
-// ── Editor handle (will come from @brink/ink-editor) ─────────────────
-
-export interface InkEditorHandle {
-  focus(): void;
-  getContent(): string;
-  triggerCompile(): void;
-  setContent(content: string): void;
-  scrollTo(pos: number): void;
-  convertLineToType(sigil: string): void;
-}
-
 // ── Editor types (the real classes from @brink/ink-editor) ───────────
 
-export type { EditorStateManager, ProjectSession } from "@brink/ink-editor";
+export type { DocumentSessions, ProjectSession } from "@brink/ink-editor";

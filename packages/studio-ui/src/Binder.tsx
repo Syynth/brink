@@ -298,11 +298,11 @@ export function computeReorder(
 
 function BinderInner() {
   const outline = useStudioStore((s) => s.outline);
-  const activeTabId = useStudioStore((s) => s.activeTabId);
+  const activeDocKey = useStudioStore((s) => s.activeDocKey);
   const collapsed = useStudioStore((s) => s.collapsed);
   const selectedKeys = useStudioStore((s) => s.selectedKeys);
   const focusedKey = useStudioStore((s) => s.focusedKey);
-  const openTab = useStudioStore((s) => s.openTab);
+  const openTarget = useStudioStore((s) => s.openTarget);
   const toggleCollapsed = useStudioStore((s) => s.toggleCollapsed);
   const selectKey = useStudioStore((s) => s.selectKey);
   const clearSelection = useStudioStore((s) => s.clearSelection);
@@ -387,16 +387,16 @@ function BinderInner() {
 
   const handleOpenUnpinned = useCallback(
     (target: TabTarget) => {
-      void openTab(target, false);
+      openTarget(target, false);
     },
-    [openTab],
+    [openTarget],
   );
 
   const handleOpenPinned = useCallback(
     (target: TabTarget) => {
-      void openTab(target, true);
+      openTarget(target, true);
     },
-    [openTab],
+    [openTarget],
   );
 
   // ── Click handler ───────────────────────────────────────────────
@@ -719,7 +719,7 @@ function BinderInner() {
 
   function renderStitch(path: string, knot: DocumentSymbol, stitch: DocumentSymbol, row: FlatRow) {
     const stitchId = row.key;
-    const isActive = activeTabId === stitchId;
+    const isActive = activeDocKey === stitchId;
     const target: TabTarget = {
       kind: "symbol",
       path,
@@ -761,7 +761,7 @@ function BinderInner() {
     const stitches = knot.children.filter((c) => c.kind === "stitch");
     const hasStitches = stitches.length > 0;
     const isExpanded = !collapsed.has(knotKey);
-    const isActive = activeTabId === knotKey;
+    const isActive = activeDocKey === knotKey;
     const target: TabTarget = {
       kind: "symbol",
       path,
@@ -812,7 +812,7 @@ function BinderInner() {
     const hasChildren = knots.length > 0;
     const fileKey = file.path;
     const isExpanded = !collapsed.has(fileKey);
-    const isActive = activeTabId === fileKey;
+    const isActive = activeDocKey === fileKey;
     const target: TabTarget = { kind: "file", path: file.path };
 
     return (

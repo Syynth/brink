@@ -1,9 +1,17 @@
 import { EditorView } from "@codemirror/view";
 import { ElementType, type LineInfo } from "./element-type.js";
-import type { ConvertTarget } from "@brink/wasm-types";
-import type { EditorSessionHandle } from "@brink/wasm";
+import type { ConvertTarget, TextEdit } from "@brink/wasm-types";
 import { sigilBypass } from "./screenplay.js";
 import { extractLineContent } from "@brink/ink-operations";
+
+/**
+ * The slice of the wasm session the transition actions need: element
+ * conversion at a view-relative offset. Satisfied by the per-view DocHandle
+ * (document-handle.ts).
+ */
+export interface ElementConverter {
+  convertElement(offset: number, target: ConvertTarget): TextEdit | null;
+}
 
 // ── Line utilities ─────────────────────────────────────────────────
 
@@ -251,7 +259,7 @@ function formatKey(key: string): string {
 
 // ── Action execution ───────────────────────────────────────────────
 
-function applyConversion(view: EditorView, session: EditorSessionHandle | null, target: ConvertTarget): boolean {
+function applyConversion(view: EditorView, session: ElementConverter | null, target: ConvertTarget): boolean {
   if (!session) return true; // trap the key even if session unavailable
   const cursorPos = view.state.selection.main.head;
   const edit = session.convertElement(cursorPos, target);
@@ -263,7 +271,7 @@ function applyConversion(view: EditorView, session: EditorSessionHandle | null, 
   return true;
 }
 
-export function executeAction(action: ActionId, view: EditorView, info: LineInfo, session: EditorSessionHandle | null): boolean {
+export function executeAction(action: ActionId, view: EditorView, info: LineInfo, session: ElementConverter | null): boolean {
   const { state } = view;
   const cursorPos = state.selection.main.head;
 

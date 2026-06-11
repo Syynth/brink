@@ -110,9 +110,8 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
   async applyMoveResult(result, description, affectedPaths) {
     const state = get();
     const project = state._project;
-    const stateManager = state._stateManager;
-    const editorRef = state._editorRef;
-    if (!project || !stateManager || !editorRef) return;
+    const documents = state._documents;
+    if (!project || !documents) return;
 
     const session = project.getSession();
 
@@ -147,16 +146,15 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     // 4. Push undo entry
     const undoStack = [...state.undoStack, { description, snapshots }];
 
-    // 5. Invalidate editor states for affected files. invalidateFile clears
-    //    view context and reloads the active view if it targets the path.
+    // 5. Refresh editor views for affected files: mounted views reload their
+    //    content (symbol views re-resolve their range), cached states rebuild
+    //    on next mount.
     for (const path of touchedPaths) {
-      if (stateManager.invalidateFile) {
-        stateManager.invalidateFile(path);
-      }
+      documents.invalidateFile(path);
     }
 
     // 6. Trigger recompile (refreshes outline)
-    editorRef.triggerCompile();
+    documents.triggerCompile();
 
     // 7. Notify, with Undo dispatching the binder.undo command (spec §7.5).
     set({ undoStack });
@@ -171,9 +169,8 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
   async undo() {
     const state = get();
     const project = state._project;
-    const stateManager = state._stateManager;
-    const editorRef = state._editorRef;
-    if (!project || !stateManager || !editorRef) return;
+    const documents = state._documents;
+    if (!project || !documents) return;
 
     const stack = [...state.undoStack];
     const entry = stack.pop();
@@ -186,15 +183,13 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       session.updateFile(path, source);
     }
 
-    // Invalidate editor states
-    if (stateManager.invalidateFile) {
-      for (const { path } of entry.snapshots) {
-        stateManager.invalidateFile(path);
-      }
+    // Refresh editor views for the restored files
+    for (const { path } of entry.snapshots) {
+      documents.invalidateFile(path);
     }
 
     // Trigger recompile
-    editorRef.triggerCompile();
+    documents.triggerCompile();
 
     set({ undoStack: stack });
     get()._notify?.({

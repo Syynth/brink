@@ -83,9 +83,17 @@ function parseOutline(source: string): MockSymbol[] {
   return symbols;
 }
 
+interface MockDoc {
+  path: string;
+  viewStart: number | null;
+  viewEnd: number | null;
+}
+
 export class EditorSession {
   private files = new Map<string, string>();
   private activePath = "";
+  private docs = new Map<number, MockDoc>();
+  private nextDocId = 1;
 
   update_source(source: string): void {
     if (this.viewStart != null && this.viewEnd != null) {
@@ -164,6 +172,80 @@ export class EditorSession {
     return JSON.stringify(outline);
   }
 
+  // ── Document handles (mirrors brink-web's multi-document API) ──
+
+  open_document(path: string): number {
+    if (!this.files.has(path)) return 0;
+    const id = this.nextDocId++;
+    this.docs.set(id, { path, viewStart: null, viewEnd: null });
+    return id;
+  }
+
+  open_fragment(path: string, start: number, end: number): number {
+    if (!this.files.has(path)) return 0;
+    const id = this.nextDocId++;
+    this.docs.set(id, { path, viewStart: start, viewEnd: end });
+    return id;
+  }
+
+  close_document(doc: number): boolean {
+    return this.docs.delete(doc);
+  }
+
+  update_document(doc: number, source: string): string {
+    const d = this.docs.get(doc);
+    if (!d) return "null";
+    const full = this.files.get(d.path) ?? "";
+    if (d.viewStart != null && d.viewEnd != null) {
+      const start = d.viewStart;
+      const end = d.viewEnd;
+      const before = full.slice(0, start);
+      const after = full.slice(end);
+      // The real splice maintains a "\n" separator after the fragment when
+      // the original view boundary sat on one and the new text doesn't end
+      // with it; the simple mock just splices verbatim.
+      this.files.set(d.path, before + source + after);
+      d.viewEnd = start + source.length;
+      return JSON.stringify({ path: d.path, start, end });
+    }
+    const prevLength = full.length;
+    this.files.set(d.path, source);
+    return JSON.stringify({ path: d.path, start: 0, end: prevLength });
+  }
+
+  get_view_source_doc(doc: number): string {
+    const d = this.docs.get(doc);
+    if (!d) return JSON.stringify(null);
+    const content = this.files.get(d.path);
+    if (content == null) return JSON.stringify(null);
+    if (d.viewStart != null && d.viewEnd != null) {
+      return JSON.stringify(content.slice(d.viewStart, d.viewEnd));
+    }
+    return JSON.stringify(content);
+  }
+
+  line_contexts_doc(_doc: number): string { return "[]"; }
+  semantic_tokens_doc(_doc: number): string { return "[]"; }
+  completions_doc(_doc: number, _offset: number): string { return "[]"; }
+  hover_doc(_doc: number, _offset: number): string { return "null"; }
+  goto_definition_doc(_doc: number, _offset: number): string { return "null"; }
+  find_references_doc(_doc: number, _offset: number): string { return "[]"; }
+  prepare_rename_doc(_doc: number, _offset: number): string { return "null"; }
+  rename_doc(_doc: number, _offset: number, _name: string): string { return "[]"; }
+  code_actions_doc(_doc: number, _offset: number): string { return "[]"; }
+  inlay_hints_doc(_doc: number, _start: number, _end: number): string { return "[]"; }
+  signature_help_doc(_doc: number, _offset: number): string { return "null"; }
+  folding_ranges_doc(_doc: number): string { return "[]"; }
+  document_symbols_doc(_doc: number): string { return "[]"; }
+  convert_element_doc(_doc: number, _offset: number, _target: string): string { return "null"; }
+  format_document_doc(_doc: number): string { return '""'; }
+
+  /** Outline-shaped symbols for one file (used by symbol-range resolution). */
+  file_symbols(path: string): string {
+    const source = this.files.get(path);
+    return JSON.stringify(source == null ? [] : parseOutline(source));
+  }
+
   semantic_tokens(): string { return "[]"; }
   completions(_offset: number): string { return "[]"; }
   hover(_offset: number): string { return "null"; }
@@ -180,7 +262,6 @@ export class EditorSession {
   line_contexts(): string { return "[]"; }
   format_document(): string { return '""'; }
   convert_element(_offset: number, _target: string): string { return "null"; }
-  file_symbols(_path: string): string { return "[]"; }
   free(): void { /* no-op */ }
 }
 

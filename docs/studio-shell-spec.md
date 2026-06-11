@@ -101,7 +101,7 @@ Default placement, mapped from existing components:
 | **Story transcript** | tool window | bottom dock | *future* | Append-only transcript view; listed to validate the model, not scheduled. |
 | **Story Graph** | editor document (custom-rendered) | editor area | *new* | Phase 6: visual story-structure explorer — see §4.1. |
 | **Settings** | editor document | editor area | *new* | Phase 5: theme choice, keymap-override JSON editing, diagnostic severity flags. VS Code precedent (settings as a document tab, not a modal). |
-| Ink files | editor document | editor area | [EditorPane.tsx](../packages/studio-ui/src/EditorPane.tsx) + CM6 | Tabbed via [FileTabBar.tsx](../packages/studio-ui/src/FileTabBar.tsx), which becomes the per-group tab bar. |
+| Ink files | editor document | editor area | the `ink-file` document type ([InkFileDocument.tsx](../packages/studio-ui/src/InkFileDocument.tsx) + CM6) | Landed (#90): the shell renders per-group tab bars; one CM6 view per (document, group) over a wasm document handle (§7.8). |
 
 The **Toast** system is replaced by the shell notification service (§7.5) in Phase 3;
 until then the existing component mounts in the shell unchanged.
@@ -403,6 +403,81 @@ viewport edges, dismiss-on-outside-click/Escape, and focus return. Lands in Phas
 (the palette needs it on day one); existing one-off implementations migrate to it as
 their components are touched, not as a big-bang.
 
+### 7.8 Editor groups & the document-type API
+
+The editor area's counterpart to §7.1: the shell owns document *structure*
+(groups, tabs, pin state, focus) and renders it purely from two pieces it
+hosts — a **document-type registry** and an **editor-groups store** — while
+document *content* belongs to registered components. Text documents (CM6) are
+one implementation of the contract, not the contract: Compiled Output (#91),
+the Story Graph (§4.1), and the Player document (#120) implement the same API.
+
+```ts
+interface DocumentRef {            // small and serializable — a tab is one of these
+  typeId: string;                  // registered document type, e.g. "ink-file"
+  docId: string;                   // type-scoped identity, e.g. "main.ink::intro"
+  title: string;                   // tab label
+}
+interface DocumentViewProps {
+  doc: DocumentRef;
+  groupId: string;                 // one component instance per (document, group)
+  active: boolean;                 // this view is the focused group's active tab
+}
+interface DocumentTypeDescriptor {
+  id: string;
+  component: ComponentType<DocumentViewProps>;
+}
+```
+
+Types register at bootstrap (same discipline as tool windows: duplicate-id and
+host-prefix rejection; hosts get the same door in Phase 5 via §8). The shell
+never imports feature components (§7.2); anything heavier than the ref —
+content, wasm handles, view state — lives behind the registered component,
+keyed by `docId` + `groupId`.
+
+**Editor groups** are a flat, ordered list of vertical columns; each group is
+a tab strip over DocumentRefs with one active tab. Splitters reuse the dock
+pattern. Group structure lives in a shell store (sibling of the layout store):
+groups, the focused group, per-group active tab, pin state, splitter sizes.
+
+- **Open/reveal policy.** A plain open (binder click, quick-open,
+  `editor.reveal`) focuses an existing tab *wherever it lives* — a document is
+  open at most once unless the user explicitly asks for more. Duplicates come
+  only from explicit actions: `editor.split` and opening into an explicit
+  target group. `editor.reveal` then scrolls/flashes in that view.
+- **Split duplicates (VS Code exact).** `editor.split` (Mod-\) duplicates the
+  focused group's active tab into a new group immediately to its right and
+  focuses it. Two views of one text document live-mirror via the CM6
+  sync-dispatch pattern (changes forwarded under an annotation that prevents
+  echo; selection/scroll stay per-view). Fragment⇄file overlaps (a symbol tab
+  and its file open at once) mirror through the wasm document-handle change
+  specs (#122), refreshing from the file where a change can't be mapped.
+- **Preview/pin is generic tab behavior.** At most one unpinned (preview) tab
+  per group, replaced in place by the next preview open; editing or
+  double-clicking pins. (Moved here from the old editor state manager — it
+  was never ink-specific.)
+- **Collapse.** A group collapses when its last tab closes; the editor area
+  always keeps ≥ 1 group.
+- **Commands:** `editor.split` (Mod-\), `editor.moveTabRight` /
+  `editor.moveTabLeft` (move the focused group's active tab between neighbor
+  groups, creating/collapsing groups at the edges), `editor.focusNextGroup`
+  (unbound; palette-discoverable).
+- **Tiers:** groups keep working in all tiers with no special narrow-tier
+  handling — cramped is acceptable; the narrow tier remains a degraded
+  presentation (§11).
+
+Text documents ride the wasm **document-handle** API (#122): each mounted view
+opens its own handle (`open_document` / `open_fragment`) and every IDE query
+routes through that view's DocId — IDE intelligence works in every group
+simultaneously, with no active-file choreography and no module-global session
+ref. Handles open on mount and close on unmount; backgrounded tabs keep a
+cached editor state, rebuilt from the session's authoritative content when it
+changed underneath.
+
+**Non-goals (for now):** group-layout persistence (dock layout persists, #88;
+groups reset on reload — future work), nested grids, and horizontal splits.
+Vertical columns only.
+
 ## 8. Embedder extension API
 
 brink-studio is embedded programmatically (the embedded playground today; RPG Maker MZ
@@ -488,11 +563,13 @@ Each phase lands independently; the studio remains shippable after every phase.
 - **Phase 3 — drag & persistence.** Strip-icon drag-to-re-dock, layout persistence,
   notification service (§7.5) replacing Toast.
 - **Phase 4 — editor groups.** Split support in the editor area (vertical first),
-  per-group tab bars from FileTabBar, `Mod-\` split command, and **component-based
-  document support** — a document-type API implemented by both text documents (CM6; the
-  Compiled Output `.inkt` tab moves out of the Program Explorer here) and custom-rendered
-  documents (consumed by the Story Graph in Phase 6). Until this phase the editor area is
-  a single group — the shell API is written for groups from day one so this is additive.
+  per-group tab bars, `Mod-\` split command, and **component-based document support** —
+  the §7.8 document-type API, implemented by both text documents (CM6; the Compiled
+  Output `.inkt` tab moves out of the Program Explorer here, #91) and custom-rendered
+  documents (consumed by the Story Graph in Phase 6). Sequenced behind #122 (wasm
+  document handles), so text documents ride per-view DocIds instead of the active-file
+  singleton. Groups + the document API + the ink-file type landed as #90; file creation
+  moved from the old tab-bar "+" to the palette `file.new` command.
 - **Phase 5 — polish, theme & embedder API.** Semantic token layer, light theme, CSS
   decomposition completes, Search tool window, Settings document (theme, keymap JSON,
   severity flags), embedder extension API exposure (§8: `StudioExtensions` mount config,
@@ -501,7 +578,8 @@ Each phase lands independently; the studio remains shippable after every phase.
   wasm-exposed) and the custom-rendered document (§4.1): auto-layout, expand/collapse,
   click-to-jump, live story overlay.
 
-What is **kept** throughout: Zustand slices (editor/compile/tabs/player/binder),
+What is **kept** throughout: Zustand slices (editor/compile/documents/session/binder —
+the old tabs slice dissolved into the shell's editor-groups store in Phase 4),
 the CM6 stack and its keybindings, player/debug domain logic, binder tree logic,
 the wasm data flow, `useTier`.
 

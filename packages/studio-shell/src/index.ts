@@ -23,6 +23,8 @@ export {
 export { attachKeyHandler, type KeyHandlerOptions } from "./keyhandler.js";
 export {
   ShellProvider,
+  useDocumentTypes,
+  useEditorGroups,
   useNotificationState,
   useNotifications,
   useShell,
@@ -32,6 +34,26 @@ export {
   type ShellContextValue,
   type ShellProviderProps,
 } from "./shell-context.js";
+export {
+  DocumentTypeRegistry,
+  documentKey,
+  type DocumentRef,
+  type DocumentTypeDescriptor,
+  type DocumentViewProps,
+} from "./document.js";
+export {
+  createEditorGroupsStore,
+  findTab,
+  focusedGroup,
+  focusedTab,
+  type EditorGroup,
+  type EditorGroupsState,
+  type EditorGroupsStore,
+  type EditorTab,
+  type OpenDocumentOptions,
+} from "./editor-groups.js";
+export { registerEditorGroupCommands } from "./editor-commands.js";
+export { EditorArea } from "./editor-area.js";
 export {
   MAX_VISIBLE_NOTIFICATIONS,
   NOTIFICATION_HISTORY_LIMIT,
@@ -98,7 +120,7 @@ export {
   type StripDragState,
   type ZoneRect,
 } from "./strip-drag.js";
-export { ShellFrame, ShellStatusBar, type ShellFrameProps } from "./regions.js";
+export { ShellFrame, ShellStatusBar } from "./regions.js";
 export { HamburgerMenu, groupCommandsForMenu, type MenuGroup } from "./menu.js";
 export { useTier } from "./use-tier.js";
 export {

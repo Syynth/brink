@@ -1,7 +1,6 @@
 import { Compartment, type Extension } from "@codemirror/state";
 import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, FileEdit, InlayHint, SignatureInfo, FoldRange, CodeAction } from "@brink/wasm-types";
-import type { EditorSessionHandle } from "@brink/wasm";
-import { setEditorSession } from "./element-type.js";
+import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
 import { highlightExtension } from "./highlight.js";
@@ -23,9 +22,11 @@ export interface BrinkStudioOptions {
   getTokenTypeNames: () => string[];
   onCompile?: (result: CompileResult) => void;
 
-  /** EditorSession for HIR-backed line classification. If provided,
-   *  the editor uses `line_contexts()` instead of the regex classifier. */
-  session?: EditorSessionHandle;
+  /** The view's wasm document-handle slot (per-view DocId, swapped across
+   *  mount/unmount). If provided, the editor uses HIR-backed line
+   *  classification (`line_contexts_doc`) instead of the regex classifier,
+   *  and transition actions can convert elements. */
+  handleSlot?: DocumentHandleSlot;
 
   // IDE features (all optional — features are enabled when provided)
   getCompletions?: (source: string, offset: number) => CompletionItem[];
@@ -49,11 +50,6 @@ export const screenplayCompartment = new Compartment();
 export const ideCompartment = new Compartment();
 
 export function brinkStudio(options: BrinkStudioOptions): Extension {
-  // Wire up the session for HIR-backed line classification
-  if (options.session) {
-    setEditorSession(options.session);
-  }
-
   const ideExtensions: Extension[] = [];
 
   if (options.getCompletions) {
@@ -89,6 +85,9 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   }
 
   return [
+    // The per-view document-handle slot, readable by every extension and the
+    // elementTypeField via state.facet(documentHandleFacet).
+    documentHandleFacet.of(options.handleSlot ?? null),
     brinkTheme,
     screenplayCompartment.of(screenplayDecorations()),
     highlightExtension({

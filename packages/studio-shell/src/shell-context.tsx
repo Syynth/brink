@@ -26,6 +26,13 @@ import { Keymap, loadKeymapOverrides, type KeymapOverrides } from "./keymap.js";
 import { attachKeyHandler } from "./keyhandler.js";
 import { ToolWindowRegistry, type ToolWindowDescriptor } from "./toolwindow.js";
 import { StatusBarRegistry, type StatusBarItemDescriptor } from "./statusbar.js";
+import { DocumentTypeRegistry, type DocumentTypeDescriptor } from "./document.js";
+import {
+  createEditorGroupsStore,
+  type EditorGroupsState,
+  type EditorGroupsStore,
+} from "./editor-groups.js";
+import { registerEditorGroupCommands } from "./editor-commands.js";
 import {
   createShellLayoutStore,
   type ShellLayoutState,
@@ -40,6 +47,8 @@ export interface ShellContextValue {
   isMac: boolean;
   toolWindows: ToolWindowRegistry;
   statusBarItems: StatusBarRegistry;
+  documents: DocumentTypeRegistry;
+  editorGroups: EditorGroupsStore;
   layout: ShellLayoutStore;
   notifications: NotificationCenter;
 }
@@ -52,6 +61,14 @@ export interface ShellProviderProps {
   toolWindows?: ToolWindowRegistry;
   /** Status-bar item registry (§7.3); omit for shells without one (tests). */
   statusBarItems?: StatusBarRegistry;
+  /** Document-type registry (§7.8); omit for shells without documents (tests). */
+  documents?: DocumentTypeRegistry;
+  /**
+   * Editor-groups store (§7.8); omit to let the provider own one. Pass an
+   * instance when code outside the React tree opens documents (e.g. main.tsx
+   * wiring the store's document opener).
+   */
+  editorGroups?: EditorGroupsStore;
   /**
    * Notification center (§7.5); omit to let the provider own one. Pass an
    * instance when producers outside the React tree need it (e.g. main.tsx
@@ -71,6 +88,8 @@ export function ShellProvider({
   commands,
   toolWindows,
   statusBarItems,
+  documents,
+  editorGroups,
   notifications,
   storage,
   layoutStorage,
@@ -84,6 +103,12 @@ export function ShellProvider({
   const registry = toolWindows ?? fallbackToolWindows;
   const [fallbackStatusBarItems] = useState(() => new StatusBarRegistry());
   const statusBar = statusBarItems ?? fallbackStatusBarItems;
+  const [fallbackDocuments] = useState(() => new DocumentTypeRegistry());
+  const documentTypes = documents ?? fallbackDocuments;
+  const [fallbackEditorGroups] = useState<EditorGroupsStore>(() =>
+    createEditorGroupsStore(),
+  );
+  const groups = editorGroups ?? fallbackEditorGroups;
   const [fallbackNotifications] = useState(() => new NotificationCenter());
   const notificationCenter = notifications ?? fallbackNotifications;
   // Layout: restore the persisted snapshot before the first render; the
@@ -163,6 +188,12 @@ export function ShellProvider({
     [commands, layout],
   );
 
+  // Editor-group commands (spec §7.8): split, move tab, focus next group.
+  useEffect(
+    () => registerEditorGroupCommands(commands, groups),
+    [commands, groups],
+  );
+
   const value = useMemo<ShellContextValue>(
     () => ({
       commands,
@@ -170,10 +201,22 @@ export function ShellProvider({
       isMac: mac,
       toolWindows: registry,
       statusBarItems: statusBar,
+      documents: documentTypes,
+      editorGroups: groups,
       layout,
       notifications: notificationCenter,
     }),
-    [commands, keymap, mac, registry, statusBar, layout, notificationCenter],
+    [
+      commands,
+      keymap,
+      mac,
+      registry,
+      statusBar,
+      documentTypes,
+      groups,
+      layout,
+      notificationCenter,
+    ],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
@@ -201,6 +244,23 @@ export function useToolWindows(): ToolWindowDescriptor[] {
     setList(toolWindows.list());
     return toolWindows.onDidChange(() => setList(toolWindows.list()));
   }, [toolWindows]);
+  return list;
+}
+
+/** Select from the editor-groups store (re-renders on selected changes). */
+export function useEditorGroups<T>(selector: (state: EditorGroupsState) => T): T {
+  const { editorGroups } = useShell();
+  return useStore(editorGroups, selector);
+}
+
+/** The registered document types, in registration order (reactive). */
+export function useDocumentTypes(): DocumentTypeDescriptor[] {
+  const { documents } = useShell();
+  const [list, setList] = useState<DocumentTypeDescriptor[]>(() => documents.list());
+  useEffect(() => {
+    setList(documents.list());
+    return documents.onDidChange(() => setList(documents.list()));
+  }, [documents]);
   return list;
 }
 

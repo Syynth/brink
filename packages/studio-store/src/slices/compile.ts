@@ -54,12 +54,10 @@ export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice>
   },
 
   compile() {
-    get()._editorRef?.triggerCompile();
+    get()._documents?.triggerCompile();
   },
 
   convertLineToType(sigil) {
-    const editor = get()._editorRef;
-    if (!editor) return;
-    editor.convertLineToType(sigil);
+    get()._documents?.convertLineToType(sigil);
   },
 });
