@@ -14,6 +14,7 @@ import type { DocumentsSlice } from "./slices/documents.js";
 import type { SessionSlice } from "./slices/session.js";
 import type { BinderSlice } from "./slices/binder.js";
 import type { OutputSlice } from "./slices/output.js";
+import type { SearchSlice } from "./slices/search.js";
 import type { DocumentSessions, ProjectSession } from "./types.js";
 
 import { createEditorSlice } from "./slices/editor.js";
@@ -22,6 +23,7 @@ import { createDocumentsSlice } from "./slices/documents.js";
 import { createSessionSlice } from "./slices/session.js";
 import { createBinderSlice } from "./slices/binder.js";
 import { createOutputSlice } from "./slices/output.js";
+import { createSearchSlice } from "./slices/search.js";
 
 // ── Notifications (store → shell bridge) ────────────────────────────
 
@@ -50,7 +52,8 @@ export interface StudioState
     DocumentsSlice,
     SessionSlice,
     BinderSlice,
-    OutputSlice {
+    OutputSlice,
+    SearchSlice {
   // Non-reactive refs — imperative handles that don't trigger re-renders
   _documents: DocumentSessions | null;
   _project: ProjectSession | null;
@@ -76,6 +79,7 @@ export const createStudioStore = () =>
       ...createSessionSlice(...args),
       ...createBinderSlice(...args),
       ...createOutputSlice(...args),
+      ...createSearchSlice(...args),
 
       // Non-reactive refs
       _documents: null,
@@ -129,6 +133,27 @@ export {
   type OutputEntry,
   type OutputSource,
 } from "./slices/output.js";
+
+// Project-wide search engine (Search tool window, issue #94) — pure,
+// unit-testable helpers, plus the result cap (unbounded-growth guard).
+export {
+  DEFAULT_SEARCH_OPTIONS,
+  SEARCH_CONTEXT_BEFORE,
+  SEARCH_RESULT_CAP,
+  applyReplacements,
+  buildSearchPattern,
+  escapeRegExp,
+  matchLineSegments,
+  replacementTextFor,
+  searchSources,
+  type FileSearchResult,
+  type MatchLineSegments,
+  type ProjectSearchResult,
+  type ReplacementEdit,
+  type SearchMatch,
+  type SearchPatternResult,
+  type SearchQueryOptions,
+} from "./search-engine.js";
 
 // Document key/title helpers (shared with the shell's DocumentRefs).
 export { docKeyFor, docTitleFor } from "@brink/ink-editor";
