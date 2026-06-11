@@ -5,11 +5,13 @@ embedding surface of `@brink-lang/studio`; the design rationale lives in
 [studio-shell-spec.md §8](studio-shell-spec.md#8-embedder-extension-api) and
 the decision log ("embedder extension API").
 
-brink-studio is embedded programmatically — the embedded playground today,
-RPG Maker MZ planned. The embedding host already runs its own code in the
-page, so it can be trusted with extension points without anything resembling
-a plugin system: **no dynamic loading, no marketplace, no sandboxing**. Host
-surfaces register at mount time into the same registries the built-ins use.
+brink-studio is embedded programmatically — the embedded playground, and
+RPG Maker MZ as the first real external host
+(`celeris/rmmz/packages/brink-studio-plugin`, the reference consumer). The
+embedding host already runs its own code in the page, so it can be trusted
+with extension points without anything resembling a plugin system: **no
+dynamic loading, no marketplace, no sandboxing**. Host surfaces register at
+mount time into the same registries the built-ins use.
 
 ## Mounting
 
@@ -19,8 +21,10 @@ import { mountStudio } from "@brink-lang/studio";
 const handle = await mountStudio(document.getElementById("app")!, {
   files: { "main.ink": "-> start\n=== start ===\nHello.\n-> END\n" },
   entryFile: "main.ink",
-  extensions: myExtensions,   // optional, see below
-  hostManifest: myManifest,   // optional: the host-capability manifest, see below
+  extensions: myExtensions,    // optional, see below
+  hostManifest: myManifest,    // optional: the host-capability manifest, see below
+  onFilesChanged: persist,     // optional: file-content egress, see below
+  wasmLocation: myWasmUrl,     // optional: explicit wasm binary location, see below
 });
 
 // later:
@@ -38,6 +42,94 @@ first compile, so manifest-driven diagnostics (literal type mismatches,
 arity disagreements — toggleable in Settings via the external-check flag),
 hover, and completions are live from the start. The host owns this data; the
 wasm session itself stays unexposed.
+
+`wasmLocation` is forwarded to `initWasm` (a URL/path string, `Request`, or
+a precompiled `WebAssembly.Module`). By default the `.wasm` binary resolves
+relative to the module URL — which cannot work inside an IIFE plugin bundle
+(no usable `import.meta.url`; e.g. an RPG Maker MZ plugin). Pass the
+location explicitly there instead of pre-calling `initWasm` and relying on
+its double-init guard.
+
+**Old-engine hosts:** the mount bootstrap feature-detects the Chromium-88
+`document.adoptedStyleSheets` shape (a frozen array — NW.js as shipped by
+RPG Maker MZ) and installs a mutable wrapper syncing through the native
+setter, so CodeMirror's style injection works without a host-side shim.
+Modern browsers fail the detect and take zero overhead.
+
+## File egress — studio → host persistence (issue #154)
+
+Disk → studio is the `files` mount option. Studio → host is the egress
+surface: hosts that own the project on disk (RPG Maker MZ writing
+`data/brink/**/*.ink`; reference consumer:
+`celeris/rmmz/packages/brink-studio-plugin`) receive edits back out of the
+session instead of losing them on unmount.
+
+```ts
+type FileChange = {
+  path: string;                                  // e.g. "main.ink"
+  type: "modified" | "created" | "deleted";
+  content?: string;                              // full text; omitted for "deleted"
+};
+```
+
+- **Push — `onFilesChanged(changes: FileChange[])` (mount option).** Called
+  with batched changes, debounced ~500 ms trailing; pending changes flush
+  immediately on `file.save` / `file.saveAll` and on `unmount()`. Every
+  mutation path reports: editor typing, binder structural ops
+  (move/reorder/promote/demote and undo), search replace (per-match and
+  replace-all), and `file.new` (as `"created"`). `"deleted"` is part of the
+  contract by design — so host-side mirrors of deletes are additive later —
+  but is currently unreachable: the studio has no delete UI yet.
+- **Pull — `api.getFiles(): Record<string, string>`.** A snapshot of every
+  session file's current content, sorted by path.
+- **Save commands.** `file.save` (default keybinding Mod-S; palette "File:
+  Save") flushes the focused editor's text to the session — bypassing the
+  editor's own debounce — and delivers pending host notifications
+  immediately; `file.saveAll` ("File: Save All") does it for every dirty
+  file. Without an `onFilesChanged` hook both still flush internally,
+  clear dirty state, and raise an info notification ("Saved main.ink") —
+  they never error in the standalone playground. Dispatchable as
+  `api.dispatch("file.save")` (ids exported as `FILE_SAVE_COMMAND_ID` /
+  `FILE_SAVE_ALL_COMMAND_ID`).
+- **Dirty state.** `StudioPublicState.dirtyFiles` is the count of files
+  whose session content diverges from the *baseline* — the content last
+  loaded from the host (mount `files`, external changes) or last
+  synced to it (an `onFilesChanged` delivery, or an explicit save). Use it
+  to warn before `unmount()`/reload would discard edits. Per-file detail is
+  `api.getDirtyFiles(): string[]`. File contents deliberately never enter
+  `StudioPublicState` (they are big and change per keystroke — the
+  reference-stability contract); use the push/pull surfaces above.
+
+### Save loop example (host-persisted project, RPG Maker MZ shaped)
+
+```ts
+import { mountStudio, type FileChange } from "@brink-lang/studio";
+
+const projectDir = "data/brink/";
+
+const handle = await mountStudio(overlayEl, {
+  files: readProjectFromDisk(projectDir),        // disk → studio
+  entryFile: "main.ink",
+  wasmLocation: pluginWasmUrl,                   // IIFE plugin bundle: explicit location
+  onFilesChanged: (changes: FileChange[]) => {   // studio → disk (autosave)
+    for (const change of changes) {
+      if (change.type === "deleted") {
+        fs.unlinkSync(projectDir + change.path);
+      } else {
+        fs.writeFileSync(projectDir + change.path, change.content!);
+      }
+    }
+    game.reloadStorySessions();                  // hot-reload the running game
+  },
+});
+
+// Closing the overlay: edits are already persisted (autosave above), but a
+// dirty check guards against a teardown racing the debounce —
+if (handle.api.select((s) => s.dirtyFiles) > 0) {
+  handle.api.dispatch("file.saveAll");           // flushes + delivers immediately
+}
+handle.unmount();                                // also flushes pending changes
+```
 
 ## `StudioExtensions` — host surfaces (spec §8.1)
 
@@ -107,6 +199,10 @@ interface StudioApi {
   select<T>(sel: (s: StudioPublicState) => T): T;
   /** Observe a selected value (Object.is change detection). */
   subscribe<T>(sel: (s: StudioPublicState) => T, cb: (value: T) => void): () => void;
+  /** Snapshot of every session file's content (pull egress, #154). */
+  getFiles(): Record<string, string>;
+  /** Files diverging from the last-saved/notified baseline (#154). */
+  getDirtyFiles(): string[];
 }
 ```
 
@@ -133,6 +229,8 @@ interface StudioPublicState {
   compileStatus: "ok" | "errors";
   sessionStatus:                                     // story session (§7.6)
     | "none" | "running" | "awaiting-choice" | "done" | "ended" | "error";
+  dirtyFiles: number;                                // unsaved-file count (#154; additive,
+                                                     // so version stays 1)
 }
 ```
 

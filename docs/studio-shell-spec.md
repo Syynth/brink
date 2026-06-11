@@ -612,13 +612,32 @@ interface StudioApi {
   notify(n: NotificationInput): NotificationHandle;  // §7.5
   select<T>(sel: (s: StudioPublicState) => T): T;
   subscribe<T>(sel: (s: StudioPublicState) => T, cb: (value: T) => void): () => void;
+  getFiles(): Record<string, string>;             // #154 pull egress — session file snapshot
+  getDirtyFiles(): string[];                      // per-file detail behind dirtyFiles
 }
 ```
 
 `StudioPublicState` is an explicit, versioned subset (`version: 1`): active file,
-cursor/element info, diagnostics summary, compile status, story session status (§7.6).
-Anything a host needs that isn't in it is a deliberate API addition, not a store leak.
-The full field list and versioning policy live in [embedder-api.md](embedder-api.md).
+cursor/element info, diagnostics summary, compile status, story session status (§7.6),
+and the `dirtyFiles` count (#154 — files diverging from the last-saved/last-notified
+baseline). Anything a host needs that isn't in it is a deliberate API addition, not a
+store leak. The full field list and versioning policy live in
+[embedder-api.md](embedder-api.md).
+
+**File-content egress (#154, closing #137).** Hosts that own project persistence (RPG
+Maker MZ writing `data/brink/**`) get studio→host file sync as: a debounced, batched
+`onFilesChanged(changes: FileChange[])` mount option (each change names the file, a kind
+`"modified" | "created" | "deleted"` — deleted designed-in, currently unreachable — and
+the content); the `getFiles()` pull; `file.save` (Mod-S) / `file.saveAll` commands that
+flush editor text and deliver pending notifications immediately (and degrade to an
+internal flush + info notification without a host hook); and the dirty summary above.
+Every mutation path — CM6 edit flushes, binder structural ops, search replace,
+`file.new` — routes through one shared notify seam (`ProjectSession`'s `FileChangeHub`),
+so omission is structurally impossible. File *contents* never enter `StudioPublicState`
+(they are big and change per keystroke — the reference-stability contract forbids them);
+push/pull ride the dedicated surfaces instead. The reference consumer is
+`celeris/rmmz/packages/brink-studio-plugin`. Host-facing docs:
+[embedder-api.md](embedder-api.md) "File egress".
 
 **Motivating example (Track B synergy):** the RPG Maker functions panel renders the
 host-capability manifest the host already registers via `set_host_manifest`
