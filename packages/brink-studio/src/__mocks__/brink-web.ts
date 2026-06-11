@@ -172,6 +172,41 @@ export class EditorSession {
     return JSON.stringify(outline);
   }
 
+  /**
+   * Story graph (#96): nodes derived from the same header parse as the
+   * outline (knots + stitches with parent ids), no edges. The real edge
+   * extraction is covered by Rust tests in brink-ide/brink-web.
+   */
+  story_graph(): string {
+    const nodes = [];
+    for (const [path, source] of this.files) {
+      for (const sym of parseOutline(source)) {
+        nodes.push({
+          id: sym.name,
+          name: sym.name,
+          kind: "knot",
+          file: path,
+          start: sym.start,
+          end: sym.end,
+        });
+        for (const child of sym.children) {
+          const id = `${sym.name}.${child.name}`;
+          nodes.push({
+            id,
+            name: id,
+            kind: "stitch",
+            file: path,
+            start: child.start,
+            end: child.end,
+            parent: sym.name,
+          });
+        }
+      }
+    }
+    nodes.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return JSON.stringify({ nodes, edges: [] });
+  }
+
   // ── Document handles (mirrors brink-web's multi-document API) ──
 
   open_document(path: string): number {

@@ -27,6 +27,7 @@ import type {
   CodeAction,
   ProjectFile,
   FileOutline,
+  StoryGraph,
   LineContext,
   ConvertTarget,
   TextEdit,
@@ -315,6 +316,18 @@ export class EditorSessionHandle {
   getProjectOutline(): FileOutline[] {
     const json = this.session.project_outline();
     return JSON.parse(json) as FileOutline[];
+  }
+
+  /**
+   * Whole-project story graph (studio-shell spec §4.1): knot/stitch nodes
+   * plus END/DONE pseudo-nodes, and divert/choice/tunnel/thread edges.
+   * Deterministically ordered; recomputed per call (call after a compile,
+   * like the outline). Returns null when no analysis is available.
+   */
+  getStoryGraph(): StoryGraph | null {
+    const json = this.session.story_graph();
+    const result = JSON.parse(json);
+    return (result as StoryGraph | null) ?? null;
   }
 
   getLineContexts(): LineContext[] {

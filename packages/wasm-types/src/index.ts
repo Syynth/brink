@@ -210,6 +210,47 @@ export interface FileOutline {
   symbols: DocumentSymbol[];
 }
 
+// ── Story graph types (studio-shell spec §4.1) ──────────────────
+
+export type StoryGraphNodeKind = "knot" | "stitch" | "end" | "done";
+
+export type StoryGraphEdgeKind = "divert" | "choice" | "tunnel" | "thread";
+
+/**
+ * A story-graph node: a knot, a stitch, or an `END`/`DONE` pseudo-node.
+ * `file`/`start`/`end` are absent on pseudo-nodes; `start`/`end` are UTF-16
+ * offsets of the declaration name within `file`.
+ */
+export interface StoryGraphNode {
+  /** Stable id — the qualified name (`knot`, `knot.stitch`), or `END`/`DONE`. */
+  id: string;
+  /** The qualified display name (currently identical to `id`). */
+  name: string;
+  kind: StoryGraphNodeKind;
+  file?: string;
+  start?: number;
+  end?: number;
+  /** For stitches: the owning knot's node id (the UI nests them). */
+  parent?: string;
+}
+
+/** A directed story-graph edge between node ids. Function calls are excluded. */
+export interface StoryGraphEdge {
+  from: string;
+  to: string;
+  kind: StoryGraphEdgeKind;
+}
+
+/**
+ * The whole-project story graph. Deterministically ordered: nodes sorted by
+ * id, edges deduplicated and sorted by (from, to, kind). Recomputed per call,
+ * like the project outline.
+ */
+export interface StoryGraph {
+  nodes: StoryGraphNode[];
+  edges: StoryGraphEdge[];
+}
+
 // ── Line conversion types ───────────────────────────────────────
 
 export type ConvertTarget = "narrative" | "choice" | "sticky_choice" | "gather" | "choice_body";
