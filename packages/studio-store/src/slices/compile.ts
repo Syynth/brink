@@ -26,12 +26,20 @@ export function sortDiagnostics(diagnostics: readonly Diagnostic[]): Diagnostic[
   });
 }
 
+/**
+ * The one real diagnostic severity knob (Settings document, #93): whether
+ * manifest-driven external-function checks report as errors or are off.
+ */
+export type ExternalCheckLevel = "error" | "off";
+
 export interface CompileSlice {
   outline: FileOutline[];
   diagnostics: { errors: number; warnings: number };
   /** Full diagnostic list from the latest compile, in canonical order. */
   diagnosticsList: Diagnostic[];
   storyBytes: Uint8Array | null;
+  /** External-function checking severity (mirrors the wasm session). */
+  externalCheck: ExternalCheckLevel;
 
   setCompileResult(
     outline: FileOutline[],
@@ -41,6 +49,13 @@ export interface CompileSlice {
   ): void;
   compile(): void;
   convertLineToType(sigil: string): void;
+  /**
+   * Set external-function checking severity. Applies to the wasm session
+   * and recompiles when a project is bound; called before `initialize`
+   * (bootstrap restore) it only seeds the state — `initialize` applies it
+   * to the session before the first compile.
+   */
+  setExternalCheck(level: ExternalCheckLevel): void;
 }
 
 export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice> = (set, get) => ({
@@ -48,6 +63,7 @@ export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice>
   diagnostics: { errors: 0, warnings: 0 },
   diagnosticsList: [],
   storyBytes: null,
+  externalCheck: "error",
 
   setCompileResult(outline, diagnostics, diagnosticsList, storyBytes) {
     set({ outline, diagnostics, diagnosticsList: sortDiagnostics(diagnosticsList), storyBytes });
@@ -59,5 +75,15 @@ export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice>
 
   convertLineToType(sigil) {
     get()._documents?.convertLineToType(sigil);
+  },
+
+  setExternalCheck(level) {
+    if (get().externalCheck === level) return;
+    set({ externalCheck: level });
+    const project = get()._project;
+    if (project !== null) {
+      project.getSession().setExternalCheck(level);
+      get()._documents?.triggerCompile();
+    }
   },
 });
