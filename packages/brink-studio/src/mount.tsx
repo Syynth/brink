@@ -25,6 +25,7 @@ import {
   DocumentSessions,
   ProjectSession,
   InMemoryFileProvider,
+  type FileChange,
 } from "@brink/ink-editor";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
 import {
@@ -88,6 +89,8 @@ import {
   type StudioApi,
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
+import { registerFileCommands } from "./file-commands.js";
+import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
 
 // ── Public types ───────────────────────────────────────────────────
 
@@ -109,6 +112,27 @@ export interface MountStudioOptions {
    * session itself stays unexposed (spec §8.2).
    */
   hostManifest?: HostManifest;
+  /**
+   * File-content egress (issue #154): called with batched change
+   * notifications whenever project files change in the session — CM6 edits,
+   * binder structural ops, search replacements, `file.new`. Debounced
+   * (~500 ms trailing); pending changes flush immediately on `file.save` /
+   * `file.saveAll` and on `unmount()`. Each change names the file, its kind
+   * ("modified" | "created" | "deleted" — the latter designed-in but
+   * currently unreachable: the studio has no delete UI yet), and the full
+   * content. A host that persists files writes these back (e.g. RPG Maker
+   * MZ writing `data/brink/**`; see docs/embedder-api.md "File egress").
+   */
+  onFilesChanged?: (changes: FileChange[]) => void;
+  /**
+   * Where to load the wasm binary from — forwarded to `initWasm`. By
+   * default the binary resolves relative to the module URL, which cannot
+   * work inside an IIFE plugin bundle (no usable `import.meta.url`, e.g. an
+   * RPG Maker MZ plugin): pass a URL/path or a precompiled
+   * `WebAssembly.Module` there instead of relying on a pre-call to
+   * `initWasm` and its double-init guard.
+   */
+  wasmLocation?: Parameters<typeof initWasm>[0];
 }
 
 export interface StudioHandle {
@@ -257,13 +281,25 @@ export async function mountStudio(
   container: HTMLElement,
   options: MountStudioOptions,
 ): Promise<StudioHandle> {
-  await initWasm();
+  // Old-engine hosts first (NW.js / RPG Maker MZ ships Chromium 88, whose
+  // frozen adoptedStyleSheets breaks CodeMirror's style injection): the
+  // feature-detect is a no-op on modern browsers. Before any CM6/style-mod
+  // code can run.
+  installAdoptedStyleSheetsShim();
+
+  await initWasm(options.wasmLocation);
 
   // Initialize the project BEFORE rendering so the wasm session has files
   // loaded.
   const provider = new InMemoryFileProvider(options.files);
   const { entryFile } = options;
-  const project = new ProjectSession({ provider, entryFile });
+  const project = new ProjectSession({
+    provider,
+    entryFile,
+    // Host egress (#154): every session-content mutation reports through
+    // the project's FileChangeHub, which batches + debounces into this.
+    onFilesChanged: options.onFilesChanged,
+  });
   await project.initialize();
 
   // Register the host's capability manifest before anything compiles, so
@@ -273,6 +309,11 @@ export async function mountStudio(
   }
 
   const store = createStudioStore();
+
+  // Mirror the project's dirty-file count into the store — it feeds the
+  // StudioPublicState.dirtyFiles summary (#154). Cheap scalar only; file
+  // contents never enter public state.
+  project.setDirtyListener((count) => store.getState().setDirtyFiles(count));
 
   // Shell command registry (spec §6). ShellProvider owns the keymap and the
   // global key handler, generates the `view.toggle.<id>` commands (Mod-1…9 by
@@ -410,6 +451,16 @@ export async function mountStudio(
         file: location.file,
         span: { start: location.start, end: location.end },
       }),
+  });
+
+  // File save commands (#154): file.save (Mod-S) / file.saveAll flush
+  // editor text to the session and deliver pending host change
+  // notifications immediately (bypassing the egress debounce). They work —
+  // and notify — with or without an onFilesChanged host hook.
+  registerFileCommands(commands, {
+    project,
+    documents,
+    notify: (n) => void notifications.notify(n),
   });
 
   // The store's document opener (Binder rows, addFile): note the target so
@@ -644,6 +695,13 @@ export async function mountStudio(
   return {
     api,
     // Unmounting runs Root's cleanup effect: dispose session + views + project.
-    unmount: () => root.unmount(),
+    // Editor views unmount (child effects) before Root's cleanup runs, so the
+    // egress flush must happen first, while the views still exist: push every
+    // mounted view's text, then deliver pending host notifications (#154).
+    unmount: () => {
+      documents.flushAll();
+      project.flushFileChanges();
+      root.unmount();
+    },
   };
 }

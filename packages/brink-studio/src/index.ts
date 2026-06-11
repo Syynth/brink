@@ -11,6 +11,12 @@
 // ── Mount (the embedding entry point) ───────────────────────────
 export { mountStudio, type MountStudioOptions, type StudioHandle } from "./mount.js";
 
+// ── File-content egress (issue #154) ────────────────────────────
+// The `onFilesChanged` mount option's payload shapes, plus the save
+// command ids (dispatchable via `api.dispatch`).
+export type { FileChange, FileChangeType } from "@brink/ink-editor";
+export { FILE_SAVE_COMMAND_ID, FILE_SAVE_ALL_COMMAND_ID } from "./file-commands.js";
+
 // ── Extension config (spec §8.1) ────────────────────────────────
 export type {
   StudioExtensions,

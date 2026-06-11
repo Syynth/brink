@@ -6,6 +6,7 @@
  */
 
 import { mountStudio, type StudioHandle } from "./mount.js";
+import type { FileChange } from "@brink/ink-editor";
 import { createExampleExtension, EXAMPLE_HOST_MANIFEST } from "./example-extension.js";
 import toppledTemple from "./stories/toppled-temple.ink.txt?raw";
 
@@ -84,6 +85,18 @@ async function main(): Promise<void> {
   // exercises that persisted layouts referencing its panel load cleanly).
   const withExtension = params.get("ext") !== "none";
 
+  // `?egress=test` attaches an onFilesChanged hook recording delivered
+  // batches on `window.__brinkFileChanges` (e2e for #154). The normal
+  // playground stays hookless — it is the "host without persistence" case,
+  // where dirty state only clears on explicit file.save / file.saveAll.
+  const recordEgress = params.get("egress") === "test";
+  const onFilesChanged = recordEgress
+    ? (changes: FileChange[]): void => {
+        const w = window as unknown as { __brinkFileChanges?: FileChange[][] };
+        (w.__brinkFileChanges ??= []).push(changes);
+      }
+    : undefined;
+
   const handle: StudioHandle = await mountStudio(appRoot, {
     files,
     entryFile: "main.ink",
@@ -92,6 +105,7 @@ async function main(): Promise<void> {
     // object). Registered regardless of `?ext=none` — the host's vocabulary
     // exists whether or not its UI extension is mounted.
     hostManifest: EXAMPLE_HOST_MANIFEST,
+    onFilesChanged,
   });
   if (superseded()) {
     handle.unmount();
