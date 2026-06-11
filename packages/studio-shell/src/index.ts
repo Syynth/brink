@@ -10,7 +10,12 @@
 
 import "./styles/index.css";
 
-export { CommandRegistry, HOST_ID_PREFIX, type Command } from "./command.js";
+export { CommandRegistry, HOST_ID_PREFIX, assertHostId, type Command } from "./command.js";
+export {
+  installStudioExtensions,
+  type StudioExtensionRegistries,
+  type StudioExtensions,
+} from "./extensions.js";
 export {
   Keymap,
   KEYMAP_STORAGE_KEY,

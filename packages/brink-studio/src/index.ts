@@ -1,93 +1,68 @@
-// ── Types (from @brink/wasm-types) ─────────────────────────────
-export type {
-  CompileResult,
-  Diagnostic,
-  SemanticToken,
-  Line,
-  LineType,
-  Choice,
-  CompletionItem,
-  HoverInfo,
-  Location,
-  FileEdit,
-  InlayHint,
-  SignatureInfo,
-  FoldRange,
-  DocumentSymbol,
-  CodeAction,
-  LineContext,
-  WeavePosition,
-  WeaveElement,
-  LineElement,
-  ProjectFile,
-  FileOutline,
-  IncludeInfo,
-} from "@brink/wasm-types";
+// @brink/studio — the public embedding surface (docs/embedder-api.md,
+// docs/studio-shell-spec.md §8).
+//
+// Hosts mount the studio with `mountStudio` and extend it through the
+// `StudioExtensions` config; host components talk to the studio through the
+// `StudioApi` facade. The studio's Zustand store is deliberately NOT
+// exported (spec §8.2): hosts observe `StudioPublicState` — an explicit,
+// versioned subset — and anything else they need is an API addition, not a
+// store leak.
 
-// ── Wasm bindings (from @brink/wasm) ───────────────────────────
+// ── Mount (the embedding entry point) ───────────────────────────
+export { mountStudio, type MountStudioOptions, type StudioHandle } from "./mount.js";
+
+// ── Extension config (spec §8.1) ────────────────────────────────
+export type {
+  StudioExtensions,
+  // Item shapes for authoring extensions.
+  Command,
+  ToolWindowDescriptor,
+  StatusBarItemDescriptor,
+  StatusBarAlignment,
+  Placement,
+  Dock,
+  Section,
+  // Navigation protocol (§6.1): the editor.reveal argument shape.
+  Location,
+  Span,
+  // Notification service (§7.5): notify() input/handle shapes.
+  Notification,
+  NotificationAction,
+  NotificationHandle,
+  NotificationInput,
+  NotificationSeverity,
+} from "@brink/studio-shell";
+
+// ── StudioApi facade (spec §8.2) ────────────────────────────────
+export {
+  useStudioApi,
+  type PublicElementInfo,
+  type StudioApi,
+  type StudioPublicState,
+} from "@brink/studio-ui";
+
+// ── Example extension (worked example, issue #95) ───────────────
+export {
+  createExampleExtension,
+  EXAMPLE_REVEAL_COMMAND_ID,
+  EXAMPLE_TOOL_WINDOW_ID,
+} from "./example-extension.js";
+
+// ── Compiler/runtime wasm bindings (no studio state involved) ────
+//
+// Lower-level building blocks for hosts that drive the compiler or a story
+// directly (the docs/book examples): wasm init + handles and their result
+// types. These carry no studio UI state.
 export {
   initWasm,
   compile,
-  getTokenTypeNames,
-  getTokenModifierNames,
   EditorSessionHandle,
   StoryRunnerHandle,
 } from "@brink/wasm";
-
-// ── Pure operations (from @brink/ink-operations) ────────────────
-export {
-  CONVERTIBLE_TYPES,
-  extractLineContent,
-  getLineSigilRange,
-} from "@brink/ink-operations";
-
-// ── Editor (from @brink/ink-editor) ─────────────────────────────
-export {
-  brinkStudio,
-  elementTypeField,
-  ElementType,
-  DocHandle,
-  DocumentSessions,
-  docKeyFor,
-  docTitleFor,
-  documentHandleFacet,
-  parseDocKey,
-  syncAnnotation,
-  ProjectSession,
-  InMemoryFileProvider,
-  brinkTheme,
-  convertLineToType,
-} from "@brink/ink-editor";
 export type {
-  KeyHint,
-  BrinkStudioOptions,
-  DocTarget,
-  DocumentCallbacks,
-  DocumentHandleSlot,
-  LineInfo,
-  ProjectSessionOptions,
-  FileProvider,
-} from "@brink/ink-editor";
-
-// ── Store (from @brink/studio-store) ────────────────────────────
-export { createStudioStore } from "@brink/studio-store";
-export type { StudioState, StudioStore, TabTarget } from "@brink/studio-store";
-
-// ── UI (from @brink/studio-ui) ─────────────────────────────────
-export {
-  StoreProvider,
-  useStudioStore,
-  App,
-  Binder,
-  INK_FILE_TYPE_ID,
-  InkFileDocument,
-  inkFileRef,
-  NewFilePrompt,
-  CompileStatusSegment,
-  CursorSegment,
-  ElementSegment,
-  KeyHintsSegment,
-  StorySegment,
-  PlayerPane,
-  ElementDropdown,
-} from "@brink/studio-ui";
+  CompileResult,
+  Diagnostic,
+  Line,
+  LineType,
+  Choice,
+} from "@brink/wasm-types";

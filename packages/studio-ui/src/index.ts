@@ -1,6 +1,16 @@
 import "./styles/index.css";
 
 export { StoreProvider, useStudioStore, useStudioStoreApi } from "./StoreContext.js";
+export {
+  StudioApiProvider,
+  createStudioApi,
+  derivePublicState,
+  useStudioApi,
+  type PublicElementInfo,
+  type StudioApi,
+  type StudioApiDeps,
+  type StudioPublicState,
+} from "./StudioApi.js";
 export { App } from "./App.js";
 export { Binder, computeReorder } from "./Binder.js";
 export { INK_FILE_TYPE_ID, InkFileDocument, inkFileRef } from "./InkFileDocument.js";
