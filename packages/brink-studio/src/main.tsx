@@ -6,10 +6,20 @@
  */
 
 import { mountStudio, type StudioHandle } from "./mount.js";
-import { createExampleExtension } from "./example-extension.js";
+import { createExampleExtension, EXAMPLE_HOST_MANIFEST } from "./example-extension.js";
 import toppledTemple from "./stories/toppled-temple.ink.txt?raw";
 
 const MAIN_INK = `INCLUDE toppled-temple.ink
+
+// Host functions — provided by the playground's pretend host. Declared
+// here ("already defined"); their signatures, types, and docs come from
+// the host-capability manifest registered at mount. The Host Functions
+// panel browses that manifest and inserts call sites.
+EXTERNAL has_item(item)
+EXTERNAL gain_gold(amount)
+EXTERNAL play_se(name)
+EXTERNAL show_picture(name, x, y)
+EXTERNAL party_size()
 
 -> intro
 `;
@@ -78,6 +88,10 @@ async function main(): Promise<void> {
     files,
     entryFile: "main.ink",
     extensions: withExtension ? createExampleExtension : undefined,
+    // The pretend host's capability manifest (the panel renders the same
+    // object). Registered regardless of `?ext=none` — the host's vocabulary
+    // exists whether or not its UI extension is mounted.
+    hostManifest: EXAMPLE_HOST_MANIFEST,
   });
   if (superseded()) {
     handle.unmount();
