@@ -69,12 +69,13 @@ jobs:
           node-version: 22
           cache: pnpm
 
+          registry-url: https://registry.npmjs.org
+
       # npm's OIDC trusted publishing needs npm >= 11.5.1; Node 22 bundles
       # npm 10.x, which silently falls back to legacy auth and dies with
       # ENEEDAUTH. Pin a supporting npm explicitly.
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@^11.5.1
-          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
