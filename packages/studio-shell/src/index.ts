@@ -53,6 +53,11 @@ export {
   type OpenDocumentOptions,
 } from "./editor-groups.js";
 export { registerEditorGroupCommands } from "./editor-commands.js";
+export {
+  EDITOR_MAXIMIZE_GROUP_COMMAND_ID,
+  VIEW_MAXIMIZE_COMMAND_ID,
+  registerMaximizeCommands,
+} from "./maximize-commands.js";
 export { EditorArea } from "./editor-area.js";
 export {
   MAX_VISIBLE_NOTIFICATIONS,

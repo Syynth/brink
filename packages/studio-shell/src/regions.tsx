@@ -24,6 +24,7 @@
 import { useEffect, useMemo, type ReactNode } from "react";
 import { Group, Panel, Separator, type PanelSize } from "react-resizable-panels";
 import {
+  useEditorGroups,
   useShell,
   useShellLayout,
   useStatusBarItems,
@@ -201,7 +202,7 @@ export function ShellStatusBar() {
 // ── Shell frame ─────────────────────────────────────────────────────
 
 export function ShellFrame() {
-  const { layout } = useShell();
+  const { layout, editorGroups } = useShell();
   const descriptors = useToolWindows();
   const tier = useShellLayout((s) => s.tier);
   const placements = useShellLayout((s) => s.placements);
@@ -209,23 +210,33 @@ export function ShellFrame() {
   const drawers = useShellLayout((s) => s.drawers);
   const narrowView = useShellLayout((s) => s.narrowView);
   const maximized = useShellLayout((s) => s.maximized);
+  // Editor-group maximize (spec §5.4): the maximized group takes the whole
+  // editor area (EditorArea hides its siblings) and the open docks collapse
+  // here — purely presentational, so restore touches nothing else.
+  const groupMaximized = useEditorGroups((s) => s.maximizedGroupId) !== null;
 
   // Strip-icon drag-to-re-dock (§5.1, #87). Transient interaction state —
   // lives here, not in the layout store; only the drop touches the store.
   const drag = useStripDrag(layout);
 
-  // Maximize restore (spec §5.4): Escape anywhere brings the layout back.
-  // Capture-phase so it wins over focused widgets; skips handled events.
+  // Maximize restore (spec §5.4): Escape anywhere brings the layout back —
+  // tool-window maximize and group maximize alike (at most one is active;
+  // the commands enforce mutual exclusion, and a stray double restores the
+  // tool window first). Capture-phase so it wins over focused widgets.
   useEffect(() => {
-    if (maximized === null) return;
+    if (maximized === null && !groupMaximized) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
-      layout.getState().toggleMaximize(maximized);
+      if (maximized !== null) {
+        layout.getState().toggleMaximize(maximized);
+      } else {
+        editorGroups.getState().toggleMaximizeGroup();
+      }
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [maximized, layout]);
+  }, [maximized, groupMaximized, layout, editorGroups]);
 
   const byId = useMemo(
     () => new Map(descriptors.map((d) => [d.id, d])),
@@ -301,9 +312,9 @@ export function ShellFrame() {
     open[dockSectionId({ dock, section: "start" })] !== null ||
     open[dockSectionId({ dock, section: "end" })] !== null;
 
-  const showLeftDock = tier === "wide" && dockHasOpen("left");
-  const showRightDock = tier === "wide" && dockHasOpen("right");
-  const showBottomDock = !narrow && dockHasOpen("bottom");
+  const showLeftDock = tier === "wide" && dockHasOpen("left") && !groupMaximized;
+  const showRightDock = tier === "wide" && dockHasOpen("right") && !groupMaximized;
+  const showBottomDock = !narrow && dockHasOpen("bottom") && !groupMaximized;
 
   // Dock sizes are read imperatively: Panel only consumes defaultSize at
   // mount (docks remount via the `open` change, which already re-renders),
