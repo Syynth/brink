@@ -888,3 +888,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The Story Graph document (#97) uses react-flow (@xyflow/react) as its graph rendering layer, confirming the spec §4.1 candidate. The auto-layout engine stays an implementation detail (layered — dagre or ELK — run off the render path). Stated by the user verbatim: "i want to use reactflow for the graph, use your judgement and be tasteful."
 - **WHY:** User-stated preference; react-flow is the mature React-native graph layer with custom-node rendering that fits the token CSS, and §4.1 already named it the candidate.
+
+## Host functions panel inserts calls, not declarations; surfaces manifest metadata
+- **WHEN:** 2026-06-11
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-shell / embedder API
+- **SCOPE:** moderate
+- **WHAT:** The host functions panel (§8.2 motivating example, and the eventual real RMMZ panel) browses the external functions already known via the host-capability manifest and inserts only call sites (`~ fn(args)`) at the cursor — never `EXTERNAL` declarations. The panel surfaces the metadata the manifest already carries (signatures, doc comments, semantic types). The §8.2 example text ("click-to-insert of EXTERNAL declarations and call snippets") is amended accordingly; the playground example gains a pretend manifest so the demo models the real data flow (and makes manifest-driven diagnostics live in the playground).
+- **WHY:** The manifest is the catalog — the panel's job is browsing what the host already provides, not declaring it; inserting EXTERNAL lines duplicates declarations that exist (or belong in a dedicated declarations file), and the metadata is already registered host-side, so rendering it costs nothing and is the panel's whole value.

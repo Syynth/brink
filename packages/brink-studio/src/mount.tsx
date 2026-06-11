@@ -20,7 +20,7 @@
 import { createRoot } from "react-dom/client";
 import { useEffect } from "react";
 import { initWasm } from "@brink/wasm";
-import type { CompileResult, FileOutline } from "@brink/wasm-types";
+import type { CompileResult, FileOutline, HostManifest } from "@brink/wasm-types";
 import {
   DocumentSessions,
   ProjectSession,
@@ -101,6 +101,14 @@ export interface MountStudioOptions {
    * receives the `StudioApi` facade for host commands that need it.
    */
   extensions?: StudioExtensions | ((api: StudioApi) => StudioExtensions);
+  /**
+   * The host-capability manifest (docs/host-capability-manifest.md): the
+   * host's external-function vocabulary, registered once at mount — before
+   * the first compile — so manifest-driven diagnostics, hover, and
+   * completions are live from the start. The host owns this data; the wasm
+   * session itself stays unexposed (spec §8.2).
+   */
+  hostManifest?: HostManifest;
 }
 
 export interface StudioHandle {
@@ -257,6 +265,12 @@ export async function mountStudio(
   const { entryFile } = options;
   const project = new ProjectSession({ provider, entryFile });
   await project.initialize();
+
+  // Register the host's capability manifest before anything compiles, so
+  // the very first analysis already validates call sites against it.
+  if (options.hostManifest !== undefined) {
+    project.getSession().setHostManifest(options.hostManifest);
+  }
 
   const store = createStudioStore();
 

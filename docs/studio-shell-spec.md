@@ -622,10 +622,13 @@ The full field list and versioning policy live in [embedder-api.md](embedder-api
 
 **Motivating example (Track B synergy):** the RPG Maker functions panel renders the
 host-capability manifest the host already registers via `set_host_manifest`
-(see [host-capability-manifest.md](host-capability-manifest.md)), with click-to-insert of
-`EXTERNAL` declarations and call snippets through `insertText`. The shipped
-`createExampleExtension` (mounted by the playground; `?ext=none` disables) is the worked
-example of exactly this shape.
+(see [host-capability-manifest.md](host-capability-manifest.md)) — surfacing the metadata
+the manifest carries (signatures, doc comments, semantic types) — with click-to-insert of
+call sites only (`~ fn(args)`) through `insertText`. The panel browses what the host
+already provides; it never inserts `EXTERNAL` declarations — those live in the story (or
+a dedicated declarations file). The shipped `createExampleExtension` (mounted by the
+playground, which registers a pretend manifest via the `hostManifest` mount option;
+`?ext=none` disables the panel) is the worked example of exactly this shape.
 
 ### 8.3 Timing
 

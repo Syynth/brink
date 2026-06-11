@@ -1,11 +1,14 @@
 /**
- * Embedder extension API e2e (shell issue 5.4 / #95, spec §8).
+ * Embedder extension API e2e (shell issue 5.4 / #95, reworked by #146, spec §8).
  *
  * The playground mounts the example host extension (host.example.functions)
- * through the StudioExtensions mount config — these specs verify the panel
- * is an equal citizen: it appears in the strip, palette, and hamburger;
- * opens/docks; click-to-insert lands an EXTERNAL snippet at the editor
- * cursor (StudioApi.insertText) and raises a notification; the host command
+ * through the StudioExtensions mount config and registers its pretend
+ * host-capability manifest at mount — these specs verify the panel is an
+ * equal citizen: it appears in the strip, palette, and hamburger;
+ * opens/docks; renders the manifest's metadata (signatures + doc comments);
+ * click-to-insert lands ONLY a call site (`~ fn(args)` — never an EXTERNAL
+ * declaration; those already live in the story) at the editor cursor
+ * (StudioApi.insertText) and raises a notification; the host command
  * navigates via dispatch("editor.reveal"); drag re-docks it and the
  * placement survives a reload; and loading without the extension
  * (`?ext=none`) drops the persisted host ids cleanly.
@@ -76,13 +79,20 @@ test("host panel appears in the strip, palette, and hamburger; opens like a buil
   ).toBeVisible();
   await page.keyboard.press("Escape");
 
-  // Strip click opens the panel in the right dock with its content.
+  // Strip click opens the panel in the right dock with its content: rows
+  // render the manifest's metadata — the typed signature plus the doc
+  // comment as secondary text.
   await button.click();
   await expect(page.locator(`.shell-dock-right [data-toolwindow="${PANEL_ID}"]`)).toBeVisible();
   await expect(page.locator(".host-example-fn").first()).toBeVisible();
+  const hasItemRow = page.locator(".host-example-fn", { hasText: "has_item" });
+  await expect(hasItemRow).toContainText("has_item(item: item_id) -> bool");
+  await expect(hasItemRow.locator(".host-example-fn-doc")).toHaveText(
+    "True if the party carries the item.",
+  );
 });
 
-test("click inserts the EXTERNAL snippet at the editor cursor and notifies", async ({
+test("click inserts ONLY the call snippet at the editor cursor and notifies", async ({
   page,
 }) => {
   await gotoStudio(page);
@@ -97,22 +107,50 @@ test("click inserts the EXTERNAL snippet at the editor cursor and notifies", asy
 
   await page.locator(".host-example-fn", { hasText: "has_item" }).click();
 
-  const firstLines = await page.evaluate(() => {
+  // The cursor sits after the insertion, so [0, head) is exactly the
+  // inserted text: a call site only — no EXTERNAL declaration (the story
+  // already declares the host functions; the panel never inserts them).
+  const inserted = await page.evaluate(() => {
     const view = (window as any).__brinkView;
-    return view.state.doc.toString().split("\n").slice(0, 2);
+    return view.state.doc.sliceString(0, view.state.selection.main.head);
   });
-  expect(firstLines).toEqual(["EXTERNAL has_item(item_id)", "~ has_item(item_id)"]);
-
-  // Cursor sits after the insertion.
-  const head = await page.evaluate(
-    () => (window as any).__brinkView.state.selection.main.head,
-  );
-  expect(head).toBe("EXTERNAL has_item(item_id)\n~ has_item(item_id)\n".length);
+  expect(inserted).toBe("~ has_item(item)\n");
+  expect(inserted).toContain("~ has_item(");
+  expect(inserted).not.toContain("EXTERNAL");
 
   // The notify() toast appeared.
   await expect(
-    page.locator(".shell-notification", { hasText: "Inserted has_item(item_id)" }),
+    page.locator(".shell-notification", { hasText: "Inserted has_item(item)" }),
   ).toBeVisible();
+});
+
+test("the registered manifest drives diagnostics; the external-check flag suppresses them", async ({
+  page,
+}) => {
+  await gotoStudio(page);
+
+  const problemsBadge = page
+    .locator('.shell-strip-bottom .shell-strip-btn[aria-label="Problems"]')
+    .locator(".shell-strip-badge");
+
+  // The default project (manifest registered, EXTERNALs declared) compiles
+  // clean: no Problems badge.
+  await expect(problemsBadge).toHaveCount(0);
+
+  // A literal type mismatch against the manifest — gain_gold takes an int
+  // (E041). Without the manifest this line would compile fine.
+  await page.evaluate(() => {
+    const view = (window as any).__brinkView;
+    view.dispatch({ changes: { from: 0, insert: '~ gain_gold("lots")\n' } });
+  });
+  await expect(problemsBadge).toHaveText("1", { timeout: 10000 });
+
+  // Settings → external check "off" recompiles immediately: the
+  // manifest-driven diagnostic is suppressed, badge gone.
+  await page.keyboard.press("Meta+,");
+  await expect(page.locator(".settings-doc")).toBeVisible();
+  await page.locator(".settings-select").selectOption("off");
+  await expect(problemsBadge).toHaveCount(0, { timeout: 10000 });
 });
 
 test("the host command navigates via dispatch('editor.reveal', …)", async ({ page }) => {

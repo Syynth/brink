@@ -1,13 +1,18 @@
 /**
- * Example host extension (docs/studio-shell-spec.md §8, issue #95).
+ * Example host extension (docs/studio-shell-spec.md §8, issues #95/#146).
  *
  * The worked example validating the RPG Maker MZ use case: a host embedding
- * the studio registers a "Host Functions" tool window listing its external
- * vocabulary, with click-to-insert of `EXTERNAL` declarations + call
- * snippets through the StudioApi facade. A real host would render the
- * host-capability manifest it already registers via `set_host_manifest`
- * (docs/host-capability-manifest.md — Track B synergy); this example uses a
- * small static list of pretend functions.
+ * the studio registers a "Host Functions" tool window that browses the
+ * external vocabulary the host already provides. The data flow models the
+ * real one (Track B synergy, docs/host-capability-manifest.md): the host
+ * owns a capability manifest — the playground registers
+ * `EXAMPLE_HOST_MANIFEST` at mount via the `hostManifest` option
+ * (`EditorSession.setHostManifest` underneath) — and the panel renders that
+ * same manifest's metadata (signatures, doc comments, semantic types).
+ * Click inserts ONLY a call site (`~ fn(args)`) at the cursor: the
+ * `EXTERNAL` declarations already live in the story (the functions are
+ * "already defined"); the panel's job is browsing the catalog, never
+ * declaring it.
  *
  * Everything here goes through public surface only: the `StudioExtensions`
  * mount config, `useStudioApi()` (insertText / dispatch / notify /
@@ -19,69 +24,137 @@
 
 import { useStudioApi, type StudioApi } from "@brink/studio-ui";
 import type { StudioExtensions } from "@brink/studio-shell";
+import type { HostManifest } from "@brink/wasm-types";
 
 export const EXAMPLE_TOOL_WINDOW_ID = "host.example.functions";
 export const EXAMPLE_REVEAL_COMMAND_ID = "host.example.revealStart";
 
-// ── Pretend host vocabulary ─────────────────────────────────────────
+// ── Pretend host-capability manifest ────────────────────────────────
 //
-// A real host derives this from its capability manifest; the shapes mirror
-// the RPG Maker-style verbs from docs/host-capability-manifest.md.
+// The playground's pretend host vocabulary, RPG Maker-flavored. The
+// playground registers this at mount (`hostManifest` option), which makes
+// the manifest-driven diagnostics live (E041 literal type mismatches etc. —
+// toggleable via the Settings external-check flag), and the panel below
+// renders the same object. The demo story declares the matching `EXTERNAL`s.
 
-interface HostFunction {
+export const EXAMPLE_HOST_MANIFEST: HostManifest = {
+  types: [{ name: "item_id", base: "string" }],
+  externals: [
+    {
+      name: "has_item",
+      params: [{ name: "item", ty: "item_id" }],
+      returns: "bool",
+      kind: "query",
+      doc: "True if the party carries the item.",
+    },
+    {
+      name: "gain_gold",
+      params: [{ name: "amount", ty: "int" }],
+      returns: "void",
+      kind: "effect",
+      doc: "Add gold to the party's purse.",
+    },
+    {
+      name: "play_se",
+      params: [{ name: "name", ty: "string" }],
+      returns: "void",
+      kind: "presentation",
+      doc: "Play a sound effect by name.",
+    },
+    {
+      name: "show_picture",
+      params: [
+        { name: "name", ty: "string" },
+        { name: "x", ty: "int" },
+        { name: "y", ty: "int" },
+      ],
+      returns: "void",
+      kind: "presentation",
+      doc: "Show a picture at screen coordinates.",
+    },
+    {
+      name: "party_size",
+      params: [],
+      returns: "int",
+      kind: "query",
+      doc: "Number of members in the active party.",
+    },
+  ],
+};
+
+// ── Manifest → panel items (pure mapping) ───────────────────────────
+
+/** One row of the Host Functions panel, derived from a manifest entry. */
+export interface HostFunctionItem {
   name: string;
-  params: string[];
+  /** Display signature, e.g. `has_item(item: item_id) -> bool`. */
+  signature: string;
+  /** The call snippet inserted on click — a call site only, no `EXTERNAL`. */
+  call: string;
+  /** The manifest doc comment ("" when the entry carries none). */
   doc: string;
+  /** The manifest kind tag ("query" | "effect" | "presentation" | "plain"). */
+  kind: string;
 }
 
-const HOST_FUNCTIONS: HostFunction[] = [
-  { name: "has_item", params: ["item_id"], doc: "Whether the party holds an item." },
-  { name: "gain_gold", params: ["amount"], doc: "Give the party gold." },
-  { name: "play_se", params: ["name"], doc: "Play a sound effect." },
-  { name: "show_picture", params: ["name", "x", "y"], doc: "Show a picture." },
-];
-
-/** The `EXTERNAL` declaration + call snippet inserted for a function. */
-export function functionSnippet(fn: HostFunction): string {
-  const params = fn.params.join(", ");
-  return `EXTERNAL ${fn.name}(${params})\n~ ${fn.name}(${params})\n`;
+/**
+ * Derive the panel's rows from a host-capability manifest. Pure — the panel
+ * renders exactly what the manifest registered, nothing else.
+ */
+export function manifestPanelItems(manifest: HostManifest): HostFunctionItem[] {
+  return (manifest.externals ?? []).map((ext) => {
+    const params = ext.params ?? [];
+    const sigParams = params
+      .map((p) => (p.ty !== undefined ? `${p.name}: ${p.ty}` : p.name))
+      .join(", ");
+    const returns =
+      ext.returns !== undefined && ext.returns !== "void" ? ` -> ${ext.returns}` : "";
+    const args = params.map((p) => p.name).join(", ");
+    return {
+      name: ext.name,
+      signature: `${ext.name}(${sigParams})${returns}`,
+      call: `~ ${ext.name}(${args})\n`,
+      doc: ext.doc ?? "",
+      kind: ext.kind ?? "plain",
+    };
+  });
 }
 
 // ── Panel component ─────────────────────────────────────────────────
 
 function HostFunctionsPanel() {
   const api = useStudioApi();
+  const items = manifestPanelItems(EXAMPLE_HOST_MANIFEST);
 
-  const insert = (fn: HostFunction): void => {
-    api.insertText(functionSnippet(fn));
+  const insert = (item: HostFunctionItem): void => {
+    api.insertText(item.call);
     api.notify({
       severity: "info",
       source: "example host",
-      message: `Inserted ${fn.name}(${fn.params.join(", ")})`,
+      message: `Inserted ${item.call.trim().slice(2)}`,
     });
   };
 
   return (
     <div className="host-example-panel" style={{ padding: 8, overflow: "auto", height: "100%" }}>
       <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--bs-fg-muted)" }}>
-        Pretend host functions — click to insert an EXTERNAL declaration and
-        call at the cursor.
+        Functions the host provides (already declared in the story) — click to
+        insert a call at the cursor.
       </p>
       <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-        {HOST_FUNCTIONS.map((fn) => (
-          <li key={fn.name} style={{ marginBottom: 4 }}>
+        {items.map((item) => (
+          <li key={item.name} style={{ marginBottom: 4 }}>
             <button
               type="button"
               className="host-example-fn"
-              onClick={() => insert(fn)}
-              title={fn.doc}
+              onClick={() => insert(item)}
+              title={`${item.kind} — inserts ${item.call.trim()}`}
               style={{
                 display: "block",
                 width: "100%",
                 textAlign: "left",
                 padding: "4px 6px",
                 font: "inherit",
-                fontFamily: "monospace",
                 fontSize: 12,
                 color: "var(--bs-fg)",
                 background: "var(--bs-surface-bg)",
@@ -90,7 +163,22 @@ function HostFunctionsPanel() {
                 cursor: "pointer",
               }}
             >
-              {fn.name}({fn.params.join(", ")})
+              <span style={{ display: "block", fontFamily: "monospace" }}>
+                {item.signature}
+              </span>
+              {item.doc !== "" && (
+                <span
+                  className="host-example-fn-doc"
+                  style={{
+                    display: "block",
+                    marginTop: 2,
+                    fontSize: 11,
+                    color: "var(--bs-fg-muted)",
+                  }}
+                >
+                  {item.doc}
+                </span>
+              )}
             </button>
           </li>
         ))}

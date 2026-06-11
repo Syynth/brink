@@ -41,11 +41,14 @@ export {
   type StudioPublicState,
 } from "@brink/studio-ui";
 
-// ── Example extension (worked example, issue #95) ───────────────
+// ── Example extension (worked example, issues #95/#146) ─────────
 export {
   createExampleExtension,
+  manifestPanelItems,
+  EXAMPLE_HOST_MANIFEST,
   EXAMPLE_REVEAL_COMMAND_ID,
   EXAMPLE_TOOL_WINDOW_ID,
+  type HostFunctionItem,
 } from "./example-extension.js";
 
 // ── Compiler/runtime wasm bindings (no studio state involved) ────
@@ -65,4 +68,10 @@ export type {
   Line,
   LineType,
   Choice,
+  // Host-capability manifest shapes (docs/host-capability-manifest.md) —
+  // the `hostManifest` mount option's type and its parts.
+  HostManifest,
+  ManifestExternal,
+  ManifestParam,
+  SemanticTypeDef,
 } from "@brink/wasm-types";
