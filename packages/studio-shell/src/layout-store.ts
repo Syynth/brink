@@ -92,6 +92,40 @@ export function isToolWindowOpen(state: ShellLayoutState, id: string): boolean {
   return placement !== undefined && state.open[dockSectionId(placement)] === id;
 }
 
+/**
+ * Ensure a tool window is open *and visible* — the imperative complement to
+ * `toggleToolWindow` for commands like `search.focus` that must never close
+ * the window (a toggle on an open, visible window would). Closed windows are
+ * opened via the toggle (which also reveals in compact tiers); open-but-
+ * hidden windows get their compact presentation (drawer / narrow overlay)
+ * surfaced directly; open-and-visible windows are left alone.
+ */
+export function ensureToolWindowOpen(store: ShellLayoutStore, id: string): void {
+  const state = store.getState();
+  const placement = state.placements[id];
+  if (placement === undefined) return;
+
+  if (!isToolWindowOpen(state, id)) {
+    state.toggleToolWindow(id);
+    return;
+  }
+
+  // Already open. Surface the compact presentations that may be hiding it
+  // (mirrors toggleToolWindow's reveal rules — narrow: left dock stays a
+  // drawer, right/bottom present as overlays).
+  if (state.tier === "narrow" && placement.dock !== "left") {
+    if (state.narrowView !== id) state.setNarrowView(id);
+    return;
+  }
+  const usesDrawer =
+    (state.tier === "medium" && placement.dock !== "bottom") ||
+    (state.tier === "narrow" && placement.dock === "left");
+  if (usesDrawer) {
+    const side = placement.dock as "left" | "right";
+    if (!state.drawers[side]) state.setDrawerOpen(side, true);
+  }
+}
+
 export function createShellLayoutStore(): ShellLayoutStore {
   return createStore<ShellLayoutState>()((set, get) => ({
     tier: "wide",

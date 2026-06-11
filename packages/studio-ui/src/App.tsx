@@ -21,6 +21,7 @@ import {
 } from "@brink/studio-shell";
 import { QuickOpen } from "./QuickOpen.js";
 import { NewFilePrompt } from "./NewFilePrompt.js";
+import { SearchCommands } from "./SearchView.js";
 
 function App() {
   const tier = useShellLayout((s) => s.tier);
@@ -37,6 +38,7 @@ function App() {
       <CommandPalette />
       <QuickOpen />
       <NewFilePrompt />
+      <SearchCommands />
       <NotificationStack />
     </div>
   );

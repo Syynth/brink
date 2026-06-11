@@ -113,6 +113,7 @@ export {
 } from "./toolwindow.js";
 export {
   createShellLayoutStore,
+  ensureToolWindowOpen,
   isToolWindowOpen,
   type LayoutTier,
   type ShellLayoutState,
