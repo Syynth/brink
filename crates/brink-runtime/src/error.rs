@@ -94,4 +94,18 @@ pub enum RuntimeError {
     /// one-shot synchronous call.
     #[error("external '{0}' is async; cannot resolve during a synchronous call_function")]
     AsyncExternalInCall(String),
+
+    /// `choose_path_string` was given a path that resolves to no knot,
+    /// stitch, or label.
+    #[error("no knot or stitch found at path '{0}'")]
+    UnknownPath(String),
+
+    /// `choose_path_string` was called while the flow is parked on an
+    /// unresolved external call. A pending host call cannot be silently
+    /// abandoned — resolve it (or reset the story) before jumping.
+    #[error(
+        "cannot jump to '{path}': the flow is parked on unresolved external '{external}' — \
+         resolve it before jumping"
+    )]
+    JumpWhileAwaitingExternal { path: String, external: String },
 }

@@ -6,7 +6,7 @@ use brink_format::{DefinitionId, StoryData};
 
 use crate::error::RuntimeError;
 use crate::program::{
-    ExternalFnEntry, GlobalSlot, LinkedContainer, ListDefEntry, ListItemEntry, Program,
+    ExternalFnEntry, GlobalSlot, LinkedContainer, ListDefEntry, ListItemEntry, PathTarget, Program,
 };
 
 /// Link a [`StoryData`] into an executable [`Program`].
@@ -147,13 +147,20 @@ pub fn link(
     // When the table is empty (legacy `.inkb` or converter output, which does
     // not emit it), fall back to deriving scope paths from container names —
     // the previous behavior, which already qualifies knot/stitch scope names.
-    let mut address_by_path: HashMap<String, (u32, usize)> = HashMap::new();
+    let mut address_by_path: HashMap<String, PathTarget> = HashMap::new();
     if data.address_paths.is_empty() {
         address_by_path.reserve(data.containers.len());
         for (i, cdef) in data.containers.iter().enumerate() {
             if let Some(name_id) = cdef.name {
                 let name = data.name_table[name_id.0 as usize].clone();
-                address_by_path.insert(name, (i as u32, 0));
+                address_by_path.insert(
+                    name,
+                    PathTarget {
+                        id: cdef.id,
+                        container_idx: i as u32,
+                        byte_offset: 0,
+                    },
+                );
             }
         }
     } else {
@@ -163,7 +170,14 @@ pub fn link(
             // unresolvable (defensive — should not happen for valid output).
             if let Some(&(idx, offset)) = address_map.get(&ap.target) {
                 let name = data.name_table[ap.path.0 as usize].clone();
-                address_by_path.insert(name, (idx, offset));
+                address_by_path.insert(
+                    name,
+                    PathTarget {
+                        id: ap.target,
+                        container_idx: idx,
+                        byte_offset: offset,
+                    },
+                );
             }
         }
     }

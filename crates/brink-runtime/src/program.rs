@@ -21,10 +21,11 @@ pub struct Program {
     pub(crate) globals: Vec<GlobalSlot>,
     pub(crate) global_map: HashMap<DefinitionId, u32>,
     pub(crate) name_table: Vec<String>,
-    /// Map from a knot/stitch path string to `(container_idx, byte_offset)`.
+    /// Map from a knot/stitch path string to its target: the defining
+    /// `DefinitionId` plus the resolved `(container_idx, byte_offset)`.
     /// Built at link time from named scope containers; lets consumers
     /// spawn flows at named entry points without needing `DefinitionId`s.
-    pub(crate) address_by_path: HashMap<String, (u32, usize)>,
+    pub(crate) address_by_path: HashMap<String, PathTarget>,
     pub(crate) root_idx: u32,
     /// List literal values referenced by `PushList(idx)`.
     pub(crate) list_literals: Vec<ListValue>,
@@ -72,6 +73,16 @@ pub(crate) struct ListDefEntry {
 pub(crate) struct ExternalFnEntry {
     pub name: NameId,
     pub fallback: Option<DefinitionId>,
+}
+
+/// Resolved target of a qualified path string: the defining `DefinitionId`
+/// (used for visit counting, exactly as a divert to the same target would
+/// use it) plus the linked `(container_idx, byte_offset)` position.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PathTarget {
+    pub id: DefinitionId,
+    pub container_idx: u32,
+    pub byte_offset: usize,
 }
 
 impl Program {
@@ -148,7 +159,17 @@ impl Program {
     /// ```
     #[must_use]
     pub fn find_address(&self, path: &str) -> Option<(u32, usize)> {
-        self.address_by_path.get(path).copied()
+        self.address_by_path
+            .get(path)
+            .map(|t| (t.container_idx, t.byte_offset))
+    }
+
+    /// Resolve a qualified ink path to the `DefinitionId` of its target.
+    /// Same path grammar as [`find_address`](Self::find_address). Used by
+    /// `choose_path_string`, which needs the id so the jump goes through the
+    /// same divert machinery (and visit counting) as `-> path` would.
+    pub(crate) fn find_path_target(&self, path: &str) -> Option<DefinitionId> {
+        self.address_by_path.get(path).map(|t| t.id)
     }
 
     /// Build the initial globals vector from slot defaults.
@@ -243,7 +264,14 @@ mod find_address_tests {
         let mut address_by_path = HashMap::new();
         for (i, name) in names.iter().enumerate() {
             #[expect(clippy::cast_possible_truncation, reason = "test fixture")]
-            address_by_path.insert((*name).to_string(), (i as u32, 0));
+            address_by_path.insert(
+                (*name).to_string(),
+                PathTarget {
+                    id: DefinitionId::new(brink_format::DefinitionTag::Address, i as u64),
+                    container_idx: i as u32,
+                    byte_offset: 0,
+                },
+            );
         }
         Program {
             containers: Vec::new(),
