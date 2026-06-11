@@ -86,6 +86,11 @@ jobs:
           commit: "chore: version npm packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Provenance lives here (CI context), not in publishConfig — a
+          # publishConfig.provenance:true breaks manual first publishes
+          # (no OIDC provider locally) and npm config precedence means no
+          # local flag can override it.
+          NPM_CONFIG_PROVENANCE: "true"
           # Used if the secret exists; with npm trusted publishing configured
           # for both packages, this can be left unset.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
