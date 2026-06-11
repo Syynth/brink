@@ -1157,7 +1157,12 @@ fn resume_at(flow: &mut Flow, pos: ContainerPosition) {
     }
 }
 
-fn goto_target(
+/// Transfer control to a divert target within the current call frame,
+/// incrementing visit/turn counts per the target container's counting flags.
+/// Used by the `Goto`/`GotoIf`/`GotoVariable` opcodes, and by
+/// `FlowInstance::choose_path_string` so a host-directed jump behaves
+/// exactly like an in-story `-> target` divert.
+pub(crate) fn goto_target(
     flow: &mut Flow,
     program: &Program,
     context: &mut (impl ContextAccess + ?Sized),

@@ -991,6 +991,106 @@ impl FlowInstance {
         )
     }
 
+    /// Move the play head to a named knot/stitch path — the equivalent of
+    /// ink's `Story.ChoosePathString(path)` (with its default
+    /// `resetCallstack: true`). Call [`step_single_line`](Self::step_single_line)
+    /// (or any continue method) afterward to run from there.
+    ///
+    /// `path` is a dot-separated runtime path: a knot (`intro`), a qualified
+    /// stitch (`intro.dock`), or — for programs compiled by `brink-compiler` —
+    /// an author label (`knot.label`, `knot.stitch.label`; an extension over
+    /// C#, which cannot address labels).
+    ///
+    /// Mirroring the C# reference (`Story.ChoosePathString` →
+    /// `ResetCallstack`/`ForceEnd` → `ChoosePath` → `state.SetChosenPath` +
+    /// `VisitChangedContainersDueToDivert`):
+    ///
+    /// - The current flow is **force-completed** first: the call stack
+    ///   collapses to a single fresh root frame (abandoning any tunnels,
+    ///   threads, or in-progress weave), pending choices are cleared, and
+    ///   the jump counts as a safe exit (as if the story had hit `-> DONE`).
+    /// - The jump **counts as a visit** to the target, with exactly the
+    ///   semantics of an in-story `-> path` divert (it goes through the same
+    ///   goto machinery, so counting flags are honored identically).
+    /// - Output already produced but not yet consumed is **kept** (C# leaves
+    ///   the output stream untouched); it is delivered before content from
+    ///   the new location. The value stack is likewise left as-is.
+    /// - A permanently **ended** story (`-> END`) may be re-entered by
+    ///   jumping, matching C# where `ChoosePathString` + `Continue` works
+    ///   after the story has ended.
+    ///
+    /// # Errors
+    /// - [`UnknownPath`](RuntimeError::UnknownPath) if `path` resolves to no
+    ///   target (the message names the path).
+    /// - [`JumpWhileAwaitingExternal`](RuntimeError::JumpWhileAwaitingExternal)
+    ///   if the flow is parked on an unresolved external call — a pending
+    ///   host call must be resolved, not silently abandoned.
+    /// - [`AlreadyEvaluatingFunction`](RuntimeError::AlreadyEvaluatingFunction)
+    ///   if an engine→ink function evaluation is in progress (C# likewise
+    ///   refuses to redirect mid-function).
+    pub fn choose_path_string(
+        &mut self,
+        program: &Program,
+        context: &mut (impl ContextAccess + ?Sized),
+        path: &str,
+    ) -> Result<(), RuntimeError> {
+        // A parked host call cannot be silently abandoned: erroring is the
+        // strictest safe behavior (brink-specific — C# has no pausable
+        // externals during normal playback).
+        if let Some(id) = self.flow.external_fn_id() {
+            let external = program
+                .external_fn(id)
+                .map_or_else(|| format!("{id}"), |e| program.name(e.name).to_owned());
+            return Err(RuntimeError::JumpWhileAwaitingExternal {
+                path: path.to_owned(),
+                external,
+            });
+        }
+        // An in-flight engine→ink evaluation (possibly paused on an external)
+        // must finish or be aborted before the flow can be redirected.
+        if self.eval.is_some() {
+            return Err(RuntimeError::AlreadyEvaluatingFunction);
+        }
+
+        let target_id = program
+            .find_path_target(path)
+            .ok_or_else(|| RuntimeError::UnknownPath(path.to_owned()))?;
+
+        // Force-end the current flow, mirroring C# `ResetCallstack` →
+        // `StoryState.ForceEnd`: a single fresh root frame (callStack.Reset),
+        // cleared choices, null pointers (the empty container stack), and
+        // didSafeExit = true. The output buffer and value stack are
+        // deliberately left untouched — C# `ForceEnd` does not clear the
+        // output stream or the evaluation stack.
+        let root_frame = CallFrame {
+            return_address: None,
+            temps: Vec::new(),
+            container_stack: Vec::new(),
+            frame_type: CallFrameType::Root,
+            external_fn_id: None,
+            function_output_start: None,
+        };
+        self.flow.threads = vec![Thread {
+            call_stack: CallStack::new(root_frame),
+        }];
+        self.flow.pending_choices.clear();
+        // Transient intra-step flags. Both are false at any point a host can
+        // observe (between lines / at a yield), but the jump abandons whatever
+        // produced them, so clear defensively.
+        self.flow.skipping_choice = false;
+        self.flow.in_tag = false;
+        self.flow.did_safe_exit = true;
+
+        // Jump via the same divert machinery as an in-story `-> path`
+        // (mirrors C# `ChoosePath` → `SetChosenPath` +
+        // `VisitChangedContainersDueToDivert`): sets the position and
+        // increments the target's visit/turn counts per its counting flags.
+        vm::goto_target(&mut self.flow, program, context, target_id)?;
+
+        self.status = StoryStatus::Active;
+        Ok(())
+    }
+
     /// The current execution status of this flow.
     #[must_use]
     pub fn status(&self) -> StoryStatus {
@@ -1953,6 +2053,25 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// [`continue_maximally`](Self::continue_maximally).
     pub fn choose(&mut self, index: usize) -> Result<(), RuntimeError> {
         self.default.choose(&mut self.default_context, index)
+    }
+
+    /// Move the default flow's play head to a named knot/stitch path — ink's
+    /// `ChoosePathString` equivalent. The current flow is force-completed
+    /// (callstack reset, pending choices cleared), the jump counts as a visit
+    /// to the target exactly like a `-> path` divert, and subsequent
+    /// [`continue_single`](Self::continue_single) /
+    /// [`continue_maximally`](Self::continue_maximally) calls run from there.
+    /// See [`FlowInstance::choose_path_string`] for full semantics.
+    ///
+    /// # Errors
+    /// [`UnknownPath`](RuntimeError::UnknownPath) for an unknown path;
+    /// [`JumpWhileAwaitingExternal`](RuntimeError::JumpWhileAwaitingExternal)
+    /// if the flow is parked on an unresolved external call;
+    /// [`AlreadyEvaluatingFunction`](RuntimeError::AlreadyEvaluatingFunction)
+    /// if an engine→ink function evaluation is in progress.
+    pub fn choose_path_string(&mut self, path: &str) -> Result<(), RuntimeError> {
+        self.default
+            .choose_path_string(self.program, &mut self.default_context, path)
     }
 
     /// Read-only access to the default flow's VM statistics.

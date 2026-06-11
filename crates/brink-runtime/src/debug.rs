@@ -80,10 +80,11 @@ pub(crate) struct NameResolver<'p> {
 impl<'p> NameResolver<'p> {
     pub(crate) fn new(program: &'p Program) -> Self {
         let mut rev: HashMap<u32, String> = HashMap::new();
-        for (path, (idx, off)) in &program.address_by_path {
-            if *off != 0 {
+        for (path, target) in &program.address_by_path {
+            if target.byte_offset != 0 {
                 continue;
             }
+            let idx = &target.container_idx;
             // Deterministic on collision: shortest path, then lexicographically
             // smallest — independent of HashMap iteration order.
             let better = match rev.get(idx) {

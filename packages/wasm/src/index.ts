@@ -657,6 +657,17 @@ export class StoryRunnerHandle {
     this.runner.choose(index);
   }
 
+  /** Move the play head to a knot/stitch path (`"knot"` / `"knot.stitch"`) —
+   * ink's `ChoosePathString` equivalent; subsequent `continue*` runs from
+   * there. The session keeps its state: variables and visit counts survive,
+   * and the jump itself counts as a visit (like a `-> path` divert). Pending
+   * choices are abandoned; the transcript so far is kept. Throws on an
+   * unknown path, or if the story is parked on an unresolved async external
+   * (resolve it — or `reset()` — first). */
+  goToPath(path: string): void {
+    this.runner.go_to_path(path);
+  }
+
   reset(): void {
     this.runner.reset();
   }
