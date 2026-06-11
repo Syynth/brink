@@ -896,3 +896,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The host functions panel (§8.2 motivating example, and the eventual real RMMZ panel) browses the external functions already known via the host-capability manifest and inserts only call sites (`~ fn(args)`) at the cursor — never `EXTERNAL` declarations. The panel surfaces the metadata the manifest already carries (signatures, doc comments, semantic types). The §8.2 example text ("click-to-insert of EXTERNAL declarations and call snippets") is amended accordingly; the playground example gains a pretend manifest so the demo models the real data flow (and makes manifest-driven diagnostics live in the playground).
 - **WHY:** The manifest is the catalog — the panel's job is browsing what the host already provides, not declaring it; inserting EXTERNAL lines duplicates declarations that exist (or belong in a dedicated declarations file), and the metadata is already registered host-side, so rendering it costs nothing and is the panel's whole value.
+
+## npm publishing: @brink-lang scope, two packages (web + studio)
+- **WHEN:** 2026-06-11
+- **PROJECT:** brink
+- **SYSTEM:** cross-system (packaging/release)
+- **SCOPE:** architectural
+- **WHAT:** The web packages publish to npm under the user's @brink-lang org as exactly two packages: **@brink-lang/web** (the wasm + TS wrapper — compile, EditorSession, StoryRunner — with wasm-types folded into its own declarations; already consumed by another of the user's projects) and **@brink-lang/studio** (the IDE via mountStudio; depends on @brink-lang/web as a regular versioned dependency, bundles the internal packages — studio-shell/studio-ui/studio-store/ink-editor — which stay private; react/react-dom as peers). Versioning via changesets; CI publishes from GitHub Actions (npm trusted publishing once the names exist; first publish manual). A lean runtime-only package is deferred until wasm size matters; @brink-lang/react is hypothetical.
+- **WHY:** mountStudio + StudioApi is the studio's deliberate public surface, and the wrapper earned separate publication by having a real external consumer (the user's other project compiles ink through it). Publishing the wrapper as a contract beats bundling it twice; -lang scoping travels across npm/GitHub/crates.io and avoids the inkjs confusion that brinkjs invited.
