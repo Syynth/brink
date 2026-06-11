@@ -14,7 +14,7 @@
     "paths": {
       "brink-web": ["../../crates/brink-web/www/pkg"],
       "@brink/wasm-types": ["../wasm-types/src/index.ts"],
-      "@brink/wasm": ["../wasm/src/index.ts"],
+      "@brink-lang/web": ["../wasm/src/index.ts"],
       "@brink/ink-operations": ["../ink-operations/src/index.ts"],
       "@brink/ink-editor": ["../ink-editor/src/index.ts"],
       "@brink/studio-shell": ["../studio-shell/src/index.ts"],

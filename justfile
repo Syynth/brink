@@ -46,7 +46,7 @@ book-assets:
     wasm-pack build crates/brink-web --target web --out-dir www/pkg
     # Install JS deps and build the studio as a self-contained static bundle.
     pnpm install --frozen-lockfile
-    pnpm --filter @brink/studio build:embed
+    pnpm --filter @brink-lang/studio build:embed
     # Stage the static build (index.html + assets/, wasm bundled) into the book.
     rm -rf "$dest"
     mkdir -p "$dest"

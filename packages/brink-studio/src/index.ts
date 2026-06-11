@@ -1,4 +1,4 @@
-// @brink/studio — the public embedding surface (docs/embedder-api.md,
+// @brink-lang/studio — the public embedding surface (docs/embedder-api.md,
 // docs/studio-shell-spec.md §8).
 //
 // Hosts mount the studio with `mountStudio` and extend it through the
@@ -61,7 +61,7 @@ export {
   compile,
   EditorSessionHandle,
   StoryRunnerHandle,
-} from "@brink/wasm";
+} from "@brink-lang/web";
 export type {
   CompileResult,
   Diagnostic,

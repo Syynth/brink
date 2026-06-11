@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { EditorSessionHandle } from "@brink/wasm";
+import { EditorSessionHandle } from "@brink-lang/web";
 
 const MAIN_INK = ["=== start ===", "Hello.", "= gate", "Onward.", "=== hub ===", "Hub."].join(
   "\n",

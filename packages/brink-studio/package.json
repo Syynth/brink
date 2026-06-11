@@ -1,5 +1,5 @@
 {
-  "name": "@brink/studio",
+  "name": "@brink-lang/studio",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@brink/wasm-types": "workspace:*",
-    "@brink/wasm": "workspace:*",
+    "@brink-lang/web": "workspace:*",
     "@brink/ink-operations": "workspace:*",
     "@brink/ink-editor": "workspace:*",
     "@brink/studio-shell": "workspace:*",

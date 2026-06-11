@@ -1,5 +1,5 @@
 /**
- * @brink/wasm — Wasm FFI bindings to brink-web.
+ * @brink-lang/web — Wasm FFI bindings to brink-web.
  *
  * Wraps the raw wasm module classes in ergonomic TypeScript wrappers
  * that parse JSON responses into typed interfaces from @brink/wasm-types.

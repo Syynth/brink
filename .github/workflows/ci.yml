@@ -115,7 +115,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install wasm-pack
         uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
-      # The @brink/wasm package is a file: dependency on the wasm-pack output,
+      # The @brink-lang/web package is a file: dependency on the wasm-pack output,
       # so the bundle must be built BEFORE `pnpm install` can link it.
       - name: Build brink-web wasm package
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
@@ -129,10 +129,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Typecheck
-        run: pnpm --filter @brink/studio typecheck
+        run: pnpm --filter @brink-lang/studio typecheck
       - name: Unit tests (vitest)
-        run: pnpm --filter @brink/studio test
+        run: pnpm --filter @brink-lang/studio test
       - name: Install Playwright browser
-        run: pnpm --filter @brink/studio exec playwright install --with-deps chromium
+        run: pnpm --filter @brink-lang/studio exec playwright install --with-deps chromium
       - name: E2E tests (Playwright)
-        run: pnpm --filter @brink/studio test:e2e
+        run: pnpm --filter @brink-lang/studio test:e2e

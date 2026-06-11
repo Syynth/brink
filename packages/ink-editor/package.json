@@ -7,7 +7,7 @@
   "types": "src/index.ts",
   "dependencies": {
     "@brink/wasm-types": "workspace:*",
-    "@brink/wasm": "workspace:*",
+    "@brink-lang/web": "workspace:*",
     "@brink/ink-operations": "workspace:*",
     "@codemirror/autocomplete": "^6.18.6",
     "@codemirror/commands": "^6.8.0",

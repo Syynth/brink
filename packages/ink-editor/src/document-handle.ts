@@ -10,7 +10,7 @@
  */
 
 import { Annotation, Facet } from "@codemirror/state";
-import type { EditorSessionHandle } from "@brink/wasm";
+import type { EditorSessionHandle } from "@brink-lang/web";
 import type {
   CodeAction,
   CompletionItem,

@@ -26,7 +26,7 @@
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
 import type { Choice, DebugState, ProgramModel } from "@brink/wasm-types";
-import { StoryRunnerHandle } from "@brink/wasm";
+import { StoryRunnerHandle } from "@brink-lang/web";
 
 const SAVE_KEY = "brink-player-save";
 

@@ -11,7 +11,7 @@
  */
 
 import type { FileProvider } from "./provider.js";
-import { EditorSessionHandle } from "@brink/wasm";
+import { EditorSessionHandle } from "@brink-lang/web";
 import type { CompileResult } from "@brink/wasm-types";
 
 export interface ProjectSessionOptions {

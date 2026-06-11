@@ -17,6 +17,9 @@ importers:
 
   packages/brink-studio:
     dependencies:
+      '@brink-lang/web':
+        specifier: workspace:*
+        version: link:../wasm
       '@brink/ink-editor':
         specifier: workspace:*
         version: link:../ink-editor
@@ -32,9 +35,6 @@ importers:
       '@brink/studio-ui':
         specifier: workspace:*
         version: link:../studio-ui
-      '@brink/wasm':
-        specifier: workspace:*
-        version: link:../wasm
       '@brink/wasm-types':
         specifier: workspace:*
         version: link:../wasm-types
@@ -102,12 +102,12 @@ importers:
 
   packages/ink-editor:
     dependencies:
+      '@brink-lang/web':
+        specifier: workspace:*
+        version: link:../wasm
       '@brink/ink-operations':
         specifier: workspace:*
         version: link:../ink-operations
-      '@brink/wasm':
-        specifier: workspace:*
-        version: link:../wasm
       '@brink/wasm-types':
         specifier: workspace:*
         version: link:../wasm-types
@@ -165,15 +165,15 @@ importers:
 
   packages/studio-store:
     dependencies:
+      '@brink-lang/web':
+        specifier: workspace:*
+        version: link:../wasm
       '@brink/ink-editor':
         specifier: workspace:*
         version: link:../ink-editor
       '@brink/ink-operations':
         specifier: workspace:*
         version: link:../ink-operations
-      '@brink/wasm':
-        specifier: workspace:*
-        version: link:../wasm
       '@brink/wasm-types':
         specifier: workspace:*
         version: link:../wasm-types

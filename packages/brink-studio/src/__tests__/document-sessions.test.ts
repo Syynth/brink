@@ -17,7 +17,7 @@ import {
   type DocTarget,
   type DocumentCallbacks,
 } from "@brink/ink-editor";
-import { initWasm } from "@brink/wasm";
+import { initWasm } from "@brink-lang/web";
 import { EditorView } from "@codemirror/view";
 
 // ── Fixtures ────────────────────────────────────────────────────────

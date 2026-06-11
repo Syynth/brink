@@ -299,7 +299,7 @@ The **Tier 1 + closed Tier 2 MVP** is implemented. What shipped:
   carries the registered manifest so diagnostics appear in compile output.
 - **Registration**: `EditorSession::set_host_manifest(json)` /
   `clear_host_manifest` / `set_external_check`; TS schema mirror in
-  `@brink/wasm-types`; handle methods in `@brink/wasm`.
+  `@brink/wasm-types`; handle methods in `@brink-lang/web`.
 
 **Resolved forks:** (1) metadata lives in side-tables (`SymbolManifest.
 external_docs` per-file; `AnalysisResult.external_meta` merged) — `SymbolInfo`
