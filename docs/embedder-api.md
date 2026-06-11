@@ -7,7 +7,7 @@ the decision log ("embedder extension API").
 
 brink-studio is embedded programmatically — the embedded playground, and
 RPG Maker MZ as the first real external host
-(`celeris/rmmz/packages/brink-studio-plugin`, the reference consumer). The
+(e.g. a game-engine plugin that owns the project on disk). The
 embedding host already runs its own code in the page, so it can be trusted
 with extension points without anything resembling a plugin system: **no
 dynamic loading, no marketplace, no sandboxing**. Host surfaces register at
@@ -61,7 +61,7 @@ Modern browsers fail the detect and take zero overhead.
 Disk → studio is the `files` mount option. Studio → host is the egress
 surface: hosts that own the project on disk (RPG Maker MZ writing
 `data/brink/**/*.ink`; reference consumer:
-`celeris/rmmz/packages/brink-studio-plugin`) receive edits back out of the
+a host that persists files to disk) receive edits back out of the
 session instead of losing them on unmount.
 
 ```ts

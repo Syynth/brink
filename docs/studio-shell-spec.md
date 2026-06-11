@@ -635,8 +635,7 @@ Every mutation path — CM6 edit flushes, binder structural ops, search replace,
 `file.new` — routes through one shared notify seam (`ProjectSession`'s `FileChangeHub`),
 so omission is structurally impossible. File *contents* never enter `StudioPublicState`
 (they are big and change per keystroke — the reference-stability contract forbids them);
-push/pull ride the dedicated surfaces instead. The reference consumer is
-`celeris/rmmz/packages/brink-studio-plugin`. Host-facing docs:
+push/pull ride the dedicated surfaces instead. Host-facing documentation:
 [embedder-api.md](embedder-api.md) "File egress".
 
 **Motivating example (Track B synergy):** the RPG Maker functions panel renders the
