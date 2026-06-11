@@ -4,6 +4,17 @@ export { StoreProvider, useStudioStore, useStudioStoreApi } from "./StoreContext
 export { App } from "./App.js";
 export { Binder, computeReorder } from "./Binder.js";
 export { INK_FILE_TYPE_ID, InkFileDocument, inkFileRef } from "./InkFileDocument.js";
+export {
+  COMPILED_OUTPUT_DOC_ID,
+  COMPILED_OUTPUT_TYPE_ID,
+  CompiledOutputDocument,
+  OPEN_COMPILED_OUTPUT_COMMAND_ID,
+  compiledOutputExtensions,
+  compiledOutputRef,
+  registerCompiledOutputCommand,
+  replaceCompiledOutput,
+} from "./CompiledOutputDocument.js";
+export { inktFolding, inktHighlighting, inktLanguage } from "./inkt-mode.js";
 export { NewFilePrompt, FILE_NEW_COMMAND_ID } from "./NewFilePrompt.js";
 export {
   CompileStatusSegment,

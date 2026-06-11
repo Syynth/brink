@@ -198,6 +198,21 @@ importers:
       '@brink/wasm-types':
         specifier: workspace:*
         version: link:../wasm-types
+      '@codemirror/language':
+        specifier: ^6.10.8
+        version: 6.12.2
+      '@codemirror/search':
+        specifier: ^6.5.10
+        version: 6.6.0
+      '@codemirror/state':
+        specifier: ^6.5.2
+        version: 6.6.0
+      '@codemirror/view':
+        specifier: ^6.36.5
+        version: 6.40.0
+      '@lezer/highlight':
+        specifier: ^1.2.1
+        version: 1.2.3
       react:
         specifier: ^19.0.0
         version: 19.2.4

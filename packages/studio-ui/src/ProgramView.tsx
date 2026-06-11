@@ -1,19 +1,21 @@
 import { memo, useState } from "react";
 import type { KnotNode } from "@brink/wasm-types";
+import { useShell } from "@brink/studio-shell";
 import { useStudioStore } from "./StoreContext.js";
+import { OPEN_COMPILED_OUTPUT_COMMAND_ID } from "./CompiledOutputDocument.js";
 
 /**
  * Program Explorer — a structured, navigable view of the *compiled* program
  * (static), distinct from the runtime State view.
  *
  * Tables for globals / lists / externals plus a knot → stitch tree you drill
- * into for flags, path hash, and name-resolved bytecode. A "raw" toggle shows
- * the underlying `.inkt` text dump.
+ * into for flags, path hash, and name-resolved bytecode. The raw `.inkt`
+ * dump lives in the read-only Compiled Output editor document (issue #91,
+ * spec §4) — the toolbar button opens it via `program.openCompiledOutput`.
  */
 function ProgramViewInner() {
   const model = useStudioStore((s) => s.programModel);
-  const inkt = useStudioStore((s) => s.programInkt);
-  const [raw, setRaw] = useState(false);
+  const { commands } = useShell();
 
   if (!model) {
     return (
@@ -37,79 +39,75 @@ function ProgramViewInner() {
         </span>
         <button
           type="button"
-          className="pv-raw-toggle"
-          onClick={() => setRaw((r) => !r)}
-          aria-pressed={raw}
+          className="pv-open-inkt"
+          title="Open the .inkt dump as a read-only editor document"
+          onClick={() => commands.dispatch(OPEN_COMPILED_OUTPUT_COMMAND_ID)}
         >
-          {raw ? "structured" : "raw .inkt"}
+          open .inkt
         </button>
       </div>
 
-      {raw ? (
-        <pre className="program-view-dump">{inkt ?? "(no raw dump)"}</pre>
-      ) : (
-        <div className="pv-body">
-          <Section title={`Globals (${model.globals.length})`}>
-            {model.globals.length === 0 ? (
-              <p className="sv-empty">none</p>
-            ) : (
-              <table className="sv-table">
-                <tbody>
-                  {model.globals.map((g) => (
-                    <tr key={g.name}>
-                      <td className="sv-key">{g.name}</td>
-                      <td className="sv-dim pv-ty">{g.ty}</td>
-                      <td className="sv-val sv-mono">{g.default}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </Section>
+      <div className="pv-body">
+        <Section title={`Globals (${model.globals.length})`}>
+          {model.globals.length === 0 ? (
+            <p className="sv-empty">none</p>
+          ) : (
+            <table className="sv-table">
+              <tbody>
+                {model.globals.map((g) => (
+                  <tr key={g.name}>
+                    <td className="sv-key">{g.name}</td>
+                    <td className="sv-dim pv-ty">{g.ty}</td>
+                    <td className="sv-val sv-mono">{g.default}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Section>
 
-          {model.lists.length > 0 && (
-            <Section title={`Lists (${model.lists.length})`}>
-              {model.lists.map((l) => (
-                <div key={l.name} className="pv-list">
-                  <div className="sv-key pv-list-name">{l.name}</div>
-                  <div className="pv-list-items">
-                    {l.items.map((it) => (
-                      <span key={it.name} className="pv-list-item">
-                        {it.name}
-                        <span className="sv-dim">·{it.ordinal}</span>
-                      </span>
-                    ))}
-                  </div>
+        {model.lists.length > 0 && (
+          <Section title={`Lists (${model.lists.length})`}>
+            {model.lists.map((l) => (
+              <div key={l.name} className="pv-list">
+                <div className="sv-key pv-list-name">{l.name}</div>
+                <div className="pv-list-items">
+                  {l.items.map((it) => (
+                    <span key={it.name} className="pv-list-item">
+                      {it.name}
+                      <span className="sv-dim">·{it.ordinal}</span>
+                    </span>
+                  ))}
                 </div>
-              ))}
-            </Section>
-          )}
-
-          {model.externals.length > 0 && (
-            <Section title={`Externals (${model.externals.length})`}>
-              <table className="sv-table">
-                <tbody>
-                  {model.externals.map((e) => (
-                    <tr key={e.name}>
-                      <td className="sv-key">{e.name}</td>
-                      <td className="sv-dim">{e.arg_count} arg{e.arg_count === 1 ? "" : "s"}</td>
-                      <td className="sv-val sv-path">{e.fallback ? `→ ${e.fallback}` : ""}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Section>
-          )}
-
-          <Section title={`Knots (${model.knots.length})`}>
-            {model.knots.length === 0 ? (
-              <p className="sv-empty">none</p>
-            ) : (
-              model.knots.map((k) => <KnotRow key={k.path} node={k} depth={0} />)
-            )}
+              </div>
+            ))}
           </Section>
-        </div>
-      )}
+        )}
+
+        {model.externals.length > 0 && (
+          <Section title={`Externals (${model.externals.length})`}>
+            <table className="sv-table">
+              <tbody>
+                {model.externals.map((e) => (
+                  <tr key={e.name}>
+                    <td className="sv-key">{e.name}</td>
+                    <td className="sv-dim">{e.arg_count} arg{e.arg_count === 1 ? "" : "s"}</td>
+                    <td className="sv-val sv-path">{e.fallback ? `→ ${e.fallback}` : ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Section>
+        )}
+
+        <Section title={`Knots (${model.knots.length})`}>
+          {model.knots.length === 0 ? (
+            <p className="sv-empty">none</p>
+          ) : (
+            model.knots.map((k) => <KnotRow key={k.path} node={k} depth={0} />)
+          )}
+        </Section>
+      </div>
     </div>
   );
 }
