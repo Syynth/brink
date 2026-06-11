@@ -23,7 +23,15 @@ export {
   KeyHintsSegment,
   StorySegment,
 } from "./StatusBar.js";
-export { PlayerPane } from "./PlayerPane.js";
+export {
+  OPEN_PLAYER_COMMAND_ID,
+  PLAYER_DOC_ID,
+  PLAYER_TYPE_ID,
+  PlayerPane,
+  openPlayerSplit,
+  playerRef,
+  registerOpenPlayerCommand,
+} from "./PlayerPane.js";
 export { StateView } from "./StateView.js";
 export { ProgramView } from "./ProgramView.js";
 export {
