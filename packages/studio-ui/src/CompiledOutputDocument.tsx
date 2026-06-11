@@ -135,7 +135,15 @@ function CompiledOutputEditor({ text }: { text: string }) {
       parent: container,
     });
     viewRef.current = view;
+    // e2e/manual verification hook, like DocumentSessions' __brinkView: CM6
+    // renders only the viewport into the DOM, so full-document assertions
+    // need the view's state.
+    const w = window as unknown as Record<string, unknown>;
+    w.__brinkCompiledOutputView = view;
     return () => {
+      if (w.__brinkCompiledOutputView === view) {
+        w.__brinkCompiledOutputView = undefined;
+      }
       viewRef.current = null;
       view.destroy();
     };
