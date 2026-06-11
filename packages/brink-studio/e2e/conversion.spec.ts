@@ -9,6 +9,14 @@ import { test, expect, type Page } from "@playwright/test";
  * original line.
  */
 
+// 264 generated tests, each self-contained (own page + goto). Playwright
+// runs a file's tests sequentially on one worker by default, which made
+// this file dominate the suite (~5 min while other workers sat idle) —
+// spread them across workers instead. Scoped here rather than
+// fullyParallel in the config so the timing-sensitive real-input specs
+// (drag, typing) keep their uncontended sequential workers.
+test.describe.configure({ mode: "parallel" });
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 async function setEditorContent(page: Page, content: string) {
