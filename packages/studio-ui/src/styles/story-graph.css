@@ -1,0 +1,278 @@
+/* Story Graph document — react-flow canvas re-skin (issue #97, spec §4.1).
+   Scoped under .brink-studio; colors reference only the semantic --bs-*
+   tokens (spec §7.4), so both themes (mocha/latte) are covered and none of
+   react-flow's default palette (the stock blue) survives. react-flow's
+   structural stylesheet is imported by StoryGraphDocument.tsx; everything
+   color-bearing is overridden here.
+
+   Edge kinds (legend): divert solid muted, choice solid accent (distinct),
+   tunnel dashed warning, thread dashed info. */
+
+.brink-studio .brink-story-graph {
+  width: 100%;
+  height: 100%;
+  /* react-flow theme hooks — kill the library defaults at the source. */
+  --xy-background-color: var(--bs-editor-bg);
+  --xy-edge-stroke: var(--bs-fg-muted);
+  --xy-edge-stroke-selected: var(--bs-accent);
+  --xy-attribution-background-color: transparent;
+}
+
+.brink-studio .brink-story-graph .react-flow {
+  background: var(--bs-editor-bg);
+}
+
+.brink-studio .brink-story-graph .react-flow__background circle {
+  fill: color-mix(in srgb, var(--bs-fg-muted) 35%, transparent);
+}
+
+/* Compile-bound placeholder (reuses the state-view empty typography). */
+.brink-studio .brink-story-graph-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bs-editor-bg);
+}
+
+/* ── Nodes ─────────────────────────────────────────────────────────── */
+
+.brink-studio .brink-graph-node {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.brink-studio .brink-graph-node-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 10px;
+  overflow: hidden;
+}
+
+.brink-studio .brink-graph-node-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* Kinds */
+.brink-studio .brink-graph-node-knot {
+  border-color: color-mix(in srgb, var(--bs-symbol-knot) 55%, var(--bs-border));
+}
+.brink-studio .brink-graph-node-knot > .brink-graph-node-header > .brink-graph-node-label {
+  color: var(--bs-symbol-knot);
+}
+.brink-studio .brink-graph-node-stitch {
+  border-color: color-mix(in srgb, var(--bs-symbol-stitch) 45%, var(--bs-border));
+  background: var(--bs-surface-bg);
+}
+.brink-studio .brink-graph-node-stitch .brink-graph-node-header {
+  height: 28px;
+  padding: 0 8px;
+}
+.brink-studio .brink-graph-node-stitch .brink-graph-node-label {
+  font-weight: 500;
+  color: var(--bs-symbol-stitch);
+}
+
+/* END/DONE pseudo-nodes: small, pill-shaped, visually terminal. */
+.brink-studio .brink-graph-node-end,
+.brink-studio .brink-graph-node-done {
+  border-radius: 13px;
+  border-style: dashed;
+  background: var(--bs-surface-bg);
+  cursor: default;
+}
+.brink-studio .brink-graph-node-end .brink-graph-node-header,
+.brink-studio .brink-graph-node-done .brink-graph-node-header {
+  height: 24px;
+  padding: 0 10px;
+  justify-content: center;
+}
+.brink-studio .brink-graph-node-end .brink-graph-node-label,
+.brink-studio .brink-graph-node-done .brink-graph-node-label {
+  flex: 0 1 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .brink-graph-node-end {
+  border-color: color-mix(in srgb, var(--bs-error) 55%, var(--bs-border));
+}
+.brink-studio .brink-graph-node-end .brink-graph-node-label {
+  color: var(--bs-error);
+}
+
+/* Expanded knot: the node is the subflow container — header on top,
+   stitch children positioned inside by react-flow. */
+.brink-studio .brink-graph-node.expanded {
+  background: color-mix(in srgb, var(--bs-panel-bg) 55%, var(--bs-editor-bg));
+}
+
+/* Live-session current location (§7.6 overlay). */
+.brink-studio .brink-graph-node.current {
+  border-color: var(--bs-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bs-accent) 45%, transparent);
+}
+
+/* Expand/collapse chevron */
+.brink-studio .brink-graph-node-toggle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+}
+.brink-studio .brink-graph-node-toggle:hover {
+  background: var(--bs-hover-bg);
+  color: var(--bs-fg);
+}
+
+/* Visit-count badge (overlay data) */
+.brink-studio .brink-graph-node-visits {
+  flex: none;
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 9px;
+  background: var(--bs-accent);
+  color: var(--bs-on-accent);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+/* Handles: invisible anchors — connections are read-only data, not UI. */
+.brink-studio .brink-graph-node .react-flow__handle {
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  background: transparent;
+  pointer-events: none;
+}
+
+/* ── Edges ─────────────────────────────────────────────────────────── */
+
+.brink-studio .brink-graph-edge .react-flow__edge-path {
+  stroke-width: 1.5;
+}
+.brink-studio .brink-graph-edge-divert .react-flow__edge-path {
+  stroke: var(--bs-fg-muted);
+}
+.brink-studio .brink-graph-edge-choice .react-flow__edge-path {
+  stroke: var(--bs-accent);
+}
+.brink-studio .brink-graph-edge-tunnel .react-flow__edge-path {
+  stroke: var(--bs-warning);
+  stroke-dasharray: 7 4;
+}
+.brink-studio .brink-graph-edge-thread .react-flow__edge-path {
+  stroke: var(--bs-info);
+  stroke-dasharray: 2 4;
+  stroke-linecap: round;
+}
+
+/* Aggregated-edge count labels (×N on collapsed knots) */
+.brink-studio .brink-story-graph .react-flow__edge-text {
+  fill: var(--bs-fg-muted);
+  font-size: 10px;
+}
+.brink-studio .brink-story-graph .react-flow__edge-textbg {
+  fill: var(--bs-editor-bg);
+}
+
+/* Arrowheads (own <defs>, see EdgeMarkerDefs — themable via tokens) */
+.brink-studio .brink-graph-markers {
+  position: absolute;
+}
+.brink-studio .brink-graph-arrow-divert {
+  fill: var(--bs-fg-muted);
+}
+.brink-studio .brink-graph-arrow-choice {
+  fill: var(--bs-accent);
+}
+.brink-studio .brink-graph-arrow-tunnel {
+  fill: var(--bs-warning);
+}
+.brink-studio .brink-graph-arrow-thread {
+  fill: var(--bs-info);
+}
+
+/* ── Controls (zoom buttons) ───────────────────────────────────────── */
+
+.brink-studio .brink-story-graph .react-flow__controls {
+  box-shadow: 0 2px 8px var(--bs-shadow);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.brink-studio .brink-story-graph .react-flow__controls-button {
+  background: var(--bs-panel-bg);
+  border-bottom: 1px solid var(--bs-border);
+  color: var(--bs-fg);
+}
+.brink-studio .brink-story-graph .react-flow__controls-button:hover {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .brink-story-graph .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+/* ── Legend (corner panel) ─────────────────────────────────────────── */
+
+.brink-studio .brink-graph-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 10px;
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bs-panel-bg) 88%, transparent);
+  color: var(--bs-fg-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.brink-studio .brink-graph-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.brink-studio .brink-graph-legend-swatch {
+  width: 16px;
+  height: 0;
+  border-top: 2px solid;
+}
+.brink-studio .brink-graph-legend-swatch.swatch-divert {
+  border-color: var(--bs-fg-muted);
+}
+.brink-studio .brink-graph-legend-swatch.swatch-choice {
+  border-color: var(--bs-accent);
+}
+.brink-studio .brink-graph-legend-swatch.swatch-tunnel {
+  border-top-style: dashed;
+  border-color: var(--bs-warning);
+}
+.brink-studio .brink-graph-legend-swatch.swatch-thread {
+  border-top-style: dotted;
+  border-color: var(--bs-info);
+}

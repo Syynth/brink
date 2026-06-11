@@ -9,7 +9,7 @@
 
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
-import type { Diagnostic, FileOutline } from "@brink/wasm-types";
+import type { Diagnostic, FileOutline, StoryGraph } from "@brink/wasm-types";
 
 /**
  * Canonical Problems ordering (deterministic): file path, then start offset,
@@ -38,6 +38,13 @@ export interface CompileSlice {
   /** Full diagnostic list from the latest compile, in canonical order. */
   diagnosticsList: Diagnostic[];
   storyBytes: Uint8Array | null;
+  /**
+   * Whole-project story graph for the Story Graph document (#97, spec §4.1).
+   * Refreshed on each successful compile; a failed compile keeps the last
+   * good graph (compile-bound, like `programInkt`). `null` until the first
+   * successful compile.
+   */
+  storyGraph: StoryGraph | null;
   /** External-function checking severity (mirrors the wasm session). */
   externalCheck: ExternalCheckLevel;
 
@@ -47,6 +54,8 @@ export interface CompileSlice {
     diagnosticsList: Diagnostic[],
     storyBytes: Uint8Array | null,
   ): void;
+  /** Replace the story graph (called on each successful compile). */
+  setStoryGraph(graph: StoryGraph): void;
   compile(): void;
   convertLineToType(sigil: string): void;
   /**
@@ -63,10 +72,15 @@ export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice>
   diagnostics: { errors: 0, warnings: 0 },
   diagnosticsList: [],
   storyBytes: null,
+  storyGraph: null,
   externalCheck: "error",
 
   setCompileResult(outline, diagnostics, diagnosticsList, storyBytes) {
     set({ outline, diagnostics, diagnosticsList: sortDiagnostics(diagnosticsList), storyBytes });
+  },
+
+  setStoryGraph(graph) {
+    set({ storyGraph: graph });
   },
 
   compile() {

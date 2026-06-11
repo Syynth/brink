@@ -26,6 +26,31 @@ export {
 } from "./CompiledOutputDocument.js";
 export { inktFolding, inktHighlighting, inktLanguage } from "./inkt-mode.js";
 export {
+  OPEN_STORY_GRAPH_COMMAND_ID,
+  STORY_GRAPH_DOC_ID,
+  STORY_GRAPH_TYPE_ID,
+  StoryGraphDocument,
+  registerStoryGraphCommand,
+  storyGraphRef,
+  toFlowEdges,
+  toFlowNodes,
+  useStoryGraphModel,
+  type StoryGraphModel,
+  type StoryNodeData,
+} from "./StoryGraphDocument.js";
+export {
+  buildGraphView,
+  buildOverlay,
+  currentNodeId,
+  nodeVisitCount,
+  type DebugStateLike,
+  type GraphView,
+  type GraphViewEdge,
+  type GraphViewNode,
+  type SessionOverlay,
+} from "./story-graph-model.js";
+export { layoutGraphView, type GraphLayout, type NodeLayout } from "./story-graph-layout.js";
+export {
   DIAGNOSTICS_STORAGE_KEY,
   OPEN_SETTINGS_COMMAND_ID,
   SETTINGS_DOC_ID,

@@ -880,3 +880,11 @@
 - **SCOPE:** moderate
 - **WHAT:** When the player becomes an editor document (#120), today's tool-window maximize stops applying to it; the replacement is a generic editor.maximizeGroup command — the focused editor group temporarily takes the whole editor area (other groups and open docks collapse), Escape or the command restores, same pattern as tool-window maximize (§5.4). It is a shell feature available to any document (the Story Graph is an expected second consumer), implemented in #120. The player-specific fullscreen concept is retired.
 - **WHY:** §5.4's principle — maximize is a shell feature, not a player feature — carries over to the document world; a player-only solo mode would violate it, and dropping fullscreen entirely loses a mode the user actually uses. Group maximize generalizes the existing, proven interaction instead of inventing a new one.
+
+## Story Graph renders with react-flow
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-shell
+- **SCOPE:** moderate
+- **WHAT:** The Story Graph document (#97) uses react-flow (@xyflow/react) as its graph rendering layer, confirming the spec §4.1 candidate. The auto-layout engine stays an implementation detail (layered — dagre or ELK — run off the render path). Stated by the user verbatim: "i want to use reactflow for the graph, use your judgement and be tasteful."
+- **WHY:** User-stated preference; react-flow is the mature React-native graph layer with custom-node rendering that fits the token CSS, and §4.1 already named it the candidate.
