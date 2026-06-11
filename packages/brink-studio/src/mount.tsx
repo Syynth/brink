@@ -69,11 +69,13 @@ import {
   ProgramView,
   SEARCH_TOOL_WINDOW_ID,
   SETTINGS_TYPE_ID,
+  STORY_GRAPH_TYPE_ID,
   SearchView,
   SettingsDocument,
   StateView,
   StorySegment,
   StoreProvider,
+  StoryGraphDocument,
   StudioApiProvider,
   createStudioApi,
   inkFileRef,
@@ -82,6 +84,7 @@ import {
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
   registerSettingsCommand,
+  registerStoryGraphCommand,
   type StudioApi,
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
@@ -320,6 +323,13 @@ export async function mountStudio(
   // compile-bound. Singleton; settings.open (Mod-,) focuses an existing tab.
   documentTypes.register({ id: SETTINGS_TYPE_ID, component: SettingsDocument });
   registerSettingsCommand(commands, editorGroups);
+  // Story Graph (#97, spec §4.1): custom-rendered, compile-bound singleton
+  // over the wasm story-graph query (the component subscribes to storyGraph,
+  // refreshed below on each successful compile), with the live session
+  // overlay from debugState. Opened via story.openGraph (palette/hamburger);
+  // reopening focuses the existing tab.
+  documentTypes.register({ id: STORY_GRAPH_TYPE_ID, component: StoryGraphDocument });
+  registerStoryGraphCommand(commands, editorGroups);
 
   // Compile-result handler shared by every path that compiles (per-view
   // debounced compiles, compile.run, the initial compile). DocumentSessions
@@ -344,6 +354,14 @@ export async function mountStudio(
 
     state.setCompileResult(outline, { errors, warnings }, result.warnings ?? [], storyBytes);
     state.appendOutput("compile", compileLogMessage(result.ok, errors, warnings, result.error));
+
+    // Story Graph data (#97, spec §4.1): recompute from the analyzer on each
+    // successful compile, like the outline. A failed compile (or a pre-analysis
+    // null) keeps the last good graph — same policy as programInkt.
+    if (result.ok) {
+      const storyGraph = project.getSession().getStoryGraph();
+      if (storyGraph !== null) state.setStoryGraph(storyGraph);
+    }
 
     // Recompile-while-running (spec §7.6): a successful compile auto-starts
     // the session on the new program through the same code path as the

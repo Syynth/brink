@@ -14,7 +14,9 @@
     "@codemirror/search": "^6.5.10",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.5",
+    "@dagrejs/dagre": "^3.0.0",
     "@lezer/highlight": "^1.2.1",
+    "@xyflow/react": "^12.11.0",
     "react-resizable-panels": "^4.7.4",
     "zustand": "^5.0.0"
   },
