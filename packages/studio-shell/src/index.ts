@@ -14,13 +14,16 @@ export { CommandRegistry, HOST_ID_PREFIX, type Command } from "./command.js";
 export {
   Keymap,
   KEYMAP_STORAGE_KEY,
+  KeymapOverridesService,
   chordFromEvent,
   chordId,
   formatChord,
   loadKeymapOverrides,
   parseKeybinding,
+  parseKeymapOverridesText,
   type Chord,
   type KeymapOverrides,
+  type KeymapOverridesParseResult,
 } from "./keymap.js";
 export { attachKeyHandler, type KeyHandlerOptions } from "./keyhandler.js";
 export {
