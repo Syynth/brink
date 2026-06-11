@@ -449,6 +449,29 @@ impl StoryRunner {
             .map_err(|e| JsError::new(&format!("choose error: {e}")))
     }
 
+    /// Move the play head to a named knot/stitch path — ink's
+    /// `ChoosePathString` equivalent (`resetCallstack: true` semantics).
+    /// Subsequent `continue_*` calls run from there. The session keeps its
+    /// state: globals and visit/turn counts survive, the jump itself counts
+    /// as a visit to the target (exactly like a `-> path` divert), and the
+    /// transcript so far is kept (append-only) while pending choices are
+    /// cleared.
+    ///
+    /// Errors on an unknown path (naming it), and refuses to jump while the
+    /// flow is parked on an unresolved async external — resolve it (or
+    /// `reset`) first; a pending host call is never silently abandoned.
+    pub fn go_to_path(&self, path: &str) -> Result<(), JsError> {
+        let _guard = BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("go_to_path"))?;
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+
+        story
+            .choose_path_string(path)
+            .map_err(|e| JsError::new(&format!("go_to_path error: {e}")))
+    }
+
     /// Reset: create a fresh story from the same program.
     pub fn reset(&self) {
         let program_ptr: *const brink_runtime::Program = &raw const *self.program;
