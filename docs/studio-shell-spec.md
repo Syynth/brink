@@ -96,8 +96,8 @@ Default placement, mapped from existing components:
 | **Problems** | tool window | bottom dock, start | *new* (data exists in `CompileSlice` diagnostics) | Clickable diagnostics list → `editor.reveal` (§6.1). Status-bar error/warning segment opens it. |
 | **Output / compile log** | tool window | bottom dock, end | *new* | Compile timings, wasm/runtime errors that aren't source diagnostics. Replaces nothing; today this information is dropped. |
 | **Search** | tool window | left dock, start | *new, later phase* | Project-wide find/replace. In the strip from day one only if trivially stubbed; otherwise added when implemented. |
-| **Program Explorer** | tool window | bottom dock or right dock (user-movable) | [ProgramView.tsx](../packages/studio-ui/src/ProgramView.tsx) | Resolved (§10.1): the structured tables (globals/lists/externals/knot tree) stay a tool window; the raw `.inkt` dump toggle leaves it in Phase 4 (see Compiled Output below). |
-| **Compiled Output** (`.inkt` dump) | editor document (read-only) | editor area | the dump toggle inside ProgramView | Phase 4: a read-only document tab with a minimal CM6 `.inkt` mode, gaining search/folding/selection. Disassembly-view precedent. |
+| **Program Explorer** | tool window | bottom dock or right dock (user-movable) | [ProgramView.tsx](../packages/studio-ui/src/ProgramView.tsx) | Resolved (§10.1): the structured tables (globals/lists/externals/knot tree) stay a tool window; the raw `.inkt` dump toggle left it in #91 (a toolbar button opens Compiled Output instead). |
+| **Compiled Output** (`.inkt` dump) | editor document (read-only) | editor area | the `compiled-output` document type ([CompiledOutputDocument.tsx](../packages/studio-ui/src/CompiledOutputDocument.tsx)) | Landed (#91): a read-only singleton document tab with a minimal CM6 `.inkt` mode (search, folding, selection), opened via `program.openCompiledOutput`. Compile-bound (§7.8): renders `programInkt` directly — no wasm document handle. Disassembly-view precedent. |
 | **Story transcript** | tool window | bottom dock | *future* | Append-only transcript view; listed to validate the model, not scheduled. |
 | **Story Graph** | editor document (custom-rendered) | editor area | *new* | Phase 6: visual story-structure explorer — see §4.1. |
 | **Settings** | editor document | editor area | *new* | Phase 5: theme choice, keymap-override JSON editing, diagnostic severity flags. VS Code precedent (settings as a document tab, not a modal). |
@@ -473,6 +473,16 @@ simultaneously, with no active-file choreography and no module-global session
 ref. Handles open on mount and close on unmount; backgrounded tabs keep a
 cached editor state, rebuilt from the session's authoritative content when it
 changed underneath.
+
+Not every document type is handle-backed — the contract demands nothing
+beyond the component. **Compiled Output** (#91, the first non-ink-file type)
+is a *compile-bound* document: a singleton ref whose component renders a
+plain string (`programInkt`) from the store in its own read-only CM6 view,
+live-updating on each successful compile and showing a quiet placeholder
+before the first one. No wasm document handle, no DocumentSessions slot, no
+session binding (§7.6 does not apply — the dump survives `story.stop`, like
+the Program Explorer). Custom-rendered types (Story Graph §4.1, Player #120)
+follow the same pattern: whatever state they need, they own.
 
 **Non-goals (for now):** group-layout persistence (dock layout persists, #88;
 groups reset on reload — future work), nested grids, and horizontal splits.
