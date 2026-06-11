@@ -78,20 +78,39 @@ export function getTokenModifierNames(): string[] {
 
 export class EditorSessionHandle {
   private session: WasmEditorSession;
+  private mutationCount = 0;
 
   constructor() {
     this.session = new WasmEditorSession();
   }
 
+  /**
+   * Monotonic counter bumped by every content-mutating call (file updates,
+   * document pushes, structural moves, manifest changes). Lets consumers
+   * cache derived results (e.g. a project compile) and invalidate exactly
+   * when the session could have changed.
+   */
+  get generation(): number {
+    return this.mutationCount;
+  }
+
+  /** Mark the session as (potentially) changed. */
+  private bump(): void {
+    this.mutationCount += 1;
+  }
+
   updateSource(source: string): void {
+    this.bump();
     this.session.update_source(source);
   }
 
   updateFile(path: string, source: string): void {
+    this.bump();
     this.session.update_file(path, source);
   }
 
   removeFile(path: string): void {
+    this.bump();
     this.session.remove_file(path);
   }
 
@@ -101,11 +120,13 @@ export class EditorSessionHandle {
    * validation and richer hover/completion. Throws on an invalid manifest.
    */
   setHostManifest(manifest: HostManifest): void {
+    this.bump();
     this.session.set_host_manifest(JSON.stringify(manifest));
   }
 
   /** Clear any registered host manifest, then re-analyze. */
   clearHostManifest(): void {
+    this.bump();
     this.session.clear_host_manifest();
   }
 
@@ -114,6 +135,7 @@ export class EditorSessionHandle {
    * (default — a registered manifest is binding) or `"off"`.
    */
   setExternalCheck(level: "error" | "off"): void {
+    this.bump();
     this.session.set_external_check(level);
   }
 
@@ -176,6 +198,7 @@ export class EditorSessionHandle {
    * live-mirroring sibling views, or null for an unknown handle.
    */
   updateDocument(doc: DocumentId, source: string): DocumentChangeSpec | null {
+    this.bump();
     const json = this.session.update_document(doc, source);
     const result = JSON.parse(json);
     return result ?? null;
@@ -381,12 +404,14 @@ export class EditorSessionHandle {
 
   /** Reorder a stitch within its knot. direction: 1 = down, -1 = up. */
   reorderStitch(path: string, knot: string, stitch: string, direction: number): MoveResult {
+    this.bump();
     const json = this.session.reorder_stitch(path, knot, stitch, direction);
     return JSON.parse(json) as MoveResult;
   }
 
   /** Reorder a knot within the top-level knot list. direction: 1 = down, -1 = up. */
   reorderKnot(path: string, knot: string, direction: number): MoveResult {
+    this.bump();
     const json = this.session.reorder_knot(path, knot, direction);
     return JSON.parse(json) as MoveResult;
   }
@@ -397,30 +422,35 @@ export class EditorSessionHandle {
    * destination order, and by multi-select moves.
    */
   reorderStitches(path: string, knot: string, order: string[]): MoveResult {
+    this.bump();
     const json = this.session.reorder_stitches(path, knot, order);
     return JSON.parse(json) as MoveResult;
   }
 
   /** Reorder all top-level knots to match `order` (a permutation of the knot names). */
   reorderKnots(path: string, order: string[]): MoveResult {
+    this.bump();
     const json = this.session.reorder_knots(path, order);
     return JSON.parse(json) as MoveResult;
   }
 
   /** Move a stitch from one knot to another. */
   moveStitch(path: string, srcKnot: string, stitch: string, destKnot: string): MoveResult {
+    this.bump();
     const json = this.session.move_stitch(path, srcKnot, stitch, destKnot);
     return JSON.parse(json) as MoveResult;
   }
 
   /** Promote a stitch to a top-level knot. */
   promoteStitch(path: string, knot: string, stitch: string): MoveResult {
+    this.bump();
     const json = this.session.promote_stitch(path, knot, stitch);
     return JSON.parse(json) as MoveResult;
   }
 
   /** Demote a top-level knot to a stitch inside another knot. */
   demoteKnot(path: string, knot: string, destKnot: string): MoveResult {
+    this.bump();
     const json = this.session.demote_knot(path, knot, destKnot);
     return JSON.parse(json) as MoveResult;
   }

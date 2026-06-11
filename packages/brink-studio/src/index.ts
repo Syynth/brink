@@ -43,32 +43,35 @@ export {
 
 // ── Editor (from @brink/ink-editor) ─────────────────────────────
 export {
-  InkEditor,
   brinkStudio,
   elementTypeField,
   ElementType,
-  setEditorSession,
-  EditorStateManager,
+  DocHandle,
+  DocumentSessions,
+  docKeyFor,
+  docTitleFor,
+  documentHandleFacet,
+  parseDocKey,
+  syncAnnotation,
   ProjectSession,
   InMemoryFileProvider,
   brinkTheme,
   convertLineToType,
 } from "@brink/ink-editor";
 export type {
-  InkEditorProps,
-  InkEditorHandle,
   KeyHint,
   BrinkStudioOptions,
+  DocTarget,
+  DocumentCallbacks,
+  DocumentHandleSlot,
   LineInfo,
-  TabTarget,
-  TabInfo,
   ProjectSessionOptions,
   FileProvider,
 } from "@brink/ink-editor";
 
 // ── Store (from @brink/studio-store) ────────────────────────────
 export { createStudioStore } from "@brink/studio-store";
-export type { StudioState, StudioStore } from "@brink/studio-store";
+export type { StudioState, StudioStore, TabTarget } from "@brink/studio-store";
 
 // ── UI (from @brink/studio-ui) ─────────────────────────────────
 export {
@@ -76,13 +79,15 @@ export {
   useStudioStore,
   App,
   Binder,
-  FileTabBar,
+  INK_FILE_TYPE_ID,
+  InkFileDocument,
+  inkFileRef,
+  NewFilePrompt,
   CompileStatusSegment,
   CursorSegment,
   ElementSegment,
   KeyHintsSegment,
   StorySegment,
   PlayerPane,
-  EditorPane,
   ElementDropdown,
 } from "@brink/studio-ui";

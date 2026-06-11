@@ -1,19 +1,16 @@
 import { createRoot } from "react-dom/client";
-import { useRef, useEffect, useCallback } from "react";
+import { useEffect } from "react";
 import { initWasm } from "@brink/wasm";
-import type { CompileResult, FileOutline, Location } from "@brink/wasm-types";
+import type { CompileResult, FileOutline } from "@brink/wasm-types";
 import {
-  InkEditor,
-  type InkEditorHandle,
-  type KeyHint,
-  type LineInfo,
-  EditorStateManager,
+  DocumentSessions,
   ProjectSession,
   InMemoryFileProvider,
 } from "@brink/ink-editor";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
 import {
   CommandRegistry,
+  DocumentTypeRegistry,
   EDITOR_REVEAL_COMMAND_ID,
   LocationResolvers,
   NotificationBell,
@@ -23,8 +20,14 @@ import {
   ToolWindowRegistry,
   VIEW_REVEAL_COMMAND_ID,
   ViewRevealHandlers,
+  createEditorGroupsStore,
+  documentKey,
+  focusedTab,
   resolveQualifiedSymbol,
+  type EditorGroupsState,
+  type EditorGroupsStore,
   type Location as ShellLocation,
+  type SourceLocation,
 } from "@brink/studio-shell";
 import {
   App,
@@ -32,6 +35,8 @@ import {
   CompileStatusSegment,
   CursorSegment,
   ElementSegment,
+  INK_FILE_TYPE_ID,
+  InkFileDocument,
   KeyHintsSegment,
   OutputView,
   PlayerPane,
@@ -41,16 +46,8 @@ import {
   StateView,
   StorySegment,
   StoreProvider,
+  inkFileRef,
 } from "@brink/studio-ui";
-import { EditorView } from "@codemirror/view";
-import type { Extension } from "@codemirror/state";
-import {
-  elementTypeField,
-  getHintsForElement,
-  lineHasContent,
-  buildContext,
-} from "@brink/ink-editor";
-import type { BrinkStudioOptions } from "@brink/ink-editor";
 import { registerStoryCommands } from "./story-commands.js";
 import toppledTemple from "./stories/toppled-temple.ink.txt?raw";
 
@@ -134,7 +131,6 @@ const OUTPUT_ICON = (
 
 // ── Compile log messages (Output tool window, spec §4) ─────────────
 //
-// One formatter shared by both compile callbacks so they stay in sync.
 // CompileResult carries no timing, so entries log outcome + counts.
 
 function compileLogMessage(
@@ -158,156 +154,36 @@ function compileLogMessage(
 interface RootProps {
   store: StudioStore;
   project: ProjectSession;
-  studioOptions: BrinkStudioOptions;
-  updateListener: Extension;
+  documents: DocumentSessions;
   commands: CommandRegistry;
   toolWindows: ToolWindowRegistry;
   statusBarItems: StatusBarRegistry;
+  documentTypes: DocumentTypeRegistry;
+  editorGroups: EditorGroupsStore;
   notifications: NotificationCenter;
 }
 
 function Root({
   store,
   project,
-  studioOptions,
-  updateListener,
+  documents,
   commands,
   toolWindows,
   statusBarItems,
+  documentTypes,
+  editorGroups,
   notifications,
 }: RootProps) {
-  const editorRef = useRef<InkEditorHandle>(null);
-  const managerRef = useRef<EditorStateManager | null>(null);
-
-  // Callbacks for InkEditor → Store
-  const onCursorChange = useCallback((line: number, col: number) => {
-    store.getState().setCursor(line, col);
-  }, [store]);
-
-  const onLineInfoChange = useCallback((info: LineInfo | null, hints: KeyHint[]) => {
-    store.getState().setLineInfo(info, hints);
-  }, [store]);
-
-  const onCompileResult = useCallback((result: CompileResult) => {
-    const state = store.getState();
-    const session = project.getSession();
-    const outline: FileOutline[] = session.getProjectOutline();
-
-    let errors = 0;
-    let warnings = 0;
-    if (result.warnings) {
-      for (const w of result.warnings) {
-        if (w.severity === "Error") errors++;
-        else warnings++;
-      }
-    }
-    if (result.error) errors++;
-
-    const storyBytes = result.ok && result.story_bytes
-      ? new Uint8Array(result.story_bytes)
-      : null;
-
-    state.setCompileResult(outline, { errors, warnings }, result.warnings ?? [], storyBytes);
-    state.appendOutput("compile", compileLogMessage(result.ok, errors, warnings, result.error));
-
-    // Recompile-while-running (spec §7.6): a successful compile auto-starts
-    // the session on the new program through the same code path as the
-    // story.start command — startSession replays the recorded choice log,
-    // truncating with a notification on divergence. A failed compile takes
-    // the `storyBytes === null` branch and leaves the existing session
-    // running on the old program.
-    if (storyBytes) {
-      state.startSession(storyBytes);
-    }
-  }, [store, project]);
-
-  const onDocEdited = useCallback(() => {
-    store.getState().pinActiveTab();
-  }, [store]);
-
-  // Build full studio options with navigation wired to the store
-  const fullOptions = useRef<BrinkStudioOptions | null>(null);
-  if (!fullOptions.current) {
-    fullOptions.current = {
-      ...studioOptions,
-      onCompile(result: CompileResult) {
-        const state = store.getState();
-        const session = project.getSession();
-        const outline: FileOutline[] = session.getProjectOutline();
-
-        let errors = 0;
-        let warnings = 0;
-        if (result.warnings) {
-          for (const w of result.warnings) {
-            if (w.severity === "Error") errors++;
-            else warnings++;
-          }
-        }
-        if (result.error) errors++;
-
-        const storyBytes = result.ok && result.story_bytes
-          ? new Uint8Array(result.story_bytes)
-          : null;
-
-        state.setCompileResult(outline, { errors, warnings }, result.warnings ?? [], storyBytes);
-        state.appendOutput(
-          "compile",
-          compileLogMessage(result.ok, errors, warnings, result.error),
-        );
-        // Same recompile-while-running contract as onCompileResult above.
-        if (storyBytes) {
-          state.startSession(storyBytes);
-        }
-      },
-      onNavigateToFile(location: Location) {
-        const manager = managerRef.current;
-        if (!manager) return;
-        void manager.openTab({ kind: "file" as const, path: location.file }, true).then(() => {
-          const tabs = [...manager.getTabs()];
-          const activeTab = manager.getActiveTab();
-          store.setState({ tabs, activeTabId: activeTab.id });
-          const view = manager.getView();
-          view.dispatch({
-            selection: { anchor: location.start },
-            effects: EditorView.scrollIntoView(location.start, { y: "center" }),
-          });
-        });
-      },
-    };
-  }
-
-  // Create manager once — pass the updateListener so every state
-  // it creates (including for tab switches) has the React callbacks.
-  if (!managerRef.current) {
-    managerRef.current = new EditorStateManager(
-      project,
-      fullOptions.current,
-      [updateListener],
-    );
-  }
-
-  const manager = managerRef.current;
-  const initialState = manager.getState(project.getActiveFile());
-
-  // Initialize store with refs after first render
-  useEffect(() => {
-    const editor = editorRef.current;
-    if (editor && manager) {
-      store.getState().initialize(project, manager, editor);
-      manager.setView(editor.getView());
-      (window as any).__brinkView = editor.getView();
-    }
-  }, [store, project, manager]);
-
   // Tear down the wasm session + story runner when the app unmounts. The
   // standalone playground never unmounts, but the embeddable/host case does —
   // this keeps the lifecycle owned instead of leaking the cached parse/HIR.
   useEffect(
     () => () => {
       store.getState().disposeSession();
+      documents.dispose();
       project.destroy();
     },
-    [store, project],
+    [store, documents, project],
   );
 
   return (
@@ -315,22 +191,12 @@ function Root({
       commands={commands}
       toolWindows={toolWindows}
       statusBarItems={statusBarItems}
+      documents={documentTypes}
+      editorGroups={editorGroups}
       notifications={notifications}
     >
       <StoreProvider store={store}>
-        <App
-          editorSlot={
-            <InkEditor
-              ref={editorRef}
-              studioOptions={fullOptions.current}
-              initialState={initialState}
-              onCursorChange={onCursorChange}
-              onLineInfoChange={onLineInfoChange}
-              onCompileResult={onCompileResult}
-              onDocEdited={onDocEdited}
-            />
-          }
-        />
+        <App />
       </StoreProvider>
     </ShellProvider>
   );
@@ -375,19 +241,20 @@ async function main(): Promise<void> {
           "toppled-temple.ink": toppledTemple,
         };
   const provider = new InMemoryFileProvider(files);
-  const project = new ProjectSession({ provider, entryFile: "main.ink" });
+  const entryFile = "main.ink";
+  const project = new ProjectSession({ provider, entryFile });
   await project.initialize();
   if (superseded()) {
     project.destroy();
     return;
   }
 
-  const studioOptions = project.createStudioOptions();
   const store = createStudioStore();
 
   // Shell command registry (spec §6). ShellProvider owns the keymap and the
-  // global key handler, and generates the `view.toggle.<id>` commands
-  // (Mod-1…9 by registration order) from the tool-window registry below.
+  // global key handler, generates the `view.toggle.<id>` commands (Mod-1…9 by
+  // registration order) from the tool-window registry below, and registers
+  // the editor-group commands (editor.split Mod-\, move-tab, focus-next).
   const commands = new CommandRegistry();
 
   // Story session lifecycle (spec §7.6): story.start / restart / stop /
@@ -396,7 +263,7 @@ async function main(): Promise<void> {
   registerStoryCommands(commands, store);
 
   // Recompile on demand (the player's "Run" button). A successful compile
-  // auto-starts the session via onCompileResult below.
+  // auto-starts the session via the compile-result handler below.
   commands.register({
     id: "compile.run",
     title: "Compile: Run",
@@ -420,8 +287,108 @@ async function main(): Promise<void> {
     run: () => void store.getState().undo(),
   });
 
+  // ── Editor groups + document types (spec §7.8) ────────────────────
+  //
+  // The shell owns tab/group structure; the app registers the "ink-file"
+  // document type, whose component mounts one CM6 view per (document, group)
+  // through DocumentSessions below.
+  const editorGroups: EditorGroupsStore = createEditorGroupsStore();
+  const documentTypes = new DocumentTypeRegistry();
+  documentTypes.register({ id: INK_FILE_TYPE_ID, component: InkFileDocument });
+
+  // Compile-result handler shared by every path that compiles (per-view
+  // debounced compiles, compile.run, the initial compile). DocumentSessions
+  // collapses reference-equal (cached) deliveries.
+  const handleCompileResult = (result: CompileResult): void => {
+    const state = store.getState();
+    const outline: FileOutline[] = project.getSession().getProjectOutline();
+
+    let errors = 0;
+    let warnings = 0;
+    if (result.warnings) {
+      for (const w of result.warnings) {
+        if (w.severity === "Error") errors++;
+        else warnings++;
+      }
+    }
+    if (result.error) errors++;
+
+    const storyBytes = result.ok && result.story_bytes
+      ? new Uint8Array(result.story_bytes)
+      : null;
+
+    state.setCompileResult(outline, { errors, warnings }, result.warnings ?? [], storyBytes);
+    state.appendOutput("compile", compileLogMessage(result.ok, errors, warnings, result.error));
+
+    // Recompile-while-running (spec §7.6): a successful compile auto-starts
+    // the session on the new program through the same code path as the
+    // story.start command — startSession replays the recorded choice log,
+    // truncating with a notification on divergence. A failed compile takes
+    // the `storyBytes === null` branch and leaves the existing session
+    // running on the old program.
+    if (storyBytes) {
+      state.startSession(storyBytes);
+    }
+  };
+
+  // Per-(document, group) editor views over wasm document handles. Cursor,
+  // line info, auto-pin, focus tracking, and the e2e `__brinkView` hook all
+  // flow through these callbacks; the manager keeps them targeted at the
+  // focused group's active view.
+  const documents = new DocumentSessions(project, {
+    onCursorChange: (line, col) => store.getState().setCursor(line, col),
+    onLineInfoChange: (info, hints) => store.getState().setLineInfo(info, hints),
+    onCompileResult: handleCompileResult,
+    onDocEdited: (docKey, groupId) =>
+      editorGroups
+        .getState()
+        .pinTab(groupId, documentKey({ typeId: INK_FILE_TYPE_ID, docId: docKey })),
+    onViewFocused: (_docKey, groupId) => editorGroups.getState().focusGroup(groupId),
+    onFocusedViewChange: (view) => {
+      (window as unknown as Record<string, unknown>).__brinkView = view ?? undefined;
+    },
+    onNavigateToFile: (location) =>
+      revealSource({
+        kind: "source",
+        file: location.file,
+        span: { start: location.start, end: location.end },
+      }),
+  });
+
+  // The store's document opener (Binder rows, addFile): note the target so
+  // symbol mounts can fall back to the outline range, then open through the
+  // shell's groups store (which applies the §7.8 reveal policy).
+  store.getState().setDocumentOpener((target, pinned) => {
+    documents.noteTarget(target);
+    editorGroups.getState().openDocument(inkFileRef(target), { pinned });
+  });
+
+  // Keep the focused-view tracking and the store's activeDocKey mirror in
+  // sync with the shell's groups store, and prune cached view slots for
+  // closed tabs (unbounded-growth guard).
+  const syncFromGroups = (state: EditorGroupsState): void => {
+    const tab = focusedTab(state);
+    const inkDocKey =
+      tab !== null && tab.ref.typeId === INK_FILE_TYPE_ID ? tab.ref.docId : null;
+    store.getState().setActiveDocKey(inkDocKey ?? "");
+    documents.setFocused(inkDocKey, inkDocKey !== null ? state.focusedGroupId : null);
+
+    const liveSlots = new Set<string>();
+    const liveDocKeys = new Set<string>();
+    for (const group of state.groups) {
+      for (const t of group.tabs) {
+        if (t.ref.typeId !== INK_FILE_TYPE_ID) continue;
+        liveSlots.add(DocumentSessions.slotId(t.ref.docId, group.id));
+        liveDocKeys.add(t.ref.docId);
+      }
+    }
+    documents.retainSlots(liveSlots, liveDocKeys);
+  };
+  editorGroups.subscribe(syncFromGroups);
+
   // Navigation protocol (spec §6.1): resolvers translate Locations toward
-  // source; editor.reveal opens the file and scrolls to the span. The symbol
+  // source; editor.reveal opens the file (focusing an existing tab in any
+  // group per the §7.8 reveal policy) and scrolls to the span. The symbol
   // resolver reads the latest compile outline; program/session resolvers
   // land with their consumers (#91, State View links).
   const locations = new LocationResolvers();
@@ -430,25 +397,17 @@ async function main(): Promise<void> {
       ? resolveQualifiedSymbol(store.getState().outline, location.name)
       : null,
   );
+  const revealSource = (target: SourceLocation): void => {
+    store.getState().openTarget({ kind: "file", path: target.file }, true);
+    documents.revealAt(target.file, target.span.start);
+  };
   const revealHandlers = new ViewRevealHandlers();
   commands.register({
     id: EDITOR_REVEAL_COMMAND_ID,
     title: "Editor: Reveal Location",
     run: (args) => {
       const target = locations.resolve(args as ShellLocation);
-      const manager = store.getState()._stateManager;
-      if (target === null || manager === null) return;
-      void manager.openTab({ kind: "file" as const, path: target.file }, true).then(() => {
-        const tabs = [...manager.getTabs()];
-        const activeTab = manager.getActiveTab();
-        store.setState({ tabs, activeTabId: activeTab.id });
-        const view = manager.getView();
-        view.dispatch({
-          selection: { anchor: target.span.start },
-          effects: EditorView.scrollIntoView(target.span.start, { y: "center" }),
-        });
-        view.focus();
-      });
+      if (target !== null) revealSource(target);
     },
   });
   commands.register({
@@ -463,6 +422,7 @@ async function main(): Promise<void> {
   // Exposed for e2e/manual verification, like __brinkView.
   (window as unknown as Record<string, unknown>).__brinkCommands = commands;
   (window as unknown as Record<string, unknown>).__brinkNotifications = notifications;
+  (window as unknown as Record<string, unknown>).__brinkEditorGroups = editorGroups;
 
   // Tool-window registry (spec §7.1, §4). Registration order is the stable,
   // user-visible Mod-N ordering: Binder Mod-1, Player Mod-2, State Mod-3,
@@ -566,38 +526,11 @@ async function main(): Promise<void> {
     component: NotificationBell,
   });
 
-  // Create the updateListener eagerly so it can be shared between
-  // InkEditor (for the initial state) and EditorStateManager (for
-  // tab-switch states). It reads callbacks from the store, so it
-  // doesn't need to be recreated when callbacks change.
-  const updateListener = EditorView.updateListener.of((update) => {
-    const state = store.getState();
-
-    if (update.docChanged) {
-      state.pinActiveTab();
-    }
-
-    if (update.docChanged || update.selectionSet) {
-      const { state: editorState } = update.view;
-      const pos = editorState.selection.main.head;
-      const line = editorState.doc.lineAt(pos);
-      const col = pos - line.from;
-
-      state.setCursor(line.number, col + 1);
-
-      const infos = editorState.field(elementTypeField);
-      const info = infos[line.number - 1] ?? null;
-
-      let hints: { key: string; hint: string }[] = [];
-      if (info) {
-        const hasContent = lineHasContent(line.text, info);
-        const lineCtx = buildContext(infos, line.number - 1);
-        hints = getHintsForElement(info, hasContent, lineCtx);
-      }
-
-      state.setLineInfo(info, hints);
-    }
-  });
+  // Bind handles, kick the initial compile, and open the entry file (the
+  // groups-store subscription above keeps focus tracking in sync as the
+  // document component mounts).
+  store.getState().initialize(project, documents);
+  store.getState().openTarget({ kind: "file", path: entryFile }, true);
 
   const appRoot = document.getElementById("app");
   if (!appRoot) throw new Error("Missing #app container");
@@ -607,17 +540,18 @@ async function main(): Promise<void> {
     <Root
       store={store}
       project={project}
-      studioOptions={studioOptions}
-      updateListener={updateListener}
+      documents={documents}
       commands={commands}
       toolWindows={toolWindows}
       statusBarItems={statusBarItems}
+      documentTypes={documentTypes}
+      editorGroups={editorGroups}
       notifications={notifications}
     />,
   );
 
   if (hotData) {
-    // Unmounting runs Root's cleanup effect: disposePlayer + project.destroy.
+    // Unmounting runs Root's cleanup effect: dispose session + views + project.
     hotData.teardown = () => root.unmount();
   }
 }

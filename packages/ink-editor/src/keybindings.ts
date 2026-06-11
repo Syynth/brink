@@ -1,6 +1,7 @@
 import { type Extension, Prec } from "@codemirror/state";
 import { keymap, type EditorView } from "@codemirror/view";
-import { elementTypeField, ElementType, getEditorSession } from "./element-type.js";
+import { elementTypeField, ElementType } from "./element-type.js";
+import { documentHandleFacet } from "./document-handle.js";
 import { sigilBypass, characterName, CHAR_SUFFIX_LEN } from "./screenplay.js";
 import { findTransition, lineHasContent, executeAction, buildContext } from "./transitions.js";
 import { CONVERTIBLE_TYPES, convertLineToType } from "./convert.js";
@@ -131,7 +132,12 @@ function handleKey(key: string, view: EditorView): boolean {
     return key === "Tab" || key === "Shift-Tab";
   }
 
-  return executeAction(transition.action, view, info, getEditorSession());
+  return executeAction(
+    transition.action,
+    view,
+    info,
+    view.state.facet(documentHandleFacet)?.handle ?? null,
+  );
 }
 
 /** For character lines, find the editable name region (after @, before :<>). */

@@ -1,6 +1,6 @@
 import { StateField, type EditorState, type Transaction } from "@codemirror/state";
 import type { LineContext, WeaveElement } from "@brink/wasm-types";
-import type { EditorSessionHandle } from "@brink/wasm";
+import { documentHandleFacet } from "./document-handle.js";
 
 export { type LineContext } from "@brink/wasm-types";
 
@@ -186,23 +186,14 @@ function classifyLine(text: string): LineInfo {
 
 // ── StateField ──────────────────────────────────────────────────────
 
-/** Facet-like holder for the session reference, set during editor creation. */
-let _sessionRef: EditorSessionHandle | null = null;
-
-export function setEditorSession(session: EditorSessionHandle): void {
-  _sessionRef = session;
-}
-
-export function getEditorSession(): EditorSessionHandle | null {
-  return _sessionRef;
-}
-
 function computeLineInfos(state: EditorState): LineInfo[] {
-  if (_sessionRef) {
-    // Update the session with current source
-    const source = state.doc.toString();
-    _sessionRef.updateSource(source);
-    const contexts = _sessionRef.getLineContexts();
+  // The view's own document handle (per-view DocId, see document-handle.ts).
+  // Pushing here keeps the wasm session in sync with this view on every doc
+  // change, before any extension queries run against the new state.
+  const handle = state.facet(documentHandleFacet)?.handle ?? null;
+  if (handle) {
+    handle.pushSource(state.doc.toString());
+    const contexts = handle.lineContexts();
 
     const infos: LineInfo[] = [];
     for (let i = 0; i < contexts.length && i < state.doc.lines; i++) {

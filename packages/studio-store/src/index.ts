@@ -10,15 +10,15 @@ import { create } from "zustand";
 
 import type { EditorSlice } from "./slices/editor.js";
 import type { CompileSlice } from "./slices/compile.js";
-import type { TabsSlice } from "./slices/tabs.js";
+import type { DocumentsSlice } from "./slices/documents.js";
 import type { SessionSlice } from "./slices/session.js";
 import type { BinderSlice } from "./slices/binder.js";
 import type { OutputSlice } from "./slices/output.js";
-import type { InkEditorHandle, EditorStateManager, ProjectSession } from "./types.js";
+import type { DocumentSessions, ProjectSession } from "./types.js";
 
 import { createEditorSlice } from "./slices/editor.js";
 import { createCompileSlice } from "./slices/compile.js";
-import { createTabsSlice } from "./slices/tabs.js";
+import { createDocumentsSlice } from "./slices/documents.js";
 import { createSessionSlice } from "./slices/session.js";
 import { createBinderSlice } from "./slices/binder.js";
 import { createOutputSlice } from "./slices/output.js";
@@ -47,22 +47,17 @@ export interface StoreNotification {
 export interface StudioState
   extends EditorSlice,
     CompileSlice,
-    TabsSlice,
+    DocumentsSlice,
     SessionSlice,
     BinderSlice,
     OutputSlice {
   // Non-reactive refs — imperative handles that don't trigger re-renders
-  _editorRef: InkEditorHandle | null;
-  _stateManager: EditorStateManager | null;
+  _documents: DocumentSessions | null;
   _project: ProjectSession | null;
   /** Injected notifier (see StoreNotification); null until the app binds it. */
   _notify: ((notification: StoreNotification) => void) | null;
 
-  initialize(
-    project: ProjectSession,
-    stateManager: EditorStateManager,
-    editorRef: InkEditorHandle,
-  ): void;
+  initialize(project: ProjectSession, documents: DocumentSessions): void;
   /** Bind the shell notifier bridge (main.tsx, at bootstrap). */
   setNotifier(notify: (notification: StoreNotification) => void): void;
 }
@@ -77,14 +72,13 @@ export const createStudioStore = () =>
       // Slices
       ...createEditorSlice(...args),
       ...createCompileSlice(...args),
-      ...createTabsSlice(...args),
+      ...createDocumentsSlice(...args),
       ...createSessionSlice(...args),
       ...createBinderSlice(...args),
       ...createOutputSlice(...args),
 
       // Non-reactive refs
-      _editorRef: null,
-      _stateManager: null,
+      _documents: null,
       _project: null,
       _notify: null,
 
@@ -92,23 +86,12 @@ export const createStudioStore = () =>
         set({ _notify: notify });
       },
 
-      // Initialization — binds imperative handles and syncs initial state
-      initialize(project, stateManager, editorRef) {
-        const tabs = [...stateManager.getTabs()];
-        const activeTab = stateManager.getActiveTab();
-        const files: string[] = stateManager.files();
-
-        set({
-          _project: project,
-          _stateManager: stateManager,
-          _editorRef: editorRef,
-          tabs,
-          activeTabId: activeTab.id,
-          files,
-        });
+      // Initialization — binds imperative handles and kicks the first compile
+      initialize(project, documents) {
+        set({ _project: project, _documents: documents });
 
         // Trigger an initial compile to populate outline/diagnostics
-        get()._editorRef?.triggerCompile();
+        documents.triggerCompile();
       },
     };
   });
@@ -138,14 +121,15 @@ export {
   type OutputSource,
 } from "./slices/output.js";
 
+// Document key/title helpers (shared with the shell's DocumentRefs).
+export { docKeyFor, docTitleFor } from "@brink/ink-editor";
+
 export type {
   ElementType,
   LineInfo,
   KeyHint,
   TabTarget,
-  TabInfo,
-  InkEditorHandle,
-  EditorStateManager,
+  DocumentSessions,
   ProjectSession,
 } from "./types.js";
 

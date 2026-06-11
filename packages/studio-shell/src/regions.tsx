@@ -3,7 +3,8 @@
  *
  * ShellFrame renders the dock/strip shell purely from the tool-window
  * registry plus the layout store: strips on the left/right/bottom edges,
- * edge docks with two sections each, and the editor area always center.
+ * edge docks with two sections each, and the editor area always center
+ * (EditorArea — groups + tabs from the editor-groups store, §7.8).
  *
  * Strip icons are draggable to any of the six dock sections (§5.1, #87):
  * ShellFrame owns the drag controller (useStripDrag) and the ghost chip;
@@ -28,6 +29,7 @@ import {
   useStatusBarItems,
   useToolWindows,
 } from "./shell-context.js";
+import { EditorArea } from "./editor-area.js";
 import { formatChord } from "./keymap.js";
 import { statusBarGroups, type StatusBarItemDescriptor } from "./statusbar.js";
 import { viewToggleCommandId } from "./view-commands.js";
@@ -41,10 +43,6 @@ import {
   type ToolWindowDescriptor,
 } from "./toolwindow.js";
 
-export interface ShellFrameProps {
-  /** The editor area content (always center, never remounted). */
-  editorSlot: ReactNode;
-}
 
 // ── Tool-window chrome ──────────────────────────────────────────────
 
@@ -190,7 +188,7 @@ export function ShellStatusBar() {
 
 // ── Shell frame ─────────────────────────────────────────────────────
 
-export function ShellFrame({ editorSlot }: ShellFrameProps) {
+export function ShellFrame() {
   const { layout } = useShell();
   const descriptors = useToolWindows();
   const tier = useShellLayout((s) => s.tier);
@@ -397,7 +395,7 @@ export function ShellFrame({ editorSlot }: ShellFrameProps) {
                 {showLeftDock && <Separator className="brink-resize-handle" />}
 
                 <Panel id="editor" key="editor" minSize="200px">
-                  {editorSlot}
+                  <EditorArea />
                 </Panel>
 
                 {showRightDock && <Separator className="brink-resize-handle" />}

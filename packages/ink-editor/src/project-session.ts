@@ -1,13 +1,18 @@
 /**
  * ProjectSession — bridges a FileProvider with an EditorSession.
  *
- * Handles multi-file loading, INCLUDE resolution, active file switching,
- * and generates editor options that wire everything together.
+ * Handles multi-file loading, INCLUDE resolution, file creation, provider
+ * write-back, and project compilation (cached by the session's mutation
+ * generation, so several live views can each ask for "the current compile"
+ * without recompiling an unchanged project).
+ *
+ * Per-view document state (wasm document handles, CM6 states, mirroring)
+ * lives in DocumentSessions — this class owns only project-level concerns.
  */
 
 import type { FileProvider } from "./provider.js";
-import { EditorSessionHandle, getTokenTypeNames } from "@brink/wasm";
-import type { BrinkStudioOptions } from "./extensions.js";
+import { EditorSessionHandle } from "@brink/wasm";
+import type { CompileResult } from "@brink/wasm-types";
 
 export interface ProjectSessionOptions {
   provider: FileProvider;
@@ -22,20 +27,19 @@ export class ProjectSession {
   private provider: FileProvider;
   private entryFile: string;
   private session: EditorSessionHandle;
-  private activeFile: string;
   private onExternalFileChange?: (path: string, content: string | null) => void;
   private unsubscribeExternal?: () => void;
   private destroyed = false;
+  private lastCompile: { generation: number; result: CompileResult } | null = null;
 
   constructor(options: ProjectSessionOptions) {
     this.provider = options.provider;
     this.entryFile = options.entryFile;
     this.session = options.session ?? new EditorSessionHandle();
-    this.activeFile = options.entryFile;
     this.onExternalFileChange = options.onExternalFileChange;
   }
 
-  /** Load all files from provider, resolve INCLUDEs, set active file. */
+  /** Load all files from provider and resolve INCLUDEs. */
   async initialize(): Promise<void> {
     const files = await this.provider.listFiles();
     for (const file of files) {
@@ -44,9 +48,6 @@ export class ProjectSession {
     }
 
     await this.resolveIncludes();
-
-    this.session.setActiveFile(this.entryFile);
-    this.activeFile = this.entryFile;
 
     // Register external change callback if the provider supports it. Keep the
     // unsubscribe so destroy() can detach it — otherwise a later external change
@@ -72,28 +73,6 @@ export class ProjectSession {
     return this.entryFile;
   }
 
-  /** Current active file. */
-  getActiveFile(): string {
-    return this.activeFile;
-  }
-
-  /** Switch active file. Loads from provider if not yet in session. */
-  async setActiveFile(path: string): Promise<string> {
-    // Try to set directly — file may already be loaded
-    if (!this.session.setActiveFile(path)) {
-      // Not loaded yet — try to get it from the provider
-      const content = await this.provider.requestFile(path);
-      if (content !== null) {
-        this.session.updateFile(path, content);
-        this.session.setActiveFile(path);
-      } else {
-        throw new Error(`File not available: ${path}`);
-      }
-    }
-    this.activeFile = path;
-    return this.session.getFileSource(path) ?? "";
-  }
-
   /** Create a new file and add it to the session. */
   async addFile(path: string, content: string = ""): Promise<void> {
     await this.provider.createFile(path, content);
@@ -105,45 +84,51 @@ export class ProjectSession {
     this.session.removeFile(path);
   }
 
-  /** Generate BrinkStudioOptions for state creation. */
-  createStudioOptions(): BrinkStudioOptions {
-    const session = this.session;
-    const provider = this.provider;
-    const self = this;
+  /**
+   * Compile the project from its entry file. Cached against the session's
+   * mutation generation: with several live views each compiling on their own
+   * debounce, only the first compile after a change does real work.
+   */
+  compileProject(): CompileResult {
+    const generation = this.session.generation;
+    if (this.lastCompile !== null && this.lastCompile.generation === generation) {
+      return this.lastCompile.result;
+    }
+    const result = this.session.compileProject(this.entryFile);
+    this.lastCompile = { generation, result };
+    return result;
+  }
 
-    return {
-      compile: (source: string) => {
-        // Use updateSource (not updateFile) so that view-context splicing
-        // is applied when editing a focused sub-region of the file.
-        session.updateSource(source);
-        provider.onFileChanged?.(self.activeFile, session.getFileSource(self.activeFile) ?? source);
-        // Kick off async INCLUDE resolution — next compile picks up new files
-        void self.resolveIncludes();
-        return session.compileProject(self.entryFile);
-      },
-      getSemanticTokens: (source: string) => {
-        session.updateSource(source);
-        return session.getSemanticTokens();
-      },
-      getTokenTypeNames,
-      session,
-      getCompletions: (_source: string, offset: number) => session.getCompletions(offset),
-      getHover: (_source: string, offset: number) => session.getHover(offset),
-      gotoDefinition: (_source: string, offset: number) => session.gotoDefinition(offset),
-      getActiveFile: () => self.activeFile,
-      findReferences: (_source: string, offset: number) => session.findReferences(offset),
-      prepareRename: (_source: string, offset: number) => session.prepareRename(offset),
-      doRename: (_source: string, offset: number, newName: string) => session.doRename(offset, newName),
-      getCodeActions: (_source: string, offset: number) => session.getCodeActions(offset),
-      getInlayHints: (_source: string, start: number, end: number) => session.getInlayHints(start, end),
-      getSignatureHelp: (_source: string, offset: number) => session.getSignatureHelp(offset),
-      getFoldingRanges: () => session.getFoldingRanges(),
-    };
+  /** Write a file's current session content back to the provider. */
+  notifyFileChanged(path: string): void {
+    const source = this.session.getFileSource(path);
+    if (source !== null) {
+      this.provider.onFileChanged?.(path, source);
+    }
+  }
+
+  /**
+   * Re-resolve INCLUDEs across all loaded files, loading missing files from
+   * the provider — the next compile picks up newly discovered files.
+   */
+  async refreshIncludes(): Promise<void> {
+    await this.resolveIncludes();
   }
 
   /** Request save via provider. */
   async save(): Promise<void> {
     await this.provider.requestSave?.();
+  }
+
+  /** Ask the provider for a file not yet in the session; loads it if found. */
+  async requestFile(path: string): Promise<string | null> {
+    const existing = this.session.getFileSource(path);
+    if (existing !== null) return existing;
+    const content = await this.provider.requestFile(path);
+    if (content !== null) {
+      this.session.updateFile(path, content);
+    }
+    return content;
   }
 
   /** Tear down. Detaches the external-change listener before freeing the

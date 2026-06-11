@@ -428,6 +428,27 @@
 .brink-studio .brink-binder-input-wrapper {
   padding: 4px 8px;
 }
+/* Editor area: groups + per-group tab bars (spec §7.8) */
+.brink-studio .shell-editor-area,
+.brink-studio .shell-editor-groups {
+  height: 100%;
+  min-width: 0;
+}
+.brink-studio .shell-editor-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brink-fg-dim);
+  font-size: 13px;
+  user-select: none;
+}
+/* Quiet focused-group cue: the active tab gets the accent underline only in
+   the focused group. */
+.brink-studio .shell-editor-group:not(.focused) .brink-tab.active {
+  color: var(--brink-fg-dim);
+}
+
 /* Editor pane */
 .brink-studio .editor-pane {
   height: 100%;

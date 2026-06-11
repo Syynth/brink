@@ -258,8 +258,7 @@ describe("binder notification bridge", () => {
     const notify = vi.fn<(n: StoreNotification) => void>();
     store.setState({
       _project: { getSession: () => session } as never,
-      _stateManager: { invalidateFile: vi.fn() } as never,
-      _editorRef: { triggerCompile: vi.fn() } as never,
+      _documents: { invalidateFile: vi.fn(), triggerCompile: vi.fn() } as never,
     });
     store.getState().setNotifier(notify);
     return { store, session, sources, notify };
