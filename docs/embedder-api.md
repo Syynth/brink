@@ -1,7 +1,7 @@
 # Embedder API — mounting and extending brink-studio
 
 **Status:** landed (issue #95, shell Phase 5). The contract here is the public
-embedding surface of `@brink/studio`; the design rationale lives in
+embedding surface of `@brink-lang/studio`; the design rationale lives in
 [studio-shell-spec.md §8](studio-shell-spec.md#8-embedder-extension-api) and
 the decision log ("embedder extension API").
 
@@ -14,7 +14,7 @@ surfaces register at mount time into the same registries the built-ins use.
 ## Mounting
 
 ```ts
-import { mountStudio } from "@brink/studio";
+import { mountStudio } from "@brink-lang/studio";
 
 const handle = await mountStudio(document.getElementById("app")!, {
   files: { "main.ink": "-> start\n=== start ===\nHello.\n-> END\n" },
@@ -45,7 +45,7 @@ Passed once at mount. Either a plain config or a factory
 `(api: StudioApi) => StudioExtensions` when host commands need the facade:
 
 ```ts
-import type { StudioExtensions } from "@brink/studio";
+import type { StudioExtensions } from "@brink-lang/studio";
 
 const myExtensions: StudioExtensions = {
   toolWindows?: ToolWindowDescriptor[];   // §7.1 shape
@@ -87,7 +87,7 @@ Host components receive a curated facade via React context — **never the raw
 Zustand store**, so store internals stay free to change:
 
 ```ts
-import { useStudioApi } from "@brink/studio";
+import { useStudioApi } from "@brink-lang/studio";
 
 function MyHostPanel() {
   const api = useStudioApi();
@@ -150,7 +150,7 @@ relevant store changes, so identity selectors don't spuriously fire.
 
 ## Worked example — the "host functions panel" use case
 
-`createExampleExtension` (shipped in `@brink/studio`, mounted by the
+`createExampleExtension` (shipped in `@brink-lang/studio`, mounted by the
 playground; `?ext=none` loads without it) validates the RPG Maker MZ story:
 a panel that browses the external vocabulary the host already provides. The
 host registers its capability manifest at mount (`hostManifest`), the panel
@@ -167,7 +167,7 @@ import {
   type HostManifest,
   type StudioApi,
   type StudioExtensions,
-} from "@brink/studio";
+} from "@brink-lang/studio";
 
 // The host's vocabulary — the same object feeds the analyzer (diagnostics,
 // hover, completion) and the panel below.
@@ -238,7 +238,7 @@ the panel surfaces what is already defined.
 
 ## What is deliberately NOT exposed
 
-- **The Zustand store.** `@brink/studio` exports no `createStudioStore`, no
+- **The Zustand store.** `@brink-lang/studio` exports no `createStudioStore`, no
   `useStudioStore`, no `StudioState`. Hosts observe `StudioPublicState`
   only. (The internal workspace packages `@brink/studio-store` /
   `@brink/studio-ui` are not part of the public surface.)

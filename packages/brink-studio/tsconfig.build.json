@@ -1,0 +1,19 @@
+{
+  // Used by vite-plugin-dts (vite.config.ts) for the published d.ts rollup.
+  // Identical to tsconfig.json EXCEPT: no path mapping for @brink-lang/web,
+  // so it resolves through node_modules to packages/wasm/dist/index.d.ts and
+  // the rollup keeps it as an external import (inlining it would duplicate
+  // its classes, which are nominally typed via private fields). Requires
+  // `pnpm --filter @brink-lang/web build` to have run first.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@brink/wasm-types": ["../wasm-types/src/index.ts"],
+      "@brink/ink-operations": ["../ink-operations/src/index.ts"],
+      "@brink/ink-editor": ["../ink-editor/src/index.ts"],
+      "@brink/studio-shell": ["../studio-shell/src/index.ts"],
+      "@brink/studio-store": ["../studio-store/src/index.ts"],
+      "@brink/studio-ui": ["../studio-ui/src/index.ts"]
+    }
+  }
+}

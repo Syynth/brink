@@ -19,7 +19,7 @@
 
 import { createRoot } from "react-dom/client";
 import { useEffect } from "react";
-import { initWasm } from "@brink/wasm";
+import { initWasm } from "@brink-lang/web";
 import type { CompileResult, FileOutline, HostManifest } from "@brink/wasm-types";
 import {
   DocumentSessions,

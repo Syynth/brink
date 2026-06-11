@@ -11,7 +11,7 @@
 //     `new URL('brink_web_bg.wasm', import.meta.url)` in the wasm-pack glue and
 //     copies + rewrites it — no vite-plugin-wasm needed.
 //
-//   pnpm --filter @brink/studio build:embed
+//   pnpm --filter @brink-lang/studio build:embed
 //
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
@@ -26,7 +26,7 @@ export default defineConfig({
     alias: {
       "brink-web": resolve(wasmPkgPath, "brink_web.js"),
       "@brink/wasm-types": resolve(__dirname, "../wasm-types/src/index.ts"),
-      "@brink/wasm": resolve(__dirname, "../wasm/src/index.ts"),
+      "@brink-lang/web": resolve(__dirname, "../wasm/src/index.ts"),
       "@brink/ink-operations": resolve(__dirname, "../ink-operations/src/index.ts"),
       "@brink/ink-editor": resolve(__dirname, "../ink-editor/src/index.ts"),
       "@brink/studio-store": resolve(__dirname, "../studio-store/src/index.ts"),

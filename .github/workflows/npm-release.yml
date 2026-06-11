@@ -1,0 +1,91 @@
+# npm releases for the public web packages (@brink-lang/web,
+# @brink-lang/studio), driven by changesets (docs/publishing.md).
+#
+# On every push to main:
+#   - with pending changesets: changesets/action opens/updates the
+#     "Version Packages" PR (bumps versions, writes CHANGELOGs).
+#   - with no pending changesets (i.e. the version PR just merged):
+#     changesets/action builds nothing itself — the `publish` script below
+#     builds both packages and `changeset publish` pushes any version not
+#     yet on npm, then tags it.
+#
+# Publish auth (one-time npm setup in docs/publishing.md):
+#   - Preferred: npm trusted publishing (OIDC) — configure both packages on
+#     npmjs.com to trust this repo + workflow file; no secret needed. The
+#     `id-token: write` permission below also produces provenance.
+#   - Fallback: an automation token in the NPM_TOKEN repo secret. The step
+#     below feeds it to npm IF PRESENT; with trusted publishing configured
+#     the empty value is simply unused.
+#
+# The crates.io release pipeline is separate (release-plz.yml); the
+# cargo-dist installers pipeline is release.yml.
+name: npm-release
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Version PR / publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the version PR branch + git tags
+      pull-requests: write # open/update the version PR
+      id-token: write # npm trusted publishing (OIDC) + provenance
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+
+      # Toolchain comes from rust-toolchain.toml (rustup honors it).
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with:
+          version: v0.14.0
+
+      # The @brink-lang/web package is a file: dependency on the wasm-pack
+      # output, so the bundle must be built BEFORE `pnpm install` can link it.
+      - name: Build brink-web wasm package
+        run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Gates before any version PR / publish. E2E is deliberately skipped
+      # here — it runs in ci.yml on every PR; the release workflow keeps to
+      # typecheck + unit tests.
+      - name: Typecheck
+        run: pnpm --filter @brink-lang/studio typecheck
+      - name: Unit tests (vitest)
+        run: pnpm --filter @brink-lang/studio test
+
+      - name: Create version PR or publish to npm
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          # Builds @brink-lang/web then @brink-lang/studio (workspace
+          # topological order), then publishes whatever versions are new.
+          publish: pnpm run release
+          title: "chore: version npm packages"
+          commit: "chore: version npm packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Used if the secret exists; with npm trusted publishing configured
+          # for both packages, this can be left unset.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

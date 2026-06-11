@@ -17,7 +17,7 @@ wasm-pack build crates/brink-web --target web --out-dir www/pkg
 This emits an npm package at `crates/brink-web/www/pkg/` — the glue JS
 (`brink_web.js`), TypeScript types (`brink_web.d.ts`), and the `.wasm` binary.
 The package must be built **before** the JS workspace installs, because the
-ergonomic wrapper `@brink/wasm` depends on it via a `file:` path.
+ergonomic wrapper `@brink-lang/web` depends on it via a `file:` path.
 
 ```ts
 // raw module
@@ -25,7 +25,7 @@ import init, { EditorSession, StoryRunner, compile } from "brink-web";
 await init();                       // one-time async load of the wasm
 
 // or the ergonomic wrapper (parses the JSON envelopes for you)
-import { EditorSessionHandle, StoryRunnerHandle, compile } from "@brink/wasm";
+import { EditorSessionHandle, StoryRunnerHandle, compile } from "@brink-lang/web";
 ```
 
 ## What it exposes
@@ -118,7 +118,7 @@ full-file mode.
 ## Conventions
 
 - **JSON envelopes.** Every query returns a JSON *string* (`serde_json`); the JS
-  side parses it. The `@brink/wasm` wrapper does this for you and returns typed
+  side parses it. The `@brink-lang/web` wrapper does this for you and returns typed
   objects (`@brink/wasm-types`).
 - **UTF-8 byte offsets.** Positions are UTF-8 byte offsets into the source, not
   UTF-16 char indices or line/column. When a view context is active they are

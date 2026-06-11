@@ -125,7 +125,7 @@ Maps name → index via `Program::global_name`/`global_count`, then
 `StoryRunner::set_seed(i32)` (not a constructor arg — the bytes carry no seed)
 applies immediately and is remembered so `reset()` re-applies it for
 deterministic replays. Backed by `Story::set_rng_seed` → `Context::set_rng_seed`.
-Default unset = runtime default (0). `@brink/wasm`: `setSeed`.
+Default unset = runtime default (0). `@brink-lang/web`: `setSeed`.
 
 ## Phase 1 — save / load (persistent game state)
 
@@ -181,7 +181,7 @@ patch-tolerance.
 - `save_bytes() -> Vec<u8>` / `load_bytes(bytes) -> LoadReport-json` — MessagePack
   (struct-map mode, via `rmp-serde`; release, compact, still field-name-tolerant).
 
-`@brink/wasm`: `save()→SaveState` (typed) / `saveBytes()→Uint8Array`,
+`@brink-lang/web`: `save()→SaveState` (typed) / `saveBytes()→Uint8Array`,
 `load(SaveState)→LoadReport` / `loadBytes(Uint8Array)→LoadReport`. The
 persistence *backend* (localStorage / RMMZ slot / Node fs) is the host's;
 `brink-react` wires auto-persist.
@@ -204,7 +204,7 @@ runtime's existing pause-resume, **unified** with the sync surface:
   `resolve_external(value)` feeds the awaited result back. The sync
   `continue_story`/`continue_single` are unchanged (they still error on a
   suspending binding — use the async path).
-- `@brink/wasm`: `continueStoryAsync()` / `continueSingleAsync()` drive
+- `@brink-lang/web`: `continueStoryAsync()` / `continueSingleAsync()` drive
   advance→`take_pending_promise`→`await`→`resolve_external`→resume, so authors
   just `await runner.continueStoryAsync()` with `async (args) => …` bindings.
   Low-level `advanceOne`/`takePendingPromise`/`resolveExternal` exposed for
@@ -225,7 +225,7 @@ Externals the function calls resolve through the (synchronous) handler inline; a
 called external that defers (`Pending`) yields `RuntimeError::AsyncExternalInCall`
 after cleaning up the paused eval (sync `call_function` can't await — matching
 bevy-brink's `AsyncExternalUnsupported`). brink-web `call_function(name, args)`
-takes/returns native JS values; `@brink/wasm` `callFunction(name, ...args)`.
+takes/returns native JS values; `@brink-lang/web` `callFunction(name, ...args)`.
 Single-flow (the default flow); multi-flow is an additive future option.
 Powers a Studio "evaluate function" panel + host-driven logic.
 
@@ -243,11 +243,11 @@ Powers a Studio "evaluate function" panel + host-driven logic.
    web `call_function` (native-JS args/return), sync, single-flow.
 6. ✅ **(Phase 2) Suspend** — async ink→engine via unified Promise-detecting
    `bindExternal`: handler returns `Pending`, `advance_one` surfaces an
-   `awaiting_external` line, `@brink/wasm` drives park→await→resolve→resume;
+   `awaiting_external` line, `@brink-lang/web` drives park→await→resolve→resume;
    reentrancy guard + rejection handling.
 
 All slices landed with host (`bevy-brink`) + `wasm-bindgen-test` (`brink-web`,
-run via `wasm-pack test --node`) coverage, and the `@brink/wasm` /
+run via `wasm-pack test --node`) coverage, and the `@brink-lang/web` /
 `@brink/wasm-types` surface typechecks via brink-studio. Each step is
 independently shippable; `brink-react` and the RMMZ adapter build on the
 cumulative surface. **Track A is complete.**

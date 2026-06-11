@@ -3,7 +3,7 @@
 `brink-studio` is the reference web authoring app for ink — a browser IDE built
 on the [Web & WASM](../web/index.md) bindings. It's both a usable editor and a
 worked example of how to assemble a full client: editor, live preview, project
-navigation, and screenplay mode, all driven by `@brink/wasm`.
+navigation, and screenplay mode, all driven by `@brink-lang/web`.
 
 ## What it does
 
@@ -34,22 +34,22 @@ capability lives in libraries, each independently testable.
 
 | Package | Responsibility |
 |---------|----------------|
-| `@brink/studio` | app shell + entry point (Vite) |
+| `@brink-lang/studio` | app shell + entry point (Vite) |
 | `@brink/studio-ui` | React components: layout, activity bar, binder, state view, player, tabs, status bar |
 | `@brink/studio-store` | Zustand store — `editor` / `compile` / `tabs` / `player` / `binder` / `layout` slices |
 | `@brink/ink-editor` | the CodeMirror 6 editor, state management, IDE extensions, screenplay sigils |
 | `@brink/ink-operations` | pure line-editing functions (no CM6, React, or wasm) |
-| `@brink/wasm` | ergonomic wrappers over the `brink-web` FFI |
+| `@brink-lang/web` | ergonomic wrappers over the `brink-web` FFI |
 | `@brink/wasm-types` | shared TypeScript interfaces (zero runtime) — decouples everything from the FFI |
 
 The dependency flow is one-directional: `@brink/wasm-types` is depended on by
-all; `@brink/wasm` wraps the raw `brink-web` module; `@brink/ink-editor` consumes
-`@brink/wasm` + `@brink/ink-operations`; `@brink/studio-store` orchestrates
-editor, compile, and player state; `@brink/studio` assembles the lot.
+all; `@brink-lang/web` wraps the raw `brink-web` module; `@brink/ink-editor` consumes
+`@brink-lang/web` + `@brink/ink-operations`; `@brink/studio-store` orchestrates
+editor, compile, and player state; `@brink-lang/studio` assembles the lot.
 
 ## Running it
 
-The WASM package must exist first — `@brink/wasm` resolves `brink-web` through a
+The WASM package must exist first — `@brink-lang/web` resolves `brink-web` through a
 `file:` path to `crates/brink-web/www/pkg`:
 
 ```sh
@@ -73,5 +73,5 @@ pnpm dev            # Vite dev server on http://localhost:5180
 
 React 19 · TypeScript 5.7 · Vite 6 · Zustand 5 · CodeMirror 6 ·
 `react-resizable-panels` for layout · Vitest + Playwright for tests. The editor
-talks to the toolchain entirely through `@brink/wasm`, so it stays a pure
+talks to the toolchain entirely through `@brink-lang/web`, so it stays a pure
 front-end with the compiler and runtime living in the WASM module.
