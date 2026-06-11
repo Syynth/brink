@@ -1,0 +1,87 @@
+/* Status-bar segment internals (spec §7.3) — cursor, element dropdown, story dot.
+   Split from the studio.css monolith (#92). Scoped under .brink-studio;
+   colors reference only the semantic --bs-* tokens (spec §7.4). */
+
+/* Status bar — segments live in the shell's full-width region
+   (.shell-statusbar, spec §7.3); these style the segment internals. */
+.brink-studio .brink-status-keyhint {
+  opacity: 0.7;
+}
+.brink-studio .brink-status-element-btn {
+  background: none;
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg);
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.brink-studio .brink-status-element-btn:hover {
+  background: var(--bs-panel-bg);
+}
+.brink-studio .brink-status-cursor {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+}
+.brink-studio .brink-status-diag.has-errors {
+  color: var(--bs-error);
+}
+.brink-studio .brink-status-diag.has-warnings {
+  color: var(--bs-warning);
+}
+/* Element type dropdown */
+.brink-studio .brink-element-dropdown {
+  /* Positioning + panel chrome come from the shell overlay (.shell-overlay). */
+  padding: 4px;
+  min-width: 160px;
+}
+.brink-studio .brink-element-dropdown-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--bs-fg);
+  padding: 5px 10px;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.brink-studio .brink-element-dropdown-key {
+  color: var(--bs-fg-muted);
+  font-size: 11px;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  margin-left: 16px;
+  opacity: 0.6;
+}
+.brink-studio .brink-element-dropdown-item:hover,
+.brink-studio .brink-element-dropdown-item.selected {
+  background: var(--bs-list-active-bg);
+}
+
+/* Story session segment (spec §7.6 status) */
+.brink-studio .brink-status-story {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.brink-studio .brink-status-story-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bs-fg-muted);
+}
+.brink-studio .brink-status-story-dot.status-running {
+  background: var(--bs-success);
+}
+.brink-studio .brink-status-story-dot.status-awaiting-choice {
+  background: var(--bs-warning);
+}
+.brink-studio .brink-status-story-dot.status-done,
+.brink-studio .brink-status-story-dot.status-ended {
+  background: var(--bs-info);
+}
+.brink-studio .brink-status-story-dot.status-error {
+  background: var(--bs-error);
+}

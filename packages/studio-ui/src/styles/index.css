@@ -1,0 +1,16 @@
+/* @brink/studio-ui styles — aggregator, side-effect imported from index.ts.
+   Split from the old studio.css monolith (#92): one file per feature area.
+   Shell-region styles live in @brink/studio-shell (src/styles/); all colors
+   reference the semantic --bs-* tokens defined by the theme files there
+   (spec §7.4). Multi-instance safe: everything is scoped under
+   .brink-studio. */
+
+@import "./binder.css";
+@import "./context-menu.css";
+@import "./editor.css";
+@import "./output.css";
+@import "./player.css";
+@import "./problems.css";
+@import "./program-view.css";
+@import "./state-view.css";
+@import "./statusbar-items.css";

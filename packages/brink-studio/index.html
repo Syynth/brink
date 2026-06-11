@@ -5,9 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>brink studio</title>
 <style>
-/* App-shell only. Component styles ship with @brink/studio-ui (scoped under
-   .brink-studio) and are injected when the app mounts; the loading screen below
-   covers the brief pre-mount gap. */
+/* App-shell only. Component styles ship with @brink/studio-shell and
+   @brink/studio-ui (scoped under .brink-studio) and are injected when the app
+   mounts; the loading screen below covers the brief pre-mount gap. The hex
+   colors here are the Catppuccin Mocha defaults on purpose: theme tokens
+   (spec §7.4) don't exist before the app mounts. */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body {

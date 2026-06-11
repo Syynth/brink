@@ -1,0 +1,76 @@
+/* Overlay primitive (spec §7.7) + command palette (spec §6).
+   Split from the studio.css monolith (#92). Scoped under .brink-studio;
+   colors reference only the semantic --bs-* tokens (spec §7.4). */
+
+/* Shell overlay primitive (studio-shell §7.7) — transient surfaces. The
+   palette is the first consumer; context menus/popovers migrate onto it as
+   they're touched. Quiet per the Zed direction: hairline border, no scrim. */
+.brink-studio .shell-overlay {
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px var(--bs-shadow-strong);
+  z-index: 60;
+}
+.brink-studio .shell-overlay.anchored {
+  position: absolute;
+}
+.brink-studio .shell-overlay.centered {
+  position: fixed;
+  top: 10%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, 90vw);
+}
+
+/* Command palette */
+.brink-studio .shell-palette {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.brink-studio .shell-palette-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--bs-border);
+  outline: none;
+  color: var(--bs-fg);
+  font: inherit;
+  font-size: 14px;
+  padding: 10px 14px;
+}
+.brink-studio .shell-palette-input::placeholder {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .shell-palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.brink-studio .shell-palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  font-size: 13px;
+  color: var(--bs-fg);
+  cursor: pointer;
+}
+.brink-studio .shell-palette-item.selected {
+  background: var(--bs-list-active-bg);
+  color: var(--bs-accent);
+}
+.brink-studio .shell-palette-item .binding {
+  color: var(--bs-fg-muted);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.brink-studio .shell-palette-empty {
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--bs-fg-muted);
+}

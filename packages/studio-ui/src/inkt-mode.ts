@@ -97,7 +97,7 @@ export const inktLanguage = StreamLanguage.define(inktParser);
 
 /**
  * Maps the mode's tags onto the studio's existing `tok-*` semantic-token
- * classes (studio.css) so the dump matches the editor palette without new
+ * classes (styles/editor.css) so the dump matches the editor palette without new
  * theme machinery.
  */
 const inktHighlightStyle = HighlightStyle.define([

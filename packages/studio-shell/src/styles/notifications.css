@@ -1,0 +1,191 @@
+/* Notifications (spec §7.5) — toast stack, status-bar bell, history popover.
+   Split from the studio.css monolith (#92). Scoped under .brink-studio;
+   colors reference only the semantic --bs-* tokens (spec §7.4). */
+
+/* Notifications (studio-shell §7.5) — toast stack bottom-right above the
+   status bar, newest on top. Quiet per the Zed direction: hairline border,
+   severity as a left accent edge, not a filled background. */
+.brink-studio .shell-notifications {
+  position: fixed;
+  right: 12px;
+  bottom: 34px; /* clear the 24px status bar */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, calc(100vw - 24px));
+  z-index: 50;
+}
+.brink-studio .shell-notification {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-left: 3px solid var(--bs-accent);
+  border-radius: 6px;
+  padding: 8px 8px 8px 12px;
+  font-size: 13px;
+  color: var(--bs-fg);
+  box-shadow: 0 4px 16px var(--bs-shadow);
+}
+.brink-studio .shell-notification.severity-warning {
+  border-left-color: var(--bs-warning);
+}
+.brink-studio .shell-notification.severity-error {
+  border-left-color: var(--bs-error);
+}
+.brink-studio .shell-notification-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.brink-studio .shell-notification-source {
+  color: var(--bs-fg-muted);
+  font-size: 11px;
+}
+.brink-studio .shell-notification-message {
+  line-height: 1.4;
+  overflow-wrap: break-word;
+}
+.brink-studio .shell-notification-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.brink-studio .shell-notification-action {
+  background: none;
+  border: 1px solid var(--bs-accent);
+  color: var(--bs-accent);
+  border-radius: 3px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.brink-studio .shell-notification-action:hover {
+  background: color-mix(in srgb, var(--bs-accent) 15%, transparent);
+}
+.brink-studio .shell-notification-close {
+  background: none;
+  border: none;
+  color: var(--bs-fg-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.brink-studio .shell-notification-close:hover {
+  color: var(--bs-fg);
+}
+.brink-studio .shell-notification-overflow {
+  align-self: flex-end;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  color: var(--bs-fg-muted);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.brink-studio .shell-notification-overflow:hover {
+  color: var(--bs-fg);
+}
+
+/* Status-bar bell + history popover (§7.5) */
+.brink-studio .shell-notification-bell {
+  position: relative;
+}
+.brink-studio .shell-notification-badge {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  background: var(--bs-accent);
+  color: var(--bs-on-accent);
+  border-radius: 8px;
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 4px;
+  min-width: 7px;
+  text-align: center;
+}
+.brink-studio .shell-notification-popover {
+  width: 320px;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.brink-studio .shell-notification-history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--bs-border);
+  font-size: 12px;
+  color: var(--bs-fg);
+}
+.brink-studio .shell-notification-history-header button {
+  background: none;
+  border: none;
+  color: var(--bs-fg-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+.brink-studio .shell-notification-history-header button:hover:enabled {
+  color: var(--bs-fg);
+}
+.brink-studio .shell-notification-history-header button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.brink-studio .shell-notification-history-empty {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .shell-notification-history {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+}
+.brink-studio .shell-notification-history-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--bs-fg);
+}
+.brink-studio .shell-notification-history-item .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bs-accent);
+  flex: none;
+  align-self: center;
+}
+.brink-studio .shell-notification-history-item.severity-warning .dot {
+  background: var(--bs-warning);
+}
+.brink-studio .shell-notification-history-item.severity-error .dot {
+  background: var(--bs-error);
+}
+.brink-studio .shell-notification-history-item .text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.brink-studio .shell-notification-history-item .source {
+  color: var(--bs-fg-muted);
+  margin-right: 6px;
+}
+.brink-studio .shell-notification-history-item .time {
+  color: var(--bs-fg-muted);
+  font-size: 10px;
+  flex: none;
+}

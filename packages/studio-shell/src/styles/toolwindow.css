@@ -1,0 +1,53 @@
+/* Tool-window chrome (spec §7.1) — header, body, panel toggle.
+   Split from the studio.css monolith (#92). Scoped under .brink-studio;
+   colors reference only the semantic --bs-* tokens (spec §7.4). */
+
+/* Tool-window chrome (studio-shell #80) — slim header above the registered
+   component, carrying over the old .binder-pane .header look. */
+.brink-studio .shell-toolwindow {
+  height: 100%;
+  background: var(--bs-surface-bg);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.brink-studio .shell-toolwindow .header {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bs-fg-muted);
+  border-bottom: 1px solid var(--bs-border);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.brink-studio .shell-toolwindow-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.brink-studio .shell-toolwindow-body > * {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Panel toggle button */
+.brink-studio .brink-panel-toggle {
+  background: none;
+  border: none;
+  color: var(--bs-fg-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.brink-studio .brink-panel-toggle:hover {
+  color: var(--bs-fg);
+  background: var(--bs-panel-bg);
+}

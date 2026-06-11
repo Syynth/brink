@@ -1,2 +1,2 @@
-// Allow side-effect CSS imports (e.g. `import "./studio.css"`) under tsc.
+// Allow side-effect CSS imports (e.g. `import "./styles/index.css"`) under tsc.
 declare module "*.css";

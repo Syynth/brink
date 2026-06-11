@@ -1,0 +1,356 @@
+/* Shell frame (spec §3/§5) — root, strips, docks, drawers, topbar, rail, resize handles.
+   Split from the studio.css monolith (#92). Scoped under .brink-studio;
+   colors reference only the semantic --bs-* tokens (spec §7.4). */
+
+/* ── Shell regions (studio-shell #80: strips, docks, tiers) ───────── */
+
+.brink-studio {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.brink-studio .studio-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* The editor row + bottom dock column between the side strips. */
+.brink-studio .shell-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.brink-studio .shell-rows {
+  flex: 1;
+  min-height: 0;
+}
+.brink-studio .studio-panes {
+  height: 100%;
+}
+.brink-studio .shell-dock,
+.brink-studio .shell-dock-sections {
+  height: 100%;
+  min-height: 0;
+}
+
+/* Dock strips — narrow icon bars along the shell edges (spec §5.1). One
+   monochrome icon per tool window, accent for the active (open) one. */
+.brink-studio .shell-strip {
+  position: relative; /* anchors the drag drop zones (§5.1) */
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  background: var(--bs-panel-bg);
+}
+.brink-studio .shell-strip-left,
+.brink-studio .shell-strip-right {
+  flex-direction: column;
+  width: 36px;
+  padding: 6px 0;
+}
+.brink-studio .shell-strip-left { border-right: 1px solid var(--bs-border); }
+.brink-studio .shell-strip-right { border-left: 1px solid var(--bs-border); }
+.brink-studio .shell-strip-bottom {
+  flex-direction: row;
+  height: 32px;
+  padding: 0 6px;
+  border-top: 1px solid var(--bs-border);
+}
+/* Icons cluster by section: start-section icons at the strip's start,
+   end-section icons anchored at the far end (JetBrains-style halves). */
+.brink-studio .shell-strip-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.brink-studio .shell-strip-bottom .shell-strip-section {
+  flex-direction: row;
+}
+.brink-studio .shell-strip-section-end {
+  margin-top: auto;
+}
+.brink-studio .shell-strip-bottom .shell-strip-section-end {
+  margin-top: 0;
+  margin-left: auto;
+}
+.brink-studio .shell-strip-btn {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--bs-fg-muted);
+  border: none;
+  border-radius: 5px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.brink-studio .shell-strip-btn:hover {
+  background: var(--bs-hover-bg);
+  color: var(--bs-fg);
+}
+.brink-studio .shell-strip-btn.active {
+  color: var(--bs-accent);
+  background: var(--bs-surface-bg);
+}
+.brink-studio .shell-strip-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--bs-error);
+  color: var(--bs-on-accent);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+}
+
+/* Strip-icon drag-to-re-dock (spec §5.1). While a drag is active every
+   strip enters drop mode: subtle emphasis, and its two sections overlay as
+   drop zones (visual only — hit-testing is rect math, so the zones take no
+   pointer events). The hovered zone gets .active. */
+.brink-studio .shell-strip.drop-mode {
+  background: var(--bs-surface-bg);
+}
+.brink-studio .shell-strip.drop-mode .shell-strip-btn {
+  cursor: grabbing;
+}
+.brink-studio .shell-strip-dropzone {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  border: 1px dashed var(--bs-border);
+  border-radius: 5px;
+}
+.brink-studio .shell-strip-left .shell-strip-dropzone,
+.brink-studio .shell-strip-right .shell-strip-dropzone {
+  left: 3px;
+  right: 3px;
+}
+.brink-studio .shell-strip-left .shell-strip-dropzone-start,
+.brink-studio .shell-strip-right .shell-strip-dropzone-start {
+  top: 3px;
+  bottom: calc(50% + 2px);
+}
+.brink-studio .shell-strip-left .shell-strip-dropzone-end,
+.brink-studio .shell-strip-right .shell-strip-dropzone-end {
+  top: calc(50% + 2px);
+  bottom: 3px;
+}
+.brink-studio .shell-strip-bottom .shell-strip-dropzone {
+  top: 3px;
+  bottom: 3px;
+}
+.brink-studio .shell-strip-bottom .shell-strip-dropzone-start {
+  left: 3px;
+  right: calc(50% + 2px);
+}
+.brink-studio .shell-strip-bottom .shell-strip-dropzone-end {
+  left: calc(50% + 2px);
+  right: 3px;
+}
+.brink-studio .shell-strip-dropzone.active {
+  border-color: var(--bs-accent);
+  background: color-mix(in srgb, var(--bs-accent) 16%, transparent);
+}
+
+/* Drag ghost: icon + title chip following the cursor (positioned by the
+   drag controller via transform; top-left origin). Above everything. */
+.brink-studio .shell-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 500;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px var(--bs-shadow);
+  color: var(--bs-fg);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.brink-studio .shell-drag-ghost-icon {
+  display: flex;
+  align-items: center;
+  color: var(--bs-fg-muted);
+}
+
+/* Fullscreen tool window (player fullscreen; proper maximize is #86). */
+.brink-studio .shell-fullscreen {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.brink-studio .shell-fullscreen > * {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Compact top bar (medium + narrow tiers) */
+.brink-studio .studio-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 8px;
+  background: var(--bs-surface-bg);
+  border-bottom: 1px solid var(--bs-border);
+  flex-shrink: 0;
+}
+
+.brink-studio .studio-iconbtn {
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  padding: 3px 9px;
+  font-size: 14px;
+  line-height: 1.1;
+  cursor: pointer;
+}
+.brink-studio .studio-iconbtn:hover { background: var(--bs-hover-bg); }
+
+.brink-studio .studio-segmented {
+  display: inline-flex;
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.brink-studio .studio-seg {
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg-muted);
+  border: none;
+  padding: 3px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.brink-studio .studio-seg + .studio-seg { border-left: 1px solid var(--bs-border); }
+.brink-studio .studio-seg.active {
+  background: var(--bs-accent);
+  color: var(--bs-on-accent);
+  font-weight: 600;
+}
+
+/* Slide-over dock drawers (medium tier; left dock also in narrow) */
+.brink-studio .studio-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--bs-scrim);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  z-index: 40;
+}
+.brink-studio .studio-scrim.open { opacity: 1; pointer-events: auto; }
+
+.brink-studio .shell-drawer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: min(280px, 82%);
+  transition: transform 0.18s ease;
+  z-index: 50;
+  background: var(--bs-surface-bg);
+}
+.brink-studio .shell-drawer-left {
+  left: 0;
+  transform: translateX(-100%);
+  box-shadow: 2px 0 14px var(--bs-shadow-strong);
+}
+.brink-studio .shell-drawer-right {
+  right: 0;
+  transform: translateX(100%);
+  box-shadow: -2px 0 14px var(--bs-shadow-strong);
+}
+.brink-studio .shell-drawer.open { transform: translateX(0); }
+
+/* Full tool-window overlays (narrow tier) */
+.brink-studio .shell-overlay-view {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: var(--bs-editor-bg);
+  transform: translateX(100%);
+  transition: transform 0.18s ease;
+}
+.brink-studio .shell-overlay-view.open { transform: translateX(0); }
+
+/* Resize handle (react-resizable-panels) */
+.brink-studio .brink-resize-handle {
+  width: 5px;
+  background: transparent;
+  position: relative;
+  z-index: 10;
+  transition: background 0.15s;
+}
+.brink-studio .brink-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--bs-border);
+  transition: background 0.15s, width 0.15s;
+}
+.brink-studio .brink-resize-handle:hover::after,
+.brink-studio .brink-resize-handle[data-resize-handle-active]::after {
+  background: var(--bs-accent);
+  width: 2px;
+  left: 1px;
+}
+/* Horizontal variant — separators in vertical groups (bottom dock, dock
+   sections). Same hairline, rotated. */
+.brink-studio .brink-resize-handle-h {
+  width: auto;
+  height: 5px;
+}
+.brink-studio .brink-resize-handle-h::after {
+  left: 0;
+  right: 0;
+  top: 2px;
+  bottom: auto;
+  width: auto;
+  height: 1px;
+}
+.brink-studio .brink-resize-handle-h:hover::after,
+.brink-studio .brink-resize-handle-h[data-resize-handle-active]::after {
+  width: auto;
+  height: 2px;
+  top: 1px;
+  left: 0;
+}
+
+/* Left rail: hamburger above the left strip (spec §6 hamburger placement). */
+.brink-studio .shell-rail-left {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+}
+.brink-studio .shell-rail-left .shell-strip {
+  flex: 1;
+}
+.brink-studio .shell-hamburger {
+  margin: 4px 0 2px;
+}
