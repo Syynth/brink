@@ -1,0 +1,232 @@
+/**
+ * SettingsDocument — the "settings" document type (issue #93, spec §4
+ * "Settings", §7.8).
+ *
+ * Settings as an editor document, not a modal (VS Code precedent). Static
+ * UI over shell services — NOT session-bound, NOT compile-bound: closing
+ * and reopening always works, and reopening focuses the existing tab (the
+ * groups store's singleton reveal policy). Three sections:
+ *
+ * - Theme — radio picker over ThemeService.list(); applies live through
+ *   select() and reflects external changes (palette command while the
+ *   document is open) via onDidChange.
+ * - Keymap overrides — a plain textarea over the user-override JSON the
+ *   keymap layer persists under brink-studio.keymap.v1. Apply validates
+ *   strictly (parseKeymapOverridesText) and writes through the shell's
+ *   KeymapOverridesService, which rebuilds the live keymap; invalid JSON
+ *   shows an inline error and saves nothing.
+ * - Diagnostics — the one real severity flag: external-function checking
+ *   ("error" / "off", the wasm session's set_external_check). Dispatched
+ *   through the store action (never a raw wasm handle here) and persisted
+ *   under brink-studio.diagnostics.v1; main.tsx restores it at bootstrap.
+ */
+
+import { useId, useState } from "react";
+import {
+  parseKeymapOverridesText,
+  useShell,
+  useThemeId,
+  type CommandRegistry,
+  type DocumentRef,
+  type DocumentViewProps,
+  type EditorGroupsStore,
+} from "@brink/studio-shell";
+import type { ExternalCheckLevel } from "@brink/studio-store";
+import { useStudioStore } from "./StoreContext.js";
+
+export const SETTINGS_TYPE_ID = "settings";
+export const SETTINGS_DOC_ID = "settings";
+export const OPEN_SETTINGS_COMMAND_ID = "settings.open";
+
+/** The singleton DocumentRef — one stable identity, one tab. */
+export function settingsRef(): DocumentRef {
+  return { typeId: SETTINGS_TYPE_ID, docId: SETTINGS_DOC_ID, title: "Settings" };
+}
+
+/**
+ * Register `settings.open` (palette: "Settings: Open", Mod-, per the VS
+ * Code precedent). Opens pinned into the focused group; the groups store's
+ * reveal policy focuses an existing tab wherever it lives.
+ */
+export function registerSettingsCommand(
+  commands: CommandRegistry,
+  editorGroups: EditorGroupsStore,
+): () => void {
+  return commands.register({
+    id: OPEN_SETTINGS_COMMAND_ID,
+    title: "Settings: Open",
+    keybinding: "Mod-,",
+    run: () => editorGroups.getState().openDocument(settingsRef(), { pinned: true }),
+  });
+}
+
+// ── Diagnostics persistence ─────────────────────────────────────────
+//
+// Theme and keymap already persist through their own services/keys; the
+// diagnostics flag gets its own versioned key. Load is lenient (corrupt
+// payloads yield the defaults), like the other loaders.
+
+export const DIAGNOSTICS_STORAGE_KEY = "brink-studio.diagnostics.v1";
+
+export interface DiagnosticsSettings {
+  externalCheck: ExternalCheckLevel;
+}
+
+const DEFAULT_DIAGNOSTICS: DiagnosticsSettings = { externalCheck: "error" };
+
+/** Load persisted diagnostics settings. Never throws; defaults on garbage. */
+export function loadDiagnosticsSettings(
+  storage: Pick<Storage, "getItem">,
+): DiagnosticsSettings {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(DIAGNOSTICS_STORAGE_KEY);
+  } catch {
+    return DEFAULT_DIAGNOSTICS;
+  }
+  if (raw === null || raw === "") return DEFAULT_DIAGNOSTICS;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return DEFAULT_DIAGNOSTICS;
+  }
+  const externalCheck = (parsed as { externalCheck?: unknown } | null)?.externalCheck;
+  return externalCheck === "off" ? { externalCheck: "off" } : DEFAULT_DIAGNOSTICS;
+}
+
+/** Persist diagnostics settings. Storage failures degrade to in-session. */
+export function saveDiagnosticsSettings(
+  storage: Pick<Storage, "setItem">,
+  settings: DiagnosticsSettings,
+): void {
+  try {
+    storage.setItem(DIAGNOSTICS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Quota/denied storage — the setting still applies for this session.
+  }
+}
+
+// ── Sections ────────────────────────────────────────────────────────
+
+function ThemeSection() {
+  const { themes } = useShell();
+  const current = useThemeId();
+  // Radio group name must be unique per mounted view (the singleton can
+  // still be split-duplicated): same-name radios across views would
+  // uncheck each other at the DOM level.
+  const groupName = useId();
+
+  return (
+    <section className="settings-section">
+      <h2 className="settings-section-title">Theme</h2>
+      <p className="settings-section-hint">
+        Color theme for the whole studio. Applies immediately.
+      </p>
+      <div className="settings-radio-group" role="radiogroup" aria-label="Theme">
+        {themes.list().map((theme) => (
+          <label key={theme.id} className="settings-radio">
+            <input
+              type="radio"
+              name={groupName}
+              value={theme.id}
+              checked={current === theme.id}
+              onChange={() => void themes.select(theme.id)}
+            />
+            <span>{theme.label}</span>
+          </label>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function KeymapSection() {
+  const { keymapOverrides } = useShell();
+  const [text, setText] = useState(() =>
+    JSON.stringify(keymapOverrides.current, null, 2),
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const apply = (): void => {
+    const result = parseKeymapOverridesText(text);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setError(null);
+    keymapOverrides.set(result.overrides);
+  };
+
+  return (
+    <section className="settings-section">
+      <h2 className="settings-section-title">Keymap overrides</h2>
+      <p className="settings-section-hint">
+        JSON mapping a command id to a keybinding ({'"Mod-K"'}), an array of
+        keybindings, or <code>null</code> to unbind. Overrides replace the
+        command{"'"}s default bindings and take effect on Apply.
+      </p>
+      <textarea
+        className="settings-json"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        spellCheck={false}
+        rows={8}
+        aria-label="Keymap overrides JSON"
+      />
+      {error !== null && (
+        <p className="settings-error" role="alert">
+          {error}
+        </p>
+      )}
+      <button type="button" className="settings-apply" onClick={apply}>
+        Apply
+      </button>
+    </section>
+  );
+}
+
+function DiagnosticsSection() {
+  const externalCheck = useStudioStore((s) => s.externalCheck);
+  const setExternalCheck = useStudioStore((s) => s.setExternalCheck);
+  const selectId = useId();
+
+  const onChange = (level: ExternalCheckLevel): void => {
+    setExternalCheck(level);
+    saveDiagnosticsSettings(window.localStorage, { externalCheck: level });
+  };
+
+  return (
+    <section className="settings-section">
+      <h2 className="settings-section-title">Diagnostics</h2>
+      <p className="settings-section-hint">
+        Severity of external-function checks against a registered host
+        manifest. Recompiles on change.
+      </p>
+      <div className="settings-field">
+        <label htmlFor={selectId}>External function checking</label>
+        <select
+          id={selectId}
+          className="settings-select"
+          value={externalCheck}
+          onChange={(event) => onChange(event.target.value as ExternalCheckLevel)}
+        >
+          <option value="error">Error</option>
+          <option value="off">Off</option>
+        </select>
+      </div>
+    </section>
+  );
+}
+
+export function SettingsDocument(_props: DocumentViewProps) {
+  return (
+    <div className="settings-doc">
+      <div className="settings-doc-inner">
+        <ThemeSection />
+        <KeymapSection />
+        <DiagnosticsSection />
+      </div>
+    </div>
+  );
+}
