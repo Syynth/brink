@@ -54,11 +54,18 @@
 .brink-studio .brink-file-tabs::-webkit-scrollbar {
   display: none;
 }
+/* Zed-style sizing (#141): tabs get a comfortable width band instead of
+   content width; long labels ellipsize. flex none keeps every tab at its
+   own width inside the scrolling bar (no squeeze on overflow). */
 .brink-studio .brink-tab {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  flex: 0 0 auto;
+  min-width: 120px;
+  max-width: 200px;
+  padding: 6px 8px 6px 12px;
   font-size: 13px;
   color: var(--bs-fg-muted);
   cursor: pointer;
@@ -73,11 +80,21 @@
   color: var(--bs-fg);
   background: var(--bs-editor-bg);
 }
+.brink-studio .brink-tab-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .brink-studio .brink-tab.unpinned .brink-tab-label {
   font-style: italic;
 }
+/* The close glyph always occupies its slot — it appears via opacity/
+   visibility (never display/width) so nothing shifts on hover (#141).
+   The active tab shows it persistently (Zed behavior). */
 .brink-studio .brink-tab-close {
-  display: none;
+  display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   width: 16px;
@@ -86,9 +103,13 @@
   line-height: 1;
   border-radius: 3px;
   color: var(--bs-fg-muted);
+  opacity: 0;
+  visibility: hidden;
 }
-.brink-studio .brink-tab:hover .brink-tab-close {
-  display: flex;
+.brink-studio .brink-tab:hover .brink-tab-close,
+.brink-studio .brink-tab.active .brink-tab-close {
+  opacity: 1;
+  visibility: visible;
 }
 .brink-studio .brink-tab-close:hover {
   background: color-mix(in srgb, var(--bs-error) 20%, transparent);
