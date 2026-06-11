@@ -100,7 +100,7 @@ Default placement, mapped from existing components:
 | **Compiled Output** (`.inkt` dump) | editor document (read-only) | editor area | the `compiled-output` document type ([CompiledOutputDocument.tsx](../packages/studio-ui/src/CompiledOutputDocument.tsx)) | Landed (#91): a read-only singleton document tab with a minimal CM6 `.inkt` mode (search, folding, selection), opened via `program.openCompiledOutput`. Compile-bound (§7.8): renders `programInkt` directly — no wasm document handle. Disassembly-view precedent. |
 | **Story transcript** | tool window | bottom dock | *future* | Append-only transcript view; listed to validate the model, not scheduled. |
 | **Story Graph** | editor document (custom-rendered) | editor area | *new* | Phase 6: visual story-structure explorer — see §4.1. |
-| **Settings** | editor document | editor area | *new* | Phase 5: theme choice, keymap-override JSON editing, diagnostic severity flags. VS Code precedent (settings as a document tab, not a modal). |
+| **Settings** | editor document | editor area | the `settings` document type ([SettingsDocument.tsx](../packages/studio-ui/src/SettingsDocument.tsx)) | Landed (#93): a singleton tab (`settings.open`, `Mod-,`) over shell services — theme picker (ThemeService §7.4, live + reflecting external switches), keymap-override JSON in a plain textarea validated strictly on Apply through the shell's `KeymapOverridesService` (live rebuild, no reload; invalid JSON shows an inline error and saves nothing), and the one real diagnostic severity flag — external-function checking (`"error"`/`"off"`, the wasm `set_external_check`) via the store action, persisted under `brink-studio.diagnostics.v1` and restored at bootstrap before the first compile. Not session- or compile-bound. VS Code precedent (settings as a document tab, not a modal). |
 | Ink files | editor document | editor area | the `ink-file` document type ([InkFileDocument.tsx](../packages/studio-ui/src/InkFileDocument.tsx) + CM6) | Landed (#90): the shell renders per-group tab bars; one CM6 view per (document, group) over a wasm document handle (§7.8). |
 
 The **Toast** system is replaced by the shell notification service (§7.5) in Phase 3;
@@ -225,9 +225,13 @@ interface Command {
   `onKeyDown` for chrome behavior.
 - **Keymap layer (required from Phase 1):** the key handler never reads
   `command.keybinding` directly — it resolves through a keymap table built from the
-  registry's defaults, with a **user-override JSON** (localStorage, no editing UI) merged
-  over the defaults. Resolved §10.3: the indirection is cheap now and expensive to
-  retrofit, and with it in place the override merge costs almost nothing. A full
+  registry's defaults, with a **user-override JSON** (localStorage
+  `brink-studio.keymap.v1`) merged over the defaults. The shell-owned
+  `KeymapOverridesService` (#93) wraps the persisted JSON with a change event;
+  ShellProvider subscribes and rebuilds the table live, and the Settings document
+  edits the JSON through it (plain textarea, strict validation on Apply).
+  Resolved §10.3: the indirection is cheap now and expensive to retrofit, and
+  with it in place the override merge costs almost nothing. A full
   keymap-editing UI stays out of scope for all phases.
 - **Hamburger menu (resolved §10.2):** a single icon at the top of the left strip
   (JetBrains new-UI placement) opens a grouped menu *generated from the command
@@ -349,8 +353,8 @@ windows: id, alignment, priority, component):
   owns the registry (ids + labels), the current selection, and persistence
   (`brink-studio.theme.v1`, read synchronously before first paint); it generates
   palette-discoverable `theme.select.<id>` commands. Switching flips the root's
-  `data-theme` attribute — runtime, no reload. The Settings document (#93) consumes
-  `list()` / `current` / `select()` / `onDidChange()`.
+  `data-theme` attribute — runtime, no reload. The Settings document's theme picker
+  (landed, #93) consumes `list()` / `current` / `select()` / `onDidChange()`.
 - The studio.css monolith is gone (#92): shell-region styles live in
   `studio-shell/src/styles/`, feature styles in `studio-ui/src/styles/`, each package
   side-effect importing its own aggregator `index.css`.
@@ -619,8 +623,9 @@ Each phase lands independently; the studio remains shippable after every phase.
   (State View takes right/start), and `editor.maximizeGroup` (§5.4) replacing the
   player-specific fullscreen.
 - **Phase 5 — polish, theme & embedder API.** Semantic token layer, light theme, CSS
-  decomposition completes, Search tool window, Settings document (theme, keymap JSON,
-  severity flags), embedder extension API exposure (§8: `StudioExtensions` mount config,
+  decomposition completes (all landed, #92), Search tool window, Settings document
+  (landed, #93: theme picker, keymap-override JSON, the external-check severity flag —
+  see §4), embedder extension API exposure (§8: `StudioExtensions` mount config,
   `StudioApi`, `StudioPublicState`).
 - **Phase 6 — Story Graph.** The story-graph extraction query (analyzer/IDE layer,
   wasm-exposed) and the custom-rendered document (§4.1): auto-layout, expand/collapse,
