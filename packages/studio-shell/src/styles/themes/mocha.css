@@ -1,0 +1,72 @@
+/* Catppuccin Mocha (docs/studio-shell-spec.md §7.4) — theme #1 and the
+   default/fallback: scoped to the bare .brink-studio root so it applies when
+   no data-theme attribute is present (and under data-theme="mocha", which
+   adds nothing). Other themes override via their higher-specificity
+   [data-theme="…"] scope.
+
+   The private palette (--ctp-*) lives only inside theme files; components
+   reference the semantic --bs-* tokens exclusively. Alpha variants of
+   semantic colors (hovers, selections, glows) are derived in component CSS
+   with color-mix() over the tokens, so themes only define base colors. */
+
+.brink-studio {
+  /* ── Private palette (Catppuccin Mocha) ─────────────────────────── */
+  --ctp-base: #1e1e2e;
+  --ctp-surface-low: #252536; /* custom step between base and surface0 */
+  --ctp-surface-high: #2a2a3d; /* custom step; panel/popup fill */
+  --ctp-surface1: #45475a;
+  --ctp-text: #cdd6f4;
+  --ctp-overlay0: #6c7086;
+  --ctp-blue: #89b4fa;
+  --ctp-green: #a6e3a1;
+  --ctp-red: #f38ba8;
+  --ctp-yellow: #f9e2af;
+  --ctp-mauve: #cba6f7;
+  --ctp-sky: #89dceb;
+  --ctp-peach: #fab387;
+  --ctp-pink: #f5c2e7;
+  --ctp-flamingo: #f2cdcd;
+
+  /* ── Surfaces & chrome ──────────────────────────────────────────── */
+  --bs-editor-bg: var(--ctp-base); /* editor, deepest background */
+  --bs-surface-bg: var(--ctp-surface-low); /* docks, bars, headers, drawers */
+  --bs-panel-bg: var(--ctp-surface-high); /* floating panels, menus, strips, inputs */
+  --bs-fg: var(--ctp-text);
+  --bs-fg-muted: var(--ctp-overlay0);
+  --bs-border: var(--ctp-surface1); /* the 1px hairlines */
+  --bs-accent: var(--ctp-blue);
+  --bs-on-accent: var(--ctp-base); /* text on accent/severity fills */
+  --bs-hover-bg: var(--ctp-surface1); /* button/strip-icon hover fill */
+  --bs-list-active-bg: var(--ctp-surface-low); /* selected/hovered list rows in panels */
+  --bs-scrim: rgb(0 0 0 / 0.45);
+  --bs-shadow: rgb(0 0 0 / 0.4); /* popups, menus, toasts */
+  --bs-shadow-strong: rgb(0 0 0 / 0.45); /* overlays, drawers */
+
+  /* ── Severity & story status ────────────────────────────────────── */
+  --bs-error: var(--ctp-red);
+  --bs-warning: var(--ctp-yellow);
+  --bs-success: var(--ctp-green);
+  --bs-info: var(--ctp-sky); /* neutral data accent; done/ended status */
+
+  /* ── Story symbols (binder, program explorer, state view) ──────── */
+  --bs-symbol-file: var(--ctp-blue);
+  --bs-symbol-knot: var(--ctp-mauve);
+  --bs-symbol-stitch: var(--ctp-sky);
+  --bs-symbol-function: var(--ctp-peach);
+
+  /* ── Syntax highlighting (tok-* classes, .inkt mode) ────────────── */
+  --bs-syn-keyword: var(--ctp-mauve);
+  --bs-syn-namespace: var(--ctp-mauve);
+  --bs-syn-function: var(--ctp-blue);
+  --bs-syn-variable: var(--ctp-text);
+  --bs-syn-string: var(--ctp-green);
+  --bs-syn-number: var(--ctp-peach);
+  --bs-syn-operator: var(--ctp-sky);
+  --bs-syn-comment: var(--ctp-overlay0);
+  --bs-syn-enum: var(--ctp-yellow);
+  --bs-syn-parameter: var(--ctp-flamingo);
+  --bs-syn-decorator: var(--ctp-peach);
+  --bs-syn-label: var(--ctp-pink);
+
+  color-scheme: dark;
+}

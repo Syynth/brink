@@ -8,6 +8,8 @@
  * protocol (§6.1), and the notification service (§7.5).
  */
 
+import "./styles/index.css";
+
 export { CommandRegistry, HOST_ID_PREFIX, type Command } from "./command.js";
 export {
   Keymap,

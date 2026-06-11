@@ -63,14 +63,23 @@ export function openPlayerSplit(editorGroups: EditorGroupsStore): void {
 
 // ── Character colors ────────────────────────────────────────────
 
-const RAINBOW = ["#f38ba8", "#fab387", "#f9e2af", "#a6e3a1", "#89b4fa", "#cba6f7"];
+// Cast colors route through the semantic theme tokens (spec §7.4) so the
+// screenplay styling stays legible in every theme — no hardcoded hex.
+const RAINBOW = [
+  "var(--bs-error)",
+  "var(--bs-syn-number)",
+  "var(--bs-syn-enum)",
+  "var(--bs-success)",
+  "var(--bs-accent)",
+  "var(--bs-syn-keyword)",
+];
 
 const CHARACTER_COLORS: Record<string, string | "rainbow"> = {
   // The Toppled Temple cast
-  GRISWOLD: "#f9e2af", // gold — the sardonic merchant
-  SPECTRE: "#89dceb",  // pale cyan — the riddling ghost
-  GRIK: "#a6e3a1",     // green — the nervous goblin
-  WARDEN: "#9399b2",   // stone grey — the golem
+  GRISWOLD: "var(--bs-syn-enum)", // gold — the sardonic merchant
+  SPECTRE: "var(--bs-info)", // pale cyan — the riddling ghost
+  GRIK: "var(--bs-success)", // green — the nervous goblin
+  WARDEN: "var(--bs-fg-muted)", // stone grey — the golem
 };
 
 /** Render a name with each letter in a cycling rainbow. */
@@ -91,7 +100,7 @@ function renderName(name: string): ReactNode {
   if (colorDef === "rainbow") {
     return rainbowName(name);
   }
-  const color = colorDef ?? "var(--brink-fg)";
+  const color = colorDef ?? "var(--bs-fg)";
   return <span style={{ fontWeight: 700, color }}>{name}</span>;
 }
 
@@ -107,7 +116,7 @@ function renderName(name: string): ReactNode {
 function renderLine(line: string): ReactNode {
   // Choice echo: "> text"
   if (line.startsWith("> ")) {
-    return <span style={{ color: "var(--brink-accent)" }}>{line}</span>;
+    return <span style={{ color: "var(--bs-accent)" }}>{line}</span>;
   }
 
   // Screenplay line: @NAME:(paren)dialogue  or  @NAME:dialogue
@@ -123,7 +132,7 @@ function renderLine(line: string): ReactNode {
     if (parenMatch) {
       parts.push(
         <br key="br1" />,
-        <span key="paren" style={{ fontStyle: "italic", color: "var(--brink-fg-dim)" }}>
+        <span key="paren" style={{ fontStyle: "italic", color: "var(--bs-fg-muted)" }}>
           ({parenMatch[1]})
         </span>,
       );
@@ -142,7 +151,7 @@ function renderLine(line: string): ReactNode {
   }
 
   // Narrator text — italic, slightly dimmer
-  return <span style={{ fontStyle: "italic", color: "var(--brink-fg-dim)" }}>{line}</span>;
+  return <span style={{ fontStyle: "italic", color: "var(--bs-fg-muted)" }}>{line}</span>;
 }
 
 // ── Component ───────────────────────────────────────────────────

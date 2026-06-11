@@ -1,24 +1,13 @@
 /* brink-studio component styles. Scoped under .brink-studio so the
    package is self-contained and multi-instance safe. Side-effect imported
    from index.ts. The app shell (index.html) keeps only the global reset +
-   the pre-mount loading screen. */
+   the pre-mount loading screen.
+
+   Colors reference only the semantic --bs-* tokens (spec §7.4); the token
+   values come from the theme files in @brink/studio-shell
+   (src/styles/themes/). Alpha variants derive from tokens via color-mix. */
 
 .brink-studio {
-  --brink-bg: #1e1e2e;
-  --brink-bg-surface: #252536;
-  --brink-bg-panel: #2a2a3d;
-  --brink-fg: #cdd6f4;
-  --brink-fg-dim: #6c7086;
-  --brink-accent: #89b4fa;
-  --brink-border: #45475a;
-  --brink-green: #a6e3a1;
-  --brink-red: #f38ba8;
-  --brink-yellow: #f9e2af;
-  --brink-mauve: #cba6f7;
-  --brink-teal: #89dceb;
-  --brink-peach: #fab387;
-  --brink-pink: #f5c2e7;
-  --brink-flamingo: #f2cdcd;
   height: 100%;
 }
 
@@ -26,7 +15,7 @@
    component, carrying over the old .binder-pane .header look. */
 .brink-studio .shell-toolwindow {
   height: 100%;
-  background: var(--brink-bg-surface);
+  background: var(--bs-surface-bg);
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -36,8 +25,8 @@
   padding: 8px 12px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--brink-fg-dim);
-  border-bottom: 1px solid var(--brink-border);
+  color: var(--bs-fg-muted);
+  border-bottom: 1px solid var(--bs-border);
   letter-spacing: 0.5px;
   text-transform: uppercase;
   display: flex;
@@ -75,24 +64,24 @@
   justify-content: space-between;
   gap: 8px;
   padding: 5px 10px;
-  border-bottom: 1px solid var(--brink-border);
+  border-bottom: 1px solid var(--bs-border);
   flex-shrink: 0;
 }
 .brink-studio .pv-checksum {
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 11px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 .brink-studio .pv-open-inkt {
   font-size: 11px;
   padding: 2px 8px;
-  background: var(--brink-bg-panel);
-  color: var(--brink-fg-dim);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg-muted);
+  border: 1px solid var(--bs-border);
   border-radius: 4px;
   cursor: pointer;
 }
-.brink-studio .pv-open-inkt:hover { color: var(--brink-fg); }
+.brink-studio .pv-open-inkt:hover { color: var(--bs-fg); }
 .brink-studio .pv-body { flex: 1; min-height: 0; overflow-y: auto; }
 
 /* Compiled Output — read-only .inkt editor document (#91) */
@@ -116,7 +105,7 @@
 }
 .brink-studio .pv-list-item {
   font-size: 11.5px;
-  color: var(--brink-teal);
+  color: var(--bs-info);
   font-family: "JetBrains Mono", "Fira Code", monospace;
 }
 
@@ -129,18 +118,18 @@
   padding: 3px 8px;
   background: none;
   border: none;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
   font-size: 12.5px;
   cursor: pointer;
   text-align: left;
 }
-.brink-studio .pv-knot-header:hover { background: var(--brink-bg-panel); }
-.brink-studio .pv-chevron { font-size: 9px; width: 10px; flex-shrink: 0; color: var(--brink-fg-dim); }
-.brink-studio .pv-knot-name { color: var(--brink-mauve); font-weight: 600; }
-.brink-studio .pv-knot-name.pv-stitch { color: var(--brink-teal); font-weight: 400; }
+.brink-studio .pv-knot-header:hover { background: var(--bs-panel-bg); }
+.brink-studio .pv-chevron { font-size: 9px; width: 10px; flex-shrink: 0; color: var(--bs-fg-muted); }
+.brink-studio .pv-knot-name { color: var(--bs-symbol-knot); font-weight: 600; }
+.brink-studio .pv-knot-name.pv-stitch { color: var(--bs-symbol-stitch); font-weight: 400; }
 .brink-studio .pv-flags {
   font-size: 10px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-style: italic;
 }
 .brink-studio .pv-knot-body { padding-right: 8px; padding-bottom: 4px; }
@@ -154,26 +143,26 @@
 .brink-studio .pv-disasm {
   margin: 4px 0;
   padding: 6px 8px;
-  background: var(--brink-bg);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-editor-bg);
+  border: 1px solid var(--bs-border);
   border-radius: 4px;
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 10.5px;
   line-height: 1.45;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
   white-space: pre;
   overflow-x: auto;
   tab-size: 2;
 }
 .brink-studio .state-view-empty {
   padding: 16px 14px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 .brink-studio .state-view-empty-title {
   margin: 0 0 6px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 .brink-studio .state-view-empty-hint {
   margin: 0;
@@ -183,7 +172,7 @@
 /* Session placeholder — session-bound views with no story session (§7.6) */
 .brink-studio .session-placeholder {
   padding: 16px 14px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -193,7 +182,7 @@
   margin: 0;
   font-size: 13px;
   font-weight: 600;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 .brink-studio .session-placeholder-hint {
   margin: 0 0 6px;
@@ -201,20 +190,20 @@
   line-height: 1.5;
 }
 .brink-studio .session-placeholder-start {
-  background: var(--brink-bg-panel);
-  color: var(--brink-accent);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  color: var(--bs-accent);
+  border: 1px solid var(--bs-border);
   border-radius: 4px;
   padding: 4px 14px;
   font-size: 12px;
   cursor: pointer;
 }
 .brink-studio .session-placeholder-start:hover {
-  background: var(--brink-border);
+  background: var(--bs-hover-bg);
 }
 /* Sections */
 .brink-studio .sv-section {
-  border-bottom: 1px solid var(--brink-border);
+  border-bottom: 1px solid var(--bs-border);
 }
 .brink-studio .sv-section-header {
   width: 100%;
@@ -224,7 +213,7 @@
   padding: 6px 10px;
   background: none;
   border: none;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.4px;
@@ -232,7 +221,7 @@
   cursor: pointer;
   text-align: left;
 }
-.brink-studio .sv-section-header:hover { color: var(--brink-fg); }
+.brink-studio .sv-section-header:hover { color: var(--bs-fg); }
 .brink-studio .sv-chevron { font-size: 9px; width: 10px; }
 .brink-studio .sv-section-body { padding: 2px 10px 8px; }
 
@@ -247,37 +236,37 @@
 .brink-studio .sv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .brink-studio .sv-table td { padding: 2px 0; vertical-align: top; }
 .brink-studio .sv-table td.sv-val { text-align: left; padding-left: 10px; }
-.brink-studio .sv-key { color: var(--brink-fg-dim); white-space: nowrap; }
-.brink-studio .sv-val { color: var(--brink-fg); word-break: break-word; }
+.brink-studio .sv-key { color: var(--bs-fg-muted); white-space: nowrap; }
+.brink-studio .sv-val { color: var(--bs-fg); word-break: break-word; }
 .brink-studio .sv-mono,
 .brink-studio .sv-num {
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 11.5px;
 }
-.brink-studio .sv-num { color: var(--brink-peach); }
-.brink-studio .sv-path { color: var(--brink-mauve); font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 11.5px; }
-.brink-studio .sv-dim { color: var(--brink-fg-dim); }
-.brink-studio .sv-empty { margin: 2px 0; font-size: 12px; color: var(--brink-fg-dim); font-style: italic; }
+.brink-studio .sv-num { color: var(--bs-syn-number); }
+.brink-studio .sv-path { color: var(--bs-symbol-knot); font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 11.5px; }
+.brink-studio .sv-dim { color: var(--bs-fg-muted); }
+.brink-studio .sv-empty { margin: 2px 0; font-size: 12px; color: var(--bs-fg-muted); font-style: italic; }
 
 /* Badges */
 .brink-studio .sv-badge {
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 3px;
-  background: var(--brink-bg-panel);
-  border: 1px solid var(--brink-border);
-  color: var(--brink-fg-dim);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg-muted);
   white-space: nowrap;
 }
-.brink-studio .sv-status-active { color: var(--brink-green); border-color: var(--brink-green); }
-.brink-studio .sv-status-waiting_for_choice { color: var(--brink-yellow); border-color: var(--brink-yellow); }
+.brink-studio .sv-status-active { color: var(--bs-success); border-color: var(--bs-success); }
+.brink-studio .sv-status-waiting_for_choice { color: var(--bs-warning); border-color: var(--bs-warning); }
 .brink-studio .sv-status-done,
-.brink-studio .sv-status-ended { color: var(--brink-fg-dim); }
-.brink-studio .sv-frame-function { color: var(--brink-teal); }
-.brink-studio .sv-frame-tunnel { color: var(--brink-peach); }
-.brink-studio .sv-frame-thread { color: var(--brink-accent); }
+.brink-studio .sv-status-ended { color: var(--bs-fg-muted); }
+.brink-studio .sv-frame-function { color: var(--bs-info); }
+.brink-studio .sv-frame-tunnel { color: var(--bs-symbol-function); }
+.brink-studio .sv-frame-thread { color: var(--bs-accent); }
 .brink-studio .sv-frame-external,
-.brink-studio .sv-frame-eval { color: var(--brink-yellow); }
+.brink-studio .sv-frame-eval { color: var(--bs-warning); }
 
 /* Call stack + choices */
 .brink-studio .sv-stack,
@@ -301,19 +290,19 @@
   margin: 2px 0 6px;
   padding: 3px 6px;
   font-size: 11.5px;
-  background: var(--brink-bg-panel);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
   border-radius: 4px;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 
 /* Change-highlighting — what moved/changed this step */
 .brink-studio .sv-changed,
 .brink-studio .sv-changed-row td {
-  background: color-mix(in srgb, var(--brink-yellow) 22%, transparent);
+  background: color-mix(in srgb, var(--bs-warning) 22%, transparent);
   border-radius: 3px;
 }
-.brink-studio .sv-changed-row td:first-child { color: var(--brink-yellow); }
+.brink-studio .sv-changed-row td:first-child { color: var(--bs-warning); }
 
 /* Binder tree */
 .brink-studio .brink-binder {
@@ -323,7 +312,7 @@
   font-size: 13px;
   --binder-indent: 18px;
   --binder-row-height: 26px;
-  --binder-guide-color: rgba(108, 112, 134, 0.2);
+  --binder-guide-color: color-mix(in srgb, var(--bs-fg-muted) 20%, transparent);
 }
 .brink-studio .brink-binder-row {
   display: flex;
@@ -336,10 +325,10 @@
   position: relative;
 }
 .brink-studio .brink-binder-row:hover {
-  background: var(--brink-bg-panel);
+  background: var(--bs-panel-bg);
 }
 .brink-studio .brink-binder-row.brink-binder-active {
-  background: rgba(137, 180, 250, 0.15);
+  background: color-mix(in srgb, var(--bs-accent) 15%, transparent);
 }
 /* Indent guides — spacing for each depth level */
 .brink-studio .brink-binder-guides {
@@ -361,12 +350,12 @@
   justify-content: center;
   flex-shrink: 0;
   font-size: 10px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   transition: transform 0.12s ease;
   transform: rotate(90deg);
 }
 .brink-studio .brink-binder-chevron:hover {
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 .brink-studio .brink-binder-chevron.collapsed {
   transform: rotate(0deg);
@@ -386,10 +375,10 @@
   font-size: 14px;
   line-height: 1;
 }
-.brink-studio .brink-binder-icon-file { color: var(--brink-accent); }
-.brink-studio .brink-binder-icon-knot { color: var(--brink-mauve); }
-.brink-studio .brink-binder-icon-function { color: var(--brink-peach); font-style: italic; }
-.brink-studio .brink-binder-icon-stitch { color: var(--brink-teal); }
+.brink-studio .brink-binder-icon-file { color: var(--bs-accent); }
+.brink-studio .brink-binder-icon-knot { color: var(--bs-symbol-knot); }
+.brink-studio .brink-binder-icon-function { color: var(--bs-symbol-function); font-style: italic; }
+.brink-studio .brink-binder-icon-stitch { color: var(--bs-symbol-stitch); }
 /* Label */
 .brink-studio .brink-binder-label {
   flex: 1;
@@ -400,13 +389,13 @@
   font-weight: 600;
 }
 .brink-studio .brink-binder-knot .brink-binder-label {
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 .brink-studio .brink-binder-stitch .brink-binder-label {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 .brink-studio .brink-binder-new {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   margin-top: 4px;
   padding-left: 8px;
   font-size: 12px;
@@ -415,7 +404,7 @@
   align-items: center;
 }
 .brink-studio .brink-binder-new:hover {
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 .brink-studio .brink-binder-input-wrapper {
   padding: 4px 8px;
@@ -431,14 +420,14 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-size: 13px;
   user-select: none;
 }
 /* Quiet focused-group cue: the active tab gets the accent underline only in
    the focused group. */
 .brink-studio .shell-editor-group:not(.focused) .brink-tab.active {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 
 /* Editor pane */
@@ -452,9 +441,9 @@
   padding: 8px 12px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--brink-fg-dim);
-  background: var(--brink-bg-surface);
-  border-bottom: 1px solid var(--brink-border);
+  color: var(--bs-fg-muted);
+  background: var(--bs-surface-bg);
+  border-bottom: 1px solid var(--bs-border);
   letter-spacing: 0.5px;
   text-transform: uppercase;
 }
@@ -474,7 +463,7 @@
 }
 .brink-studio .editor .cm-editor {
   height: 100%;
-  background: var(--brink-bg);
+  background: var(--bs-editor-bg);
 }
 .brink-studio .editor .cm-editor .cm-scroller {
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
@@ -482,32 +471,32 @@
   line-height: 1.6;
 }
 .brink-studio .editor .cm-editor .cm-gutters {
-  background: var(--brink-bg);
-  border-right: 1px solid var(--brink-border);
-  color: var(--brink-fg-dim);
+  background: var(--bs-editor-bg);
+  border-right: 1px solid var(--bs-border);
+  color: var(--bs-fg-muted);
 }
 .brink-studio .editor .cm-editor .cm-activeLineGutter {
-  background: var(--brink-bg-surface);
+  background: var(--bs-surface-bg);
 }
 .brink-studio .editor .cm-editor .cm-activeLine {
-  background: rgba(37, 37, 54, 0.6);
+  background: color-mix(in srgb, var(--bs-surface-bg) 60%, transparent);
 }
 .brink-studio .editor .cm-editor .cm-selectionBackground,
 .brink-studio .editor .cm-editor.cm-focused .cm-selectionBackground {
-  background: rgba(137, 180, 250, 0.25) !important;
+  background: color-mix(in srgb, var(--bs-accent) 25%, transparent) !important;
 }
 .brink-studio .editor .cm-editor .cm-cursor {
-  border-left-color: var(--brink-accent);
+  border-left-color: var(--bs-accent);
 }
 .brink-studio .editor .cm-editor .cm-content {
-  caret-color: var(--brink-accent);
-  color: var(--brink-fg);
+  caret-color: var(--bs-accent);
+  color: var(--bs-fg);
   padding-left: var(--editor-margin);
   padding-right: var(--editor-margin);
   width: 100%;
   max-width: 8.5in;
   box-sizing: border-box;
-  border-right: 1px solid var(--brink-border);
+  border-right: 1px solid var(--bs-border);
 }
 /* Screenplay element line styles */
 .brink-studio .cm-line.brink-knot-header {
@@ -527,7 +516,7 @@
   top: 0;
   left: calc(-1 * var(--editor-margin));
   right: calc(-1 * var(--editor-margin));
-  border-top: 1px solid rgba(69, 71, 90, 0.6);
+  border-top: 1px solid color-mix(in srgb, var(--bs-border) 60%, transparent);
   pointer-events: none;
 }
 .brink-studio .cm-line.brink-stitch-header {
@@ -536,17 +525,17 @@
 /* Collapsed declaration fold: renders the hidden knot/stitch header */
 .brink-studio .brink-fold-decl {
   cursor: pointer;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 .brink-studio .brink-fold-decl-header {
-  color: var(--brink-mauve);
+  color: var(--bs-symbol-knot);
   font-weight: 700;
 }
 .brink-studio .cm-line.brink-choice {
-  color: var(--brink-accent);
+  color: var(--bs-accent);
 }
 .brink-studio .cm-line.brink-gather {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 .brink-studio .cm-line.brink-divert {
 }
@@ -563,18 +552,18 @@
   opacity: 0.7;
 }
 .brink-studio .cm-line.brink-tag {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 /* Screenplay: character / parenthetical / dialogue */
 .brink-studio .cm-line.brink-character {
   font-weight: 700;
-  color: var(--brink-accent);
+  color: var(--bs-accent);
   text-transform: uppercase;
   padding-left: var(--indent-character);
 }
 .brink-studio .cm-line.brink-parenthetical {
   font-style: italic;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   padding-left: var(--indent-parenthetical);
 }
 .brink-studio .cm-line.brink-dialogue {
@@ -594,35 +583,116 @@
 }
 /* Choice bracket styling */
 .brink-studio .brink-choice-bracket {
-  background: rgba(137, 180, 250, 0.08);
+  background: color-mix(in srgb, var(--bs-accent) 8%, transparent);
 }
 /* Semantic token classes */
-.brink-studio .tok-namespace { color: #cba6f7; }
-.brink-studio .tok-function { color: #89b4fa; }
-.brink-studio .tok-variable { color: #cdd6f4; }
-.brink-studio .tok-string { color: #a6e3a1; }
-.brink-studio .tok-number { color: #fab387; }
-.brink-studio .tok-keyword { color: #cba6f7; font-weight: 600; }
-.brink-studio .tok-operator { color: #89dceb; }
-.brink-studio .tok-comment { color: #6c7086; font-style: italic; }
-.brink-studio .tok-enum { color: #f9e2af; }
-.brink-studio .tok-enumMember { color: #f9e2af; }
-.brink-studio .tok-parameter { color: #f2cdcd; }
-.brink-studio .tok-decorator { color: #fab387; }
-.brink-studio .tok-label { color: #f5c2e7; }
+.brink-studio .tok-namespace { color: var(--bs-syn-namespace); }
+.brink-studio .tok-function { color: var(--bs-syn-function); }
+.brink-studio .tok-variable { color: var(--bs-syn-variable); }
+.brink-studio .tok-string { color: var(--bs-syn-string); }
+.brink-studio .tok-number { color: var(--bs-syn-number); }
+.brink-studio .tok-keyword { color: var(--bs-syn-keyword); font-weight: 600; }
+.brink-studio .tok-operator { color: var(--bs-syn-operator); }
+.brink-studio .tok-comment { color: var(--bs-syn-comment); font-style: italic; }
+.brink-studio .tok-enum { color: var(--bs-syn-enum); }
+.brink-studio .tok-enumMember { color: var(--bs-syn-enum); }
+.brink-studio .tok-parameter { color: var(--bs-syn-parameter); }
+.brink-studio .tok-decorator { color: var(--bs-syn-decorator); }
+.brink-studio .tok-label { color: var(--bs-syn-label); }
 /* CM6 lint panel overrides */
 .brink-studio .cm-panel.cm-panel-lint {
-  background: var(--brink-bg-surface);
-  border-top: 1px solid var(--brink-border);
+  background: var(--bs-surface-bg);
+  border-top: 1px solid var(--bs-border);
 }
-.brink-studio .cm-diagnostic-error { border-left-color: var(--brink-red); }
-.brink-studio .cm-diagnostic-warning { border-left-color: var(--brink-yellow); }
+.brink-studio .cm-diagnostic-error { border-left-color: var(--bs-error); }
+.brink-studio .cm-diagnostic-warning { border-left-color: var(--bs-warning); }
+/* CM6 chrome — panels (search), buttons, fields, tooltips, match
+   highlights. CM6 ships hardcoded light/dark base styles; the brink theme
+   no longer pins `dark: true`, so every visible piece of chrome is themed
+   here from the semantic tokens instead (spec §7.4). */
+.brink-studio .cm-editor .cm-panels {
+  background: var(--bs-surface-bg);
+  color: var(--bs-fg);
+}
+.brink-studio .cm-editor .cm-panels-top { border-bottom: 1px solid var(--bs-border); }
+.brink-studio .cm-editor .cm-panels-bottom { border-top: 1px solid var(--bs-border); }
+.brink-studio .cm-editor .cm-panel input[type="checkbox"] {
+  accent-color: var(--bs-accent);
+}
+.brink-studio .cm-editor .cm-textfield {
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg);
+}
+.brink-studio .cm-editor .cm-textfield:focus {
+  border-color: var(--bs-accent);
+  outline: none;
+}
+.brink-studio .cm-editor .cm-button {
+  background-image: none;
+  background-color: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.brink-studio .cm-editor .cm-button:active,
+.brink-studio .cm-editor .cm-button:hover {
+  background-image: none;
+  background-color: var(--bs-hover-bg);
+}
+.brink-studio .cm-editor .cm-panel button[name="close"] {
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+}
+.brink-studio .cm-editor .cm-panel button[name="close"]:hover {
+  color: var(--bs-fg);
+}
+.brink-studio .cm-editor .cm-searchMatch {
+  background: color-mix(in srgb, var(--bs-accent) 25%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--bs-accent) 50%, transparent);
+}
+.brink-studio .cm-editor .cm-searchMatch.cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--bs-warning) 40%, transparent);
+}
+.brink-studio .cm-editor .cm-selectionMatch {
+  background: color-mix(in srgb, var(--bs-success) 20%, transparent);
+}
+.brink-studio .cm-editor .cm-matchingBracket,
+.brink-studio .cm-editor.cm-focused .cm-matchingBracket {
+  background: color-mix(in srgb, var(--bs-accent) 25%, transparent);
+}
+.brink-studio .cm-editor .cm-nonmatchingBracket,
+.brink-studio .cm-editor.cm-focused .cm-nonmatchingBracket {
+  background: color-mix(in srgb, var(--bs-error) 25%, transparent);
+}
+.brink-studio .cm-editor .cm-foldPlaceholder {
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg-muted);
+}
+.brink-studio .cm-editor .cm-tooltip {
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg);
+}
+.brink-studio .cm-editor .cm-tooltip-autocomplete ul li[aria-selected] {
+  background: var(--bs-list-active-bg);
+  color: var(--bs-accent);
+}
+.brink-studio .cm-editor .cm-completionMatchedText {
+  text-decoration: none;
+  color: var(--bs-accent);
+}
+.brink-studio .cm-editor .cm-completionDetail {
+  color: var(--bs-fg-muted);
+}
 /* File tab bar */
 .brink-studio .brink-file-tabs {
   display: flex;
   align-items: stretch;
-  background: var(--brink-bg-surface);
-  border-bottom: 1px solid var(--brink-border);
+  background: var(--bs-surface-bg);
+  border-bottom: 1px solid var(--bs-border);
   overflow-x: auto;
   min-height: 33px;
   scrollbar-width: none;
@@ -636,18 +706,18 @@
   gap: 6px;
   padding: 6px 12px;
   font-size: 13px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   cursor: pointer;
-  border-right: 1px solid var(--brink-border);
+  border-right: 1px solid var(--bs-border);
   white-space: nowrap;
   user-select: none;
 }
 .brink-studio .brink-tab:hover {
-  background: var(--brink-bg-panel);
+  background: var(--bs-panel-bg);
 }
 .brink-studio .brink-tab.active {
-  color: var(--brink-fg);
-  background: var(--brink-bg);
+  color: var(--bs-fg);
+  background: var(--bs-editor-bg);
 }
 .brink-studio .brink-tab.unpinned .brink-tab-label {
   font-style: italic;
@@ -661,27 +731,27 @@
   font-size: 14px;
   line-height: 1;
   border-radius: 3px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 .brink-studio .brink-tab:hover .brink-tab-close {
   display: flex;
 }
 .brink-studio .brink-tab-close:hover {
-  background: rgba(243, 139, 168, 0.2);
-  color: var(--brink-red);
+  background: color-mix(in srgb, var(--bs-error) 20%, transparent);
+  color: var(--bs-error);
 }
 .brink-studio .brink-tab-new {
   display: flex;
   align-items: center;
   padding: 6px 10px;
   font-size: 16px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   cursor: pointer;
   user-select: none;
 }
 .brink-studio .brink-tab-new:hover {
-  color: var(--brink-fg);
-  background: var(--brink-bg-panel);
+  color: var(--bs-fg);
+  background: var(--bs-panel-bg);
 }
 .brink-studio .brink-tab-input-wrapper {
   display: flex;
@@ -689,9 +759,9 @@
   padding: 4px 6px;
 }
 .brink-studio .brink-tab-input {
-  background: var(--brink-bg);
-  color: var(--brink-fg);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-editor-bg);
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
   border-radius: 3px;
   padding: 2px 8px;
   font-size: 13px;
@@ -699,10 +769,10 @@
   outline: none;
 }
 .brink-studio .brink-tab-input:focus {
-  border-color: var(--brink-accent);
+  border-color: var(--bs-accent);
 }
 .brink-studio .brink-tab-input.error {
-  border-color: var(--brink-red);
+  border-color: var(--bs-error);
 }
 /* Status bar — segments live in the shell's full-width region
    (.shell-statusbar, spec §7.3); these style the segment internals. */
@@ -711,24 +781,24 @@
 }
 .brink-studio .brink-status-element-btn {
   background: none;
-  border: 1px solid var(--brink-border);
-  color: var(--brink-fg);
+  border: 1px solid var(--bs-border);
+  color: var(--bs-fg);
   font-size: 12px;
   padding: 1px 8px;
   border-radius: 3px;
   cursor: pointer;
 }
 .brink-studio .brink-status-element-btn:hover {
-  background: var(--brink-bg-panel);
+  background: var(--bs-panel-bg);
 }
 .brink-studio .brink-status-cursor {
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
 }
 .brink-studio .brink-status-diag.has-errors {
-  color: var(--brink-red);
+  color: var(--bs-error);
 }
 .brink-studio .brink-status-diag.has-warnings {
-  color: var(--brink-yellow);
+  color: var(--bs-warning);
 }
 /* Element type dropdown */
 .brink-studio .brink-element-dropdown {
@@ -743,7 +813,7 @@
   width: 100%;
   background: none;
   border: none;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
   padding: 5px 10px;
   font-size: 12px;
   text-align: left;
@@ -751,7 +821,7 @@
   border-radius: 3px;
 }
 .brink-studio .brink-element-dropdown-key {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-size: 11px;
   font-family: "JetBrains Mono", "Fira Code", monospace;
   margin-left: 16px;
@@ -759,12 +829,12 @@
 }
 .brink-studio .brink-element-dropdown-item:hover,
 .brink-studio .brink-element-dropdown-item.selected {
-  background: var(--brink-bg-surface);
+  background: var(--bs-list-active-bg);
 }
 /* Hover tooltip */
 .brink-studio .brink-hover-tooltip {
-  background: var(--brink-bg-panel);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
   border-radius: 4px;
   padding: 8px 12px;
   font-size: 13px;
@@ -772,58 +842,58 @@
   line-height: 1.5;
 }
 .brink-studio .brink-hover-tooltip code {
-  background: var(--brink-bg-surface);
+  background: var(--bs-surface-bg);
   padding: 1px 4px;
   border-radius: 2px;
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 12px;
 }
 .brink-studio .brink-hover-tooltip strong {
-  color: var(--brink-accent);
+  color: var(--bs-accent);
 }
 /* Inlay hints */
 .brink-studio .brink-inlay-hint {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-size: 0.85em;
   font-style: italic;
-  background: rgba(108, 112, 134, 0.15);
+  background: color-mix(in srgb, var(--bs-fg-muted) 15%, transparent);
   border-radius: 2px;
   padding: 0 3px;
   margin-left: 2px;
 }
 /* Signature help */
 .brink-studio .brink-signature-help {
-  background: var(--brink-bg-panel);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
   border-radius: 4px;
   padding: 8px 12px;
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 13px;
 }
 .brink-studio .brink-sig-active-param {
-  color: var(--brink-accent);
+  color: var(--bs-accent);
   font-weight: 600;
   text-decoration: underline;
 }
 .brink-studio .brink-sig-doc {
   margin-top: 4px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-family: system-ui, sans-serif;
   font-size: 12px;
 }
 /* Reference highlights */
 .brink-studio .brink-reference-highlight {
-  background: rgba(137, 180, 250, 0.2);
-  border-bottom: 1px solid var(--brink-accent);
+  background: color-mix(in srgb, var(--bs-accent) 20%, transparent);
+  border-bottom: 1px solid var(--bs-accent);
 }
 /* Code actions menu */
 .brink-studio .brink-code-actions-menu {
-  background: var(--brink-bg-panel);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
   border-radius: 6px;
   padding: 4px;
   z-index: 100;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--bs-shadow);
   min-width: 200px;
 }
 .brink-studio .brink-code-action-item {
@@ -831,7 +901,7 @@
   width: 100%;
   background: none;
   border: none;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
   padding: 6px 10px;
   font-size: 13px;
   text-align: left;
@@ -839,7 +909,7 @@
   border-radius: 4px;
 }
 .brink-studio .brink-code-action-item:hover {
-  background: var(--brink-bg-surface);
+  background: var(--bs-list-active-bg);
 }
 /* Player pane */
 .brink-studio .player-pane {
@@ -852,9 +922,9 @@
   padding: 8px 12px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--brink-fg-dim);
-  background: var(--brink-bg-surface);
-  border-bottom: 1px solid var(--brink-border);
+  color: var(--bs-fg-muted);
+  background: var(--bs-surface-bg);
+  border-bottom: 1px solid var(--bs-border);
   letter-spacing: 0.5px;
   text-transform: uppercase;
   display: flex;
@@ -866,16 +936,16 @@
   gap: 6px;
 }
 .brink-studio .player-pane .header button {
-  background: var(--brink-bg-panel);
-  color: var(--brink-fg);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
   border-radius: 4px;
   padding: 2px 10px;
   font-size: 12px;
   cursor: pointer;
 }
 .brink-studio .player-pane .header button:hover {
-  background: var(--brink-border);
+  background: var(--bs-hover-bg);
 }
 .brink-studio .player {
   flex: 1;
@@ -899,9 +969,9 @@
   gap: 6px;
 }
 .brink-studio .player .choices button {
-  background: var(--brink-bg-panel);
-  color: var(--brink-accent);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  color: var(--bs-accent);
+  border: 1px solid var(--bs-border);
   border-radius: 6px;
   padding: 10px 16px;
   font-size: 16px;
@@ -911,22 +981,22 @@
   transition: background 0.15s;
 }
 .brink-studio .player .choices button:hover {
-  background: var(--brink-border);
+  background: var(--bs-hover-bg);
 }
 .brink-studio .player .end-marker {
   margin-top: 16px;
   padding: 8px;
   text-align: center;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-style: italic;
   font-size: 13px;
 }
 .brink-studio .player .error {
-  color: var(--brink-red);
+  color: var(--bs-error);
   font-family: monospace;
   font-size: 13px;
   padding: 8px;
-  background: rgba(243, 139, 168, 0.1);
+  background: color-mix(in srgb, var(--bs-error) 10%, transparent);
   border-radius: 4px;
   margin-top: 8px;
 }
@@ -945,12 +1015,12 @@
   top: 0;
   bottom: 0;
   width: 1px;
-  background: var(--brink-border);
+  background: var(--bs-border);
   transition: background 0.15s, width 0.15s;
 }
 .brink-studio .brink-resize-handle:hover::after,
 .brink-studio .brink-resize-handle[data-resize-handle-active]::after {
-  background: var(--brink-accent);
+  background: var(--bs-accent);
   width: 2px;
   left: 1px;
 }
@@ -979,7 +1049,7 @@
 .brink-studio .brink-panel-toggle {
   background: none;
   border: none;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-size: 10px;
   cursor: pointer;
   padding: 2px 4px;
@@ -987,17 +1057,17 @@
   line-height: 1;
 }
 .brink-studio .brink-panel-toggle:hover {
-  color: var(--brink-fg);
-  background: var(--brink-bg-panel);
+  color: var(--bs-fg);
+  background: var(--bs-panel-bg);
 }
 /* Binder: multi-select highlight */
 .brink-studio .brink-binder-row.brink-binder-selected {
-  background: rgba(137, 180, 250, 0.15);
-  border-left: 2px solid var(--brink-accent);
+  background: color-mix(in srgb, var(--bs-accent) 15%, transparent);
+  border-left: 2px solid var(--bs-accent);
 }
 /* Binder: keyboard focus indicator */
 .brink-studio .brink-binder-row.brink-binder-focused {
-  outline: 1px solid rgba(137, 180, 250, 0.4);
+  outline: 1px solid color-mix(in srgb, var(--bs-accent) 40%, transparent);
   outline-offset: -1px;
 }
 /* Binder: drag source opacity */
@@ -1006,21 +1076,21 @@
 }
 /* Binder: drop target knot highlight */
 .brink-studio .brink-binder-row.brink-binder-drop-into {
-  background: rgba(137, 180, 250, 0.1);
-  border: 1px dashed var(--brink-accent);
+  background: color-mix(in srgb, var(--bs-accent) 10%, transparent);
+  border: 1px dashed var(--bs-accent);
 }
 /* Binder: drop insertion line */
 .brink-studio .brink-binder-drop-line {
   height: 2px;
-  background: var(--brink-accent);
+  background: var(--bs-accent);
   margin: 0 8px;
   border-radius: 1px;
-  box-shadow: 0 0 4px rgba(137, 180, 250, 0.5);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--bs-accent) 50%, transparent);
   pointer-events: none;
 }
 /* Binder: post-move flash animation */
 @keyframes brink-binder-flash {
-  0% { background: rgba(137, 180, 250, 0.3); }
+  0% { background: color-mix(in srgb, var(--bs-accent) 30%, transparent); }
   100% { background: transparent; }
 }
 .brink-studio .brink-binder-flash {
@@ -1033,12 +1103,12 @@
 /* Context menu */
 .brink-studio .brink-context-menu {
   position: fixed;
-  background: var(--brink-bg-panel);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
   border-radius: 6px;
   padding: 4px;
   z-index: 300;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--bs-shadow);
   min-width: 160px;
 }
 .brink-studio .brink-context-menu-item {
@@ -1047,17 +1117,17 @@
   align-items: center;
   padding: 5px 10px;
   font-size: 12px;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
   cursor: pointer;
   border-radius: 3px;
   user-select: none;
   position: relative;
 }
 .brink-studio .brink-context-menu-item:hover {
-  background: var(--brink-bg-surface);
+  background: var(--bs-list-active-bg);
 }
 .brink-studio .brink-context-menu-item.disabled {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   opacity: 0.5;
   cursor: default;
 }
@@ -1066,12 +1136,12 @@
 }
 .brink-studio .brink-context-menu-separator {
   height: 1px;
-  background: var(--brink-border);
+  background: var(--bs-border);
   margin: 4px 6px;
 }
 .brink-studio .brink-context-menu-arrow {
   font-size: 8px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   margin-left: 12px;
 }
 .brink-studio .brink-context-submenu {
@@ -1096,20 +1166,20 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  background: var(--brink-bg-panel);
-  border: 1px solid var(--brink-border);
-  border-left: 3px solid var(--brink-accent);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-left: 3px solid var(--bs-accent);
   border-radius: 6px;
   padding: 8px 8px 8px 12px;
   font-size: 13px;
-  color: var(--brink-fg);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  color: var(--bs-fg);
+  box-shadow: 0 4px 16px var(--bs-shadow);
 }
 .brink-studio .shell-notification.severity-warning {
-  border-left-color: var(--brink-yellow);
+  border-left-color: var(--bs-warning);
 }
 .brink-studio .shell-notification.severity-error {
-  border-left-color: var(--brink-red);
+  border-left-color: var(--bs-error);
 }
 .brink-studio .shell-notification-body {
   flex: 1;
@@ -1119,7 +1189,7 @@
   gap: 4px;
 }
 .brink-studio .shell-notification-source {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-size: 11px;
 }
 .brink-studio .shell-notification-message {
@@ -1133,40 +1203,40 @@
 }
 .brink-studio .shell-notification-action {
   background: none;
-  border: 1px solid var(--brink-accent);
-  color: var(--brink-accent);
+  border: 1px solid var(--bs-accent);
+  color: var(--bs-accent);
   border-radius: 3px;
   padding: 2px 10px;
   font-size: 12px;
   cursor: pointer;
 }
 .brink-studio .shell-notification-action:hover {
-  background: rgba(137, 180, 250, 0.15);
+  background: color-mix(in srgb, var(--bs-accent) 15%, transparent);
 }
 .brink-studio .shell-notification-close {
   background: none;
   border: none;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
   padding: 2px 4px;
 }
 .brink-studio .shell-notification-close:hover {
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 .brink-studio .shell-notification-overflow {
   align-self: flex-end;
-  background: var(--brink-bg-panel);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
   border-radius: 4px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-size: 11px;
   padding: 2px 8px;
   cursor: pointer;
 }
 .brink-studio .shell-notification-overflow:hover {
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 
 /* Status-bar bell + history popover (§7.5) */
@@ -1177,8 +1247,8 @@
   position: absolute;
   top: -5px;
   right: -7px;
-  background: var(--brink-accent);
-  color: var(--brink-bg);
+  background: var(--bs-accent);
+  color: var(--bs-on-accent);
   border-radius: 8px;
   font-size: 9px;
   line-height: 1;
@@ -1198,21 +1268,21 @@
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--brink-border);
+  border-bottom: 1px solid var(--bs-border);
   font-size: 12px;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 .brink-studio .shell-notification-history-header button {
   background: none;
   border: none;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font: inherit;
   font-size: 11px;
   cursor: pointer;
   padding: 0;
 }
 .brink-studio .shell-notification-history-header button:hover:enabled {
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 .brink-studio .shell-notification-history-header button:disabled {
   opacity: 0.5;
@@ -1221,7 +1291,7 @@
 .brink-studio .shell-notification-history-empty {
   padding: 12px;
   font-size: 12px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 .brink-studio .shell-notification-history {
   list-style: none;
@@ -1236,21 +1306,21 @@
   padding: 5px 8px;
   border-radius: 4px;
   font-size: 12px;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 .brink-studio .shell-notification-history-item .dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--brink-accent);
+  background: var(--bs-accent);
   flex: none;
   align-self: center;
 }
 .brink-studio .shell-notification-history-item.severity-warning .dot {
-  background: var(--brink-yellow);
+  background: var(--bs-warning);
 }
 .brink-studio .shell-notification-history-item.severity-error .dot {
-  background: var(--brink-red);
+  background: var(--bs-error);
 }
 .brink-studio .shell-notification-history-item .text {
   flex: 1;
@@ -1258,11 +1328,11 @@
   overflow-wrap: anywhere;
 }
 .brink-studio .shell-notification-history-item .source {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   margin-right: 6px;
 }
 .brink-studio .shell-notification-history-item .time {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-size: 10px;
   flex: none;
 }
@@ -1311,7 +1381,7 @@
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  background: var(--brink-bg-panel);
+  background: var(--bs-panel-bg);
 }
 .brink-studio .shell-strip-left,
 .brink-studio .shell-strip-right {
@@ -1319,13 +1389,13 @@
   width: 36px;
   padding: 6px 0;
 }
-.brink-studio .shell-strip-left { border-right: 1px solid var(--brink-border); }
-.brink-studio .shell-strip-right { border-left: 1px solid var(--brink-border); }
+.brink-studio .shell-strip-left { border-right: 1px solid var(--bs-border); }
+.brink-studio .shell-strip-right { border-left: 1px solid var(--bs-border); }
 .brink-studio .shell-strip-bottom {
   flex-direction: row;
   height: 32px;
   padding: 0 6px;
-  border-top: 1px solid var(--brink-border);
+  border-top: 1px solid var(--bs-border);
 }
 /* Icons cluster by section: start-section icons at the strip's start,
    end-section icons anchored at the far end (JetBrains-style halves). */
@@ -1353,7 +1423,7 @@
   align-items: center;
   justify-content: center;
   background: transparent;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   border: none;
   border-radius: 5px;
   line-height: 1;
@@ -1361,12 +1431,12 @@
   padding: 0;
 }
 .brink-studio .shell-strip-btn:hover {
-  background: var(--brink-border);
-  color: var(--brink-fg);
+  background: var(--bs-hover-bg);
+  color: var(--bs-fg);
 }
 .brink-studio .shell-strip-btn.active {
-  color: var(--brink-accent);
-  background: var(--brink-bg-surface);
+  color: var(--bs-accent);
+  background: var(--bs-surface-bg);
 }
 .brink-studio .shell-strip-badge {
   position: absolute;
@@ -1376,8 +1446,8 @@
   height: 13px;
   padding: 0 3px;
   border-radius: 7px;
-  background: var(--brink-red);
-  color: var(--brink-bg);
+  background: var(--bs-error);
+  color: var(--bs-on-accent);
   font-size: 9px;
   font-weight: 700;
   line-height: 13px;
@@ -1389,7 +1459,7 @@
    drop zones (visual only — hit-testing is rect math, so the zones take no
    pointer events). The hovered zone gets .active. */
 .brink-studio .shell-strip.drop-mode {
-  background: var(--brink-bg-surface);
+  background: var(--bs-surface-bg);
 }
 .brink-studio .shell-strip.drop-mode .shell-strip-btn {
   cursor: grabbing;
@@ -1398,7 +1468,7 @@
   position: absolute;
   z-index: 1;
   pointer-events: none;
-  border: 1px dashed var(--brink-border);
+  border: 1px dashed var(--bs-border);
   border-radius: 5px;
 }
 .brink-studio .shell-strip-left .shell-strip-dropzone,
@@ -1429,8 +1499,8 @@
   right: 3px;
 }
 .brink-studio .shell-strip-dropzone.active {
-  border-color: var(--brink-accent);
-  background: color-mix(in srgb, var(--brink-accent) 16%, transparent);
+  border-color: var(--bs-accent);
+  background: color-mix(in srgb, var(--bs-accent) 16%, transparent);
 }
 
 /* Drag ghost: icon + title chip following the cursor (positioned by the
@@ -1445,18 +1515,18 @@
   align-items: center;
   gap: 6px;
   padding: 4px 9px;
-  background: var(--brink-bg-panel);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
   border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-  color: var(--brink-fg);
+  box-shadow: 0 4px 12px var(--bs-shadow);
+  color: var(--bs-fg);
   font-size: 12px;
   white-space: nowrap;
 }
 .brink-studio .shell-drag-ghost-icon {
   display: flex;
   align-items: center;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 
 /* Fullscreen tool window (player fullscreen; proper maximize is #86). */
@@ -1478,41 +1548,41 @@
   align-items: center;
   gap: 12px;
   padding: 5px 8px;
-  background: var(--brink-bg-surface);
-  border-bottom: 1px solid var(--brink-border);
+  background: var(--bs-surface-bg);
+  border-bottom: 1px solid var(--bs-border);
   flex-shrink: 0;
 }
 
 .brink-studio .studio-iconbtn {
-  background: var(--brink-bg-panel);
-  color: var(--brink-fg);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
   border-radius: 4px;
   padding: 3px 9px;
   font-size: 14px;
   line-height: 1.1;
   cursor: pointer;
 }
-.brink-studio .studio-iconbtn:hover { background: var(--brink-border); }
+.brink-studio .studio-iconbtn:hover { background: var(--bs-hover-bg); }
 
 .brink-studio .studio-segmented {
   display: inline-flex;
-  border: 1px solid var(--brink-border);
+  border: 1px solid var(--bs-border);
   border-radius: 6px;
   overflow: hidden;
 }
 .brink-studio .studio-seg {
-  background: var(--brink-bg-panel);
-  color: var(--brink-fg-dim);
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg-muted);
   border: none;
   padding: 3px 16px;
   font-size: 13px;
   cursor: pointer;
 }
-.brink-studio .studio-seg + .studio-seg { border-left: 1px solid var(--brink-border); }
+.brink-studio .studio-seg + .studio-seg { border-left: 1px solid var(--bs-border); }
 .brink-studio .studio-seg.active {
-  background: var(--brink-accent);
-  color: var(--brink-bg);
+  background: var(--bs-accent);
+  color: var(--bs-on-accent);
   font-weight: 600;
 }
 
@@ -1520,7 +1590,7 @@
 .brink-studio .studio-scrim {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--bs-scrim);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.18s ease;
@@ -1535,17 +1605,17 @@
   width: min(280px, 82%);
   transition: transform 0.18s ease;
   z-index: 50;
-  background: var(--brink-bg-surface);
+  background: var(--bs-surface-bg);
 }
 .brink-studio .shell-drawer-left {
   left: 0;
   transform: translateX(-100%);
-  box-shadow: 2px 0 14px rgba(0, 0, 0, 0.45);
+  box-shadow: 2px 0 14px var(--bs-shadow-strong);
 }
 .brink-studio .shell-drawer-right {
   right: 0;
   transform: translateX(100%);
-  box-shadow: -2px 0 14px rgba(0, 0, 0, 0.45);
+  box-shadow: -2px 0 14px var(--bs-shadow-strong);
 }
 .brink-studio .shell-drawer.open { transform: translateX(0); }
 
@@ -1554,7 +1624,7 @@
   position: absolute;
   inset: 0;
   z-index: 30;
-  background: var(--brink-bg);
+  background: var(--bs-editor-bg);
   transform: translateX(100%);
   transition: transform 0.18s ease;
 }
@@ -1569,10 +1639,10 @@
    palette is the first consumer; context menus/popovers migrate onto it as
    they're touched. Quiet per the Zed direction: hairline border, no scrim. */
 .brink-studio .shell-overlay {
-  background: var(--brink-bg-panel);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
   border-radius: 8px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 8px 32px var(--bs-shadow-strong);
   z-index: 60;
 }
 .brink-studio .shell-overlay.anchored {
@@ -1595,15 +1665,15 @@
 .brink-studio .shell-palette-input {
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--brink-border);
+  border-bottom: 1px solid var(--bs-border);
   outline: none;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
   font: inherit;
   font-size: 14px;
   padding: 10px 14px;
 }
 .brink-studio .shell-palette-input::placeholder {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 .brink-studio .shell-palette-list {
   list-style: none;
@@ -1620,22 +1690,22 @@
   padding: 6px 10px;
   border-radius: 5px;
   font-size: 13px;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
   cursor: pointer;
 }
 .brink-studio .shell-palette-item.selected {
-  background: var(--brink-bg-surface);
-  color: var(--brink-accent);
+  background: var(--bs-list-active-bg);
+  color: var(--bs-accent);
 }
 .brink-studio .shell-palette-item .binding {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-size: 12px;
   letter-spacing: 0.04em;
 }
 .brink-studio .shell-palette-empty {
   padding: 10px 14px;
   font-size: 13px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 
 /* Shell status bar region (spec §7.3) — full shell width, bottom-most. */
@@ -1646,9 +1716,9 @@
   height: 24px;
   padding: 0 10px;
   font-size: 12px;
-  color: var(--brink-fg-dim);
-  background: var(--brink-bg-surface);
-  border-top: 1px solid var(--brink-border);
+  color: var(--bs-fg-muted);
+  background: var(--bs-surface-bg);
+  border-top: 1px solid var(--bs-border);
   flex: none;
 }
 .brink-studio .shell-statusbar-group {
@@ -1676,7 +1746,7 @@
   cursor: pointer;
 }
 .brink-studio .shell-statusbar-item .clickable:hover {
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 
 /* Story session segment (spec §7.6 status) */
@@ -1689,20 +1759,20 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--brink-fg-dim);
+  background: var(--bs-fg-muted);
 }
 .brink-studio .brink-status-story-dot.status-running {
-  background: var(--brink-green);
+  background: var(--bs-success);
 }
 .brink-studio .brink-status-story-dot.status-awaiting-choice {
-  background: var(--brink-yellow);
+  background: var(--bs-warning);
 }
 .brink-studio .brink-status-story-dot.status-done,
 .brink-studio .brink-status-story-dot.status-ended {
-  background: var(--brink-teal);
+  background: var(--bs-info);
 }
 .brink-studio .brink-status-story-dot.status-error {
-  background: var(--brink-red);
+  background: var(--bs-error);
 }
 
 /* ── Problems tool window (spec §4) ───────────────────────────────── */
@@ -1715,7 +1785,7 @@
 .brink-studio .problems-empty {
   margin: 0;
   padding: 14px 12px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 .brink-studio .problems-list {
   list-style: none;
@@ -1731,20 +1801,20 @@
   background: transparent;
   border: none;
   font: inherit;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
   text-align: left;
   cursor: pointer;
 }
 .brink-studio .problems-row:hover {
-  background: var(--brink-bg-panel);
+  background: var(--bs-panel-bg);
 }
 .brink-studio .problems-severity {
   flex-shrink: 0;
   font-size: 9px;
   line-height: inherit;
 }
-.brink-studio .problems-severity.is-error { color: var(--brink-red); }
-.brink-studio .problems-severity.is-warning { color: var(--brink-yellow); }
+.brink-studio .problems-severity.is-error { color: var(--bs-error); }
+.brink-studio .problems-severity.is-warning { color: var(--bs-warning); }
 .brink-studio .problems-message {
   min-width: 0;
   overflow: hidden;
@@ -1754,7 +1824,7 @@
 .brink-studio .problems-location {
   margin-left: auto;
   flex-shrink: 0;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 11px;
 }
@@ -1771,20 +1841,20 @@
   display: flex;
   justify-content: flex-end;
   padding: 4px 8px;
-  border-bottom: 1px solid var(--brink-border);
+  border-bottom: 1px solid var(--bs-border);
   flex-shrink: 0;
 }
 .brink-studio .output-clear {
-  background: var(--brink-bg-panel);
-  color: var(--brink-fg-dim);
-  border: 1px solid var(--brink-border);
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg-muted);
+  border: 1px solid var(--bs-border);
   border-radius: 4px;
   font: inherit;
   font-size: 11px;
   padding: 1px 8px;
   cursor: pointer;
 }
-.brink-studio .output-clear:hover:not(:disabled) { color: var(--brink-fg); }
+.brink-studio .output-clear:hover:not(:disabled) { color: var(--bs-fg); }
 .brink-studio .output-clear:disabled { opacity: 0.5; cursor: default; }
 .brink-studio .output-log {
   flex: 1;
@@ -1796,7 +1866,7 @@
 .brink-studio .output-empty {
   margin: 0;
   padding: 10px 12px;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-family: system-ui, -apple-system, sans-serif;
 }
 .brink-studio .output-entry {
@@ -1807,7 +1877,7 @@
 }
 .brink-studio .output-time {
   flex-shrink: 0;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
 }
 .brink-studio .output-source {
   flex-shrink: 0;
@@ -1815,13 +1885,13 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.brink-studio .output-source-compile { color: var(--brink-accent); }
-.brink-studio .output-source-story { color: var(--brink-mauve); }
+.brink-studio .output-source-compile { color: var(--bs-accent); }
+.brink-studio .output-source-story { color: var(--bs-symbol-knot); }
 .brink-studio .output-message {
   min-width: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
 }
 
 /* Left rail: hamburger above the left strip (spec §6 hamburger placement). */
@@ -1845,7 +1915,7 @@
   padding: 4px;
 }
 .brink-studio .shell-menu-group + .shell-menu-group {
-  border-top: 1px solid var(--brink-border);
+  border-top: 1px solid var(--bs-border);
   margin-top: 4px;
   padding-top: 4px;
 }
@@ -1853,7 +1923,7 @@
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   padding: 4px 10px 2px;
 }
 .brink-studio .shell-menu-item {
@@ -1866,17 +1936,17 @@
   border: none;
   font: inherit;
   text-align: left;
-  color: var(--brink-fg);
+  color: var(--bs-fg);
   padding: 5px 10px;
   border-radius: 5px;
   font-size: 13px;
   cursor: pointer;
 }
 .brink-studio .shell-menu-item:hover {
-  background: var(--brink-bg-surface);
-  color: var(--brink-accent);
+  background: var(--bs-list-active-bg);
+  color: var(--bs-accent);
 }
 .brink-studio .shell-menu-item .binding {
-  color: var(--brink-fg-dim);
+  color: var(--bs-fg-muted);
   font-size: 12px;
 }

@@ -1,0 +1,73 @@
+/* Catppuccin Latte (docs/studio-shell-spec.md §7.4) — the light theme, and
+   the proof that no component hardcodes a color. Selected via
+   data-theme="latte" on the .brink-studio root; the [data-theme] scope
+   out-specifies the Mocha defaults on the bare class.
+
+   Same private-palette + semantic-token structure as mocha.css. Deviations
+   from the stock Latte palette are deliberate legibility picks:
+   - muted text uses subtext0 (not overlay0, too faint on light surfaces)
+   - teal stands in for Mocha's sky (sky is ~2.6:1 on the base — illegible)
+   - shadows/scrim are much lighter, as light themes want. */
+
+.brink-studio[data-theme="latte"] {
+  /* ── Private palette (Catppuccin Latte) ─────────────────────────── */
+  --ctp-base: #eff1f5;
+  --ctp-surface-low: #e6e9ef; /* mantle */
+  --ctp-surface-high: #dce0e8; /* crust; panel/popup fill */
+  --ctp-surface0: #ccd0da;
+  --ctp-surface1: #bcc0cc;
+  --ctp-text: #4c4f69;
+  --ctp-subtext0: #6c6f85;
+  --ctp-blue: #1e66f5;
+  --ctp-green: #40a02b;
+  --ctp-red: #d20f39;
+  --ctp-yellow: #df8e1d;
+  --ctp-mauve: #8839ef;
+  --ctp-teal: #179299;
+  --ctp-peach: #fe640b;
+  --ctp-pink: #ea76cb;
+  --ctp-flamingo: #dd7878;
+
+  /* ── Surfaces & chrome ──────────────────────────────────────────── */
+  --bs-editor-bg: var(--ctp-base);
+  --bs-surface-bg: var(--ctp-surface-low);
+  --bs-panel-bg: var(--ctp-surface-high);
+  --bs-fg: var(--ctp-text);
+  --bs-fg-muted: var(--ctp-subtext0);
+  --bs-border: var(--ctp-surface1);
+  --bs-accent: var(--ctp-blue);
+  --bs-on-accent: var(--ctp-base);
+  --bs-hover-bg: var(--ctp-surface1);
+  --bs-list-active-bg: var(--ctp-surface0);
+  --bs-scrim: rgb(0 0 0 / 0.3);
+  --bs-shadow: rgb(0 0 0 / 0.16);
+  --bs-shadow-strong: rgb(0 0 0 / 0.22);
+
+  /* ── Severity & story status ────────────────────────────────────── */
+  --bs-error: var(--ctp-red);
+  --bs-warning: var(--ctp-yellow);
+  --bs-success: var(--ctp-green);
+  --bs-info: var(--ctp-teal);
+
+  /* ── Story symbols ──────────────────────────────────────────────── */
+  --bs-symbol-file: var(--ctp-blue);
+  --bs-symbol-knot: var(--ctp-mauve);
+  --bs-symbol-stitch: var(--ctp-teal);
+  --bs-symbol-function: var(--ctp-peach);
+
+  /* ── Syntax highlighting ────────────────────────────────────────── */
+  --bs-syn-keyword: var(--ctp-mauve);
+  --bs-syn-namespace: var(--ctp-mauve);
+  --bs-syn-function: var(--ctp-blue);
+  --bs-syn-variable: var(--ctp-text);
+  --bs-syn-string: var(--ctp-green);
+  --bs-syn-number: var(--ctp-peach);
+  --bs-syn-operator: var(--ctp-teal);
+  --bs-syn-comment: var(--ctp-subtext0);
+  --bs-syn-enum: var(--ctp-yellow);
+  --bs-syn-parameter: var(--ctp-flamingo);
+  --bs-syn-decorator: var(--ctp-peach);
+  --bs-syn-label: var(--ctp-pink);
+
+  color-scheme: light;
+}

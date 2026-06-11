@@ -1,0 +1,6 @@
+/* @brink/studio-shell styles — aggregator (side-effect imported from
+   index.ts). Theme files define the semantic --bs-* token values
+   (spec §7.4); component files reference tokens only. */
+
+@import "./themes/mocha.css";
+@import "./themes/latte.css";

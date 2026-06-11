@@ -72,30 +72,30 @@ export function replaceCompiledOutput(view: EditorView, text: string): void {
   });
 }
 
-const compiledOutputTheme = EditorView.theme(
-  {
-    "&": {
-      height: "100%",
-      backgroundColor: "var(--brink-bg, #1e1e2e)",
-      color: "var(--brink-fg, #cdd6f4)",
-    },
-    ".cm-scroller": {
-      overflow: "auto",
-      fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace',
-      fontSize: "12px",
-      lineHeight: "1.6",
-    },
-    ".cm-gutters": {
-      backgroundColor: "var(--brink-bg, #1e1e2e)",
-      borderRight: "1px solid var(--brink-border, #45475a)",
-      color: "var(--brink-fg-dim, #6c7086)",
-    },
-    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-      backgroundColor: "rgba(137, 180, 250, 0.3) !important",
-    },
+// Colors reference only the semantic --bs-* tokens (spec §7.4); values come
+// from the active theme's CSS, so the view follows runtime theme switches.
+const compiledOutputTheme = EditorView.theme({
+  "&": {
+    height: "100%",
+    backgroundColor: "var(--bs-editor-bg)",
+    color: "var(--bs-fg)",
   },
-  { dark: true },
-);
+  ".cm-scroller": {
+    overflow: "auto",
+    fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace',
+    fontSize: "12px",
+    lineHeight: "1.6",
+  },
+  ".cm-gutters": {
+    backgroundColor: "var(--bs-editor-bg)",
+    borderRight: "1px solid var(--bs-border)",
+    color: "var(--bs-fg-muted)",
+  },
+  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
+    backgroundColor:
+      "color-mix(in srgb, var(--bs-accent) 30%, transparent) !important",
+  },
+});
 
 /** The full extension set for a Compiled Output view (exported for tests). */
 export function compiledOutputExtensions(): Extension[] {
