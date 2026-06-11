@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, type ReactNode } from "react";
 import { useShell, useShellLayout } from "@brink/studio-shell";
 import { sessionCanContinue } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
@@ -58,7 +58,7 @@ function renderLine(line: string): ReactNode {
     const name = screenplayMatch[1].trim();
     const rest = screenplayMatch[2];
 
-    const parts: ReactNode[] = [renderName(name)];
+    const parts: ReactNode[] = [<Fragment key="name">{renderName(name)}</Fragment>];
 
     // Check if rest starts with a parenthetical: (text)remainder
     const parenMatch = rest.match(/^\(([^)]*)\)(.*)/);
