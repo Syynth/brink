@@ -135,11 +135,31 @@ export function EditorArea() {
   const { editorGroups } = useShell();
   const groups = useEditorGroups((s) => s.groups);
   const focusedGroupId = useEditorGroups((s) => s.focusedGroupId);
+  const maximizedGroupId = useEditorGroups((s) => s.maximizedGroupId);
   const descriptors = useDocumentTypes();
   const types = useMemo(
     () => new Map(descriptors.map((d) => [d.id, d])),
     [descriptors],
   );
+
+  // Group maximize (spec §5.4): only the maximized group renders — siblings
+  // unmount (their tabs keep cached state like any backgrounded view) and
+  // come back with their stored splitter sizes on restore.
+  const maximizedGroup =
+    maximizedGroupId !== null
+      ? groups.find((g) => g.id === maximizedGroupId)
+      : undefined;
+  if (maximizedGroup) {
+    return (
+      <div className="shell-editor-area" data-maximized-group={maximizedGroup.id}>
+        <EditorGroupView
+          group={maximizedGroup}
+          focused={maximizedGroup.id === focusedGroupId}
+          types={types}
+        />
+      </div>
+    );
+  }
 
   if (groups.length === 1) {
     return (

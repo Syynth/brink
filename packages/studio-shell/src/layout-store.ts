@@ -138,7 +138,11 @@ export function createShellLayoutStore(): ShellLayoutStore {
 
         const narrowView =
           s.narrowView !== null && known.has(s.narrowView) ? s.narrowView : null;
-        return { placements, open, narrowView };
+        // A persisted maximized id whose window no longer exists would leave
+        // the shell stuck half-restored (Escape targets a ghost id).
+        const maximized =
+          s.maximized !== null && known.has(s.maximized) ? s.maximized : null;
+        return { placements, open, narrowView, maximized };
       });
     },
 

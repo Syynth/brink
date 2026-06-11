@@ -41,6 +41,7 @@ import {
   InkFileDocument,
   KeyHintsSegment,
   OutputView,
+  PLAYER_TYPE_ID,
   PlayerPane,
   ProblemsBadge,
   ProblemsView,
@@ -49,7 +50,9 @@ import {
   StorySegment,
   StoreProvider,
   inkFileRef,
+  openPlayerSplit,
   registerCompiledOutputCommand,
+  registerOpenPlayerCommand,
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
 import toppledTemple from "./stories/toppled-temple.ink.txt?raw";
@@ -96,12 +99,6 @@ const iconProps = {
 const BINDER_ICON = (
   <svg {...iconProps}>
     <path d="M3 3.5h10M3 6.5h10M5.5 9.5h7.5M5.5 12.5h7.5" />
-  </svg>
-);
-
-const PLAYER_ICON = (
-  <svg {...iconProps}>
-    <path d="M5 3.5v9l8-4.5z" fill="currentColor" stroke="none" />
   </svg>
 );
 
@@ -307,6 +304,12 @@ async function main(): Promise<void> {
     component: CompiledOutputDocument,
   });
   registerCompiledOutputCommand(commands, editorGroups);
+  // Player (#120): the session document — singleton, session-bound (§7.6),
+  // opened in a right split at bootstrap (Inky two-up) and via
+  // story.openPlayer. The old player tool window is gone; State View takes
+  // its right/start strip slot.
+  documentTypes.register({ id: PLAYER_TYPE_ID, component: PlayerPane });
+  registerOpenPlayerCommand(commands, editorGroups);
 
   // Compile-result handler shared by every path that compiles (per-view
   // debounced compiles, compile.run, the initial compile). DocumentSessions
@@ -437,9 +440,10 @@ async function main(): Promise<void> {
   (window as unknown as Record<string, unknown>).__brinkEditorGroups = editorGroups;
 
   // Tool-window registry (spec §7.1, §4). Registration order is the stable,
-  // user-visible Mod-N ordering: Binder Mod-1, Player Mod-2, State Mod-3,
-  // Program Mod-4, Problems Mod-5, Output Mod-6. The shell never imports
-  // these components — they are registered into it here, at the app boundary.
+  // user-visible Mod-N ordering: Binder Mod-1, State Mod-2, Program Mod-3,
+  // Problems Mod-4, Output Mod-5. (The Player is an editor document now —
+  // #120 — not a tool window.) The shell never imports these components —
+  // they are registered into it here, at the app boundary.
   //
   // Bottom-dock sharing: Program Explorer and Problems both default to
   // bottom/start (spec §4) — a section holds multiple windows, one open at a
@@ -454,18 +458,10 @@ async function main(): Promise<void> {
     component: Binder,
   });
   toolWindows.register({
-    id: "player",
-    title: "Player",
-    icon: PLAYER_ICON,
-    defaultPlacement: { dock: "right", section: "start" },
-    defaultOpen: true,
-    component: PlayerPane,
-  });
-  toolWindows.register({
     id: "state",
     title: "State View",
     icon: STATE_ICON,
-    defaultPlacement: { dock: "right", section: "end" },
+    defaultPlacement: { dock: "right", section: "start" },
     defaultOpen: false,
     component: StateView,
   });
@@ -543,6 +539,11 @@ async function main(): Promise<void> {
   // document component mounts).
   store.getState().initialize(project, documents);
   store.getState().openTarget({ kind: "file", path: entryFile }, true);
+
+  // Default layout (spec §4): the Inky two-up — entry file left, player in a
+  // right split, focus back on the editor. Group layout is not persisted, so
+  // every fresh load reproduces this.
+  openPlayerSplit(editorGroups);
 
   const appRoot = document.getElementById("app");
   if (!appRoot) throw new Error("Missing #app container");

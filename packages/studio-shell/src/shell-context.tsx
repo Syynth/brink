@@ -33,6 +33,7 @@ import {
   type EditorGroupsStore,
 } from "./editor-groups.js";
 import { registerEditorGroupCommands } from "./editor-commands.js";
+import { registerMaximizeCommands } from "./maximize-commands.js";
 import {
   createShellLayoutStore,
   type ShellLayoutState,
@@ -174,18 +175,12 @@ export function ShellProvider({
     [commands, keymap, mac],
   );
 
-  // Tool-window maximize (spec §5.4): a shell feature, not a player feature.
-  // Dispatched with the tool-window id as args; Escape restores (ShellFrame).
+  // Maximize commands (spec §5.4): tool-window maximize (view.maximize) and
+  // editor-group maximize (editor.maximizeGroup), registered together because
+  // they are mutually exclusive. Escape restores either (ShellFrame).
   useEffect(
-    () =>
-      commands.register({
-        id: "view.maximize",
-        title: "View: Toggle Maximized Tool Window",
-        run: (args) => {
-          if (typeof args === "string") layout.getState().toggleMaximize(args);
-        },
-      }),
-    [commands, layout],
+    () => registerMaximizeCommands(commands, layout, groups),
+    [commands, layout, groups],
   );
 
   // Editor-group commands (spec §7.8): split, move tab, focus next group.

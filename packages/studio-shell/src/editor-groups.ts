@@ -52,6 +52,13 @@ export interface EditorGroupsState {
   focusedGroupId: string;
   /** Last splitter sizes in px per group id (not persisted). */
   groupSizes: Record<string, number>;
+  /**
+   * Maximized group (§5.4): this group temporarily takes the entire editor
+   * area — other groups hide and ShellFrame collapses the open docks. Pure
+   * presentation: no other state is touched, so restoring is just clearing
+   * this field (dock open-state and group sizes come back untouched).
+   */
+  maximizedGroupId: string | null;
 
   /** Open per the reveal policy above; focuses the resulting group + tab. */
   openDocument(ref: DocumentRef, opts?: OpenDocumentOptions): void;
@@ -80,6 +87,12 @@ export interface EditorGroupsState {
   pinTab(groupId: string, key: string): void;
   /** Remember a group's splitter size in px. */
   setGroupSize(groupId: string, px: number): void;
+  /**
+   * Maximize a group over the editor area, or restore (§5.4). With no id the
+   * focused group maximizes; maximizing also focuses the group. Restoring
+   * ignores the id — whichever group is maximized comes back down.
+   */
+  toggleMaximizeGroup(groupId?: string): void;
 }
 
 export type EditorGroupsStore = StoreApi<EditorGroupsState>;
@@ -122,6 +135,7 @@ export function createEditorGroupsStore(): EditorGroupsStore {
     groups: [{ id: "group-1", tabs: [], activeKey: null }],
     focusedGroupId: "group-1",
     groupSizes: {},
+    maximizedGroupId: null,
 
     openDocument(ref, opts) {
       const pinned = opts?.pinned ?? true;
@@ -214,6 +228,8 @@ export function createEditorGroupsStore(): EditorGroupsStore {
             groupSizes,
             focusedGroupId:
               s.focusedGroupId === groupId ? neighbor.id : s.focusedGroupId,
+            maximizedGroupId:
+              s.maximizedGroupId === groupId ? null : s.maximizedGroupId,
           };
         }
 
@@ -261,11 +277,13 @@ export function createEditorGroupsStore(): EditorGroupsStore {
 
         let focusedGroupId = toGroupId;
         const groupSizes = { ...s.groupSizes };
+        let maximizedGroupId = s.maximizedGroupId;
         if (fromTabs.length === 0 && groups.length > 1) {
           groups = groups.filter((g) => g.id !== fromGroupId);
           delete groupSizes[fromGroupId];
+          if (maximizedGroupId === fromGroupId) maximizedGroupId = null;
         }
-        return { groups, focusedGroupId, groupSizes };
+        return { groups, focusedGroupId, groupSizes, maximizedGroupId };
       });
     },
 
@@ -283,7 +301,9 @@ export function createEditorGroupsStore(): EditorGroupsStore {
           created.activeKey = documentKey(active.ref);
         }
         const groups = [...s.groups.slice(0, at + 1), created, ...s.groups.slice(at + 1)];
-        return { groups, focusedGroupId: created.id };
+        // Splitting while maximized restores first — the new group must be
+        // visible, and a hidden split would be a silent no-op.
+        return { groups, focusedGroupId: created.id, maximizedGroupId: null };
       });
     },
 
@@ -331,6 +351,15 @@ export function createEditorGroupsStore(): EditorGroupsStore {
       const rounded = Math.round(px);
       if (get().groupSizes[groupId] === rounded) return;
       set((s) => ({ groupSizes: { ...s.groupSizes, [groupId]: rounded } }));
+    },
+
+    toggleMaximizeGroup(groupId) {
+      set((s) => {
+        if (s.maximizedGroupId !== null) return { maximizedGroupId: null };
+        const id = groupId ?? s.focusedGroupId;
+        if (!s.groups.some((g) => g.id === id)) return {};
+        return { maximizedGroupId: id, focusedGroupId: id };
+      });
     },
   }));
 }

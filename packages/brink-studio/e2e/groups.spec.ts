@@ -39,6 +39,14 @@ test.describe("editor groups", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?fixture=screenplay");
     await page.waitForSelector(".brink-knot-header", { timeout: 5000 });
+
+    // The default layout opens the Player document in a right split (#120).
+    // These specs exercise raw group mechanics from a single-group baseline;
+    // the two-up itself is covered by player-document.spec.ts.
+    const playerTab = page.locator(".brink-tab", { hasText: "Player" });
+    await playerTab.hover();
+    await playerTab.locator(".brink-tab-close").click();
+    await expect(page.locator(".shell-editor-group")).toHaveCount(1);
   });
 
   test("Mod-\\ splits with the same file in both groups", async ({ page }) => {

@@ -7,24 +7,34 @@ async function waitForBinder(page: Page) {
   await page.waitForSelector(".brink-binder-knot", { timeout: 5000 });
 }
 
-/** Get all visible tab labels. */
+// The default layout is the Inky two-up (#120): the editor group on the
+// left, the Player document in a right split. These specs are about the
+// editor group, so the tab/editor helpers scope to the first group.
+function editorGroup(page: Page) {
+  return page.locator(".shell-editor-group").first();
+}
+
+/** Get the editor group's visible tab labels. */
 async function getTabLabels(page: Page) {
-  return page.locator(".brink-tab .brink-tab-label").allTextContents();
+  return editorGroup(page).locator(".brink-tab .brink-tab-label").allTextContents();
 }
 
-/** Get the active tab's label. */
+/** Get the editor group's active tab label. */
 async function getActiveTabLabel(page: Page) {
-  return page.locator(".brink-tab.active .brink-tab-label").textContent();
+  return editorGroup(page).locator(".brink-tab.active .brink-tab-label").textContent();
 }
 
-/** Check if the active tab is unpinned (italic). */
+/** Check if the editor group's active tab is unpinned (italic). */
 async function isActiveTabUnpinned(page: Page) {
-  return page.locator(".brink-tab.active.unpinned").count().then((n) => n > 0);
+  return editorGroup(page)
+    .locator(".brink-tab.active.unpinned")
+    .count()
+    .then((n) => n > 0);
 }
 
 /** Get the text content of the CodeMirror editor. */
 async function getEditorContent(page: Page) {
-  return page.locator(".cm-content").textContent();
+  return editorGroup(page).locator(".cm-content").textContent();
 }
 
 /** Get all binder knot labels. */

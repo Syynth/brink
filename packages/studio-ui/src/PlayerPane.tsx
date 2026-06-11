@@ -1,7 +1,65 @@
-import { useCallback, useEffect, useRef, type ReactNode } from "react";
-import { useShell, useShellLayout } from "@brink/studio-shell";
+import { Fragment, useCallback, useEffect, useRef, type ReactNode } from "react";
+import {
+  EDITOR_MAXIMIZE_GROUP_COMMAND_ID,
+  useEditorGroups,
+  useShell,
+  type CommandRegistry,
+  type DocumentRef,
+  type DocumentViewProps,
+  type EditorGroupsStore,
+} from "@brink/studio-shell";
 import { sessionCanContinue } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
+
+// ── Document type (issue #120, spec §4, §7.6, §7.8) ─────────────────
+//
+// The Player is an editor-area document, not a tool window: a play session
+// is content-you-open, and multi-session (§7.6) maps to player *tabs*. The
+// type is session-bound and singleton — one stable DocumentRef over "the
+// active session", so reopening focuses the existing tab wherever it lives
+// (groups-store reveal policy) and only an explicit split duplicates the
+// view (both copies are plain store subscribers over the same session).
+
+export const PLAYER_TYPE_ID = "player";
+export const PLAYER_DOC_ID = "session";
+export const OPEN_PLAYER_COMMAND_ID = "story.openPlayer";
+
+/** The singleton DocumentRef — one stable identity, one tab per group. */
+export function playerRef(): DocumentRef {
+  return { typeId: PLAYER_TYPE_ID, docId: PLAYER_DOC_ID, title: "Player" };
+}
+
+/**
+ * Register `story.openPlayer` (palette: "Story: Open Player", no default
+ * keybinding). Opens pinned into the focused group; the groups store's
+ * reveal policy focuses an existing tab wherever it lives.
+ */
+export function registerOpenPlayerCommand(
+  commands: CommandRegistry,
+  editorGroups: EditorGroupsStore,
+): () => void {
+  return commands.register({
+    id: OPEN_PLAYER_COMMAND_ID,
+    title: "Story: Open Player",
+    run: () =>
+      editorGroups.getState().openDocument(playerRef(), { pinned: true }),
+  });
+}
+
+/**
+ * The default-layout half of the Inky two-up (spec §4): open the player in
+ * a split immediately right of the focused group, then hand focus back so
+ * typing keeps going to the editor. Called once at bootstrap, after the
+ * entry ink file opens in the first group.
+ */
+export function openPlayerSplit(editorGroups: EditorGroupsStore): void {
+  const entryGroupId = editorGroups.getState().focusedGroupId;
+  editorGroups.getState().openDocument(playerRef(), {
+    group: "split-right",
+    pinned: true,
+  });
+  editorGroups.getState().focusGroup(entryGroupId);
+}
 
 // ── Character colors ────────────────────────────────────────────
 
@@ -58,7 +116,7 @@ function renderLine(line: string): ReactNode {
     const name = screenplayMatch[1].trim();
     const rest = screenplayMatch[2];
 
-    const parts: ReactNode[] = [renderName(name)];
+    const parts: ReactNode[] = [<Fragment key="name">{renderName(name)}</Fragment>];
 
     // Check if rest starts with a parenthetical: (text)remainder
     const parenMatch = rest.match(/^\(([^)]*)\)(.*)/);
@@ -89,19 +147,23 @@ function renderLine(line: string): ReactNode {
 
 // ── Component ───────────────────────────────────────────────────
 
-function PlayerPane() {
-  // Session-bound view (spec §7.6): selects from the story session and never
-  // mutates it — every interaction dispatches a command.
+function PlayerPane({ groupId, active }: DocumentViewProps) {
+  // Session-bound document view (spec §7.6): selects from the story session
+  // and never mutates it — every interaction dispatches a command. The
+  // session data/commands are the entire contract (decision log 2026-06-10):
+  // the component must never hold or receive the wasm runner handle, so a
+  // future SessionProvider (#127) can back it without rework.
   const status = useStudioStore((s) => s.sessionStatus);
   const text = useStudioStore((s) => s.sessionText);
   const choices = useStudioStore((s) => s.sessionChoices);
   const { commands } = useShell();
-  const maximized = useShellLayout((s) => s.maximized) === "player";
+  const maximized = useEditorGroups((s) => s.maximizedGroupId) === groupId;
 
   const ended = status === "ended" || status === "error";
   const hasPending = sessionCanContinue(status);
 
   const playerRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when text changes
   useEffect(() => {
@@ -109,6 +171,20 @@ function PlayerPane() {
       playerRef.current.scrollTop = playerRef.current.scrollHeight;
     }
   }, [text, choices, ended, hasPending]);
+
+  // Becoming the focused group's active tab takes DOM focus into the pane,
+  // exactly as a revealed text document focuses its CM6 view. Without this,
+  // a command that reveals the player (story.openPlayer via the palette)
+  // loses the focus fight: the palette overlay's focus-return runs after the
+  // command and hands DOM focus back to the editor, whose focusin handler
+  // snaps the focused group right back. Effects run after unmount cleanups
+  // in the same commit, so this focus lands last and wins.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!active || root === null) return;
+    if (root.contains(document.activeElement)) return;
+    root.focus({ preventScroll: true });
+  }, [active]);
 
   const handleRun = useCallback(() => {
     commands.dispatch("compile.run");
@@ -136,7 +212,7 @@ function PlayerPane() {
   // No session: placeholder with a start affordance instead of stale content.
   if (status === "none") {
     return (
-      <div className="player-pane">
+      <div className="player-pane" ref={rootRef} tabIndex={-1}>
         <div className="header">
           <span>Story</span>
         </div>
@@ -156,7 +232,7 @@ function PlayerPane() {
   }
 
   return (
-    <div className="player-pane">
+    <div className="player-pane" ref={rootRef} tabIndex={-1}>
       <div className="header">
         <span>Story</span>
         <div className="toolbar">
@@ -167,7 +243,9 @@ function PlayerPane() {
             Restart
           </button>
           <button
-            onClick={() => commands.dispatch("view.maximize", "player")}
+            onClick={() =>
+              commands.dispatch(EDITOR_MAXIMIZE_GROUP_COMMAND_ID, groupId)
+            }
             title={maximized ? "Restore (Esc)" : "Maximize"}
           >
             {maximized ? "\u25a3" : "\u25a1"}

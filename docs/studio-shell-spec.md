@@ -39,13 +39,13 @@ would have to be rebuilt on top of it, and layouts degrade.
 - **Strip** — the narrow icon bar along a dock's edge. Shows one icon per tool window
   assigned to that dock; click toggles, drag re-docks. Strips are always visible (even when
   their dock is collapsed) unless the dock has no tool windows at all.
-- **Tool window** — a registered, dockable view (Binder, Player, Problems, …). Tool windows
+- **Tool window** — a registered, dockable view (Binder, State View, Problems, …). Tool windows
   can live in any dock section, can be toggled, and remember size/placement. They can never
   enter the editor area.
 - **Editor area** — the center region. Hosts **editor groups** (tabbed documents,
   splittable). Documents are files or read-only document views (e.g. the `.inkt` dump).
   Editors can never enter a dock.
-- **Command** — a named action (`player.restart`, `view.toggle.problems`). Keybindings,
+- **Command** — a named action (`story.restart`, `view.toggle.problems`). Keybindings,
   palette entries, strip clicks, menu items, and buttons all dispatch commands; nothing
   binds a key directly to a function.
 - **Story session** — one live story/VM instance: compiled program + runner handle +
@@ -59,9 +59,9 @@ would have to be rebuilt on top of it, and layouts degrade.
 │ ┌─┐ ┌─────────────────────────────────────────────────┐ ┌─┐ │
 │ │s│ │ left dock │   editor area (groups)  │ right dock│ │s│ │
 │ │t│ │  start    │  ┌─tabs────┐┌─tabs────┐ │   start   │ │t│ │
-│ │r│ │           │  │         ││         │ │  (Player) │ │r│ │
-│ │i│ ├───────────┤  │  ink    ││  ink    │ ├───────────┤ │i│ │
-│ │p│ │ left dock │  │  editor ││  editor │ │ right dock│ │p│ │
+│ │r│ │           │  │         ││         │ │  (State)  │ │r│ │
+│ │i│ ├───────────┤  │  ink    ││  player │ ├───────────┤ │i│ │
+│ │p│ │ left dock │  │  editor ││  doc    │ │ right dock│ │p│ │
 │ │ │ │  end      │  └─────────┘└─────────┘ │   end     │ │ │ │
 │ └─┘ └─────────────────────────────────────────────────┘ └─┘ │
 │      ┌────────────────────────────────────────────────┐     │
@@ -73,8 +73,8 @@ would have to be rebuilt on top of it, and layouts degrade.
 
 Rules:
 
-1. **The editor area always exists and is always center.** It cannot be collapsed (the
-   "player fullscreen" mode is a tool-window maximize, not an editor removal — see §5.4).
+1. **The editor area always exists and is always center.** It cannot be collapsed
+   (maximize modes are temporary presentation over an unchanged layout — see §5.4).
 2. **Docks collapse to their strip.** A dock with no open tool window takes zero width
    beyond its strip.
 3. **Sizes are per-dock, persisted.** Resizing a dock with the splitter is remembered;
@@ -91,8 +91,8 @@ Default placement, mapped from existing components:
 | Surface | Kind | Default home | Today | Notes |
 |---|---|---|---|---|
 | **Binder** | tool window | left dock, start | [Binder.tsx](../packages/studio-ui/src/Binder.tsx) (928 LOC) | Open by default. Component gets decomposed (tree / selection / DnD / context menu) during migration, not before. |
-| **Player** | tool window | right dock, start | [PlayerPane.tsx](../packages/studio-ui/src/PlayerPane.tsx) | Open by default (Inky two-up). Maximize replaces today's `playerFullscreen`. **Confirmed** (decision log 2026-06-10): becomes an editor *document* (session tab, opened in a split — #120, after #90); multi-session (§7.6) maps to player tabs; the tool window is the interim. |
-| **State View** (debugger) | tool window | right dock, end | [StateView.tsx](../packages/studio-ui/src/StateView.tsx) | Closed by default; opens when a story is running and the user toggles it. Pairs vertically with Player. |
+| **Player** | editor document (session-bound) | editor area, right split by default | the `player` document type ([PlayerPane.tsx](../packages/studio-ui/src/PlayerPane.tsx)) | Landed (#120): a singleton session document (§7.6 — placeholder + Start when no session), opened via `story.openPlayer` and at bootstrap in a right split (the Inky two-up: editor left, player right, focus on the editor). Reopening focuses the existing tab; only an explicit split duplicates the view (two store subscribers over one session). The component owns its Run/Restart/Maximize header (§7.8); maximize is `editor.maximizeGroup` (§5.4). The old tool window is gone; multi-session maps to player tabs. |
+| **State View** (debugger) | tool window | right dock, start | [StateView.tsx](../packages/studio-ui/src/StateView.tsx) | Closed by default; opens when a story is running and the user toggles it. Took the right strip's start slot when the Player left the dock (#120). |
 | **Problems** | tool window | bottom dock, start | *new* (data exists in `CompileSlice` diagnostics) | Clickable diagnostics list → `editor.reveal` (§6.1). Status-bar error/warning segment opens it. |
 | **Output / compile log** | tool window | bottom dock, end | *new* | Compile timings, wasm/runtime errors that aren't source diagnostics. Replaces nothing; today this information is dropped. |
 | **Search** | tool window | left dock, start | *new, later phase* | Project-wide find/replace. In the strip from day one only if trivially stubbed; otherwise added when implemented. |
@@ -156,7 +156,7 @@ the same document-type API.
 JetBrains-style numbered mnemonics, dispatched through the command registry:
 
 - `Mod-1…9` — toggle tool windows by a stable, user-visible ordering (Binder `Mod-1`,
-  Player `Mod-2`, Problems `Mod-3`, …; shown in strip tooltips).
+  State View `Mod-2`, …; generated from registration order, shown in strip tooltips).
 - `Mod-Shift-P` — command palette. `Mod-P` — quick-open (binder files/knots/stitches).
 - `Escape` from a tool window returns focus to the editor (JetBrains behavior).
 - Editor-internal editing keys (Enter/Tab/element transitions in
@@ -180,12 +180,30 @@ Tier changes never lose layout state; they change presentation only (the current
 "editor panel never remounts" guarantee in App.tsx is preserved — tool windows and editor
 mount once and relocate).
 
-### 5.4 Player maximize
+### 5.4 Maximize
 
-Today's `playerFullscreen` becomes a general "maximize tool window" command: the tool
-window temporarily covers the editor area; `Escape` or the command restores the previous
-layout. Only Player is expected to use it initially, but it's a shell feature, not a
-player feature.
+Two maximize modes, both shell features (the retired player-specific
+`playerFullscreen` generalized — maximize is never a feature of one view):
+
+- **Tool-window maximize** (`view.maximize`, args: tool-window id): the tool
+  window temporarily covers the whole shell frame (the editor unmounts).
+  Unchanged by #120.
+- **Editor-group maximize** (`editor.maximizeGroup`, args: optional group id,
+  defaulting to the focused group; landed with #120): the group temporarily
+  takes the entire editor area — sibling groups hide and the open docks
+  collapse. The editor itself never unmounts. Available to any document; the
+  Player's header Maximize button drives it, and the Story Graph is the
+  expected second consumer.
+
+Both are pure presentation: no open-state, dock sizes, or group sizes change,
+so restoring (`Escape` or re-dispatching the command) brings the previous
+layout back exactly. Neither has a default keybinding (palette-discoverable).
+
+**Interplay rule:** the two modes are mutually exclusive. Dispatching either
+command while the other mode is active restores the other first, so at most
+one maximize is ever in effect. A maximized group that collapses (last tab
+closed) restores automatically, and splitting while maximized restores first
+(the new group must be visible).
 
 ## 6. Command system
 
@@ -193,7 +211,7 @@ A `CommandRegistry` in the shell package:
 
 ```ts
 interface Command {
-  id: string;             // "view.toggle.problems", "player.restart"
+  id: string;             // "view.toggle.problems", "story.restart"
   title: string;          // palette display: "View: Toggle Problems"
   keybinding?: string;    // "Mod-3" — single default binding, user remap is future work
   when?: (state: StudioState) => boolean;  // enablement, evaluated at dispatch & palette
@@ -201,8 +219,8 @@ interface Command {
 }
 ```
 
-- Commands are registered at startup by each feature module (player commands by the player
-  slice owner, view-toggle commands generated from the tool-window registry).
+- Commands are registered at startup by each feature module (story commands at the app
+  boundary, view-toggle commands generated from the tool-window registry).
 - One global key handler resolves keybindings → command dispatch. No component-level
   `onKeyDown` for chrome behavior.
 - **Keymap layer (required from Phase 1):** the key handler never reads
@@ -258,7 +276,7 @@ type Location =
 
 ```ts
 interface ToolWindowDescriptor {
-  id: string;                       // "binder", "player", "problems"
+  id: string;                       // "binder", "state", "problems"
   title: string;
   icon: ReactNode;
   defaultPlacement: { dock: "left" | "right" | "bottom"; section: "start" | "end" };
@@ -579,7 +597,12 @@ Each phase lands independently; the studio remains shippable after every phase.
   documents (consumed by the Story Graph in Phase 6). Sequenced behind #122 (wasm
   document handles), so text documents ride per-view DocIds instead of the active-file
   singleton. Groups + the document API + the ink-file type landed as #90; file creation
-  moved from the old tab-bar "+" to the palette `file.new` command.
+  moved from the old tab-bar "+" to the palette `file.new` command. Compiled Output
+  landed as #91 (the first non-ink-file document type). The Player document landed as
+  #120: the `player` type, the bootstrap two-up (entry file left, player in a right
+  split, focus on the editor), `story.openPlayer`, the player tool window removed
+  (State View takes right/start), and `editor.maximizeGroup` (§5.4) replacing the
+  player-specific fullscreen.
 - **Phase 5 — polish, theme & embedder API.** Semantic token layer, light theme, CSS
   decomposition completes, Search tool window, Settings document (theme, keymap JSON,
   severity flags), embedder extension API exposure (§8: `StudioExtensions` mount config,
