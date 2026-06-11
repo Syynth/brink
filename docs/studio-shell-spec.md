@@ -99,7 +99,7 @@ Default placement, mapped from existing components:
 | **Program Explorer** | tool window | bottom dock or right dock (user-movable) | [ProgramView.tsx](../packages/studio-ui/src/ProgramView.tsx) | Resolved (§10.1): the structured tables (globals/lists/externals/knot tree) stay a tool window; the raw `.inkt` dump toggle left it in #91 (a toolbar button opens Compiled Output instead). |
 | **Compiled Output** (`.inkt` dump) | editor document (read-only) | editor area | the `compiled-output` document type ([CompiledOutputDocument.tsx](../packages/studio-ui/src/CompiledOutputDocument.tsx)) | Landed (#91): a read-only singleton document tab with a minimal CM6 `.inkt` mode (search, folding, selection), opened via `program.openCompiledOutput`. Compile-bound (§7.8): renders `programInkt` directly — no wasm document handle. Disassembly-view precedent. |
 | **Story transcript** | tool window | bottom dock | *future* | Append-only transcript view; listed to validate the model, not scheduled. |
-| **Story Graph** | editor document (custom-rendered) | editor area | *new* | Phase 6: visual story-structure explorer — see §4.1. |
+| **Story Graph** | editor document (custom-rendered) | editor area | the `story-graph` document type ([StoryGraphDocument.tsx](../packages/studio-ui/src/StoryGraphDocument.tsx)) | Landed (#97): visual story-structure explorer — a read-only pan/zoom react-flow canvas over the wasm story-graph query, opened as a singleton tab via `story.openGraph`. Compile-bound graph + session-bound live overlay — see §4.1. |
 | **Settings** | editor document | editor area | the `settings` document type ([SettingsDocument.tsx](../packages/studio-ui/src/SettingsDocument.tsx)) | Landed (#93): a singleton tab (`settings.open`, `Mod-,`) over shell services — theme picker (ThemeService §7.4, live + reflecting external switches), keymap-override JSON in a plain textarea validated strictly on Apply through the shell's `KeymapOverridesService` (live rebuild, no reload; invalid JSON shows an inline error and saves nothing), and the one real diagnostic severity flag — external-function checking (`"error"`/`"off"`, the wasm `set_external_check`) via the store action, persisted under `brink-studio.diagnostics.v1` and restored at bootstrap before the first compile. Not session- or compile-bound. VS Code precedent (settings as a document tab, not a modal). |
 | Ink files | editor document | editor area | the `ink-file` document type ([InkFileDocument.tsx](../packages/studio-ui/src/InkFileDocument.tsx) + CM6) | Landed (#90): the shell renders per-group tab bars; one CM6 view per (document, group) over a wasm document handle (§7.8). |
 
@@ -134,15 +134,37 @@ the same document-type API.
   divert/choice/tunnel/thread), recomputed per call like the outline. Ordering is
   deterministic (nodes sorted by id, edges deduplicated and sorted by from/to/kind —
   the HashMap-iteration rule). Returns `null` before the first analysis.
-- **Rendering:** auto-layout via a layered engine (ELK or dagre — handles cycles);
-  candidate React graph layer is react-flow/xyflow. Library choice is an implementation
-  decision, but layout must run off the render path and node count is capped-by-collapse
-  (knots start collapsed) per the unbounded-growth guard.
-- **Interaction:** pan/zoom; click a node to navigate to its source (`editor.reveal`,
-  §6.1); expand/collapse knots. **Live story overlay:** while a story runs, the current location
-  node is highlighted and nodes show visit-count badges (the same name-resolved debug
-  state the State View consumes). Read-only — authoring actions from the graph (create
-  knot, drag-to-divert) are out of scope and would be a separate spec.
+- **Rendering:** landed (#97) — react-flow (`@xyflow/react`) renders the canvas;
+  `@dagrejs/dagre` computes a layered **top-down** layout (stories flow downward from
+  their entry knot) as a pure function off the render path
+  ([story-graph-layout.ts](../packages/studio-ui/src/story-graph-layout.ts)), memoized
+  on structure only — overlay changes (current location, visit counts) restyle nodes
+  without re-running layout. Expanded knots are laid out in two passes (dagre's
+  compound support is unreliable): each expanded knot's stitches get their own dagre
+  run to size the knot as a cluster, then the top level runs with cluster-sized knot
+  nodes; stitch positions are parent-relative (react-flow subflow convention). The
+  view-model mapping ([story-graph-model.ts](../packages/studio-ui/src/story-graph-model.ts))
+  is pure and renderer-agnostic: stitches are visible only while their knot is
+  expanded; edges into a collapsed knot's stitches remap up to the knot, duplicates
+  fold into one edge with a ×N count, and remap-created self-loops are dropped
+  (genuine self-diverts kept). Node count is capped-by-collapse (knots start
+  collapsed) per the unbounded-growth guard. Edge styling by kind (divert solid
+  muted, choice solid accent, tunnel/thread dashed, custom themable arrowheads) and
+  the whole surface — nodes, edges, controls, legend, background — is skinned with
+  the semantic `--bs-*` tokens (§7.4), covering both themes; react-flow ships only
+  its structural stylesheet. A corner legend names the edge kinds. The graph lands in
+  the compile slice (`storyGraph`), refreshed on each successful compile; a failed
+  compile keeps the last good graph (like `programInkt`).
+- **Interaction:** landed (#97) — pan/zoom (wheel, drag, zoom controls); click a node
+  to navigate to its source (`editor.reveal`, §6.1; pseudo-nodes have no source);
+  expand/collapse knots via the header chevron or double-click. **Live story
+  overlay:** while a story runs, the current location node is highlighted and nodes
+  show visit-count badges — consuming the same name-resolved `debugState` the State
+  View consumes, session DATA only, never the runner handle (§7.6). A current
+  location inside a collapsed knot highlights the knot (longest visible dot-prefix);
+  with no session the graph renders plain. Read-only — nothing is draggable,
+  connectable, or selectable; authoring actions from the graph (create knot,
+  drag-to-divert) are out of scope and would be a separate spec.
 
 ## 5. Behavior
 
@@ -648,8 +670,11 @@ Each phase lands independently; the studio remains shippable after every phase.
   see §4), embedder extension API exposure (§8: `StudioExtensions` mount config,
   `StudioApi`, `StudioPublicState`).
 - **Phase 6 — Story Graph.** The story-graph extraction query (analyzer/IDE layer,
-  wasm-exposed) and the custom-rendered document (§4.1): auto-layout, expand/collapse,
-  click-to-jump, live story overlay.
+  wasm-exposed) landed as #96; the custom-rendered document (§4.1) landed as #97:
+  the `story-graph` document type (react-flow canvas, dagre top-down auto-layout off
+  the render path), expand/collapse with collapse-time edge aggregation,
+  click-to-jump via `editor.reveal`, the live story overlay from `debugState`, and
+  `story.openGraph` (palette/hamburger).
 
 What is **kept** throughout: Zustand slices (editor/compile/documents/session/binder —
 the old tabs slice dissolved into the shell's editor-groups store in Phase 4),
