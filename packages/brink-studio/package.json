@@ -1,24 +1,70 @@
 {
   "name": "@brink-lang/studio",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Embeddable brink studio \u2014 a full ink IDE (CodeMirror editor, compiler diagnostics, story player, binder, story graph) mounted into a DOM element with one call.",
+  "license": "MIT",
   "type": "module",
+  "homepage": "https://github.com/Syynth/brink",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Syynth/brink.git",
+    "directory": "packages/brink-studio"
+  },
+  "bugs": {
+    "url": "https://github.com/Syynth/brink/issues"
+  },
+  "keywords": [
+    "ink",
+    "narrative",
+    "interactive-fiction",
+    "ide",
+    "editor",
+    "react"
+  ],
+  "sideEffects": [
+    "*.css"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./style.css": "./dist/style.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && tsup",
     "build:embed": "vite build --config vite.config.embed.ts",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@brink/wasm-types": "workspace:*",
-    "@brink-lang/web": "workspace:*",
-    "@brink/ink-operations": "workspace:*",
+    "@brink-lang/web": "workspace:^"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
     "@brink/ink-editor": "workspace:*",
+    "@brink/ink-operations": "workspace:*",
     "@brink/studio-shell": "workspace:*",
     "@brink/studio-store": "workspace:*",
     "@brink/studio-ui": "workspace:*",
+    "@brink/wasm-types": "workspace:*",
     "@codemirror/autocomplete": "^6.18.6",
     "@codemirror/commands": "^6.8.0",
     "@codemirror/language": "^6.10.8",
@@ -27,19 +73,18 @@
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.5",
     "@lezer/highlight": "^1.2.1",
-    "codemirror": "^6.0.1",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "zustand": "^5.0.0"
-  },
-  "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "codemirror": "^6.0.1",
     "jsdom": "^29.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsup": "^8.5.1",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.0",
+    "zustand": "^5.0.0"
   }
 }

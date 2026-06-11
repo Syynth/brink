@@ -74,4 +74,4 @@ export type {
   ManifestExternal,
   ManifestParam,
   SemanticTypeDef,
-} from "@brink/wasm-types";
+} from "@brink-lang/web";
