@@ -132,15 +132,17 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       }
     }
 
-    // 2. Apply new_source to the target file (from result.path)
+    // 2. Apply new_source to the target file (from result.path) — through
+    //    the project's shared apply-edits seam (#137), so the provider
+    //    write-back and the host egress callback see structural ops too.
     if (result.new_source != null && result.path) {
-      session.updateFile(result.path, result.new_source);
+      project.applyEdit(result.path, result.new_source);
     }
 
     // 3. Apply cross-file reference edits — each carries the full new source
     //    of an affected file, keyed by path.
     for (const edit of result.cross_file_edits) {
-      session.updateFile(edit.path, edit.new_source);
+      project.applyEdit(edit.path, edit.new_source);
     }
 
     // 4. Push undo entry
@@ -176,11 +178,11 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     const entry = stack.pop();
     if (!entry) return;
 
-    const session = project.getSession();
-
-    // Restore each snapshot
+    // Restore each snapshot — through the shared apply-edits seam (#137):
+    // an undo changes file content like any other edit, and the host must
+    // see the reverted text.
     for (const { path, source } of entry.snapshots) {
-      session.updateFile(path, source);
+      project.applyEdit(path, source);
     }
 
     // Refresh editor views for the restored files

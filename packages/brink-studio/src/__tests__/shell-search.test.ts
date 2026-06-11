@@ -53,7 +53,7 @@ function registerMainToolWindows(registry: ToolWindowRegistry): void {
 }
 
 interface FakeProject {
-  project: { getSession(): unknown };
+  project: { getSession(): unknown; applyEdit(path: string, source: string): void };
   sources: Map<string, string>;
   updates: Array<{ path: string; source: string }>;
 }
@@ -69,7 +69,15 @@ function fakeProject(files: Record<string, string>): FakeProject {
       updates.push({ path, source });
     },
   };
-  return { project: { getSession: () => session }, sources, updates };
+  return {
+    project: {
+      getSession: () => session,
+      // The shared apply-edits seam (#137) the replace paths route through.
+      applyEdit: (path: string, source: string) => session.updateFile(path, source),
+    },
+    sources,
+    updates,
+  };
 }
 
 function searchStore(files: Record<string, string>) {

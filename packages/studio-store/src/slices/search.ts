@@ -138,7 +138,9 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
       state.searchReplace,
       state.searchOptions.regex,
     );
-    session.updateFile(
+    // Through the shared apply-edits seam (#137): provider write-back +
+    // host egress, exactly like the binder structural-op path.
+    project.applyEdit(
       path,
       applyReplacements(source, [{ start: match.start, end: match.end, text }]),
     );
@@ -203,7 +205,8 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
     }
 
     for (const { path, source, edits } of planned) {
-      session.updateFile(path, applyReplacements(source, edits));
+      // Shared apply-edits seam (#137): see replaceSearchMatch.
+      project.applyEdit(path, applyReplacements(source, edits));
       documents.invalidateFile(path);
     }
     documents.triggerCompile();

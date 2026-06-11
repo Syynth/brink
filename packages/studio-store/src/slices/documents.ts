@@ -21,6 +21,10 @@ export interface DocumentsSlice {
   /** docKey ("main.ink" / "main.ink::start") of the focused group's active
    *  ink document; "" when none. */
   activeDocKey: string;
+  /** Count of files whose session content diverges from the last-saved /
+   *  last-notified baseline (mirrored from the project's FileChangeHub by
+   *  a mount.tsx listener; feeds StudioPublicState.dirtyFiles). */
+  dirtyFiles: number;
   /** Injected opener (main.tsx → editor-groups store); null until bound. */
   _openTarget: ((target: TabTarget, pinned: boolean) => void) | null;
 
@@ -32,6 +36,8 @@ export interface DocumentsSlice {
   setDocumentOpener(open: (target: TabTarget, pinned: boolean) => void): void;
   /** Update the focused-document mirror (main.tsx subscription). */
   setActiveDocKey(key: string): void;
+  /** Update the dirty-file summary (mount.tsx dirty listener). */
+  setDirtyFiles(count: number): void;
 }
 
 export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSlice> = (
@@ -39,6 +45,7 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
   get,
 ) => ({
   activeDocKey: "",
+  dirtyFiles: 0,
   _openTarget: null,
 
   openTarget(target, pinned) {
@@ -58,5 +65,9 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
 
   setActiveDocKey(key) {
     if (get().activeDocKey !== key) set({ activeDocKey: key });
+  },
+
+  setDirtyFiles(count) {
+    if (get().dirtyFiles !== count) set({ dirtyFiles: count });
   },
 });
