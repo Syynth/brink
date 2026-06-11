@@ -122,10 +122,19 @@
   background: color-mix(in srgb, var(--bs-panel-bg) 55%, var(--bs-editor-bg));
 }
 
-/* Live-session current location (§7.6 overlay). */
+/* Live-session current location (§7.6 overlay). Loud on purpose — this is
+   the "you are here" marker and must read at a glance, not on inspection:
+   accent-tinted fill, full-strength accent ring, accent label. */
 .brink-studio .brink-graph-node.current {
+  background: color-mix(in srgb, var(--bs-accent) 18%, var(--bs-panel-bg));
   border-color: var(--bs-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bs-accent) 45%, transparent);
+  box-shadow:
+    0 0 0 2px var(--bs-accent),
+    0 0 12px 2px color-mix(in srgb, var(--bs-accent) 35%, transparent);
+}
+.brink-studio .brink-graph-node.current .brink-graph-node-label {
+  color: var(--bs-accent);
+  font-weight: 600;
 }
 
 /* Expand/collapse chevron */
