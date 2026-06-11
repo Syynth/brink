@@ -281,6 +281,117 @@ describe("editor groups store", () => {
       expect(s.groups).toHaveLength(1);
       expect(s.groups[0].id).toBe(g1);
     });
+
+    describe("with an insertion index (#142)", () => {
+      /** group 1: [MAIN, OTHER]; group 2: [THIRD]. Returns [g1, g2]. */
+      function layout(): [string, string] {
+        store.getState().openDocument(MAIN);
+        store.getState().openDocument(OTHER);
+        store.getState().openDocument(THIRD, { group: "split-right" });
+        const [g1, g2] = store.getState().groups.map((g) => g.id);
+        return [g1, g2];
+      }
+
+      function tabsOf(groupId: string): string[] {
+        return store
+          .getState()
+          .groups.find((g) => g.id === groupId)!
+          .tabs.map((t) => t.ref.docId);
+      }
+
+      it("inserts at the index (front of the target)", () => {
+        const [g1, g2] = layout();
+        store.getState().moveTabToGroup(KEY_OTHER, g1, g2, 0);
+        expect(tabsOf(g2)).toEqual(["other.ink", "third.ink"]);
+        expect(store.getState().focusedGroupId).toBe(g2);
+        expect(store.getState().groups.find((g) => g.id === g2)!.activeKey).toBe(
+          KEY_OTHER,
+        );
+      });
+
+      it("clamps an out-of-range index to append; omitted index appends", () => {
+        const [g1, g2] = layout();
+        store.getState().moveTabToGroup(KEY_OTHER, g1, g2, 99);
+        expect(tabsOf(g2)).toEqual(["third.ink", "other.ink"]);
+
+        store.getState().moveTabToGroup(KEY_MAIN, g1, g2);
+        expect(tabsOf(g2)).toEqual(["third.ink", "other.ink", "main.ink"]);
+      });
+
+      it("clamps a negative index to the front", () => {
+        const [g1, g2] = layout();
+        store.getState().moveTabToGroup(KEY_OTHER, g1, g2, -3);
+        expect(tabsOf(g2)).toEqual(["other.ink", "third.ink"]);
+      });
+
+      it("still collapses an emptied source group", () => {
+        const [g1, g2] = layout();
+        store.getState().moveTabToGroup(documentKey(THIRD), g2, g1, 1);
+        const s = store.getState();
+        expect(s.groups).toHaveLength(1);
+        expect(s.groups[0].id).toBe(g1);
+        expect(tabsOf(g1)).toEqual(["main.ink", "third.ink", "other.ink"]);
+      });
+
+      it("ignores the index when the target already shows the document (focuses it)", () => {
+        store.getState().openDocument(MAIN);
+        store.getState().splitGroup(); // both groups show MAIN
+        const [g1, g2] = store.getState().groups.map((g) => g.id);
+        store.getState().openDocument(OTHER, { group: g1 });
+
+        store.getState().moveTabToGroup(KEY_MAIN, g1, g2, 0);
+        const s = store.getState();
+        const g2Tabs = s.groups.find((g) => g.id === g2)!.tabs;
+        expect(g2Tabs.filter((t) => documentKey(t.ref) === KEY_MAIN)).toHaveLength(1);
+        expect(s.groups.find((g) => g.id === g2)!.activeKey).toBe(KEY_MAIN);
+        expect(s.focusedGroupId).toBe(g2);
+        expect(tabsOf(g1)).toEqual(["other.ink"]);
+      });
+    });
+  });
+
+  describe("reorderTab (#142)", () => {
+    /** One group with [MAIN, OTHER, THIRD]; returns its id. */
+    function layout(): string {
+      store.getState().openDocument(MAIN);
+      store.getState().openDocument(OTHER);
+      store.getState().openDocument(THIRD);
+      return store.getState().groups[0].id;
+    }
+
+    function order(): string[] {
+      return store.getState().groups[0].tabs.map((t) => t.ref.docId);
+    }
+
+    it("moves a tab to its final index, keeping active tab and focus", () => {
+      const g = layout();
+      store.getState().setActiveTab(g, KEY_MAIN);
+      store.getState().reorderTab(g, documentKey(THIRD), 0);
+      expect(order()).toEqual(["third.ink", "main.ink", "other.ink"]);
+      expect(store.getState().groups[0].activeKey).toBe(KEY_MAIN);
+
+      store.getState().reorderTab(g, documentKey(THIRD), 2);
+      expect(order()).toEqual(["main.ink", "other.ink", "third.ink"]);
+    });
+
+    it("clamps out-of-range indices to the ends", () => {
+      const g = layout();
+      store.getState().reorderTab(g, KEY_MAIN, 99);
+      expect(order()).toEqual(["other.ink", "third.ink", "main.ink"]);
+      store.getState().reorderTab(g, KEY_MAIN, -5);
+      expect(order()).toEqual(["main.ink", "other.ink", "third.ink"]);
+    });
+
+    it("is a no-op for the same index, unknown keys, and unknown groups", () => {
+      const g = layout();
+      const before = store.getState().groups;
+      store.getState().reorderTab(g, KEY_OTHER, 1);
+      expect(store.getState().groups).toBe(before);
+      store.getState().reorderTab(g, "nope::nope::nope", 0);
+      expect(store.getState().groups).toBe(before);
+      store.getState().reorderTab("nope", KEY_MAIN, 0);
+      expect(store.getState().groups).toBe(before);
+    });
   });
 
   describe("focus & pin", () => {

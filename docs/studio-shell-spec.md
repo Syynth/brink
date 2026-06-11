@@ -522,6 +522,11 @@ groups, the focused group, per-group active tab, pin state, splitter sizes.
   was never ink-specific.)
 - **Collapse.** A group collapses when its last tab closes; the editor area
   always keeps ≥ 1 group.
+- **Tab drag (#142).** Tabs drag with the pointer (the §5.1 strip-drag
+  gesture: 5px threshold, ghost, Escape cancel, click suppression) — within a
+  group to reorder, across groups to move at the insert-indicator gap (pin
+  state kept; a duplicate target focuses the existing tab; an emptied source
+  collapses).
 - **Commands:** `editor.split` (Mod-\), `editor.moveTabRight` /
   `editor.moveTabLeft` (move the focused group's active tab between neighbor
   groups, creating/collapsing groups at the edges), `editor.focusNextGroup`

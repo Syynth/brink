@@ -68,11 +68,17 @@ export interface EditorGroupsState {
    */
   closeTab(groupId: string, key: string): void;
   /**
-   * Move a tab to another group (keeps its pin state). If the target already
-   * shows that document, the source tab is dropped and the existing tab is
-   * focused instead — never a same-group duplicate.
+   * Move a tab to another group (keeps its pin state). `index` is where it
+   * lands in the target's tab list (clamped; default append). If the target
+   * already shows that document, the source tab is dropped and the existing
+   * tab is focused instead — never a same-group duplicate (index ignored).
    */
-  moveTabToGroup(key: string, fromGroupId: string, toGroupId: string): void;
+  moveTabToGroup(key: string, fromGroupId: string, toGroupId: string, index?: number): void;
+  /**
+   * Reorder a tab within its group: `toIndex` is the tab's final index in
+   * the group's tab list (clamped). Active tab and focus are untouched.
+   */
+  reorderTab(groupId: string, key: string, toIndex: number): void;
   /**
    * Split: duplicate the focused group's active tab into a new group
    * immediately to its right, and focus it (VS Code semantics — the explicit
@@ -245,7 +251,7 @@ export function createEditorGroupsStore(): EditorGroupsStore {
       });
     },
 
-    moveTabToGroup(key, fromGroupId, toGroupId) {
+    moveTabToGroup(key, fromGroupId, toGroupId, index) {
       if (fromGroupId === toGroupId) return;
       set((s) => {
         const from = s.groups.find((g) => g.id === fromGroupId);
@@ -269,7 +275,12 @@ export function createEditorGroupsStore(): EditorGroupsStore {
           }
           if (g.id === toGroupId) {
             // Target already shows this document: drop the duplicate.
-            const tabs = toHasIt ? g.tabs : [...g.tabs, moved];
+            if (toHasIt) return { ...g, activeKey: key };
+            const at =
+              index === undefined
+                ? g.tabs.length
+                : Math.max(0, Math.min(Math.trunc(index), g.tabs.length));
+            const tabs = [...g.tabs.slice(0, at), moved, ...g.tabs.slice(at)];
             return { ...g, tabs, activeKey: key };
           }
           return g;
@@ -284,6 +295,22 @@ export function createEditorGroupsStore(): EditorGroupsStore {
           if (maximizedGroupId === fromGroupId) maximizedGroupId = null;
         }
         return { groups, focusedGroupId, groupSizes, maximizedGroupId };
+      });
+    },
+
+    reorderTab(groupId, key, toIndex) {
+      set((s) => {
+        const group = s.groups.find((g) => g.id === groupId);
+        if (!group) return {};
+        const from = group.tabs.findIndex((t) => documentKey(t.ref) === key);
+        if (from < 0) return {};
+        const to = Math.max(0, Math.min(Math.trunc(toIndex), group.tabs.length - 1));
+        if (to === from) return {};
+        const tabs = [...group.tabs];
+        const [moved] = tabs.splice(from, 1);
+        tabs.splice(to, 0, moved);
+        const groups = s.groups.map((g) => (g.id === groupId ? { ...g, tabs } : g));
+        return { groups };
       });
     },
 
