@@ -1,12 +1,52 @@
 {
   "name": "@brink-lang/web",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.1.0",
+  "description": "The brink ink-language compiler, IDE session, and story runtime for the web (WebAssembly): compile .ink source, drive stories, and power editor tooling from JavaScript/TypeScript.",
+  "license": "MIT",
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
-  "dependencies": {
+  "homepage": "https://github.com/Syynth/brink",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Syynth/brink.git",
+    "directory": "packages/wasm"
+  },
+  "bugs": {
+    "url": "https://github.com/Syynth/brink/issues"
+  },
+  "keywords": [
+    "ink",
+    "narrative",
+    "interactive-fiction",
+    "compiler",
+    "wasm"
+  ],
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsup && node scripts/copy-wasm.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
     "@brink/wasm-types": "workspace:*",
-    "brink-web": "file:../../crates/brink-web/www/pkg"
+    "brink-web": "file:../../crates/brink-web/www/pkg",
+    "tsup": "^8.5.1",
+    "typescript": "^5.7.0"
   }
 }

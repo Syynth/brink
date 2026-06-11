@@ -1,8 +1,11 @@
 /**
- * @brink-lang/web — Wasm FFI bindings to brink-web.
+ * @brink-lang/web — the brink compiler, IDE session, and story runtime
+ * compiled to WebAssembly, behind ergonomic TypeScript wrappers.
  *
- * Wraps the raw wasm module classes in ergonomic TypeScript wrappers
- * that parse JSON responses into typed interfaces from @brink/wasm-types.
+ * Wraps the raw wasm module classes (brink-web, built with wasm-pack
+ * `--target web`) in wrappers that parse JSON responses into the typed
+ * interfaces re-exported below. Call {@link initWasm} once before using
+ * anything else.
  */
 
 import init, {
@@ -43,10 +46,31 @@ import type {
   HostManifest,
 } from "@brink/wasm-types";
 
+// Public surface: every interface the wasm boundary speaks is available
+// from this package alone (the private @brink/wasm-types workspace package
+// is rolled into the published declarations).
+export type * from "@brink/wasm-types";
+
 // ── Wasm initialization ─────────────────────────────────────────
 
-export async function initWasm(): Promise<void> {
-  await init();
+/**
+ * Initialize the wasm module. Must complete before any other export is used.
+ * Safe to call more than once.
+ *
+ * By default the `.wasm` binary is located relative to this module
+ * (`new URL("brink_web_bg.wasm", import.meta.url)`), which bundlers like
+ * Vite resolve and emit automatically. Pass `wasmLocation` to load it from
+ * somewhere else (a CDN URL, a string path, or a precompiled
+ * `WebAssembly.Module`).
+ */
+export async function initWasm(
+  wasmLocation?: string | URL | Request | WebAssembly.Module,
+): Promise<void> {
+  if (wasmLocation === undefined) {
+    await init();
+  } else {
+    await init({ module_or_path: wasmLocation });
+  }
 }
 
 // ── Compilation ─────────────────────────────────────────────────
