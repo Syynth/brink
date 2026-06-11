@@ -1329,6 +1329,62 @@ impl EditorSession {
         serde_json::to_string(&outline).unwrap_or_default()
     }
 
+    /// Whole-project story graph (studio-shell spec §4.1): knot/stitch nodes
+    /// plus `END`/`DONE` pseudo-nodes, and divert/choice/tunnel/thread edges.
+    /// Function knots and function-call edges are excluded. Node spans are
+    /// UTF-16 offsets in the node's own file. Deterministically ordered
+    /// (nodes by id, edges by from/to/kind). Returns JSON `StoryGraph`, or
+    /// `"null"` when no analysis is available.
+    pub fn story_graph(&self) -> String {
+        let Some(analysis) = self.session.analysis() else {
+            return "null".to_owned();
+        };
+        let db = self.session.db();
+        let files: Vec<(brink_ir::FileId, &brink_ir::HirFile)> = db
+            .file_ids()
+            .filter_map(|id| db.hir(id).map(|hir| (id, hir)))
+            .collect();
+        let graph = brink_ide::story_graph::story_graph(analysis, &files);
+
+        let nodes: Vec<StoryGraphNodeJs> = graph
+            .nodes
+            .into_iter()
+            .map(|n| {
+                let (file, start, end) = match (n.file, n.range) {
+                    (Some(f), Some(r)) => {
+                        let src = db.source(f).unwrap_or("");
+                        (
+                            db.file_path(f).map(str::to_owned),
+                            Some(byte_to_utf16(src, r.start().into())),
+                            Some(byte_to_utf16(src, r.end().into())),
+                        )
+                    }
+                    _ => (None, None, None),
+                };
+                StoryGraphNodeJs {
+                    id: n.id,
+                    name: n.name,
+                    kind: story_node_kind_str(n.kind),
+                    file,
+                    start,
+                    end,
+                    parent: n.parent,
+                }
+            })
+            .collect();
+        let edges: Vec<StoryGraphEdgeJs> = graph
+            .edges
+            .into_iter()
+            .map(|e| StoryGraphEdgeJs {
+                from: e.from,
+                to: e.to,
+                kind: story_edge_kind_str(e.kind),
+            })
+            .collect();
+
+        serde_json::to_string(&StoryGraphJs { nodes, edges }).unwrap_or_default()
+    }
+
     /// Compute per-line context from the HIR. Returns JSON array of `LineContext`.
     pub fn line_contexts(&self) -> String {
         self.line_contexts_impl(&self.active_path, self.view.as_ref())
@@ -2367,6 +2423,39 @@ struct FileOutlineJs {
     symbols: Vec<DocumentSymbolJs>,
 }
 
+/// Whole-project story graph (spec §4.1) — mirrored as `StoryGraph` in
+/// `@brink/wasm-types`.
+#[derive(Serialize)]
+struct StoryGraphJs {
+    nodes: Vec<StoryGraphNodeJs>,
+    edges: Vec<StoryGraphEdgeJs>,
+}
+
+/// A story-graph node. `file`/`start`/`end` are absent on the `END`/`DONE`
+/// pseudo-nodes; `start`/`end` are UTF-16 offsets of the declaration name in
+/// `file`. `parent` is the owning knot's id, present on stitches.
+#[derive(Serialize)]
+struct StoryGraphNodeJs {
+    id: String,
+    name: String,
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+}
+
+#[derive(Serialize)]
+struct StoryGraphEdgeJs {
+    from: String,
+    to: String,
+    kind: &'static str,
+}
+
 #[derive(Serialize)]
 struct CompletionItemJs {
     name: String,
@@ -2516,6 +2605,24 @@ fn symbol_kind_str(kind: brink_ir::SymbolKind) -> &'static str {
         brink_ir::SymbolKind::Label => "label",
         brink_ir::SymbolKind::Param => "param",
         brink_ir::SymbolKind::Temp => "temp",
+    }
+}
+
+fn story_node_kind_str(kind: brink_ide::story_graph::StoryNodeKind) -> &'static str {
+    match kind {
+        brink_ide::story_graph::StoryNodeKind::Knot => "knot",
+        brink_ide::story_graph::StoryNodeKind::Stitch => "stitch",
+        brink_ide::story_graph::StoryNodeKind::End => "end",
+        brink_ide::story_graph::StoryNodeKind::Done => "done",
+    }
+}
+
+fn story_edge_kind_str(kind: brink_ide::story_graph::StoryEdgeKind) -> &'static str {
+    match kind {
+        brink_ide::story_graph::StoryEdgeKind::Divert => "divert",
+        brink_ide::story_graph::StoryEdgeKind::Choice => "choice",
+        brink_ide::story_graph::StoryEdgeKind::Tunnel => "tunnel",
+        brink_ide::story_graph::StoryEdgeKind::Thread => "thread",
     }
 }
 
@@ -3061,6 +3168,103 @@ mod tests {
         assert_eq!(
             s.get_view_source(),
             serde_json::to_string("=== a ===\nA edit").unwrap()
+        );
+    }
+
+    // ── Story graph (#96) ───────────────────────────────────────────
+
+    const GRAPH_MAIN: &str = "é\n=== start ===\n* [Go] -> east.gate\n- -> END\n";
+    const GRAPH_EAST: &str = "=== east ===\n= gate\nGate.\n-> start\n";
+
+    #[test]
+    fn story_graph_null_without_analysis() {
+        let s = EditorSession::new();
+        assert_eq!(s.story_graph(), "null");
+    }
+
+    #[test]
+    fn story_graph_shape_and_utf16_offsets() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", GRAPH_MAIN);
+        s.update_file("east.ink", GRAPH_EAST);
+
+        let json = s.story_graph();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // Nodes sorted by id; pseudo-node END present (referenced), DONE not.
+        let ids: Vec<&str> = v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["END", "east", "east.gate", "start"]);
+
+        let nodes = v["nodes"].as_array().unwrap();
+        let node = |id: &str| nodes.iter().find(|n| n["id"] == id).unwrap();
+
+        // `start` is declared after the 2-byte/1-unit `é`: its name sits at
+        // byte 7 but UTF-16 offset 6 — the span must be UTF-16.
+        let start = node("start");
+        assert_eq!(start["kind"], "knot");
+        assert_eq!(start["file"], "main.ink");
+        assert_eq!(start["start"].as_u64().unwrap(), 6, "must be UTF-16");
+        assert_eq!(start["end"].as_u64().unwrap(), 11);
+        assert!(start.get("parent").is_none(), "knots carry no parent");
+
+        let gate = node("east.gate");
+        assert_eq!(gate["kind"], "stitch");
+        assert_eq!(gate["file"], "east.ink");
+        assert_eq!(gate["parent"], "east");
+
+        let end = node("END");
+        assert_eq!(end["kind"], "end");
+        assert!(end.get("file").is_none(), "pseudo-nodes have no file");
+        assert!(end.get("start").is_none(), "pseudo-nodes have no span");
+
+        // Edges sorted by (from, to, kind); choice aggregation + cross-file
+        // resolution + the auto-enter divert east -> east.gate.
+        let edges: Vec<(String, String, String)> = v["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["from"].as_str().unwrap().to_owned(),
+                    e["to"].as_str().unwrap().to_owned(),
+                    e["kind"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let owned: Vec<(&str, &str, &str)> = edges
+            .iter()
+            .map(|(f, t, k)| (f.as_str(), t.as_str(), k.as_str()))
+            .collect();
+        assert_eq!(
+            owned,
+            vec![
+                ("east", "east.gate", "divert"),
+                ("east.gate", "start", "divert"),
+                ("start", "END", "divert"),
+                ("start", "east.gate", "choice"),
+            ]
+        );
+    }
+
+    #[test]
+    fn story_graph_deterministic_across_file_insertion_order() {
+        let mut a = EditorSession::new();
+        a.update_file("main.ink", GRAPH_MAIN);
+        a.update_file("east.ink", GRAPH_EAST);
+
+        let mut b = EditorSession::new();
+        b.update_file("east.ink", GRAPH_EAST);
+        b.update_file("main.ink", GRAPH_MAIN);
+
+        assert_eq!(
+            a.story_graph(),
+            b.story_graph(),
+            "story graph JSON must be identical regardless of insertion order"
         );
     }
 }
