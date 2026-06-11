@@ -32,7 +32,9 @@ import {
 import {
   App,
   Binder,
+  COMPILED_OUTPUT_TYPE_ID,
   CompileStatusSegment,
+  CompiledOutputDocument,
   CursorSegment,
   ElementSegment,
   INK_FILE_TYPE_ID,
@@ -47,6 +49,7 @@ import {
   StorySegment,
   StoreProvider,
   inkFileRef,
+  registerCompiledOutputCommand,
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
 import toppledTemple from "./stories/toppled-temple.ink.txt?raw";
@@ -295,6 +298,15 @@ async function main(): Promise<void> {
   const editorGroups: EditorGroupsStore = createEditorGroupsStore();
   const documentTypes = new DocumentTypeRegistry();
   documentTypes.register({ id: INK_FILE_TYPE_ID, component: InkFileDocument });
+  // Compiled Output (#91): a read-only, compile-bound singleton document over
+  // the current compile's .inkt dump — no wasm document handle, just a string
+  // (the component subscribes to programInkt). Opened by command (palette or
+  // the Program Explorer toolbar); reopening focuses the existing tab.
+  documentTypes.register({
+    id: COMPILED_OUTPUT_TYPE_ID,
+    component: CompiledOutputDocument,
+  });
+  registerCompiledOutputCommand(commands, editorGroups);
 
   // Compile-result handler shared by every path that compiles (per-view
   // debounced compiles, compile.run, the initial compile). DocumentSessions

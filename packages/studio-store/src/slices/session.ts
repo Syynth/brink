@@ -133,7 +133,10 @@ export interface SessionSlice {
    * compile-bound (spec §4), so this survives `stopSession`.
    */
   programModel: ProgramModel | null;
-  /** The compiled program as `.inkt` text — the Program Explorer's raw toggle. */
+  /**
+   * The compiled program as `.inkt` text — rendered by the read-only
+   * Compiled Output document (#91). Compile-bound like `programModel`.
+   */
   programInkt: string | null;
 
   /**
