@@ -8,7 +8,7 @@
  */
 
 import type { ComponentType, ReactNode } from "react";
-import { HOST_ID_PREFIX } from "./command.js";
+import { HOST_ID_PREFIX, assertHostId } from "./command.js";
 
 /** Edge docks that can host tool windows (spec §2). */
 export type Dock = "left" | "right" | "bottom";
@@ -82,6 +82,20 @@ export class ToolWindowRegistry {
         `tool window id "${descriptor.id}" uses the prefix reserved for embedder hosts`,
       );
     }
+    return this.insert(descriptor);
+  }
+
+  /**
+   * Register an embedder-host tool window (spec §8.1) — the id MUST carry
+   * the `host.<vendor>.` prefix. Throws on malformed ids and collisions.
+   * Returns an unregister function.
+   */
+  registerHost(descriptor: ToolWindowDescriptor): () => void {
+    assertHostId("tool window", descriptor.id);
+    return this.insert(descriptor);
+  }
+
+  private insert(descriptor: ToolWindowDescriptor): () => void {
     if (this.toolWindows.has(descriptor.id)) {
       throw new Error(`duplicate tool window id "${descriptor.id}"`);
     }

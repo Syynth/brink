@@ -27,6 +27,21 @@ export interface Command {
 /** Id prefix reserved for embedder-host registrations (spec §8.1). */
 export const HOST_ID_PREFIX = "host.";
 
+/**
+ * Validate an embedder-host id: `host.<vendor>.<name>` with non-empty vendor
+ * and name segments (spec §8.1). `kind` names the registry for the error
+ * message ("command", "tool window", "status bar item").
+ */
+export function assertHostId(kind: string, id: string): void {
+  const rest = id.startsWith(HOST_ID_PREFIX) ? id.slice(HOST_ID_PREFIX.length) : null;
+  const dot = rest === null ? -1 : rest.indexOf(".");
+  if (rest === null || dot <= 0 || dot === rest.length - 1) {
+    throw new Error(
+      `host ${kind} id "${id}" must be namespaced "host.<vendor>.<name>" (spec §8.1)`,
+    );
+  }
+}
+
 export class CommandRegistry {
   private readonly commands = new Map<string, Command>();
   private readonly changeListeners = new Set<() => void>();
@@ -41,6 +56,21 @@ export class CommandRegistry {
         `command id "${command.id}" uses the prefix reserved for embedder hosts`,
       );
     }
+    return this.insert(command);
+  }
+
+  /**
+   * Register an embedder-host command (spec §8.1) — the inverse of
+   * `register`'s built-in rule: the id MUST carry the `host.<vendor>.`
+   * prefix. Throws on malformed ids and collisions with a clean error.
+   * Returns an unregister function.
+   */
+  registerHost(command: Command): () => void {
+    assertHostId("command", command.id);
+    return this.insert(command);
+  }
+
+  private insert(command: Command): () => void {
     if (this.commands.has(command.id)) {
       throw new Error(`duplicate command id "${command.id}"`);
     }

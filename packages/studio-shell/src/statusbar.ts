@@ -9,7 +9,7 @@
  */
 
 import type { ComponentType } from "react";
-import { HOST_ID_PREFIX } from "./command.js";
+import { HOST_ID_PREFIX, assertHostId } from "./command.js";
 
 /** Which segment group an item renders in (spec §7.3). */
 export type StatusBarAlignment = "left" | "right";
@@ -67,6 +67,20 @@ export class StatusBarRegistry {
         `status bar item id "${descriptor.id}" uses the prefix reserved for embedder hosts`,
       );
     }
+    return this.insert(descriptor);
+  }
+
+  /**
+   * Register an embedder-host status-bar item (spec §8.1) — the id MUST
+   * carry the `host.<vendor>.` prefix. Throws on malformed ids and
+   * collisions. Returns an unregister function.
+   */
+  registerHost(descriptor: StatusBarItemDescriptor): () => void {
+    assertHostId("status bar item", descriptor.id);
+    return this.insert(descriptor);
+  }
+
+  private insert(descriptor: StatusBarItemDescriptor): () => void {
     if (this.items.has(descriptor.id)) {
       throw new Error(`duplicate status bar item id "${descriptor.id}"`);
     }
