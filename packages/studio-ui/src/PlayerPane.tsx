@@ -147,7 +147,7 @@ function renderLine(line: string): ReactNode {
 
 // ── Component ───────────────────────────────────────────────────
 
-function PlayerPane({ groupId }: DocumentViewProps) {
+function PlayerPane({ groupId, active }: DocumentViewProps) {
   // Session-bound document view (spec §7.6): selects from the story session
   // and never mutates it — every interaction dispatches a command. The
   // session data/commands are the entire contract (decision log 2026-06-10):
@@ -163,6 +163,7 @@ function PlayerPane({ groupId }: DocumentViewProps) {
   const hasPending = sessionCanContinue(status);
 
   const playerRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when text changes
   useEffect(() => {
@@ -170,6 +171,20 @@ function PlayerPane({ groupId }: DocumentViewProps) {
       playerRef.current.scrollTop = playerRef.current.scrollHeight;
     }
   }, [text, choices, ended, hasPending]);
+
+  // Becoming the focused group's active tab takes DOM focus into the pane,
+  // exactly as a revealed text document focuses its CM6 view. Without this,
+  // a command that reveals the player (story.openPlayer via the palette)
+  // loses the focus fight: the palette overlay's focus-return runs after the
+  // command and hands DOM focus back to the editor, whose focusin handler
+  // snaps the focused group right back. Effects run after unmount cleanups
+  // in the same commit, so this focus lands last and wins.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!active || root === null) return;
+    if (root.contains(document.activeElement)) return;
+    root.focus({ preventScroll: true });
+  }, [active]);
 
   const handleRun = useCallback(() => {
     commands.dispatch("compile.run");
@@ -197,7 +212,7 @@ function PlayerPane({ groupId }: DocumentViewProps) {
   // No session: placeholder with a start affordance instead of stale content.
   if (status === "none") {
     return (
-      <div className="player-pane">
+      <div className="player-pane" ref={rootRef} tabIndex={-1}>
         <div className="header">
           <span>Story</span>
         </div>
@@ -217,7 +232,7 @@ function PlayerPane({ groupId }: DocumentViewProps) {
   }
 
   return (
-    <div className="player-pane">
+    <div className="player-pane" ref={rootRef} tabIndex={-1}>
       <div className="header">
         <span>Story</span>
         <div className="toolbar">
