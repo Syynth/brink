@@ -537,6 +537,9 @@ extension code path.
 
 ### 8.1 Contract
 
+**Landed (#95).** The host-facing documentation is
+[embedder-api.md](embedder-api.md); this section is the design contract.
+
 ```ts
 interface StudioExtensions {
   toolWindows?: ToolWindowDescriptor[];   // §7.1 shape; ids must be "host.<vendor>.<name>"
@@ -545,7 +548,12 @@ interface StudioExtensions {
 }
 ```
 
-Passed once at mount alongside the existing initialization wiring. Rules:
+Passed once at mount alongside the existing initialization wiring — concretely
+`mountStudio(container, { files, entryFile, extensions })`, where `extensions` is the
+config or an `(api: StudioApi) => StudioExtensions` factory (for host commands that need
+the facade). Installation goes through the registries' host-only `registerHost` doors
+(`installStudioExtensions`), after every built-in registration so built-in strip
+mnemonics never shift; a rejected install rolls back atomically. Rules:
 
 - **Namespacing:** host ids must carry the `host.<vendor>.` prefix; registration
   validates this and rejects collisions with a clean error. Built-in ids never use the
@@ -560,34 +568,40 @@ Passed once at mount alongside the existing initialization wiring. Rules:
 
 ### 8.2 StudioApi facade
 
-Host components receive a **curated facade** via React context — never the raw Zustand
-store (consumer-first API principle: store internals stay free to change):
+**Landed (#95).** Host components receive a **curated facade** via React context
+(`useStudioApi()`; also returned from `mountStudio` for host code outside the React
+tree) — never the raw Zustand store (consumer-first API principle: store internals stay
+free to change):
 
 ```ts
 interface StudioApi {
-  insertText(text: string): void;                 // at cursor in the active editor
-  dispatch(commandId: string, args?: unknown): void;
-  notify(n: Notification): NotificationHandle;    // §7.5
-  select<T>(sel: (s: StudioPublicState) => T): T; // + subscribe(sel, cb)
+  insertText(text: string): void;                 // at cursor in the focused editor view
+  dispatch(commandId: string, args?: unknown): boolean;
+  notify(n: NotificationInput): NotificationHandle;  // §7.5
+  select<T>(sel: (s: StudioPublicState) => T): T;
+  subscribe<T>(sel: (s: StudioPublicState) => T, cb: (value: T) => void): () => void;
 }
 ```
 
-`StudioPublicState` is an explicit, versioned subset: active file, cursor/element info,
-diagnostics summary, compile status, story session status (§7.6). Anything a host needs that isn't in it
-is a deliberate API addition, not a store leak.
+`StudioPublicState` is an explicit, versioned subset (`version: 1`): active file,
+cursor/element info, diagnostics summary, compile status, story session status (§7.6).
+Anything a host needs that isn't in it is a deliberate API addition, not a store leak.
+The full field list and versioning policy live in [embedder-api.md](embedder-api.md).
 
 **Motivating example (Track B synergy):** the RPG Maker functions panel renders the
 host-capability manifest the host already registers via `set_host_manifest`
 (see [host-capability-manifest.md](host-capability-manifest.md)), with click-to-insert of
-`EXTERNAL` declarations and call snippets through `insertText`.
+`EXTERNAL` declarations and call snippets through `insertText`. The shipped
+`createExampleExtension` (mounted by the playground; `?ext=none` disables) is the worked
+example of exactly this shape.
 
 ### 8.3 Timing
 
 The registries are written to these contract shapes **from Phase 1** (namespaced ids,
 descriptor discipline, command-only actions) so the public exposure is a thin door, not a
 retrofit. The exposure itself — `StudioExtensions` mount config, `StudioApi`,
-`StudioPublicState`, and their documentation — lands in **Phase 5**, once docking and
-persistence are stable enough to promise hosts a non-churning contract.
+`StudioPublicState`, and their documentation — landed in **Phase 5** (#95), once docking
+and persistence were stable enough to promise hosts a non-churning contract.
 
 ## 9. Migration plan
 
