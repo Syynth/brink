@@ -46,13 +46,17 @@ import {
   ProblemsBadge,
   ProblemsView,
   ProgramView,
+  SETTINGS_TYPE_ID,
+  SettingsDocument,
   StateView,
   StorySegment,
   StoreProvider,
   inkFileRef,
+  loadDiagnosticsSettings,
   openPlayerSplit,
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
+  registerSettingsCommand,
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
 import toppledTemple from "./stories/toppled-temple.ink.txt?raw";
@@ -310,6 +314,10 @@ async function main(): Promise<void> {
   // its right/start strip slot.
   documentTypes.register({ id: PLAYER_TYPE_ID, component: PlayerPane });
   registerOpenPlayerCommand(commands, editorGroups);
+  // Settings (#93): static UI over shell services — not session-bound, not
+  // compile-bound. Singleton; settings.open (Mod-,) focuses an existing tab.
+  documentTypes.register({ id: SETTINGS_TYPE_ID, component: SettingsDocument });
+  registerSettingsCommand(commands, editorGroups);
 
   // Compile-result handler shared by every path that compiles (per-view
   // debounced compiles, compile.run, the initial compile). DocumentSessions
@@ -533,6 +541,13 @@ async function main(): Promise<void> {
     priority: 5,
     component: NotificationBell,
   });
+
+  // Restore the persisted diagnostics setting (Settings document, #93)
+  // before initialize: pre-bind, the action only seeds the state, and
+  // initialize applies it to the wasm session ahead of the first compile.
+  store.getState().setExternalCheck(
+    loadDiagnosticsSettings(window.localStorage).externalCheck,
+  );
 
   // Bind handles, kick the initial compile, and open the entry file (the
   // groups-store subscription above keeps focus tracking in sync as the

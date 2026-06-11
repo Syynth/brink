@@ -90,6 +90,14 @@ export const createStudioStore = () =>
       initialize(project, documents) {
         set({ _project: project, _documents: documents });
 
+        // Apply a restored diagnostics setting (Settings document, #93)
+        // before the first compile — setExternalCheck called pre-initialize
+        // only seeds the state, since no session is bound yet.
+        const externalCheck = get().externalCheck;
+        if (externalCheck !== "error") {
+          project.getSession().setExternalCheck(externalCheck);
+        }
+
         // Trigger an initial compile to populate outline/diagnostics
         documents.triggerCompile();
       },
@@ -111,8 +119,9 @@ export {
   type SessionStatus,
 } from "./slices/session.js";
 
-// Problems ordering (canonical sort, unit-testable pure helper).
-export { sortDiagnostics } from "./slices/compile.js";
+// Problems ordering (canonical sort, unit-testable pure helper) + the
+// external-check severity level (Settings document, #93).
+export { sortDiagnostics, type ExternalCheckLevel } from "./slices/compile.js";
 
 // Output log (Output tool window, spec §4) — entries + growth cap.
 export {

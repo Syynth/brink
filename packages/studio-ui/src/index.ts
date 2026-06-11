@@ -15,6 +15,18 @@ export {
   replaceCompiledOutput,
 } from "./CompiledOutputDocument.js";
 export { inktFolding, inktHighlighting, inktLanguage } from "./inkt-mode.js";
+export {
+  DIAGNOSTICS_STORAGE_KEY,
+  OPEN_SETTINGS_COMMAND_ID,
+  SETTINGS_DOC_ID,
+  SETTINGS_TYPE_ID,
+  SettingsDocument,
+  loadDiagnosticsSettings,
+  registerSettingsCommand,
+  saveDiagnosticsSettings,
+  settingsRef,
+  type DiagnosticsSettings,
+} from "./SettingsDocument.js";
 export { NewFilePrompt, FILE_NEW_COMMAND_ID } from "./NewFilePrompt.js";
 export {
   CompileStatusSegment,

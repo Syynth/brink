@@ -131,6 +131,105 @@ export function formatChord(chord: Chord, isMac: boolean): string {
   return parts.join("+");
 }
 
+/**
+ * Validate user-edited override JSON (the Settings document's textarea,
+ * #93). Unlike `loadKeymapOverrides` — which is lenient because a corrupt
+ * persisted payload must not break startup — this is strict: the user is
+ * editing live and deserves a precise error instead of silent dropping.
+ * Top level must be an object; each value a keybinding string, an array of
+ * keybinding strings, or null (unbind); every binding must parse.
+ */
+export type KeymapOverridesParseResult =
+  | { ok: true; overrides: KeymapOverrides }
+  | { ok: false; error: string };
+
+export function parseKeymapOverridesText(text: string): KeymapOverridesParseResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    return { ok: false, error: `Not valid JSON: ${(error as Error).message}` };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      error: 'Overrides must be a JSON object mapping command id to a keybinding, e.g. {"palette.toggle": "Mod-K"}',
+    };
+  }
+  const overrides: KeymapOverrides = {};
+  for (const [id, value] of Object.entries(parsed)) {
+    if (value === null) {
+      overrides[id] = null;
+      continue;
+    }
+    const bindings = typeof value === "string" ? [value] : value;
+    if (!Array.isArray(bindings) || !bindings.every((b) => typeof b === "string")) {
+      return {
+        ok: false,
+        error: `"${id}": expected a keybinding string, an array of strings, or null (to unbind)`,
+      };
+    }
+    for (const binding of bindings) {
+      if (parseKeybinding(binding) === null) {
+        return {
+          ok: false,
+          error: `"${id}": "${binding}" is not a valid keybinding (e.g. "Mod-Shift-P")`,
+        };
+      }
+    }
+    overrides[id] = typeof value === "string" ? value : (bindings as string[]);
+  }
+  return { ok: true, overrides };
+}
+
+/**
+ * Owns the user keymap overrides: the persisted JSON under
+ * KEYMAP_STORAGE_KEY, the in-memory copy, and a change event. ShellProvider
+ * subscribes and rebuilds the resolution table on change, so an edit from
+ * the Settings document (#93) takes effect immediately — same pattern as
+ * ThemeService (§7.4). Storage failures degrade to in-session overrides.
+ */
+export class KeymapOverridesService {
+  private overrides: KeymapOverrides;
+  private readonly storage: Pick<Storage, "getItem" | "setItem"> | null;
+  private readonly changeListeners = new Set<() => void>();
+
+  constructor(
+    storage: Pick<Storage, "getItem" | "setItem"> | null = defaultStorage(),
+  ) {
+    this.storage = storage;
+    this.overrides = storage === null ? {} : loadKeymapOverrides(storage);
+  }
+
+  /** The current overrides (persisted ∪ in-session edits). */
+  get current(): KeymapOverrides {
+    return this.overrides;
+  }
+
+  /** Replace the overrides wholesale: persist and notify subscribers. */
+  set(overrides: KeymapOverrides): void {
+    this.overrides = overrides;
+    try {
+      this.storage?.setItem(KEYMAP_STORAGE_KEY, JSON.stringify(overrides));
+    } catch {
+      // Quota/denied storage — overrides degrade to in-session.
+    }
+    for (const listener of this.changeListeners) listener();
+  }
+
+  /** Subscribe to override changes. Returns an unsubscribe function. */
+  onDidChange(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => {
+      this.changeListeners.delete(listener);
+    };
+  }
+}
+
+function defaultStorage(): Pick<Storage, "getItem" | "setItem"> | null {
+  return typeof window === "undefined" ? null : window.localStorage;
+}
+
 /** Load overrides from storage. Never throws; malformed payloads yield {}. */
 export function loadKeymapOverrides(storage: Pick<Storage, "getItem">): KeymapOverrides {
   let raw: string | null;

@@ -22,7 +22,7 @@ import {
 import { useStore } from "zustand";
 import type { CommandRegistry } from "./command.js";
 import { NotificationCenter, type NotificationState } from "./notifications.js";
-import { Keymap, loadKeymapOverrides, type KeymapOverrides } from "./keymap.js";
+import { Keymap, KeymapOverridesService, type KeymapOverrides } from "./keymap.js";
 import { attachKeyHandler } from "./keyhandler.js";
 import { ToolWindowRegistry, type ToolWindowDescriptor } from "./toolwindow.js";
 import { StatusBarRegistry, type StatusBarItemDescriptor } from "./statusbar.js";
@@ -54,6 +54,7 @@ export interface ShellContextValue {
   layout: ShellLayoutStore;
   notifications: NotificationCenter;
   themes: ThemeService;
+  keymapOverrides: KeymapOverridesService;
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null);
@@ -84,8 +85,14 @@ export interface ShellProviderProps {
    * inject test storage.
    */
   themes?: ThemeService;
+  /**
+   * Keymap-overrides service; omit to let the provider own one over
+   * `storage`. Pass an instance when code outside the React tree edits
+   * overrides (tests).
+   */
+  keymapOverrides?: KeymapOverridesService;
   /** Override storage for keymap overrides (tests); defaults to localStorage. */
-  storage?: Pick<Storage, "getItem">;
+  storage?: Pick<Storage, "getItem" | "setItem">;
   /** Override storage for layout persistence (tests); defaults to localStorage. */
   layoutStorage?: Pick<Storage, "getItem" | "setItem">;
   /** Override platform detection (tests). */
@@ -101,6 +108,7 @@ export function ShellProvider({
   editorGroups,
   notifications,
   themes,
+  keymapOverrides,
   storage,
   layoutStorage,
   isMac,
@@ -141,11 +149,23 @@ export function ShellProvider({
     [layout, layoutStorage],
   );
 
-  // Overrides load once per provider; the Settings document (Phase 5) will
-  // own editing them and can force a remount/reload.
-  const [overrides] = useState<KeymapOverrides>(() =>
-    loadKeymapOverrides(storage ?? window.localStorage),
+  // Keymap overrides (§6): the service loads the persisted JSON once at
+  // construction; the Settings document (#93) edits through it, and the
+  // subscription below feeds edits into the keymap rebuild — no reload.
+  const [fallbackOverridesService] = useState(
+    () => new KeymapOverridesService(storage),
   );
+  const overridesService = keymapOverrides ?? fallbackOverridesService;
+  const [overrides, setOverrides] = useState<KeymapOverrides>(
+    () => overridesService.current,
+  );
+
+  useEffect(() => {
+    setOverrides(overridesService.current);
+    return overridesService.onDidChange(() =>
+      setOverrides(overridesService.current),
+    );
+  }, [overridesService]);
 
   const [keymap, setKeymap] = useState<Keymap>(() =>
     Keymap.fromCommands(commands.list(), overrides),
@@ -221,6 +241,7 @@ export function ShellProvider({
       layout,
       notifications: notificationCenter,
       themes: themeService,
+      keymapOverrides: overridesService,
     }),
     [
       commands,
@@ -233,6 +254,7 @@ export function ShellProvider({
       layout,
       notificationCenter,
       themeService,
+      overridesService,
     ],
   );
 
