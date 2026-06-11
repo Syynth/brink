@@ -354,6 +354,34 @@ describe("DocumentSessions", () => {
     });
   });
 
+  describe("insertAtCursor (StudioApi insertText path, spec §8.2)", () => {
+    it("inserts at the cursor in the focused view and moves the cursor after", () => {
+      const { view } = harness.mount("main.ink", "group-1");
+      harness.documents.setFocused("main.ink", "group-1");
+      view.dispatch({ selection: { anchor: 3 } });
+      harness.documents.insertAtCursor("EXTERNAL has(item)\n");
+      expect(docText(view)).toBe(
+        `${MAIN_INK.slice(0, 3)}EXTERNAL has(item)\n${MAIN_INK.slice(3)}`,
+      );
+      expect(view.state.selection.main.head).toBe(3 + "EXTERNAL has(item)\n".length);
+    });
+
+    it("replaces a selection", () => {
+      const { view } = harness.mount("main.ink", "group-1");
+      harness.documents.setFocused("main.ink", "group-1");
+      view.dispatch({ selection: { anchor: 0, head: 2 } });
+      harness.documents.insertAtCursor("XY");
+      expect(docText(view)).toBe(`XY${MAIN_INK.slice(2)}`);
+    });
+
+    it("is a no-op when no view is focused", () => {
+      const { view } = harness.mount("main.ink", "group-1");
+      expect(harness.documents.getFocusedView()).toBeNull();
+      harness.documents.insertAtCursor("nope");
+      expect(docText(view)).toBe(MAIN_INK);
+    });
+  });
+
   describe("reveal", () => {
     it("selects and scrolls once the view is mounted", () => {
       harness.documents.revealAt("main.ink", 30);
