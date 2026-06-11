@@ -18,19 +18,22 @@ import { Group, Panel, Separator, type PanelSize } from "react-resizable-panels"
 import { useDocumentTypes, useEditorGroups, useShell } from "./shell-context.js";
 import { documentKey, type DocumentTypeDescriptor } from "./document.js";
 import type { EditorGroup, EditorTab } from "./editor-groups.js";
+import { useTabDrag, type TabDragController } from "./tab-drag.js";
 
 // ── Tab bar ─────────────────────────────────────────────────────────
 
 interface GroupTabBarProps {
   group: EditorGroup;
+  drag: TabDragController;
 }
 
 /**
  * One tab strip for a group. Click activates (and focuses the group),
- * double-click pins a preview tab, the close glyph closes. Class names are
- * kept from the old FileTabBar so existing styling and tests carry over.
+ * double-click pins a preview tab, the close glyph closes, dragging reorders
+ * or moves the tab (#142 — see tab-drag.ts). Class names are kept from the
+ * old FileTabBar so existing styling and tests carry over.
  */
-function GroupTabBar({ group }: GroupTabBarProps) {
+function GroupTabBar({ group, drag }: GroupTabBarProps) {
   const { editorGroups } = useShell();
   return (
     <div className="brink-file-tabs" role="tablist" data-group={group.id}>
@@ -46,7 +49,13 @@ function GroupTabBar({ group }: GroupTabBarProps) {
               "brink-tab" + (active ? " active" : "") + (tab.pinned ? "" : " unpinned")
             }
             title={tab.ref.title}
-            onClick={() => editorGroups.getState().setActiveTab(group.id, key)}
+            {...drag.handlersFor(group.id, tab)}
+            onClick={() => {
+              // A click that ends a drag is not an activation (the
+              // pointerdown already activated anyway — strip-drag parity).
+              if (drag.consumeClickSuppression()) return;
+              editorGroups.getState().setActiveTab(group.id, key);
+            }}
             onDoubleClick={(e) => {
               e.preventDefault();
               if (!tab.pinned) editorGroups.getState().pinTab(group.id, key);
@@ -81,9 +90,10 @@ interface EditorGroupViewProps {
   group: EditorGroup;
   focused: boolean;
   types: ReadonlyMap<string, DocumentTypeDescriptor>;
+  drag: TabDragController;
 }
 
-function EditorGroupView({ group, focused, types }: EditorGroupViewProps) {
+function EditorGroupView({ group, focused, types, drag }: EditorGroupViewProps) {
   const { editorGroups } = useShell();
   const tab = activeTab(group);
   const descriptor = tab ? types.get(tab.ref.typeId) : undefined;
@@ -118,7 +128,7 @@ function EditorGroupView({ group, focused, types }: EditorGroupViewProps) {
       // editor (or anything else) inside a group focuses the group.
       onFocus={() => editorGroups.getState().focusGroup(group.id)}
     >
-      <GroupTabBar group={group} />
+      <GroupTabBar group={group} drag={drag} />
       <div className="editor shell-editor-group-body">{body}</div>
     </section>
   );
@@ -141,6 +151,18 @@ export function EditorArea() {
     () => new Map(descriptors.map((d) => [d.id, d])),
     [descriptors],
   );
+  const drag = useTabDrag(editorGroups);
+
+  // Tab-drag ghost (#142): a tab-shaped chip following the cursor.
+  // Fixed-positioned but rendered in the area's tree (not portaled) so the
+  // .brink-studio design tokens apply; the controller moves it imperatively
+  // on pointermove (strip-drag pattern).
+  const ghost =
+    drag.dragging !== null ? (
+      <div className="shell-tab-drag-ghost" ref={drag.setGhostElement} aria-hidden="true">
+        <span className="brink-tab-label">{drag.dragging.title}</span>
+      </div>
+    ) : null;
 
   // Group maximize (spec §5.4): only the maximized group renders — siblings
   // unmount (their tabs keep cached state like any backgrounded view) and
@@ -156,7 +178,9 @@ export function EditorArea() {
           group={maximizedGroup}
           focused={maximizedGroup.id === focusedGroupId}
           types={types}
+          drag={drag}
         />
+        {ghost}
       </div>
     );
   }
@@ -168,7 +192,9 @@ export function EditorArea() {
           group={groups[0]}
           focused={groups[0].id === focusedGroupId}
           types={types}
+          drag={drag}
         />
+        {ghost}
       </div>
     );
   }
@@ -202,6 +228,7 @@ export function EditorArea() {
           group={group}
           focused={group.id === focusedGroupId}
           types={types}
+          drag={drag}
         />
       </Panel>,
     );
@@ -212,6 +239,7 @@ export function EditorArea() {
       <Group orientation="horizontal" id="brink-editor-groups" className="shell-editor-groups">
         {children}
       </Group>
+      {ghost}
     </div>
   );
 }

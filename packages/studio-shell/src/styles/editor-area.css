@@ -115,6 +115,51 @@
   background: color-mix(in srgb, var(--bs-error) 20%, transparent);
   color: var(--bs-error);
 }
+/* Tab drag (#142): insert indicator — a 2px accent line at the hovered gap.
+   Drawn on the tab at the gap (left edge) or the last tab (right edge, tail
+   append); an empty bar shows it at its left edge. */
+.brink-studio .brink-tab.brink-tab-drop-before::before,
+.brink-studio .brink-tab.brink-tab-drop-after::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--bs-accent);
+  z-index: 1;
+  pointer-events: none;
+}
+.brink-studio .brink-tab.brink-tab-drop-before::before {
+  left: 0;
+}
+.brink-studio .brink-tab.brink-tab-drop-after::after {
+  right: 0;
+}
+.brink-studio .brink-file-tabs.brink-file-tabs-drop-empty {
+  box-shadow: inset 2px 0 0 var(--bs-accent);
+}
+/* Tab drag ghost: a tab-shaped chip following the cursor (positioned by the
+   drag controller via transform; top-left origin). Above everything. */
+.brink-studio .shell-tab-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 500;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  min-width: 120px;
+  max-width: 200px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--bs-fg);
+  background: var(--bs-editor-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px var(--bs-shadow);
+  white-space: nowrap;
+  opacity: 0.92;
+}
 .brink-studio .brink-tab-new {
   display: flex;
   align-items: center;

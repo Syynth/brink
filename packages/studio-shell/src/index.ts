@@ -145,6 +145,15 @@ export {
   type StripDragState,
   type ZoneRect,
 } from "./strip-drag.js";
+export {
+  insertionIndexForX,
+  reorderTargetIndex,
+  useTabDrag,
+  type TabDragController,
+  type TabDragHandlers,
+  type TabDragState,
+  type TabRect,
+} from "./tab-drag.js";
 export { ShellFrame, ShellStatusBar } from "./regions.js";
 export { HamburgerMenu, groupCommandsForMenu, type MenuGroup } from "./menu.js";
 export { useTier } from "./use-tier.js";
