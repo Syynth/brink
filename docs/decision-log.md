@@ -872,3 +872,11 @@
 - **SCOPE:** architectural
 - **WHAT:** The story session (§7.6) will eventually be backed by a SessionProvider interface so that a VM running inside a game context (RPG Maker MZ via the §8 mount API or postMessage; Bevy via a dev-only websocket debug plugin) can power the studio's session-bound views as a live inspector — design tracked as #127 ("phase 7/8"). Binding now: session-bound views (player document #120, State View, graph overlay #97, status segment) must consume session data only and never reach through to the local wasm runner handle; capabilities gate the story.* commands' when predicates (observe-only providers hide drive commands); source mapping requires a program-identity (StoryData hash) match, with transcript-plus-variables as a first-class degraded mode.
 - **WHY:** The session abstraction was built so views select from "the active session" without owning it — holding the provider-agnostic line now costs nothing, while letting runner details leak into views would make the inspector a rework instead of a new backend. Bevy's per-flow model maps directly onto the reserved multi-session contract, and the RMMZ embedding already plans the mount-time surface the transport needs.
+
+## Editor-group maximize replaces player fullscreen
+- **WHEN:** 2026-06-10
+- **PROJECT:** brink (brink-studio)
+- **SYSTEM:** studio-shell
+- **SCOPE:** moderate
+- **WHAT:** When the player becomes an editor document (#120), today's tool-window maximize stops applying to it; the replacement is a generic editor.maximizeGroup command — the focused editor group temporarily takes the whole editor area (other groups and open docks collapse), Escape or the command restores, same pattern as tool-window maximize (§5.4). It is a shell feature available to any document (the Story Graph is an expected second consumer), implemented in #120. The player-specific fullscreen concept is retired.
+- **WHY:** §5.4's principle — maximize is a shell feature, not a player feature — carries over to the document world; a player-only solo mode would violate it, and dropping fullscreen entirely loses a mode the user actually uses. Group maximize generalizes the existing, proven interaction instead of inventing a new one.
