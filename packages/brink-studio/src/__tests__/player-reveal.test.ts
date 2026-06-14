@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { createStudioStore, sessionCanContinue } from "@brink/studio-store";
+import {
+  createStudioStore,
+  LocalSessionProvider,
+  sessionCanContinue,
+} from "@brink/studio-store";
 
 type Line = {
   type: string;
@@ -8,19 +12,28 @@ type Line = {
   choices?: { index: number; text: string; tags: string[] }[];
 };
 
-function storeWithRunner(line: Line) {
+// revealNext drives the bound SessionProvider (#179): the store mirrors the
+// provider's snapshot into the reactive fields the views read. We bind a
+// LocalSessionProvider wrapping a minimal scripted runner and assert on the
+// mirrored store state — the runner is a provider implementation detail.
+function storeWithRunner(runner: Record<string, unknown>) {
   const store = createStudioStore();
-  store.setState({
-    _runner: { continueSingle: () => line, reset: vi.fn(), choose: vi.fn() } as never,
-    sessionStatus: "running",
+  const provider = new LocalSessionProvider({
+    runner: runner as never,
+    status: "running",
   });
+  store.getState()._bindProvider(provider);
   return store;
+}
+
+function storeRevealing(line: Line) {
+  return storeWithRunner({ continueSingle: () => line, reset: vi.fn(), choose: vi.fn() });
 }
 
 describe("session revealNext", () => {
   it("keeps the Continue affordance on a Done line (#6)", () => {
     // `-> DONE` is a turn boundary, not the end — the player must be able to resume.
-    const store = storeWithRunner({ type: "done", text: "the turn ends\n", tags: [] });
+    const store = storeRevealing({ type: "done", text: "the turn ends\n", tags: [] });
     store.getState().revealNext();
     const s = store.getState();
     expect(s.sessionStatus).toBe("done");
@@ -30,7 +43,7 @@ describe("session revealNext", () => {
   });
 
   it("stays running (Continue) on a Text line", () => {
-    const store = storeWithRunner({ type: "text", text: "more...\n", tags: [] });
+    const store = storeRevealing({ type: "text", text: "more...\n", tags: [] });
     store.getState().revealNext();
     const s = store.getState();
     expect(s.sessionStatus).toBe("running");
@@ -38,7 +51,7 @@ describe("session revealNext", () => {
   });
 
   it("marks ended (no Continue) on an End line", () => {
-    const store = storeWithRunner({ type: "end", text: "fin\n", tags: [] });
+    const store = storeRevealing({ type: "end", text: "fin\n", tags: [] });
     store.getState().revealNext();
     const s = store.getState();
     expect(s.sessionStatus).toBe("ended");
@@ -46,7 +59,7 @@ describe("session revealNext", () => {
   });
 
   it("surfaces choices (awaiting-choice, no Continue) on a Choices line", () => {
-    const store = storeWithRunner({
+    const store = storeRevealing({
       type: "choices",
       text: "",
       tags: [],
@@ -60,14 +73,10 @@ describe("session revealNext", () => {
   });
 
   it("transitions to error when the runtime throws", () => {
-    const store = createStudioStore();
-    store.setState({
-      _runner: {
-        continueSingle: () => {
-          throw new Error("boom");
-        },
-      } as never,
-      sessionStatus: "running",
+    const store = storeWithRunner({
+      continueSingle: () => {
+        throw new Error("boom");
+      },
     });
     store.getState().revealNext();
     const s = store.getState();

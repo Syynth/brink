@@ -114,13 +114,20 @@ export type StudioStore = ReturnType<typeof createStudioStore>;
 
 // ── Re-exports ──────────────────────────────────────────────────────
 
-// Exposed for unit testing the replay loop's termination + divergence
-// behavior (spec §7.6).
+// Session channel (docs/live-inspector-spec.md §3): the provider seam plus the
+// status helpers and divergence message. `LocalSessionProvider` owns the wasm
+// runner, the choice-replay loop, and divergence truncation (spec §6.1) — its
+// behavior is unit-tested directly.
 export {
-  replayChoices,
   sessionCanContinue,
+  statusOfLine,
   REPLAY_DIVERGED_MESSAGE,
+  LocalSessionProvider,
+  EMPTY_SNAPSHOT,
   type SessionStatus,
+  type SessionSnapshot,
+  type SessionProvider,
+  type SessionCapability,
 } from "./slices/session.js";
 
 // Problems ordering (canonical sort, unit-testable pure helper) + the

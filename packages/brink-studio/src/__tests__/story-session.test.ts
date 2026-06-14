@@ -1,13 +1,18 @@
 /**
  * Story session model + lifecycle commands (spec §7.6, shell issue 2.1).
  *
- * Covers: session status transitions, the PlayerSlice/SessionSlice split,
- * `when` gating of story.start/restart/stop/choose/continue per status,
- * stop → placeholder state, and failed-compile-keeps-session.
+ * Covers: session status transitions, the SessionProvider seam (#179), `when`
+ * gating of story.start/restart/stop/choose/continue per status, stop →
+ * placeholder state, and failed-compile-keeps-session.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createStudioStore, REPLAY_DIVERGED_MESSAGE } from "@brink/studio-store";
+import {
+  createStudioStore,
+  LocalSessionProvider,
+  REPLAY_DIVERGED_MESSAGE,
+  type StudioStore,
+} from "@brink/studio-store";
 import { CommandRegistry } from "@brink/studio-shell";
 import { registerStoryCommands } from "../story-commands.js";
 
@@ -34,6 +39,26 @@ function scriptedRunner(lines: Line[]) {
   };
 }
 
+/**
+ * Bind a LocalSessionProvider wrapping `runner` to the store, mirroring its
+ * snapshot into the reactive fields. Models "the studio already has a live
+ * runner" — the runner is a provider implementation detail (#179).
+ */
+function bindRunner(
+  store: StudioStore,
+  runner: Record<string, unknown>,
+  opts: { status?: Line["type"] | "running" | "awaiting-choice" | "ended"; transcript?: string[]; choices?: Line["choices"] } = {},
+): LocalSessionProvider {
+  const provider = new LocalSessionProvider({
+    runner: runner as never,
+    status: (opts.status ?? "running") as never,
+    transcript: opts.transcript,
+    choices: (opts.choices ?? []) as never,
+  });
+  store.getState()._bindProvider(provider);
+  return provider;
+}
+
 beforeEach(() => {
   localStorage.clear();
 });
@@ -46,7 +71,7 @@ describe("session slice split", () => {
     expect(s.sessionStatus).toBe("none");
     expect(s.sessionText).toEqual([]);
     expect(s.sessionChoices).toEqual([]);
-    expect(s._runner).toBeNull();
+    expect(s._provider).toBeNull();
     // playerFullscreen is gone too (#86): maximize is a shell feature now.
     expect(s).not.toHaveProperty("playerFullscreen");
 
@@ -71,7 +96,7 @@ describe("session status transitions", () => {
       { type: "text", text: "after\n", tags: [] },
       { type: "end", text: "fin\n", tags: [] },
     ]);
-    store.setState({ _runner: runner as never, sessionStatus: "running" });
+    const provider = bindRunner(store, runner, { status: "running" });
 
     store.getState().revealNext();
     expect(store.getState().sessionStatus).toBe("running");
@@ -84,7 +109,7 @@ describe("session status transitions", () => {
     store.getState().chooseOption(0);
     expect(runner.choose).toHaveBeenCalledWith(0);
     expect(store.getState().sessionStatus).toBe("running");
-    expect(store.getState()._choiceLog).toEqual([0]);
+    expect(provider.recordedChoices).toEqual([0]);
     expect(store.getState().sessionText).toContain("> Go");
 
     store.getState().revealNext();
@@ -97,10 +122,9 @@ describe("session status transitions", () => {
     runner.choose.mockImplementation(() => {
       throw new Error("bad choice");
     });
-    store.setState({
-      _runner: runner as never,
-      sessionStatus: "awaiting-choice",
-      sessionChoices: [{ index: 0, text: "Go", tags: [] }],
+    bindRunner(store, runner, {
+      status: "awaiting-choice",
+      choices: [{ index: 0, text: "Go", tags: [] }],
     });
 
     store.getState().chooseOption(0);
@@ -112,14 +136,12 @@ describe("session status transitions", () => {
     const runner = scriptedRunner([]);
     localStorage.setItem("brink-player-save", JSON.stringify({ choiceLog: [1] }));
     const bytes = new Uint8Array([1, 2, 3]);
-    store.setState({
-      _runner: runner as never,
-      _sessionBytes: bytes,
-      sessionStatus: "awaiting-choice",
-      sessionText: ["intro"],
-      sessionChoices: [{ index: 0, text: "Go", tags: [] }],
-      _choiceLog: [1],
+    const provider = bindRunner(store, runner, {
+      status: "awaiting-choice",
+      transcript: ["intro"],
+      choices: [{ index: 0, text: "Go", tags: [] }],
     });
+    store.setState({ _sessionBytes: bytes });
 
     store.getState().stopSession();
 
@@ -128,8 +150,11 @@ describe("session status transitions", () => {
     expect(s.sessionStatus).toBe("none");
     expect(s.sessionText).toEqual([]);
     expect(s.sessionChoices).toEqual([]);
-    expect(s._choiceLog).toEqual([]);
-    expect(s._runner).toBeNull();
+    expect(provider.recordedChoices).toEqual([]);
+    // The provider is kept (program identity outlives the run) but its runner
+    // is freed — a later story.start re-creates one.
+    expect(s._provider).toBe(provider);
+    expect(provider.hasLiveRunner()).toBe(false);
     expect(localStorage.getItem("brink-player-save")).toBeNull();
     // Program identity survives the stop so story.start can run it again.
     expect(s._sessionBytes).toBe(bytes);
@@ -138,12 +163,7 @@ describe("session status transitions", () => {
   it("restartSession resets the runner, clears the log, and reveals fresh", () => {
     const store = createStudioStore();
     const runner = scriptedRunner([{ type: "text", text: "from the top\n", tags: [] }]);
-    store.setState({
-      _runner: runner as never,
-      sessionStatus: "ended",
-      sessionText: ["old"],
-      _choiceLog: [0, 1],
-    });
+    const provider = bindRunner(store, runner, { status: "ended", transcript: ["old"] });
 
     store.getState().restartSession();
 
@@ -151,7 +171,7 @@ describe("session status transitions", () => {
     expect(runner.reset).toHaveBeenCalled();
     expect(s.sessionStatus).toBe("running");
     expect(s.sessionText).toEqual(["from the top"]);
-    expect(s._choiceLog).toEqual([]);
+    expect(provider.recordedChoices).toEqual([]);
   });
 });
 
@@ -183,8 +203,9 @@ describe("story lifecycle command gating (spec §7.6)", () => {
 
   it("gates per status while a session runs", () => {
     const { store, commands } = setup();
-    const runner = scriptedRunner([]);
-    store.setState({ _runner: runner as never, sessionStatus: "running" });
+    // Gating reads only sessionStatus (+ available program bytes), so the
+    // status alone drives the predicates — no runner needed.
+    store.setState({ sessionStatus: "running" });
 
     expect(commands.isEnabled("story.start")).toBe(false); // session exists
     expect(commands.isEnabled("story.restart")).toBe(true);
@@ -209,10 +230,9 @@ describe("story lifecycle command gating (spec §7.6)", () => {
   it("story.choose dispatches the chosen index into the session", () => {
     const { store, commands } = setup();
     const runner = scriptedRunner([{ type: "text", text: "picked\n", tags: [] }]);
-    store.setState({
-      _runner: runner as never,
-      sessionStatus: "awaiting-choice",
-      sessionChoices: [
+    bindRunner(store, runner, {
+      status: "awaiting-choice",
+      choices: [
         { index: 0, text: "A", tags: [] },
         { index: 1, text: "B", tags: [] },
       ],
@@ -226,7 +246,7 @@ describe("story lifecycle command gating (spec §7.6)", () => {
   it("story.choose is refused outside awaiting-choice", () => {
     const { store, commands } = setup();
     const runner = scriptedRunner([]);
-    store.setState({ _runner: runner as never, sessionStatus: "running" });
+    bindRunner(store, runner, { status: "running" });
 
     expect(commands.dispatch("story.choose", 0)).toBe(false);
     expect(runner.choose).not.toHaveBeenCalled();
@@ -236,12 +256,11 @@ describe("story lifecycle command gating (spec §7.6)", () => {
     const { store, commands } = setup();
     const runner = scriptedRunner([]);
     const bytes = new Uint8Array([9]);
+    bindRunner(store, runner, { status: "running" });
     store.setState({
-      _runner: runner as never,
       _sessionBytes: bytes,
-      sessionStatus: "running",
-      // No compiled bytes — e.g. the latest compile failed. The session's
-      // own program identity keeps start workable.
+      // No compiled bytes — e.g. the latest compile failed. The session's own
+      // program identity keeps start workable.
       storyBytes: null,
     });
 
@@ -249,7 +268,7 @@ describe("story lifecycle command gating (spec §7.6)", () => {
     expect(store.getState().sessionStatus).toBe("none");
     expect(commands.isEnabled("story.start")).toBe(true);
 
-    // start constructs a real (mock-wasm) runner on the kept bytes; the mock
+    // start re-creates a real (mock-wasm) runner on the kept bytes; the mock
     // story ends immediately, but a session now exists again.
     expect(commands.dispatch("story.start")).toBe(true);
     expect(store.getState().sessionStatus).not.toBe("none");
@@ -260,14 +279,12 @@ describe("recompile-while-running", () => {
   it("a failed compile leaves the existing session untouched", () => {
     const store = createStudioStore();
     const runner = scriptedRunner([]);
-    store.setState({
-      _runner: runner as never,
-      sessionStatus: "awaiting-choice",
-      sessionText: ["intro"],
-      sessionChoices: [{ index: 0, text: "Go", tags: [] }],
-      _choiceLog: [2],
-      storyBytes: new Uint8Array([1]),
+    const provider = bindRunner(store, runner, {
+      status: "awaiting-choice",
+      transcript: ["intro"],
+      choices: [{ index: 0, text: "Go", tags: [] }],
     });
+    store.setState({ storyBytes: new Uint8Array([1]) });
 
     // What main.tsx does on a failed compile: record diagnostics with null
     // bytes and do NOT touch the session.
@@ -275,11 +292,10 @@ describe("recompile-while-running", () => {
 
     const s = store.getState();
     expect(s.storyBytes).toBeNull();
-    expect(s._runner).toBe(runner as never);
+    expect(s._provider).toBe(provider);
     expect(s.sessionStatus).toBe("awaiting-choice");
     expect(s.sessionText).toEqual(["intro"]);
     expect(s.sessionChoices).toHaveLength(1);
-    expect(s._choiceLog).toEqual([2]);
     expect(runner.free).not.toHaveBeenCalled();
   });
 
@@ -296,7 +312,7 @@ describe("recompile-while-running", () => {
 
     const s = store.getState();
     expect(s.sessionStatus).toBe("ended"); // mock story ends at once
-    expect(s._choiceLog).toEqual([]);
+    expect((s._provider as LocalSessionProvider).recordedChoices).toEqual([]);
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({
         severity: "warning",

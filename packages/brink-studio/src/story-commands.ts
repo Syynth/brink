@@ -46,17 +46,11 @@ export function registerStoryCommands(
       id: "story.restart",
       title: "Story: Restart",
       when: () => store.getState().sessionStatus !== "none" || programBytes() !== null,
-      run: () => {
-        const state = store.getState();
-        if (state._runner !== null) {
-          state.restartSession();
-          return;
-        }
-        // No live runner (status "none", or "error" from a failed load) —
-        // restart means a fresh start on the available program.
-        const bytes = programBytes();
-        if (bytes) state.startSession(bytes);
-      },
+      // `restartSession` resets a live runner in place, or — with no live
+      // runner (status "none", or "error" from a failed load) — starts fresh
+      // on the available program. The provider/runner distinction lives in the
+      // slice now (spec §3); the command no longer reaches into session refs.
+      run: () => store.getState().restartSession(),
     }),
 
     commands.register({
