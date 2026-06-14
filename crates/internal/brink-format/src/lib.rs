@@ -14,7 +14,6 @@ mod inkb;
 mod inkl;
 mod line;
 mod opcode;
-mod replay;
 mod save;
 mod story;
 mod value;
@@ -44,7 +43,6 @@ pub use line::{
     LineContent, LineFlags, LinePart, LineTemplate, PluralCategory, PluralResolver, SelectKey,
 };
 pub use opcode::{ChoiceFlags, DecodeError, Opcode, SequenceKind};
-pub use replay::{RECORDING_CAP, RecordedExternal, ReplayMode, ReplayRecorder};
 pub use save::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 pub use story::StoryData;
 pub use value::{ListValue, Value, ValueType};

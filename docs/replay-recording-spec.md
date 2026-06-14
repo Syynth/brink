@@ -35,11 +35,14 @@ No `ExternalKind`, no classifier, and — notably — no dependency on the bindi
 host-capability manifest's `@kind` for replay. Recording is uniform, so it can be a single
 **runtime-owned** concern rather than per-consumer hook sites.
 
-## 3. Data model (`brink-format`)
+## 3. Data model (`brink-runtime`)
 
-Lives in `brink-format` (serializable, alongside `Value` and `SaveState`), keeping
-`brink-runtime` serde-free. Serializability lets consumers persist recordings (e.g. the web's
-localStorage) and cross the wasm boundary if needed.
+Lives in **`brink-runtime`** (in `replay.rs`, next to the handlers). Recordings are **ephemeral
+in-memory hot-reload state, not serialized** — the **transcript** is the durable artifact, so a
+recorder never needs to persist. This keeps the types out of `brink-format` (whose charter is
+the compiler↔runtime *interface* — a recording is a pure runtime-execution artifact the
+compiler never produces) and keeps the runtime serde-free. They are plain data, so a consumer
+that ever needs persistence can add serialization without disturbing this core.
 
 ```rust
 /// One recorded external result, captured in call order during a live run.
@@ -101,9 +104,9 @@ call(name, args) → match recorder.take_recorded(name, args):
 ```
 
 For **`ReplayMode::Live`**, the consumer simply **doesn't** wrap with `ReplayHandler` — it
-supplies its real handler so everything runs live (effects fire). `ReplayMode` lives in
-`brink-format` for the consumer's config/serialization; the runtime handler itself is just the
-recorded-replay object, so there is no mode branch in the hot path.
+supplies its real handler so everything runs live (effects fire). `ReplayMode` is just the
+consumer's config; the runtime handler itself is the recorded-replay object, so there is no
+mode branch in the hot path.
 
 No new async machinery: a `Live`-mode query that needs world access flows through the existing
 `ExternalResult::Pending` / `resolve_external` suspend-resume (Track A); the consumer's existing
@@ -120,10 +123,10 @@ driver resolves it.
    cursor; the **first** mismatch (program/path changed) or exhaustion sets `diverged` and
    *all* subsequent lookups return `None` → fallback. This degrades gracefully when an edit
    changes the early path, rather than feeding misaligned later recordings. Cap = 16 384.
-3. **Web serialization** — `RecordedExternal`/`ReplayRecorder` are `serde`-serializable (they
-   live in `brink-format`). The web consumer keeps the recorder **Rust-side in the wasm
-   `StoryRunner`** by default (no boundary crossing); persisting it alongside the choice log in
-   localStorage is an additive option later.
+3. **Persistence** — recordings are **not serialized**; they're ephemeral in-memory hot-reload
+   state, and the **transcript** is the durable artifact. The web consumer keeps the recorder
+   Rust-side in the wasm `StoryRunner`. If a consumer ever genuinely needs to persist a
+   recording, the types are plain data and can grow serialization then — no `serde` in this core.
 4. **`Live` granularity** — whole-flow (one `ReplayMode` per replay), with a per-flow override
    at the consumer layer. No per-external granularity; revisit only if a real need appears.
 
