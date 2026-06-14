@@ -28,7 +28,9 @@ import type { StudioState } from "../index.js";
 import type { Choice, DebugState, ProgramModel } from "@brink/wasm-types";
 
 import {
+  ALL_CAPABILITIES,
   EMPTY_SNAPSHOT,
+  type SessionCapability,
   type SessionProvider,
   type SessionSnapshot,
   type SessionStatus,
@@ -39,6 +41,7 @@ import { LocalSessionProvider } from "../session/local-provider.js";
 export {
   statusOfLine,
   sessionCanContinue,
+  ALL_CAPABILITIES,
   type SessionStatus,
   type SessionSnapshot,
   type SessionProvider,
@@ -99,6 +102,15 @@ export interface SessionSlice {
    * Mirrored from the provider snapshot; the basis for degraded mode (#181).
    */
   programChecksum: string | null;
+  /**
+   * Drive verbs the bound provider advertises (spec §3.2/§4). The command
+   * layer ANDs these into the `story.*` `when` predicates, so an observe-only
+   * provider makes the drive commands vanish from the palette/strips/headers
+   * with no per-view branching. Defaults to the full local set — the studio
+   * can always start a *local* session until a narrower (remote) provider
+   * binds; a remote provider replaces this with whatever the game permits.
+   */
+  capabilities: ReadonlySet<SessionCapability>;
 
   /**
    * Start (or restart) a session on `bytes`. The single code path for both
@@ -137,6 +149,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
   programModel: null,
   programInkt: null,
   programChecksum: null,
+  capabilities: ALL_CAPABILITIES,
 
   _bindProvider(provider) {
     // Wire studio services into a local provider so it can notify + log
@@ -151,7 +164,9 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     // itself — `startSession` reuses the live provider for hot-reload).
     get()._providerUnsub?.();
     const unsub = provider.subscribe((snap) => mirror(set, snap));
-    set({ _provider: provider, _providerUnsub: unsub });
+    // Capabilities are static per provider instance (spec §3.2) — capture them
+    // at bind so the command `when` predicates gate on them.
+    set({ _provider: provider, _providerUnsub: unsub, capabilities: provider.capabilities });
     mirror(set, provider.getSnapshot());
   },
 
@@ -214,6 +229,9 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       programModel: null,
       programInkt: null,
       programChecksum: null,
+      // Back to the default local capability set — the next session is local
+      // until a narrower provider binds.
+      capabilities: ALL_CAPABILITIES,
     });
   },
 });

@@ -960,3 +960,19 @@
 - **SCOPE:** architectural
 - **WHAT:** Record knot/container parameter arity in the compiled format — add `param_count` to `ContainerDef`, populated by codegen from the knot's declared params (the converter reference pipeline defaults it to 0/unknown). This backs `choose_path_string_with_args(path, &[Value])` arity validation and lets `call_function` validate too. Chosen over (a) shipping without arity checks like `call_function` does today, and (b) bytecode introspection (fragile — a leading `~ temp` also emits a `DeclareTemp`, so the count over-reads).
 - **WHY:** #178 requires erroring on arity mismatch, but the format had no knot param metadata (only `ExternalFnDef` has `arg_count`). Recording the real count at codegen is the only robust source — the runtime can't reliably recover it from bytecode, and the converter can't from inklecate's JSON. It's an additive metadata field, so execution behavior and the oracle are unaffected, at the cost of an `.inkb` format-version bump.
+
+## Recompile keeps auto-reload; #181 degraded mode is mechanism-only
+- **WHEN:** 2026-06-14
+- **PROJECT:** brink
+- **SYSTEM:** live-inspector / studio session channel
+- **SCOPE:** moderate
+- **WHAT:** A successful recompile continues to hot-reload the running session in place (the #179 replay-restore path). Program-identity / degraded mode (#181) is therefore built as mechanism only — the running-vs-latest-compile checksum compare, the degraded UI states (graph overlay drops current-location highlight + visit badges; status-bar "source out of sync"), and a cheap `program_checksum(bytes)` wasm util — and is NOT end-to-end exercisable locally. It goes live when a remote provider (Bevy dev-websocket / RMMZ host) runs a program older than the studio's source.
+- **WHY:** The local provider always runs exactly what the studio compiled (auto-reload on every successful compile), so the running checksum == latest-compile checksum and degraded mode never triggers locally. Degraded mode is inherently a remote-provider condition (author edits while a separate game keeps running the old story). Changing recompile to leave the session on the old program would make it locally reachable but changes the "edit while playing" UX, which deserves its own consideration; we keep today's auto-reload. Bevy is the first real "remote" case where it'll be exercised.
+
+## #182 (multi-session / flow picker) spun into its own spec, sequenced last
+- **WHEN:** 2026-06-14
+- **PROJECT:** brink
+- **SYSTEM:** live-inspector / multi-session
+- **SCOPE:** moderate
+- **WHAT:** #182 (multi-session / flow picker, Phase 8.4) is spun out into its own short spec rather than riding `docs/live-inspector-spec.md`, and sequenced last in Phase 8. It carries a runtime/wasm dependency (the wasm `StoryRunner` exposes no flows today; the runtime's `FlowInstance` doesn't cross the boundary), so it needs design before build. Likely modeled as N `SessionProvider` instances + an `activeSessionId` selector in the store.
+- **WHY:** It's the heaviest and least-blocking Phase 8 item, the inspector spec already defers it (§7 "designed-for, not built here"), and it requires a runtime-surface change — which by standing rule goes through a design issue, not inline.
