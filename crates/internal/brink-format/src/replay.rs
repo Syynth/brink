@@ -136,7 +136,10 @@ mod tests {
             r.take_recorded("get_switch", &args(&[1])),
             Some(Value::Bool(true))
         );
-        assert_eq!(r.take_recorded("get_var", &args(&[2])), Some(Value::Int(42)));
+        assert_eq!(
+            r.take_recorded("get_var", &args(&[2])),
+            Some(Value::Int(42))
+        );
         // Exhausted → fallback.
         assert_eq!(r.take_recorded("get_var", &args(&[2])), None);
     }
