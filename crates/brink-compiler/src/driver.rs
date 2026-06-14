@@ -3,9 +3,29 @@
 use std::io;
 
 use brink_driver::{AnalysisOptions, Driver};
+use brink_ir::Diagnostic;
 use tracing::info;
 
-use crate::{CompileError, CompileOutput, LirOutput};
+use crate::{CompileError, CompileOutput, LirOutput, ResolvedDiagnostic};
+
+/// Resolve a `FileId`-keyed [`Diagnostic`] to a [`ResolvedDiagnostic`] carrying
+/// the file's source path. Must run while `driver` is still alive, since it
+/// owns the `FileId`→path map. An id with no known path (which should not
+/// happen for a diagnostic produced from a discovered file) resolves to an
+/// empty path rather than dropping the diagnostic.
+fn resolve_diagnostics(driver: &Driver, diags: Vec<Diagnostic>) -> Vec<ResolvedDiagnostic> {
+    let db = driver.db();
+    diags
+        .into_iter()
+        .map(|d| ResolvedDiagnostic {
+            path: db.file_path(d.file).unwrap_or_default().to_string(),
+            file: d.file,
+            range: d.range,
+            message: d.message,
+            code: d.code,
+        })
+        .collect()
+}
 
 /// Run the full compilation pipeline through LIR lowering.
 fn compile_lir<F>(
@@ -48,7 +68,7 @@ where
     if !report.errors.is_empty() {
         let mut all = report.errors;
         all.extend(report.warnings);
-        return Err(CompileError::Diagnostics(all));
+        return Err(CompileError::Diagnostics(resolve_diagnostics(&driver, all)));
     }
 
     // ── Pass 6a: Build LIR ────────────────────────────────────────
@@ -65,6 +85,8 @@ where
 
     info!(globals = program.globals.len(), "LIR lowering complete");
 
+    // Resolve FileId→path at the boundary, while the driver's map is alive.
+    let warnings = resolve_diagnostics(&driver, warnings);
     Ok(LirOutput { program, warnings })
 }
 

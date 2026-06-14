@@ -1796,6 +1796,31 @@ fn warnings_surfaced_alongside_successful_compilation() {
     );
 }
 
+/// A warning originating in an included file must carry that file's path, not
+/// the entry's. Regression for #187 (secondary): the public API used to return
+/// diagnostics keyed only by an opaque `FileId`, so a consumer had no way to
+/// locate them and collapsed every diagnostic onto the entry file. The E033
+/// here lives wholly in `phone.ink`, so its resolved `path` must be `phone.ink`.
+#[test]
+fn warning_from_included_file_carries_its_path() {
+    let files: HashMap<&str, &str> = HashMap::from([
+        ("main.ink", "INCLUDE phone.ink\n-> reveal\n"),
+        // `-> END` is terminal; the trailing content is unreachable → E033.
+        ("phone.ink", "=== reveal ===\n-> END\nAnd we're off.\n"),
+    ]);
+
+    let output = compile_mem_with_warnings("main.ink", &files).unwrap();
+    let e033 = output
+        .warnings
+        .iter()
+        .find(|w| w.code.as_str() == "E033")
+        .expect("expected an E033 warning from the unreachable line in phone.ink");
+    assert_eq!(
+        e033.path, "phone.ink",
+        "E033 from phone.ink must be attributed to phone.ink, not the entry"
+    );
+}
+
 #[test]
 fn clean_compilation_has_no_warnings() {
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", "Hello, world!\n-> END\n")]);

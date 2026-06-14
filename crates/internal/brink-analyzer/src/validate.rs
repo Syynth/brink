@@ -185,10 +185,12 @@ fn walk_block_for_returns(block: &Block, file_id: FileId, diagnostics: &mut Vec<
 
 // ─── Unreachable code after divert (E033) ────────────────────────────
 
-/// Flag statements that follow a terminal statement (`Divert`, `Return`,
-/// `TunnelCall`) in the same block. Only the first unreachable statement
-/// per block is flagged. `ThreadStart` is NOT terminal — threads fork
-/// execution, they don't end the current flow.
+/// Flag statements that follow a terminal statement (`Divert`, `Return`)
+/// in the same block. Only the first unreachable statement per block is
+/// flagged. `ThreadStart` is NOT terminal — threads fork execution, they
+/// don't end the current flow. `TunnelCall` is NOT terminal either — a
+/// tunnel call (`-> x ->`) returns control to the statement after the
+/// call (the tunnel ends in `->->`), so that statement is reachable.
 fn check_unreachable_after_divert(
     file_id: FileId,
     hir: &HirFile,
@@ -223,7 +225,7 @@ fn walk_block_for_unreachable(block: &Block, file_id: FileId, diagnostics: &mut 
         }
 
         match stmt {
-            Stmt::Divert(_) | Stmt::Return(_) | Stmt::TunnelCall(_) => {
+            Stmt::Divert(_) | Stmt::Return(_) => {
                 saw_terminal = true;
             }
             _ => {}
@@ -591,6 +593,58 @@ mod tests {
         assert!(
             e033s.is_empty(),
             "ThreadStart is not terminal — content after it is reachable"
+        );
+    }
+
+    #[test]
+    fn content_after_tunnel_call_no_warning() {
+        // `-> wave ->` returns control to the next statement, so content
+        // following a tunnel call is reachable and must not trigger E033.
+        let mut hir = empty_hir();
+        hir.knots.push(Knot {
+            ptr: dummy_knot_ptr(),
+            name: Name {
+                text: "greet".into(),
+                range: dummy_range(),
+            },
+            is_function: false,
+            params: Vec::new(),
+            body: Block {
+                label: None,
+                stmts: vec![
+                    Stmt::TunnelCall(TunnelCall {
+                        ptr: AstPtr::from_range(dummy_range()),
+                        targets: vec![DivertTarget {
+                            path: DivertPath::Path(Path {
+                                segments: vec![Name {
+                                    text: "wave".into(),
+                                    range: dummy_range(),
+                                }],
+                                range: dummy_range(),
+                            }),
+                            args: Vec::new(),
+                        }],
+                    }),
+                    Stmt::Content(Content {
+                        ptr: Some(SyntaxNodePtr::from_range(dummy_range())),
+                        parts: vec![ContentPart::Text("and we're off".into())],
+                        tags: Vec::new(),
+                    }),
+                ],
+                container_id: None,
+            },
+            stitches: Vec::new(),
+        });
+
+        let files = vec![(FileId(0), &hir)];
+        let diags = validate(&files);
+        let e033s: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E033)
+            .collect();
+        assert!(
+            e033s.is_empty(),
+            "TunnelCall is not terminal — content after it is reachable: {e033s:?}"
         );
     }
 

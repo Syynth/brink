@@ -24,7 +24,7 @@ pub fn compile(source: &str) -> String {
             let warnings: Vec<DiagnosticJs> = output
                 .warnings
                 .iter()
-                .map(|d| diagnostic_to_js(d, source, "main.ink".to_owned()))
+                .map(|d| diagnostic_to_js(d, source))
                 .collect();
 
             let data = output.data;
@@ -45,10 +45,7 @@ pub fn compile(source: &str) -> String {
 
             match e {
                 brink_compiler::CompileError::Diagnostics(diags) => {
-                    diagnostics = diags
-                        .iter()
-                        .map(|d| diagnostic_to_js(d, source, "main.ink".to_owned()))
-                        .collect();
+                    diagnostics = diags.iter().map(|d| diagnostic_to_js(d, source)).collect();
                 }
                 other => {
                     error_msg = Some(format!("{other}"));
@@ -1270,12 +1267,12 @@ impl EditorSession {
         );
 
         // Convert a diagnostic against its OWN file's source (offsets are
-        // file-relative) and attach that file's path, so an INCLUDEd file's
-        // error lands on the right tab instead of collapsing onto the entry.
-        let to_js = |d: &brink_ir::Diagnostic| {
+        // file-relative); the resolved diagnostic already carries that file's
+        // path, so an INCLUDEd file's error lands on the right tab instead of
+        // collapsing onto the entry.
+        let to_js = |d: &brink_compiler::ResolvedDiagnostic| {
             let src = session.source(d.file).unwrap_or("");
-            let file = session.file_path(d.file).unwrap_or_default().to_owned();
-            diagnostic_to_js(d, src, file)
+            diagnostic_to_js(d, src)
         };
 
         match result {
@@ -2666,13 +2663,17 @@ fn inlay_hint_kind_str(kind: &brink_ide::inlay_hints::InlayHintKind) -> &'static
 /// Convert a compiler diagnostic to JSON, translating its byte range to UTF-16
 /// offsets against `source` (the diagnostic's own file) and attaching `file`
 /// (that file's path).
-fn diagnostic_to_js(d: &brink_ir::Diagnostic, source: &str, file: String) -> DiagnosticJs {
+/// Convert a resolved diagnostic to its JS shape. `source` is the diagnostic's
+/// OWN file source (offsets are file-relative), used only to translate byte
+/// offsets into UTF-16 for the editor. The file path comes from the resolved
+/// diagnostic itself, so an included file's error lands on the right tab.
+fn diagnostic_to_js(d: &brink_compiler::ResolvedDiagnostic, source: &str) -> DiagnosticJs {
     DiagnosticJs {
         message: d.message.clone(),
         start: byte_to_utf16(source, d.range.start().into()),
         end: byte_to_utf16(source, d.range.end().into()),
         severity: format!("{:?}", d.code.severity()),
-        file,
+        file: d.path.clone(),
     }
 }
 

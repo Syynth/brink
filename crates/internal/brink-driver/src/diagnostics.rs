@@ -191,4 +191,44 @@ mod tests {
             );
         }
     }
+
+    /// Regression test for #187 (secondary): an *analysis* diagnostic (E033,
+    /// unreachable code) originating in an included file must be attributed to
+    /// that file, not the entry. The original report saw such warnings collapsed
+    /// onto `main.ink` at an offset past its EOF. This guards the analysis path
+    /// specifically — #43 only covered lowering diagnostics.
+    #[test]
+    fn analysis_diagnostic_from_included_file_carries_its_file_id() {
+        let mut db = ProjectDb::new();
+        db.set_file("main.ink", "INCLUDE helper.ink\n-> top\n".to_string());
+        // `-> END` is terminal; the following content is unreachable → E033.
+        db.set_file(
+            "helper.ink",
+            "=== top ===\n-> END\nunreachable line\n".to_string(),
+        );
+        let analysis = run_analysis(&db);
+        let entry = db.file_id("main.ink");
+        let helper = db
+            .file_id("helper.ink")
+            .expect("helper.ink should have a FileId");
+        let report = collect_diagnostics(&db, &analysis, entry);
+
+        let e033s: Vec<_> = report
+            .errors
+            .iter()
+            .chain(report.warnings.iter())
+            .filter(|d| d.code == brink_ir::DiagnosticCode::E033)
+            .collect();
+        assert!(
+            !e033s.is_empty(),
+            "the unreachable line in helper.ink should produce an E033"
+        );
+        for d in &e033s {
+            assert_eq!(
+                d.file, helper,
+                "E033 for unreachable code inside helper.ink should carry \
+                 helper.ink's FileId ({helper:?}), not the entry's ({entry:?})"
+            );
+        }
+    }
 }
