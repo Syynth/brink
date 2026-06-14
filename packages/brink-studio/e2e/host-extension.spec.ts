@@ -63,7 +63,7 @@ test("host panel appears in the strip, palette, and hamburger; opens like a buil
   await expect(panel(page)).toHaveCount(0);
 
   // Palette lists the generated view-toggle command for the host window.
-  await page.keyboard.press("Meta+Shift+P");
+  await page.keyboard.press("ControlOrMeta+Shift+P");
   const input = page.locator(".shell-palette-input");
   await expect(input).toBeVisible();
   await input.fill("Host Functions");
@@ -147,7 +147,7 @@ test("the registered manifest drives diagnostics; the external-check flag suppre
 
   // Settings → external check "off" recompiles immediately: the
   // manifest-driven diagnostic is suppressed, badge gone.
-  await page.keyboard.press("Meta+,");
+  await page.keyboard.press("ControlOrMeta+,");
   await expect(page.locator(".settings-doc")).toBeVisible();
   await page.locator(".settings-select").selectOption("off");
   await expect(problemsBadge).toHaveCount(0, { timeout: 10000 });

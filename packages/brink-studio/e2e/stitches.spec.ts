@@ -143,7 +143,7 @@ test.describe("stitches in binder", () => {
 
     // Edit: go to end and add text
     await page.locator(".cm-content").click();
-    await page.keyboard.press("Meta+End");
+    await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.type("added text");
 
     await page.waitForTimeout(100);
@@ -169,7 +169,7 @@ test.describe("stitches in binder", () => {
 
     // Go to end and type -> DONE
     await page.locator(".cm-content").click();
-    await page.keyboard.press("Meta+End");
+    await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.press("Enter");
     await page.keyboard.type("-> DONE");
 
@@ -201,7 +201,7 @@ test.describe("stitches in binder", () => {
 
     // Go to end and type -> DONE
     await page.locator(".cm-content").click();
-    await page.keyboard.press("Meta+End");
+    await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.press("Enter");
     await page.keyboard.type("-> DONE");
 

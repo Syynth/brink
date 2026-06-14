@@ -28,7 +28,7 @@ async function editorText(g: Locator): Promise<string> {
 
 /** Run a palette command by title (real input: Mod-Shift-P, type, Enter). */
 async function runPaletteCommand(page: Page, title: string): Promise<void> {
-  await page.keyboard.press("Meta+Shift+P");
+  await page.keyboard.press("ControlOrMeta+Shift+P");
   const input = page.locator(".shell-palette-input");
   await expect(input).toBeVisible();
   await input.fill(title);
@@ -53,7 +53,7 @@ test.describe("editor groups", () => {
     await expect(page.locator(".shell-editor-group")).toHaveCount(1);
 
     await editorIn(group(page, 0)).click();
-    await page.keyboard.press("Meta+\\");
+    await page.keyboard.press("ControlOrMeta+\\");
 
     await expect(page.locator(".shell-editor-group")).toHaveCount(2);
     await expect(tabsIn(group(page, 0))).toHaveText(["main.ink"]);
@@ -66,14 +66,14 @@ test.describe("editor groups", () => {
 
   test("typing in the left view live-appears in the right", async ({ page }) => {
     await editorIn(group(page, 0)).click();
-    await page.keyboard.press("Meta+\\");
+    await page.keyboard.press("ControlOrMeta+\\");
     await expect(page.locator(".shell-editor-group")).toHaveCount(2);
 
     // Focus the LEFT view and type at the end of the first line.
     const left = group(page, 0);
     const right = group(page, 1);
     await editorIn(left).click();
-    await page.keyboard.press("Meta+End");
+    await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.type(" XYZZY");
 
     await expect(editorIn(right)).toContainText("XYZZY");
@@ -81,7 +81,7 @@ test.describe("editor groups", () => {
 
     // And the other direction: type in the right view.
     await editorIn(right).click();
-    await page.keyboard.press("Meta+End");
+    await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.type(" PLUGH");
     await expect(editorIn(left)).toContainText("PLUGH");
     expect(await editorText(left)).toBe(await editorText(right));
@@ -114,7 +114,7 @@ test.describe("editor groups", () => {
 
   test("closing one duplicate keeps the other editable", async ({ page }) => {
     await editorIn(group(page, 0)).click();
-    await page.keyboard.press("Meta+\\");
+    await page.keyboard.press("ControlOrMeta+\\");
     await expect(page.locator(".shell-editor-group")).toHaveCount(2);
 
     // Close the duplicate in the right group; the group collapses.
@@ -125,7 +125,7 @@ test.describe("editor groups", () => {
 
     // The surviving view still edits (and still talks to the session).
     await editorIn(group(page, 0)).click();
-    await page.keyboard.press("Meta+End");
+    await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.type(" SURVIVOR");
     await expect(editorIn(group(page, 0))).toContainText("SURVIVOR");
     const fromView = await page.evaluate(() =>

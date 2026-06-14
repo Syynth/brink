@@ -23,7 +23,7 @@ function tabsIn(g: Locator): Locator {
 
 /** Run a palette command by title (real input: Mod-Shift-P, type, Enter). */
 async function runPaletteCommand(page: Page, title: string): Promise<void> {
-  await page.keyboard.press("Meta+Shift+P");
+  await page.keyboard.press("ControlOrMeta+Shift+P");
   const input = page.locator(".shell-palette-input");
   await expect(input).toBeVisible();
   await input.fill(title);
@@ -154,7 +154,7 @@ test.describe("player document", () => {
     });
 
     await page.locator(".brink-tab", { hasText: "Player" }).click();
-    await page.keyboard.press("Meta+\\");
+    await page.keyboard.press("ControlOrMeta+\\");
 
     await expect(page.locator(".shell-editor-group")).toHaveCount(3);
     await expect(page.locator(".brink-tab-label", { hasText: "Player" })).toHaveCount(2);

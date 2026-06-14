@@ -60,7 +60,7 @@ test.describe("file egress — file.save (Mod-S)", () => {
 
     await page.locator(".cm-content").first().click();
     await page.keyboard.type("// saved marker");
-    await page.keyboard.press("Meta+s");
+    await page.keyboard.press("ControlOrMeta+s");
 
     // The notification is raised synchronously by the command…
     await expect(
@@ -82,7 +82,7 @@ test.describe("file egress — file.save (Mod-S)", () => {
 
     await page.locator(".cm-content").first().click();
     await page.keyboard.type("x");
-    await page.keyboard.press("Meta+s");
+    await page.keyboard.press("ControlOrMeta+s");
 
     await expect(
       page.locator(".shell-notification-message").filter({ hasText: "Saved main.ink" }),
@@ -123,7 +123,7 @@ test.describe("file egress — search replace-all (#137)", () => {
     // Default fixture: main.ink + toppled-temple.ink, "intro" appears in both.
     await gotoStudio(page, "/?egress=test");
 
-    await page.keyboard.press("Meta+Shift+F");
+    await page.keyboard.press("ControlOrMeta+Shift+F");
     await page.locator(".search-input").fill("intro");
     await expect(page.locator(".search-file-header").first()).toBeVisible();
 
