@@ -29,6 +29,7 @@ mod list_ops;
 mod locale;
 mod output;
 mod program;
+mod replay;
 pub mod rng;
 mod save;
 mod state;
@@ -37,13 +38,17 @@ pub mod transcript;
 mod value_ops;
 mod vm;
 
-pub use brink_format::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
+pub use brink_format::{
+    LoadReport, RECORDING_CAP, RecordedExternal, ReplayMode, ReplayRecorder, SAVE_FORMAT_VERSION,
+    SaveState, VisitEntry,
+};
 pub use debug::{DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit};
 pub use error::RuntimeError;
 pub use linker::link;
 pub use locale::{LocaleMode, apply_locale};
 pub use output::{Fragment, OutputPart};
 pub use program::Program;
+pub use replay::{RecordingHandler, ReplayHandler};
 pub use rng::{DotNetRng, FastRng, StoryRng};
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
 pub use story::{

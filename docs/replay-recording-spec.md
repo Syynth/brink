@@ -74,41 +74,47 @@ pub enum ReplayMode {
 
 ## 4. Runtime behavior (`brink-runtime`)
 
-### 4.1 Recording (during the live run)
+### 4.1 Recording (during the live run) — by composition, not threading
 
-The stepping path takes an **optional** `&mut ReplayRecorder`. Every time an external's result
-value is determined, it is appended: both the inline `ExternalResult::Resolved(v)` path
-(pure/command bindings) and the out-of-band `resolve_external(v)` path (world-access/async
-bindings). A single internal record site per path; `None` recorder = no-op = today's behavior.
+Recording **composes** with the consumer's handler rather than threading an optional recorder
+through the stepping hot loop — which aligns with the project's instrumentation principle
+("observers should wrap or compose with production types, not thread optional parameters
+through them"). No stepping signature changes; not recording = don't wrap = exactly today's
+behavior.
+
+- **`RecordingHandler<H>`** wraps the real `ExternalFnHandler` and records every inline
+  `ExternalResult::Resolved(v)` — the pure/command bindings that resolve while the VM steps.
+  The consumer wraps its handler with this during a recording run.
+- **Out-of-band results** — world-access/async bindings return `Pending`; their value arrives
+  later via `resolve_external`. The consumer records those itself at the moment it supplies the
+  value (it has the name, args, and result there). One line in each consumer's resolve path.
 
 ### 4.2 Replay (`ReplayHandler`)
 
-A `ReplayHandler` implementing `ExternalFnHandler`, parameterized by a `&mut ReplayRecorder`
-and a `ReplayMode`:
+`ReplayHandler` implements `ExternalFnHandler` over a `&mut ReplayRecorder` — it *is* the
+`Recorded`-mode object (it resets the cursor on construction):
 
 ```text
-call(name, args):
-  Live      → Fallback        (consumer's driver re-runs it live; see §6)
-  Recorded  → match recorder.take_recorded(name, args):
-                Some(v) → Resolved(v)
-                None    → Fallback   (uncovered/divergent/past-cap → ink fallback body)
+call(name, args) → match recorder.take_recorded(name, args):
+                     Some(v) → Resolved(v)
+                     None    → Fallback   (uncovered/divergent/past-cap → ink fallback body)
 ```
 
-`Live` returns `Fallback` for unbound externals; for bound ones the consumer supplies its real
-handler instead of (or composed with) the `ReplayHandler` — `Live` mode is "use your normal
-handler," so in practice a consumer in `Live` mode just doesn't wrap with `ReplayHandler` at
-all. The shared `ReplayHandler` is the `Recorded`-mode object.
+For **`ReplayMode::Live`**, the consumer simply **doesn't** wrap with `ReplayHandler` — it
+supplies its real handler so everything runs live (effects fire). `ReplayMode` lives in
+`brink-format` for the consumer's config/serialization; the runtime handler itself is just the
+recorded-replay object, so there is no mode branch in the hot path.
 
 No new async machinery: a `Live`-mode query that needs world access flows through the existing
-`ExternalResult::Pending` / `resolve_external` suspend-resume (Track A); the consumer's
-existing driver resolves it.
+`ExternalResult::Pending` / `resolve_external` suspend-resume (Track A); the consumer's existing
+driver resolves it.
 
 ## 5. Resolved design questions
 
-1. **Recording choke point** — at the two value-determination sites in the runtime stepping:
-   the inline `Resolved` return and `resolve_external`. The recorder is threaded as an optional
-   parameter through the stepping entry points (or carried on the stepping context), so a
-   `None` recorder is a true no-op.
+1. **Recording choke point** — composition, not threading. `RecordingHandler` (a wrapping
+   `ExternalFnHandler`) captures inline `Resolved` results; the consumer records out-of-band
+   (`resolve_external`) results when it resolves them. No optional parameter through the stepping
+   hot loop — aligns with the project's "observers wrap/compose, not thread" principle.
 2. **Cap + divergence** — the replay cursor consumes recordings **strictly in order**, matching
    **name + args** at the current position. A match returns the recorded value and advances the
    cursor; the **first** mismatch (program/path changed) or exhaustion sets `diverged` and
