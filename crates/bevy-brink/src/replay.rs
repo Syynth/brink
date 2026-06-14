@@ -16,16 +16,33 @@ use bevy_asset::{AssetEvent, Assets, Handle};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
+use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Commands, Query, Res};
 use bevy_log::{info, warn};
 use brink_format::LineEntry;
-use brink_runtime::{Context, FallbackHandler, FastRng, FlowInstance, Line, RuntimeError};
+use brink_runtime::{
+    Context, FallbackHandler, FastRng, FlowInstance, Line, ReplayMode, ReplayRecorder, RuntimeError,
+};
 
 use crate::asset::{BrinkProgram, BrinkStoryAsset, LineTablesAsset, ProgramAsset};
 use crate::event::BrinkFlowReset;
 use crate::flow::BrinkFlow;
 use crate::globals::BrinkContext;
 use crate::request::FlowStart;
+
+/// Global default [`ReplayMode`] for hot-reload replay (the shared
+/// [`brink_runtime`] primitive). Override on a specific flow with
+/// [`ReplayQueryModeOverride`].
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct BrinkReplayConfig {
+    /// Replay mode used when a flow has no [`ReplayQueryModeOverride`].
+    pub query_mode: ReplayMode,
+}
+
+/// Per-flow override of the global [`BrinkReplayConfig`] replay mode. Insert on
+/// a flow entity to make that flow replay with a specific [`ReplayMode`].
+#[derive(Component, Clone, Copy, Debug)]
+pub struct ReplayQueryModeOverride(pub ReplayMode);
 
 /// Per-flow snapshot used to reconstruct the flow on hot-reload.
 ///
@@ -47,6 +64,10 @@ pub struct BrinkReplayLog<M: Send + Sync + 'static = ()> {
     /// Choices made so far, in order. Populated by
     /// [`BrinkFlow::choose_recording`].
     pub choices_made: Vec<usize>,
+    /// External-call results recorded during live play (the shared
+    /// [`ReplayRecorder`]), replayed back during reload reconstruction so
+    /// query-gated branches resolve faithfully instead of via fallback.
+    pub recorder: ReplayRecorder,
     _marker: PhantomData<fn() -> M>,
 }
 
@@ -61,6 +82,7 @@ impl<M: Send + Sync + 'static> BrinkReplayLog<M> {
             start,
             story,
             choices_made: Vec::new(),
+            recorder: ReplayRecorder::new(),
             _marker: PhantomData,
         }
     }

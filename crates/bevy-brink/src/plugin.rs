@@ -90,6 +90,8 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         app.add_observer(crate::locale::on_locale_changed::<M>);
         app.add_systems(Update, crate::locale::catch_up_loaded_locales::<M>);
         #[cfg(feature = "dev")]
+        app.init_resource::<crate::replay::BrinkReplayConfig>();
+        #[cfg(feature = "dev")]
         app.add_systems(Update, crate::replay::replay_on_reload::<M>);
         #[cfg(debug_assertions)]
         app.add_systems(Update, crate::request::warn_post_fulfillment_mutations::<M>);
