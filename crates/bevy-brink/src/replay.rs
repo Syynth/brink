@@ -16,16 +16,35 @@ use bevy_asset::{AssetEvent, Assets, Handle};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
+use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Commands, Query, Res};
+use bevy_ecs::world::World;
 use bevy_log::{info, warn};
 use brink_format::LineEntry;
-use brink_runtime::{Context, FallbackHandler, FastRng, FlowInstance, Line, RuntimeError};
+use brink_runtime::{
+    Context, ExternalFnHandler, FastRng, FlowInstance, Line, ReplayHandler, ReplayMode,
+    ReplayRecorder, RuntimeError,
+};
 
 use crate::asset::{BrinkProgram, BrinkStoryAsset, LineTablesAsset, ProgramAsset};
 use crate::event::BrinkFlowReset;
 use crate::flow::BrinkFlow;
 use crate::globals::BrinkContext;
 use crate::request::FlowStart;
+
+/// Global default [`ReplayMode`] for hot-reload replay (the shared
+/// [`brink_runtime`] primitive). Override on a specific flow with
+/// [`ReplayQueryModeOverride`].
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct BrinkReplayConfig {
+    /// Replay mode used when a flow has no [`ReplayQueryModeOverride`].
+    pub query_mode: ReplayMode,
+}
+
+/// Per-flow override of the global [`BrinkReplayConfig`] replay mode. Insert on
+/// a flow entity to make that flow replay with a specific [`ReplayMode`].
+#[derive(Component, Clone, Copy, Debug)]
+pub struct ReplayQueryModeOverride(pub ReplayMode);
 
 /// Per-flow snapshot used to reconstruct the flow on hot-reload.
 ///
@@ -47,6 +66,10 @@ pub struct BrinkReplayLog<M: Send + Sync + 'static = ()> {
     /// Choices made so far, in order. Populated by
     /// [`BrinkFlow::choose_recording`].
     pub choices_made: Vec<usize>,
+    /// External-call results recorded during live play (the shared
+    /// [`ReplayRecorder`]), replayed back during reload reconstruction so
+    /// query-gated branches resolve faithfully instead of via fallback.
+    pub recorder: ReplayRecorder,
     _marker: PhantomData<fn() -> M>,
 }
 
@@ -61,6 +84,7 @@ impl<M: Send + Sync + 'static> BrinkReplayLog<M> {
             start,
             story,
             choices_made: Vec::new(),
+            recorder: ReplayRecorder::new(),
             _marker: PhantomData,
         }
     }
@@ -162,6 +186,16 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         // Replace the in-place flow with the freshly-built one.
         flow.inner = new_flow;
 
+        // Split the log so the recorded externals can drive replay (via a
+        // single `ReplayHandler` over the whole re-walk) while we read the
+        // recorded choices from a disjoint field. Recorded during live play
+        // by `advance_flow`; fed back here so query-gated branches resolve
+        // faithfully instead of via fallback (and recorded effects don't
+        // re-fire — replay re-executes nothing). Uncovered / divergent calls
+        // fall through to the ink fallback body, exactly as before.
+        let log = log.into_inner();
+        let replay = ReplayHandler::new(&mut log.recorder);
+
         // Replay each recorded choice *silently* — we step the VM
         // through to each choice point and consume the choice without
         // firing observer events. The events would mislead consumers
@@ -175,6 +209,7 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
                 &program_asset.program,
                 line_tables,
                 &mut context.inner,
+                &replay,
             ) {
                 warn!(
                     "replay: failed to reach choice point {i} for entity {entity:?}: {err}; \
@@ -203,7 +238,7 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
             &program_asset.program,
             line_tables,
             &mut context.inner,
-            &FallbackHandler,
+            &replay,
             entity,
             &mut commands,
         ) {
@@ -234,16 +269,12 @@ fn step_to_next_choices(
     program: &brink_runtime::Program,
     line_tables: &[Vec<LineEntry>],
     context: &mut Context,
+    handler: &dyn ExternalFnHandler,
 ) -> Result<(), RuntimeError> {
     const STEP_LIMIT: usize = 10_000;
     for _ in 0..STEP_LIMIT {
-        let line = flow.step_single_line::<FastRng>(
-            program,
-            line_tables,
-            context,
-            &FallbackHandler,
-            None,
-        )?;
+        let line =
+            flow.step_single_line::<FastRng>(program, line_tables, context, handler, None)?;
         match line {
             // Choices: ready for the next replayed pick.
             // Done / End: nothing to choose against; replay caller will
@@ -253,4 +284,36 @@ fn step_to_next_choices(
         }
     }
     Err(RuntimeError::StepLimitExceeded(STEP_LIMIT as u64))
+}
+
+/// Take the flow's [`ReplayRecorder`] out of its [`BrinkReplayLog<M>`], leaving
+/// an empty one behind. Returns `None` for an entity with no replay log (not a
+/// dev-tracked flow).
+///
+/// Paired with [`put_recorder`]: an exclusive `&mut World` driver
+/// ([`advance_flow`](crate::advance_flow)) takes the recorder, wraps its handler
+/// with a [`RecordingHandler`](brink_runtime::RecordingHandler) (and records
+/// out-of-band query results) for the duration of the pass, then puts it back —
+/// avoiding holding the component borrowed across the `run_system_with`
+/// re-borrows of the World.
+pub(crate) fn take_recorder<M: Send + Sync + 'static>(
+    world: &mut World,
+    entity: Entity,
+) -> Option<ReplayRecorder> {
+    world
+        .get_mut::<BrinkReplayLog<M>>(entity)
+        .map(|mut log| std::mem::take(&mut log.recorder))
+}
+
+/// Restore a recorder taken by [`take_recorder`] into the flow's
+/// [`BrinkReplayLog<M>`]. A no-op if the log is gone (entity despawned or the
+/// component removed mid-pass).
+pub(crate) fn put_recorder<M: Send + Sync + 'static>(
+    world: &mut World,
+    entity: Entity,
+    recorder: ReplayRecorder,
+) {
+    if let Some(mut log) = world.get_mut::<BrinkReplayLog<M>>(entity) {
+        log.recorder = recorder;
+    }
 }

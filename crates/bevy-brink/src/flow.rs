@@ -802,4 +802,131 @@ mod tests {
             "new choice 'foo' should be in rendered output; got: {rendered_after:?}"
         );
     }
+
+    /// End-to-end Recorded-mode replay (#173/#189): a query-gated branch
+    /// resolved during live play is recorded and replayed *faithfully* on
+    /// hot-reload — even though the live World state has since changed, the
+    /// reload re-walk uses the recorded value (it re-runs no externals), so the
+    /// branch it took during play is the branch it shows after reload.
+    #[test]
+    #[cfg(feature = "dev")]
+    fn hot_reload_replays_recorded_query_branch() {
+        use crate::{BrinkBindingsAppExt, BrinkQueryInput, Value, advance_flow};
+        use bevy_asset::Assets;
+
+        // A world-access binding whose value flips between play and reload.
+        #[derive(Resource)]
+        struct SwitchState(bool);
+        #[expect(
+            clippy::needless_pass_by_value,
+            reason = "bevy system params are taken by value"
+        )]
+        fn get_switch(In((_e, _args)): In<BrinkQueryInput>, state: Res<SwitchState>) -> Value {
+            Value::Bool(state.0)
+        }
+
+        let mut app = make_test_app();
+        install_recorder(&mut app);
+        render_harness::install(&mut app);
+        app.insert_resource(SwitchState(true));
+        app.bind_brink_query::<(), _, _>("get_switch", get_switch);
+
+        // The query gate is *after* a choice, so the test exercises both
+        // recorded-choice replay and recorded-query fidelity in one walk.
+        let (program, tables, ctx) = compile_test_story(
+            "EXTERNAL get_switch(n)\nStart.\n* [go] -> after\n\
+             === after ===\nSwitch is {get_switch(1): ON|OFF}.\n-> END\n",
+        );
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update(); // fulfill
+
+        // Drive one line at a time to the choice via the exclusive driver
+        // (this is the recording path).
+        let advance_to_terminal = |app: &mut bevy_app::App| -> Line {
+            loop {
+                let line = advance_flow::<()>(app.world_mut(), entity).expect("advance");
+                if line.is_terminal() {
+                    return line;
+                }
+            }
+        };
+
+        let at_choice = advance_to_terminal(&mut app);
+        assert!(
+            matches!(at_choice, Line::Choices { .. }),
+            "expected the choice page; got {at_choice:?}"
+        );
+
+        // Pick [go], recording the choice, then advance through the gate —
+        // get_switch(1) resolves to true (SwitchState) and is recorded.
+        {
+            let mut q = app.world_mut().query::<(
+                &mut BrinkFlow<()>,
+                &mut crate::BrinkContext<()>,
+                &mut crate::replay::BrinkReplayLog<()>,
+            )>();
+            let (mut flow, mut ctx, mut log) =
+                q.get_mut(app.world_mut(), entity).expect("flow components");
+            flow.choose_recording(&mut ctx.inner, &mut log, 0)
+                .expect("choose");
+        }
+        let ended = advance_to_terminal(&mut app);
+        assert!(
+            ended.text().contains("Switch is ON."),
+            "live play should take the ON branch; got {:?}",
+            ended.text()
+        );
+
+        // The query result must have been recorded.
+        let recorded = app
+            .world()
+            .entity(entity)
+            .get::<crate::replay::BrinkReplayLog<()>>()
+            .expect("replay log")
+            .recorder
+            .len();
+        assert_eq!(
+            recorded, 1,
+            "get_switch(1) should be the one recorded external"
+        );
+
+        // Flip the live World state: a *live* re-query would now answer OFF.
+        app.world_mut().resource_mut::<SwitchState>().0 = false;
+
+        // Simulate a hot-reload: touching the program asset fires
+        // AssetEvent::Modified, which drives replay_on_reload over the same
+        // (unchanged) program — so any divergence is purely the handler's.
+        let program_handle = app
+            .world()
+            .entity(entity)
+            .get::<crate::BrinkProgram<()>>()
+            .expect("BrinkProgram")
+            .handle
+            .clone();
+        {
+            let mut programs = app
+                .world_mut()
+                .resource_mut::<Assets<crate::ProgramAsset>>();
+            let _ = programs.get_mut(&program_handle);
+        }
+        app.update(); // asset_events → replay_on_reload rebuilds + replays
+        app.update(); // flush deferred triggers from replay
+
+        // The reload re-walk replayed the recorded `true`, so the page shows
+        // the ON branch — not OFF (what a live re-query would now produce) and
+        // not a fallback approximation.
+        let rendered_after = render_harness::render(&app);
+        assert!(
+            rendered_after.contains("Switch is ON."),
+            "reload should replay the recorded ON branch; got: {rendered_after:?}"
+        );
+        assert!(
+            !rendered_after.contains("OFF"),
+            "reload must not re-query live (which would now be OFF); got: {rendered_after:?}"
+        );
+    }
 }

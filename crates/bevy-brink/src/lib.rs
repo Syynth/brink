@@ -98,7 +98,7 @@ pub use locale::{
 };
 pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
 #[cfg(feature = "dev")]
-pub use replay::{BrinkReplayLog, replay_on_reload};
+pub use replay::{BrinkReplayConfig, BrinkReplayLog, ReplayQueryModeOverride, replay_on_reload};
 pub use request::{BrinkFlowRequest, ContextSeed, FlowStart, fulfill_flow_requests};
 #[cfg(feature = "dev")]
 pub use source_loader::{InkLoader, InkLoaderError};
