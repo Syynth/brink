@@ -87,9 +87,12 @@ test.describe("settings document", () => {
     // before the keypress below (Playwright can otherwise outrace the
     // commit by a frame; a human cannot).
     await page.locator(".shell-hamburger").click();
+    // The hint is formatted per-platform by the shell (⌘ on macOS, Ctrl+
+    // elsewhere); match what this runner's OS renders. See formatChord.
+    const modJ = process.platform === "darwin" ? "⌘J" : "Ctrl+J";
     await expect(
       page.locator(".shell-menu-item", { hasText: "Command Palette" }),
-    ).toContainText("⌘J");
+    ).toContainText(modJ);
     await page.keyboard.press("Escape");
 
     // The new chord opens the palette right away — no reload.
