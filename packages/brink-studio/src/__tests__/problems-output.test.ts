@@ -9,7 +9,12 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { createStudioStore, sortDiagnostics, OUTPUT_LOG_LIMIT } from "@brink/studio-store";
+import {
+  createStudioStore,
+  LocalSessionProvider,
+  sortDiagnostics,
+  OUTPUT_LOG_LIMIT,
+} from "@brink/studio-store";
 import { ToolWindowRegistry, type ToolWindowDescriptor } from "@brink/studio-shell";
 import {
   buildProblemRows,
@@ -174,7 +179,9 @@ describe("story errors feed the Output log", () => {
       }),
       free: vi.fn(),
     };
-    store.setState({ _runner: runner as never, sessionStatus: "running" });
+    store.getState()._bindProvider(
+      new LocalSessionProvider({ runner: runner as never, status: "running" }),
+    );
 
     store.getState().revealNext();
 
@@ -195,11 +202,13 @@ describe("story errors feed the Output log", () => {
       }),
       free: vi.fn(),
     };
-    store.setState({
-      _runner: runner as never,
-      sessionStatus: "awaiting-choice",
-      sessionChoices: [{ index: 0, text: "Go", tags: [] }],
-    });
+    store.getState()._bindProvider(
+      new LocalSessionProvider({
+        runner: runner as never,
+        status: "awaiting-choice",
+        choices: [{ index: 0, text: "Go", tags: [] }],
+      }),
+    );
 
     store.getState().chooseOption(0);
 
