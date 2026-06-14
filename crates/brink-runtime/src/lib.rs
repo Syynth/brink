@@ -29,6 +29,7 @@ mod list_ops;
 mod locale;
 mod output;
 mod program;
+mod replay;
 pub mod rng;
 mod save;
 mod state;
@@ -44,6 +45,9 @@ pub use linker::link;
 pub use locale::{LocaleMode, apply_locale};
 pub use output::{Fragment, OutputPart};
 pub use program::Program;
+pub use replay::{
+    RECORDING_CAP, RecordedExternal, RecordingHandler, ReplayHandler, ReplayMode, ReplayRecorder,
+};
 pub use rng::{DotNetRng, FastRng, StoryRng};
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
 pub use story::{
