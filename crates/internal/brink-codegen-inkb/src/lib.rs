@@ -300,6 +300,10 @@ fn walk_container(
         bytecode: emitter.bytecode,
         counting_flags: container.counting_flags,
         path_hash,
+        // Declared-parameter count for arity-checking a host-directed entry
+        // (`choose_path_string_with_args`) / `call_function`. Saturates — a
+        // knot with >255 params is absurd and never legitimately occurs.
+        param_count: u8::try_from(container.params.len()).unwrap_or(u8::MAX),
     };
 
     state.containers.push(def);

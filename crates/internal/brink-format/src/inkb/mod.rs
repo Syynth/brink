@@ -47,7 +47,10 @@ use crate::opcode::DecodeError;
 // ── Constants ───────────────────────────────────────────────────────────────
 
 pub(crate) const MAGIC: &[u8; 4] = b"INKB";
-pub(crate) const VERSION: u16 = 1;
+/// On-the-wire format version. Bumped on any byte-layout change; the reader
+/// hard-rejects an unrecognized version (see `docs/format-spec.md` § Versioning).
+/// v2 added `ContainerDef::param_count` to the Containers section.
+pub(crate) const VERSION: u16 = 2;
 /// Fixed-size preamble: magic + version + section count + reserved + file size + checksum.
 pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)

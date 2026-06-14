@@ -1496,6 +1496,7 @@ mod tests {
                 bytecode: vec![],
                 counting_flags: CountingFlags::empty(),
                 path_hash: 0,
+                param_count: 0,
                 scope_table_idx: 0,
             }],
             address_map: HashMap::new(),

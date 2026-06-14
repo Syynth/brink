@@ -65,6 +65,7 @@ Each container has a primary address (tag `0x01`) plus a `ContainerDef` with:
   - Bit 1: `TURNS` — record which turn it was visited on
   - Bit 2: `COUNT_START_ONLY` — only count when entering at the start, not when re-entering mid-container
 - **Path hash** — `i32`, sum of char values from the container's ink path string. Used to seed the RNG for shuffle sequences.
+- **Param count** — `u8`, the number of parameters the container declares (a parameterized knot/stitch/function, e.g. `=== call(action, present) ===` has 2; `0` for the vast majority). The prologue binds them with that many leading `DeclareTemp`s. Lets the runtime arity-check a host-directed parameterized entry (`choose_path_string_with_args`) and `call_function`. The **converter** reference pipeline leaves this `0` (inklecate's JSON doesn't expose it); only the brink compiler populates the true count.
 - **Scope id** — `DefinitionId` of the lexical scope this container belongs to. For knots and stitches, `scope_id == id` (they ARE the scope). For gathers, choice targets, inline sequence wrappers, and other compiler-internal containers, `scope_id` is the enclosing knot or stitch. Used by the linker to associate containers with their scope's line table.
 
 ### Container hierarchy

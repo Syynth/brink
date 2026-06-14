@@ -108,4 +108,17 @@ pub enum RuntimeError {
          resolve it before jumping"
     )]
     JumpWhileAwaitingExternal { path: String, external: String },
+
+    /// A host-directed entry (`choose_path_string_with_args`) — or a
+    /// `call_function` — was given the wrong number of arguments for the
+    /// target's declared parameters.
+    #[error("'{target}' expects {expected} argument(s), got {got}")]
+    ArgCountMismatch {
+        /// The knot/stitch/function path or name.
+        target: String,
+        /// Declared parameter count.
+        expected: u8,
+        /// Arguments the host supplied.
+        got: usize,
+    },
 }

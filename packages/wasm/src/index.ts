@@ -663,9 +663,24 @@ export class StoryRunnerHandle {
    * and the jump itself counts as a visit (like a `-> path` divert). Pending
    * choices are abandoned; the transcript so far is kept. Throws on an
    * unknown path, or if the story is parked on an unresolved async external
-   * (resolve it — or `reset()` — first). */
-  goToPath(path: string): void {
-    this.runner.go_to_path(path);
+   * (resolve it — or `reset()` — first).
+   *
+   * Pass `args` to enter a **parameterized** knot (`=== call(action, present)
+   * ===`) with its declared parameters bound from the supplied values. Throws
+   * if the argument count doesn't match the knot's declared parameters. */
+  goToPath(path: string, ...args: ExternalValue[]): void {
+    if (args.length === 0) {
+      this.runner.go_to_path(path);
+    } else {
+      this.runner.go_to_path_with_args(path, args);
+    }
+  }
+
+  /** Convenience alias for entering a parameterized knot by name with bound
+   * arguments — `runKnot("call", "wave", true)` ≡ `goToPath("call", "wave",
+   * true)`. */
+  runKnot(name: string, ...args: ExternalValue[]): void {
+    this.goToPath(name, ...args);
   }
 
   reset(): void {

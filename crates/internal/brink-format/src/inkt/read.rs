@@ -592,6 +592,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
 
     let mut counting_flags = CountingFlags::empty();
     let mut path_hash = 0i32;
+    let mut param_count = 0u8;
     let mut lines = Vec::new();
     let mut bytecode = Vec::new();
     let mut name: Option<NameId> = None;
@@ -640,6 +641,18 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
                     col: 0,
                 })?;
             }
+            Rule::params_field => {
+                let val = child.into_inner().next().ok_or_else(|| InktParseError {
+                    message: "expected integer in params".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                param_count = val.as_str().parse().map_err(|_| InktParseError {
+                    message: "invalid params integer".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+            }
             Rule::lines_field => {
                 lines = parse_lines_field(child)?;
             }
@@ -657,6 +670,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
         bytecode,
         counting_flags,
         path_hash,
+        param_count,
     };
     let line_table = ScopeLineTable { scope_id, lines };
     Ok((container, line_table))

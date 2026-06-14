@@ -509,6 +509,29 @@ impl StoryRunner {
             .map_err(|e| JsError::new(&format!("go_to_path error: {e}")))
     }
 
+    /// Like [`go_to_path`](Self::go_to_path) but **binds the target knot's
+    /// declared parameters** from `args` — host-directed entry into a
+    /// parameterized knot (`=== call(action, present) ===`). Args arrive as
+    /// native JS values; semantics otherwise match `go_to_path`. Errors if the
+    /// argument count doesn't match the knot's declared parameters.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "wasm-bindgen passes a JS array as an owned Vec across the boundary"
+    )]
+    pub fn go_to_path_with_args(&self, path: &str, args: Vec<JsValue>) -> Result<(), JsError> {
+        let _guard = BusyGuard::acquire(&self.busy)
+            .ok_or_else(|| reentrant_error("go_to_path_with_args"))?;
+        let ink_args: Vec<Value> = args.iter().map(js_to_value).collect();
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+
+        story
+            .choose_path_string_with_args(path, &ink_args)
+            .map_err(|e| JsError::new(&format!("go_to_path_with_args error: {e}")))
+    }
+
     /// Reset: create a fresh story from the same program.
     pub fn reset(&self) {
         let program_ptr: *const brink_runtime::Program = &raw const *self.program;
@@ -3630,6 +3653,25 @@ mod binding_wasm_tests {
             .ok()
             .expect("call");
         assert_eq!(v.as_f64(), Some(5.0));
+    }
+
+    /// Host-directed parameterized knot entry (#178): `go_to_path_with_args`
+    /// binds the knot's declared params, and the arg count is validated.
+    #[wasm_bindgen_test]
+    fn go_to_path_with_args_binds_and_validates() {
+        let src = "-> END\n=== call(action) ===\nYou {action} now.\n-> END\n";
+        let r = runner(src);
+        r.go_to_path_with_args("call", vec![JsValue::from_str("wave")])
+            .ok()
+            .expect("enters parameterized knot");
+        assert!(cont(&r).contains("You wave now."));
+
+        // Wrong arity errors instead of jumping.
+        let r2 = runner(src);
+        assert!(
+            r2.go_to_path_with_args("call", vec![]).is_err(),
+            "arity mismatch (0 of 1) must error"
+        );
     }
 
     #[wasm_bindgen_test]

@@ -17,7 +17,7 @@
 | Offset | Size | Field |
 |--------|------|-------|
 | 0 | 4 | Magic: `INKB` |
-| 4 | 2 | Version: u16 LE (currently 1) |
+| 4 | 2 | Version: u16 LE (currently 2) |
 | 6 | 1 | Section count: u8 (10) |
 | 7 | 1 | Reserved: 0x00 |
 | 8 | 4 | File size: u32 LE |
@@ -46,7 +46,7 @@ With 10 sections, the offset table occupies 80 bytes (10 x 8). The total header 
 | `0x03` | **ListDefs** | List (enum) type definitions. Each entry: `DefinitionId` + `NameId` + item count + `(NameId, i32 ordinal)` pairs. |
 | `0x04` | **ListItems** | Individual list item definitions. Each entry: `DefinitionId` + origin `DefinitionId` + `i32` ordinal + `NameId`. |
 | `0x05` | **Externals** | External function declarations. Each entry: `DefinitionId` + `NameId` + `u8` arg count + optional fallback `DefinitionId`. |
-| `0x06` | **Containers** | Bytecode containers. Each entry: `DefinitionId` + `u64` content hash + `CountingFlags` byte + `i32` path hash + `u32` bytecode length + raw bytecode bytes. |
+| `0x06` | **Containers** | Bytecode containers. Each entry: `DefinitionId` + scope `DefinitionId` + optional `NameId` + `CountingFlags` byte + `i32` path hash + `u8` declared-parameter count + `u32` bytecode length + raw bytecode bytes. |
 | `0x07` | **LineTables** | Per-scope line tables for output text (one per knot/stitch/root). Each scope's table: `DefinitionId` (scope) + line count + encoded line entries (plain strings or interpolation templates). |
 | `0x08` | **Labels** | Address definitions (divert targets). Each entry: `DefinitionId` (address) + `DefinitionId` (container) + `u32` byte offset. |
 | `0x09` | **ListLiterals** | Pre-computed list literal values used by `PushList` instructions. Each entry: item count + `DefinitionId` items + origin count + `DefinitionId` origins. |
