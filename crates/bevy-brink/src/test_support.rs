@@ -291,4 +291,84 @@ mod runtime_story_api {
             "resolved value appears; got {text:?}"
         );
     }
+
+    /// Host-directed parameterized knot entry (#178): `choose_path_string_with_args`
+    /// binds the target knot's declared parameters from host-supplied values.
+    #[test]
+    fn choose_path_string_with_args_binds_params() {
+        let src = "-> END\n=== call(action, present) ===\nYou {action} the {present}.\n-> END\n";
+        let (program, tables, _ctx) = compile_test_story(src);
+        let mut story = Story::<FastRng>::new(&program, tables);
+        story
+            .choose_path_string_with_args("call", &[Value::from("open"), Value::from("box")])
+            .expect("enters the parameterized knot");
+        let text = render(story.continue_maximally().expect("continues"));
+        assert!(
+            text.contains("You open the box."),
+            "params bound into the knot body; got {text:?}"
+        );
+    }
+
+    /// `choose_path_string_with_args` arity-checks against the knot's declared
+    /// parameters (and the plain no-args `choose_path_string` likewise errors on
+    /// a parameterized knot, since it routes through the same check).
+    #[test]
+    fn choose_path_string_arity_mismatch_errors() {
+        use brink_runtime::RuntimeError;
+        let src = "-> END\n=== call(action, present) ===\nYou {action} the {present}.\n-> END\n";
+        let (program, tables, _ctx) = compile_test_story(src);
+        let mut story = Story::<FastRng>::new(&program, tables);
+
+        let too_few = story
+            .choose_path_string_with_args("call", &[Value::from("open")])
+            .unwrap_err();
+        assert!(
+            matches!(
+                too_few,
+                RuntimeError::ArgCountMismatch {
+                    expected: 2,
+                    got: 1,
+                    ..
+                }
+            ),
+            "got {too_few:?}"
+        );
+
+        // No-args entry into a parameterized knot is the same mismatch (0 of 2).
+        let none = story.choose_path_string("call").unwrap_err();
+        assert!(
+            matches!(
+                none,
+                RuntimeError::ArgCountMismatch {
+                    expected: 2,
+                    got: 0,
+                    ..
+                }
+            ),
+            "got {none:?}"
+        );
+    }
+
+    /// `call_function` arity-checks too (the decision behind #178's `param_count`).
+    #[test]
+    fn call_function_arity_mismatch_errors() {
+        use brink_runtime::{FallbackHandler, RuntimeError};
+        let src = "-> END\n=== function add(a, b) ===\n~ return a + b\n";
+        let (program, tables, _) = compile_test_story(src);
+        let mut story = Story::<FastRng>::new(&program, tables);
+        let err = story
+            .call_function("add", &[Value::Int(1)], &FallbackHandler)
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RuntimeError::ArgCountMismatch {
+                    expected: 2,
+                    got: 1,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
 }

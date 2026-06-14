@@ -1034,6 +1034,33 @@ impl FlowInstance {
         context: &mut (impl ContextAccess + ?Sized),
         path: &str,
     ) -> Result<(), RuntimeError> {
+        self.choose_path_string_with_args(program, context, path, &[])
+    }
+
+    /// Like [`choose_path_string`](Self::choose_path_string) but **binds the
+    /// target knot's declared parameters** from `args` — host-directed entry
+    /// into a parameterized knot/stitch (`=== call(action, present) ===`),
+    /// which a plain path jump can't reach with its params bound.
+    ///
+    /// Semantics are otherwise identical to `choose_path_string` (force-ends
+    /// the current flow, counts as a visit, etc.). The args are pushed onto the
+    /// value stack in declaration order and bound by the target's prologue —
+    /// exactly as an in-story `-> call(a, b)` divert binds them, so this enters
+    /// at the container start (where the prologue runs).
+    ///
+    /// # Errors
+    /// In addition to [`choose_path_string`](Self::choose_path_string)'s errors:
+    /// [`ArgCountMismatch`](RuntimeError::ArgCountMismatch) if `args.len()`
+    /// differs from the target container's declared parameter count. (Programs
+    /// built by the converter record no param counts, so they report `0` — pass
+    /// no args.)
+    pub fn choose_path_string_with_args(
+        &mut self,
+        program: &Program,
+        context: &mut (impl ContextAccess + ?Sized),
+        path: &str,
+        args: &[Value],
+    ) -> Result<(), RuntimeError> {
         // A parked host call cannot be silently abandoned: erroring is the
         // strictest safe behavior (brink-specific — C# has no pausable
         // externals during normal playback).
@@ -1055,6 +1082,17 @@ impl FlowInstance {
         let target_id = program
             .find_path_target(path)
             .ok_or_else(|| RuntimeError::UnknownPath(path.to_owned()))?;
+
+        // Arity-check before mutating any state. The target container's
+        // declared param count is what its prologue's `DeclareTemp`s will pop.
+        let expected = program.path_param_count(path).unwrap_or(0);
+        if args.len() != expected as usize {
+            return Err(RuntimeError::ArgCountMismatch {
+                target: path.to_owned(),
+                expected,
+                got: args.len(),
+            });
+        }
 
         // Force-end the current flow, mirroring C# `ResetCallstack` →
         // `StoryState.ForceEnd`: a single fresh root frame (callStack.Reset),
@@ -1080,6 +1118,11 @@ impl FlowInstance {
         self.flow.skipping_choice = false;
         self.flow.in_tag = false;
         self.flow.did_safe_exit = true;
+
+        // Push the arguments in declaration order; the target's prologue
+        // (`DeclareTemp`) binds them, exactly as `begin_function_eval` and an
+        // in-story `-> call(a, b)` divert do.
+        self.flow.value_stack.extend_from_slice(args);
 
         // Jump via the same divert machinery as an in-story `-> path`
         // (mirrors C# `ChoosePath` → `SetChosenPath` +
@@ -1866,6 +1909,16 @@ impl<'p, R: StoryRng> Story<'p, R> {
             .find_address(name)
             .ok_or_else(|| RuntimeError::FunctionNotFound(name.to_owned()))?
             .0;
+        // Arity-check against the function's declared parameters (compiler-built
+        // programs only; converter-built ones record 0 and so accept no args).
+        let expected = self.program.container(container_idx).param_count;
+        if args.len() != expected as usize {
+            return Err(RuntimeError::ArgCountMismatch {
+                target: name.to_owned(),
+                expected,
+                got: args.len(),
+            });
+        }
         let resolver = self.resolver.as_deref();
         let outcome = self.default.begin_function_eval::<R>(
             self.program,
@@ -2072,6 +2125,29 @@ impl<'p, R: StoryRng> Story<'p, R> {
     pub fn choose_path_string(&mut self, path: &str) -> Result<(), RuntimeError> {
         self.default
             .choose_path_string(self.program, &mut self.default_context, path)
+    }
+
+    /// Move the default flow's play head to a parameterized knot/stitch,
+    /// **binding its declared parameters** from `args` — ink's
+    /// `ChoosePathString` with arguments. Otherwise identical to
+    /// [`choose_path_string`](Self::choose_path_string). See
+    /// [`FlowInstance::choose_path_string_with_args`] for full semantics.
+    ///
+    /// # Errors
+    /// As [`choose_path_string`](Self::choose_path_string), plus
+    /// [`ArgCountMismatch`](RuntimeError::ArgCountMismatch) when `args.len()`
+    /// doesn't match the target's declared parameter count.
+    pub fn choose_path_string_with_args(
+        &mut self,
+        path: &str,
+        args: &[Value],
+    ) -> Result<(), RuntimeError> {
+        self.default.choose_path_string_with_args(
+            self.program,
+            &mut self.default_context,
+            path,
+            args,
+        )
     }
 
     /// Read-only access to the default flow's VM statistics.

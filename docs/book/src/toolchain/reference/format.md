@@ -17,7 +17,7 @@
 | Offset | Size | Field |
 |--------|------|-------|
 | 0 | 4 | Magic: `INKB` |
-| 4 | 2 | Version: u16 LE (currently 1) |
+| 4 | 2 | Version: u16 LE (currently 2) |
 | 6 | 1 | Section count: u8 (10) |
 | 7 | 1 | Reserved: 0x00 |
 | 8 | 4 | File size: u32 LE |
@@ -46,7 +46,7 @@ With 10 sections, the offset table occupies 80 bytes (10 x 8). The total header 
 | `0x03` | **ListDefs** | List (enum) type definitions. Each entry: `DefinitionId` + `NameId` + item count + `(NameId, i32 ordinal)` pairs. |
 | `0x04` | **ListItems** | Individual list item definitions. Each entry: `DefinitionId` + origin `DefinitionId` + `i32` ordinal + `NameId`. |
 | `0x05` | **Externals** | External function declarations. Each entry: `DefinitionId` + `NameId` + `u8` arg count + optional fallback `DefinitionId`. |
-| `0x06` | **Containers** | Bytecode containers. Each entry: `DefinitionId` + `u64` content hash + `CountingFlags` byte + `i32` path hash + `u32` bytecode length + raw bytecode bytes. |
+| `0x06` | **Containers** | Bytecode containers. Each entry: `DefinitionId` + scope `DefinitionId` + optional `NameId` + `CountingFlags` byte + `i32` path hash + `u8` declared-parameter count + `u32` bytecode length + raw bytecode bytes. |
 | `0x07` | **LineTables** | Per-scope line tables for output text (one per knot/stitch/root). Each scope's table: `DefinitionId` (scope) + line count + encoded line entries (plain strings or interpolation templates). |
 | `0x08` | **Labels** | Address definitions (divert targets). Each entry: `DefinitionId` (address) + `DefinitionId` (container) + `u32` byte offset. |
 | `0x09` | **ListLiterals** | Pre-computed list literal values used by `PushList` instructions. Each entry: item count + `DefinitionId` items + origin count + `DefinitionId` origins. |
@@ -58,6 +58,14 @@ With 10 sections, the offset table occupies 80 bytes (10 x 8). The total header 
 - `DefinitionId` values are encoded as raw `u64` LE (8 bytes).
 - Strings in the name table are length-prefixed: `u16` LE byte count followed by UTF-8 bytes.
 - Sections are self-contained — the runtime can deserialize them independently. The `read_inkb` function parses all sections into a complete `StoryData` for linking.
+
+### Versioning & compatibility
+
+The header carries a `u16` version, and the reader **rejects any version it doesn't recognize** rather than guessing — every change to the byte layout bumps it.
+
+`.inkb` and `.inkl` are **build artifacts**: regenerated from `.ink` on every compile, not meant to be hand-edited or shipped independently of the compiler that produced them. So the toolchain keeps a single current version and **recompiles on mismatch** — there are no multi-version readers. If you bundle compiled bytes with a game, treat them as version-locked to the brink release you built with, and recompile when you upgrade.
+
+This is separate from **save files**, which *are* designed to survive toolchain upgrades: loading a save reports what it couldn't apply (e.g. a variable a newer story removed) rather than failing outright — see the [Runtime API](./runtime-api.md). Program metadata like container layout never affects save compatibility, since saves reference variables and visit counts by definition id, not by byte offset.
 
 ## `.inkt` format
 

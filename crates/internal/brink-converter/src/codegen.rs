@@ -691,6 +691,11 @@ pub fn process_container(
         bytecode: emitter.bytecode,
         counting_flags,
         path_hash,
+        // The converter (inklecate's JSON → StoryData) can't recover declared
+        // param counts — they're implicit in inklecate's containers. Leave 0;
+        // the reference pipeline doesn't host-direct parameterized entry, so
+        // arity-checking simply isn't available for converter-built programs.
+        param_count: 0,
     };
 
     // Store element offsets for this container, keyed by DefinitionId.

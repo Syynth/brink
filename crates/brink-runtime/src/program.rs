@@ -44,6 +44,8 @@ pub(crate) struct LinkedContainer {
     pub bytecode: Vec<u8>,
     pub counting_flags: CountingFlags,
     pub path_hash: i32,
+    /// Number of declared parameters (for arity-checking host-directed entry).
+    pub param_count: u8,
     /// Index into `Program.line_tables` for this container's scope line table.
     pub scope_table_idx: u32,
 }
@@ -170,6 +172,16 @@ impl Program {
     /// same divert machinery (and visit counting) as `-> path` would.
     pub(crate) fn find_path_target(&self, path: &str) -> Option<DefinitionId> {
         self.address_by_path.get(path).map(|t| t.id)
+    }
+
+    /// Declared parameter count of the container a `path` targets, for
+    /// arity-checking a host-directed parameterized entry. `None` if the path
+    /// is unknown. (Always `0` for converter-built programs, which don't
+    /// record param counts.)
+    pub(crate) fn path_param_count(&self, path: &str) -> Option<u8> {
+        self.address_by_path
+            .get(path)
+            .map(|t| self.containers[t.container_idx as usize].param_count)
     }
 
     /// Build the initial globals vector from slot defaults.

@@ -20,6 +20,14 @@ pub struct ContainerDef {
     /// Sum of char values from the container's ink path string.
     /// Used to seed the RNG for shuffle sequences.
     pub path_hash: i32,
+    /// Number of parameters this container declares (a parameterized knot,
+    /// stitch, or function — e.g. `=== call(action, present) ===` has 2). The
+    /// container's prologue binds them with that many leading `DeclareTemp`s.
+    /// `0` for the vast majority of containers. Lets the runtime arity-check a
+    /// host-directed entry (`choose_path_string_with_args`) or `call_function`.
+    /// The converter reference pipeline leaves this `0` (inklecate's JSON does
+    /// not expose it); only the brink compiler populates the true count.
+    pub param_count: u8,
 }
 
 /// Metadata for a single interpolation slot in a template line.

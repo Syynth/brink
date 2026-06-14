@@ -234,6 +234,11 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
         writeln!(w, "    (path_hash {})", c.path_hash)?;
     }
 
+    // Declared parameter count (parameterized knots/stitches/functions)
+    if c.param_count != 0 {
+        writeln!(w, "    (params {})", c.param_count)?;
+    }
+
     // Line table
     if !lines.is_empty() {
         writeln!(w, "    (lines")?;

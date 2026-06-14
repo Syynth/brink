@@ -448,6 +448,7 @@ mod tests {
                 bytecode: vec![],
                 counting_flags: brink_format::CountingFlags::empty(),
                 path_hash: 0,
+                param_count: 0,
                 scope_table_idx: 0,
             }],
             address_map: {

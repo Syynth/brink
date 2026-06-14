@@ -47,6 +47,7 @@ pub fn link(
             bytecode: cdef.bytecode.clone(),
             counting_flags: cdef.counting_flags,
             path_hash: cdef.path_hash,
+            param_count: cdef.param_count,
             scope_table_idx,
         });
     }
