@@ -319,4 +319,11 @@ export class StoryRunner {
   choose(_index: number): void { /* no-op */ }
   reset(): void { /* no-op */ }
   free(): void { /* no-op */ }
+  // Replay-recording surface (mirrors the real StoryRunner; #173/#189): the
+  // mock records nothing, so has_recording() is always false → the studio's
+  // post-reload re-walk runs live, exactly as before this feature.
+  reload(_bytes: Uint8Array): void { /* no-op */ }
+  begin_replay(): void { /* no-op */ }
+  end_replay(): void { /* no-op */ }
+  has_recording(): boolean { return false; }
 }

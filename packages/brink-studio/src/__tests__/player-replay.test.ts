@@ -17,8 +17,17 @@ import { replayChoices, REPLAY_DIVERGED_MESSAGE } from "@brink/studio-store";
 type Line = { type: string; text: string; tags: string[]; choices?: { index: number; text: string; tags: string[] }[] };
 
 function makeHarness(runner: Record<string, unknown>, choiceLog: number[]) {
+  // Default the replay-recording surface (#173/#189) so each test runner stays
+  // focused on the divergence behavior under test. has_recording=false means the
+  // re-walk runs live — exactly what these tests already assert.
+  const fullRunner: Record<string, unknown> = {
+    hasRecording: () => false,
+    beginReplay: vi.fn(),
+    endReplay: vi.fn(),
+    ...runner,
+  };
   let state: Record<string, unknown> = {
-    _runner: runner,
+    _runner: fullRunner,
     _choiceLog: choiceLog,
     _notify: vi.fn(),
     revealNext: vi.fn(),

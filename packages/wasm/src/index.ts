@@ -672,6 +672,37 @@ export class StoryRunnerHandle {
     this.runner.reset();
   }
 
+  /** Hot-reload a freshly compiled program **in place**, preserving the
+   * session's external bindings, RNG seed, and replay recording, then reset
+   * the play head to the start. Follow with `beginReplay()`, a silent re-walk
+   * of the saved choice log, and `endReplay()` to restore position with
+   * faithful externals (query-gated branches reproduce, effects don't
+   * re-fire). Throws on decode/link failure — the old program keeps running. */
+  reload(storyBytes: Uint8Array): void {
+    this.runner.reload(storyBytes);
+  }
+
+  /** Enter replay mode and reset the replay cursor: visible playback
+   * (`continueStory`/`continueSingle`/`advanceOne`) serves externals from the
+   * recording and re-runs nothing. Bracket the post-`reload` choice re-walk
+   * with this and `endReplay()`. */
+  beginReplay(): void {
+    this.runner.begin_replay();
+  }
+
+  /** Leave replay mode: visible playback resumes invoking bindings and
+   * recording their results (appending to the existing log). */
+  endReplay(): void {
+    this.runner.end_replay();
+  }
+
+  /** Whether any external has been recorded this session — i.e. whether a
+   * post-`reload` re-walk should `beginReplay()` (serve recorded externals)
+   * or run live (a fresh load has nothing recorded yet). */
+  hasRecording(): boolean {
+    return this.runner.has_recording();
+  }
+
   /** Structured, name-resolved snapshot of the runtime's current state. */
   debugSnapshot(): DebugState {
     return JSON.parse(this.runner.debug_snapshot()) as DebugState;
