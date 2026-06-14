@@ -59,6 +59,14 @@ With 10 sections, the offset table occupies 80 bytes (10 x 8). The total header 
 - Strings in the name table are length-prefixed: `u16` LE byte count followed by UTF-8 bytes.
 - Sections are self-contained — the runtime can deserialize them independently. The `read_inkb` function parses all sections into a complete `StoryData` for linking.
 
+### Versioning & compatibility
+
+The header carries a `u16` version, and the reader **rejects any version it doesn't recognize** rather than guessing — every change to the byte layout bumps it.
+
+`.inkb` and `.inkl` are **build artifacts**: regenerated from `.ink` on every compile, not meant to be hand-edited or shipped independently of the compiler that produced them. So the toolchain keeps a single current version and **recompiles on mismatch** — there are no multi-version readers. If you bundle compiled bytes with a game, treat them as version-locked to the brink release you built with, and recompile when you upgrade.
+
+This is separate from **save files**, which *are* designed to survive toolchain upgrades: loading a save reports what it couldn't apply (e.g. a variable a newer story removed) rather than failing outright — see the [Runtime API](./runtime-api.md). Program metadata like container layout never affects save compatibility, since saves reference variables and visit counts by definition id, not by byte offset.
+
 ## `.inkt` format
 
 The textual format is a human-readable disassembly of `.inkb`. Container paths appear as labels, opcodes as mnemonics with operands. Useful for debugging compiler output and diffing two compilations side-by-side.

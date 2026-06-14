@@ -4,6 +4,16 @@
 
 See also: [compiler-spec](compiler-spec.md) (how the compiler produces these types), [runtime-spec](runtime-spec.md) (how the runtime consumes them).
 
+## Versioning
+
+The `.inkb` and `.inkl` formats carry a `(MAGIC, VERSION)` header; the reader **hard-rejects** any version it doesn't recognize (`UnsupportedVersion`). **Every change to the on-the-wire layout bumps `VERSION`.**
+
+Today these are **regenerable build artifacts** — produced from `.ink` on every compile, never decoupled from the compiler that made them — so the policy is deliberately simple: **regenerate on mismatch; no multi-version readers.** Maintaining back-compat parsers for bytes nobody persists would be premature complexity.
+
+This is distinct from the **save format** (`SAVE_FORMAT_VERSION`, `save.rs`), which *is* durable — written by players and expected to survive runtime updates — and is therefore *tolerant* by design (`LoadReport` reports what it couldn't apply rather than failing). Program metadata such as container layout does not affect save compatibility: saves reference visit counts and variables by `DefinitionId`, not by container byte layout.
+
+**When to revisit:** the single-version policy holds until a compiled artifact is first **shipped or cached decoupled from its compiler** — e.g. a game bundles a prebuilt `.inkb` against an independently-updating runtime, or the studio persists compiled bytes across versions. At that point, prefer making sections **length-framed and append-only (TLV-style)** — new fields always appended, sections self-describing — so an older reader can skip what it doesn't recognize, rather than maintaining N full parsers. (The container section's length-prefixed bytecode is already partway there.) Make that call when the first durable consumer appears, not before.
+
 ## Definitions and DefinitionId
 
 All named things in the format — addresses (containers + intra-container labels), global variables, list definitions, list items, external functions, and local variables — use a single `DefinitionId(u64)` type. The high 8 bits are a type tag identifying which table the definition belongs to; the low 56 bits are a hash of the fully qualified name/path.

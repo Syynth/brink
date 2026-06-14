@@ -952,3 +952,11 @@
 - **SCOPE:** architectural
 - **WHAT:** The web/studio replay adapter uses an in-place `StoryRunner.reload(bytes)` that swaps Program/Story while keeping bindings + seed + the replay recorder Rust-side, rather than re-instantiating a fresh StoryRunner per recompile. `startSession` calls `reload` on the existing runner. Mirrors bevy-brink's durable-owner model (recorder lives on the durable owner; the program/flow is what gets swapped). Full-page-reload durability (localStorage persistence) is deferred; HMR-only for now.
 - **WHY:** Keeps recordings entirely Rust-side (no per-compile wasm-boundary marshaling) and unifies both consumers on one "durable owner holds the recorder, swap the program" ownership model — a single mental model, validated by the bevy-brink work. The self-referential reload cost is small and localized to one `&mut self` method.
+
+## Knot parameter arity in the compiled format (#178 host-directed knot entry)
+- **WHEN:** 2026-06-14
+- **PROJECT:** brink
+- **SYSTEM:** format / codegen / runtime (host-directed knot entry, #178)
+- **SCOPE:** architectural
+- **WHAT:** Record knot/container parameter arity in the compiled format — add `param_count` to `ContainerDef`, populated by codegen from the knot's declared params (the converter reference pipeline defaults it to 0/unknown). This backs `choose_path_string_with_args(path, &[Value])` arity validation and lets `call_function` validate too. Chosen over (a) shipping without arity checks like `call_function` does today, and (b) bytecode introspection (fragile — a leading `~ temp` also emits a `DeclareTemp`, so the count over-reads).
+- **WHY:** #178 requires erroring on arity mismatch, but the format had no knot param metadata (only `ExternalFnDef` has `arg_count`). Recording the real count at codegen is the only robust source — the runtime can't reliably recover it from bytecode, and the converter can't from inklecate's JSON. It's an additive metadata field, so execution behavior and the oracle are unaffected, at the cost of an `.inkb` format-version bump.
