@@ -888,6 +888,10 @@ enum Dispatch {
     Query {
         system: QuerySystemId,
         qargs: Vec<Value>,
+        /// External name, carried only in dev builds so the resolved query
+        /// result can be recorded into the flow's replay log.
+        #[cfg(feature = "dev")]
+        name: String,
     },
     /// `bind_brink_async` (event): fire [`BrinkExternalAwaited`] + insert the
     /// [`BrinkAwaiting`] marker.
@@ -896,6 +900,13 @@ enum Dispatch {
     /// [`BrinkPendingTask`].
     SpawnTask {
         fut: Pin<Box<dyn Future<Output = Value> + Send>>,
+        /// Name + args, carried only in dev builds so [`poll_brink_tasks`]
+        /// can record the task's result into the flow's replay log when it
+        /// completes (the value isn't known until then).
+        #[cfg(feature = "dev")]
+        name: String,
+        #[cfg(feature = "dev")]
+        qargs: Vec<Value>,
     },
 }
 
@@ -907,65 +918,91 @@ enum Dispatch {
 /// - `bind_brink_task` → spawn the future once (guarded by [`BrinkPendingTask`])
 ///   and leave the flow parked for [`poll_brink_tasks`](crate::poll_brink_tasks).
 ///
+/// Decide what [`dispatch_one_external`] should do for `entity`, computed inside
+/// the immutable borrow scope (so the action can re-borrow `&mut World`).
+/// [`Dispatch::Nothing`] when the flow has no pending external, isn't loaded, or
+/// has already been dispatched.
+#[expect(
+    clippy::type_complexity,
+    reason = "SystemState param tuple for the flow component (+ dispatch markers) + assets + bindings"
+)]
+fn decide_dispatch<M: Send + Sync + 'static>(world: &mut World, entity: Entity) -> Dispatch {
+    let mut state: SystemState<(
+        Query<(
+            &BrinkProgram<M>,
+            &BrinkFlow<M>,
+            Option<&BrinkAwaiting<M>>,
+            Option<&BrinkPendingTask<M>>,
+        )>,
+        Res<Assets<ProgramAsset>>,
+        Res<BrinkBindings<M>>,
+    )> = SystemState::new(world);
+    let (flows, programs, bindings) = state.get(world);
+    let Ok((prog_c, flow, awaiting, pending_task)) = flows.get(entity) else {
+        return Dispatch::Nothing;
+    };
+    if !flow.inner.has_pending_external() {
+        return Dispatch::Nothing;
+    }
+    let Some(program) = programs.get(&prog_c.handle) else {
+        // Program not loaded yet — leave parked; we'll retry next frame.
+        return Dispatch::Nothing;
+    };
+    let program = &program.program;
+    let name = flow
+        .inner
+        .pending_external_name(program)
+        .unwrap_or_default()
+        .to_owned();
+    let qargs = flow.inner.pending_external_args().to_vec();
+
+    if let Some(system) = bindings.query(&name) {
+        Dispatch::Query {
+            system,
+            qargs,
+            #[cfg(feature = "dev")]
+            name,
+        }
+    } else if let Some(kind) = bindings.async_bindings.get(&name) {
+        match kind {
+            AsyncKind::Event if awaiting.is_some() => Dispatch::Nothing, // already fired
+            AsyncKind::Event => Dispatch::FireEvent { name, qargs },
+            AsyncKind::Task(_) if pending_task.is_some() => Dispatch::Nothing, // already spawned
+            AsyncKind::Task(factory) => {
+                #[cfg(feature = "dev")]
+                let fut = factory(qargs.clone());
+                #[cfg(not(feature = "dev"))]
+                let fut = factory(qargs);
+                Dispatch::SpawnTask {
+                    fut,
+                    #[cfg(feature = "dev")]
+                    name,
+                    #[cfg(feature = "dev")]
+                    qargs,
+                }
+            }
+        }
+    } else {
+        // Pending but unbound. The handler only pauses on registered names, so
+        // this indicates a registration race; warn and leave parked.
+        warn!("brink: flow {entity:?} parked on unbound external '{name}'");
+        Dispatch::Nothing
+    }
+}
+
 /// A no-op when the flow has no pending external or its program isn't loaded.
 fn dispatch_one_external<M: Send + Sync + 'static>(world: &mut World, entity: Entity) {
-    #[expect(
-        clippy::type_complexity,
-        reason = "SystemState param tuple for the flow component (+ dispatch markers) + assets + bindings"
-    )]
-    let dispatch = {
-        let mut state: SystemState<(
-            Query<(
-                &BrinkProgram<M>,
-                &BrinkFlow<M>,
-                Option<&BrinkAwaiting<M>>,
-                Option<&BrinkPendingTask<M>>,
-            )>,
-            Res<Assets<ProgramAsset>>,
-            Res<BrinkBindings<M>>,
-        )> = SystemState::new(world);
-        let (flows, programs, bindings) = state.get(world);
-        let Ok((prog_c, flow, awaiting, pending_task)) = flows.get(entity) else {
-            return;
-        };
-        if !flow.inner.has_pending_external() {
-            return;
-        }
-        let Some(program) = programs.get(&prog_c.handle) else {
-            // Program not loaded yet — leave parked; we'll retry next frame.
-            return;
-        };
-        let program = &program.program;
-        let name = flow
-            .inner
-            .pending_external_name(program)
-            .unwrap_or_default()
-            .to_owned();
-        let qargs = flow.inner.pending_external_args().to_vec();
-
-        if let Some(system) = bindings.query(&name) {
-            Dispatch::Query { system, qargs }
-        } else if let Some(kind) = bindings.async_bindings.get(&name) {
-            match kind {
-                AsyncKind::Event if awaiting.is_some() => Dispatch::Nothing, // already fired
-                AsyncKind::Event => Dispatch::FireEvent { name, qargs },
-                AsyncKind::Task(_) if pending_task.is_some() => Dispatch::Nothing, // already spawned
-                AsyncKind::Task(factory) => Dispatch::SpawnTask {
-                    fut: factory(qargs),
-                },
-            }
-        } else {
-            // Pending but unbound. The handler only pauses on registered names,
-            // so this indicates a registration race; warn and leave parked.
-            warn!("brink: flow {entity:?} parked on unbound external '{name}'");
-            Dispatch::Nothing
-        }
-    };
-
-    match dispatch {
+    match decide_dispatch::<M>(world, entity) {
         Dispatch::Nothing => {}
-        Dispatch::Query { system, qargs } => match world.run_system_with(system, (entity, qargs)) {
+        Dispatch::Query {
+            system,
+            qargs,
+            #[cfg(feature = "dev")]
+            name,
+        } => match world.run_system_with(system, (entity, qargs.clone())) {
             Ok(value) => {
+                #[cfg(feature = "dev")]
+                crate::replay::record_external::<M>(world, entity, &name, &qargs, &value);
                 let mut flows = world.query::<&mut BrinkFlow<M>>();
                 if let Ok(mut flow) = flows.get_mut(world, entity) {
                     flow.inner.resolve_external(value);
@@ -984,13 +1021,23 @@ fn dispatch_one_external<M: Send + Sync + 'static>(world: &mut World, entity: En
                 .entity_mut(entity)
                 .trigger(|e| BrinkExternalAwaited::<M>::new(e, name, qargs));
         }
-        Dispatch::SpawnTask { fut } => {
+        Dispatch::SpawnTask {
+            fut,
+            #[cfg(feature = "dev")]
+            name,
+            #[cfg(feature = "dev")]
+            qargs,
+        } => {
             // get_or_init so we don't panic in apps/tests without TaskPoolPlugin;
             // a no-op when the pool is already set up (e.g. by DefaultPlugins).
             let task = AsyncComputeTaskPool::get_or_init(TaskPool::default).spawn(fut);
-            world
-                .entity_mut(entity)
-                .insert(BrinkPendingTask::<M>::new(task));
+            world.entity_mut(entity).insert(BrinkPendingTask::<M>::new(
+                task,
+                #[cfg(feature = "dev")]
+                name,
+                #[cfg(feature = "dev")]
+                qargs,
+            ));
         }
     }
 }

@@ -9,6 +9,8 @@ use brink_format::LineEntry;
 use brink_runtime::{
     Context, ExternalFnHandler, FastRng, FlowInstance, Line, Program, RuntimeError, StepOutcome,
 };
+#[cfg(feature = "dev")]
+use brink_runtime::{RecordingHandler, ReplayRecorder};
 
 use crate::event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 
@@ -137,6 +139,78 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
                 Advance::Line(_) => {}
                 // Can't resolve a world query from here — yield to the
                 // plugin resolver; the caller resumes next frame.
+                Advance::AwaitingQuery => return Ok(Advance::AwaitingQuery),
+            }
+        }
+        Err(RuntimeError::StepLimitExceeded(STEP_LIMIT))
+    }
+
+    /// Like [`step_one`](Self::step_one) but records every external the VM
+    /// resolves *inline* (pure/command bindings) into `recorder` — the flow's
+    /// [`BrinkReplayLog`](crate::BrinkReplayLog) recorder — by wrapping
+    /// `handler` in a [`RecordingHandler`]. World-access/async externals park
+    /// (`AwaitingQuery`) and are recorded out-of-band by the plugin resolver
+    /// when it supplies their value.
+    ///
+    /// Use this (rather than [`step_one`](Self::step_one)) on the non-exclusive
+    /// playback path when you want a hot-reload to replay faithfully: only
+    /// externals captured here and at the resolve sites feed the reload
+    /// re-walk. Available only with the `dev` feature.
+    #[cfg(feature = "dev")]
+    #[expect(clippy::too_many_arguments, reason = "recording adds the recorder")]
+    pub fn step_one_recording(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<LineEntry>],
+        context: &mut Context,
+        handler: &dyn ExternalFnHandler,
+        recorder: &mut ReplayRecorder,
+        entity: Entity,
+        commands: &mut Commands,
+    ) -> Result<Advance, RuntimeError> {
+        let recording = RecordingHandler::new(handler, recorder);
+        match self
+            .inner
+            .advance::<FastRng>(program, line_tables, context, &recording, None)?
+        {
+            StepOutcome::Line(line) => {
+                emit_event::<M>(&line, entity, commands);
+                Ok(Advance::Line(line))
+            }
+            StepOutcome::AwaitingExternal => Ok(Advance::AwaitingQuery),
+        }
+    }
+
+    /// Recording counterpart to
+    /// [`advance_until_terminal`](Self::advance_until_terminal): steps to a
+    /// terminal line while recording every inline external into `recorder` (see
+    /// [`step_one_recording`](Self::step_one_recording)). Available only with
+    /// the `dev` feature.
+    #[cfg(feature = "dev")]
+    #[expect(clippy::too_many_arguments, reason = "recording adds the recorder")]
+    pub fn advance_until_terminal_recording(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<LineEntry>],
+        context: &mut Context,
+        handler: &dyn ExternalFnHandler,
+        recorder: &mut ReplayRecorder,
+        entity: Entity,
+        commands: &mut Commands,
+    ) -> Result<Advance, RuntimeError> {
+        const STEP_LIMIT: u64 = 10_000;
+        for _ in 0..STEP_LIMIT {
+            match self.step_one_recording(
+                program,
+                line_tables,
+                context,
+                handler,
+                recorder,
+                entity,
+                commands,
+            )? {
+                Advance::Line(line) if line.is_terminal() => return Ok(Advance::Line(line)),
+                Advance::Line(_) => {}
                 Advance::AwaitingQuery => return Ok(Advance::AwaitingQuery),
             }
         }
@@ -927,6 +1001,277 @@ mod tests {
         assert!(
             !rendered_after.contains("OFF"),
             "reload must not re-query live (which would now be OFF); got: {rendered_after:?}"
+        );
+    }
+
+    /// End-to-end Recorded-mode replay on the *non-exclusive* `step_one` path:
+    /// `step_one_recording` captures an inline pure binding while the plugin's
+    /// `resolve_pending_externals` records an out-of-band world query — both, in
+    /// VM order, replay faithfully on hot-reload even after the live state flips.
+    #[test]
+    #[cfg(feature = "dev")]
+    #[expect(clippy::too_many_lines, reason = "end-to-end replay test")]
+    fn hot_reload_replays_recorded_externals_on_non_exclusive_path() {
+        use crate::{
+            BrinkBindings, BrinkBindingsAppExt, BrinkLocale, BrinkProgram, BrinkQueryInput, Value,
+        };
+        use bevy_asset::Assets;
+
+        #[derive(Resource)]
+        struct SwitchState(bool);
+        #[derive(Resource, Default)]
+        struct DriveOn(bool);
+        #[expect(
+            clippy::needless_pass_by_value,
+            reason = "bevy system params are taken by value"
+        )]
+        fn get_switch(In((_e, _a)): In<BrinkQueryInput>, s: Res<SwitchState>) -> Value {
+            Value::Bool(s.0)
+        }
+
+        // Non-exclusive recording driver (gated by DriveOn so it doesn't run
+        // during the simulated reload): advance each non-parked flow to terminal
+        // via `step_one_recording`; the plugin's resolver records + resolves the
+        // parked query out-of-band.
+        #[expect(
+            clippy::type_complexity,
+            clippy::needless_pass_by_value,
+            reason = "bevy system params"
+        )]
+        fn driver(
+            mut flows: Query<(
+                Entity,
+                &mut BrinkFlow<()>,
+                &mut crate::BrinkContext<()>,
+                &mut crate::replay::BrinkReplayLog<()>,
+                &BrinkProgram<()>,
+                &BrinkLocale<()>,
+            )>,
+            programs: Res<Assets<crate::ProgramAsset>>,
+            tables: Res<Assets<crate::LineTablesAsset>>,
+            bindings: Res<BrinkBindings<()>>,
+            drive: Res<DriveOn>,
+            mut commands: Commands,
+        ) {
+            if !drive.0 {
+                return;
+            }
+            for (entity, mut flow, mut ctx, mut log, prog, loc) in &mut flows {
+                if flow.inner.has_pending_external() {
+                    continue;
+                }
+                let (Some(p), Some(t)) = (programs.get(&prog.handle), tables.get(&loc.handle))
+                else {
+                    continue;
+                };
+                let handler = bindings.handler();
+                let _ = flow.advance_until_terminal_recording(
+                    &p.program,
+                    &t.tables,
+                    &mut ctx.inner,
+                    &handler,
+                    &mut log.recorder,
+                    entity,
+                    &mut commands,
+                );
+                handler.flush(&mut commands);
+            }
+        }
+
+        let mut app = make_test_app();
+        install_recorder(&mut app);
+        render_harness::install(&mut app);
+        app.insert_resource(SwitchState(true));
+        app.init_resource::<DriveOn>();
+        app.bind_brink_fn::<(), _, _>("dbl", |a| {
+            a.first().and_then(Value::as_int).unwrap_or(0) * 2
+        });
+        app.bind_brink_query::<(), _, _>("get_switch", get_switch);
+        app.add_systems(Update, driver);
+
+        let (program, tables, ctx) = compile_test_story(
+            "EXTERNAL dbl(x)\nEXTERNAL get_switch(n)\n\
+             Val {dbl(20)} switch {get_switch(1): ON|OFF}.\n-> END\n",
+        );
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+
+        // Drive across frames: query parks, the resolver resolves it, then the
+        // driver resumes to the end.
+        app.world_mut().resource_mut::<DriveOn>().0 = true;
+        for _ in 0..8 {
+            app.update();
+        }
+
+        // Both externals were recorded, in VM order (pure dbl, then the query).
+        let len = app
+            .world()
+            .entity(entity)
+            .get::<crate::replay::BrinkReplayLog<()>>()
+            .expect("replay log")
+            .recorder
+            .len();
+        assert_eq!(len, 2, "dbl + get_switch should both be recorded");
+
+        // Stop driving and flip the live state: a re-run would now answer OFF.
+        app.world_mut().resource_mut::<DriveOn>().0 = false;
+        app.world_mut().resource_mut::<SwitchState>().0 = false;
+
+        let program_handle = app
+            .world()
+            .entity(entity)
+            .get::<BrinkProgram<()>>()
+            .expect("BrinkProgram")
+            .handle
+            .clone();
+        {
+            let mut programs = app
+                .world_mut()
+                .resource_mut::<Assets<crate::ProgramAsset>>();
+            let _ = programs.get_mut(&program_handle);
+        }
+        app.update();
+        app.update();
+
+        let rendered = render_harness::render(&app);
+        assert!(
+            rendered.contains("Val 40 switch ON."),
+            "reload should replay recorded dbl=40 + get_switch=ON; got: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("OFF"),
+            "reload must not re-run externals live (which would be OFF); got: {rendered:?}"
+        );
+    }
+
+    /// A `bind_brink_task` external recorded during play replays *synchronously*
+    /// on hot-reload: the reload re-walk serves the recorded value through
+    /// `ReplayHandler`, so no task is spawned and the branch reproduces.
+    #[test]
+    #[cfg(feature = "dev")]
+    #[expect(clippy::too_many_lines, reason = "end-to-end replay test")]
+    fn hot_reload_replays_recorded_task_result() {
+        use crate::{BrinkBindings, BrinkBindingsAppExt, BrinkLocale, BrinkProgram, Value};
+        use bevy_asset::Assets;
+
+        #[derive(Resource, Default)]
+        struct DriveOn(bool);
+
+        #[expect(
+            clippy::type_complexity,
+            clippy::needless_pass_by_value,
+            reason = "bevy system params"
+        )]
+        fn driver(
+            mut flows: Query<(
+                Entity,
+                &mut BrinkFlow<()>,
+                &mut crate::BrinkContext<()>,
+                &mut crate::replay::BrinkReplayLog<()>,
+                &BrinkProgram<()>,
+                &BrinkLocale<()>,
+            )>,
+            programs: Res<Assets<crate::ProgramAsset>>,
+            tables: Res<Assets<crate::LineTablesAsset>>,
+            bindings: Res<BrinkBindings<()>>,
+            drive: Res<DriveOn>,
+            mut commands: Commands,
+        ) {
+            if !drive.0 {
+                return;
+            }
+            for (entity, mut flow, mut ctx, mut log, prog, loc) in &mut flows {
+                if flow.inner.has_pending_external() {
+                    continue;
+                }
+                let (Some(p), Some(t)) = (programs.get(&prog.handle), tables.get(&loc.handle))
+                else {
+                    continue;
+                };
+                let handler = bindings.handler();
+                let _ = flow.advance_until_terminal_recording(
+                    &p.program,
+                    &t.tables,
+                    &mut ctx.inner,
+                    &handler,
+                    &mut log.recorder,
+                    entity,
+                    &mut commands,
+                );
+                handler.flush(&mut commands);
+            }
+        }
+
+        let mut app = make_test_app();
+        install_recorder(&mut app);
+        render_harness::install(&mut app);
+        app.init_resource::<DriveOn>();
+        app.bind_brink_task::<(), _, _>("roll", |args: Vec<Value>| async move {
+            let n = args.first().and_then(Value::as_int).unwrap_or(0);
+            Value::Int(n * 2)
+        });
+        app.add_systems(Update, driver);
+
+        let (program, tables, ctx) =
+            compile_test_story("EXTERNAL roll(n)\nRolled {roll(21)}.\n-> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+
+        // Drive until the task resolves (poll_brink_tasks records its value).
+        app.world_mut().resource_mut::<DriveOn>().0 = true;
+        let mut played = false;
+        for _ in 0..200 {
+            app.update();
+            if render_harness::render(&app).contains("Rolled 42.") {
+                played = true;
+                break;
+            }
+        }
+        assert!(played, "task should resolve to 42 during play");
+        let len = app
+            .world()
+            .entity(entity)
+            .get::<crate::replay::BrinkReplayLog<()>>()
+            .expect("replay log")
+            .recorder
+            .len();
+        assert_eq!(len, 1, "roll should be recorded once");
+
+        // Reload: the recorded value is replayed inline, so no task is spawned.
+        app.world_mut().resource_mut::<DriveOn>().0 = false;
+        let program_handle = app
+            .world()
+            .entity(entity)
+            .get::<BrinkProgram<()>>()
+            .expect("BrinkProgram")
+            .handle
+            .clone();
+        {
+            let mut programs = app
+                .world_mut()
+                .resource_mut::<Assets<crate::ProgramAsset>>();
+            let _ = programs.get_mut(&program_handle);
+        }
+        app.update();
+        app.update();
+
+        let rendered = render_harness::render(&app);
+        assert!(
+            rendered.contains("Rolled 42."),
+            "reload should replay the recorded task value synchronously; got: {rendered:?}"
+        );
+        assert!(
+            app.world()
+                .entity(entity)
+                .get::<crate::BrinkPendingTask<()>>()
+                .is_none(),
+            "reload should not spawn a task (the value is replayed)"
         );
     }
 }
