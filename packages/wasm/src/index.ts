@@ -10,6 +10,7 @@
 
 import init, {
   compile as wasmCompile,
+  program_checksum as wasmProgramChecksum,
   token_type_names,
   token_modifier_names,
   EditorSession as WasmEditorSession,
@@ -78,6 +79,16 @@ export async function initWasm(
 export function compile(source: string): CompileResult {
   const json = wasmCompile(source);
   return JSON.parse(json) as CompileResult;
+}
+
+/**
+ * The source-identity checksum of compiled `.inkb` bytes — identical to
+ * `ProgramModel.checksum` (`"0x{:08x}"`), but computed without constructing a
+ * `StoryRunnerHandle`. The studio compares a running program's identity to its
+ * latest compile to detect "source out of sync" (live-inspector degraded mode).
+ */
+export function programChecksum(storyBytes: Uint8Array): string {
+  return wasmProgramChecksum(storyBytes);
 }
 
 // ── Token legend (stateless) ────────────────────────────────────

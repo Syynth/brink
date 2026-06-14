@@ -41,6 +41,7 @@ import { LocalSessionProvider } from "../session/local-provider.js";
 export {
   statusOfLine,
   sessionCanContinue,
+  sessionDegraded,
   ALL_CAPABILITIES,
   type SessionStatus,
   type SessionSnapshot,

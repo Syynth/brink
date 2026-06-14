@@ -85,3 +85,14 @@
 .brink-studio .brink-status-story-dot.status-error {
   background: var(--bs-error);
 }
+
+/* Degraded mode (spec §5, #181): the running program is out of sync with the
+   studio's latest compile. A muted-warning tint, not an error — inspection
+   still works, only source-position features pause. */
+.brink-studio .brink-status-story.degraded {
+  color: var(--bs-warning);
+  font-style: italic;
+}
+.brink-studio .brink-status-story-dot.degraded {
+  background: var(--bs-warning);
+}

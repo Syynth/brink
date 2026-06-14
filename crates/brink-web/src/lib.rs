@@ -63,6 +63,18 @@ pub fn compile(source: &str) -> String {
     }
 }
 
+/// The source-identity checksum of compiled `.inkb` bytes, formatted as
+/// `0x{:08x}` — identical to `ProgramModel.checksum`. Lets the studio compare a
+/// running program's identity against its latest compile *without* constructing
+/// a `StoryRunner` (live-inspector degraded mode, #181 / spec §5): a mismatch
+/// means the running program is not the studio's current source.
+#[wasm_bindgen]
+pub fn program_checksum(story_bytes: &[u8]) -> Result<String, JsError> {
+    let data = brink_format::read_inkb(story_bytes)
+        .map_err(|e| JsError::new(&format!("decode error: {e}")))?;
+    Ok(format!("0x{:08x}", data.source_checksum))
+}
+
 #[derive(Serialize)]
 struct CompileResult {
     ok: bool,
@@ -3728,5 +3740,35 @@ mod binding_wasm_tests {
             text.contains("Got 42."),
             "resolved async value appears; got {text:?}"
         );
+    }
+
+    // ── Program identity (#181 / spec §5) ────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn program_checksum_matches_program_model() {
+        let b = bytes("Hello.\n-> END\n");
+        let sum = super::program_checksum(&b).ok().expect("checksum decodes");
+        assert!(sum.starts_with("0x"), "formatted as hex: {sum}");
+        // The standalone checksum must match the one the runner's program model
+        // reports — the studio compares the two to detect source-out-of-sync.
+        let model = runner("Hello.\n-> END\n")
+            .program_model()
+            .ok()
+            .expect("model");
+        assert!(
+            model.contains(&format!("\"checksum\":\"{sum}\"")),
+            "program_model carries the same checksum; model={model}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn program_checksum_differs_for_different_sources() {
+        let a = super::program_checksum(&bytes("Apple.\n-> END\n"))
+            .ok()
+            .expect("a");
+        let b = super::program_checksum(&bytes("Banana.\n-> END\n"))
+            .ok()
+            .expect("b");
+        assert_ne!(a, b, "distinct sources have distinct identity");
     }
 }

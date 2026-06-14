@@ -10,6 +10,7 @@
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
 import type { Diagnostic, FileOutline, StoryGraph } from "@brink/wasm-types";
+import { programChecksum } from "@brink-lang/web";
 
 /**
  * Canonical Problems ordering (deterministic): file path, then start offset,
@@ -38,6 +39,13 @@ export interface CompileSlice {
   /** Full diagnostic list from the latest compile, in canonical order. */
   diagnosticsList: Diagnostic[];
   storyBytes: Uint8Array | null;
+  /**
+   * Source-identity checksum of the latest successful compile's bytes
+   * (`"0x{:08x}"`, matches `ProgramModel.checksum`). The studio compares this
+   * to the *running* program's `programChecksum` to detect degraded mode
+   * (live-inspector spec §5, #181). `null` when the latest compile failed.
+   */
+  compiledChecksum: string | null;
   /**
    * Whole-project story graph for the Story Graph document (#97, spec §4.1).
    * Refreshed on each successful compile; a failed compile keeps the last
@@ -72,11 +80,29 @@ export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice>
   diagnostics: { errors: 0, warnings: 0 },
   diagnosticsList: [],
   storyBytes: null,
+  compiledChecksum: null,
   storyGraph: null,
   externalCheck: "error",
 
   setCompileResult(outline, diagnostics, diagnosticsList, storyBytes) {
-    set({ outline, diagnostics, diagnosticsList: sortDiagnostics(diagnosticsList), storyBytes });
+    // Identity of this compile, for the degraded-mode comparison (spec §5).
+    // A failed compile (null bytes) clears it; a decode failure leaves it null
+    // rather than throwing into the compile path.
+    let compiledChecksum: string | null = null;
+    if (storyBytes) {
+      try {
+        compiledChecksum = programChecksum(storyBytes);
+      } catch {
+        compiledChecksum = null;
+      }
+    }
+    set({
+      outline,
+      diagnostics,
+      diagnosticsList: sortDiagnostics(diagnosticsList),
+      storyBytes,
+      compiledChecksum,
+    });
   },
 
   setStoryGraph(graph) {
