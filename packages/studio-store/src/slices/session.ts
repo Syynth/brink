@@ -176,12 +176,25 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
 
   startSession(bytes) {
     const prev = get()._runner;
-    if (prev) {
-      prev.free();
-    }
 
     try {
-      const runner = new StoryRunnerHandle(bytes);
+      // Reuse the live runner via in-place hot-reload when one exists: this
+      // preserves the replay recording, so the saved choice log replays with
+      // faithful externals (query-gated branches reproduce; effect bindings
+      // don't re-fire). Fall back to a fresh runner when there's none, or if
+      // reload fails (decode/link).
+      let runner: StoryRunnerHandle;
+      if (prev) {
+        try {
+          prev.reload(bytes);
+          runner = prev;
+        } catch {
+          prev.free();
+          runner = new StoryRunnerHandle(bytes);
+        }
+      } else {
+        runner = new StoryRunnerHandle(bytes);
+      }
       // The program inspection is static for the program — capture once on load.
       let programModel: ProgramModel | null = null;
       let programInkt: string | null = null;
@@ -398,6 +411,26 @@ export function replayChoices(set: SetFn, get: GetFn, choiceLog: number[]): void
   const runner = get()._runner;
   if (!runner) return;
 
+  // When the runner holds a recording (the player played before a hot-reload),
+  // serve externals from it during the silent re-walk *and* the current-page
+  // reveal, so query-gated branches reproduce and effect bindings don't
+  // re-fire. On a fresh load the recording is empty, so replay runs live
+  // (today's behavior). end_replay always runs, even on a divergence return.
+  const useRecording = runner.hasRecording();
+  if (useRecording) runner.beginReplay();
+  try {
+    replayChoicesWalk(set, get, runner, choiceLog);
+  } finally {
+    if (useRecording) runner.endReplay();
+  }
+}
+
+function replayChoicesWalk(
+  set: SetFn,
+  get: GetFn,
+  runner: StoryRunnerHandle,
+  choiceLog: number[],
+): void {
   const allText: string[] = [];
   let choiceIdx = 0;
 

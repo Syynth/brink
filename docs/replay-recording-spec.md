@@ -155,8 +155,16 @@ driver resolves it.
   - **Deferred:** `ReplayMode::Live` — the `BrinkReplayConfig`/`ReplayQueryModeOverride` seam
     exists but isn't consumed yet; it needs the world-re-query refactor with the effect-re-fire
     caveat. Recording is otherwise complete for the Bevy adapter.
-- **Web/studio**: record inside the wasm `StoryRunner`; `session.ts`'s choice-replay drives the
-  shared handler over the wasm boundary. Closes the latent gap with no manifest `@kind`.
+- **Web/studio** — **landed.** The wasm `StoryRunner` owns a `ReplayRecorder` and records every
+  external during visible playback (`continue_*`/`advance_one`) via a `RecordingReplayHandler`
+  that composes the `JsHandler` with the recorder; out-of-band async results are recorded in
+  `resolve_external`. The **durable owner** is the runner itself: `reload(bytes)` swaps the
+  program in place (preserving bindings, seed, and the recording) rather than re-instantiating,
+  so the recorder never crosses the wasm boundary (decision 2026-06-14). `begin_replay`/
+  `end_replay` bracket the studio's post-reload choice re-walk (`session.ts` `replayChoices`),
+  served from the recording when `has_recording()`; a fresh load (empty recording) re-walks live,
+  exactly as before. Closes the latent gap with no manifest `@kind`. **Deferred:** full-page-reload
+  durability (persisting the recording to localStorage) — HMR-only for now; `ReplayMode::Live`.
 - **RMMZ** (celeris #78): align the host-side implementation onto this model.
 
 ## 7. Out of scope

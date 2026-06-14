@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use brink_format::Value;
 use brink_ide::session::IdeSession;
-use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng};
+use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng, ReplayRecorder};
 use rowan::{TextRange, TextSize};
 use serde::Serialize;
 use wasm_bindgen::JsCast;
@@ -123,6 +123,18 @@ pub struct StoryRunner {
     /// callback (or a second `continueAsync`) that re-enters gets a clean error
     /// + `console.warn` instead of a `RefCell` double-borrow panic.
     busy: Cell<bool>,
+    /// Records every external resolved during live playback so a hot-reload
+    /// ([`reload`](Self::reload)) can replay them faithfully — query-gated
+    /// branches reproduce and effect bindings don't re-fire. Lives Rust-side
+    /// across reloads (the program is swapped in place, this is kept); never
+    /// crosses the wasm boundary. See `docs/replay-recording-spec.md`.
+    recorder: RefCell<ReplayRecorder>,
+    /// While `true`, visible playback (`continue_*`/`advance_one`) serves
+    /// externals from `recorder` instead of invoking JS bindings — used by the
+    /// studio to silently re-walk the recorded choice log after a reload.
+    /// Bracketed by [`begin_replay`](Self::begin_replay) /
+    /// [`end_replay`](Self::end_replay).
+    replaying: Cell<bool>,
 }
 
 #[wasm_bindgen]
@@ -161,6 +173,8 @@ impl StoryRunner {
             seed: Cell::new(None),
             pending_promise: RefCell::new(None),
             busy: Cell::new(false),
+            recorder: RefCell::new(ReplayRecorder::new()),
+            replaying: Cell::new(false),
         })
     }
 
@@ -322,10 +336,15 @@ impl StoryRunner {
         let _guard =
             BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("continue_story"))?;
         let bindings = self.bindings.borrow();
-        let handler = JsHandler {
-            bindings: &bindings,
-            lenient: self.lenient_unbound.get(),
-            pending: &self.pending_promise,
+        let mut rec = self.recorder.borrow_mut();
+        let handler = RecordingReplayHandler {
+            inner: JsHandler {
+                bindings: &bindings,
+                lenient: self.lenient_unbound.get(),
+                pending: &self.pending_promise,
+            },
+            recorder: RefCell::new(&mut rec),
+            replaying: self.replaying.get(),
         };
         let mut borrow = self.story.borrow_mut();
         let story = borrow
@@ -347,10 +366,15 @@ impl StoryRunner {
         let _guard =
             BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("continue_single"))?;
         let bindings = self.bindings.borrow();
-        let handler = JsHandler {
-            bindings: &bindings,
-            lenient: self.lenient_unbound.get(),
-            pending: &self.pending_promise,
+        let mut rec = self.recorder.borrow_mut();
+        let handler = RecordingReplayHandler {
+            inner: JsHandler {
+                bindings: &bindings,
+                lenient: self.lenient_unbound.get(),
+                pending: &self.pending_promise,
+            },
+            recorder: RefCell::new(&mut rec),
+            replaying: self.replaying.get(),
         };
         let mut borrow = self.story.borrow_mut();
         let story = borrow
@@ -376,10 +400,15 @@ impl StoryRunner {
         let _guard =
             BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("advance_one"))?;
         let bindings = self.bindings.borrow();
-        let handler = JsHandler {
-            bindings: &bindings,
-            lenient: self.lenient_unbound.get(),
-            pending: &self.pending_promise,
+        let mut rec = self.recorder.borrow_mut();
+        let handler = RecordingReplayHandler {
+            inner: JsHandler {
+                bindings: &bindings,
+                lenient: self.lenient_unbound.get(),
+                pending: &self.pending_promise,
+            },
+            recorder: RefCell::new(&mut rec),
+            replaying: self.replaying.get(),
         };
         let mut borrow = self.story.borrow_mut();
         let story = borrow
@@ -414,6 +443,17 @@ impl StoryRunner {
         }
         let v = js_to_value(value);
         if let Some(story) = self.story.borrow_mut().as_mut() {
+            // Record the resolved async external (live mode only) so a reload
+            // can replay it. The flow is still parked, so its name + args are
+            // available here.
+            if !self.replaying.get() {
+                let info = story
+                    .pending_external_name()
+                    .map(|n| (n.to_owned(), story.pending_external_args().to_vec()));
+                if let Some((name, args)) = info {
+                    self.recorder.borrow_mut().record(&name, &args, &v);
+                }
+            }
             story.resolve_external(v);
         }
     }
@@ -483,6 +523,76 @@ impl StoryRunner {
             story.set_rng_seed(seed);
         }
         *self.story.borrow_mut() = Some(story);
+        // A reset is a fresh playthrough: drop the recording and leave replay.
+        *self.recorder.borrow_mut() = ReplayRecorder::new();
+        self.replaying.set(false);
+    }
+
+    /// Hot-reload: swap in a freshly compiled program **in place**, preserving
+    /// the session's external bindings, RNG seed, and replay recording, then
+    /// reset the play head to the start. The studio calls this on recompile,
+    /// then brackets a silent re-walk of the saved choice log with
+    /// [`begin_replay`](Self::begin_replay) / [`end_replay`](Self::end_replay)
+    /// so externals are served from the recording (query-gated branches
+    /// reproduce, effect bindings don't re-fire) instead of re-invoked.
+    ///
+    /// Errors on decode/link failure — the previously loaded program keeps
+    /// running unchanged.
+    pub fn reload(&mut self, story_bytes: &[u8]) -> Result<(), JsError> {
+        let data = brink_format::read_inkb(story_bytes)
+            .map_err(|e| JsError::new(&format!("decode error: {e}")))?;
+        let (prog, line_tables) =
+            brink_runtime::link(&data).map_err(|e| JsError::new(&format!("link error: {e}")))?;
+
+        // Drop the old story first — it borrows the program we're about to
+        // replace — then swap the heap-pinned program/data/tables and rebuild.
+        // Write into the existing Box (stable address) rather than reallocating.
+        *self.story.borrow_mut() = None;
+        *self.program = prog;
+        self.data = data;
+        self.base_line_tables.clone_from(&line_tables);
+
+        let program_ptr: *const brink_runtime::Program = &raw const *self.program;
+        // SAFETY: same invariants as `new` — the Box is pinned and outlives the
+        // Story, and the old Story was dropped above before this new borrow.
+        // wasm is single-threaded.
+        #[expect(unsafe_code)]
+        let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
+        let mut story = brink_runtime::Story::<FastRng>::new(program_ref, line_tables);
+        if let Some(seed) = self.seed.get() {
+            story.set_rng_seed(seed);
+        }
+        *self.story.borrow_mut() = Some(story);
+
+        // Clear transient async state; keep bindings, seed, and the recorder.
+        *self.pending_promise.borrow_mut() = None;
+        self.busy.set(false);
+        self.replaying.set(false);
+        Ok(())
+    }
+
+    /// Enter replay mode and reset the replay cursor: subsequent visible
+    /// playback (`continue_*` / `advance_one`) serves externals from the
+    /// recording and re-runs nothing. Used by the studio to silently re-walk
+    /// the saved choice log after [`reload`](Self::reload).
+    pub fn begin_replay(&self) {
+        self.recorder.borrow_mut().reset_cursor();
+        self.replaying.set(true);
+    }
+
+    /// Leave replay mode: visible playback resumes invoking JS bindings and
+    /// recording their results (appending to the existing log).
+    pub fn end_replay(&self) {
+        self.replaying.set(false);
+    }
+
+    /// Whether any external has been recorded this session. The studio uses
+    /// this to decide whether a post-reload choice re-walk should enter replay
+    /// mode (serve recorded externals) or run live — on a fresh load the
+    /// recording is empty, so replay would only produce fallbacks.
+    #[must_use]
+    pub fn has_recording(&self) -> bool {
+        !self.recorder.borrow().is_empty()
     }
 
     /// Structured, name-resolved snapshot of the runtime's current state for
@@ -598,6 +708,40 @@ impl ExternalFnHandler for JsHandler<'_> {
                 ExternalResult::Resolved(Value::Null)
             }
         }
+    }
+}
+
+/// Composes the runner's [`JsHandler`] with the replay [`ReplayRecorder`] for
+/// visible playback (`continue_*` / `advance_one`):
+///
+/// - **Live** (`replaying = false`): delegate to `inner` (the JS bindings) and
+///   record each inline-`Resolved` result. A `Pending` (async) result is
+///   recorded later by [`StoryRunner::resolve_external`]; `Fallback` isn't
+///   recorded.
+/// - **Replay** (`replaying = true`): serve the next recorded result for
+///   `name` + `args` and re-run nothing (so query-gated branches reproduce and
+///   effect bindings don't re-fire). An uncovered / divergent call returns
+///   [`ExternalResult::Fallback`] (the ink fallback body) — the cursor latches
+///   diverged, matching the shared primitive.
+struct RecordingReplayHandler<'a> {
+    inner: JsHandler<'a>,
+    recorder: RefCell<&'a mut ReplayRecorder>,
+    replaying: bool,
+}
+
+impl ExternalFnHandler for RecordingReplayHandler<'_> {
+    fn call(&self, name: &str, args: &[Value]) -> ExternalResult {
+        if self.replaying {
+            return match self.recorder.borrow_mut().take_recorded(name, args) {
+                Some(v) => ExternalResult::Resolved(v),
+                None => ExternalResult::Fallback,
+            };
+        }
+        let result = self.inner.call(name, args);
+        if let ExternalResult::Resolved(v) = &result {
+            self.recorder.borrow_mut().record(name, args, v);
+        }
+        result
     }
 }
 
@@ -3390,6 +3534,66 @@ mod binding_wasm_tests {
         assert_eq!(
             first, second,
             "reset re-applies the seed -> identical RANDOM output"
+        );
+    }
+
+    /// Record an external during live play, then `reload` + replay: the
+    /// recorded value is served even though the binding now returns something
+    /// else, so a query-gated branch reproduces faithfully across a hot-reload.
+    #[wasm_bindgen_test]
+    fn reload_replays_recorded_external() {
+        let src = "EXTERNAL get_switch(n)\nSwitch {get_switch(1): ON|OFF}.\n-> END\n";
+        let mut r = runner(src);
+
+        // Live play with the switch ON — records get_switch(1) = true.
+        r.bind_external("get_switch", Function::new_with_args("n", "return true"));
+        assert!(cont(&r).contains("Switch ON."), "live play takes ON");
+
+        // Hot-reload the same program, then flip the binding to false. Replay
+        // must serve the recorded `true`, so the branch stays ON.
+        r.reload(&bytes(src)).ok().expect("reload");
+        r.bind_external("get_switch", Function::new_with_args("n", "return false"));
+        r.begin_replay();
+        let replayed = cont(&r);
+        r.end_replay();
+        assert!(
+            replayed.contains("Switch ON."),
+            "reload replays the recorded ON branch, not the live binding; got {replayed}"
+        );
+    }
+
+    /// After `end_replay`, genuinely-new content runs the live binding again:
+    /// content recorded before the reload replays from the recording, while a
+    /// fresh continue past it consults the (now-live) binding.
+    #[wasm_bindgen_test]
+    fn live_resumes_after_replay() {
+        // Two switches: the first is recorded pre-reload; the second is only
+        // reached after we leave replay mode, so it uses the live binding.
+        // (Single-line source — a `\`-continuation would inject leading
+        // whitespace into the ink, breaking the `=== after ===` knot header.)
+        let src = "EXTERNAL get_switch(n)\nA{get_switch(1): ON|OFF}.\n* [go] -> after\n=== after ===\nB{get_switch(2): ON|OFF}.\n-> END\n";
+        let mut r = runner(src);
+        r.bind_external("get_switch", Function::new_with_args("n", "return true"));
+        let page = cont(&r);
+        assert!(page.contains("ON."), "first page ON; recorded; got {page}");
+
+        // Reload, flip the binding to false. Replay the first page from the
+        // recording (stays ON), make the choice, then leave replay — the second
+        // page's get_switch(2) is uncovered, so it uses the live (false) binding.
+        r.reload(&bytes(src)).ok().expect("reload");
+        r.bind_external("get_switch", Function::new_with_args("n", "return false"));
+        r.begin_replay();
+        let first = cont(&r);
+        assert!(
+            first.contains("ON.") && !first.contains("OFF"),
+            "replayed first page ON from the recording, not the live (false) binding; got {first}"
+        );
+        r.choose(0).ok().expect("choose");
+        r.end_replay();
+        let second = cont(&r);
+        assert!(
+            second.contains("OFF."),
+            "post-replay content uses the live (false) binding; got {second}"
         );
     }
 
