@@ -11,7 +11,7 @@ import { test, expect, type Locator, type Page } from "@playwright/test";
 
 /** Run a palette command by title (real input: Mod-Shift-P, type, Enter). */
 async function runPaletteCommand(page: Page, title: string): Promise<void> {
-  await page.keyboard.press("Meta+Shift+P");
+  await page.keyboard.press("ControlOrMeta+Shift+P");
   const input = page.locator(".shell-palette-input");
   await expect(input).toBeVisible();
   await input.fill(title);
@@ -87,7 +87,7 @@ test.describe("compiled output document", () => {
     await openCompiledOutput(page);
 
     await compiledOutputContent(page).click();
-    await page.keyboard.press("Meta+f");
+    await page.keyboard.press("ControlOrMeta+f");
 
     const panel = page.locator(".brink-compiled-output .cm-search");
     await expect(panel).toBeVisible();
@@ -115,7 +115,7 @@ test.describe("compiled output document", () => {
       .first()
       .locator(".cm-content")
       .click();
-    await page.keyboard.press("Meta+End");
+    await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.press("Enter");
     await page.keyboard.type("=== xyzzy ===");
     await page.keyboard.press("Enter");

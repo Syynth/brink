@@ -278,7 +278,7 @@ test.describe("focused view content", () => {
 
     // Move cursor to the last line and delete it (Cmd+End to go to end, then Backspace)
     await page.locator(".cm-content").click();
-    await page.keyboard.press("Meta+End");
+    await page.keyboard.press("ControlOrMeta+End");
     await page.keyboard.press("Backspace");
 
     // Wait for the edit to flush

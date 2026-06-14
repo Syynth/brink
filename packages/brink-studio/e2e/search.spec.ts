@@ -14,7 +14,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
 async function openSearch(page: Page): Promise<void> {
-  await page.keyboard.press("Meta+Shift+F");
+  await page.keyboard.press("ControlOrMeta+Shift+F");
   await expect(page.locator(".search-view")).toBeVisible();
 }
 
@@ -49,7 +49,7 @@ test.describe("search tool window", () => {
     await expect(page.locator(".search-input")).toBeFocused();
 
     // search.focus is not a toggle — a second press keeps it open.
-    await page.keyboard.press("Meta+Shift+F");
+    await page.keyboard.press("ControlOrMeta+Shift+F");
     await expect(page.locator(".search-view")).toBeVisible();
     await expect(page.locator(".search-input")).toBeFocused();
   });
@@ -57,9 +57,9 @@ test.describe("search tool window", () => {
   test("Mod-6 is the generated toggle (registered after the built-ins)", async ({
     page,
   }) => {
-    await page.keyboard.press("Meta+6");
+    await page.keyboard.press("ControlOrMeta+6");
     await expect(page.locator(".search-view")).toBeVisible();
-    await page.keyboard.press("Meta+6");
+    await page.keyboard.press("ControlOrMeta+6");
     await expect(page.locator(".search-view")).toHaveCount(0);
   });
 

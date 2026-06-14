@@ -13,7 +13,7 @@ import { test, expect, type Page } from "@playwright/test";
 
 /** Run a palette command by title (real input: Mod-Shift-P, type, Enter). */
 async function runPaletteCommand(page: Page, title: string): Promise<void> {
-  await page.keyboard.press("Meta+Shift+P");
+  await page.keyboard.press("ControlOrMeta+Shift+P");
   const input = page.locator(".shell-palette-input");
   await expect(input).toBeVisible();
   await input.fill(title);
@@ -47,7 +47,7 @@ test.describe("settings document", () => {
   });
 
   test("opens via the Mod-, default binding", async ({ page }) => {
-    await page.keyboard.press("Meta+,");
+    await page.keyboard.press("ControlOrMeta+,");
     await expect(page.locator(".settings-doc")).toBeVisible();
   });
 
@@ -93,12 +93,12 @@ test.describe("settings document", () => {
     await page.keyboard.press("Escape");
 
     // The new chord opens the palette right away — no reload.
-    await page.keyboard.press("Meta+j");
+    await page.keyboard.press("ControlOrMeta+j");
     await expect(page.locator(".shell-palette-input")).toBeVisible();
     await page.keyboard.press("Escape");
 
     // The override replaced the whole default set, so Mod-Shift-P is inert.
-    await page.keyboard.press("Meta+Shift+P");
+    await page.keyboard.press("ControlOrMeta+Shift+P");
     await expect(page.locator(".shell-palette-input")).toHaveCount(0);
 
     // And it was persisted under the versioned key.
@@ -120,7 +120,7 @@ test.describe("settings document", () => {
     ).toBeNull();
 
     // The keymap is untouched — the palette still opens on its default.
-    await page.keyboard.press("Meta+Shift+P");
+    await page.keyboard.press("ControlOrMeta+Shift+P");
     await expect(page.locator(".shell-palette-input")).toBeVisible();
   });
 

@@ -11,7 +11,7 @@ import { test, expect, type Page } from "@playwright/test";
 
 /** Run a palette command by title (real input: Mod-Shift-P, type, Enter). */
 async function runPaletteCommand(page: Page, title: string): Promise<void> {
-  await page.keyboard.press("Meta+Shift+P");
+  await page.keyboard.press("ControlOrMeta+Shift+P");
   const input = page.locator(".shell-palette-input");
   await expect(input).toBeVisible();
   await input.fill(title);
