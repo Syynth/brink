@@ -912,3 +912,27 @@
 - **SCOPE:** architectural
 - **WHAT:** Studio→host file persistence (#154, unblocking the RMMZ host) ships as: a debounced `onFilesChanged(changes)` mount option whose payload names files with a change kind (modified | created | deleted) and content; an `api.getFiles()` pull on the facade; `file.save`/`file.saveAll` commands on Mod-S flushing to the host hook; dirty state as a cheap summary on StudioPublicState with detail behind the facade. File *contents* never enter StudioPublicState. All mutation paths (CM6 edits, binder structural ops, search replace, file.new) route through one shared notify helper — closing #137 in the same change. Also: `wasmLocation` mount option and a Chromium-88 adoptedStyleSheets feature-detect shim in the studio bootstrap.
 - **WHY:** The egress API is only trustworthy if every edit path feeds it — #137 proved paths already skip the internal seam; one helper makes omission impossible. Contents are big and change per keystroke, so they violate the public-state contract (cheap, reference-stable derived values); a dedicated callback/pull keeps the hot path clean. The change-kind payload designs file lifecycle in now, so renames/deletes later are additive.
+
+## Milestone structure for host-integration / live-inspector work
+- **WHEN:** 2026-06-14
+- **PROJECT:** brink
+- **SYSTEM:** cross-system (studio-shell + bevy-brink host integration)
+- **SCOPE:** moderate
+- **WHAT:** Three layered milestones — **Phase 7 Host session channel** (shared transport: #127, #173); **Phase 8 Live inspector views** (run-time surfaces stacked on the channel; placeholder, populated from #127's spec); **Phase 9 Host-aware authoring** (author-time argument picking on the same channel: #176, #174, #175, #164). #173 folds into the channel layer; #164 into authoring.
+- **WHY:** The live inspector and host-aware authoring feel similar because they share one foundation — the host session channel (#127). They are distinct deliverables (run-time observation vs author-time picking) that each stack on that channel. A layered split (channel → views → authoring) makes the shared dependency explicit and forces correct sequencing: build the channel once, both consumer surfaces follow.
+
+## Phase 7 execution autonomy — merge-on-green for impl, review gate for design
+- **WHEN:** 2026-06-14
+- **PROJECT:** brink
+- **SYSTEM:** process / Shell Phase 7 (host session channel)
+- **SCOPE:** moderate (process, time-boxed to Phase 7)
+- **WHAT:** For Phase 7, the agent keeps issues up to date (board In Progress → Done), works per-issue branches, and opens one PR per issue. **Implementation PRs self-merge once tests pass.** **Design/spec PRs do NOT auto-merge** (#127 → `docs/live-inspector-spec.md`, #178 → host-entry spec) — they wait for user review even though their tests are trivially green. Sequential merges. Authority runs through the end of Phase 7.
+- **WHY:** The user wants momentum within the phase without gating every code change on review, and passing tests are a sufficient bar for implementation. But specs encode architectural decisions the user owns (the `SessionProvider` interface shapes all of Phase 8 and #178's composition), so those keep a human review gate.
+
+## Studio QoL milestone — group accumulated authoring/debugging experience features
+- **WHEN:** 2026-06-14
+- **PROJECT:** brink
+- **SYSTEM:** studio (+ runtime enabler)
+- **SCOPE:** moderate
+- **WHAT:** Created milestone **"Studio QoL"** (#10) for accumulated quality-of-life features for brink-studio. Members: #57 (editable runtime state), #69 (click-to-source), #77 (instant diagnostics), #155 (editor font), #184 (runtime sandbox eval — REPL enabler), #185 (REPL), #186 (play-from-here), #14 (per-keystroke reparse), #115 (analyzer unused warnings). **#164 (binder folder tree) moved here from Phase 9** (it's studio UX, not host-vocabulary authoring). Excluded as non-QoL: #72/#119 (tech-debt/bug), #152/#163 (CI), #166 (runtime conformance). Added requirement on #115: unused-knot warnings must **respect host-usage data** — model as reachability from a root set (story start + host-declared entry knots, via the host-capability manifest / #127 connection); host-referenced knots are advisory, never hard errors.
+- **WHY:** The unmilestoned backlog had accumulated a coherent cluster of studio authoring/debugging-experience features; grouping them gives a schedulable roadmap distinct from the host-integration shell phases (7/8/9) and the conformance track. #164 fits QoL better than Phase 9 now that a QoL home exists. The #115 host-usage rule prevents false "unused" warnings on knots the engine enters from outside the ink source (host-directed entry, play-from-here #186, parameterized entry #178).
