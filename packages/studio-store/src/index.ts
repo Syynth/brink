@@ -124,6 +124,7 @@ export {
   REPLAY_DIVERGED_MESSAGE,
   LocalSessionProvider,
   EMPTY_SNAPSHOT,
+  ALL_CAPABILITIES,
   type SessionStatus,
   type SessionSnapshot,
   type SessionProvider,
