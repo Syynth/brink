@@ -120,6 +120,7 @@ export type StudioStore = ReturnType<typeof createStudioStore>;
 // behavior is unit-tested directly.
 export {
   sessionCanContinue,
+  sessionDegraded,
   statusOfLine,
   REPLAY_DIVERGED_MESSAGE,
   LocalSessionProvider,

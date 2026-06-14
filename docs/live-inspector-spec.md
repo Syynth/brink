@@ -155,10 +155,12 @@ not an error.
 - **Recovery is live:** when a later compile's checksum matches again (or the game reloads to
   match), full fidelity returns with no view teardown.
 
-*Gap to close (#181):* the checksum must be available from a provider snapshot directly. For
-the local provider it is `ProgramModel.checksum`; for remote providers the transport carries it
-in the status/handshake. A `checksum(bytes)` utility avoids constructing a throwaway runner
-when the studio needs its own program's identity cheaply.
+*Closed (#181):* the running program's checksum is on the provider snapshot
+(`SessionSnapshot.programChecksum`, mirrored to the slice). The studio's latest-compile identity
+is `compiledChecksum` on the compile slice, computed by the `program_checksum(bytes)` wasm util
+(`@brink-lang/web`) — which avoids constructing a throwaway runner. `sessionDegraded(running,
+compiled)` is the derived predicate; the graph overlay and the status-bar segment consume it.
+Remote providers will carry their checksum in the transport status/handshake.
 
 ## 6. Transports
 

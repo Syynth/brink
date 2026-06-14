@@ -47,6 +47,7 @@ import {
   type EditorGroupsStore,
   type Location as ShellLocation,
 } from "@brink/studio-shell";
+import { sessionDegraded } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 import {
   buildGraphView,
@@ -312,6 +313,14 @@ function StoryGraphCanvas({ graph }: { graph: StoryGraph }) {
   // Session overlay inputs — DATA from the session slice only (the debug
   // snapshot is already name-resolved); no runner handle anywhere (§7.6).
   const debugState = useStudioStore((s) => s.debugState);
+  // Degraded mode (spec §5, #181): when the running program isn't the studio's
+  // latest compile, the snapshot's locations/visits are keyed to a *different*
+  // program, so drop the source-position overlay (current-location highlight +
+  // visit badges) by withholding the debug state. The structural graph stays.
+  const degraded = useStudioStore((s) =>
+    sessionDegraded(s.programChecksum, s.compiledChecksum),
+  );
+  const overlaySource = degraded ? null : debugState;
 
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const onToggle = useCallback((id: string) => {
@@ -323,7 +332,7 @@ function StoryGraphCanvas({ graph }: { graph: StoryGraph }) {
     });
   }, []);
 
-  const model = useStoryGraphModel(graph, expanded, debugState);
+  const model = useStoryGraphModel(graph, expanded, overlaySource);
 
   const nodes = useMemo(() => toFlowNodes(model, onToggle), [model, onToggle]);
   const edges = useMemo(() => toFlowEdges(model.view.edges), [model.view.edges]);

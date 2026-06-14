@@ -304,6 +304,15 @@ export function compile(_source: string): string {
   return JSON.stringify({ ok: true });
 }
 
+/** Deterministic stand-in for the source-identity checksum: a stable hash of
+ * the bytes, formatted like the real `0x{:08x}` — distinct bytes → distinct
+ * value, so degraded-mode comparisons behave. */
+export function program_checksum(bytes: Uint8Array): string {
+  let sum = 0;
+  for (const b of bytes) sum = (sum + b) >>> 0;
+  return "0x" + sum.toString(16).padStart(8, "0");
+}
+
 export function token_type_names(): string {
   return JSON.stringify(["comment", "keyword", "string", "number", "function", "variable"]);
 }

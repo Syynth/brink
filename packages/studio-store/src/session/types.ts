@@ -54,6 +54,29 @@ export function sessionCanContinue(status: SessionStatus): boolean {
   return status === "running" || status === "done";
 }
 
+/**
+ * Whether the running program is out of sync with the studio's latest compile
+ * (live-inspector degraded mode, spec §5, #181). True only when both
+ * checksums are known *and* differ — an unknown checksum (no session, or a
+ * failed compile) is **not** degraded, it's simply absent. When degraded,
+ * source-position features (graph current-location highlight, visit badges)
+ * disable; name-keyed views (the State View) stay live.
+ *
+ * Locally this never fires (a successful recompile hot-reloads the session, so
+ * the running program is always the latest compile). It is reached by a remote
+ * provider whose game runs an older program than the studio's source.
+ */
+export function sessionDegraded(
+  programChecksum: string | null,
+  compiledChecksum: string | null,
+): boolean {
+  return (
+    programChecksum !== null &&
+    compiledChecksum !== null &&
+    programChecksum !== compiledChecksum
+  );
+}
+
 // ── Snapshot ────────────────────────────────────────────────────────
 
 /**

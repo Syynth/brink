@@ -13,7 +13,7 @@ import { useShell, viewToggleCommandId } from "@brink/studio-shell";
 import { useStudioStore } from "./StoreContext.js";
 import { ElementDropdown } from "./ElementDropdown.js";
 import type { LineInfo } from "@brink/studio-store";
-import { ElementTypeEnum } from "@brink/studio-store";
+import { ElementTypeEnum, sessionDegraded } from "@brink/studio-store";
 
 // ── Element labels ─────────────────────────────────────────────────
 
@@ -100,21 +100,32 @@ const STORY_STATUS_LABELS: Record<string, string> = {
 /** Story session status (spec §7.6); click restarts when that makes sense. */
 export function StorySegment() {
   const status = useStudioStore((s) => s.sessionStatus);
+  // Degraded mode (spec §5, #181): the running program isn't the studio's
+  // latest compile. Surfaced as a status, not a notification — source-position
+  // features (graph location, visit badges) are disabled while it holds.
+  const degraded = useStudioStore((s) =>
+    sessionDegraded(s.programChecksum, s.compiledChecksum),
+  );
   const { commands } = useShell();
 
-  const label = STORY_STATUS_LABELS[status] ?? status;
+  const label = degraded
+    ? "inspecting — source out of sync"
+    : (STORY_STATUS_LABELS[status] ?? status);
   const canRestart = commands.isEnabled("story.restart");
   const body = (
     <>
-      <span className={`brink-status-story-dot status-${status}`} />
+      <span
+        className={`brink-status-story-dot status-${status}${degraded ? " degraded" : ""}`}
+      />
       {label}
     </>
   );
 
-  if (!canRestart) return <span className="brink-status-story">{body}</span>;
+  const className = `brink-status-story${degraded ? " degraded" : ""}`;
+  if (!canRestart) return <span className={className}>{body}</span>;
   return (
     <button
-      className="brink-status-story clickable"
+      className={`${className} clickable`}
       title="Restart story"
       onClick={() => commands.dispatch("story.restart")}
     >

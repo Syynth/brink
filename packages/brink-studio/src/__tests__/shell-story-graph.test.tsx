@@ -21,7 +21,7 @@ import {
   documentKey,
   findTab,
 } from "@brink/studio-shell";
-import { createStudioStore } from "@brink/studio-store";
+import { createStudioStore, sessionDegraded } from "@brink/studio-store";
 import {
   OPEN_STORY_GRAPH_COMMAND_ID,
   STORY_GRAPH_TYPE_ID,
@@ -272,6 +272,33 @@ describe("session overlay", () => {
     expect(nodeVisitCount("hub", overlay)).toBe(3);
     expect(nodeVisitCount("hub.east", overlay)).toBe(2);
     expect(nodeVisitCount("loop", overlay)).toBeNull();
+  });
+
+  // Degraded mode (spec §5, #181): when the running program isn't the studio's
+  // latest compile, the snapshot's locations/visits key to a *different*
+  // program, so the canvas withholds the debug state — dropping both the
+  // current-location highlight and the visit badges, while the structural
+  // graph stays. This mirrors StoryGraphCanvas's `degraded ? null : debugState`.
+  it("drops the overlay (highlight + badges) when the session is degraded", () => {
+    const view = buildGraphView(GRAPH, NONE);
+    const degraded = sessionDegraded("0xrunning0", "0xcompiled"); // differ
+    expect(degraded).toBe(true);
+
+    const overlaySource = degraded ? null : debugState;
+    const overlay = buildOverlay(overlaySource);
+    expect(overlay).toBeNull();
+    expect(currentNodeId(overlay?.currentLocation ?? null, view)).toBeNull();
+    expect(nodeVisitCount("hub", overlay)).toBeNull();
+  });
+
+  it("keeps the overlay when identity matches (full fidelity)", () => {
+    const view = buildGraphView(GRAPH, NONE);
+    const degraded = sessionDegraded("0xsame", "0xsame");
+    expect(degraded).toBe(false);
+
+    const overlay = buildOverlay(degraded ? null : debugState)!;
+    expect(currentNodeId(overlay.currentLocation, view)).toBe("hub");
+    expect(nodeVisitCount("hub", overlay)).toBe(3);
   });
 });
 
