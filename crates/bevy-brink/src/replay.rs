@@ -317,3 +317,25 @@ pub(crate) fn put_recorder<M: Send + Sync + 'static>(
         log.recorder = recorder;
     }
 }
+
+/// Record one out-of-band external result into the flow's [`BrinkReplayLog<M>`]
+/// recorder, if the entity has one. Used by the world-access / async / task
+/// resolve sites — which resolve *after* the VM parks (`ExternalResult::Pending`)
+/// and so supply their value here rather than through the inline
+/// [`RecordingHandler`](brink_runtime::RecordingHandler).
+///
+/// Always recording (for any dev-tracked flow) is safe even when the flow is
+/// driven by a non-recording `step_one`: a partial recording simply diverges to
+/// the ink fallback body earlier during replay (never feeding a misaligned
+/// value), so it is never worse than recording nothing.
+pub(crate) fn record_external<M: Send + Sync + 'static>(
+    world: &mut World,
+    entity: Entity,
+    name: &str,
+    args: &[brink_format::Value],
+    result: &brink_format::Value,
+) {
+    if let Some(mut log) = world.get_mut::<BrinkReplayLog<M>>(entity) {
+        log.recorder.record(name, args, result);
+    }
+}

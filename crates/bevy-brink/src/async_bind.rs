@@ -102,13 +102,28 @@ impl<M: Send + Sync + 'static> BrinkAwaiting<M> {
 #[derive(Component)]
 pub struct BrinkPendingTask<M: Send + Sync + 'static = ()> {
     pub(crate) task: Task<Value>,
+    /// External name + args, kept in dev builds so [`poll_brink_tasks`] can
+    /// record the task's result into the flow's replay log on completion (the
+    /// value isn't available until the future finishes).
+    #[cfg(feature = "dev")]
+    name: String,
+    #[cfg(feature = "dev")]
+    args: Vec<Value>,
     _marker: PhantomData<fn() -> M>,
 }
 
 impl<M: Send + Sync + 'static> BrinkPendingTask<M> {
-    pub(crate) fn new(task: Task<Value>) -> Self {
+    pub(crate) fn new(
+        task: Task<Value>,
+        #[cfg(feature = "dev")] name: String,
+        #[cfg(feature = "dev")] args: Vec<Value>,
+    ) -> Self {
         Self {
             task,
+            #[cfg(feature = "dev")]
+            name,
+            #[cfg(feature = "dev")]
+            args,
             _marker: PhantomData,
         }
     }
@@ -140,6 +155,19 @@ pub(crate) fn resolve_external_world<M: Send + Sync + 'static>(
     flow: Entity,
     value: Value,
 ) {
+    // Capture the external name (from BrinkAwaiting) + args (while still parked)
+    // before we consume `value`, so we can record the resolution into the flow's
+    // replay log (dev) for faithful hot-reload replay.
+    #[cfg(feature = "dev")]
+    let record_info = {
+        let name = world.get::<BrinkAwaiting<M>>(flow).map(|a| a.name.clone());
+        let args = world
+            .get::<BrinkFlow<M>>(flow)
+            .filter(|f| f.inner.has_pending_external())
+            .map(|f| f.inner.pending_external_args().to_vec());
+        name.zip(args).map(|(n, a)| (n, a, value.clone()))
+    };
+
     let resolved = {
         let mut flows = world.query::<&mut BrinkFlow<M>>();
         match flows.get_mut(world, flow) {
@@ -162,6 +190,10 @@ pub(crate) fn resolve_external_world<M: Send + Sync + 'static>(
     };
     if resolved {
         world.entity_mut(flow).remove::<BrinkAwaiting<M>>();
+        #[cfg(feature = "dev")]
+        if let Some((name, args, recorded)) = record_info {
+            crate::replay::record_external::<M>(world, flow, &name, &args, &recorded);
+        }
     }
 }
 
@@ -177,6 +209,17 @@ pub fn poll_brink_tasks<M: Send + Sync + 'static>(
         if let Some(value) = block_on(poll_once(&mut pending.task)) {
             // Guard: the flow could have been resolved by other means.
             if flow.inner.has_pending_external() {
+                // Record the resolved value into the flow's replay log (dev)
+                // for faithful hot-reload replay. Deferred via a command so we
+                // don't need `BrinkReplayLog` in this non-exclusive query.
+                #[cfg(feature = "dev")]
+                {
+                    let (name, args, recorded) =
+                        (pending.name.clone(), pending.args.clone(), value.clone());
+                    commands.queue(move |world: &mut World| {
+                        crate::replay::record_external::<M>(world, entity, &name, &args, &recorded);
+                    });
+                }
                 flow.inner.resolve_external(value);
             }
             commands.entity(entity).remove::<BrinkPendingTask<M>>();

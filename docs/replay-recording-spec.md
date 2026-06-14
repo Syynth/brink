@@ -135,17 +135,26 @@ driver resolves it.
 - **Bevy** (#173): record into a flow-attached `ReplayRecorder` during normal play; drive the
   exclusive `&mut World` reload replay with the shared `ReplayHandler`, resolving `Live`/world
   queries via `run_system_with`.
-  - **Landed (Recorded mode):** the exclusive `advance_flow` driver records *every* external it
-    resolves — inline pure/command via `RecordingHandler`, out-of-band world-access queries at
-    the resolve site — into the entity's `BrinkReplayLog` recorder (dev-only, taken out/put back
-    around the pass). `replay_on_reload` drives the whole re-walk through one `ReplayHandler` over
-    that recorder, so a query-gated branch replays the value it took during play (and recorded
-    commands don't re-fire). Uncovered/divergent calls fall through to the ink fallback body.
-  - **Deferred:** recording on the *non-exclusive* `step_one` playback path (inline pure/command
-    flow through the consumer's own handler there — its recorder stays empty, so reload falls back
-    exactly as before, no regression) and on the async/task resolve paths; and `ReplayMode::Live`
-    (the `BrinkReplayConfig`/`ReplayQueryModeOverride` seam exists but isn't consumed yet — it
-    needs the world-re-query refactor with the effect-re-fire caveat).
+  - **Landed (Recorded mode):** recording now covers **both** playback paths and all external
+    kinds, into the entity's dev-only `BrinkReplayLog` recorder:
+    - The exclusive `advance_flow` driver records every external it resolves — inline pure/command
+      via `RecordingHandler`, out-of-band world-access queries at the resolve site (recorder taken
+      out/put back around the pass).
+    - The non-exclusive path records via `BrinkFlow::step_one_recording` /
+      `advance_until_terminal_recording` (inline pure/command, mirroring `choose_recording`) plus
+      the plugin resolver's out-of-band sites: `dispatch_one_external` (query),
+      `resolve_external_world` (async event), and `poll_brink_tasks` (task). Out-of-band recording
+      is unconditional for any dev-tracked flow — a *partial* recording (e.g. a flow driven by
+      plain `step_one`) just diverges to fallback earlier on replay, never worse than recording
+      nothing.
+
+    `replay_on_reload` drives the whole re-walk through one `ReplayHandler` over the recorder, so a
+    query-gated branch replays the value it took during play, recorded commands don't re-fire, and
+    a recorded async/task value replays **synchronously** (the handler serves it inline, so no task
+    is spawned and no event fires). Uncovered/divergent calls fall through to the ink fallback body.
+  - **Deferred:** `ReplayMode::Live` — the `BrinkReplayConfig`/`ReplayQueryModeOverride` seam
+    exists but isn't consumed yet; it needs the world-re-query refactor with the effect-re-fire
+    caveat. Recording is otherwise complete for the Bevy adapter.
 - **Web/studio**: record inside the wasm `StoryRunner`; `session.ts`'s choice-replay drives the
   shared handler over the wasm boundary. Closes the latent gap with no manifest `@kind`.
 - **RMMZ** (celeris #78): align the host-side implementation onto this model.
