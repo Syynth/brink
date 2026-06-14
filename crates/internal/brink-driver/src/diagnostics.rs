@@ -193,7 +193,7 @@ mod tests {
     }
 
     /// Regression test for #187 (secondary): an *analysis* diagnostic (E033,
-    /// unreachable code) originating in an INCLUDEd file must be attributed to
+    /// unreachable code) originating in an included file must be attributed to
     /// that file, not the entry. The original report saw such warnings collapsed
     /// onto `main.ink` at an offset past its EOF. This guards the analysis path
     /// specifically — #43 only covered lowering diagnostics.
