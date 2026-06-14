@@ -16,6 +16,7 @@ brink-json = { workspace = true }
 brink-codegen-json = { workspace = true }
 brink-codegen-inkb = { workspace = true }
 brink-driver = { workspace = true }
+rowan.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

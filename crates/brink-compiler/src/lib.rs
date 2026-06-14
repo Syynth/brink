@@ -8,24 +8,51 @@
 mod driver;
 
 pub use brink_driver::AnalysisOptions;
-pub use brink_ir::FileId;
+pub use brink_ir::{DiagnosticCode, FileId};
 
 use brink_format::StoryData;
-use brink_ir::Diagnostic;
 use std::io;
 use std::path::Path;
+
+/// A diagnostic resolved for consumption outside the compiler.
+///
+/// The internal [`Diagnostic`] keys a file by [`FileId`] — an interning index
+/// that is only meaningful inside the compiler instance that produced it and
+/// is not stable across recompiles. A consumer (an editor, a host integration,
+/// an LSP) cannot map that id back to a file on its own. `ResolvedDiagnostic`
+/// carries the file's `path` — byte-identical to the string the host used as
+/// the entry point / answered the `read_file` callback with — so a diagnostic
+/// can always be located. `file` is retained for in-result correlation only.
+///
+/// `range` is left as byte offsets into the file's source. Line/column
+/// resolution is deliberately not baked in: column units are consumer-specific
+/// (LSP uses UTF-16 code units, a terminal uses bytes or chars), and the
+/// consumer already holds the source text to resolve them in the unit it needs.
+#[derive(Debug, Clone)]
+pub struct ResolvedDiagnostic {
+    /// The file this diagnostic belongs to, keyed by its source path.
+    pub path: String,
+    /// The originating file's interning id — for in-result correlation only.
+    pub file: FileId,
+    /// The source span this diagnostic points at, as byte offsets.
+    pub range: rowan::TextRange,
+    /// Human-readable message describing the problem.
+    pub message: String,
+    /// Structured error code for documentation and tooling.
+    pub code: DiagnosticCode,
+}
 
 /// Successful compilation output, including any non-fatal warnings.
 #[derive(Debug)]
 pub struct CompileOutput {
     pub data: StoryData,
-    pub warnings: Vec<Diagnostic>,
+    pub warnings: Vec<ResolvedDiagnostic>,
 }
 
 /// Successful LIR compilation output, including any non-fatal warnings.
 pub struct LirOutput {
     pub program: brink_ir::lir::Program,
-    pub warnings: Vec<Diagnostic>,
+    pub warnings: Vec<ResolvedDiagnostic>,
 }
 
 /// Compile an ink story from an entry-point file path.
@@ -89,7 +116,7 @@ pub enum CompileError {
     Io(#[from] io::Error),
     /// One or more diagnostics prevented compilation.
     #[error("{} diagnostic(s) prevented compilation", .0.len())]
-    Diagnostics(Vec<Diagnostic>),
+    Diagnostics(Vec<ResolvedDiagnostic>),
     /// Circular INCLUDE dependency detected.
     #[error("circular INCLUDE dependency: {0}")]
     CircularInclude(String),
