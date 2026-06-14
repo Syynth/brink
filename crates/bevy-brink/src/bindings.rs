@@ -61,6 +61,8 @@ use brink_runtime::{
     ExternalFnHandler, ExternalResult, FastRng, FlowInstance, Line, Program, RuntimeError,
     StepOutcome,
 };
+#[cfg(feature = "dev")]
+use brink_runtime::{RecordingHandler, ReplayRecorder};
 use thiserror::Error;
 
 use crate::asset::{BrinkProgram, LineTablesAsset, ProgramAsset};
@@ -683,6 +685,10 @@ enum FlowStep {
     Query {
         system: QuerySystemId,
         qargs: Vec<Value>,
+        /// External name, carried only in dev builds so the resolved query
+        /// result can be recorded into the flow's replay log.
+        #[cfg(feature = "dev")]
+        name: String,
     },
 }
 
@@ -716,6 +722,26 @@ fn emit_line_event_world<M: Send + Sync + 'static>(world: &mut World, entity: En
                 .trigger(|e| BrinkStoryEnded::<M>::new(e, text.clone(), tags.clone()));
         }
     }
+}
+
+/// One `advance` step for [`advance_flow`], wrapping the handler with a
+/// [`RecordingHandler`] when a recorder is active (dev) so inline pure/command
+/// results are captured into the flow's replay log. A thin pass-through in
+/// non-dev builds (the `recorder` parameter doesn't exist there).
+fn advance_recording<M: Send + Sync + 'static>(
+    flow: &mut FlowInstance,
+    program: &Program,
+    line_tables: &[Vec<brink_format::LineEntry>],
+    context: &mut brink_runtime::Context,
+    handler: &BrinkHandler<'_, M>,
+    #[cfg(feature = "dev")] recorder: Option<&mut ReplayRecorder>,
+) -> Result<StepOutcome, RuntimeError> {
+    #[cfg(feature = "dev")]
+    if let Some(rec) = recorder {
+        let recording = RecordingHandler::new(handler, rec);
+        return flow.advance::<FastRng>(program, line_tables, context, &recording, None);
+    }
+    flow.advance::<FastRng>(program, line_tables, context, handler, None)
 }
 
 /// Advance a flow by one line from an exclusive (`&mut World`) context,
@@ -755,6 +781,14 @@ pub fn advance_flow<M: Send + Sync + 'static>(
     // line, then flush once the line is produced.
     let mut triggers: Vec<TriggerFn> = Vec::new();
 
+    // In dev builds, record every external resolved during this pass into the
+    // flow's replay log so a hot-reload can replay it faithfully. Taken out of
+    // the component up front (and put back before the line returns) so it can
+    // wrap the handler / be written without holding `BrinkReplayLog` borrowed
+    // across the World re-borrows below. `None` for a non-dev-tracked flow.
+    #[cfg(feature = "dev")]
+    let mut recorder: Option<ReplayRecorder> = crate::replay::take_recorder::<M>(world, entity);
+
     loop {
         let step = {
             let (mut flows, programs, tables, bindings) = state.get_mut(world);
@@ -770,12 +804,17 @@ pub fn advance_flow<M: Send + Sync + 'static>(
                 .ok_or(BrinkCallError::LineTablesNotLoaded)?
                 .tables;
             let handler = bindings.handler();
-            let outcome = flow.inner.advance::<FastRng>(
+            // Inline pure/command results are captured by `advance_recording`'s
+            // RecordingHandler wrap (dev); out-of-band query results are recorded
+            // at the resolve site below.
+            let outcome = advance_recording(
+                &mut flow.inner,
                 program,
                 line_tables,
                 &mut ctx.inner,
                 &handler,
-                None,
+                #[cfg(feature = "dev")]
+                recorder.as_mut(),
             )?;
             triggers.extend(handler.take_queued());
             match outcome {
@@ -791,9 +830,14 @@ pub fn advance_flow<M: Send + Sync + 'static>(
                     }
                     let system = bindings
                         .query(&name)
-                        .ok_or(BrinkCallError::UnknownQuery(name))?;
+                        .ok_or_else(|| BrinkCallError::UnknownQuery(name.clone()))?;
                     let qargs = flow.inner.pending_external_args().to_vec();
-                    FlowStep::Query { system, qargs }
+                    FlowStep::Query {
+                        system,
+                        qargs,
+                        #[cfg(feature = "dev")]
+                        name,
+                    }
                 }
             }
         };
@@ -804,12 +848,25 @@ pub fn advance_flow<M: Send + Sync + 'static>(
                     trigger(world);
                 }
                 emit_line_event_world::<M>(world, entity, &line);
+                #[cfg(feature = "dev")]
+                if let Some(rec) = recorder {
+                    crate::replay::put_recorder::<M>(world, entity, rec);
+                }
                 return Ok(line);
             }
-            FlowStep::Query { system, qargs } => {
+            FlowStep::Query {
+                system,
+                qargs,
+                #[cfg(feature = "dev")]
+                name,
+            } => {
                 let value = world
-                    .run_system_with(system, (entity, qargs))
+                    .run_system_with(system, (entity, qargs.clone()))
                     .map_err(|e| BrinkCallError::QueryFailed(format!("{e:?}")))?;
+                #[cfg(feature = "dev")]
+                if let Some(rec) = recorder.as_mut() {
+                    rec.record(&name, &qargs, &value);
+                }
                 let (mut flows, ..) = state.get_mut(world);
                 let (_, _, mut flow, _) = flows
                     .get_mut(entity)
