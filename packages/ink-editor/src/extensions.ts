@@ -60,7 +60,12 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     ideExtensions.push(completionsExtension({ getCompletions: options.getCompletions }));
   }
   if (options.getHover) {
-    ideExtensions.push(hoverExtension({ getHover: options.getHover }));
+    ideExtensions.push(
+      hoverExtension({
+        getHover: options.getHover,
+        getArgumentWidgets: options.getArgumentWidgets,
+      }),
+    );
   }
   if (options.gotoDefinition) {
     ideExtensions.push(gotoDefinitionExtension({

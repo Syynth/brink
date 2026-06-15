@@ -1,9 +1,13 @@
 import { type Extension } from "@codemirror/state";
-import { hoverTooltip, type Tooltip } from "@codemirror/view";
-import type { HoverInfo } from "@brink/wasm-types";
+import { hoverTooltip, EditorView, type Tooltip } from "@codemirror/view";
+import type { HoverInfo, CallWidgetSite } from "@brink/wasm-types";
+import { openCallForm, FORM_GLYPH_ICON } from "./argument-widgets.js";
 
 export interface HoverOptions {
   getHover: (source: string, offset: number) => HoverInfo | null;
+  /** When provided, the hover card over a call name gains an always-on "edit
+   *  arguments" action (zero in-text chrome — independent of the inline glyph). */
+  getArgumentWidgets?: (source: string, start: number, end: number) => CallWidgetSite[];
 }
 
 export function hoverExtension(options: HoverOptions): Extension {
@@ -19,6 +23,11 @@ export function hoverExtension(options: HoverOptions): Extension {
 
     if (!info) return null;
 
+    // Surface the form action when `pos` is over a call name (always available).
+    const site = options.getArgumentWidgets
+      ? siteAt(options.getArgumentWidgets, source, pos)
+      : null;
+
     return {
       pos: info.start ?? pos,
       end: info.end ?? pos,
@@ -27,22 +36,49 @@ export function hoverExtension(options: HoverOptions): Extension {
         const dom = document.createElement("div");
         dom.className = "brink-hover-tooltip";
 
-        // Render content line by line with inline markdown spans
+        // Render content line by line with inline markdown spans.
         const lines = info!.content.split("\n");
         for (const line of lines) {
-          if (line.startsWith("```")) {
-            // Skip code fence markers
-            continue;
-          }
+          if (line.startsWith("```") || line.trim() === "") continue;
           const p = document.createElement("div");
           renderInline(line, p);
           dom.appendChild(p);
         }
 
+        if (site) dom.appendChild(buildEditAction(site, view));
         return { dom };
       },
     };
   });
+}
+
+/** The call whose name span contains `pos`, if any (for the hover-card action). */
+function siteAt(
+  getArgumentWidgets: (source: string, start: number, end: number) => CallWidgetSite[],
+  source: string,
+  pos: number,
+): CallWidgetSite | null {
+  let sites: CallWidgetSite[];
+  try {
+    sites = getArgumentWidgets(source, 0, source.length);
+  } catch {
+    return null;
+  }
+  return (
+    sites.find(
+      (s) => s.slots.length > 0 && pos >= s.name_start && pos <= s.name_end,
+    ) ?? null
+  );
+}
+
+/** The "edit arguments" button folded into the hover card. */
+function buildEditAction(site: CallWidgetSite, view: EditorView): HTMLElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "brink-hover-action";
+  btn.innerHTML = `${FORM_GLYPH_ICON}<span>Edit arguments</span>`;
+  btn.addEventListener("click", () => openCallForm(btn, site, view));
+  return btn;
 }
 
 /**
