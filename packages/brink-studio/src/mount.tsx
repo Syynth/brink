@@ -690,10 +690,14 @@ export async function mountStudio(
   // document component mounts).
   store.getState().initialize(project, documents);
 
-  // Restore the persisted inline form-glyph mode (Settings → Editor). After
-  // initialize, so the action reaches `documents`; new views read it from
-  // slotOptions, open ones get the live switch.
-  store.getState().setFormGlyph(loadEditorSettings(window.localStorage).formGlyph);
+  // Restore the persisted editor settings (Settings → Editor). After initialize,
+  // so the actions reach `documents`; new views read them from slotOptions, open
+  // ones get the live switch.
+  {
+    const editor = loadEditorSettings(window.localStorage);
+    store.getState().setFormGlyph(editor.formGlyph);
+    store.getState().setAutoOpenForm(editor.autoOpenForm);
+  }
   store.getState().openTarget({ kind: "file", path: entryFile }, true);
 
   // Default layout (spec §4): the Inky two-up — entry file left, player in a

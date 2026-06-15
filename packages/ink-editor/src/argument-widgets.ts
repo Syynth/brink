@@ -13,6 +13,7 @@
  */
 
 import { RangeSetBuilder, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { pickedCompletion } from "@codemirror/autocomplete";
 import {
   Decoration,
   type DecorationSet,
@@ -55,6 +56,21 @@ const formGlyphField = StateField.define<FormGlyphMode>({
 /** Switch a view's inline-glyph mode live (the Settings toggle dispatches this). */
 export function setFormGlyphMode(view: EditorView, mode: FormGlyphMode): void {
   view.dispatch({ effects: setFormGlyphEffect.of(mode) });
+}
+
+// Live auto-open flag: whether accepting a function completion opens the Form.
+const setAutoOpenEffect = StateEffect.define<boolean>();
+const autoOpenField = StateField.define<boolean>({
+  create: () => false,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setAutoOpenEffect)) return e.value;
+    return value;
+  },
+});
+
+/** Toggle a view's completion-accept auto-open live (the Settings toggle). */
+export function setFormAutoOpen(view: EditorView, on: boolean): void {
+  view.dispatch({ effects: setAutoOpenEffect.of(on) });
 }
 
 /** The form-launcher icon — a small "fields in a box" mark (currentColor). */
@@ -360,8 +376,10 @@ class FormGlyphWidget extends WidgetType {
 
 export interface ArgumentWidgetsOptions {
   getArgumentWidgets: (source: string, start: number, end: number) => CallWidgetSite[];
-  /** How the call-level form glyph is shown. Default `"hover"`. */
+  /** How the inline call-level form glyph is shown. Default `off`. */
   formGlyph?: FormGlyphMode;
+  /** Accepting a function completion inserts `()` + opens the Form. Default false. */
+  autoOpen?: boolean;
 }
 
 export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Extension {
@@ -455,9 +473,33 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
     },
   ]);
 
+  // Auto-open: accepting a function/method completion inserts `()` and opens the
+  // Form. Deferred out of the update listener (dispatch isn't allowed in it) so
+  // the inserted parens are parsed before we query for the call.
+  const autoOpen = EditorView.updateListener.of((update) => {
+    if (!update.state.field(autoOpenField)) return;
+    const view = update.view;
+    for (const tr of update.transactions) {
+      const picked = tr.annotation(pickedCompletion);
+      if (!picked || (picked.type !== "function" && picked.type !== "method")) continue;
+      setTimeout(() => {
+        const pos = view.state.selection.main.head;
+        const doc = view.state.doc;
+        const nextChar = pos < doc.length ? doc.sliceString(pos, pos + 1) : "";
+        if (nextChar !== "(") {
+          view.dispatch({ changes: { from: pos, insert: "()" }, selection: { anchor: pos + 1 } });
+        }
+        openFormAtCursor(view, options.getArgumentWidgets);
+      }, 0);
+      break;
+    }
+  });
+
   return [
     formGlyphField.init(() => options.formGlyph ?? DEFAULT_FORM_GLYPH_MODE),
+    autoOpenField.init(() => options.autoOpen ?? false),
     plugin,
     keys,
+    autoOpen,
   ];
 }

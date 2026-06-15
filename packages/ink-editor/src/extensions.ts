@@ -43,8 +43,10 @@ export interface BrinkStudioOptions {
   getCodeActions?: (source: string, offset: number) => CodeAction[];
   getInlayHints?: (source: string, start: number, end: number) => InlayHint[];
   getArgumentWidgets?: (source: string, start: number, end: number) => CallWidgetSite[];
-  /** How the call-level argument-form glyph is shown. Default `"hover"`. */
+  /** How the inline call-level argument-form glyph is shown. Default `off`. */
   argumentFormGlyph?: FormGlyphMode;
+  /** Accepting a function completion inserts `()` + opens the Form. Default false. */
+  argumentAutoOpen?: boolean;
   getSignatureHelp?: (source: string, offset: number) => SignatureInfo | null;
   getFoldingRanges?: (source: string) => FoldRange[];
 }
@@ -85,6 +87,7 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       argumentWidgetsExtension({
         getArgumentWidgets: options.getArgumentWidgets,
         formGlyph: options.argumentFormGlyph,
+        autoOpen: options.argumentAutoOpen,
       }),
     );
   }

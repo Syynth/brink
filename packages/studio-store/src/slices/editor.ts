@@ -15,10 +15,13 @@ export interface EditorSlice {
   currentLineHints: KeyHint[];
   /** Inline argument-form glyph mode (Settings; applied live to all editors). */
   formGlyph: FormGlyphMode;
+  /** Auto-open the Form on accepting a function completion (Settings). */
+  autoOpenForm: boolean;
 
   setCursor(line: number, col: number): void;
   setLineInfo(info: LineInfo | null, hints: KeyHint[]): void;
   setFormGlyph(mode: FormGlyphMode): void;
+  setAutoOpenForm(on: boolean): void;
 }
 
 export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> = (set, get) => ({
@@ -26,6 +29,7 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
   currentLineInfo: null,
   currentLineHints: [],
   formGlyph: "off",
+  autoOpenForm: false,
 
   setCursor(line, col) {
     set({ cursor: { line, col } });
@@ -38,5 +42,10 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
   setFormGlyph(mode) {
     set({ formGlyph: mode });
     get()._documents?.setFormGlyph(mode);
+  },
+
+  setAutoOpenForm(on) {
+    set({ autoOpenForm: on });
+    get()._documents?.setAutoOpen(on);
   },
 });
