@@ -1,3 +1,4 @@
+pub mod argument_widgets;
 pub mod code_actions;
 pub mod color;
 mod completion;
