@@ -195,6 +195,7 @@ mod tests {
                 constraint: Some(Constraint::Enum {
                     values: vec!["#FF0000".into()],
                 }),
+                values: None,
             }],
         }
     }

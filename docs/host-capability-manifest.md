@@ -300,6 +300,15 @@ The **Tier 1 + closed Tier 2 MVP** is implemented. What shipped:
 - **Registration**: `EditorSession::set_host_manifest(json)` /
   `clear_host_manifest` / `set_external_check`; TS schema mirror in
   `@brink/wasm-types`; handle methods in `@brink-lang/web`.
+- **Tier 3 — static slice landed (#174):** `SemanticTypeDef.values:
+  ValueSource` (`{source:"static", items:[{value,label,detail?}]}` |
+  `{source:"host"}`) — a *separate* field from `constraint`, **advisory** (never
+  a diagnostic). The analyzer carries it on `ResolvedType.values`; `brink-ide`
+  inlay hints render a **value label** after a literal whose param has a static
+  value set (`set_switch(5 ⟨HarborGate⟩, …)`, `InlayHintKind::Value`). The
+  dynamic `host` source (the push-cache transport + the studio
+  `argumentProviders` surface + the completion dropdown) is the next increment —
+  see [host-argument-picker-spec.md](host-argument-picker-spec.md).
 
 **Resolved forks:** (1) metadata lives in side-tables (`SymbolManifest.
 external_docs` per-file; `AnalysisResult.external_meta` merged) — `SymbolInfo`

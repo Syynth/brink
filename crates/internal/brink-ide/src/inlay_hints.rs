@@ -5,7 +5,11 @@ use rowan::{TextRange, TextSize};
 
 /// The kind of inlay hint.
 pub enum InlayHintKind {
+    /// A `name:` / `name: type` label before an argument.
     Parameter,
+    /// A host value label after a literal argument (e.g. `5 ⟨HarborGate⟩`) —
+    /// the static value source's label for that literal (#174).
+    Value,
 }
 
 /// An inlay hint to display in the editor.
@@ -125,6 +129,25 @@ fn collect_param_hints(
             kind: InlayHintKind::Parameter,
             padding_right: true,
         });
+
+        // Value-label hint (#174): if the param's semantic type declares a
+        // static labelled value set and this literal matches an item, show its
+        // label after the argument (`set_switch(5 ⟨HarborGate⟩, …)`). Advisory —
+        // a non-matching literal simply gets no label (the host's set may have
+        // changed; the running game is source of truth).
+        if let Some(brink_ir::ValueSource::Static { items }) = ty.and_then(|rt| rt.values.as_ref())
+        {
+            let literal = arg_text.trim_matches('"');
+            if let Some(item) = items.iter().find(|it| it.value == literal) {
+                hints.push(InlayHint {
+                    offset: arg.syntax().text_range().end(),
+                    // Leading space separates it from the literal (no padding_left).
+                    label: format!(" \u{27e8}{}\u{27e9}", item.label),
+                    kind: InlayHintKind::Value,
+                    padding_right: false,
+                });
+            }
+        }
     }
 }
 
@@ -132,7 +155,7 @@ fn collect_param_hints(
 mod tests {
     use rowan::{TextRange, TextSize};
 
-    use super::inlay_hints;
+    use super::{InlayHintKind, inlay_hints};
     use crate::session::IdeSession;
 
     #[test]
@@ -161,5 +184,75 @@ mod tests {
         let labels: Vec<_> = hints.iter().map(|h| h.label.as_str()).collect();
         assert!(labels.contains(&"weapon: int"), "{labels:?}");
         assert!(labels.contains(&"amount:"), "{labels:?}");
+    }
+
+    #[test]
+    fn static_value_source_labels_matching_literal() {
+        use brink_ir::{
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef, ValueItem, ValueSource,
+        };
+
+        let src = "\
+EXTERNAL set_switch(id, on)
+== main ==
+~ set_switch(5, true)
+~ set_switch(9, false)
+-> END
+";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        // set_switch(id: switch_id, on: bool); switch_id maps "5" -> "HarborGate".
+        session.set_host_manifest(HostManifest {
+            externals: vec![ManifestExternal {
+                name: "set_switch".into(),
+                params: vec![
+                    ManifestParam {
+                        name: "id".into(),
+                        ty: TypeRef("switch_id".into()),
+                    },
+                    ManifestParam {
+                        name: "on".into(),
+                        ty: TypeRef("bool".into()),
+                    },
+                ],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Effect,
+                doc: None,
+            }],
+            types: vec![SemanticTypeDef {
+                name: "switch_id".into(),
+                base: BaseType::Int,
+                constraint: None,
+                values: Some(ValueSource::Static {
+                    items: vec![ValueItem {
+                        value: "5".into(),
+                        label: "HarborGate".into(),
+                        detail: None,
+                    }],
+                }),
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax::parse(src);
+        let hints = inlay_hints(
+            &parsed.syntax(),
+            analysis,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+        );
+
+        // The matching literal `5` gets a value label; `9` (not in the set) does not.
+        let value_labels: Vec<_> = hints
+            .iter()
+            .filter(|h| matches!(h.kind, InlayHintKind::Value))
+            .map(|h| h.label.as_str())
+            .collect();
+        assert_eq!(
+            value_labels.len(),
+            1,
+            "only the matching literal: {value_labels:?}"
+        );
+        assert!(value_labels[0].contains("HarborGate"), "{value_labels:?}");
     }
 }

@@ -2940,6 +2940,7 @@ fn code_action_kind_str(kind: &brink_ide::code_actions::CodeActionKind) -> &'sta
 fn inlay_hint_kind_str(kind: &brink_ide::inlay_hints::InlayHintKind) -> &'static str {
     match kind {
         brink_ide::inlay_hints::InlayHintKind::Parameter => "parameter",
+        brink_ide::inlay_hints::InlayHintKind::Value => "value",
     }
 }
 

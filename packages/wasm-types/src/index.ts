@@ -419,11 +419,32 @@ export type Constraint =
   | { kind: "regex"; pattern: string }
   | { kind: "range"; min?: number | null; max?: number | null };
 
+/** One pickable value with its host-given display label (Tier 3, #174). */
+export interface ValueItem {
+  /** The literal inserted into source (e.g. "5"). */
+  value: string;
+  /** The display label (e.g. "HarborGate"). */
+  label: string;
+  /** Optional secondary text (e.g. "Switch #5"). */
+  detail?: string | null;
+}
+
+/**
+ * Where a semantic type's pickable values come from (Tier 3, #174). Advisory
+ * tooling metadata only — it drives the author-time argument picker and never
+ * affects checking or the compiled program. See docs/host-argument-picker-spec.md.
+ */
+export type ValueSource =
+  | { source: "static"; items: ValueItem[] }
+  | { source: "host" };
+
 /** A flat-nominal semantic type: a base type plus one optional constraint. */
 export interface SemanticTypeDef {
   name: string;
   base: BaseType;
   constraint?: Constraint | null;
+  /** The picker's value source (Tier 3) — `static` (no host) or `host`. */
+  values?: ValueSource | null;
 }
 
 /** A registered external parameter. */
