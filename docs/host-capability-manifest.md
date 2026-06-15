@@ -314,8 +314,14 @@ The **Tier 1 + closed Tier 2 MVP** is implemented. What shipped:
   the attached host pushes; it lives on `IdeSession` (query-time, no re-analyze)
   and the picker + value-label inlay hints resolve `host`-source types from it
   (empty ⇒ plain literal entry). Studio handle: `EditorSessionHandle.setHostValues`.
-  The studio `argumentProviders` extension surface (#175) — a data-only embedder
-  API that drives the cache — is the remaining piece.
+- **Tier 3 — studio `argumentProviders` surface landed (#175):**
+  `StudioExtensions.argumentProviders?: { type, enumerate() }[]` — a data-only
+  embedder API keyed by semantic type. At mount the studio enumerates them and
+  pushes the snapshot into the session's value cache (`pushArgumentProviderValues`
+  → `setHostValues`), so a host registers value sources declaratively rather than
+  poking the session. **This completes the Phase-9 host-aware argument picker**
+  (static + dynamic). Optional follow-up: live refresh (re-enumerate when host
+  data changes). Host-rendered editors remain Tier 3+ (out of scope).
 
 **Resolved forks:** (1) metadata lives in side-tables (`SymbolManifest.
 external_docs` per-file; `AnalysisResult.external_meta` merged) — `SymbolInfo`

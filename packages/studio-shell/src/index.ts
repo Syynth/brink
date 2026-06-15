@@ -15,6 +15,8 @@ export {
   installStudioExtensions,
   type StudioExtensionRegistries,
   type StudioExtensions,
+  type ArgumentProvider,
+  type ArgumentValue,
 } from "./extensions.js";
 export {
   Keymap,
