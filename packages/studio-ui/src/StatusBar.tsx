@@ -145,6 +145,7 @@ export function SessionPicker() {
   const activeSessionId = useStudioStore((s) => s.activeSessionId);
   const setActiveSession = useStudioStore((s) => s.setActiveSession);
   const openSession = useStudioStore((s) => s.openSession);
+  const openFlow = useStudioStore((s) => s.openFlow);
   const closeSession = useStudioStore((s) => s.closeSession);
 
   if (sessions.length <= 1) return null;
@@ -166,10 +167,17 @@ export function SessionPicker() {
       </select>
       <button
         className="brink-session-add clickable"
-        title="Open a new session"
+        title="Open a new session (independent — isolated globals)"
         onClick={() => openSession()}
       >
         +
+      </button>
+      <button
+        className="brink-session-add clickable"
+        title="Open a new flow (concurrent — shares globals)"
+        onClick={() => openFlow()}
+      >
+        +⑂
       </button>
       {canClose && (
         <button

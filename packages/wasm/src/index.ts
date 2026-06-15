@@ -744,6 +744,42 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.program_model()) as ProgramModel;
   }
 
+  // ── Shared flows (#200) ──────────────────────────────────────────
+  // Concurrent flows of one story that SHARE this runner's globals / visit
+  // counts / rng (true ink flow semantics), each with its own call stack.
+  // Drives the studio's "+ new flow". Distinct from a separate
+  // `StoryRunnerHandle`, which is an isolated playthrough.
+
+  /** Spawn a shared-context flow at the program root (or `path`). */
+  spawnFlow(name: string, path?: string): void {
+    this.runner.spawn_flow(name, path);
+  }
+
+  /** Advance a shared flow by one line. */
+  continueFlow(name: string): Line {
+    return JSON.parse(this.runner.continue_flow(name)) as Line;
+  }
+
+  /** Select a choice in a shared flow. */
+  chooseFlow(name: string, index: number): void {
+    this.runner.choose_flow(name, index);
+  }
+
+  /** Destroy a shared flow. */
+  destroyFlow(name: string): void {
+    this.runner.destroy_flow(name);
+  }
+
+  /** Active flow names (sorted). */
+  flowNames(): string[] {
+    return JSON.parse(this.runner.flow_names()) as string[];
+  }
+
+  /** Per-flow debug snapshot (State View) for a named flow. */
+  flowDebugSnapshot(name: string): DebugState {
+    return JSON.parse(this.runner.flow_debug_snapshot(name)) as DebugState;
+  }
+
   free(): void {
     this.runner.free();
   }

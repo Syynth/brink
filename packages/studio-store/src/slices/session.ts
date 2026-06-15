@@ -59,6 +59,7 @@ export {
   LocalSessionProvider,
   REPLAY_DIVERGED_MESSAGE,
 } from "../session/local-provider.js";
+export { FlowSessionProvider } from "../session/flow-provider.js";
 
 // ── Slice ───────────────────────────────────────────────────────────
 
@@ -153,6 +154,12 @@ export interface SessionSlice {
    * Registered alongside the others and made active. No-op without a program.
    */
   openSession(opts?: { label?: string; path?: string; args?: ExternalValue[] }): void;
+  /**
+   * Open a new shared-context flow (#200) — a concurrent flow of the **primary**
+   * session's story that **shares** its globals / visit counts / rng, started at
+   * the root or `path`. Registered + made active. No-op without a live primary.
+   */
+  openFlow(opts?: { label?: string; path?: string }): void;
   /** Close a session by id. The primary (`local:default`) cannot be closed. */
   closeSession(id: SessionId): void;
   /** Make `id` the active session — repoints every session-bound view. */
@@ -230,6 +237,14 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     },
 
     startSession(bytes) {
+      // A recompile/reload replaces the primary's `Story`, so any shared flows
+      // (#200) become stale — dispose + drop them before reloading.
+      const staleFlows = get().sessions.filter((e) => e.id.startsWith("flow:"));
+      if (staleFlows.length > 0) {
+        for (const e of staleFlows) e.provider.dispose();
+        set((s) => ({ sessions: s.sessions.filter((e) => !e.id.startsWith("flow:")) }));
+      }
+
       // The auto-start / story.start path always targets the primary session.
       let entry = get().sessions.find((e) => e.id === DEFAULT_SESSION_ID);
       if (!entry) {
@@ -259,6 +274,24 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       }));
       setActive(id);
       provider.start(bytes);
+    },
+
+    openFlow(opts) {
+      // Spawn a shared flow on the primary session's runner — it shares that
+      // story's globals (#200). Needs a live primary local session.
+      const primary = get().sessions.find((e) => e.id === DEFAULT_SESSION_ID)?.provider;
+      if (!(primary instanceof LocalSessionProvider) || !primary.hasLiveRunner()) return;
+      const seq = get()._sessionSeq;
+      const id = `flow:${seq}`;
+      const provider = primary.spawnFlow(`flow${seq}`, opts?.path);
+      if (!provider) return;
+      const label = opts?.label ?? opts?.path ?? `Flow ${seq}`;
+      set((s) => ({
+        sessions: [...s.sessions, { id, label, provider }],
+        _sessionSeq: seq + 1,
+      }));
+      setActive(id);
+      provider.start();
     },
 
     setActiveSession(id) {

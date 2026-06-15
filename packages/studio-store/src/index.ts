@@ -124,6 +124,7 @@ export {
   statusOfLine,
   REPLAY_DIVERGED_MESSAGE,
   LocalSessionProvider,
+  FlowSessionProvider,
   EMPTY_SNAPSHOT,
   ALL_CAPABILITIES,
   DEFAULT_SESSION_ID,

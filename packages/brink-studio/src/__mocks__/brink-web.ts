@@ -335,4 +335,20 @@ export class StoryRunner {
   begin_replay(): void { /* no-op */ }
   end_replay(): void { /* no-op */ }
   has_recording(): boolean { return false; }
+  // Shared-flow surface (#200): a minimal in-memory flow registry so the studio
+  // multi-flow path is exercisable. Each flow ends immediately, like the mock
+  // story.
+  private flows = new Set<string>();
+  spawn_flow(name: string, _path?: string): void { this.flows.add(name); }
+  continue_flow(_name: string): string { return JSON.stringify({ type: "end", text: "", tags: [] }); }
+  choose_flow(_name: string, _index: number): void { /* no-op */ }
+  destroy_flow(name: string): void { this.flows.delete(name); }
+  flow_names(): string { return JSON.stringify([...this.flows].sort()); }
+  flow_debug_snapshot(_name: string): string {
+    return JSON.stringify({
+      status: "ended", current_location: null, turn_index: 0,
+      globals: [], call_stack: [], visit_counts: [], pending_choices: [],
+      rng: { seed: 0, previous: 0 },
+    });
+  }
 }
