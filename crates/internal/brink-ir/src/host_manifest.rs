@@ -59,6 +59,37 @@ pub struct SemanticTypeDef {
     pub base: BaseType,
     #[serde(default)]
     pub constraint: Option<Constraint>,
+    /// Where this type's pickable values + labels come from (Tier 3, #174).
+    /// Drives the author-time argument picker; **advisory** — orthogonal to
+    /// `constraint` (which does checking) and never affects the compiled
+    /// program. `None` means the param is entered as a plain literal.
+    #[serde(default)]
+    pub values: Option<ValueSource>,
+}
+
+/// One pickable value with its host-given display label (Tier 3, #174).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueItem {
+    /// The literal inserted into source (e.g. `"5"`).
+    pub value: String,
+    /// The display label (e.g. `"HarborGate"`).
+    pub label: String,
+    /// Optional secondary text (e.g. `"Switch #5"`).
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+/// Where a semantic type's pickable values come from (Tier 3, #174). Advisory
+/// tooling metadata only — never checked against, never compiled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "source")]
+pub enum ValueSource {
+    /// A closed, labelled set baked into the manifest — drives the picker with
+    /// no host attached (the static slice).
+    Static { items: Vec<ValueItem> },
+    /// Values are provided by the attached host at author time (pushed into the
+    /// studio); empty until a host connects.
+    Host,
 }
 
 /// A closed-domain constraint, statically checkable against literal arguments.
@@ -174,4 +205,45 @@ pub struct DocBlock {
     pub returns: Option<TypeRef>,
     /// `@kind <kind>`.
     pub kind: Option<ExternalKind>,
+}
+
+#[cfg(test)]
+mod value_source_tests {
+    use super::{SemanticTypeDef, ValueSource};
+
+    #[test]
+    fn static_value_source_json_roundtrip() {
+        // The host authors this JSON; lock the wire shape.
+        let json = r#"{
+            "name": "switch_id",
+            "base": "int",
+            "values": { "source": "static", "items": [
+                { "value": "5", "label": "HarborGate", "detail": "Switch #5" },
+                { "value": "9", "label": "Vault" }
+            ] }
+        }"#;
+        let def: SemanticTypeDef = serde_json::from_str(json).expect("parse");
+        let items = match def.values {
+            Some(ValueSource::Static { items }) => items,
+            _ => Vec::new(),
+        };
+        assert_eq!(items.len(), 2, "two static items parsed");
+        assert_eq!(items[0].value, "5");
+        assert_eq!(items[0].label, "HarborGate");
+        assert_eq!(items[0].detail.as_deref(), Some("Switch #5"));
+        assert_eq!(items[1].detail, None);
+    }
+
+    #[test]
+    fn host_value_source_and_omitted_values_parse() {
+        let host: SemanticTypeDef =
+            serde_json::from_str(r#"{ "name": "item_id", "base": "int", "values": { "source": "host" } }"#)
+                .expect("parse host");
+        assert!(matches!(host.values, Some(ValueSource::Host)));
+
+        // Omitted `values` is fine (Tiers 1–2 manifests, plain literals).
+        let none: SemanticTypeDef =
+            serde_json::from_str(r#"{ "name": "x", "base": "int" }"#).expect("parse bare");
+        assert!(none.values.is_none());
+    }
 }

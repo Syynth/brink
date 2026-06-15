@@ -38,7 +38,23 @@ export const EXAMPLE_REVEAL_COMMAND_ID = "host.example.revealStart";
 // renders the same object. The demo story declares the matching `EXTERNAL`s.
 
 export const EXAMPLE_HOST_MANIFEST: HostManifest = {
-  types: [{ name: "item_id", base: "string" }],
+  types: [
+    { name: "item_id", base: "string" },
+    // A static value source (#174): `switch_id` literals get a name label
+    // inline — `set_switch(5 ⟨HarborGate⟩, true)` — with no host attached.
+    {
+      name: "switch_id",
+      base: "int",
+      values: {
+        source: "static",
+        items: [
+          { value: "1", label: "IntroSeen", detail: "Switch #1" },
+          { value: "5", label: "HarborGate", detail: "Switch #5" },
+          { value: "9", label: "VaultOpen", detail: "Switch #9" },
+        ],
+      },
+    },
+  ],
   externals: [
     {
       name: "has_item",
@@ -46,6 +62,16 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       returns: "bool",
       kind: "query",
       doc: "True if the party carries the item.",
+    },
+    {
+      name: "set_switch",
+      params: [
+        { name: "id", ty: "switch_id" },
+        { name: "on", ty: "bool" },
+      ],
+      returns: "void",
+      kind: "effect",
+      doc: "Set a game switch on or off.",
     },
     {
       name: "gain_gold",
