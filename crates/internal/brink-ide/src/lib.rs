@@ -1,4 +1,5 @@
 pub mod code_actions;
+pub mod color;
 mod completion;
 pub mod document;
 pub mod folding;

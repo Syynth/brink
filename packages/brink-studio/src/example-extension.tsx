@@ -54,8 +54,18 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
         ],
       },
     },
+    // A studio-builtin picker (#174): a `hex_color` param renders a native
+    // color swatch over its string literal — click it to pick a color.
+    { name: "hex_color", base: "string" },
   ],
   externals: [
+    {
+      name: "set_tint",
+      params: [{ name: "color", ty: "hex_color" }],
+      returns: "void",
+      kind: "presentation",
+      doc: "Tint the screen to a hex color.",
+    },
     {
       name: "has_item",
       params: [{ name: "item", ty: "item_id" }],

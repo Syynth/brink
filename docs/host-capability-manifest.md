@@ -147,6 +147,19 @@ runtime. Catches signature/type mismatches, not logic errors.
 ] }
 ```
 
+**Panel categorization (`path`).** An external may carry an optional `path:
+string[]` — a category → sub-category breadcrumb the Host Functions panel uses to
+group and filter a large vocabulary (a real host has hundreds of verbs). Pure
+static presentation metadata, like `doc`/`kind`; un-`path`'d externals fall into a
+default bucket. Nested (`["Map","Movement"]`), not a flat string, so hosts can
+express a real taxonomy. Designed in #210 (the panel renders collapsible sections
++ search over it).
+
+```jsonc
+{ "name": "set_move_route", "params": [["actor","int"]], "returns": "void",
+  "kind": "effect", "path": ["Map", "Movement"] }
+```
+
 ### Tier 2 — Semantic / refined types (static declaration)
 
 A param is not just `string`, it's a **named semantic type** with an optional
@@ -179,22 +192,49 @@ hook, studio brokers):
 **(b) Host-rendered editors** — for rich, domain-specific value entry the studio
 can't render itself (an RMMZ map editor that needs tilesets + map data).
 
+> **The full widget UX is designed in [argument-widget-spec.md](argument-widget-spec.md).**
+> This section is the *schema + protocol* source of truth; the spec covers the
+> three authoring entry points (Edit a literal / Fill an empty slot / Form the
+> whole call), the Host Functions panel as a Form launcher, the studio widget
+> registry, the `argumentWidgets` embedder surface, and graceful degradation.
+
 #### Widget classes
 
-- **Studio-builtin widgets** — generic, studio renders them, no host assets:
-  color picker (`color`), number fields (`vector3`), searchable dropdown
-  (backed by a Tier-3 value provider, for `item_id`).
-- **Host-provided editors** — studio *cannot* render these; the host owns the
-  UI and assets. Studio's role is **broker + seam**.
+- **Studio-builtin widgets** — generic, studio renders them, no host assets, all
+  through one registry: `color` (swatch + popover picker, for `hex_color`),
+  `value-list` (a **label-searchable typeahead** for a type carrying `values` —
+  filters on the item name, inserts the id; #211), later `number`/`vector3`/
+  `bool-toggle`.
+- **Host-provided editors** — studio *cannot* render these; the host owns the UI
+  and assets. Studio's role is **broker + seam**.
+
+**Inline is always studio-rendered (data-only host input).** The in-text
+affordance — a swatch, or a chip reading a label — is drawn by the studio. A host
+contributes inline only as *data*: a label string + an optional CSS class on the
+chip span (`inline(ctx) → { text, className? }`). No host-mounted DOM in the
+source line, no thumbnails. The host's rich UI lives entirely in the **editor**
+(a popover or modal), which is the only host-rendered surface.
+
+#### Type-level built-in widget
+
+A semantic type names a studio-builtin widget via `widget` (the `@widget` inline
+JSDoc tag is the `///` counterpart, already reserved):
+
+```jsonc
+{ "name": "hex_color", "base": "string", "widget": { "kind": "color" } }
+```
 
 #### Arg-group semantic types (one widget, many params)
 
-A widget may span an **argument group**, not just a single param:
+A widget may span an **argument group**, not just a single param. `surface`
+(`"popover"` default | `"modal"`) declares the editor container; a heavy host
+editor (a map) requests `modal`:
 
 ```jsonc
 { "name": "place_object",
   "params": [["x","int"], ["y","int"]],
-  "widgets": [ { "group": [0,1], "type": "map_point", "editor": "rmmz.map_picker" } ] }
+  "widgets": [ { "group": [0,1], "type": "map_point",
+                 "editor": "rmmz.map_picker", "surface": "modal" } ] }
 ```
 
 #### Inter-arg context
@@ -211,21 +251,27 @@ manifest — but still short of a type system.
 
 #### Host-editor invocation protocol
 
-The data flow for a host-rendered editor (reuses inlay/code-lens affordances +
-text-edit returns that `brink-ide` already has, cf. `convert_element` /
-`rename`):
+The host editor is a **studio-side mounted component** (registered through the
+`argumentWidgets` embedder surface, like a tool window) — *not* a wasm↔host
+callback. The studio owns the popover/modal chrome; the host fills the body and
+resolves/cancels. Data flow (detail in argument-widget-spec §5):
 
-1. Manifest declares an arg-group widget with `editor: "rmmz.map_picker"`.
-2. Studio renders an affordance at the call site (code-lens / inlay).
-3. On invoke, studio emits an **edit request** to the host:
-   `{ editor, call_site, current: {x,y}, context: {mapId} }`.
-4. The host opens *its* editor, the user acts, the host returns a **structured
-   result** (`{x,y}`) — or cancels.
-5. Studio applies a **multi-arg text edit**, writing the slots back to source.
+1. Manifest declares an arg-group widget with `editor: "host.<vendor>.map_picker"`.
+2. The `brink-ide` `argument_widgets` query reports the call's slots — spans,
+   current values, resolved inter-arg `context` — and the studio renders the
+   affordance (inline chip / Fill placeholder / Form glyph).
+3. On invoke, the studio opens its chrome and calls the host's
+   `editor.render(ctx, host, container)` — `ctx` carries `{ values, context }`,
+   `container` is a DOM node the host mounts its UI into.
+4. The host acts; calls `host.resolve(values)` (the structured result, e.g.
+   `["12","8"]`) or `host.cancel()`.
+5. The studio applies a **multi-slot text edit**, writing the group's spans back
+   to source as one undoable transaction.
 
-The only net-new infrastructure is steps 3–4: a wasm↔host
-**request-host-UI / return-structured-value** callback — the same seam as the
-value provider, "host renders an editor" instead of "host answers a query."
+The net-new infrastructure is just the `argument_widgets` IDE query (spans + slot
+state + context) and the `argumentWidgets` embedder surface — the host editor runs
+in the studio's JS context, so no new wasm↔host UI callback is required (the value
+provider's push-cache already covers the data side).
 
 #### Graceful degradation
 
@@ -321,7 +367,17 @@ The **Tier 1 + closed Tier 2 MVP** is implemented. What shipped:
   → `setHostValues`), so a host registers value sources declaratively rather than
   poking the session. **This completes the Phase-9 host-aware argument picker**
   (static + dynamic). Optional follow-up: live refresh (re-enumerate when host
-  data changes). Host-rendered editors remain Tier 3+ (out of scope).
+  data changes).
+- **Tier 3 — widgets & editors: designed, not yet landed.** The full UX is specced
+  in [argument-widget-spec.md](argument-widget-spec.md), forks resolved (inline is
+  studio-rendered data-only; the host editor is a studio-mounted component via the
+  `argumentWidgets` surface; studio owns the popover/modal chrome; `surface` declared
+  in-manifest). Schema delta to land: `SemanticTypeDef.widget?: { kind }`,
+  `ManifestExternal.widgets?: [{ group, type, editor, surface?, context?, fallback? }]`,
+  `ManifestExternal.path?: string[]` (panel categorization, #210). Built in 5 stages
+  (registry + `color` first; `argument_widgets` query; the Form; host widgets;
+  arg-groups + modal). Related: #210 (panel categories/search), #211 (`value-list`
+  label-searchable typeahead).
 
 **Resolved forks:** (1) metadata lives in side-tables (`SymbolManifest.
 external_docs` per-file; `AnalysisResult.external_meta` merged) — `SymbolInfo`
@@ -344,11 +400,15 @@ argument (non-breaking: `analyze(files)` delegates with defaults), not a
 
 ## Remaining design forks (Tier 3+)
 
-1. **Tier-3 completions: push-cache vs. async provider** — host pushes value
-   sets into the session on change (sync completions; lean this) vs. the session
-   calls out mid-query. Only relevant once Tier 3 is built.
-2. **Manifest generation** — generating registered entries from host source
+1. **Tier-3 completions: push-cache vs. async provider** — *resolved:* push-cache
+   (host pushes value sets on change; sync completions). Landed (#174/#175).
+2. **Widget UX forks** — *resolved* in [argument-widget-spec.md](argument-widget-spec.md)
+   §6 (inline data-only, studio chrome, mount-callback seam, manifest `surface`,
+   Form glyph placement prototype-both, panel-as-launcher).
+3. **Manifest generation** — generating registered entries from host source
    (e.g. an RMMZ plugin's commands) is a nice-to-have, not required.
+4. **Categories taxonomy depth** — `path: string[]` is nested (decided); whether
+   the panel renders arbitrary depth or caps it is a panel-impl detail (#210).
 
 ## Phasing
 

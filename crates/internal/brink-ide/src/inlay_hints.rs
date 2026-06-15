@@ -124,9 +124,14 @@ fn collect_param_hints(
         let ty = meta
             .and_then(|m| m.params.get(i))
             .and_then(|rp| rp.ty.as_ref());
+        // A param whose type has a studio-builtin widget shows just `name:` —
+        // the widget (e.g. the color swatch) conveys the type, so repeating it
+        // is noise: `set_tint(color: ▮"#FF8800")`, not `color: hex_color`.
         let label = match ty {
-            Some(ty) => format!("{prefix}{}: {}", param.name, ty.name),
-            None => format!("{prefix}{}:", param.name),
+            Some(ty) if !crate::color::has_builtin_widget(&ty.name) => {
+                format!("{prefix}{}: {}", param.name, ty.name)
+            }
+            _ => format!("{prefix}{}:", param.name),
         };
 
         hints.push(InlayHint {
@@ -198,6 +203,50 @@ mod tests {
         let labels: Vec<_> = hints.iter().map(|h| h.label.as_str()).collect();
         assert!(labels.contains(&"weapon: int"), "{labels:?}");
         assert!(labels.contains(&"amount:"), "{labels:?}");
+    }
+
+    #[test]
+    fn builtin_widget_param_drops_the_type_label() {
+        use brink_ir::{
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef,
+        };
+
+        // `color: hex_color` carries the built-in color widget — the swatch
+        // conveys the type, so the inlay shows just `color:` (spec §9).
+        let src = "EXTERNAL set_tint(color)\n~ set_tint(\"#FF8800\")\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            externals: vec![ManifestExternal {
+                name: "set_tint".into(),
+                params: vec![ManifestParam {
+                    name: "color".into(),
+                    ty: TypeRef("hex_color".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Effect,
+                doc: None,
+            }],
+            types: vec![SemanticTypeDef {
+                name: "hex_color".into(),
+                base: BaseType::String,
+                constraint: None,
+                values: None,
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax::parse(src);
+        let hints = inlay_hints(
+            &parsed.syntax(),
+            analysis,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
+        );
+        let labels: Vec<_> = hints.iter().map(|h| h.label.as_str()).collect();
+        assert!(labels.contains(&"color:"), "{labels:?}");
+        assert!(!labels.contains(&"color: hex_color"), "{labels:?}");
     }
 
     #[test]

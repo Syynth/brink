@@ -128,6 +128,16 @@ export interface InlayHint {
   padding_right: boolean;
 }
 
+/** A `hex_color` argument literal for the built-in color picker (#174). */
+export interface ColorHint {
+  /** Start offset of the literal (including quotes), UTF-16. */
+  start: number;
+  /** End offset of the literal (exclusive), UTF-16. */
+  end: number;
+  /** The bare hex value, quotes stripped (e.g. "#FF0000"). */
+  value: string;
+}
+
 export interface SignatureInfo {
   label: string;
   documentation?: string;

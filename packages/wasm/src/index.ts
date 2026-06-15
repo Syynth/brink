@@ -25,6 +25,7 @@ import type {
   Location,
   FileEdit,
   InlayHint,
+  ColorHint,
   SignatureInfo,
   FoldRange,
   DocumentSymbol,
@@ -317,6 +318,12 @@ export class EditorSessionHandle {
   getInlayHintsDoc(doc: DocumentId, start: number, end: number): InlayHint[] {
     const json = this.session.inlay_hints_doc(doc, start, end);
     return JSON.parse(json) as InlayHint[];
+  }
+
+  /** `hex_color` argument literals in range, for the built-in color picker. */
+  getColorHintsDoc(doc: DocumentId, start: number, end: number): ColorHint[] {
+    const json = this.session.color_hints_doc(doc, start, end);
+    return JSON.parse(json) as ColorHint[];
   }
 
   getSignatureHelpDoc(doc: DocumentId, offset: number): SignatureInfo | null {
