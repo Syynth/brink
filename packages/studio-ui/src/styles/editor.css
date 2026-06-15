@@ -309,6 +309,32 @@
   outline-offset: 1px;
 }
 
+/* Call-level form glyph (argument-widget-spec §1.1, §6.5): opens the whole-call
+   Form. Two prototyped variants — always-visible, and hover-revealed (shown only
+   when the line is hovered). */
+.brink-studio .brink-form-glyph {
+  display: inline-block;
+  margin: 0 1px 0 2px;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+  font-size: 0.9em;
+  opacity: 0.5;
+  transition: opacity 0.1s ease;
+}
+.brink-studio .brink-form-glyph:hover {
+  opacity: 1;
+  color: var(--bs-accent, var(--bs-fg));
+}
+.brink-studio .brink-form-glyph--hover {
+  opacity: 0;
+}
+.brink-studio .cm-line:hover .brink-form-glyph--hover {
+  opacity: 0.5;
+}
+.brink-studio .cm-line:hover .brink-form-glyph--hover:hover {
+  opacity: 1;
+}
+
 /* Studio-owned popover chrome for widget editors. */
 .brink-widget-popover {
   position: absolute;

@@ -23,7 +23,11 @@ import {
 } from "@codemirror/view";
 import type { CallWidgetSite } from "@brink/wasm-types";
 import { getBuiltinWidget, type WidgetEditorHost } from "./widget-registry.js";
+import { openArgumentForm, type FormField } from "./argument-form.js";
 import "./color-widget.js"; // side-effect: registers the built-in "color" widget
+
+/** How the call-level form glyph is shown (spec §6.5 — prototype both). */
+export type FormGlyphMode = "hover" | "inline" | "off";
 
 /**
  * The current quoted-literal range starting at `from` (the opening quote).
@@ -37,6 +41,45 @@ function liveLiteralRange(view: EditorView, from: number): { from: number; to: n
     if (doc.sliceString(i, i + 1) === '"') return { from, to: i + 1 };
   }
   return null;
+}
+
+/**
+ * The call's parenthesis range, scanning from just after the function name
+ * (`nameEnd`) — only whitespace may sit between the name and `(`. Returns the
+ * `(` and matching `)` positions (depth-counted, so nested calls in args are
+ * handled). The form replaces `[open+1, close)` with the composed arg list.
+ */
+function liveParenRange(view: EditorView, nameEnd: number): { open: number; close: number } | null {
+  const doc = view.state.doc;
+  let open = -1;
+  for (let i = nameEnd; i < doc.length; i++) {
+    const c = doc.sliceString(i, i + 1);
+    if (c === "(") {
+      open = i;
+      break;
+    }
+    if (c !== " " && c !== "\t") return null;
+  }
+  if (open < 0) return null;
+  let depth = 0;
+  for (let i = open; i < doc.length; i++) {
+    const c = doc.sliceString(i, i + 1);
+    if (c === "(") depth++;
+    else if (c === ")") {
+      depth--;
+      if (depth === 0) return { open, close: i };
+    }
+  }
+  return null;
+}
+
+/** A stable key for a call site — so the glyph reuses its DOM until the call's
+ *  identity or slot values change. */
+function siteKey(site: CallWidgetSite): string {
+  const slots = site.slots
+    .map((s) => `${s.param_name}:${s.state.kind === "filled" ? s.state.value : s.state.kind}`)
+    .join(",");
+  return `${site.name_end}|${site.callee}|${slots}`;
 }
 
 /** An inline editor affordance on a filled literal — Edit (replace in place). */
@@ -173,8 +216,71 @@ class FillGhostWidget extends WidgetType {
   }
 }
 
+/** A call-level glyph at the function name — opens the whole-call Form. */
+class FormGlyphWidget extends WidgetType {
+  constructor(
+    readonly site: CallWidgetSite,
+    readonly mode: FormGlyphMode,
+    readonly view: EditorView,
+  ) {
+    super();
+  }
+
+  eq(other: FormGlyphWidget): boolean {
+    return other.mode === this.mode && siteKey(other.site) === siteKey(this.site);
+  }
+
+  toDOM(): HTMLElement {
+    const el = document.createElement("span");
+    el.className =
+      this.mode === "hover" ? "brink-form-glyph brink-form-glyph--hover" : "brink-form-glyph";
+    el.textContent = "⊞";
+    el.setAttribute("role", "button");
+    el.tabIndex = 0;
+    el.title = `Edit ${this.site.callee}(…)`;
+    el.addEventListener("click", () => this.open(el));
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        this.open(el);
+      }
+    });
+    return el;
+  }
+
+  private open(anchor: HTMLElement): void {
+    const fields: FormField[] = this.site.slots.map((slot) => ({
+      paramName: slot.param_name,
+      typeName: slot.type_name,
+      widgetKind: slot.widget,
+      initial: slot.state.kind === "filled" ? slot.state.value : undefined,
+    }));
+    const sig = `${this.site.callee}(${this.site.slots.map((s) => s.param_name).join(", ")})`;
+    openArgumentForm(anchor, {
+      title: sig,
+      applyLabel: "Apply",
+      fields,
+      onApply: (literals) => {
+        const range = liveParenRange(this.view, this.site.name_end);
+        if (range) {
+          this.view.dispatch({
+            changes: { from: range.open + 1, to: range.close, insert: literals.join(", ") },
+          });
+        }
+      },
+      onCancel: () => {},
+    });
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
 export interface ArgumentWidgetsOptions {
   getArgumentWidgets: (source: string, start: number, end: number) => CallWidgetSite[];
+  /** How the call-level form glyph is shown. Default `"hover"`. */
+  formGlyph?: FormGlyphMode;
 }
 
 export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Extension {
@@ -189,8 +295,19 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
 
     // Collect (pos, side, deco) then sort — Fill ghosts and Edit swatches can
     // interleave across calls, and RangeSetBuilder needs sorted input.
+    const glyphMode = options.formGlyph ?? "hover";
     const decos: { pos: number; deco: Decoration }[] = [];
     for (const site of sites) {
+      // Call-level form glyph, just after the function name.
+      if (glyphMode !== "off" && site.slots.length > 0) {
+        decos.push({
+          pos: site.name_end,
+          deco: Decoration.widget({
+            widget: new FormGlyphWidget(site, glyphMode, view),
+            side: 1,
+          }),
+        });
+      }
       let filledGhost = false; // render a ghost only for the first empty slot
       for (const slot of site.slots) {
         const kind = slot.widget;

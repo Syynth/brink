@@ -11,7 +11,7 @@ import { hoverExtension } from "./hover.js";
 import { gotoDefinitionExtension } from "./goto-definition.js";
 import { foldingExtension } from "./folding.js";
 import { inlayHintsExtension } from "./inlay-hints.js";
-import { argumentWidgetsExtension } from "./argument-widgets.js";
+import { argumentWidgetsExtension, type FormGlyphMode } from "./argument-widgets.js";
 import { signatureHelpExtension } from "./signature-help.js";
 import { referencesExtension } from "./references.js";
 import { renameExtension } from "./rename.js";
@@ -43,6 +43,8 @@ export interface BrinkStudioOptions {
   getCodeActions?: (source: string, offset: number) => CodeAction[];
   getInlayHints?: (source: string, start: number, end: number) => InlayHint[];
   getArgumentWidgets?: (source: string, start: number, end: number) => CallWidgetSite[];
+  /** How the call-level argument-form glyph is shown. Default `"hover"`. */
+  argumentFormGlyph?: FormGlyphMode;
   getSignatureHelp?: (source: string, offset: number) => SignatureInfo | null;
   getFoldingRanges?: (source: string) => FoldRange[];
 }
@@ -75,7 +77,10 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   }
   if (options.getArgumentWidgets) {
     ideExtensions.push(
-      argumentWidgetsExtension({ getArgumentWidgets: options.getArgumentWidgets }),
+      argumentWidgetsExtension({
+        getArgumentWidgets: options.getArgumentWidgets,
+        formGlyph: options.argumentFormGlyph,
+      }),
     );
   }
   if (options.getSignatureHelp) {

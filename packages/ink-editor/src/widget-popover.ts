@@ -37,6 +37,10 @@ export function openPopover(
   render(panel);
 
   let closed = false;
+  // Reposition when the panel's own size changes — e.g. the form's inline color
+  // picker expanding — so a grown panel re-flips instead of clipping off-screen.
+  const resizeObserver = new ResizeObserver(() => reposition());
+
   const close = (): void => {
     if (closed) return;
     closed = true;
@@ -44,6 +48,7 @@ export function openPopover(
     document.removeEventListener("pointerdown", onPointerDown, true);
     window.removeEventListener("resize", reposition);
     window.removeEventListener("scroll", reposition, true);
+    resizeObserver.disconnect();
     panel.remove();
     onClose();
   };
@@ -82,6 +87,7 @@ export function openPopover(
   };
 
   reposition();
+  resizeObserver.observe(panel);
   // Defer listener attachment so the click that opened the popover doesn't
   // immediately dismiss it.
   setTimeout(() => {
