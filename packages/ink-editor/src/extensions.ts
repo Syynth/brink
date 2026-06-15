@@ -1,5 +1,5 @@
 import { Compartment, type Extension } from "@codemirror/state";
-import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, FileEdit, InlayHint, ColorHint, SignatureInfo, FoldRange, CodeAction } from "@brink/wasm-types";
+import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, FileEdit, InlayHint, ColorHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
@@ -43,6 +43,7 @@ export interface BrinkStudioOptions {
   getCodeActions?: (source: string, offset: number) => CodeAction[];
   getInlayHints?: (source: string, start: number, end: number) => InlayHint[];
   getColorHints?: (source: string, start: number, end: number) => ColorHint[];
+  getArgumentWidgets?: (source: string, start: number, end: number) => CallWidgetSite[];
   getSignatureHelp?: (source: string, offset: number) => SignatureInfo | null;
   getFoldingRanges?: (source: string) => FoldRange[];
 }

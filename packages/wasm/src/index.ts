@@ -26,6 +26,7 @@ import type {
   FileEdit,
   InlayHint,
   ColorHint,
+  CallWidgetSite,
   SignatureInfo,
   FoldRange,
   DocumentSymbol,
@@ -324,6 +325,12 @@ export class EditorSessionHandle {
   getColorHintsDoc(doc: DocumentId, start: number, end: number): ColorHint[] {
     const json = this.session.color_hints_doc(doc, start, end);
     return JSON.parse(json) as ColorHint[];
+  }
+
+  /** Argument-widget sites in range — per-call slots + state (Edit/Fill). */
+  getArgumentWidgetsDoc(doc: DocumentId, start: number, end: number): CallWidgetSite[] {
+    const json = this.session.argument_widgets_doc(doc, start, end);
+    return JSON.parse(json) as CallWidgetSite[];
   }
 
   getSignatureHelpDoc(doc: DocumentId, offset: number): SignatureInfo | null {

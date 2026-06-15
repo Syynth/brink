@@ -138,6 +138,31 @@ export interface ColorHint {
   value: string;
 }
 
+/** The authoring state of an argument slot (argument-widget spec §4). */
+export type SlotState =
+  /** A literal — Edit replaces `[start, end)`; `value` is quotes-stripped. */
+  | { kind: "filled"; start: number; end: number; value: string }
+  /** No argument — Fill inserts at `insert_at` (`, `-prefixed if needed). */
+  | { kind: "empty"; insert_at: number; needs_leading_comma: boolean }
+  /** A non-literal expression — no inline affordance. */
+  | { kind: "expr" };
+
+/** One parameter slot of a call (argument-widget spec §4). */
+export interface SlotWidget {
+  param_name: string;
+  /** The built-in widget kind for this slot's type (`color`, …), if any. */
+  widget?: string;
+  /** The semantic-type name, if the param is typed. */
+  type_name?: string;
+  state: SlotState;
+}
+
+/** A call site with a per-parameter widget slot (argument-widget spec §4). */
+export interface CallWidgetSite {
+  callee: string;
+  slots: SlotWidget[];
+}
+
 export interface SignatureInfo {
   label: string;
   documentation?: string;
