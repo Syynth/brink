@@ -38,6 +38,9 @@ pub struct IdeSession {
     analysis: Option<AnalysisResult>,
     /// The registered host-capability manifest (tooling/author-time), if any.
     host_manifest: Option<HostManifest>,
+    /// Host-pushed values for `host`-source semantic types (Tier 3, #174).
+    /// Query-time only — not part of analysis, so a push needs no re-analyze.
+    host_values: crate::HostValues,
     /// Severity policy for manifest-driven external checks.
     external_check: ExternalCheckSeverity,
 }
@@ -49,6 +52,7 @@ impl IdeSession {
             db: ProjectDb::new(),
             analysis: None,
             host_manifest: None,
+            host_values: crate::HostValues::new(),
             external_check: ExternalCheckSeverity::default(),
         }
     }
@@ -63,6 +67,24 @@ impl IdeSession {
     pub fn clear_host_manifest(&mut self) {
         self.host_manifest = None;
         self.reanalyze();
+    }
+
+    /// Replace the host-pushed value cache (Tier 3, #174). No re-analyze — these
+    /// values are consumed only by the argument picker + value-label inlay
+    /// hints at query time, not by analysis.
+    pub fn set_host_values(&mut self, values: crate::HostValues) {
+        self.host_values = values;
+    }
+
+    /// Clear the host-pushed value cache.
+    pub fn clear_host_values(&mut self) {
+        self.host_values.clear();
+    }
+
+    /// The host-pushed value cache (empty when no host is attached).
+    #[must_use]
+    pub fn host_values(&self) -> &crate::HostValues {
+        &self.host_values
     }
 
     /// Set the severity policy for manifest-driven external checks, then

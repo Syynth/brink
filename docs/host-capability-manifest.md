@@ -306,9 +306,16 @@ The **Tier 1 + closed Tier 2 MVP** is implemented. What shipped:
   a diagnostic). The analyzer carries it on `ResolvedType.values`; `brink-ide`
   inlay hints render a **value label** after a literal whose param has a static
   value set (`set_switch(5 ⟨HarborGate⟩, …)`, `InlayHintKind::Value`). The
-  dynamic `host` source (the push-cache transport + the studio
-  `argumentProviders` surface + the completion dropdown) is the next increment —
-  see [host-argument-picker-spec.md](host-argument-picker-spec.md).
+  completion dropdown offers the values too (`argument_value_completions` +
+  `CompletionItem.insert`). See [host-argument-picker-spec.md](host-argument-picker-spec.md).
+- **Tier 3 — dynamic host transport landed (#174):** the `host` value source is
+  served from a **push-cache** — `EditorSession::set_host_values(json)` /
+  `clear_host_values` take a per-type snapshot (`{ "<type>": [{value,label,detail?}] }`)
+  the attached host pushes; it lives on `IdeSession` (query-time, no re-analyze)
+  and the picker + value-label inlay hints resolve `host`-source types from it
+  (empty ⇒ plain literal entry). Studio handle: `EditorSessionHandle.setHostValues`.
+  The studio `argumentProviders` extension surface (#175) — a data-only embedder
+  API that drives the cache — is the remaining piece.
 
 **Resolved forks:** (1) metadata lives in side-tables (`SymbolManifest.
 external_docs` per-file; `AnalysisResult.external_meta` merged) — `SymbolInfo`
