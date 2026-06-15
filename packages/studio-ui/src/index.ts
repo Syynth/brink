@@ -57,10 +57,13 @@ export {
   SETTINGS_TYPE_ID,
   SettingsDocument,
   loadDiagnosticsSettings,
+  loadEditorSettings,
   registerSettingsCommand,
   saveDiagnosticsSettings,
+  saveEditorSettings,
   settingsRef,
   type DiagnosticsSettings,
+  type EditorSettings,
 } from "./SettingsDocument.js";
 export { NewFilePrompt, FILE_NEW_COMMAND_ID } from "./NewFilePrompt.js";
 export {

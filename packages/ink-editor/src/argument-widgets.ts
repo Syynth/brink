@@ -12,7 +12,7 @@
  * `color_hints` path.
  */
 
-import { RangeSetBuilder, type Extension } from "@codemirror/state";
+import { RangeSetBuilder, StateEffect, StateField, type Extension } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -40,6 +40,22 @@ export type FormGlyphMode = "off" | "hover" | "inline";
 /** The inline-glyph mode when none is configured — `off`, since the always-on
  *  hover-card action already launches the Form without in-text chrome. */
 export const DEFAULT_FORM_GLYPH_MODE: FormGlyphMode = "off";
+
+// Live glyph mode: a StateField the decorations read, switched by an effect so
+// the Settings toggle reconfigures the glyph without rebuilding the editor.
+const setFormGlyphEffect = StateEffect.define<FormGlyphMode>();
+const formGlyphField = StateField.define<FormGlyphMode>({
+  create: () => DEFAULT_FORM_GLYPH_MODE,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setFormGlyphEffect)) return e.value;
+    return value;
+  },
+});
+
+/** Switch a view's inline-glyph mode live (the Settings toggle dispatches this). */
+export function setFormGlyphMode(view: EditorView, mode: FormGlyphMode): void {
+  view.dispatch({ effects: setFormGlyphEffect.of(mode) });
+}
 
 /** The form-launcher icon — a small "fields in a box" mark (currentColor). */
 export const FORM_GLYPH_ICON =
@@ -360,11 +376,11 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
 
     // Collect (pos, side, deco) then sort — Fill ghosts and Edit swatches can
     // interleave across calls, and RangeSetBuilder needs sorted input.
-    const glyphMode = options.formGlyph ?? DEFAULT_FORM_GLYPH_MODE;
+    const glyphMode = view.state.field(formGlyphField);
     const decos: { pos: number; deco: Decoration }[] = [];
     for (const site of sites) {
-      // Call-level form glyph, just after the function name (inline modes only;
-      // `hovercard` puts the action in the hover card, `off` shows nothing).
+      // Call-level form glyph, just after the function name (`off` shows none —
+      // the always-on hover-card action launches the Form without it).
       if ((glyphMode === "inline" || glyphMode === "hover") && site.slots.length > 0) {
         decos.push({
           pos: site.name_end,
@@ -421,7 +437,9 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
         this.decorations = build(view);
       }
       update(update: ViewUpdate): void {
-        if (update.docChanged || update.viewportChanged) {
+        const modeChanged =
+          update.startState.field(formGlyphField) !== update.state.field(formGlyphField);
+        if (update.docChanged || update.viewportChanged || modeChanged) {
           this.decorations = build(update.view);
         }
       }
@@ -437,5 +455,9 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
     },
   ]);
 
-  return [plugin, keys];
+  return [
+    formGlyphField.init(() => options.formGlyph ?? DEFAULT_FORM_GLYPH_MODE),
+    plugin,
+    keys,
+  ];
 }
