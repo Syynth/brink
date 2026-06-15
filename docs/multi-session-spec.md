@@ -81,13 +81,16 @@ A **session source** owns registering / unregistering entries:
 
 ## 5. Picker UI
 
-- A **session selector** lists entries (label + a status dot) and sets the active session.
-  **Hidden when ≤1 entry** — local single-session behavior is identical to today, no picker noise
-  (acceptance §9).
-- **Placement (open):** a status-bar segment adjacent to the story-status segment (session-scoped
-  global state) is the recommendation; an alternative is a control in the Player / State View
-  header. To settle at build time.
+- A **session selector** lists entries and sets the active session. **Hidden when ≤1 entry** —
+  local single-session behavior is identical to today, no picker noise (acceptance §9).
+- **Placement (settled):** a status-bar segment (`status.sessions`) immediately after the
+  story-status segment — session-scoped global state. The first extra session is opened via the
+  `story.openSession` command (palette), so there is no affordance clutter at one session.
 - Drive commands (`story.*`) act on the **active** provider, capability-gated (#180).
+  `story.openSession` opens a local session; it gates only on a program existing (it always creates
+  a *local* session, independent of the active provider's capabilities). Opening "from here" at a
+  knot is wired (`openSession({ path })`), but a studio affordance that picks the knot is the #186
+  *play-from-here* follow-on.
 
 ## 6. Lifecycle
 

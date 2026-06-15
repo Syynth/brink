@@ -126,10 +126,13 @@ export {
   LocalSessionProvider,
   EMPTY_SNAPSHOT,
   ALL_CAPABILITIES,
+  DEFAULT_SESSION_ID,
   type SessionStatus,
   type SessionSnapshot,
   type SessionProvider,
   type SessionCapability,
+  type SessionEntry,
+  type SessionId,
 } from "./slices/session.js";
 
 // Problems ordering (canonical sort, unit-testable pure helper) + the

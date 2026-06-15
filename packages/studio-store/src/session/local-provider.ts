@@ -10,7 +10,7 @@
  * this logic lived in the session slice — the seam is the only change.
  */
 
-import { StoryRunnerHandle } from "@brink-lang/web";
+import { StoryRunnerHandle, type ExternalValue } from "@brink-lang/web";
 import type { Choice } from "@brink/wasm-types";
 
 import {
@@ -97,6 +97,20 @@ export class LocalSessionProvider implements SessionProvider {
   /** Program bytes this session is running — kept so `restart` can re-create. */
   private bytes: Uint8Array | null = null;
 
+  /**
+   * Whether to persist + restore the choice log via localStorage. The primary
+   * session persists (restore on reload); secondary local sessions (#182) do
+   * not — they're transient, isolated playthroughs that must not clobber the
+   * primary's save.
+   */
+  private persist = true;
+  /**
+   * Optional entry point for the session: navigate here (`go_to_path`) right
+   * after load instead of starting at the root — the "play from here as a new
+   * session" path (#182). Secondary sessions only.
+   */
+  private startPath: { path: string; args: ExternalValue[] } | null = null;
+
   constructor(opts?: {
     callbacks?: ProviderCallbacks;
     /** Adopt an already-live runner (the studio wraps an existing handle; tests). */
@@ -107,9 +121,17 @@ export class LocalSessionProvider implements SessionProvider {
     transcript?: string[];
     /** Pending choices of an adopted runner (default empty). */
     choices?: Choice[];
+    /** Persist + restore the choice log (default true; false for secondary sessions). */
+    persist?: boolean;
+    /** Navigate to this entry point after load instead of the root (#182). */
+    startPath?: { path: string; args?: ExternalValue[] };
   }) {
     this.callbacks = opts?.callbacks ?? NOOP_CALLBACKS;
     this.runner = opts?.runner ?? null;
+    this.persist = opts?.persist ?? true;
+    this.startPath = opts?.startPath
+      ? { path: opts.startPath.path, args: opts.startPath.args ?? [] }
+      : null;
     if (opts?.runner) {
       this.status = opts.status ?? "running";
       this.transcript = opts.transcript ?? [];
@@ -192,8 +214,16 @@ export class LocalSessionProvider implements SessionProvider {
       this.choices = [];
       this.choiceLog = [];
 
+      // A secondary "play from here" session jumps to its entry point before
+      // revealing — no replay (it doesn't persist).
+      if (this.startPath) {
+        runner.goToPath(this.startPath.path, ...this.startPath.args);
+        this.reveal();
+        return;
+      }
+
       // Check for saved state and replay; otherwise reveal the first line.
-      const saved = loadFromStorage();
+      const saved = this.persist ? loadFromStorage() : null;
       if (saved && saved.choiceLog.length > 0) {
         this.replay(saved.choiceLog);
       } else {
@@ -224,11 +254,13 @@ export class LocalSessionProvider implements SessionProvider {
       return;
     }
     this.runner.reset();
-    clearStorage();
+    if (this.persist) clearStorage();
     this.status = "running";
     this.transcript = [];
     this.choices = [];
     this.choiceLog = [];
+    // Re-navigate a "play from here" session to its entry on restart.
+    if (this.startPath) this.runner.goToPath(this.startPath.path, ...this.startPath.args);
     this.reveal();
   }
 
@@ -237,7 +269,7 @@ export class LocalSessionProvider implements SessionProvider {
     this.runner = null;
     // Stopping ends the session *intent* — a later `start` is a fresh run, so
     // the persisted choice log goes too.
-    clearStorage();
+    if (this.persist) clearStorage();
     this.choiceLog = [];
     this.status = "none";
     this.transcript = [];
@@ -267,9 +299,9 @@ export class LocalSessionProvider implements SessionProvider {
       return;
     }
 
-    // Record choice and save.
+    // Record choice and save (secondary sessions don't persist — §182).
     this.choiceLog = [...this.choiceLog, index];
-    saveToStorage({ choiceLog: this.choiceLog });
+    if (this.persist) saveToStorage({ choiceLog: this.choiceLog });
 
     // Append the chosen text as a marker, clear choices.
     if (choiceText) this.transcript = [...this.transcript, `> ${choiceText}`];

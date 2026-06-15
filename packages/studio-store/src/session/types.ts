@@ -174,3 +174,24 @@ export interface ProviderCallbacks {
   notify(notification: StoreNotification): void;
   appendOutput(source: OutputSource, text: string): void;
 }
+
+// ── Multi-session registry (docs/multi-session-spec.md, #182) ────────
+
+/** Stable id for a session in the registry. */
+export type SessionId = string;
+
+/**
+ * One session in the multi-session registry (spec §3): a labelled
+ * {@link SessionProvider}. The session-bound views follow the *active* entry;
+ * the registry stays provider-agnostic, so a future remote source can register
+ * N flow-backed entries without touching views.
+ */
+export interface SessionEntry {
+  id: SessionId;
+  /** Picker label (e.g. "Main", a knot name, a flow/entity name). */
+  label: string;
+  provider: SessionProvider;
+}
+
+/** The always-present primary local session — the auto-started default. */
+export const DEFAULT_SESSION_ID = "local:default";
