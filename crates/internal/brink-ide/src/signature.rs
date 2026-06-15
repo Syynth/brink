@@ -91,6 +91,61 @@ pub fn signature_help(
     })
 }
 
+/// One pickable value for an argument (Tier 3 static value source, #174).
+pub struct ArgumentValueCompletion {
+    /// The literal inserted into source (e.g. `"5"`).
+    pub value: String,
+    /// The display label (e.g. `"HarborGate"`).
+    pub label: String,
+    /// Optional secondary text (e.g. `"Switch #5"`).
+    pub detail: Option<String>,
+}
+
+/// Pickable values for the argument at `byte_offset` (#174): if the cursor is
+/// inside a call whose active parameter has a **static** value source, return
+/// its labelled items. Empty otherwise — a dynamic `host` source is served from
+/// the studio's pushed cache, not here, and a non-value param has nothing to
+/// offer. Reuses the same call-site → semantic-type join point as
+/// [`signature_help`].
+#[must_use]
+pub fn argument_value_completions(
+    analysis: &AnalysisResult,
+    source: &str,
+    byte_offset: usize,
+) -> Vec<ArgumentValueCompletion> {
+    let Some((func_name, active_param)) = find_call_context(source, byte_offset) else {
+        return Vec::new();
+    };
+    let Some(info) = analysis.index.symbols.values().find(|info| {
+        matches!(
+            info.kind,
+            brink_ir::SymbolKind::Knot
+                | brink_ir::SymbolKind::Stitch
+                | brink_ir::SymbolKind::External
+        ) && info.name == func_name
+            && !info.params.is_empty()
+    }) else {
+        return Vec::new();
+    };
+    let Some(brink_ir::ValueSource::Static { items }) = analysis
+        .symbol_meta
+        .get(&info.id)
+        .and_then(|m| m.params.get(active_param))
+        .and_then(|rp| rp.ty.as_ref())
+        .and_then(|rt| rt.values.as_ref())
+    else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .map(|it| ArgumentValueCompletion {
+            value: it.value.clone(),
+            label: it.label.clone(),
+            detail: it.detail.clone(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::session::IdeSession;
@@ -134,5 +189,67 @@ mod tests {
             sig.documentation.as_deref(),
             Some("Damage roll for an attack.")
         );
+    }
+
+    #[test]
+    fn argument_value_completions_for_static_source() {
+        use brink_ir::{
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef, ValueItem, ValueSource,
+        };
+
+        let src = "EXTERNAL set_switch(id, on)\n~ set_switch(5, true)\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            externals: vec![ManifestExternal {
+                name: "set_switch".into(),
+                params: vec![
+                    ManifestParam {
+                        name: "id".into(),
+                        ty: TypeRef("switch_id".into()),
+                    },
+                    ManifestParam {
+                        name: "on".into(),
+                        ty: TypeRef("bool".into()),
+                    },
+                ],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Effect,
+                doc: None,
+            }],
+            types: vec![SemanticTypeDef {
+                name: "switch_id".into(),
+                base: BaseType::Int,
+                constraint: None,
+                values: Some(ValueSource::Static {
+                    items: vec![
+                        ValueItem {
+                            value: "5".into(),
+                            label: "HarborGate".into(),
+                            detail: Some("Switch #5".into()),
+                        },
+                        ValueItem {
+                            value: "9".into(),
+                            label: "Vault".into(),
+                            detail: None,
+                        },
+                    ],
+                }),
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+
+        // Cursor in the first arg slot (id: switch_id) → the labelled values.
+        let id_offset = src.find("set_switch(").expect("call") + "set_switch(".len();
+        let values = super::argument_value_completions(analysis, src, id_offset);
+        assert_eq!(values.len(), 2, "two switch values");
+        assert_eq!(values[0].label, "HarborGate");
+        assert_eq!(values[0].value, "5");
+        assert_eq!(values[0].detail.as_deref(), Some("Switch #5"));
+
+        // Cursor in the second arg slot (on: bool — no value source) → empty.
+        let on_offset = src.find("true").expect("second arg");
+        assert!(super::argument_value_completions(analysis, src, on_offset).is_empty());
     }
 }

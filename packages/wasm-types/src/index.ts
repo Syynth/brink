@@ -95,6 +95,12 @@ export interface CompletionItem {
   name: string;
   kind: string;
   detail?: string;
+  /**
+   * Literal to insert when it differs from the displayed `name` — the host
+   * value picker (#174) shows `HarborGate` but inserts `5`. Absent ⇒ insert
+   * `name` (the default for ordinary symbol completions).
+   */
+  insert?: string | null;
 }
 
 export interface HoverInfo {

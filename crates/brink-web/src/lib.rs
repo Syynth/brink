@@ -2156,7 +2156,7 @@ impl EditorSession {
         let ctx = brink_ide::detect_completion_context(source, abs_offset as usize);
         let scope = brink_ide::cursor_scope(source, abs_offset as usize);
 
-        let items: Vec<CompletionItemJs> = analysis
+        let symbol_items = analysis
             .index
             .symbols
             .values()
@@ -2167,8 +2167,30 @@ impl EditorSession {
                 // Callables get a typed signature from /// docs or the host
                 // manifest, if any; otherwise the kind-derived detail.
                 detail: typed_detail(analysis, info).or_else(|| info.detail.clone()),
-            })
-            .collect();
+                insert: None,
+            });
+
+        // Host value picker (#174): in an argument slot whose param has a
+        // static value source, offer its labelled values first (display the
+        // label, insert the literal).
+        let mut items: Vec<CompletionItemJs> = Vec::new();
+        if matches!(ctx, brink_ide::CompletionContext::FunctionArgs) {
+            items.extend(
+                brink_ide::signature::argument_value_completions(
+                    analysis,
+                    source,
+                    abs_offset as usize,
+                )
+                .into_iter()
+                .map(|v| CompletionItemJs {
+                    name: v.label,
+                    kind: "value".to_owned(),
+                    detail: v.detail,
+                    insert: Some(v.value),
+                }),
+            );
+        }
+        items.extend(symbol_items);
 
         serde_json::to_string(&items).unwrap_or_default()
     }
@@ -2764,6 +2786,10 @@ struct CompletionItemJs {
     name: String,
     kind: String,
     detail: Option<String>,
+    /// Literal to insert when the display label differs from it — host value
+    /// picker (#174): show `HarborGate`, insert `5`. `None` ⇒ insert `name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    insert: Option<String>,
 }
 
 /// Build a typed signature detail for a callable (external, knot, stitch)
