@@ -1659,6 +1659,13 @@ pub struct Story<'p, R: StoryRng = FastRng> {
     pub(crate) default_context: Context,
     line_tables: Vec<Vec<brink_format::LineEntry>>,
     instances: HashMap<String, (FlowInstance, Context)>,
+    /// Named flows that **share** `default_context` (globals / visit counts /
+    /// rng) — true ink concurrent-flow semantics, where one flow's writes are
+    /// visible to the others. Each still has its own call stack + temps (those
+    /// live in the [`FlowInstance`]). Distinct from `instances`, whose flows
+    /// each own an isolated `Context` (bevy-brink's per-entity model). Transient
+    /// studio/host state — not persisted in a [`StorySnapshot`].
+    shared_instances: HashMap<String, FlowInstance>,
     resolver: Option<Box<dyn PluralResolver>>,
     _rng: PhantomData<R>,
 }
@@ -1671,6 +1678,7 @@ impl<R: StoryRng> Clone for Story<'_, R> {
             default_context: self.default_context.clone(),
             line_tables: self.line_tables.clone(),
             instances: self.instances.clone(),
+            shared_instances: self.shared_instances.clone(),
             resolver: None,
             _rng: PhantomData,
         }
@@ -1699,6 +1707,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
             default_context,
             line_tables,
             instances: HashMap::new(),
+            shared_instances: HashMap::new(),
             resolver: None,
             _rng: PhantomData,
         }
@@ -1758,16 +1767,21 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// Returns the same choices that would appear in `Line::Choices`,
     /// but freshly resolved (useful after locale switch).
     pub fn pending_choices(&self) -> Vec<Choice> {
-        self.default
-            .flow
-            .pending_choices
+        self.resolved_choices_for(&self.default.flow)
+    }
+
+    /// Resolve a given flow's pending choices against the current line tables.
+    /// Shared by [`pending_choices`](Self::pending_choices) (default flow) and
+    /// the per-flow debug snapshot (#200 shared flows).
+    fn resolved_choices_for(&self, flow: &Flow) -> Vec<Choice> {
+        flow.pending_choices
             .iter()
             .enumerate()
             .filter(|(_, pc)| !pc.flags.is_invisible_default)
             .map(|(i, pc)| {
                 let display_text = match &pc.display {
                     ChoiceDisplay::Text(s) => s.clone(),
-                    ChoiceDisplay::Fragment(idx) => self.default.flow.output.resolve_fragment(
+                    ChoiceDisplay::Fragment(idx) => flow.output.resolve_fragment(
                         *idx,
                         self.program,
                         &self.line_tables,
@@ -1966,6 +1980,9 @@ impl<'p, R: StoryRng> Story<'p, R> {
             default_context: snapshot.default_context,
             line_tables,
             instances: snapshot.instances,
+            // Shared flows are transient (not persisted) — a reattached story
+            // starts with none.
+            shared_instances: HashMap::new(),
             resolver: None,
             _rng: PhantomData,
         }
@@ -2266,17 +2283,84 @@ impl<'p, R: StoryRng> Story<'p, R> {
         instance.choose(ctx, index)
     }
 
-    /// Destroy a named flow instance.
+    /// Destroy a named flow instance — isolated or shared (#200).
     pub fn destroy_flow(&mut self, name: &str) -> Result<(), RuntimeError> {
-        if self.instances.remove(name).is_none() {
-            return Err(RuntimeError::UnknownFlow(name.to_owned()));
+        if self.shared_instances.remove(name).is_some() || self.instances.remove(name).is_some() {
+            Ok(())
+        } else {
+            Err(RuntimeError::UnknownFlow(name.to_owned()))
         }
+    }
+
+    /// List active flow names (isolated + shared), sorted for determinism.
+    pub fn flow_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .instances
+            .keys()
+            .chain(self.shared_instances.keys())
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
+    // ── Shared flows (#200) ─────────────────────────────────────────
+    // Spawn a flow that **shares** `default_context` (globals / visit counts /
+    // rng) with the default flow — true ink concurrent-flow semantics — while
+    // keeping its own call stack + temps. Distinct from `spawn_flow`, whose
+    // flows each own an isolated context (bevy-brink's per-entity model).
+
+    /// Spawn a shared-context flow at `container_idx` (or the root if `None`).
+    pub fn spawn_flow_shared(
+        &mut self,
+        name: &str,
+        container_idx: Option<u32>,
+    ) -> Result<(), RuntimeError> {
+        if self.shared_instances.contains_key(name) || self.instances.contains_key(name) {
+            return Err(RuntimeError::FlowAlreadyExists(name.to_owned()));
+        }
+        // The fresh context the constructor returns is discarded — a shared
+        // flow runs against `default_context`.
+        let (flow, _ctx) = match container_idx {
+            Some(idx) => FlowInstance::new_at(self.program, idx),
+            None => FlowInstance::new_at_root(self.program),
+        };
+        self.shared_instances.insert(name.to_owned(), flow);
         Ok(())
     }
 
-    /// List active flow names.
-    pub fn flow_names(&self) -> Vec<&str> {
-        self.instances.keys().map(String::as_str).collect()
+    /// Advance a shared flow one line (against the shared context).
+    pub fn continue_flow_single(&mut self, name: &str) -> Result<Line, RuntimeError> {
+        self.continue_flow_single_with(name, &FallbackHandler)
+    }
+
+    /// Advance a shared flow one line with an external-function handler.
+    pub fn continue_flow_single_with(
+        &mut self,
+        name: &str,
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<Line, RuntimeError> {
+        let resolver = self.resolver.as_deref();
+        let instance = self
+            .shared_instances
+            .get_mut(name)
+            .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
+        instance.step_single_line::<R>(
+            self.program,
+            &self.line_tables,
+            &mut self.default_context,
+            handler,
+            resolver,
+        )
+    }
+
+    /// Select a choice in a shared flow (against the shared context).
+    pub fn choose_flow_shared(&mut self, name: &str, index: usize) -> Result<(), RuntimeError> {
+        let instance = self
+            .shared_instances
+            .get_mut(name)
+            .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
+        instance.choose(&mut self.default_context, index)
     }
 
     /// A structured, name-resolved snapshot of the current runtime state for
@@ -2285,15 +2369,41 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// not on any hot path. See [`DebugSnapshot`](crate::DebugSnapshot).
     #[must_use]
     pub fn debug_snapshot(&self) -> crate::DebugSnapshot {
+        self.build_debug_snapshot(&self.default, &self.default_context)
+    }
+
+    /// A debug snapshot of a named shared flow (#200), built against the shared
+    /// `default_context` — so its globals / visit counts match the default
+    /// flow's, while its call stack + temps are the flow's own. Falls back to a
+    /// named isolated flow's own context if `name` is one of those instead.
+    pub fn debug_snapshot_flow(
+        &self,
+        name: &str,
+    ) -> Result<crate::DebugSnapshot, RuntimeError> {
+        if let Some(instance) = self.shared_instances.get(name) {
+            Ok(self.build_debug_snapshot(instance, &self.default_context))
+        } else if let Some((instance, ctx)) = self.instances.get(name) {
+            Ok(self.build_debug_snapshot(instance, ctx))
+        } else {
+            Err(RuntimeError::UnknownFlow(name.to_owned()))
+        }
+    }
+
+    /// Build a debug snapshot from a specific flow instance + context. Backs
+    /// both [`debug_snapshot`](Self::debug_snapshot) and the per-flow variant.
+    fn build_debug_snapshot(
+        &self,
+        instance: &FlowInstance,
+        ctx: &Context,
+    ) -> crate::DebugSnapshot {
         use crate::debug::{
             DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit, NameResolver,
         };
 
-        let flow = &self.default.flow;
-        let ctx = &self.default_context;
+        let flow = &instance.flow;
         let resolver = NameResolver::new(self.program);
 
-        let status = match self.default.status {
+        let status = match instance.status {
             StoryStatus::Active => "active",
             StoryStatus::WaitingForChoice => "waiting_for_choice",
             StoryStatus::Done => "done",
@@ -2369,7 +2479,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
             .map(|pc| pc.target_id)
             .collect();
         let pending_choices = self
-            .pending_choices()
+            .resolved_choices_for(flow)
             .into_iter()
             .enumerate()
             .map(|(i, ch)| DebugChoice {
