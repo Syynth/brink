@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/Syynth/brink/compare/brink-driver-v0.0.3...brink-driver-v0.0.4) - 2026-06-15
+
+### Fixed
+
+- *(#187)* tunnel calls aren't terminal (E033) + resolve diagnostics to paths (#190)
+
 ## [0.0.3](https://github.com/Syynth/brink/compare/brink-driver-v0.0.2...brink-driver-v0.0.3) - 2026-06-13
 
 ### Added

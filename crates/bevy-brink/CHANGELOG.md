@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/Syynth/brink/compare/bevy-brink-v0.0.3...bevy-brink-v0.0.4) - 2026-06-15
+
+### Added
+
+- *(runtime,web)* host-directed parameterized knot entry ([#178](https://github.com/Syynth/brink/pull/178)) ([#195](https://github.com/Syynth/brink/pull/195))
+- *(bevy-brink)* complete replay recording — non-exclusive path + async/task ([#173](https://github.com/Syynth/brink/pull/173)) ([#193](https://github.com/Syynth/brink/pull/193))
+- *(bevy-brink)* Recorded-mode replay over the shared #189 primitive ([#173](https://github.com/Syynth/brink/pull/173)) ([#192](https://github.com/Syynth/brink/pull/192))
+
 ## [0.0.3](https://github.com/Syynth/brink/compare/bevy-brink-v0.0.2...bevy-brink-v0.0.3) - 2026-06-13
 
 ### Added

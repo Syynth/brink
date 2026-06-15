@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/Syynth/brink/compare/brink-ir-v0.0.3...brink-ir-v0.0.4) - 2026-06-15
+
+### Added
+
+- *(manifest,ide)* static value-source + value-label inlay hints ([#174](https://github.com/Syynth/brink/pull/174)) ([#203](https://github.com/Syynth/brink/pull/203))
+
 ## [0.0.3](https://github.com/Syynth/brink/compare/brink-ir-v0.0.2...brink-ir-v0.0.3) - 2026-06-13
 
 ### Added
