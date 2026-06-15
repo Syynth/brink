@@ -26,11 +26,15 @@
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
 import type { Choice, DebugState, ProgramModel } from "@brink/wasm-types";
+import type { ExternalValue } from "@brink-lang/web";
 
 import {
   ALL_CAPABILITIES,
+  DEFAULT_SESSION_ID,
   EMPTY_SNAPSHOT,
   type SessionCapability,
+  type SessionEntry,
+  type SessionId,
   type SessionProvider,
   type SessionSnapshot,
   type SessionStatus,
@@ -43,10 +47,13 @@ export {
   sessionCanContinue,
   sessionDegraded,
   ALL_CAPABILITIES,
+  DEFAULT_SESSION_ID,
   type SessionStatus,
   type SessionSnapshot,
   type SessionProvider,
   type SessionCapability,
+  type SessionEntry,
+  type SessionId,
 } from "../session/types.js";
 export {
   LocalSessionProvider,
@@ -64,12 +71,24 @@ export interface SessionSlice {
   sessionChoices: Choice[];
 
   /**
-   * The bound session provider. Non-reactive ref by convention (`_` prefix);
-   * views select the mirrored reactive fields, never the provider.
+   * The session registry (docs/multi-session-spec.md, #182) — ordered, the
+   * primary "local:default" first. The single-session studio is "exactly one
+   * entry, always active"; a source (local now, remote later) populates it.
+   */
+  sessions: SessionEntry[];
+  /** The session the views follow; `null` only before the first session. */
+  activeSessionId: SessionId | null;
+
+  /**
+   * The *active* session's provider. Non-reactive ref by convention
+   * (`_` prefix); views select the mirrored reactive fields, never the
+   * provider. Kept in sync with `activeSessionId`.
    */
   _provider: SessionProvider | null;
-  /** Unsubscribe from the bound provider's snapshot stream. */
+  /** Unsubscribe from the active provider's snapshot stream. */
   _providerUnsub: (() => void) | null;
+  /** Monotonic id source for secondary local sessions (deterministic). */
+  _sessionSeq: number;
   /**
    * Program identity: the bytes the session is running. Kept across
    * `stopSession` so `story.start` can begin a fresh session on the same
@@ -127,7 +146,19 @@ export interface SessionSlice {
   chooseOption(index: number): void;
   /** Reveal the next line from the runtime (or surface choices/end). */
   revealNext(): void;
-  /** Bind a session provider, mirroring its snapshots into the slice. */
+
+  /**
+   * Open a new local session (#182) — an independent runner with isolated
+   * globals, started at the program root or at `path` ("play from here").
+   * Registered alongside the others and made active. No-op without a program.
+   */
+  openSession(opts?: { label?: string; path?: string; args?: ExternalValue[] }): void;
+  /** Close a session by id. The primary (`local:default`) cannot be closed. */
+  closeSession(id: SessionId): void;
+  /** Make `id` the active session — repoints every session-bound view. */
+  setActiveSession(id: SessionId): void;
+
+  /** Bind a provider as the primary session, making it active (back-compat). */
   _bindProvider(provider: SessionProvider): void;
   /** Refresh the State View from the current provider snapshot (no-op if none). */
   _refreshDebugState(): void;
@@ -138,104 +169,176 @@ export interface SessionSlice {
 export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice> = (
   set,
   get,
-) => ({
-  sessionStatus: "none",
-  sessionText: [],
-  sessionChoices: [],
-  _provider: null,
-  _providerUnsub: null,
-  _sessionBytes: null,
-  debugState: null,
-  prevDebugState: null,
-  programModel: null,
-  programInkt: null,
-  programChecksum: null,
-  capabilities: ALL_CAPABILITIES,
-
-  _bindProvider(provider) {
-    // Wire studio services into a local provider so it can notify + log
-    // without importing the store (spec §3 ProviderCallbacks).
+) => {
+  // Wire studio services into a local provider so it can notify + log without
+  // importing the store (spec §3 ProviderCallbacks).
+  const wire = (provider: SessionProvider): void => {
     if (provider instanceof LocalSessionProvider) {
       provider.setCallbacks({
         notify: (n) => get()._notify?.(n),
         appendOutput: (source, text) => get().appendOutput(source, text),
       });
     }
-    // Drop any previously-bound provider's subscription (not the provider
-    // itself — `startSession` reuses the live provider for hot-reload).
+  };
+
+  // Make `id` the active session: subscribe its provider and mirror its
+  // snapshot. A switch is a different execution timeline, so `prevDebugState`
+  // resets rather than diffing across sessions.
+  const setActive = (id: SessionId): void => {
+    const entry = get().sessions.find((e) => e.id === id);
+    if (!entry) return;
     get()._providerUnsub?.();
-    const unsub = provider.subscribe((snap) => mirror(set, snap));
-    // Capabilities are static per provider instance (spec §3.2) — capture them
-    // at bind so the command `when` predicates gate on them.
-    set({ _provider: provider, _providerUnsub: unsub, capabilities: provider.capabilities });
-    mirror(set, provider.getSnapshot());
-  },
-
-  startSession(bytes) {
-    let provider = get()._provider;
-    if (!provider) {
-      provider = new LocalSessionProvider();
-      get()._bindProvider(provider);
-    }
-    set({ _sessionBytes: bytes });
-    provider.start?.(bytes);
-  },
-
-  restartSession() {
-    const provider = get()._provider;
-    // Reset a live runner in place; otherwise (stopped, or a failed load) a
-    // restart means a fresh start on the latest available program — preferring
-    // the newest compile, falling back to the session's own bytes.
-    if (provider instanceof LocalSessionProvider && provider.hasLiveRunner()) {
-      provider.restart();
-      return;
-    }
-    const bytes = get().storyBytes ?? get()._sessionBytes;
-    if (bytes) get().startSession(bytes);
-  },
-
-  stopSession() {
-    get()._provider?.stop?.();
-  },
-
-  chooseOption(index) {
-    get()._provider?.choose?.(index);
-  },
-
-  revealNext() {
-    get()._provider?.continue?.();
-  },
-
-  _refreshDebugState() {
-    const provider = get()._provider;
-    if (!provider) {
-      set({ debugState: null, prevDebugState: null });
-      return;
-    }
-    mirror(set, provider.getSnapshot());
-  },
-
-  disposeSession() {
-    get()._providerUnsub?.();
-    get()._provider?.dispose();
+    const unsub = entry.provider.subscribe((snap) => mirror(set, snap));
     set({
-      _provider: null,
-      _providerUnsub: null,
-      _sessionBytes: null,
-      sessionStatus: "none",
-      sessionText: [],
-      sessionChoices: [],
-      debugState: null,
-      prevDebugState: null,
-      programModel: null,
-      programInkt: null,
-      programChecksum: null,
-      // Back to the default local capability set — the next session is local
-      // until a narrower provider binds.
-      capabilities: ALL_CAPABILITIES,
+      _provider: entry.provider,
+      _providerUnsub: unsub,
+      activeSessionId: entry.id,
+      capabilities: entry.provider.capabilities,
     });
-  },
-});
+    mirror(set, entry.provider.getSnapshot(), true);
+  };
+
+  return {
+    sessionStatus: "none",
+    sessionText: [],
+    sessionChoices: [],
+    sessions: [],
+    activeSessionId: null,
+    _provider: null,
+    _providerUnsub: null,
+    _sessionSeq: 1,
+    _sessionBytes: null,
+    debugState: null,
+    prevDebugState: null,
+    programModel: null,
+    programInkt: null,
+    programChecksum: null,
+    capabilities: ALL_CAPABILITIES,
+
+    _bindProvider(provider) {
+      wire(provider);
+      // Register (or replace) the primary entry, then make it active.
+      set((s) => {
+        const old = s.sessions.find((e) => e.id === DEFAULT_SESSION_ID);
+        if (old && old.provider !== provider) old.provider.dispose();
+        const others = s.sessions.filter((e) => e.id !== DEFAULT_SESSION_ID);
+        return {
+          sessions: [{ id: DEFAULT_SESSION_ID, label: "Main", provider }, ...others],
+        };
+      });
+      setActive(DEFAULT_SESSION_ID);
+    },
+
+    startSession(bytes) {
+      // The auto-start / story.start path always targets the primary session.
+      let entry = get().sessions.find((e) => e.id === DEFAULT_SESSION_ID);
+      if (!entry) {
+        get()._bindProvider(new LocalSessionProvider()); // registers + activates
+        entry = get().sessions.find((e) => e.id === DEFAULT_SESSION_ID);
+      } else if (get().activeSessionId !== DEFAULT_SESSION_ID) {
+        setActive(DEFAULT_SESSION_ID);
+      }
+      set({ _sessionBytes: bytes });
+      entry?.provider.start?.(bytes);
+    },
+
+    openSession(opts) {
+      const bytes = get().storyBytes ?? get()._sessionBytes;
+      if (!bytes) return; // no program to play
+      const seq = get()._sessionSeq;
+      const id = `local:${seq}`;
+      const label = opts?.label ?? opts?.path ?? `Session ${seq}`;
+      const provider = new LocalSessionProvider({
+        persist: false, // secondary sessions are transient, isolated playthroughs
+        startPath: opts?.path ? { path: opts.path, args: opts.args } : undefined,
+      });
+      wire(provider);
+      set((s) => ({
+        sessions: [...s.sessions, { id, label, provider }],
+        _sessionSeq: seq + 1,
+      }));
+      setActive(id);
+      provider.start(bytes);
+    },
+
+    setActiveSession(id) {
+      setActive(id);
+    },
+
+    closeSession(id) {
+      if (id === DEFAULT_SESSION_ID) return; // the primary session always stays
+      const entry = get().sessions.find((e) => e.id === id);
+      if (!entry) return;
+      const wasActive = get().activeSessionId === id;
+      if (wasActive) get()._providerUnsub?.();
+      entry.provider.dispose();
+      set((s) => ({ sessions: s.sessions.filter((e) => e.id !== id) }));
+      if (wasActive) {
+        // Fall back to the most-recently-added remaining session.
+        const remaining = get().sessions;
+        setActive(remaining[remaining.length - 1]?.id ?? DEFAULT_SESSION_ID);
+      }
+    },
+
+    restartSession() {
+      const provider = get()._provider;
+      // Reset a live runner in place; otherwise (stopped, or a failed load) a
+      // restart means a fresh start on the latest available program — preferring
+      // the newest compile, falling back to the session's own bytes.
+      if (provider instanceof LocalSessionProvider && provider.hasLiveRunner()) {
+        provider.restart();
+        return;
+      }
+      const bytes = get().storyBytes ?? get()._sessionBytes;
+      if (bytes) get().startSession(bytes);
+    },
+
+    stopSession() {
+      get()._provider?.stop?.();
+    },
+
+    chooseOption(index) {
+      get()._provider?.choose?.(index);
+    },
+
+    revealNext() {
+      get()._provider?.continue?.();
+    },
+
+    _refreshDebugState() {
+      const provider = get()._provider;
+      if (!provider) {
+        set({ debugState: null, prevDebugState: null });
+        return;
+      }
+      mirror(set, provider.getSnapshot());
+    },
+
+    disposeSession() {
+      get()._providerUnsub?.();
+      for (const entry of get().sessions) entry.provider.dispose();
+      set({
+        sessions: [],
+        activeSessionId: null,
+        _provider: null,
+        _providerUnsub: null,
+        _sessionSeq: 1,
+        _sessionBytes: null,
+        sessionStatus: "none",
+        sessionText: [],
+        sessionChoices: [],
+        debugState: null,
+        prevDebugState: null,
+        programModel: null,
+        programInkt: null,
+        programChecksum: null,
+        // Back to the default local capability set — the next session is local
+        // until a narrower provider binds.
+        capabilities: ALL_CAPABILITIES,
+      });
+    },
+  };
+};
 
 // ── Snapshot mirror ─────────────────────────────────────────────────
 
@@ -248,14 +351,15 @@ type SetFn = {
  * Mirror a provider snapshot into the reactive slice fields. `prevDebugState`
  * is derived here from the previous snapshot's debug state (spec §3.1): the
  * provider emits one snapshot per logical advance, so carrying the prior
- * `debugState` forward gives the State View its step diff.
+ * `debugState` forward gives the State View its step diff. On a session switch
+ * (`resetPrev`) the prior is dropped — a different execution timeline.
  */
-function mirror(set: SetFn, snap: SessionSnapshot): void {
+function mirror(set: SetFn, snap: SessionSnapshot, resetPrev = false): void {
   set((s) => ({
     sessionStatus: snap.status,
     sessionText: snap.transcript,
     sessionChoices: snap.choices,
-    prevDebugState: s.debugState,
+    prevDebugState: resetPrev ? null : s.debugState,
     debugState: snap.debugState,
     programModel: snap.programModel,
     programInkt: snap.programInkt,

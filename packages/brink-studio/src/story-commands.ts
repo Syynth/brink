@@ -98,6 +98,18 @@ export function registerStoryCommands(
         sessionCanContinue(store.getState().sessionStatus) && can("continue"),
       run: () => store.getState().revealNext(),
     }),
+
+    commands.register({
+      id: "story.openSession",
+      title: "Story: Open Session",
+      // Opening a new local session needs a program to play; it's independent
+      // of the active provider's drive capabilities (multi-session, #182).
+      when: () => programBytes() !== null,
+      run: (args) => {
+        const o = args as { path?: string; label?: string } | undefined;
+        store.getState().openSession(o ? { path: o.path, label: o.label } : undefined);
+      },
+    }),
   ];
 
   return () => {

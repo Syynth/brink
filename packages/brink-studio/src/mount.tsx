@@ -72,6 +72,7 @@ import {
   SETTINGS_TYPE_ID,
   STORY_GRAPH_TYPE_ID,
   SearchView,
+  SessionPicker,
   SettingsDocument,
   StateView,
   StorySegment,
@@ -613,6 +614,14 @@ export async function mountStudio(
     alignment: "left",
     priority: 10,
     component: StorySegment,
+  });
+  // Multi-session picker (#182) — sits just after the story status, hidden
+  // until there's more than one session.
+  statusBarItems.register({
+    id: "status.sessions",
+    alignment: "left",
+    priority: 9,
+    component: SessionPicker,
   });
   statusBarItems.register({
     id: "status.cursor",

@@ -68,6 +68,7 @@ export {
   CursorSegment,
   ElementSegment,
   KeyHintsSegment,
+  SessionPicker,
   StorySegment,
 } from "./StatusBar.js";
 export {

@@ -96,3 +96,31 @@
 .brink-studio .brink-status-story-dot.degraded {
   background: var(--bs-warning);
 }
+
+/* Multi-session picker (#182) — hidden at ≤1 session by the component. */
+.brink-studio .brink-status-sessions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.brink-studio .brink-session-select {
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--bs-border);
+  border-radius: 3px;
+  font: inherit;
+  padding: 0 2px;
+}
+.brink-studio .brink-session-add,
+.brink-studio .brink-session-close {
+  background: transparent;
+  color: inherit;
+  border: none;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.brink-studio .brink-session-add:hover,
+.brink-studio .brink-session-close:hover {
+  color: var(--bs-fg);
+}

@@ -13,7 +13,7 @@ import { useShell, viewToggleCommandId } from "@brink/studio-shell";
 import { useStudioStore } from "./StoreContext.js";
 import { ElementDropdown } from "./ElementDropdown.js";
 import type { LineInfo } from "@brink/studio-store";
-import { ElementTypeEnum, sessionDegraded } from "@brink/studio-store";
+import { ElementTypeEnum, sessionDegraded, DEFAULT_SESSION_ID } from "@brink/studio-store";
 
 // ── Element labels ─────────────────────────────────────────────────
 
@@ -131,6 +131,56 @@ export function StorySegment() {
     >
       {body}
     </button>
+  );
+}
+
+/**
+ * Multi-session picker (docs/multi-session-spec.md §5, #182). Lists the
+ * registered sessions and repoints every session-bound view to the selected
+ * one. Hidden when ≤1 session — no picker noise in the single-session studio;
+ * opening the first extra session is the `story.openSession` command.
+ */
+export function SessionPicker() {
+  const sessions = useStudioStore((s) => s.sessions);
+  const activeSessionId = useStudioStore((s) => s.activeSessionId);
+  const setActiveSession = useStudioStore((s) => s.setActiveSession);
+  const openSession = useStudioStore((s) => s.openSession);
+  const closeSession = useStudioStore((s) => s.closeSession);
+
+  if (sessions.length <= 1) return null;
+
+  const canClose = activeSessionId !== null && activeSessionId !== DEFAULT_SESSION_ID;
+  return (
+    <span className="brink-status-sessions">
+      <select
+        className="brink-session-select"
+        title="Active session"
+        value={activeSessionId ?? ""}
+        onChange={(e) => setActiveSession(e.target.value)}
+      >
+        {sessions.map((session) => (
+          <option key={session.id} value={session.id}>
+            {session.label}
+          </option>
+        ))}
+      </select>
+      <button
+        className="brink-session-add clickable"
+        title="Open a new session"
+        onClick={() => openSession()}
+      >
+        +
+      </button>
+      {canClose && (
+        <button
+          className="brink-session-close clickable"
+          title="Close this session"
+          onClick={() => closeSession(activeSessionId)}
+        >
+          ×
+        </button>
+      )}
+    </span>
   );
 }
 
