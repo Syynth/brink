@@ -1198,6 +1198,25 @@ impl EditorSession {
         self.session.clear_host_manifest();
     }
 
+    /// Push the host's current values for `host`-source semantic types (Tier 3,
+    /// #174) from a JSON object `{ "<type>": [{ "value", "label", "detail"? }] }`
+    /// — a full snapshot that **replaces** the cache. The attached host (e.g.
+    /// RPG Maker MZ) calls this with its named switches / items / … so the
+    /// argument picker + value-label inlay hints stay current. Tooling-only;
+    /// no re-analyze (values are consumed at query time, not in analysis).
+    pub fn set_host_values(&mut self, json: &str) -> Result<(), JsError> {
+        let values: brink_ide::HostValues = serde_json::from_str(json)
+            .map_err(|e| JsError::new(&format!("invalid host values: {e}")))?;
+        self.session.set_host_values(values);
+        Ok(())
+    }
+
+    /// Clear the host-pushed value cache (e.g. on host disconnect). The picker
+    /// degrades to plain literal entry for `host`-source params.
+    pub fn clear_host_values(&mut self) {
+        self.session.clear_host_values();
+    }
+
     /// Set the severity policy for manifest-driven external diagnostics:
     /// `"error"` (default — a registered manifest is binding) or `"off"`.
     pub fn set_external_check(&mut self, level: &str) -> Result<(), JsError> {
@@ -2170,9 +2189,10 @@ impl EditorSession {
                 insert: None,
             });
 
-        // Host value picker (#174): in an argument slot whose param has a
-        // static value source, offer its labelled values first (display the
-        // label, insert the literal).
+        // Host value picker (#174): in an argument slot whose param has a value
+        // source, offer its labelled values first (display the label, insert the
+        // literal) — static items from the manifest, or `host` items from the
+        // pushed cache.
         let mut items: Vec<CompletionItemJs> = Vec::new();
         if matches!(ctx, brink_ide::CompletionContext::FunctionArgs) {
             items.extend(
@@ -2180,6 +2200,7 @@ impl EditorSession {
                     analysis,
                     source,
                     abs_offset as usize,
+                    Some(self.session.host_values()),
                 )
                 .into_iter()
                 .map(|v| CompletionItemJs {
@@ -2421,7 +2442,12 @@ impl EditorSession {
         let abs_start = self.to_absolute(path, view, start);
         let abs_end = self.to_absolute(path, view, end);
         let range = TextRange::new(TextSize::new(abs_start), TextSize::new(abs_end));
-        let hints = brink_ide::inlay_hints::inlay_hints(&root, analysis, range);
+        let hints = brink_ide::inlay_hints::inlay_hints(
+            &root,
+            analysis,
+            range,
+            Some(self.session.host_values()),
+        );
 
         let items: Vec<InlayHintJs> = hints
             .iter()

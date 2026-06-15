@@ -45,6 +45,7 @@ import type {
   SaveState,
   LoadReport,
   HostManifest,
+  ValueItem,
 } from "@brink/wasm-types";
 
 // Public surface: every interface the wasm boundary speaks is available
@@ -164,6 +165,24 @@ export class EditorSessionHandle {
   clearHostManifest(): void {
     this.bump();
     this.session.clear_host_manifest();
+  }
+
+  /**
+   * Push the host's current values for `host`-source semantic types (#174) —
+   * a full snapshot keyed by semantic-type name that **replaces** the cache.
+   * The attached host (e.g. RPG Maker MZ) calls this with its named switches /
+   * items / … so the argument picker + value-label inlay hints stay current.
+   * Tooling-only — no re-analyze.
+   */
+  setHostValues(values: Record<string, ValueItem[]>): void {
+    this.bump();
+    this.session.set_host_values(JSON.stringify(values));
+  }
+
+  /** Clear the host-pushed value cache (e.g. on host disconnect). */
+  clearHostValues(): void {
+    this.bump();
+    this.session.clear_host_values();
   }
 
   /**

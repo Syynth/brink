@@ -1385,8 +1385,10 @@ impl LanguageServer for Backend {
         let root = parse.tree();
         drop(db);
 
+        // The LSP has no host-value push channel (#174) — static value labels
+        // still resolve from the manifest; `host`-source labels need none.
         let domain_hints =
-            brink_ide::inlay_hints::inlay_hints(root.syntax(), &snap.analysis, request_range);
+            brink_ide::inlay_hints::inlay_hints(root.syntax(), &snap.analysis, request_range, None);
 
         if domain_hints.is_empty() {
             return Ok(None);

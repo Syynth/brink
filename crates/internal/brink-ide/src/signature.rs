@@ -102,16 +102,17 @@ pub struct ArgumentValueCompletion {
 }
 
 /// Pickable values for the argument at `byte_offset` (#174): if the cursor is
-/// inside a call whose active parameter has a **static** value source, return
-/// its labelled items. Empty otherwise — a dynamic `host` source is served from
-/// the studio's pushed cache, not here, and a non-value param has nothing to
-/// offer. Reuses the same call-site → semantic-type join point as
+/// inside a call whose active parameter has a value source, return its labelled
+/// items — `static` items from the manifest, or `host` items from the pushed
+/// cache (`host_values`, empty/`None` when no host is attached). Empty for a
+/// non-value param. Reuses the same call-site → semantic-type join point as
 /// [`signature_help`].
 #[must_use]
 pub fn argument_value_completions(
     analysis: &AnalysisResult,
     source: &str,
     byte_offset: usize,
+    host_values: Option<&crate::HostValues>,
 ) -> Vec<ArgumentValueCompletion> {
     let Some((func_name, active_param)) = find_call_context(source, byte_offset) else {
         return Vec::new();
@@ -127,23 +128,26 @@ pub fn argument_value_completions(
     }) else {
         return Vec::new();
     };
-    let Some(brink_ir::ValueSource::Static { items }) = analysis
+    let Some(rt) = analysis
         .symbol_meta
         .get(&info.id)
         .and_then(|m| m.params.get(active_param))
         .and_then(|rp| rp.ty.as_ref())
-        .and_then(|rt| rt.values.as_ref())
     else {
         return Vec::new();
     };
-    items
-        .iter()
-        .map(|it| ArgumentValueCompletion {
-            value: it.value.clone(),
-            label: it.label.clone(),
-            detail: it.detail.clone(),
-        })
-        .collect()
+    let to_completion = |it: &brink_ir::ValueItem| ArgumentValueCompletion {
+        value: it.value.clone(),
+        label: it.label.clone(),
+        detail: it.detail.clone(),
+    };
+    match rt.values.as_ref() {
+        Some(brink_ir::ValueSource::Static { items }) => items.iter().map(to_completion).collect(),
+        Some(brink_ir::ValueSource::Host) => host_values
+            .and_then(|hv| hv.get(&rt.name))
+            .map_or_else(Vec::new, |items| items.iter().map(to_completion).collect()),
+        None => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -242,7 +246,7 @@ mod tests {
 
         // Cursor in the first arg slot (id: switch_id) → the labelled values.
         let id_offset = src.find("set_switch(").expect("call") + "set_switch(".len();
-        let values = super::argument_value_completions(analysis, src, id_offset);
+        let values = super::argument_value_completions(analysis, src, id_offset, None);
         assert_eq!(values.len(), 2, "two switch values");
         assert_eq!(values[0].label, "HarborGate");
         assert_eq!(values[0].value, "5");
@@ -250,6 +254,82 @@ mod tests {
 
         // Cursor in the second arg slot (on: bool — no value source) → empty.
         let on_offset = src.find("true").expect("second arg");
-        assert!(super::argument_value_completions(analysis, src, on_offset).is_empty());
+        assert!(super::argument_value_completions(analysis, src, on_offset, None).is_empty());
+    }
+
+    #[test]
+    fn argument_value_completions_from_host_cache() {
+        use brink_ir::{
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef, ValueItem, ValueSource,
+        };
+
+        let src = "EXTERNAL give_item(id)\n~ give_item(0)\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        // `item_id` is a HOST-source type — its values come from the cache, not
+        // the manifest.
+        session.set_host_manifest(HostManifest {
+            externals: vec![ManifestExternal {
+                name: "give_item".into(),
+                params: vec![ManifestParam {
+                    name: "id".into(),
+                    ty: TypeRef("item_id".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Effect,
+                doc: None,
+            }],
+            types: vec![SemanticTypeDef {
+                name: "item_id".into(),
+                base: BaseType::Int,
+                constraint: None,
+                values: Some(ValueSource::Host),
+            }],
+        });
+
+        let id_offset = src.find("give_item(").expect("call") + "give_item(".len();
+
+        // With no host values pushed, the host source yields nothing.
+        {
+            let analysis = session.analysis().expect("analysis");
+            assert!(
+                super::argument_value_completions(
+                    analysis,
+                    src,
+                    id_offset,
+                    Some(session.host_values())
+                )
+                .is_empty(),
+                "no host values pushed yet",
+            );
+        }
+
+        // After the host pushes a snapshot, the picker serves it.
+        session.set_host_values(crate::HostValues::from([(
+            "item_id".to_string(),
+            vec![
+                ValueItem {
+                    value: "0".into(),
+                    label: "Potion".into(),
+                    detail: None,
+                },
+                ValueItem {
+                    value: "1".into(),
+                    label: "Ether".into(),
+                    detail: Some("MP".into()),
+                },
+            ],
+        )]));
+        let analysis = session.analysis().expect("analysis");
+        let values = super::argument_value_completions(
+            analysis,
+            src,
+            id_offset,
+            Some(session.host_values()),
+        );
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0].label, "Potion");
+        assert_eq!(values[1].value, "1");
     }
 }

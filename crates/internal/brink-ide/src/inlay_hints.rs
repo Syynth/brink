@@ -21,10 +21,15 @@ pub struct InlayHint {
 }
 
 /// Compute inlay hints for the given syntax tree within the requested range.
+///
+/// `host_values` (Tier 3, #174) supplies labels for `host`-source semantic
+/// types from the pushed cache; pass `None` when no host is attached (static
+/// value labels still resolve from the manifest).
 pub fn inlay_hints(
     root: &SyntaxNode,
     analysis: &AnalysisResult,
     range: TextRange,
+    host_values: Option<&crate::HostValues>,
 ) -> Vec<InlayHint> {
     let mut hints = Vec::new();
 
@@ -37,13 +42,13 @@ pub fn inlay_hints(
 
         if let Some(call) = brink_syntax::ast::FunctionCall::cast(node.clone()) {
             if let Some(name) = call.name() {
-                collect_param_hints(&name, call.arg_list(), analysis, &mut hints);
+                collect_param_hints(&name, call.arg_list(), analysis, host_values, &mut hints);
             }
         } else if let Some(target) = brink_syntax::ast::DivertTargetWithArgs::cast(node.clone())
             && let Some(path_node) = target.path()
         {
             let name = path_node.full_name();
-            collect_param_hints(&name, target.arg_list(), analysis, &mut hints);
+            collect_param_hints(&name, target.arg_list(), analysis, host_values, &mut hints);
         }
     }
 
@@ -55,6 +60,7 @@ fn collect_param_hints(
     callee_name: &str,
     arg_list: Option<brink_syntax::ast::ArgList>,
     analysis: &AnalysisResult,
+    host_values: Option<&crate::HostValues>,
     hints: &mut Vec<InlayHint>,
 ) {
     let Some(arg_list) = arg_list else { return };
@@ -130,13 +136,20 @@ fn collect_param_hints(
             padding_right: true,
         });
 
-        // Value-label hint (#174): if the param's semantic type declares a
-        // static labelled value set and this literal matches an item, show its
-        // label after the argument (`set_switch(5 ⟨HarborGate⟩, …)`). Advisory —
-        // a non-matching literal simply gets no label (the host's set may have
-        // changed; the running game is source of truth).
-        if let Some(brink_ir::ValueSource::Static { items }) = ty.and_then(|rt| rt.values.as_ref())
-        {
+        // Value-label hint (#174): if the param's semantic type carries a value
+        // set (static manifest items, or `host` items from the pushed cache) and
+        // this literal matches one, show its label after the argument
+        // (`set_switch(5 ⟨HarborGate⟩, …)`). Advisory — a non-matching literal
+        // gets no label (the host's set may have changed; the game is truth).
+        let value_items: Option<&[brink_ir::ValueItem]> =
+            ty.and_then(|rt| match rt.values.as_ref() {
+                Some(brink_ir::ValueSource::Static { items }) => Some(items.as_slice()),
+                Some(brink_ir::ValueSource::Host) => host_values
+                    .and_then(|hv| hv.get(&rt.name))
+                    .map(Vec::as_slice),
+                None => None,
+            });
+        if let Some(items) = value_items {
             let literal = arg_text.trim_matches('"');
             if let Some(item) = items.iter().find(|it| it.value == literal) {
                 hints.push(InlayHint {
@@ -180,6 +193,7 @@ mod tests {
             &parsed.syntax(),
             analysis,
             TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
         );
         let labels: Vec<_> = hints.iter().map(|h| h.label.as_str()).collect();
         assert!(labels.contains(&"weapon: int"), "{labels:?}");
@@ -240,6 +254,7 @@ EXTERNAL set_switch(id, on)
             &parsed.syntax(),
             analysis,
             TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
         );
 
         // The matching literal `5` gets a value label; `9` (not in the set) does not.
@@ -254,5 +269,68 @@ EXTERNAL set_switch(id, on)
             "only the matching literal: {value_labels:?}"
         );
         assert!(value_labels[0].contains("HarborGate"), "{value_labels:?}");
+    }
+
+    #[test]
+    fn host_value_source_labels_from_pushed_cache() {
+        use brink_ir::{
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef, ValueItem, ValueSource,
+        };
+
+        let src = "EXTERNAL give_item(id)\n~ give_item(1)\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            externals: vec![ManifestExternal {
+                name: "give_item".into(),
+                params: vec![ManifestParam {
+                    name: "id".into(),
+                    ty: TypeRef("item_id".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Effect,
+                doc: None,
+            }],
+            types: vec![SemanticTypeDef {
+                name: "item_id".into(),
+                base: BaseType::Int,
+                constraint: None,
+                values: Some(ValueSource::Host),
+            }],
+        });
+        session.set_host_values(crate::HostValues::from([(
+            "item_id".to_string(),
+            vec![ValueItem {
+                value: "1".into(),
+                label: "Ether".into(),
+                detail: None,
+            }],
+        )]));
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax::parse(src);
+        let range = TextRange::new(TextSize::new(0), TextSize::of(src));
+
+        // The pushed cache resolves the host literal's label.
+        let hints = inlay_hints(
+            &parsed.syntax(),
+            analysis,
+            range,
+            Some(session.host_values()),
+        );
+        assert!(
+            hints
+                .iter()
+                .any(|h| matches!(h.kind, InlayHintKind::Value) && h.label.contains("Ether")),
+            "host value label from cache",
+        );
+
+        // Without the cache (no host attached), no host label.
+        let bare = inlay_hints(&parsed.syntax(), analysis, range, None);
+        assert!(
+            !bare.iter().any(|h| matches!(h.kind, InlayHintKind::Value)),
+            "no host label without the cache",
+        );
     }
 }

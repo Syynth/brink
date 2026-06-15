@@ -20,6 +20,13 @@ mod text;
 pub use completion::{
     CompletionContext, CursorScope, cursor_scope, detect_completion_context, is_visible_in_context,
 };
+
+/// Author-time host value cache (Tier 3, #174): `host`-source semantic types →
+/// the labelled values the attached host pushed in (`set_host_values`). Keyed
+/// by semantic-type name. Consumed at query time by the argument picker +
+/// value-label inlay hints; never part of analysis (so a push needs no
+/// re-analyze). Empty when no host is attached.
+pub type HostValues = std::collections::HashMap<String, Vec<brink_ir::ValueItem>>;
 pub use formatting::{format_region, sort_knots_in_source, sort_stitches_in_knot};
 pub use line_index::LineIndex;
 pub use text::{

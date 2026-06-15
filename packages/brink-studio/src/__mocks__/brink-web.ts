@@ -164,6 +164,12 @@ export class EditorSession {
     return JSON.stringify({ ok: true });
   }
 
+  // Host-capability manifest + value cache (#174) — no-ops in the mock.
+  set_host_manifest(_json: string): void { /* no-op */ }
+  clear_host_manifest(): void { /* no-op */ }
+  set_host_values(_json: string): void { /* no-op */ }
+  clear_host_values(): void { /* no-op */ }
+
   project_outline(): string {
     const outline = [];
     for (const [path, source] of this.files) {
