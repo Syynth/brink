@@ -3904,9 +3904,7 @@ mod binding_wasm_tests {
     fn shared_flow_writes_visible_to_default() {
         // The default flow at root reads a global the *flow* wrote — sharing is
         // bidirectional.
-        let r = runner(
-            "VAR x = 0\n{x}\n-> END\n=== bump ===\n~ x = 9\nbumped.\n-> END\n",
-        );
+        let r = runner("VAR x = 0\n{x}\n-> END\n=== bump ===\n~ x = 9\nbumped.\n-> END\n");
         r.spawn_flow("f", Some("bump".to_owned()))
             .ok()
             .expect("spawn");
@@ -3914,6 +3912,9 @@ mod binding_wasm_tests {
         let _ = r.continue_flow("f").ok().expect("flow line");
         // The default flow now reads 9.
         let line = r.continue_single().ok().expect("default line");
-        assert!(line.contains('9'), "default sees the flow's write; got {line}");
+        assert!(
+            line.contains('9'),
+            "default sees the flow's write; got {line}"
+        );
     }
 }

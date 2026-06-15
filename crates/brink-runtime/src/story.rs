@@ -2376,10 +2376,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// `default_context` — so its globals / visit counts match the default
     /// flow's, while its call stack + temps are the flow's own. Falls back to a
     /// named isolated flow's own context if `name` is one of those instead.
-    pub fn debug_snapshot_flow(
-        &self,
-        name: &str,
-    ) -> Result<crate::DebugSnapshot, RuntimeError> {
+    pub fn debug_snapshot_flow(&self, name: &str) -> Result<crate::DebugSnapshot, RuntimeError> {
         if let Some(instance) = self.shared_instances.get(name) {
             Ok(self.build_debug_snapshot(instance, &self.default_context))
         } else if let Some((instance, ctx)) = self.instances.get(name) {
@@ -2391,11 +2388,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
 
     /// Build a debug snapshot from a specific flow instance + context. Backs
     /// both [`debug_snapshot`](Self::debug_snapshot) and the per-flow variant.
-    fn build_debug_snapshot(
-        &self,
-        instance: &FlowInstance,
-        ctx: &Context,
-    ) -> crate::DebugSnapshot {
+    fn build_debug_snapshot(&self, instance: &FlowInstance, ctx: &Context) -> crate::DebugSnapshot {
         use crate::debug::{
             DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit, NameResolver,
         };
