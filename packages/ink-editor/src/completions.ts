@@ -13,6 +13,8 @@ const KIND_MAP: Record<string, string> = {
   Label: "property",
   Param: "variable",
   Temp: "variable",
+  // Host value-picker items (#174): a labelled value for an argument slot.
+  value: "enum",
 };
 
 export interface CompletionsOptions {
@@ -44,6 +46,9 @@ export function completionsExtension(options: CompletionsOptions): Extension {
             label: item.name,
             type: KIND_MAP[item.kind] ?? "text",
             detail: item.detail ?? undefined,
+            // Host value picker (#174): display `item.name` (the label), insert
+            // `item.insert` (the literal). Omitted ⇒ CodeMirror inserts the label.
+            apply: item.insert ?? undefined,
           })),
         };
       },
