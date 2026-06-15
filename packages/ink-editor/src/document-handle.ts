@@ -21,7 +21,6 @@ import type {
   FoldRange,
   HoverInfo,
   InlayHint,
-  ColorHint,
   CallWidgetSite,
   LineContext,
   Location,
@@ -144,10 +143,6 @@ export class DocHandle {
 
   inlayHints(start: number, end: number): InlayHint[] {
     return this.session.getInlayHintsDoc(this.id, start, end);
-  }
-
-  colorHints(start: number, end: number): ColorHint[] {
-    return this.session.getColorHintsDoc(this.id, start, end);
   }
 
   argumentWidgets(start: number, end: number): CallWidgetSite[] {

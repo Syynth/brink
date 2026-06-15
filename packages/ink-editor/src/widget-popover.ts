@@ -42,8 +42,14 @@ export function openPopover(
     onClose();
   };
 
+  // Capture the anchor rect at open. A Fill ghost is replaced by an Edit swatch
+  // the instant the literal is inserted, detaching the anchor; fall back to the
+  // captured rect so the popover stays put instead of jumping to (0, 0).
+  let anchorRect = anchor.getBoundingClientRect();
+
   const reposition = (): void => {
-    const a = anchor.getBoundingClientRect();
+    if (anchor.isConnected) anchorRect = anchor.getBoundingClientRect();
+    const a = anchorRect;
     const p = panel.getBoundingClientRect();
     const margin = 4;
     // Prefer below-left-aligned; flip above when it would overflow the viewport.
@@ -68,7 +74,8 @@ export function openPopover(
   };
 
   const onPointerDown = (e: PointerEvent): void => {
-    if (!panel.contains(e.target as Node) && !anchor.contains(e.target as Node)) {
+    // Only the panel is consulted — the anchor may have been replaced (Fill).
+    if (!panel.contains(e.target as Node)) {
       close();
     }
   };

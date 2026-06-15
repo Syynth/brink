@@ -25,10 +25,12 @@ EXTERNAL set_tint(color)
 
 -> intro
 
-// Color-picker demo (#174): \`color\` is a \`hex_color\` param, so the editor
-// renders a swatch over the literal below — click it to pick a color.
+// Argument-widget demo: \`color\` is a \`hex_color\` param (color widget). The
+// filled call renders a swatch over the literal — click to Edit. The empty call
+// renders a \`‹color›\` ghost — click to Fill (pick a color, inserted in place).
 === palette ===
 ~ set_tint("#FF8800")
+~ set_tint()
 -> DONE
 `;
 
