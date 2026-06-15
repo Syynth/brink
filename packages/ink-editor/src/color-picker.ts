@@ -1,11 +1,13 @@
 /**
- * Built-in color picker for `hex_color` arguments (#174).
+ * Built-in color picker for `hex_color` arguments (#174, argument-widget-spec
+ * stage 1).
  *
- * For every `EXTERNAL` call argument whose semantic type is `hex_color`, the
- * brink-ide `color_hints` query returns the literal's span + hex value. This
- * extension renders a native `<input type="color">` swatch just before each
- * such literal; picking a color rewrites the literal in place. Studio-builtin —
- * no host involvement (unlike the host-provided value pickers).
+ * For every `EXTERNAL` call argument whose semantic type carries the `color`
+ * built-in widget, the brink-ide `color_hints` query returns the literal's span
+ * + hex value. This extension renders the registry's `color` widget — a swatch
+ * just before the literal; clicking opens a light studio popover picker, which
+ * rewrites the literal in place. The swatch + editor go through the shared
+ * widget registry (the seam future built-ins and host widgets plug into).
  */
 
 import { RangeSetBuilder, type Extension } from "@codemirror/state";
@@ -18,48 +20,78 @@ import {
   WidgetType,
 } from "@codemirror/view";
 import type { ColorHint } from "@brink/wasm-types";
+import { getBuiltinWidget, type WidgetEditorHost } from "./widget-registry.js";
+import { toDisplayHex } from "./color-widget.js";
+import "./color-widget.js"; // side-effect: registers the built-in "color" widget
 
-/** Coerce a stored value to a `#rrggbb` an `<input type=color>` accepts. */
-function toInputHex(value: string): string {
-  const v = value.trim().replace(/^#?/, "");
-  if (/^[0-9a-fA-F]{6}$/.test(v)) return `#${v.toLowerCase()}`;
-  if (/^[0-9a-fA-F]{3}$/.test(v)) {
-    return `#${v.split("").map((c) => c + c).join("").toLowerCase()}`;
+/**
+ * The current quoted-literal range starting at `from` (the opening quote).
+ * Recomputed at edit time so successive live edits stay correct even when the
+ * literal's length changes (e.g. `#FFF` → `#00FF00`).
+ */
+function liveLiteralRange(view: EditorView, from: number): { from: number; to: number } | null {
+  const doc = view.state.doc;
+  if (from < 0 || from >= doc.length || doc.sliceString(from, from + 1) !== '"') return null;
+  for (let i = from + 1; i < doc.length; i++) {
+    if (doc.sliceString(i, i + 1) === '"') return { from, to: i + 1 };
   }
-  return "#000000";
+  return null;
 }
 
 class ColorSwatchWidget extends WidgetType {
   constructor(
     readonly value: string,
     readonly from: number,
-    readonly to: number,
     readonly view: EditorView,
   ) {
     super();
   }
 
   eq(other: ColorSwatchWidget): boolean {
-    return other.value === this.value && other.from === this.from && other.to === this.to;
+    return other.value === this.value && other.from === this.from;
   }
 
   toDOM(): HTMLElement {
-    const input = document.createElement("input");
-    input.type = "color";
-    input.className = "brink-color-swatch";
-    input.value = toInputHex(this.value);
-    input.title = `Pick color (${this.value})`;
-    // `input` fires live as the user drags the picker; rewrite the literal,
-    // preserving the surrounding quotes.
-    input.addEventListener("input", () => {
-      const hex = input.value.toUpperCase();
-      this.view.dispatch({ changes: { from: this.from, to: this.to, insert: `"${hex}"` } });
+    const widget = getBuiltinWidget("color");
+    const el = widget ? widget.renderInline(this.value) : document.createElement("span");
+    el.addEventListener("click", () => this.open(el));
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        this.open(el);
+      }
     });
-    return input;
+    return el;
+  }
+
+  updateDOM(dom: HTMLElement): boolean {
+    // Reuse the same element across live edits so an open popover's anchor stays
+    // valid; just refresh the swatch color + title.
+    dom.style.background = toDisplayHex(this.value);
+    dom.title = `Edit color (${this.value})`;
+    return true;
+  }
+
+  private open(anchor: HTMLElement): void {
+    const widget = getBuiltinWidget("color");
+    if (!widget) return;
+    const host: WidgetEditorHost = {
+      initial: this.value,
+      resolve: (hex) => {
+        const range = liveLiteralRange(this.view, this.from);
+        if (range) {
+          this.view.dispatch({
+            changes: { from: range.from, to: range.to, insert: `"${hex}"` },
+          });
+        }
+      },
+      cancel: () => {},
+    };
+    widget.openEditor(anchor, host);
   }
 
   ignoreEvent(): boolean {
-    return true; // let the native input handle its own pointer/keyboard events
+    return true;
   }
 }
 
@@ -84,8 +116,10 @@ export function colorPickerExtension(options: ColorPickerOptions): Extension {
         h.start,
         h.start,
         Decoration.widget({
-          widget: new ColorSwatchWidget(h.value, h.start, h.end, view),
-          side: -1,
+          widget: new ColorSwatchWidget(h.value, h.start, view),
+          // After the param-name inlay (side 1), immediately before the literal:
+          // `set_tint(color: ▮"#FF8800")`.
+          side: 2,
         }),
       );
     }

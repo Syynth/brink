@@ -12,7 +12,16 @@ use brink_syntax::ast::AstNode;
 use rowan::{TextRange, TextSize};
 
 /// The semantic-type name that triggers the built-in color picker.
-const HEX_COLOR_TYPE: &str = "hex_color";
+pub const HEX_COLOR_TYPE: &str = "hex_color";
+
+/// Whether a semantic type has a studio-builtin argument widget. When it does,
+/// the inlay hint drops the `: type` suffix (the widget — e.g. the color swatch
+/// — already conveys the type). Stage 1 of the argument-widget spec recognizes
+/// `hex_color`; later stages drive this off the manifest `widget` declaration.
+#[must_use]
+pub fn has_builtin_widget(type_name: &str) -> bool {
+    type_name == HEX_COLOR_TYPE
+}
 
 /// A `hex_color` argument literal: its full span (including quotes) and the
 /// bare hex value (quotes stripped, e.g. `#FF0000`).
