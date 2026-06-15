@@ -1453,6 +1453,16 @@ impl EditorSession {
         self.inlay_hints_impl(&d.path, d.view.as_ref(), start, end)
     }
 
+    /// Color hints (`hex_color` argument literals) for a document handle, for
+    /// the built-in color picker (#174-adjacent). Returns JSON array of
+    /// `{ start, end, value }` (UTF-16 offsets).
+    pub fn color_hints_doc(&self, doc: u32, start: u32, end: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "[]".to_owned();
+        };
+        self.color_hints_impl(&d.path, d.view.as_ref(), start, end)
+    }
+
     /// Compute signature help for a document handle. Returns JSON or "null".
     pub fn signature_help_doc(&self, doc: u32, offset: u32) -> String {
         let Some(d) = self.docs.get(&doc) else {
@@ -2465,6 +2475,43 @@ impl EditorSession {
         serde_json::to_string(&items).unwrap_or_default()
     }
 
+    fn color_hints_impl(
+        &self,
+        path: &str,
+        view: Option<&ViewContext>,
+        start: u32,
+        end: u32,
+    ) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let (Some(analysis), Some(root)) =
+            (self.session.analysis(), self.session.syntax_root(file_id))
+        else {
+            return "[]".to_owned();
+        };
+
+        let abs_start = self.to_absolute(path, view, start);
+        let abs_end = self.to_absolute(path, view, end);
+        let range = TextRange::new(TextSize::new(abs_start), TextSize::new(abs_end));
+        let hints = brink_ide::color::color_hints(&root, analysis, range);
+
+        let items: Vec<ColorHintJs> = hints
+            .iter()
+            .filter_map(|h| {
+                let start = self.to_relative(path, view, h.start.into())?;
+                let end = self.to_relative(path, view, h.end.into())?;
+                Some(ColorHintJs {
+                    start,
+                    end,
+                    value: h.value.clone(),
+                })
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
+    }
+
     fn signature_help_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
         let Some(file_id) = self.session.file_id(path) else {
             return "null".to_owned();
@@ -2890,6 +2937,13 @@ struct InlayHintJs {
     label: String,
     kind: String,
     padding_right: bool,
+}
+
+#[derive(Serialize)]
+struct ColorHintJs {
+    start: u32,
+    end: u32,
+    value: String,
 }
 
 #[derive(Serialize)]

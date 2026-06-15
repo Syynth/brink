@@ -273,6 +273,32 @@
   padding: 0 3px;
   margin-left: 2px;
 }
+/* Built-in hex_color picker (#174): the native color input styled as a small
+   clickable swatch sitting just before the literal. */
+.brink-studio .brink-color-swatch {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 0.85em;
+  height: 0.85em;
+  padding: 0;
+  margin-right: 3px;
+  border: 1px solid var(--bs-border);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.brink-studio .brink-color-swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.brink-studio .brink-color-swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+.brink-studio .brink-color-swatch::-moz-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
 /* Signature help */
 .brink-studio .brink-signature-help {
   background: var(--bs-panel-bg);

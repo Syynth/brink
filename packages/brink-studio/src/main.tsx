@@ -21,8 +21,15 @@ EXTERNAL gain_gold(amount)
 EXTERNAL play_se(name)
 EXTERNAL show_picture(name, x, y)
 EXTERNAL party_size()
+EXTERNAL set_tint(color)
 
 -> intro
+
+// Color-picker demo (#174): \`color\` is a \`hex_color\` param, so the editor
+// renders a swatch over the literal below — click it to pick a color.
+=== palette ===
+~ set_tint("#FF8800")
+-> DONE
 `;
 
 // Deterministic single-file project for e2e, loaded via `?fixture=screenplay`.
