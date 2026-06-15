@@ -50,11 +50,23 @@ describe("manifestPanelItems", () => {
   it("tolerates sparse manifest entries (no params/returns/doc/kind)", () => {
     const sparse: HostManifest = { externals: [{ name: "ping" }] };
     expect(manifestPanelItems(sparse)).toEqual([
-      { name: "ping", signature: "ping()", call: "~ ping()\n", doc: "", kind: "plain" },
+      { name: "ping", signature: "ping()", call: "~ ping()\n", doc: "", kind: "plain", fields: [] },
     ]);
   });
 
   it("returns no rows for an empty manifest", () => {
     expect(manifestPanelItems({})).toEqual([]);
+  });
+
+  it("resolves per-param form fields, with the widget kind from the type", () => {
+    const items = manifestPanelItems(EXAMPLE_HOST_MANIFEST);
+    // set_tint(color: hex_color) — hex_color declares the `color` widget.
+    const setTint = items.find((i) => i.name === "set_tint");
+    expect(setTint?.fields).toEqual([
+      { paramName: "color", typeName: "hex_color", widgetKind: "color" },
+    ]);
+    // show_picture(name, x, y) — plain types, no widgets → text fields.
+    const showPicture = items.find((i) => i.name === "show_picture");
+    expect(showPicture?.fields.map((f) => f.widgetKind)).toEqual([undefined, undefined, undefined]);
   });
 });
