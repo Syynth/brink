@@ -107,56 +107,17 @@ export function openArgumentForm(anchor: HTMLElement, opts: ArgumentFormOptions)
   return () => popover?.close();
 }
 
-/** A color field: swatch + hex input + a toggleable inline picker. Returns a
- *  getter for the `"#RRGGBB"` literal. */
+/** A color field: the actual picker widget, embedded inline in the form (its
+ *  own hex input + presets are part of it). Returns a getter for the
+ *  `"#RRGGBB"` literal. */
 function buildColorField(row: HTMLElement, field: FormField): () => string {
   let hex = field.initial ? toDisplayHex(field.initial) : "#FF8800";
-
-  const control = document.createElement("div");
-  control.className = "brink-arg-form-control";
-
-  const swatch = document.createElement("button");
-  swatch.type = "button";
-  swatch.className = "brink-color-swatch";
-  swatch.style.background = hex;
-  swatch.title = "Toggle picker";
-
-  const hexInput = document.createElement("input");
-  hexInput.type = "text";
-  hexInput.className = "brink-cp-hex";
-  hexInput.spellcheck = false;
-  hexInput.value = hex;
-
-  const pickerWrap = document.createElement("div");
-  pickerWrap.className = "brink-arg-form-picker";
-  pickerWrap.style.display = "none";
-  let picker: { destroy(): void } | null = null;
-
-  swatch.addEventListener("click", () => {
-    if (picker) {
-      picker.destroy();
-      picker = null;
-      pickerWrap.style.display = "none";
-    } else {
-      pickerWrap.style.display = "block";
-      picker = mountColorPicker(pickerWrap, hex, (h) => {
-        hex = h;
-        swatch.style.background = h;
-        hexInput.value = h;
-      });
-    }
+  const wrap = document.createElement("div");
+  wrap.className = "brink-arg-form-picker";
+  mountColorPicker(wrap, hex, (h) => {
+    hex = h;
   });
-
-  hexInput.addEventListener("input", () => {
-    const rgb = hexToRgb(hexInput.value);
-    if (rgb) {
-      hex = rgbToHex(rgb);
-      swatch.style.background = hex;
-    }
-  });
-
-  control.append(swatch, hexInput);
-  row.append(control, pickerWrap);
+  row.appendChild(wrap);
   return () => `"${hex}"`;
 }
 
