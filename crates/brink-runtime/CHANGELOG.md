@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.3...brink-runtime-v0.0.4) - 2026-06-15
+
+### Added
+
+- shared-context flow sessions — "+ New flow" ([#200](https://github.com/Syynth/brink/pull/200)) ([#201](https://github.com/Syynth/brink/pull/201))
+- *(runtime,web)* host-directed parameterized knot entry ([#178](https://github.com/Syynth/brink/pull/178)) ([#195](https://github.com/Syynth/brink/pull/195))
+- *(replay)* shared external recording/replay primitive ([#189](https://github.com/Syynth/brink/pull/189)) ([#191](https://github.com/Syynth/brink/pull/191))
+
 ## [0.0.3](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.2...brink-runtime-v0.0.3) - 2026-06-13
 
 ### Added

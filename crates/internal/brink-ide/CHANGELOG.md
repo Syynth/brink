@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/Syynth/brink/compare/brink-ide-v0.0.3...brink-ide-v0.0.4) - 2026-06-15
+
+### Added
+
+- *(ide,web)* host value push-cache transport for the argument picker ([#174](https://github.com/Syynth/brink/pull/174)) ([#205](https://github.com/Syynth/brink/pull/205))
+- *(ide,studio)* arg-position value completion dropdown ([#175](https://github.com/Syynth/brink/pull/175)) ([#204](https://github.com/Syynth/brink/pull/204))
+- *(manifest,ide)* static value-source + value-label inlay hints ([#174](https://github.com/Syynth/brink/pull/174)) ([#203](https://github.com/Syynth/brink/pull/203))
+
 ## [0.0.3](https://github.com/Syynth/brink/compare/brink-ide-v0.0.2...brink-ide-v0.0.3) - 2026-06-13
 
 ### Added

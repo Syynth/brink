@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/Syynth/brink/compare/brink-lsp-v0.0.3...brink-lsp-v0.0.4) - 2026-06-15
+
+### Added
+
+- *(ide,web)* host value push-cache transport for the argument picker ([#174](https://github.com/Syynth/brink/pull/174)) ([#205](https://github.com/Syynth/brink/pull/205))
+
 ## [0.0.3](https://github.com/Syynth/brink/compare/brink-lsp-v0.0.2...brink-lsp-v0.0.3) - 2026-06-13
 
 ### Other
