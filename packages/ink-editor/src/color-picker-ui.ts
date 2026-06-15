@@ -155,7 +155,7 @@ export function mountColorPicker(
     sw.title = p;
     sw.addEventListener("click", () => {
       hsv = rgbToHsv(hexToRgb(p) ?? { r: 0, g: 0, b: 0 });
-      syncFromHsv(true);
+      syncFromHsv(true, true);
     });
     presets.appendChild(sw);
   }
@@ -165,9 +165,11 @@ export function mountColorPicker(
 
   const currentHex = (): string => rgbToHex(hsvToRgb(hsv));
 
-  // Push the model out and refresh the UI. `editText` controls whether the hex
-  // field is rewritten (skip while the user is typing into it).
-  function syncFromHsv(editText: boolean): void {
+  // Refresh the UI from the model. `editText` rewrites the hex field (skip while
+  // typing into it); `emit` calls `onChange`. The initial seed updates the UI
+  // WITHOUT emitting — so opening the picker doesn't commit a value (Fill stays
+  // empty until the user actually picks; Escape leaves the slot untouched).
+  function syncFromHsv(editText: boolean, emit: boolean): void {
     const hex = currentHex();
     sv.style.background = `linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, hsl(${hsv.h} 100% 50%)), #fff`;
     svThumb.style.left = `${hsv.s * 100}%`;
@@ -175,7 +177,7 @@ export function mountColorPicker(
     svThumb.style.background = hex;
     hue.value = String(Math.round(hsv.h));
     if (editText) hexInput.value = hex;
-    onChange(hex);
+    if (emit) onChange(hex);
   }
 
   const onSvPointer = (e: PointerEvent): void => {
@@ -185,7 +187,7 @@ export function mountColorPicker(
       s: clamp((e.clientX - rect.left) / rect.width, 0, 1),
       v: clamp(1 - (e.clientY - rect.top) / rect.height, 0, 1),
     };
-    syncFromHsv(true);
+    syncFromHsv(true, true);
   };
   sv.addEventListener("pointerdown", (e) => {
     sv.setPointerCapture(e.pointerId);
@@ -197,18 +199,18 @@ export function mountColorPicker(
 
   hue.addEventListener("input", () => {
     hsv = { ...hsv, h: Number(hue.value) };
-    syncFromHsv(true);
+    syncFromHsv(true, true);
   });
 
   hexInput.addEventListener("input", () => {
     const rgb = hexToRgb(hexInput.value);
     if (rgb) {
       hsv = rgbToHsv(rgb);
-      syncFromHsv(false);
+      syncFromHsv(false, true);
     }
   });
 
-  syncFromHsv(true);
+  syncFromHsv(true, false);
 
   return {
     destroy(): void {

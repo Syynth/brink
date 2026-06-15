@@ -24,6 +24,12 @@ export function openPopover(
   render: (container: HTMLElement) => void,
   onClose: () => void,
 ): PopoverHandle {
+  // Capture the anchor rect BEFORE rendering. A widget editor may edit the doc
+  // on first interaction, and for Fill the ghost anchor is replaced by a swatch
+  // the instant a literal is inserted — detaching it. Fall back to the captured
+  // rect so the popover stays put instead of jumping to (0, 0).
+  let anchorRect = anchor.getBoundingClientRect();
+
   const panel = document.createElement("div");
   panel.className = "brink-widget-popover";
   panel.setAttribute("role", "dialog");
@@ -41,11 +47,6 @@ export function openPopover(
     panel.remove();
     onClose();
   };
-
-  // Capture the anchor rect at open. A Fill ghost is replaced by an Edit swatch
-  // the instant the literal is inserted, detaching the anchor; fall back to the
-  // captured rect so the popover stays put instead of jumping to (0, 0).
-  let anchorRect = anchor.getBoundingClientRect();
 
   const reposition = (): void => {
     if (anchor.isConnected) anchorRect = anchor.getBoundingClientRect();
