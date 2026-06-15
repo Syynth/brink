@@ -128,7 +128,7 @@ fn collect_param_hints(
         // the widget (e.g. the color swatch) conveys the type, so repeating it
         // is noise: `set_tint(color: ▮"#FF8800")`, not `color: hex_color`.
         let label = match ty {
-            Some(ty) if !crate::color::has_builtin_widget(&ty.name) => {
+            Some(ty) if ty.widget.is_none() => {
                 format!("{prefix}{}: {}", param.name, ty.name)
             }
             _ => format!("{prefix}{}:", param.name),
@@ -209,7 +209,7 @@ mod tests {
     fn builtin_widget_param_drops_the_type_label() {
         use brink_ir::{
             BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
-            TypeRef,
+            TypeRef, WidgetDecl,
         };
 
         // `color: hex_color` carries the built-in color widget — the swatch
@@ -233,6 +233,9 @@ mod tests {
                 base: BaseType::String,
                 constraint: None,
                 values: None,
+                widget: Some(WidgetDecl {
+                    kind: "color".into(),
+                }),
             }],
         });
         let analysis = session.analysis().expect("analysis");
@@ -294,6 +297,7 @@ EXTERNAL set_switch(id, on)
                         detail: None,
                     }],
                 }),
+                widget: None,
             }],
         });
         let analysis = session.analysis().expect("analysis");
@@ -346,6 +350,7 @@ EXTERNAL set_switch(id, on)
                 base: BaseType::Int,
                 constraint: None,
                 values: Some(ValueSource::Host),
+                widget: None,
             }],
         });
         session.set_host_values(crate::HostValues::from([(

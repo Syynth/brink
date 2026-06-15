@@ -1,27 +1,19 @@
-//! Color hints — a studio-builtin picker for `hex_color` arguments.
+//! Color hints — a studio-builtin picker for `color`-widget arguments.
 //!
-//! When an `EXTERNAL` call argument's semantic type is named `hex_color`
-//! (a manifest convention) and the literal is a quoted hex string, we surface
-//! its span + value so the editor can render a native color swatch/picker over
-//! it. Reuses the same call-site → semantic-type join point as inlay hints and
-//! the argument picker; tooling-only, never touches the compiled program.
+//! When an `EXTERNAL` call argument's semantic type declares the built-in
+//! `color` widget (manifest `widget: { kind: "color" }`) and the literal is a
+//! quoted hex string, we surface its span + value so the editor can render a
+//! color swatch/picker over it. Reuses the same call-site → semantic-type join
+//! point as inlay hints and the argument picker; tooling-only, never touches the
+//! compiled program.
 
 use brink_analyzer::AnalysisResult;
 use brink_syntax::SyntaxNode;
 use brink_syntax::ast::AstNode;
 use rowan::{TextRange, TextSize};
 
-/// The semantic-type name that triggers the built-in color picker.
-pub const HEX_COLOR_TYPE: &str = "hex_color";
-
-/// Whether a semantic type has a studio-builtin argument widget. When it does,
-/// the inlay hint drops the `: type` suffix (the widget — e.g. the color swatch
-/// — already conveys the type). Stage 1 of the argument-widget spec recognizes
-/// `hex_color`; later stages drive this off the manifest `widget` declaration.
-#[must_use]
-pub fn has_builtin_widget(type_name: &str) -> bool {
-    type_name == HEX_COLOR_TYPE
-}
+/// The built-in widget kind that triggers the color picker.
+pub const COLOR_WIDGET_KIND: &str = "color";
 
 /// A `hex_color` argument literal: its full span (including quotes) and the
 /// bare hex value (quotes stripped, e.g. `#FF0000`).
@@ -95,12 +87,13 @@ fn collect(
     };
 
     for (i, arg) in args.iter().enumerate() {
-        let is_hex_color = meta
+        let is_color = meta
             .params
             .get(i)
             .and_then(|rp| rp.ty.as_ref())
-            .is_some_and(|rt| rt.name == HEX_COLOR_TYPE);
-        if !is_hex_color {
+            .and_then(|rt| rt.widget.as_ref())
+            .is_some_and(|w| w.kind == COLOR_WIDGET_KIND);
+        if !is_color {
             continue;
         }
         // Only a quoted string literal carries a color; skip a variable/expr.
@@ -125,7 +118,7 @@ mod tests {
     fn hints(src: &str) -> Vec<ColorHint> {
         use brink_ir::{
             BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
-            TypeRef,
+            TypeRef, WidgetDecl,
         };
         let mut session = IdeSession::new();
         session.update_and_analyze("test.ink", src.to_string());
@@ -145,6 +138,9 @@ mod tests {
                 base: BaseType::String,
                 constraint: None,
                 values: None,
+                widget: Some(WidgetDecl {
+                    kind: "color".into(),
+                }),
             }],
         });
         let analysis = session.analysis().expect("analysis");

@@ -65,6 +65,20 @@ pub struct SemanticTypeDef {
     /// program. `None` means the param is entered as a plain literal.
     #[serde(default)]
     pub values: Option<ValueSource>,
+    /// A studio-builtin argument widget for this type (Tier 3, argument-widget
+    /// spec). Names a built-in kind (`color`, …); the studio renders the inline
+    /// affordance + editor. Advisory tooling metadata; `None` means no widget.
+    #[serde(default)]
+    pub widget: Option<WidgetDecl>,
+}
+
+/// A studio-builtin argument widget declaration (argument-widget spec §2).
+/// Flat by design — just the built-in kind for now; host-rendered editors are
+/// declared per-external (`widgets`), not here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WidgetDecl {
+    /// The built-in widget kind, e.g. `"color"`.
+    pub kind: String,
 }
 
 /// One pickable value with its host-given display label (Tier 3, #174).

@@ -240,6 +240,7 @@ mod tests {
                         },
                     ],
                 }),
+                widget: None,
             }],
         });
         let analysis = session.analysis().expect("analysis");
@@ -285,6 +286,7 @@ mod tests {
                 base: BaseType::Int,
                 constraint: None,
                 values: Some(ValueSource::Host),
+                widget: None,
             }],
         });
 

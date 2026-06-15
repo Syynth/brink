@@ -114,6 +114,9 @@ pub struct ResolvedType {
     /// The picker's value source (Tier 3, #174) — advisory; drives the
     /// argument picker + value-label inlay hints, never checked against.
     pub values: Option<brink_ir::ValueSource>,
+    /// The studio-builtin argument widget for this type (argument-widget spec)
+    /// — advisory; drives the inline affordance + editor, never checked.
+    pub widget: Option<brink_ir::WidgetDecl>,
 }
 
 /// Build the per-external enrichment map and collect manifest-driven
@@ -436,6 +439,7 @@ fn resolve_type(
             base: Some(base),
             constraint: None,
             values: None,
+            widget: None,
         });
     }
     if let Some(def) = types.get(t.0.trim()) {
@@ -444,6 +448,7 @@ fn resolve_type(
             base: Some(def.base),
             constraint: def.constraint.clone(),
             values: def.values.clone(),
+            widget: def.widget.clone(),
         });
     }
     diags.push(Diagnostic {
@@ -462,6 +467,7 @@ fn resolve_type(
         base: None,
         constraint: None,
         values: None,
+        widget: None,
     })
 }
 
@@ -941,6 +947,7 @@ mod tests {
                     values: vec!["sword".into(), "shield".into()],
                 }),
                 values: None,
+                widget: None,
             },
         );
         let mut docs = BTreeMap::new();
@@ -1107,6 +1114,7 @@ mod tests {
                 base: BaseType::String,
                 constraint: None,
                 values: None,
+                widget: None,
             },
         );
 
@@ -1363,6 +1371,7 @@ mod tests {
             base: Some(BaseType::String),
             constraint: None,
             values: None,
+            widget: None,
         });
         let diags = run_call_check("tint", vec![Expr::Int(5)], &meta);
         assert_eq!(diags.len(), 1);
@@ -1376,6 +1385,7 @@ mod tests {
             base: Some(BaseType::String),
             constraint: None,
             values: None,
+            widget: None,
         });
         let diags = run_call_check("tint", vec![string_lit("ok")], &meta);
         assert!(diags.is_empty(), "matching string literal: {diags:?}");
@@ -1388,6 +1398,7 @@ mod tests {
             base: Some(BaseType::Float),
             constraint: None,
             values: None,
+            widget: None,
         });
         let diags = run_call_check("scale", vec![Expr::Int(3)], &meta);
         assert!(
@@ -1404,6 +1415,7 @@ mod tests {
             base: Some(BaseType::String),
             constraint: None,
             values: None,
+            widget: None,
         });
         let var = Expr::Path(HirPath {
             segments: vec![Name {
@@ -1428,6 +1440,7 @@ mod tests {
                 values: vec!["sword".into(), "shield".into()],
             }),
             values: None,
+            widget: None,
         });
         let bad = run_call_check("give", vec![string_lit("banana")], &meta);
         assert_eq!(bad.len(), 1);
@@ -1446,6 +1459,7 @@ mod tests {
                 max: Some(100),
             }),
             values: None,
+            widget: None,
         });
         let bad = run_call_check("set", vec![Expr::Int(150)], &meta);
         assert_eq!(bad.len(), 1);

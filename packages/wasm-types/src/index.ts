@@ -454,6 +454,12 @@ export type ValueSource =
   | { source: "static"; items: ValueItem[] }
   | { source: "host" };
 
+/** A studio-builtin argument widget for a semantic type (Tier 3). */
+export interface WidgetDecl {
+  /** The built-in widget kind, e.g. `"color"`. */
+  kind: string;
+}
+
 /** A flat-nominal semantic type: a base type plus one optional constraint. */
 export interface SemanticTypeDef {
   name: string;
@@ -461,6 +467,8 @@ export interface SemanticTypeDef {
   constraint?: Constraint | null;
   /** The picker's value source (Tier 3) — `static` (no host) or `host`. */
   values?: ValueSource | null;
+  /** A studio-builtin argument widget (Tier 3) — e.g. `{ kind: "color" }`. */
+  widget?: WidgetDecl | null;
 }
 
 /** A registered external parameter. */

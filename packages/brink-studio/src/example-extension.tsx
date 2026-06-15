@@ -54,9 +54,10 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
         ],
       },
     },
-    // A studio-builtin picker (#174): a `hex_color` param renders a native
-    // color swatch over its string literal — click it to pick a color.
-    { name: "hex_color", base: "string" },
+    // A studio-builtin widget (argument-widget spec): a `hex_color` param
+    // renders a color swatch over its string literal — click for the popover
+    // picker. The `widget` declaration drives it (no magic type-name).
+    { name: "hex_color", base: "string", widget: { kind: "color" } },
   ],
   externals: [
     {
