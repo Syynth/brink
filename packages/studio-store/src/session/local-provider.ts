@@ -13,6 +13,8 @@
 import { StoryRunnerHandle, type ExternalValue } from "@brink-lang/web";
 import type { Choice } from "@brink/wasm-types";
 
+import { FlowSessionProvider } from "./flow-provider.js";
+
 import {
   ALL_CAPABILITIES,
   statusOfLine,
@@ -147,6 +149,18 @@ export class LocalSessionProvider implements SessionProvider {
   /** Whether a live runner exists (drives restart-vs-fresh-start; see slice). */
   hasLiveRunner(): boolean {
     return this.runner !== null;
+  }
+
+  /**
+   * Spawn a shared-context flow on this session's runner (#200): a concurrent
+   * flow of the *same* story that shares globals / visits / rng. Returns a
+   * {@link FlowSessionProvider} that drives it, or `null` if there's no live
+   * runner. The flow shares this provider's wired callbacks.
+   */
+  spawnFlow(name: string, path?: string): FlowSessionProvider | null {
+    if (!this.runner) return null;
+    this.runner.spawnFlow(name, path);
+    return new FlowSessionProvider(this.runner, name, this.callbacks);
   }
 
   /**

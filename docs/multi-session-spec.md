@@ -101,20 +101,27 @@ A **session source** owns registering / unregistering entries:
   `null` → placeholder (status `none`).
 - **App teardown** disposes every provider.
 
-## 7. Local isolation now, shared-context seam later
+## 7. Two kinds: independent runners *and* shared-context flows
 
-*Decision 2026-06-14: "isolated now, shared later."*
+*Decision 2026-06-14: "isolated now, shared later" — then shared pulled forward as a local
+feature (#200).* The picker offers **both**, as distinct tools:
 
-- **Now — independent runners.** A local session is its own `StoryRunnerHandle` with **isolated
-  globals**. No wasm/runtime change; studio-only; exercisable locally today. This is the right
-  default for the local use cases (speculative play, compare-two-paths, play-from-here without
-  disturbing the main session).
-- **Seam for later — shared-context flows.** The registry is provider-agnostic, so a future
-  *shared-context source* can register N providers backed by real `FlowInstance`s sharing a
-  `Context` (one flow's writes visible to others — true ink / bevy semantics). That needs new wasm
-  flow API (`spawn_flow` / `continue_flow` / `choose_flow` / `destroy_flow` / `list_flows`) plus
-  shared-`Context` wiring, and is **deferred** until a concrete need or the Bevy provider lands.
-  **No view or registry change is required to add it** — only a new source.
+- **"+ New session" — independent runners.** A local session is its own `StoryRunnerHandle` with
+  **isolated globals**. The right default for speculative play, compare-two-paths, and
+  play-from-here without disturbing the main session. (#182.)
+- **"+ New flow" — shared-context flows (#200).** A `FlowSessionProvider` drives a named
+  `FlowInstance` spawned in the **primary session's** `Story`, sharing its `Context` (globals /
+  visit counts / rng — one flow's writes visible to the others, true ink concurrent-flow
+  semantics) while keeping its own call stack + temps. Realized end-to-end locally:
+  `Story::spawn_flow_shared` + a `shared_instances` map (brink-runtime), the
+  `spawn_flow`/`continue_flow`/`choose_flow`/`destroy_flow`/`flow_names`/`flow_debug_snapshot` wasm
+  surface, and `LocalSessionProvider.spawnFlow` vending the provider on its shared runner. Flow
+  sessions are dropped when the primary recompiles (its `Story` is replaced). The existing isolated
+  `Story::spawn_flow` (bevy-brink's per-entity model) is unchanged, and single default-flow
+  execution is untouched, so the oracle is unaffected.
+
+Both kinds live in the **same registry** (§3) — the seam held: adding flows needed a new provider
++ source, **no view or registry change**.
 
 ## 8. Player tabs per session (#120) — follow-on
 

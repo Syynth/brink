@@ -641,6 +641,110 @@ impl StoryRunner {
         let js = debug_snapshot_to_js(story.debug_snapshot());
         serde_json::to_string(&js).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
+
+    // ── Shared flows (#200) ─────────────────────────────────────────
+    // A "+ new flow" in the studio spawns a named flow that SHARES this
+    // story's globals / visit counts / rng with the default flow, while
+    // keeping its own call stack — true ink concurrent-flow semantics, run
+    // locally. (`spawn_flow` here is the runtime's shared-context variant; the
+    // isolated `Story::spawn_flow` is bevy-brink's per-entity model.)
+
+    /// Spawn a shared-context flow, started at the program root (or `path`).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "wasm-bindgen passes an optional JS string as an owned value across the boundary"
+    )]
+    pub fn spawn_flow(&self, name: &str, path: Option<String>) -> Result<(), JsError> {
+        let _guard = BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("spawn_flow"))?;
+        let container_idx = match path.as_deref() {
+            None => None,
+            Some(p) => Some(
+                self.program
+                    .find_address(p)
+                    .map(|(idx, _)| idx)
+                    .ok_or_else(|| JsError::new(&format!("unknown path: {p}")))?,
+            ),
+        };
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        story
+            .spawn_flow_shared(name, container_idx)
+            .map_err(|e| JsError::new(&format!("spawn_flow error: {e}")))
+    }
+
+    /// Advance a shared flow by one line. Returns one `Line` JSON.
+    pub fn continue_flow(&self, name: &str) -> Result<String, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("continue_flow"))?;
+        let bindings = self.bindings.borrow();
+        // A plain handler — flow stepping is not part of the default flow's
+        // choice-log replay, so it must not touch the recorder.
+        let handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound.get(),
+            pending: &self.pending_promise,
+        };
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let line = story
+            .continue_flow_single_with(name, &handler)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        serde_json::to_string(&line_to_js(line))
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Select a choice in a shared flow.
+    pub fn choose_flow(&self, name: &str, index: usize) -> Result<(), JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("choose_flow"))?;
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        story
+            .choose_flow_shared(name, index)
+            .map_err(|e| JsError::new(&format!("choose_flow error: {e}")))
+    }
+
+    /// Destroy a shared flow.
+    pub fn destroy_flow(&self, name: &str) -> Result<(), JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("destroy_flow"))?;
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        story
+            .destroy_flow(name)
+            .map_err(|e| JsError::new(&format!("destroy_flow error: {e}")))
+    }
+
+    /// JSON array of active flow names (sorted, deterministic).
+    pub fn flow_names(&self) -> Result<String, JsError> {
+        let borrow = self.story.borrow();
+        let story = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        serde_json::to_string(&story.flow_names())
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Per-flow debug snapshot (State View) for a named flow.
+    pub fn flow_debug_snapshot(&self, name: &str) -> Result<String, JsError> {
+        let borrow = self.story.borrow();
+        let story = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let snap = story
+            .debug_snapshot_flow(name)
+            .map_err(|e| JsError::new(&format!("flow error: {e}")))?;
+        serde_json::to_string(&debug_snapshot_to_js(snap))
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
 }
 
 // ── Save/load helper (not wasm-exported: takes a Rust SaveState) ─────
@@ -3770,5 +3874,47 @@ mod binding_wasm_tests {
             .ok()
             .expect("b");
         assert_ne!(a, b, "distinct sources have distinct identity");
+    }
+
+    // ── Shared flows (#200) ──────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn shared_flow_reads_default_globals() {
+        // A flow spawned at `other` reads the global the default flow's context
+        // holds — proving the shared context (#200).
+        let r = runner("VAR x = 0\nMain.\n-> END\n=== other ===\nx is {x}.\n-> END\n");
+        assert!(r.set_var("x", &JsValue::from_f64(7.0)));
+
+        r.spawn_flow("f", Some("other".to_owned()))
+            .ok()
+            .expect("spawn");
+        let line = r.continue_flow("f").ok().expect("continue flow");
+        assert!(
+            line.contains("x is 7"),
+            "shared flow reads the shared global; got {line}"
+        );
+
+        // The flow is listed, then destroyable.
+        assert!(r.flow_names().ok().expect("names").contains("\"f\""));
+        r.destroy_flow("f").ok().expect("destroy");
+        assert!(!r.flow_names().ok().expect("names2").contains("\"f\""));
+    }
+
+    #[wasm_bindgen_test]
+    fn shared_flow_writes_visible_to_default() {
+        // The default flow at root reads a global the *flow* wrote — sharing is
+        // bidirectional.
+        let r = runner("VAR x = 0\n{x}\n-> END\n=== bump ===\n~ x = 9\nbumped.\n-> END\n");
+        r.spawn_flow("f", Some("bump".to_owned()))
+            .ok()
+            .expect("spawn");
+        // Drive the flow so it sets x = 9 in the shared context.
+        let _ = r.continue_flow("f").ok().expect("flow line");
+        // The default flow now reads 9.
+        let line = r.continue_single().ok().expect("default line");
+        assert!(
+            line.contains('9'),
+            "default sees the flow's write; got {line}"
+        );
     }
 }

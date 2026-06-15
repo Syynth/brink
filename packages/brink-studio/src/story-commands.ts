@@ -110,6 +110,18 @@ export function registerStoryCommands(
         store.getState().openSession(o ? { path: o.path, label: o.label } : undefined);
       },
     }),
+
+    commands.register({
+      id: "story.openFlow",
+      title: "Story: Open Flow",
+      // A shared-context flow (#200) needs a live primary session to spawn from
+      // (its runner owns the shared story). Disabled with no session.
+      when: () => store.getState().sessionStatus !== "none",
+      run: (args) => {
+        const o = args as { path?: string; label?: string } | undefined;
+        store.getState().openFlow(o ? { path: o.path, label: o.label } : undefined);
+      },
+    }),
   ];
 
   return () => {
