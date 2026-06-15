@@ -135,8 +135,7 @@ fn collect_param_hints(
         // label after the argument (`set_switch(5 ⟨HarborGate⟩, …)`). Advisory —
         // a non-matching literal simply gets no label (the host's set may have
         // changed; the running game is source of truth).
-        if let Some(brink_ir::ValueSource::Static { items }) =
-            ty.and_then(|rt| rt.values.as_ref())
+        if let Some(brink_ir::ValueSource::Static { items }) = ty.and_then(|rt| rt.values.as_ref())
         {
             let literal = arg_text.trim_matches('"');
             if let Some(item) = items.iter().find(|it| it.value == literal) {
@@ -156,7 +155,7 @@ fn collect_param_hints(
 mod tests {
     use rowan::{TextRange, TextSize};
 
-    use super::{inlay_hints, InlayHintKind};
+    use super::{InlayHintKind, inlay_hints};
     use crate::session::IdeSession;
 
     #[test]
@@ -190,8 +189,8 @@ mod tests {
     #[test]
     fn static_value_source_labels_matching_literal() {
         use brink_ir::{
-            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam,
-            SemanticTypeDef, TypeRef, ValueItem, ValueSource,
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef, ValueItem, ValueSource,
         };
 
         let src = "\
@@ -208,8 +207,14 @@ EXTERNAL set_switch(id, on)
             externals: vec![ManifestExternal {
                 name: "set_switch".into(),
                 params: vec![
-                    ManifestParam { name: "id".into(), ty: TypeRef("switch_id".into()) },
-                    ManifestParam { name: "on".into(), ty: TypeRef("bool".into()) },
+                    ManifestParam {
+                        name: "id".into(),
+                        ty: TypeRef("switch_id".into()),
+                    },
+                    ManifestParam {
+                        name: "on".into(),
+                        ty: TypeRef("bool".into()),
+                    },
                 ],
                 returns: TypeRef::default(),
                 kind: ExternalKind::Effect,
@@ -243,7 +248,11 @@ EXTERNAL set_switch(id, on)
             .filter(|h| matches!(h.kind, InlayHintKind::Value))
             .map(|h| h.label.as_str())
             .collect();
-        assert_eq!(value_labels.len(), 1, "only the matching literal: {value_labels:?}");
+        assert_eq!(
+            value_labels.len(),
+            1,
+            "only the matching literal: {value_labels:?}"
+        );
         assert!(value_labels[0].contains("HarborGate"), "{value_labels:?}");
     }
 }

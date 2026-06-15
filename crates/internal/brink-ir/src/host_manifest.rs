@@ -236,9 +236,10 @@ mod value_source_tests {
 
     #[test]
     fn host_value_source_and_omitted_values_parse() {
-        let host: SemanticTypeDef =
-            serde_json::from_str(r#"{ "name": "item_id", "base": "int", "values": { "source": "host" } }"#)
-                .expect("parse host");
+        let host: SemanticTypeDef = serde_json::from_str(
+            r#"{ "name": "item_id", "base": "int", "values": { "source": "host" } }"#,
+        )
+        .expect("parse host");
         assert!(matches!(host.values, Some(ValueSource::Host)));
 
         // Omitted `values` is fine (Tiers 1–2 manifests, plain literals).
