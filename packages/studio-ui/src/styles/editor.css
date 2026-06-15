@@ -406,6 +406,81 @@
   outline: 1px solid var(--bs-accent, #888);
   outline-offset: 1px;
 }
+
+/* The argument Form (argument-widget-spec §1.1) — one field per parameter. */
+.brink-arg-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+  font: inherit;
+}
+.brink-arg-form-title {
+  font-family: var(--bs-font-mono, monospace);
+  font-size: 12px;
+  color: var(--bs-fg-muted, #aaa);
+  border-bottom: 1px solid var(--bs-border, #444);
+  padding-bottom: 6px;
+}
+.brink-arg-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.brink-arg-form-label {
+  flex: 0 0 auto;
+  min-width: 84px;
+  font-size: 12px;
+  color: var(--bs-fg, #ddd);
+  font-style: italic;
+}
+.brink-arg-form-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+.brink-arg-form-input,
+.brink-arg-form .brink-cp-hex {
+  flex: 1;
+  min-width: 90px;
+  font-family: var(--bs-font-mono, monospace);
+  font-size: 12px;
+  padding: 4px 6px;
+  background: var(--bs-surface-bg, #2a2a3a);
+  color: var(--bs-fg, #eee);
+  border: 1px solid var(--bs-border, #444);
+  border-radius: 4px;
+}
+.brink-arg-form-picker {
+  flex: 1 0 100%;
+  margin-top: 4px;
+}
+.brink-arg-form-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+.brink-arg-form-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--bs-border, #444);
+  background: var(--bs-surface-bg, #2a2a3a);
+  color: var(--bs-fg, #eee);
+  cursor: pointer;
+}
+.brink-arg-form-btn:hover {
+  border-color: var(--bs-accent, #888);
+}
+.brink-arg-form-btn-primary {
+  background: var(--bs-accent, #3b6ea5);
+  border-color: var(--bs-accent, #3b6ea5);
+  color: #fff;
+}
 /* Signature help */
 .brink-studio .brink-signature-help {
   background: var(--bs-panel-bg);
