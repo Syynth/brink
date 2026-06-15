@@ -291,6 +291,24 @@
   outline-offset: 1px;
 }
 
+/* Fill ghost placeholder (argument-widget-spec §1.1): a dimmed, clickable
+   `‹param›` marking an empty argument slot — click to fill it via the widget. */
+.brink-studio .brink-fill-ghost {
+  color: var(--bs-fg-muted);
+  font-style: italic;
+  opacity: 0.75;
+  background: color-mix(in srgb, var(--bs-fg-muted) 12%, transparent);
+  border: 1px dashed var(--bs-border);
+  border-radius: 3px;
+  padding: 0 3px;
+  cursor: pointer;
+}
+.brink-studio .brink-fill-ghost:hover {
+  opacity: 1;
+  outline: 1px solid var(--bs-accent, var(--bs-border));
+  outline-offset: 1px;
+}
+
 /* Studio-owned popover chrome for widget editors. */
 .brink-widget-popover {
   position: absolute;

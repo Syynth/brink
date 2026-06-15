@@ -1463,6 +1463,18 @@ impl EditorSession {
         self.color_hints_impl(&d.path, d.view.as_ref(), start, end)
     }
 
+    /// Argument-widget sites for a document handle (argument-widget spec §4):
+    /// every call's per-parameter slots + state (Filled / Empty / Expr), for
+    /// inline editing and empty-slot filling. Returns a JSON array of
+    /// `{ callee, slots: [{ param_name, widget?, type_name?, state }] }`
+    /// (UTF-16 offsets).
+    pub fn argument_widgets_doc(&self, doc: u32, start: u32, end: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "[]".to_owned();
+        };
+        self.argument_widgets_impl(&d.path, d.view.as_ref(), start, end)
+    }
+
     /// Compute signature help for a document handle. Returns JSON or "null".
     pub fn signature_help_doc(&self, doc: u32, offset: u32) -> String {
         let Some(d) = self.docs.get(&doc) else {
@@ -2512,6 +2524,81 @@ impl EditorSession {
         serde_json::to_string(&items).unwrap_or_default()
     }
 
+    fn argument_widgets_impl(
+        &self,
+        path: &str,
+        view: Option<&ViewContext>,
+        start: u32,
+        end: u32,
+    ) -> String {
+        use brink_ide::argument_widgets::SlotState;
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let (Some(analysis), Some(root)) =
+            (self.session.analysis(), self.session.syntax_root(file_id))
+        else {
+            return "[]".to_owned();
+        };
+
+        let abs_start = self.to_absolute(path, view, start);
+        let abs_end = self.to_absolute(path, view, end);
+        let range = TextRange::new(TextSize::new(abs_start), TextSize::new(abs_end));
+        let sites = brink_ide::argument_widgets::argument_widgets(&root, analysis, range);
+
+        let out: Vec<CallWidgetSiteJs> = sites
+            .iter()
+            .map(|site| {
+                let slots = site
+                    .slots
+                    .iter()
+                    .map(|slot| {
+                        // Map byte offsets to UTF-16; a slot whose offsets fall
+                        // outside the view degrades to a non-actionable Expr.
+                        let state = match &slot.state {
+                            SlotState::Filled { start, end, value } => {
+                                match (
+                                    self.to_relative(path, view, (*start).into()),
+                                    self.to_relative(path, view, (*end).into()),
+                                ) {
+                                    (Some(start), Some(end)) => SlotStateJs::Filled {
+                                        start,
+                                        end,
+                                        value: value.clone(),
+                                    },
+                                    _ => SlotStateJs::Expr,
+                                }
+                            }
+                            SlotState::Empty {
+                                insert_at,
+                                needs_leading_comma,
+                            } => match self.to_relative(path, view, (*insert_at).into()) {
+                                Some(insert_at) => SlotStateJs::Empty {
+                                    insert_at,
+                                    needs_leading_comma: *needs_leading_comma,
+                                },
+                                None => SlotStateJs::Expr,
+                            },
+                            SlotState::Expr => SlotStateJs::Expr,
+                        };
+                        SlotWidgetJs {
+                            param_name: slot.param_name.clone(),
+                            widget: slot.widget.clone(),
+                            type_name: slot.type_name.clone(),
+                            state,
+                        }
+                    })
+                    .collect();
+                CallWidgetSiteJs {
+                    callee: site.callee.clone(),
+                    slots,
+                }
+            })
+            .collect();
+
+        serde_json::to_string(&out).unwrap_or_default()
+    }
+
     fn signature_help_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
         let Some(file_id) = self.session.file_id(path) else {
             return "null".to_owned();
@@ -2944,6 +3031,37 @@ struct ColorHintJs {
     start: u32,
     end: u32,
     value: String,
+}
+
+#[derive(Serialize)]
+struct CallWidgetSiteJs {
+    callee: String,
+    slots: Vec<SlotWidgetJs>,
+}
+
+#[derive(Serialize)]
+struct SlotWidgetJs {
+    param_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    widget: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    type_name: Option<String>,
+    state: SlotStateJs,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SlotStateJs {
+    Filled {
+        start: u32,
+        end: u32,
+        value: String,
+    },
+    Empty {
+        insert_at: u32,
+        needs_leading_comma: bool,
+    },
+    Expr,
 }
 
 #[derive(Serialize)]

@@ -1,5 +1,5 @@
 import { Compartment, type Extension } from "@codemirror/state";
-import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, FileEdit, InlayHint, ColorHint, SignatureInfo, FoldRange, CodeAction } from "@brink/wasm-types";
+import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, FileEdit, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
@@ -11,7 +11,7 @@ import { hoverExtension } from "./hover.js";
 import { gotoDefinitionExtension } from "./goto-definition.js";
 import { foldingExtension } from "./folding.js";
 import { inlayHintsExtension } from "./inlay-hints.js";
-import { colorPickerExtension } from "./color-picker.js";
+import { argumentWidgetsExtension } from "./argument-widgets.js";
 import { signatureHelpExtension } from "./signature-help.js";
 import { referencesExtension } from "./references.js";
 import { renameExtension } from "./rename.js";
@@ -42,7 +42,7 @@ export interface BrinkStudioOptions {
   doRename?: (source: string, offset: number, newName: string) => FileEdit[];
   getCodeActions?: (source: string, offset: number) => CodeAction[];
   getInlayHints?: (source: string, start: number, end: number) => InlayHint[];
-  getColorHints?: (source: string, start: number, end: number) => ColorHint[];
+  getArgumentWidgets?: (source: string, start: number, end: number) => CallWidgetSite[];
   getSignatureHelp?: (source: string, offset: number) => SignatureInfo | null;
   getFoldingRanges?: (source: string) => FoldRange[];
 }
@@ -73,8 +73,10 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   if (options.getInlayHints) {
     ideExtensions.push(inlayHintsExtension({ getInlayHints: options.getInlayHints }));
   }
-  if (options.getColorHints) {
-    ideExtensions.push(colorPickerExtension({ getColorHints: options.getColorHints }));
+  if (options.getArgumentWidgets) {
+    ideExtensions.push(
+      argumentWidgetsExtension({ getArgumentWidgets: options.getArgumentWidgets }),
+    );
   }
   if (options.getSignatureHelp) {
     ideExtensions.push(signatureHelpExtension({ getSignatureHelp: options.getSignatureHelp }));
