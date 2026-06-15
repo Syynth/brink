@@ -19,6 +19,31 @@ import { CommandRegistry, type Command } from "./command.js";
 import { ToolWindowRegistry, type ToolWindowDescriptor } from "./toolwindow.js";
 import { StatusBarRegistry, type StatusBarItemDescriptor } from "./statusbar.js";
 
+/** One pickable value for a host-enumerable argument (Tier 3, #175). */
+export interface ArgumentValue {
+  /** The literal inserted into source (e.g. "5"). */
+  value: string;
+  /** The display label (e.g. "HarborGate"). */
+  label: string;
+  /** Optional secondary text (e.g. "Switch #5"). */
+  detail?: string;
+}
+
+/**
+ * A host-provided value source for arguments of a semantic type (Tier 3,
+ * #175 / docs/host-argument-picker-spec.md). Data-only: the host returns the
+ * current values; the studio renders them through the existing completion +
+ * value-label inlay UI (it pushes them into the editor session's value cache).
+ * The `type` matches a manifest semantic type marked `values: { source:
+ * "host" }`.
+ */
+export interface ArgumentProvider {
+  /** The semantic type these values are for (e.g. "switch_id"). */
+  type: string;
+  /** The host's current values for the type (sync or async). */
+  enumerate(): ArgumentValue[] | Promise<ArgumentValue[]>;
+}
+
 /**
  * Host-provided surfaces, passed once at mount alongside the existing
  * initialization wiring (spec §8.1). All ids must be `host.<vendor>.<name>`.
@@ -30,6 +55,13 @@ export interface StudioExtensions {
   commands?: Command[];
   /** §7.3 shape; same id namespacing. */
   statusBarItems?: StatusBarItemDescriptor[];
+  /**
+   * Host-enumerable argument value sources (Tier 3, #175), keyed by semantic
+   * type. Enumerated at mount and pushed into the editor's value cache so the
+   * argument picker + inline labels show the host's live vocabulary (named
+   * switches / items / …). Not registry-installed — applied to the session.
+   */
+  argumentProviders?: ArgumentProvider[];
 }
 
 /** The registries an extension installs into (the same ones built-ins use). */

@@ -91,6 +91,7 @@ import {
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
 import { registerFileCommands } from "./file-commands.js";
+import { pushArgumentProviderValues } from "./argument-providers.js";
 import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
 
 // ── Public types ───────────────────────────────────────────────────
@@ -665,6 +666,15 @@ export async function mountStudio(
         ? options.extensions(api)
         : options.extensions;
     installStudioExtensions(extensions, { commands, toolWindows, statusBarItems });
+    // Host argument providers (#175): enumerate + push into the editor's value
+    // cache so the picker shows the host's live vocabulary. Data-only, applied
+    // to the session rather than a registry.
+    if (extensions.argumentProviders !== undefined) {
+      await pushArgumentProviderValues(
+        project.getSession(),
+        extensions.argumentProviders,
+      );
+    }
   }
 
   // Restore the persisted diagnostics setting (Settings document, #93)
