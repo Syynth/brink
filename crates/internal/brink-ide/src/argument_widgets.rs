@@ -13,11 +13,13 @@ use brink_syntax::SyntaxNode;
 use brink_syntax::ast::AstNode;
 use rowan::TextSize;
 
-/// A call site with a per-parameter widget slot. (The call-name span that
-/// anchors the form affordance arrives with the stage-3 form work.)
+/// A call site with a per-parameter widget slot.
 pub struct CallWidgetSite {
     /// The callee name as written.
     pub callee: String,
+    /// The call-name span — anchors the call-level form affordance (spec §1.1).
+    pub name_start: TextSize,
+    pub name_end: TextSize,
     /// One slot per declared parameter.
     pub slots: Vec<SlotWidget>,
 }
@@ -66,7 +68,14 @@ pub fn argument_widgets(
         }
         if let Some(call) = brink_syntax::ast::FunctionCall::cast(node.clone()) {
             if let Some(name) = call.name()
-                && let Some(site) = collect(&name, &node, call.arg_list(), analysis)
+                && let Some(id) = call.identifier()
+                && let Some(site) = collect(
+                    &name,
+                    id.syntax().text_range(),
+                    &node,
+                    call.arg_list(),
+                    analysis,
+                )
             {
                 sites.push(site);
             }
@@ -74,7 +83,13 @@ pub fn argument_widgets(
             && let Some(path_node) = target.path()
         {
             let full = path_node.full_name();
-            if let Some(site) = collect(&full, &node, target.arg_list(), analysis) {
+            if let Some(site) = collect(
+                &full,
+                path_node.syntax().text_range(),
+                &node,
+                target.arg_list(),
+                analysis,
+            ) {
                 sites.push(site);
             }
         }
@@ -84,6 +99,7 @@ pub fn argument_widgets(
 
 fn collect(
     callee_name: &str,
+    name_range: rowan::TextRange,
     node: &SyntaxNode,
     arg_list: Option<brink_syntax::ast::ArgList>,
     analysis: &AnalysisResult,
@@ -168,6 +184,8 @@ fn collect(
 
     Some(CallWidgetSite {
         callee: callee_name.to_string(),
+        name_start: name_range.start(),
+        name_end: name_range.end(),
         slots,
     })
 }
