@@ -22,7 +22,8 @@ export {
   type StudioPublicState,
 } from "./StudioApi.js";
 export { App } from "./App.js";
-export { Binder, computeReorder } from "./Binder.js";
+export { Binder, computeReorder, buildBinderTree } from "./Binder.js";
+export type { FolderNode } from "./Binder.js";
 export { INK_FILE_TYPE_ID, InkFileDocument, inkFileRef } from "./InkFileDocument.js";
 export {
   COMPILED_OUTPUT_DOC_ID,

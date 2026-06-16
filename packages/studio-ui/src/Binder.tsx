@@ -11,12 +11,15 @@ import type { TabTarget } from "@brink/studio-store";
 // ── Icons ──────────────────────────────────────────────────────────
 
 const ICON_FILE = "\ud83d\udcc4";
+const ICON_FOLDER = "\ud83d\udcc1"; // \ud83d\udcc1
 const ICON_KNOT = "\u25c6";
 const ICON_STITCH = "\u25c7";
 const ICON_FUNCTION = "\u0192"; // \u0192 \u2014 a knot declared as a function
 
 function iconChar(kind: string, isFunction = false): string {
   switch (kind) {
+    case "folder":
+      return ICON_FOLDER;
     case "file":
       return ICON_FILE;
     case "knot":
@@ -30,6 +33,8 @@ function iconChar(kind: string, isFunction = false): string {
 
 function iconClass(kind: string, isFunction = false): string {
   switch (kind) {
+    case "folder":
+      return "brink-binder-icon-folder";
     case "file":
       return "brink-binder-icon-file";
     case "knot":
@@ -156,6 +161,7 @@ function BinderRow({
 
   const rowClass =
     "brink-binder-row" +
+    (kind === "folder" ? " brink-binder-folder-row" : "") +
     (kind === "file" ? " brink-binder-file-row" : "") +
     (kind === "knot" ? " brink-binder-knot" : "") +
     (kind === "stitch" ? " brink-binder-stitch" : "") +
@@ -205,7 +211,7 @@ function BinderRow({
 
 interface FlatRow {
   key: string;
-  kind: "file" | "knot" | "stitch";
+  kind: "folder" | "file" | "knot" | "stitch";
   path: string;
   knot?: string;
   stitch?: string;
@@ -213,17 +219,59 @@ interface FlatRow {
   siblingCount: number;
 }
 
+/** A folder in the binder tree, derived from `/`-separated file paths. `key` is
+ *  the directory path with a trailing slash (e.g. `"scenes/act1/"`) — distinct
+ *  from any file path and used as the collapse key. */
+export interface FolderNode {
+  name: string;
+  key: string;
+  folders: FolderNode[];
+  files: FileOutline[];
+}
+
+interface TreeLevel {
+  folders: FolderNode[];
+  files: FileOutline[];
+}
+
+/** Group files into a collapsible folder tree by splitting their paths on `/`.
+ *  Purely presentational (no new data model); files with no `/` sit at root.
+ *  Folders and files are sorted by name within each level for determinism. */
+export function buildBinderTree(outline: FileOutline[]): TreeLevel {
+  const root: TreeLevel = { folders: [], files: [] };
+  for (const file of outline) {
+    const slash = file.path.lastIndexOf("/");
+    if (slash < 0) {
+      root.files.push(file);
+      continue;
+    }
+    let level: TreeLevel = root;
+    let prefix = "";
+    for (const segment of file.path.substring(0, slash).split("/")) {
+      prefix += `${segment}/`;
+      let child = level.folders.find((f) => f.key === prefix);
+      if (!child) {
+        child = { name: segment, key: prefix, folders: [], files: [] };
+        level.folders.push(child);
+      }
+      level = child;
+    }
+    level.files.push(file);
+  }
+  const sortLevel = (lvl: TreeLevel): void => {
+    lvl.folders.sort((a, b) => a.name.localeCompare(b.name));
+    lvl.files.sort((a, b) => a.path.localeCompare(b.path));
+    lvl.folders.forEach(sortLevel);
+  };
+  sortLevel(root);
+  return root;
+}
+
 function buildFlatRows(outline: FileOutline[], collapsed: Set<string>): FlatRow[] {
   const rows: FlatRow[] = [];
-  for (const file of outline) {
-    rows.push({
-      key: file.path,
-      kind: "file",
-      path: file.path,
-      index: 0,
-      siblingCount: 1,
-    });
-    if (collapsed.has(file.path)) continue;
+  const pushFile = (file: FileOutline): void => {
+    rows.push({ key: file.path, kind: "file", path: file.path, index: 0, siblingCount: 1 });
+    if (collapsed.has(file.path)) return;
     const knots = file.symbols.filter((s) => s.kind === "knot");
     knots.forEach((knot, ki) => {
       const knotKey = `${file.path}::${knot.name}`;
@@ -249,7 +297,15 @@ function buildFlatRows(outline: FileOutline[], collapsed: Set<string>): FlatRow[
         });
       });
     });
-  }
+  };
+  const walk = (level: TreeLevel): void => {
+    for (const folder of level.folders) {
+      rows.push({ key: folder.key, kind: "folder", path: folder.key, index: 0, siblingCount: 1 });
+      if (!collapsed.has(folder.key)) walk(folder);
+    }
+    for (const file of level.files) pushFile(file);
+  };
+  walk(buildBinderTree(outline));
   return rows;
 }
 
@@ -458,7 +514,7 @@ function BinderInner() {
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, row: FlatRow) => {
-      if (row.kind === "file") return; // No context menu for files
+      if (row.kind === "file" || row.kind === "folder") return; // knots/stitches only
       e.preventDefault();
       e.stopPropagation();
       setContextMenu({
@@ -521,7 +577,9 @@ function BinderInner() {
       if (e.key === "Enter" && focusedKey) {
         e.preventDefault();
         const row = flatRows.find((r) => r.key === focusedKey);
-        if (row) {
+        if (row?.kind === "folder") {
+          toggleCollapsed(row.key);
+        } else if (row) {
           const target = buildTarget(row, outline);
           if (target) handleOpenUnpinned(target);
         }
@@ -533,7 +591,7 @@ function BinderInner() {
         e.preventDefault();
         if (!focusedKey) return;
         const row = flatRows.find((r) => r.key === focusedKey);
-        if (!row || row.kind === "file") return;
+        if (!row || row.kind === "file" || row.kind === "folder") return;
         const direction = e.key === "ArrowDown" ? 1 : -1;
 
         if (row.kind === "stitch") {
@@ -564,6 +622,7 @@ function BinderInner() {
       handleOpenUnpinned,
       outline,
       executeAction,
+      toggleCollapsed,
     ],
   );
 
@@ -571,7 +630,7 @@ function BinderInner() {
 
   const handleDragStart = useCallback(
     (e: React.DragEvent, row: FlatRow) => {
-      if (row.kind === "file") {
+      if (row.kind === "file" || row.kind === "folder") {
         e.preventDefault();
         return;
       }
@@ -717,7 +776,13 @@ function BinderInner() {
 
   // ── Render helpers ──────────────────────────────────────────────
 
-  function renderStitch(path: string, knot: DocumentSymbol, stitch: DocumentSymbol, row: FlatRow) {
+  function renderStitch(
+    path: string,
+    knot: DocumentSymbol,
+    stitch: DocumentSymbol,
+    row: FlatRow,
+    depth: number,
+  ) {
     const stitchId = row.key;
     const isActive = activeDocKey === stitchId;
     const target: TabTarget = {
@@ -732,7 +797,7 @@ function BinderInner() {
       <BinderRow
         key={stitchId}
         rowKey={stitchId}
-        depth={2}
+        depth={depth}
         kind="stitch"
         label={stitch.name}
         expandable={false}
@@ -756,7 +821,7 @@ function BinderInner() {
     );
   }
 
-  function renderKnot(path: string, knot: DocumentSymbol, row: FlatRow) {
+  function renderKnot(path: string, knot: DocumentSymbol, row: FlatRow, depth: number) {
     const knotKey = row.key;
     const stitches = knot.children.filter((c) => c.kind === "stitch");
     const hasStitches = stitches.length > 0;
@@ -774,7 +839,7 @@ function BinderInner() {
       <div key={knotKey}>
         <BinderRow
           rowKey={knotKey}
-          depth={1}
+          depth={depth}
           kind="knot"
           isFunction={knot.detail === "function"}
           label={knot.name}
@@ -801,13 +866,13 @@ function BinderInner() {
           stitches.map((s) => {
             const sRow = flatRows.find((r) => r.key === `${path}::${knot.name}::${s.name}`);
             if (!sRow) return null;
-            return renderStitch(path, knot, s, sRow);
+            return renderStitch(path, knot, s, sRow, depth + 1);
           })}
       </div>
     );
   }
 
-  function renderFile(file: FileOutline) {
+  function renderFile(file: FileOutline, depth: number) {
     const knots = file.symbols.filter((s) => s.kind === "knot");
     const hasChildren = knots.length > 0;
     const fileKey = file.path;
@@ -819,7 +884,7 @@ function BinderInner() {
       <div key={fileKey}>
         <BinderRow
           rowKey={fileKey}
-          depth={0}
+          depth={depth}
           kind="file"
           label={displayName(file.path)}
           expandable={hasChildren}
@@ -844,9 +909,53 @@ function BinderInner() {
           knots.map((k) => {
             const kRow = flatRows.find((r) => r.key === `${file.path}::${k.name}`);
             if (!kRow) return null;
-            return renderKnot(file.path, k, kRow);
+            return renderKnot(file.path, k, kRow, depth + 1);
           })}
       </div>
+    );
+  }
+
+  function renderFolder(folder: FolderNode, depth: number) {
+    const isExpanded = !collapsed.has(folder.key);
+    return (
+      <div key={folder.key}>
+        <BinderRow
+          rowKey={folder.key}
+          depth={depth}
+          kind="folder"
+          label={folder.name}
+          expandable={true}
+          isExpanded={isExpanded}
+          isActive={false}
+          isSelected={selectedKeys.has(folder.key)}
+          isFocused={focusedKey === folder.key}
+          isDragging={false}
+          isDropInto={false}
+          dropLinePosition={null}
+          draggable={false}
+          onChevronClick={() => toggleCollapsed(folder.key)}
+          onClick={() => {
+            setFocusedKey(folder.key);
+            toggleCollapsed(folder.key);
+          }}
+          onDoubleClick={() => {}}
+          onContextMenu={(e) => e.preventDefault()}
+          onDragStart={() => {}}
+          onDragEnd={() => {}}
+          onDragOver={() => {}}
+          onDrop={() => {}}
+        />
+        {isExpanded && renderTree(folder, depth + 1)}
+      </div>
+    );
+  }
+
+  function renderTree(level: TreeLevel, depth: number) {
+    return (
+      <>
+        {level.folders.map((folder) => renderFolder(folder, depth))}
+        {level.files.map((file) => renderFile(file, depth))}
+      </>
     );
   }
 
@@ -857,7 +966,7 @@ function BinderInner() {
       tabIndex={0}
       onKeyDown={handleKeyDown}
     >
-      {outline.map((file) => renderFile(file))}
+      {renderTree(buildBinderTree(outline), 0)}
       <div className="brink-binder-row brink-binder-new" onClick={handleNewClick}>
         + New file
       </div>
