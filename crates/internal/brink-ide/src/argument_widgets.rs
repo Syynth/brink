@@ -120,6 +120,7 @@ pub fn argument_widgets(
     root: &SyntaxNode,
     analysis: &AnalysisResult,
     range: rowan::TextRange,
+    host_values: Option<&crate::HostValues>,
 ) -> Vec<CallWidgetSite> {
     let mut sites = Vec::new();
     for node in root.descendants() {
@@ -136,6 +137,7 @@ pub fn argument_widgets(
                     &node,
                     call.arg_list(),
                     analysis,
+                    host_values,
                 )
             {
                 sites.push(site);
@@ -150,6 +152,7 @@ pub fn argument_widgets(
                 &node,
                 target.arg_list(),
                 analysis,
+                host_values,
             ) {
                 sites.push(site);
             }
@@ -164,6 +167,7 @@ fn collect(
     node: &SyntaxNode,
     arg_list: Option<brink_syntax::ast::ArgList>,
     analysis: &AnalysisResult,
+    host_values: Option<&crate::HostValues>,
 ) -> Option<CallWidgetSite> {
     // Resolve the callee symbol by name (the most-params callable wins, so a
     // partially-typed call still maps onto the full signature).
@@ -230,29 +234,7 @@ fn collect(
         }
     };
 
-    let mut slots = Vec::with_capacity(info.params.len());
-    for (i, param) in info.params.iter().enumerate() {
-        let ty = meta
-            .and_then(|m| m.params.get(i))
-            .and_then(|rp| rp.ty.as_ref());
-        let widget = ty.and_then(|t| t.widget.as_ref()).map(|w| w.kind.clone());
-        let type_name = ty.map(|t| t.name.clone());
-        // Static value-list items (#174) for the Form dropdown; host-sourced
-        // value-lists are not surfaced here yet.
-        let values = ty
-            .and_then(|t| match t.values.as_ref() {
-                Some(brink_ir::ValueSource::Static { items }) => Some(items.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        slots.push(SlotWidget {
-            param_name: param.name.clone(),
-            widget,
-            type_name,
-            values,
-            state: state_for(i),
-        });
-    }
+    let slots = build_slots(info, meta, host_values, &state_for);
 
     // Arg-group widgets (spec §2): emit one per declared group, but only when
     // every member is uniformly Filled (Edit) or Empty (Fill) — drives inline.
@@ -278,6 +260,40 @@ fn collect(
         groups,
         declared_groups,
     })
+}
+
+/// One [`SlotWidget`] per declared parameter — its built-in widget, semantic
+/// type, value-list items (static from the manifest or host-sourced from the
+/// pushed cache, like inlay hints), and authoring state.
+fn build_slots(
+    info: &brink_ir::SymbolInfo,
+    meta: Option<&brink_analyzer::SymbolMeta>,
+    host_values: Option<&crate::HostValues>,
+    state_for: &impl Fn(usize) -> SlotState,
+) -> Vec<SlotWidget> {
+    let mut slots = Vec::with_capacity(info.params.len());
+    for (i, param) in info.params.iter().enumerate() {
+        let ty = meta
+            .and_then(|m| m.params.get(i))
+            .and_then(|rp| rp.ty.as_ref());
+        let values = ty
+            .and_then(|t| match t.values.as_ref() {
+                Some(brink_ir::ValueSource::Static { items }) => Some(items.clone()),
+                Some(brink_ir::ValueSource::Host) => {
+                    host_values.and_then(|hv| hv.get(&t.name)).cloned()
+                }
+                None => None,
+            })
+            .unwrap_or_default();
+        slots.push(SlotWidget {
+            param_name: param.name.clone(),
+            widget: ty.and_then(|t| t.widget.as_ref()).map(|w| w.kind.clone()),
+            type_name: ty.map(|t| t.name.clone()),
+            values,
+            state: state_for(i),
+        });
+    }
+    slots
 }
 
 /// The declared structure of one arg-group (no arg-state), for the Form. `None`
@@ -406,6 +422,7 @@ mod tests {
     };
     use std::collections::BTreeMap;
 
+    #[expect(clippy::too_many_lines, reason = "test fixture: a manifest literal")]
     fn manifest() -> HostManifest {
         HostManifest {
             externals: vec![
@@ -472,8 +489,28 @@ mod tests {
                         context: BTreeMap::from([("map".to_string(), 0)]),
                     }],
                 },
+                // A host-sourced value-list: `region` items come from the pushed
+                // host-values cache, not the manifest.
+                ManifestExternal {
+                    name: "go_region".into(),
+                    params: vec![ManifestParam {
+                        name: "region".into(),
+                        ty: TypeRef("region_id".into()),
+                    }],
+                    returns: TypeRef::default(),
+                    kind: ExternalKind::Effect,
+                    doc: None,
+                    widgets: vec![],
+                },
             ],
             types: vec![
+                SemanticTypeDef {
+                    name: "region_id".into(),
+                    base: BaseType::String,
+                    constraint: None,
+                    values: Some(ValueSource::Host),
+                    widget: None,
+                },
                 SemanticTypeDef {
                     name: "hex_color".into(),
                     base: BaseType::String,
@@ -517,6 +554,7 @@ mod tests {
             &parsed.syntax(),
             analysis,
             rowan::TextRange::new(0.into(), rowan::TextSize::of(src)),
+            None,
         )
     }
 
@@ -637,6 +675,46 @@ mod tests {
         assert_eq!(g.param_indices, vec![1, 2]);
         assert_eq!(g.param_names, vec!["x".to_string(), "y".to_string()]);
         assert_eq!(g.context_params, vec![("map".to_string(), 0)]);
+    }
+
+    #[test]
+    fn host_sourced_value_list_is_surfaced_from_cache() {
+        let src = "EXTERNAL go_region(region)\n~ go_region(\"harbor\")\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(manifest());
+        let analysis = session.analysis().expect("analysis");
+        let parsed = brink_syntax::parse(src);
+        let range = rowan::TextRange::new(0.into(), rowan::TextSize::of(src));
+        let host_values: crate::HostValues = std::collections::HashMap::from([(
+            "region_id".to_string(),
+            vec![ValueItem {
+                value: "harbor".into(),
+                label: "Harbor".into(),
+                detail: None,
+            }],
+        )]);
+
+        let with = argument_widgets(&parsed.syntax(), analysis, range, Some(&host_values));
+        let call = with.iter().find(|c| c.callee == "go_region").expect("call");
+        let labels: Vec<_> = call.slots[0]
+            .values
+            .iter()
+            .map(|v| v.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Harbor"],
+            "host items come from the pushed cache"
+        );
+
+        // Without the cache, a `host` value-list surfaces nothing.
+        let without = argument_widgets(&parsed.syntax(), analysis, range, None);
+        let call = without
+            .iter()
+            .find(|c| c.callee == "go_region")
+            .expect("call");
+        assert!(call.slots[0].values.is_empty());
     }
 
     #[test]

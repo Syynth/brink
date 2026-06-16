@@ -2544,7 +2544,12 @@ impl EditorSession {
         let abs_start = self.to_absolute(path, view, start);
         let abs_end = self.to_absolute(path, view, end);
         let range = TextRange::new(TextSize::new(abs_start), TextSize::new(abs_end));
-        let sites = brink_ide::argument_widgets::argument_widgets(&root, analysis, range);
+        let sites = brink_ide::argument_widgets::argument_widgets(
+            &root,
+            analysis,
+            range,
+            Some(self.session.host_values()),
+        );
 
         let out: Vec<CallWidgetSiteJs> = sites
             .iter()
@@ -2617,17 +2622,8 @@ impl EditorSession {
 
                 // Declared groups carry no document spans, so they need no view
                 // translation — the Form renders them and seeds from `slots`.
-                let declared_groups: Vec<DeclaredGroupJs> = site
-                    .declared_groups
-                    .iter()
-                    .map(|g| DeclaredGroupJs {
-                        ty: g.ty.clone(),
-                        surface: g.surface.clone(),
-                        param_indices: g.param_indices.clone(),
-                        param_names: g.param_names.clone(),
-                        context_params: g.context_params.iter().cloned().collect(),
-                    })
-                    .collect();
+                let declared_groups: Vec<DeclaredGroupJs> =
+                    site.declared_groups.iter().map(declared_group_js).collect();
 
                 CallWidgetSiteJs {
                     callee: site.callee.clone(),
@@ -3139,6 +3135,16 @@ struct DeclaredGroupJs {
     param_indices: Vec<u32>,
     param_names: Vec<String>,
     context_params: std::collections::BTreeMap<String, u32>,
+}
+
+fn declared_group_js(g: &brink_ide::argument_widgets::DeclaredGroup) -> DeclaredGroupJs {
+    DeclaredGroupJs {
+        ty: g.ty.clone(),
+        surface: g.surface.clone(),
+        param_indices: g.param_indices.clone(),
+        param_names: g.param_names.clone(),
+        context_params: g.context_params.iter().cloned().collect(),
+    }
 }
 
 #[derive(Serialize)]
