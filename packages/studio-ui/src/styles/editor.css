@@ -487,11 +487,19 @@
   color: var(--bs-accent, var(--bs-fg));
   background: color-mix(in srgb, var(--bs-accent, var(--bs-fg-muted)) 16%, transparent);
 }
+/* Hover mode: the glyph reserves no space until the line is hovered, then it
+   reveals (a brief reflow), rather than sitting as a permanent invisible gap. */
 .brink-studio .brink-form-glyph--hover {
   opacity: 0;
+  width: 0;
+  margin-left: 0;
+  margin-right: 0;
+  overflow: hidden;
 }
 .brink-studio .cm-line:hover .brink-form-glyph--hover {
   opacity: 0.55;
+  width: 1.15em;
+  margin: 0 1px 0 3px;
 }
 .brink-studio .cm-line:hover .brink-form-glyph--hover:hover {
   opacity: 1;
