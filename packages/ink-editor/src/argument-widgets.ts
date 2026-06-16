@@ -199,18 +199,33 @@ function openFormAtCursor(
   return true;
 }
 
+/** Delimiters that end a bare (unquoted) literal argument. */
+const ARG_DELIMITERS = new Set([",", ")", " ", "\t", "\n", "\r"]);
+
 /**
- * The current quoted-literal range starting at `from` (the opening quote).
- * Recomputed at edit time so successive live edits stay correct even when the
- * literal's length changes.
+ * The current source range of the argument literal starting at `from`. A quoted
+ * string runs to its closing quote; a bare literal (int/float/bool/identifier)
+ * runs to the next delimiter (`,`, `)`, whitespace). Recomputed at edit time so
+ * successive live edits stay correct even when the literal's length changes.
+ *
+ * Bare literals matter for host widgets on non-string types (e.g. an `int`
+ * `item_id`): quote-only matching left their Edit-replace a no-op (#242).
  */
-function liveLiteralRange(view: EditorView, from: number): { from: number; to: number } | null {
+export function liveArgRange(
+  view: EditorView,
+  from: number,
+): { from: number; to: number } | null {
   const doc = view.state.doc;
-  if (from < 0 || from >= doc.length || doc.sliceString(from, from + 1) !== '"') return null;
-  for (let i = from + 1; i < doc.length; i++) {
-    if (doc.sliceString(i, i + 1) === '"') return { from, to: i + 1 };
+  if (from < 0 || from >= doc.length) return null;
+  if (doc.sliceString(from, from + 1) === '"') {
+    for (let i = from + 1; i < doc.length; i++) {
+      if (doc.sliceString(i, i + 1) === '"') return { from, to: i + 1 };
+    }
+    return null;
   }
-  return null;
+  let i = from;
+  while (i < doc.length && !ARG_DELIMITERS.has(doc.sliceString(i, i + 1))) i++;
+  return i > from ? { from, to: i } : null;
 }
 
 /**
@@ -301,7 +316,7 @@ class EditWidget extends WidgetType {
     const host: WidgetEditorHost = {
       initial: this.value,
       resolve: (value) => {
-        const range = liveLiteralRange(this.view, this.from);
+        const range = liveArgRange(this.view, this.from);
         if (range) {
           this.view.dispatch({
             changes: { from: range.from, to: range.to, insert: `"${value}"` },
@@ -480,7 +495,7 @@ class HostEditWidget extends WidgetType {
     el.title = `Edit ${this.slot.param_name}`;
     const open = (): void =>
       openHostEditor(el, this.widget, ctx, (values) => {
-        const range = liveLiteralRange(this.view, this.from);
+        const range = liveArgRange(this.view, this.from);
         if (range && values.length > 0) {
           this.view.dispatch({ changes: { from: range.from, to: range.to, insert: values[0] } });
         }
