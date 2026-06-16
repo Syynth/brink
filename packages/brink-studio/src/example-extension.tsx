@@ -24,7 +24,7 @@
 
 import { useStudioApi, type StudioApi } from "@brink/studio-ui";
 import type { StudioExtensions } from "@brink/studio-shell";
-import type { HostManifest } from "@brink/wasm-types";
+import type { HostManifest, ArgumentWidget } from "@brink/wasm-types";
 import { openArgumentForm, type FormField } from "@brink/ink-editor";
 
 export const EXAMPLE_TOOL_WINDOW_ID = "host.example.functions";
@@ -59,6 +59,10 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
     // renders a color swatch over its string literal — click for the popover
     // picker. The `widget` declaration drives it (no magic type-name).
     { name: "hex_color", base: "string", widget: { kind: "color" } },
+    // A HOST widget (argument-widget spec §3): `region_id`'s widget kind names a
+    // host-provided ArgumentWidget (below). The studio renders the inline chip
+    // from the host's label data and opens the host's popover editor.
+    { name: "region_id", base: "string", widget: { kind: "host.example.region" } },
   ],
   externals: [
     {
@@ -67,6 +71,13 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       returns: "void",
       kind: "presentation",
       doc: "Tint the screen to a hex color.",
+    },
+    {
+      name: "go_region",
+      params: [{ name: "region", ty: "region_id" }],
+      returns: "void",
+      kind: "effect",
+      doc: "Move the party to a named region.",
     },
     {
       name: "has_item",
@@ -165,6 +176,49 @@ export function manifestPanelItems(manifest: HostManifest): HostFunctionItem[] {
     };
   });
 }
+
+// ── Host argument widget (argument-widget-spec §3) ──────────────────
+//
+// A worked example of a host-rendered widget: `region_id` (the manifest type
+// above declares `widget.kind: "host.example.region"`). The studio renders the
+// inline chip from `inline()`'s label data; `editor.render` mounts the host's
+// own picker UI into a studio-owned popover and `resolve`s the chosen literal.
+
+const REGIONS = [
+  { id: "harbor", label: "Harbor District" },
+  { id: "market", label: "Market Square" },
+  { id: "keep", label: "The Keep" },
+  { id: "wilds", label: "The Wilds" },
+];
+
+export const EXAMPLE_REGION_WIDGET: ArgumentWidget = {
+  type: "host.example.region",
+  inline(ctx) {
+    const value = ctx.values[0] ?? "";
+    const region = REGIONS.find((r) => r.id === value);
+    return { text: region ? region.label : value || "region", className: "host-example-region" };
+  },
+  editor: {
+    surface: "popover",
+    render(ctx, host, container) {
+      const root = document.createElement("div");
+      root.className = "host-example-region-picker";
+      const current = ctx.values[0] ?? "";
+      for (const region of REGIONS) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "host-example-region-btn";
+        btn.textContent = region.label;
+        if (region.id === current) btn.setAttribute("aria-current", "true");
+        // resolve a literal: region_id is a string type, so quote it.
+        btn.addEventListener("click", () => host.resolve([`"${region.id}"`]));
+        root.appendChild(btn);
+      }
+      container.appendChild(root);
+      return () => root.remove();
+    },
+  },
+};
 
 // ── Panel component ─────────────────────────────────────────────────
 
@@ -327,5 +381,6 @@ export function createExampleExtension(api: StudioApi): StudioExtensions {
         },
       },
     ],
+    argumentWidgets: [EXAMPLE_REGION_WIDGET],
   };
 }

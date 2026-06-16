@@ -378,6 +378,53 @@
   outline-offset: 1px;
 }
 
+/* Host argument-widget chip (argument-widget-spec §3): the studio-drawn inline
+   label for a host widget. The host supplies the text + an optional CSS class;
+   the studio renders this chip — no host DOM in the source line. */
+.brink-studio .brink-host-chip {
+  display: inline-block;
+  margin: 0 3px 0 1px;
+  padding: 0 5px;
+  font-size: 0.85em;
+  color: var(--bs-fg-muted);
+  background: color-mix(in srgb, var(--bs-accent, var(--bs-fg-muted)) 14%, transparent);
+  border: 1px solid var(--bs-border);
+  border-radius: 3px;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.brink-studio .brink-host-chip:hover {
+  color: var(--bs-fg);
+  border-color: var(--bs-accent, var(--bs-border));
+}
+
+/* The example host's region-picker editor body (host-owned UI in the studio
+   popover). A real host styles its own editor; this is the playground's. */
+.host-example-region-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+.host-example-region-btn {
+  text-align: left;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--bs-fg);
+  background: var(--bs-surface-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.host-example-region-btn:hover {
+  border-color: var(--bs-accent, var(--bs-border));
+}
+.host-example-region-btn[aria-current="true"] {
+  border-color: var(--bs-accent, var(--bs-border));
+  color: var(--bs-accent, var(--bs-fg));
+}
+
 /* Call-level form glyph (argument-widget-spec §1.1, §6.5): a small icon button
    just after the function name that opens the whole-call Form. Prototyped
    variants — always-visible, and hover-revealed (shown only on line hover). */
