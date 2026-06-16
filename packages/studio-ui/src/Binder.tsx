@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { Overlay } from "@brink/studio-shell";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import {
   BinderContextMenu,
@@ -364,12 +365,16 @@ function BinderInner() {
   const clearSelection = useStudioStore((s) => s.clearSelection);
   const setFocusedKey = useStudioStore((s) => s.setFocusedKey);
   const applyMoveResult = useStudioStore((s) => s.applyMoveResult);
+  const deleteFile = useStudioStore((s) => s.deleteFile);
+  const deleteFolder = useStudioStore((s) => s.deleteFolder);
   const undo = useStudioStore((s) => s.undo);
   const undoStack = useStudioStore((s) => s.undoStack);
   const addFile = useStudioStore((s) => s.addFile);
   const storeApi = useStudioStoreApi();
 
   const [inputActive, setInputActive] = useState(false);
+  /** Directory prefix the New File input is pre-filled with ("New file here"). */
+  const [newFileDir, setNewFileDir] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -378,6 +383,12 @@ function BinderInner() {
     x: number;
     y: number;
     target: ContextMenuTarget;
+  } | null>(null);
+
+  // Pending delete confirmation (file or folder).
+  const [pendingDelete, setPendingDelete] = useState<{
+    message: string;
+    run: () => void;
   } | null>(null);
 
   // Drag state
@@ -430,6 +441,10 @@ function BinderInner() {
           result = session.demoteKnot(action.path, action.knot, action.destKnot);
           description = `Demote ${action.knot} into ${action.destKnot}`;
           break;
+        default:
+          // Lifecycle actions (delete*, newFileInFolder) are handled by
+          // handleContextMenuAction, never reach the structural-move path.
+          return;
       }
 
       if (result.ok && result.path) {
@@ -472,28 +487,41 @@ function BinderInner() {
 
   // ── New file input ──────────────────────────────────────────────
 
-  const handleNewClick = useCallback(() => {
-    if (inputActive) return;
-    setInputActive(true);
-    requestAnimationFrame(() => inputRef.current?.focus());
-  }, [inputActive]);
+  /** Open the inline New File input, optionally pre-filled with a directory
+   *  prefix ("New file here" on a file/folder row). Cursor lands at the end. */
+  const openNewFileInput = useCallback(
+    (dir: string) => {
+      if (inputActive) return;
+      setNewFileDir(dir);
+      setInputActive(true);
+      requestAnimationFrame(() => {
+        const input = inputRef.current;
+        if (!input) return;
+        input.focus();
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+      });
+    },
+    [inputActive],
+  );
+
+  const handleNewClick = useCallback(() => openNewFileInput(""), [openNewFileInput]);
 
   const cancelInput = useCallback(() => {
     setInputActive(false);
+    setNewFileDir("");
   }, []);
 
   const confirmInput = useCallback(() => {
     const input = inputRef.current;
     if (!input) return;
     let name = input.value.trim();
-    if (!name) {
-      setInputActive(false);
-      return;
-    }
+    setInputActive(false);
+    setNewFileDir("");
+    if (!name) return;
     if (!name.includes(".")) {
       name += ".ink";
     }
-    setInputActive(false);
     void addFile(name);
   }, [addFile]);
 
@@ -514,31 +542,62 @@ function BinderInner() {
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, row: FlatRow) => {
-      if (row.kind === "file" || row.kind === "folder") return; // knots/stitches only
       e.preventDefault();
       e.stopPropagation();
-      setContextMenu({
-        x: e.clientX,
-        y: e.clientY,
-        target: {
+
+      let target: ContextMenuTarget;
+      if (row.kind === "file") {
+        const canDelete = storeApi.getState()._project?.canDeleteFiles() ?? false;
+        target = { kind: "file", path: row.path, canDelete };
+      } else if (row.kind === "folder") {
+        // Every file under the folder prefix (recursive); the folder row's
+        // `path` is the directory key with a trailing slash.
+        const paths = outline
+          .map((f) => f.path)
+          .filter((p) => p.startsWith(row.path));
+        const canDelete = storeApi.getState()._project?.canDeleteFiles() ?? false;
+        target = { kind: "folder", prefix: row.path, paths, canDelete };
+      } else {
+        target = {
           kind: row.kind,
           path: row.path,
           knot: row.knot!,
           stitch: row.stitch,
           index: row.index,
           siblingCount: row.siblingCount,
-        },
-      });
+        };
+      }
+      setContextMenu({ x: e.clientX, y: e.clientY, target });
     },
-    [],
+    [storeApi, outline],
   );
 
   const handleContextMenuAction = useCallback(
     (action: ContextMenuAction) => {
       setContextMenu(null);
-      void executeAction(action);
+      switch (action.type) {
+        case "newFileInFolder":
+          openNewFileInput(action.dir);
+          return;
+        case "deleteFile":
+          setPendingDelete({
+            message: `Delete ${action.path}?`,
+            run: () => void deleteFile(action.path),
+          });
+          return;
+        case "deleteFolder": {
+          const n = action.paths.length;
+          setPendingDelete({
+            message: `Delete ${action.prefix.replace(/\/$/, "")}/ and its ${n} file${n === 1 ? "" : "s"}?`,
+            run: () => void deleteFolder(action.prefix, action.paths),
+          });
+          return;
+        }
+        default:
+          void executeAction(action);
+      }
     },
-    [executeAction],
+    [executeAction, openNewFileInput, deleteFile, deleteFolder],
   );
 
   // ── Keyboard handler ────────────────────────────────────────────
@@ -879,6 +938,7 @@ function BinderInner() {
     const isExpanded = !collapsed.has(fileKey);
     const isActive = activeDocKey === fileKey;
     const target: TabTarget = { kind: "file", path: file.path };
+    const fileRow = flatRows.find((r) => r.key === fileKey);
 
     return (
       <div key={fileKey}>
@@ -899,7 +959,7 @@ function BinderInner() {
           onChevronClick={() => toggleCollapsed(fileKey)}
           onClick={(e) => handleRowClick(fileKey, target, e)}
           onDoubleClick={() => handleOpenPinned(target)}
-          onContextMenu={(e) => e.preventDefault()}
+          onContextMenu={(e) => (fileRow ? handleContextMenu(e, fileRow) : e.preventDefault())}
           onDragStart={() => {}}
           onDragEnd={() => {}}
           onDragOver={() => {}}
@@ -917,6 +977,7 @@ function BinderInner() {
 
   function renderFolder(folder: FolderNode, depth: number) {
     const isExpanded = !collapsed.has(folder.key);
+    const folderRow = flatRows.find((r) => r.key === folder.key);
     return (
       <div key={folder.key}>
         <BinderRow
@@ -939,7 +1000,7 @@ function BinderInner() {
             toggleCollapsed(folder.key);
           }}
           onDoubleClick={() => {}}
-          onContextMenu={(e) => e.preventDefault()}
+          onContextMenu={(e) => (folderRow ? handleContextMenu(e, folderRow) : e.preventDefault())}
           onDragStart={() => {}}
           onDragEnd={() => {}}
           onDragOver={() => {}}
@@ -977,6 +1038,7 @@ function BinderInner() {
             className="brink-tab-input"
             type="text"
             placeholder="filename.ink"
+            defaultValue={newFileDir}
             size={16}
             onKeyDown={handleInputKeyDown}
             onBlur={cancelInput}
@@ -993,6 +1055,32 @@ function BinderInner() {
           onClose={() => setContextMenu(null)}
         />
       )}
+      <Overlay
+        open={pendingDelete !== null}
+        onClose={() => setPendingDelete(null)}
+        className="brink-binder-confirm"
+      >
+        <div className="brink-binder-confirm-message">{pendingDelete?.message}</div>
+        <div className="brink-binder-confirm-actions">
+          <button
+            type="button"
+            className="brink-binder-confirm-cancel"
+            onClick={() => setPendingDelete(null)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="brink-binder-confirm-delete"
+            onClick={() => {
+              pendingDelete?.run();
+              setPendingDelete(null);
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      </Overlay>
     </div>
   );
 }

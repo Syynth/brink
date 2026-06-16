@@ -112,6 +112,22 @@ export class ProjectSession {
     this.session.removeFile(path);
   }
 
+  /** Whether the provider can delete files (drives the binder's delete UI). */
+  canDeleteFiles(): boolean {
+    return this.provider.deleteFile !== undefined;
+  }
+
+  /** Delete a file: remove it from the provider and the wasm session, and
+   *  record a "deleted" change so the host's mirror drops it too. Unlike
+   *  {@link closeFile} (session-only eviction), this is a real deletion. The
+   *  caller is responsible for snapshotting content first if undo is wanted
+   *  and for closing any open views (see the store's `deleteFile`). */
+  async deleteFile(path: string): Promise<void> {
+    await this.provider.deleteFile?.(path);
+    this.session.removeFile(path);
+    this.changes.record(path, "deleted");
+  }
+
   /**
    * Compile the project from its entry file. Cached against the session's
    * mutation generation: with several live views each compiling on their own

@@ -3,16 +3,31 @@ import type { DocumentSymbol, FileOutline } from "@brink/wasm-types";
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export interface ContextMenuTarget {
-  kind: "knot" | "stitch";
-  path: string;
-  knot: string;
-  stitch?: string;
-  /** Position in sibling list */
-  index: number;
-  /** Total siblings */
-  siblingCount: number;
-}
+export type ContextMenuTarget =
+  | {
+      kind: "knot" | "stitch";
+      path: string;
+      knot: string;
+      stitch?: string;
+      /** Position in sibling list */
+      index: number;
+      /** Total siblings */
+      siblingCount: number;
+    }
+  | {
+      kind: "file";
+      path: string;
+      /** Whether the provider supports deletion (hides Delete when false). */
+      canDelete: boolean;
+    }
+  | {
+      kind: "folder";
+      /** Directory key with trailing slash, e.g. "scenes/act1/". */
+      prefix: string;
+      /** All file paths under the folder (recursive). */
+      paths: string[];
+      canDelete: boolean;
+    };
 
 interface MenuItem {
   label: string;
@@ -37,7 +52,16 @@ export type ContextMenuAction =
   | { type: "reorderKnots"; path: string; order: string[] }
   | { type: "moveStitch"; path: string; srcKnot: string; stitch: string; destKnot: string }
   | { type: "promoteStitch"; path: string; knot: string; stitch: string }
-  | { type: "demoteKnot"; path: string; knot: string; destKnot: string };
+  | { type: "demoteKnot"; path: string; knot: string; destKnot: string }
+  | { type: "deleteFile"; path: string }
+  | { type: "deleteFolder"; prefix: string; paths: string[] }
+  | { type: "newFileInFolder"; dir: string };
+
+/** Directory of a file path, with trailing slash; "" for a root-level file. */
+function dirOf(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash >= 0 ? path.substring(0, slash + 1) : "";
+}
 
 // ── Component ───────────────────────────────────────────────────────
 
@@ -72,120 +96,7 @@ function BinderContextMenuInner({ x, y, target, outline, onAction, onClose }: Pr
     };
   }, [onClose]);
 
-  // Get knots from same file for submenu
-  const fileOutline = outline.find((f) => f.path === target.path);
-  const allKnots: DocumentSymbol[] = fileOutline?.symbols.filter((s) => s.kind === "knot") ?? [];
-
-  const items: MenuItem[] = [];
-
-  if (target.kind === "stitch") {
-    items.push({
-      label: "Move Up",
-      disabled: target.index === 0,
-      action: () =>
-        onAction({
-          type: "reorderStitch",
-          path: target.path,
-          knot: target.knot,
-          stitch: target.stitch!,
-          direction: -1,
-        }),
-    });
-    items.push({
-      label: "Move Down",
-      disabled: target.index >= target.siblingCount - 1,
-      action: () =>
-        onAction({
-          type: "reorderStitch",
-          path: target.path,
-          knot: target.knot,
-          stitch: target.stitch!,
-          direction: 1,
-        }),
-    });
-    items.push({ label: "---" });
-
-    // Move to submenu — knots excluding current parent, excluding name collisions
-    const moveTargets = allKnots.filter((k) => {
-      if (k.name === target.knot) return false;
-      // Check for name collision
-      return !k.children.some(
-        (c) => c.kind === "stitch" && c.name === target.stitch,
-      );
-    });
-    if (moveTargets.length > 0) {
-      items.push({
-        label: "Move to",
-        submenu: moveTargets.map((k) => ({
-          label: k.name,
-          action: () =>
-            onAction({
-              type: "moveStitch",
-              path: target.path,
-              srcKnot: target.knot,
-              stitch: target.stitch!,
-              destKnot: k.name,
-            }),
-        })),
-      });
-    }
-
-    items.push({
-      label: "Promote to Knot",
-      disabled: allKnots.some((k) => k.name === target.stitch),
-      action: () =>
-        onAction({
-          type: "promoteStitch",
-          path: target.path,
-          knot: target.knot,
-          stitch: target.stitch!,
-        }),
-    });
-  } else {
-    // Knot context menu
-    items.push({
-      label: "Move Up",
-      disabled: target.index === 0,
-      action: () =>
-        onAction({ type: "reorderKnot", path: target.path, knot: target.knot, direction: -1 }),
-    });
-    items.push({
-      label: "Move Down",
-      disabled: target.index >= target.siblingCount - 1,
-      action: () =>
-        onAction({ type: "reorderKnot", path: target.path, knot: target.knot, direction: 1 }),
-    });
-    items.push({ label: "---" });
-
-    // Demote into submenu — sibling knots excluding self and collision check
-    const knotNode = allKnots.find((k) => k.name === target.knot);
-    const hasStitches =
-      knotNode?.children.some((c) => c.kind === "stitch") ?? false;
-
-    if (!hasStitches) {
-      const demoteTargets = allKnots.filter((k) => {
-        if (k.name === target.knot) return false;
-        return !k.children.some(
-          (c) => c.kind === "stitch" && c.name === target.knot,
-        );
-      });
-      if (demoteTargets.length > 0) {
-        items.push({
-          label: "Demote into",
-          submenu: demoteTargets.map((k) => ({
-            label: k.name,
-            action: () =>
-              onAction({
-                type: "demoteKnot",
-                path: target.path,
-                knot: target.knot,
-                destKnot: k.name,
-              }),
-          })),
-        });
-      }
-    }
-  }
+  const items: MenuItem[] = buildItems(target, outline, onAction);
 
   const handleItemClick = useCallback(
     (item: MenuItem) => {
@@ -254,6 +165,162 @@ function BinderContextMenuInner({ x, y, target, outline, onAction, onClose }: Pr
       })}
     </div>
   );
+}
+
+// ── Menu construction ───────────────────────────────────────────────
+
+/** Build the menu items for a target. Files/folders get lifecycle actions
+ *  (New file here, Delete); knots/stitches get the structural-move actions. */
+function buildItems(
+  target: ContextMenuTarget,
+  outline: FileOutline[],
+  onAction: (action: ContextMenuAction) => void,
+): MenuItem[] {
+  if (target.kind === "file") {
+    const items: MenuItem[] = [
+      {
+        label: "New file here",
+        action: () => onAction({ type: "newFileInFolder", dir: dirOf(target.path) }),
+      },
+    ];
+    if (target.canDelete) {
+      items.push({ label: "---" });
+      items.push({
+        label: "Delete",
+        action: () => onAction({ type: "deleteFile", path: target.path }),
+      });
+    }
+    return items;
+  }
+
+  if (target.kind === "folder") {
+    const items: MenuItem[] = [
+      {
+        label: "New file here",
+        action: () => onAction({ type: "newFileInFolder", dir: target.prefix }),
+      },
+    ];
+    if (target.canDelete) {
+      items.push({ label: "---" });
+      items.push({
+        label: `Delete folder (${target.paths.length})`,
+        disabled: target.paths.length === 0,
+        action: () =>
+          onAction({ type: "deleteFolder", prefix: target.prefix, paths: target.paths }),
+      });
+    }
+    return items;
+  }
+
+  // Knot / stitch: structural-move actions, scoped to the file's knots.
+  const fileOutline = outline.find((f) => f.path === target.path);
+  const allKnots: DocumentSymbol[] = fileOutline?.symbols.filter((s) => s.kind === "knot") ?? [];
+  const items: MenuItem[] = [];
+
+  if (target.kind === "stitch") {
+    items.push({
+      label: "Move Up",
+      disabled: target.index === 0,
+      action: () =>
+        onAction({
+          type: "reorderStitch",
+          path: target.path,
+          knot: target.knot,
+          stitch: target.stitch!,
+          direction: -1,
+        }),
+    });
+    items.push({
+      label: "Move Down",
+      disabled: target.index >= target.siblingCount - 1,
+      action: () =>
+        onAction({
+          type: "reorderStitch",
+          path: target.path,
+          knot: target.knot,
+          stitch: target.stitch!,
+          direction: 1,
+        }),
+    });
+    items.push({ label: "---" });
+
+    // Move to submenu — knots excluding current parent, excluding name collisions
+    const moveTargets = allKnots.filter((k) => {
+      if (k.name === target.knot) return false;
+      return !k.children.some((c) => c.kind === "stitch" && c.name === target.stitch);
+    });
+    if (moveTargets.length > 0) {
+      items.push({
+        label: "Move to",
+        submenu: moveTargets.map((k) => ({
+          label: k.name,
+          action: () =>
+            onAction({
+              type: "moveStitch",
+              path: target.path,
+              srcKnot: target.knot,
+              stitch: target.stitch!,
+              destKnot: k.name,
+            }),
+        })),
+      });
+    }
+
+    items.push({
+      label: "Promote to Knot",
+      disabled: allKnots.some((k) => k.name === target.stitch),
+      action: () =>
+        onAction({
+          type: "promoteStitch",
+          path: target.path,
+          knot: target.knot,
+          stitch: target.stitch!,
+        }),
+    });
+    return items;
+  }
+
+  // Knot context menu
+  items.push({
+    label: "Move Up",
+    disabled: target.index === 0,
+    action: () =>
+      onAction({ type: "reorderKnot", path: target.path, knot: target.knot, direction: -1 }),
+  });
+  items.push({
+    label: "Move Down",
+    disabled: target.index >= target.siblingCount - 1,
+    action: () =>
+      onAction({ type: "reorderKnot", path: target.path, knot: target.knot, direction: 1 }),
+  });
+  items.push({ label: "---" });
+
+  // Demote into submenu — sibling knots excluding self and collision check
+  const knotNode = allKnots.find((k) => k.name === target.knot);
+  const hasStitches = knotNode?.children.some((c) => c.kind === "stitch") ?? false;
+
+  if (!hasStitches) {
+    const demoteTargets = allKnots.filter((k) => {
+      if (k.name === target.knot) return false;
+      return !k.children.some((c) => c.kind === "stitch" && c.name === target.knot);
+    });
+    if (demoteTargets.length > 0) {
+      items.push({
+        label: "Demote into",
+        submenu: demoteTargets.map((k) => ({
+          label: k.name,
+          action: () =>
+            onAction({
+              type: "demoteKnot",
+              path: target.path,
+              knot: target.knot,
+              destKnot: k.name,
+            }),
+        })),
+      });
+    }
+  }
+  return items;
 }
 
 export const BinderContextMenu = memo(BinderContextMenuInner);

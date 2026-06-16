@@ -27,13 +27,22 @@ export interface DocumentsSlice {
   dirtyFiles: number;
   /** Injected opener (main.tsx → editor-groups store); null until bound. */
   _openTarget: ((target: TabTarget, pinned: boolean) => void) | null;
+  /** Injected tab-closer (main.tsx → editor-groups store): closes every tab
+   *  for a file path (the file doc and any of its `path::symbol` docs) across
+   *  all groups. Null until bound. */
+  _closeDocsForPath: ((path: string) => void) | null;
 
   /** Open an ink document (pinned, or as the group's preview tab). */
   openTarget(target: TabTarget, pinned: boolean): void;
+  /** Close every open tab for `path` (file + its symbol docs). Used by delete
+   *  so the shell tears the views down before the file leaves the session. */
+  closeDocsForPath(path: string): void;
   /** Create a new file in the project and open it pinned. */
   addFile(name: string): Promise<void>;
   /** Bind the shell opener bridge (main.tsx, at bootstrap). */
   setDocumentOpener(open: (target: TabTarget, pinned: boolean) => void): void;
+  /** Bind the shell tab-closer bridge (main.tsx, at bootstrap). */
+  setDocCloser(close: (path: string) => void): void;
   /** Update the focused-document mirror (main.tsx subscription). */
   setActiveDocKey(key: string): void;
   /** Update the dirty-file summary (mount.tsx dirty listener). */
@@ -47,9 +56,14 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
   activeDocKey: "",
   dirtyFiles: 0,
   _openTarget: null,
+  _closeDocsForPath: null,
 
   openTarget(target, pinned) {
     get()._openTarget?.(target, pinned);
+  },
+
+  closeDocsForPath(path) {
+    get()._closeDocsForPath?.(path);
   },
 
   async addFile(name) {
@@ -61,6 +75,10 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
 
   setDocumentOpener(open) {
     set({ _openTarget: open });
+  },
+
+  setDocCloser(close) {
+    set({ _closeDocsForPath: close });
   },
 
   setActiveDocKey(key) {
