@@ -46,6 +46,10 @@ export function inlayHintsExtension(options: InlayHintsOptions): Extension {
 
     for (const hint of hints) {
       if (hint.offset < 0 || hint.offset > source.length) continue;
+      // Value-list labels (#174) are rendered by the argument-widgets extension
+      // as an interactive picker chip instead of this passive hint (#224); the
+      // LSP, a separate consumer, still gets them.
+      if (hint.kind === "value") continue;
       const widget = new InlayHintWidget(hint.label, hint.padding_right);
       builder.add(
         hint.offset,
