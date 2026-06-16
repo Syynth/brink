@@ -342,6 +342,74 @@
   padding: 0 3px;
   margin-left: 2px;
 }
+/* Interactive value-list chip (#224) — the clickable counterpart of the value
+   inlay hint above. Click opens a dropdown picker. */
+.brink-studio .brink-value-chip {
+  font-size: 0.85em;
+  color: var(--bs-fg-muted);
+  background: color-mix(in srgb, var(--bs-fg-muted) 15%, transparent);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-left: 2px;
+  cursor: pointer;
+}
+.brink-studio .brink-value-chip:hover {
+  color: var(--bs-fg);
+  border-color: var(--bs-accent, var(--bs-border));
+  background: color-mix(in srgb, var(--bs-accent, var(--bs-fg-muted)) 18%, transparent);
+}
+/* Value-list dropdown picker (mounted in the studio-root popover). */
+.brink-value-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+  max-width: 320px;
+}
+.brink-value-filter {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  background: var(--bs-surface-bg, #2a2a3a);
+  color: var(--bs-fg, #eee);
+  border: 1px solid var(--bs-border, #444);
+  border-radius: 4px;
+}
+.brink-value-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow: auto;
+}
+.brink-value-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 8px;
+  color: var(--bs-fg, #eee);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.brink-value-item:hover {
+  background: var(--bs-surface-bg, #2a2a3a);
+}
+.brink-value-item[aria-current="true"] {
+  border-color: var(--bs-accent, #3b6ea5);
+}
+.brink-value-item-label {
+  flex: 1;
+}
+.brink-value-item-detail {
+  font-size: 0.85em;
+  color: var(--bs-fg-muted, #aaa);
+}
 /* Built-in `color` widget (argument-widget-spec §7): a small clickable swatch
    sitting just before the literal; click opens the studio popover picker. */
 .brink-studio .brink-color-swatch {

@@ -30,6 +30,7 @@ import type {
   ArgumentWidget,
   ArgumentWidgetContext,
   ArgumentWidgetEditorHost,
+  ValueItem,
 } from "@brink/wasm-types";
 import { getBuiltinWidget, getHostWidget, type WidgetEditorHost } from "./widget-registry.js";
 import { openArgumentForm, type FormField, type FormGroup } from "./argument-form.js";
@@ -567,6 +568,117 @@ class HostFillGhostWidget extends WidgetType {
   }
 }
 
+// ── Value-list picker (#174 / #224) ─────────────────────────────────
+
+/** A studio dropdown for a value-list slot: a filter box + the items (label +
+ *  detail). Picking calls `onPick` with the chosen item's literal value. */
+function openValuePicker(
+  anchor: HTMLElement,
+  items: ValueItem[],
+  current: string,
+  onPick: (value: string) => void,
+): void {
+  let popover: { close(): void } | null = null;
+  popover = openPopover(
+    anchor,
+    (container) => {
+      const root = document.createElement("div");
+      root.className = "brink-value-picker";
+      const filter = document.createElement("input");
+      filter.type = "text";
+      filter.className = "brink-value-filter";
+      filter.placeholder = "Filter…";
+      filter.spellcheck = false;
+      const list = document.createElement("div");
+      list.className = "brink-value-list";
+      const render = (q: string): void => {
+        const ql = q.toLowerCase();
+        list.replaceChildren();
+        for (const it of items) {
+          if (ql && !it.label.toLowerCase().includes(ql) && !it.value.toLowerCase().includes(ql)) {
+            continue;
+          }
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "brink-value-item";
+          if (it.value === current) btn.setAttribute("aria-current", "true");
+          const label = document.createElement("span");
+          label.className = "brink-value-item-label";
+          label.textContent = it.label;
+          btn.appendChild(label);
+          if (it.detail) {
+            const detail = document.createElement("span");
+            detail.className = "brink-value-item-detail";
+            detail.textContent = it.detail;
+            btn.appendChild(detail);
+          }
+          btn.addEventListener("click", () => {
+            onPick(it.value);
+            popover?.close();
+          });
+          list.appendChild(btn);
+        }
+      };
+      filter.addEventListener("input", () => render(filter.value));
+      render("");
+      root.append(filter, list);
+      container.appendChild(root);
+      setTimeout(() => filter.focus(), 0);
+    },
+    () => {},
+  );
+}
+
+/** A clickable label chip on a filled value-list literal (#224): shows the
+ *  matched item's label and opens the dropdown picker; choosing rewrites the
+ *  literal in place, mirroring the existing literal's quoting. */
+class ValueEditWidget extends WidgetType {
+  constructor(
+    readonly slot: SlotWidget,
+    readonly value: string,
+    readonly start: number,
+    readonly end: number,
+    readonly view: EditorView,
+  ) {
+    super();
+  }
+
+  eq(other: ValueEditWidget): boolean {
+    return other.value === this.value && other.start === this.start && other.end === this.end;
+  }
+
+  toDOM(): HTMLElement {
+    const item = this.slot.values?.find((it) => it.value === this.value);
+    const el = document.createElement("span");
+    el.className = "brink-value-chip";
+    el.textContent = `⟨${item ? item.label : this.value}⟩`;
+    el.setAttribute("role", "button");
+    el.tabIndex = 0;
+    el.title = `Pick ${this.slot.param_name}`;
+    const open = (): void => {
+      openValuePicker(el, this.slot.values ?? [], this.value, (picked) => {
+        const range = liveArgRange(this.view, this.start);
+        if (!range) return;
+        const raw = this.view.state.doc.sliceString(range.from, range.to);
+        const insert = raw.startsWith('"') ? `"${picked}"` : picked;
+        this.view.dispatch({ changes: { from: range.from, to: range.to, insert } });
+      });
+    };
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
+      }
+    });
+    return el;
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
 // ── Arg-group widgets (argument-widget-spec §2) ─────────────────────
 
 /** The context handed to a host widget for an arg-group. */
@@ -801,7 +913,26 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
         const kind = slot.widget;
         const builtin = kind !== undefined ? getBuiltinWidget(kind) : undefined;
         const host = builtin ? undefined : matchHostWidget(slot);
-        if (builtin === undefined && host === undefined) continue;
+        if (builtin === undefined && host === undefined) {
+          // Value-list slot (#174/#224): a clickable label chip on the filled
+          // literal that opens the studio dropdown picker.
+          if (slot.state.kind === "filled" && slot.values && slot.values.length > 0) {
+            decos.push({
+              pos: slot.state.end,
+              deco: Decoration.widget({
+                widget: new ValueEditWidget(
+                  slot,
+                  slot.state.value,
+                  slot.state.start,
+                  slot.state.end,
+                  view,
+                ),
+                side: 1,
+              }),
+            });
+          }
+          continue;
+        }
 
         if (slot.state.kind === "filled") {
           const widget =
