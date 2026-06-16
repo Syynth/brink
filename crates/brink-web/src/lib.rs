@@ -2585,6 +2585,15 @@ impl EditorSession {
                             param_name: slot.param_name.clone(),
                             widget: slot.widget.clone(),
                             type_name: slot.type_name.clone(),
+                            values: slot
+                                .values
+                                .iter()
+                                .map(|v| ValueItemJs {
+                                    value: v.value.clone(),
+                                    label: v.label.clone(),
+                                    detail: v.detail.clone(),
+                                })
+                                .collect(),
                             state,
                         }
                     })
@@ -2657,6 +2666,7 @@ impl EditorSession {
             param_names: g.param_names.clone(),
             state,
             context: g.context.iter().cloned().collect(),
+            context_params: g.context_params.iter().cloned().collect(),
         })
     }
 
@@ -3113,6 +3123,9 @@ struct GroupWidgetSiteJs {
     param_names: Vec<String>,
     state: GroupStateJs,
     context: std::collections::BTreeMap<String, String>,
+    /// Raw key → param-index map (#174) — the Form resolves context from its
+    /// live draft values via this, before anything is written to the document.
+    context_params: std::collections::BTreeMap<String, u32>,
 }
 
 #[derive(Serialize)]
@@ -3135,7 +3148,18 @@ struct SlotWidgetJs {
     widget: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     type_name: Option<String>,
+    /// Static value-list items (#174) for the Form dropdown; omitted when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    values: Vec<ValueItemJs>,
     state: SlotStateJs,
+}
+
+#[derive(Serialize)]
+struct ValueItemJs {
+    value: String,
+    label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
 }
 
 #[derive(Serialize)]
