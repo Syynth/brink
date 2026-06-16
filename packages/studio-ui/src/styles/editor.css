@@ -664,6 +664,51 @@
   flex: 1 0 100%;
   margin-top: 4px;
 }
+/* Value-list dropdown (#174). */
+.brink-arg-form-select {
+  flex: 1;
+  min-width: 120px;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  background: var(--bs-surface-bg, #2a2a3a);
+  color: var(--bs-fg, #eee);
+  border: 1px solid var(--bs-border, #444);
+  border-radius: 4px;
+}
+/* Host-widget summary chip + Edit toggle + embedded editor. */
+.brink-arg-form-host {
+  flex: 1;
+  min-width: 90px;
+  font-family: var(--bs-font-mono, monospace);
+  font-size: 12px;
+  padding: 3px 7px;
+  background: var(--bs-surface-bg, #2a2a3a);
+  border: 1px solid var(--bs-border, #444);
+  border-radius: 4px;
+  color: var(--bs-fg, #eee);
+}
+.brink-arg-form-edit {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--bs-border, #444);
+  background: var(--bs-surface-bg, #2a2a3a);
+  color: var(--bs-fg, #eee);
+  cursor: pointer;
+}
+.brink-arg-form-edit:hover {
+  border-color: var(--bs-accent, #888);
+}
+.brink-arg-form-editor {
+  flex: 1 0 100%;
+  margin-top: 4px;
+}
+.brink-arg-form-editor[hidden] {
+  display: none;
+}
 .brink-arg-form-buttons {
   display: flex;
   justify-content: flex-end;

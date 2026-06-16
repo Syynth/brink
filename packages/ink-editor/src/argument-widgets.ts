@@ -32,7 +32,7 @@ import type {
   ArgumentWidgetEditorHost,
 } from "@brink/wasm-types";
 import { getBuiltinWidget, getHostWidget, type WidgetEditorHost } from "./widget-registry.js";
-import { openArgumentForm, type FormField } from "./argument-form.js";
+import { openArgumentForm, type FormField, type FormGroup } from "./argument-form.js";
 import { openPopover } from "./widget-popover.js";
 import { openModal } from "./widget-modal.js";
 import "./color-widget.js"; // side-effect: registers the built-in "color" widget
@@ -95,17 +95,53 @@ export const FORM_GLYPH_ICON =
  * by the in-editor glyph and the hover-card action.
  */
 export function openCallForm(anchor: HTMLElement, site: CallWidgetSite, view: EditorView): void {
-  const fields: FormField[] = site.slots.map((slot) => ({
-    paramName: slot.param_name,
-    typeName: slot.type_name,
-    widgetKind: slot.widget,
-    initial: slot.state.kind === "filled" ? slot.state.value : undefined,
-  }));
+  // Seed drafts with the RAW literal text (quotes included) so unedited string
+  // args round-trip; widget context strips quotes for display.
+  const rawAt = (from: number, to: number): string => view.state.doc.sliceString(from, to);
+
+  // Arg-group widgets with a resolved host widget; their member params are then
+  // rendered by the group control, not as individual fields.
+  const groups: FormGroup[] = [];
+  const grouped = new Set<number>();
+  for (const group of site.groups) {
+    const widget = getHostWidget(group.type);
+    if (widget === undefined) continue;
+    for (const idx of group.param_indices) grouped.add(idx);
+    const initialValues = group.param_indices.map((_, k) =>
+      group.state.kind === "filled" ? rawAt(group.state.spans[k][0], group.state.spans[k][1]) : "",
+    );
+    groups.push({
+      paramIndices: group.param_indices,
+      paramNames: group.param_names,
+      typeName: group.type,
+      hostWidget: widget,
+      surface: group.surface,
+      initialValues,
+      contextParams: group.context_params,
+    });
+  }
+
+  const fields: FormField[] = [];
+  site.slots.forEach((slot, i) => {
+    if (grouped.has(i)) return;
+    fields.push({
+      paramName: slot.param_name,
+      paramIndex: i,
+      typeName: slot.type_name,
+      widgetKind: slot.widget,
+      values: slot.values,
+      hostWidget: matchHostWidget(slot),
+      initial: slot.state.kind === "filled" ? rawAt(slot.state.start, slot.state.end) : undefined,
+    });
+  });
+
   const sig = `${site.callee}(${site.slots.map((s) => s.param_name).join(", ")})`;
   openArgumentForm(anchor, {
     title: sig,
+    external: site.callee,
     applyLabel: "Apply",
     fields,
+    groups,
     onApply: (literals) => {
       const range = liveParenRange(view, site.name_end);
       if (range) {
