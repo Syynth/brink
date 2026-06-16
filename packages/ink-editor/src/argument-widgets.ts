@@ -99,24 +99,28 @@ export function openCallForm(anchor: HTMLElement, site: CallWidgetSite, view: Ed
   // args round-trip; widget context strips quotes for display.
   const rawAt = (from: number, to: number): string => view.state.doc.sliceString(from, to);
 
-  // Arg-group widgets with a resolved host widget; their member params are then
-  // rendered by the group control, not as individual fields.
+  // Read a member's current value from its slot — the Form is driven by the
+  // signature metadata (every declared group, always), seeding values from
+  // whatever arguments exist, so a partial or over-full call still renders the
+  // right widgets rather than degrading to plain text fields.
+  const slotRaw = (idx: number): string => {
+    const slot = site.slots[idx] as SlotWidget | undefined;
+    return slot && slot.state.kind === "filled" ? rawAt(slot.state.start, slot.state.end) : "";
+  };
+
   const groups: FormGroup[] = [];
   const grouped = new Set<number>();
-  for (const group of site.groups) {
+  for (const group of site.declared_groups ?? []) {
     const widget = getHostWidget(group.type);
     if (widget === undefined) continue;
     for (const idx of group.param_indices) grouped.add(idx);
-    const initialValues = group.param_indices.map((_, k) =>
-      group.state.kind === "filled" ? rawAt(group.state.spans[k][0], group.state.spans[k][1]) : "",
-    );
     groups.push({
       paramIndices: group.param_indices,
       paramNames: group.param_names,
       typeName: group.type,
       hostWidget: widget,
       surface: group.surface,
-      initialValues,
+      initialValues: group.param_indices.map(slotRaw),
       contextParams: group.context_params,
     });
   }

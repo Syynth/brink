@@ -22,10 +22,29 @@ pub struct CallWidgetSite {
     pub name_end: TextSize,
     /// One slot per declared parameter.
     pub slots: Vec<SlotWidget>,
-    /// Arg-group widgets (spec §2) — a widget spanning several params. Grouped
-    /// params still appear in `slots` (for the Form); the studio renders the
-    /// group inline and skips those slots.
+    /// Arg-group widgets (spec §2) — a widget spanning several params, emitted
+    /// only when the group is uniformly Filled/Empty. Drives the *inline* group
+    /// chip/ghost (which needs the arg state). Grouped params still appear in
+    /// `slots`; inline rendering skips them.
     pub groups: Vec<GroupWidgetSite>,
+    /// Every declared arg-group widget for the callee, independent of the
+    /// current arguments — the **Form** renders these (seeding member values
+    /// from `slots`), so a partial or over-full call still gets its widgets.
+    pub declared_groups: Vec<DeclaredGroup>,
+}
+
+/// A declared arg-group widget: the manifest structure with no arg-state. The
+/// Form always renders one control per declared group regardless of how many
+/// arguments the call currently has.
+pub struct DeclaredGroup {
+    /// Widget / semantic type (matches a host `ArgumentWidget.type`).
+    pub ty: String,
+    /// Editor container — `"popover"` (default) or `"modal"`.
+    pub surface: Option<String>,
+    pub param_indices: Vec<u32>,
+    pub param_names: Vec<String>,
+    /// Raw inter-arg context: key → the sibling param index.
+    pub context_params: Vec<(String, u32)>,
 }
 
 /// An arg-group widget at a call site — one widget over several params, emitted
@@ -236,12 +255,17 @@ fn collect(
     }
 
     // Arg-group widgets (spec §2): emit one per declared group, but only when
-    // every member is uniformly Filled (Edit) or Empty (Fill).
+    // every member is uniformly Filled (Edit) or Empty (Fill) — drives inline.
+    // Separately, surface every declared group (structure only) for the Form.
     let mut groups = Vec::new();
+    let mut declared_groups = Vec::new();
     if let Some(meta) = meta {
         for gw in &meta.group_widgets {
             if let Some(site) = build_group(gw, info, &args, append_at, &state_for) {
                 groups.push(site);
+            }
+            if let Some(declared) = declare_group(gw, info) {
+                declared_groups.push(declared);
             }
         }
     }
@@ -252,6 +276,29 @@ fn collect(
         name_end: name_range.end(),
         slots,
         groups,
+        declared_groups,
+    })
+}
+
+/// The declared structure of one arg-group (no arg-state), for the Form. `None`
+/// when the group is empty or names a param index the signature doesn't have.
+fn declare_group(
+    gw: &brink_ir::ArgGroupWidget,
+    info: &brink_ir::SymbolInfo,
+) -> Option<DeclaredGroup> {
+    if gw.group.is_empty() {
+        return None;
+    }
+    let mut param_names = Vec::with_capacity(gw.group.len());
+    for &idx in &gw.group {
+        param_names.push(info.params.get(idx as usize)?.name.clone());
+    }
+    Some(DeclaredGroup {
+        ty: gw.ty.clone(),
+        surface: gw.surface.clone(),
+        param_indices: gw.group.clone(),
+        param_names,
+        context_params: gw.context.iter().map(|(k, &v)| (k.clone(), v)).collect(),
     })
 }
 
@@ -574,6 +621,22 @@ mod tests {
         assert_eq!(labels, vec!["Harbor", "Old Temple"]);
         // Non-value-list slots carry no items.
         assert!(call.slots[1].values.is_empty());
+    }
+
+    #[test]
+    fn declared_group_present_even_when_args_are_mixed() {
+        // x filled, y missing → not a uniform group, so the inline `groups` is
+        // empty, but the Form's `declared_groups` still carries the map_point
+        // widget (driven by the signature, not the partial call).
+        let s = sites("EXTERNAL teleport(map, x, y)\n~ teleport(\"harbor\", 1)\n-> END\n");
+        let call = s.iter().find(|c| c.callee == "teleport").expect("call");
+        assert_eq!(call.groups.len(), 0, "mixed args → no inline group");
+        assert_eq!(call.declared_groups.len(), 1);
+        let g = &call.declared_groups[0];
+        assert_eq!(g.ty, "map_point");
+        assert_eq!(g.param_indices, vec![1, 2]);
+        assert_eq!(g.param_names, vec!["x".to_string(), "y".to_string()]);
+        assert_eq!(g.context_params, vec![("map".to_string(), 0)]);
     }
 
     #[test]

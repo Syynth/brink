@@ -2615,12 +2615,27 @@ impl EditorSession {
                     .filter_map(|g| self.group_widget_js(path, view, g))
                     .collect();
 
+                // Declared groups carry no document spans, so they need no view
+                // translation — the Form renders them and seeds from `slots`.
+                let declared_groups: Vec<DeclaredGroupJs> = site
+                    .declared_groups
+                    .iter()
+                    .map(|g| DeclaredGroupJs {
+                        ty: g.ty.clone(),
+                        surface: g.surface.clone(),
+                        param_indices: g.param_indices.clone(),
+                        param_names: g.param_names.clone(),
+                        context_params: g.context_params.iter().cloned().collect(),
+                    })
+                    .collect();
+
                 CallWidgetSiteJs {
                     callee: site.callee.clone(),
                     name_start,
                     name_end,
                     slots,
                     groups,
+                    declared_groups,
                 }
             })
             .collect();
@@ -3111,6 +3126,19 @@ struct CallWidgetSiteJs {
     name_end: u32,
     slots: Vec<SlotWidgetJs>,
     groups: Vec<GroupWidgetSiteJs>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    declared_groups: Vec<DeclaredGroupJs>,
+}
+
+#[derive(Serialize)]
+struct DeclaredGroupJs {
+    #[serde(rename = "type")]
+    ty: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    surface: Option<String>,
+    param_indices: Vec<u32>,
+    param_names: Vec<String>,
+    context_params: std::collections::BTreeMap<String, u32>,
 }
 
 #[derive(Serialize)]
