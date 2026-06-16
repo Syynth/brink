@@ -154,6 +154,8 @@ export interface SlotWidget {
   widget?: string;
   /** The semantic-type name, if the param is typed. */
   type_name?: string;
+  /** Static value-list items (#174) — the Form renders these as a dropdown. */
+  values?: ValueItem[];
   state: SlotState;
 }
 
@@ -175,8 +177,12 @@ export interface GroupWidgetSite {
   param_indices: number[];
   param_names: string[];
   state: GroupState;
-  /** Resolved inter-arg context: key → the sibling arg's literal value. */
+  /** Resolved inter-arg context: key → the sibling arg's literal value (from the
+   *  document — what inline editing uses). */
   context: Record<string, string>;
+  /** Raw inter-arg context: key → the sibling param index. The Form resolves
+   *  context from its own live draft values via this map. */
+  context_params?: Record<string, number>;
 }
 
 /** A call site with a per-parameter widget slot (argument-widget spec §4). */

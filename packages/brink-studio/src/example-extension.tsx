@@ -63,6 +63,22 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
     // host-provided ArgumentWidget (below). The studio renders the inline chip
     // from the host's label data and opens the host's popover editor.
     { name: "region_id", base: "string", widget: { kind: "host.example.region" } },
+    // A value-list type (#174): `map_id` is an int whose pickable values carry
+    // map names. The studio renders the dropdown (in the Form) and the inline
+    // name label (`teleport(5 ⟨Old Temple⟩, …)`) — the host only declares the
+    // values, it never reinvents a combobox.
+    {
+      name: "map_id",
+      base: "int",
+      values: {
+        source: "static",
+        items: [
+          { value: "1", label: "Harbor", detail: "Map #1" },
+          { value: "5", label: "Old Temple", detail: "Map #5" },
+          { value: "9", label: "Catacombs", detail: "Map #9" },
+        ],
+      },
+    },
   ],
   externals: [
     {
@@ -84,7 +100,7 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       // opened as a MODAL, taking inter-arg `context` (the `map` arg).
       name: "teleport",
       params: [
-        { name: "map", ty: "int" },
+        { name: "map", ty: "map_id" },
         { name: "x", ty: "int" },
         { name: "y", ty: "int" },
       ],
@@ -244,6 +260,10 @@ export const EXAMPLE_REGION_WIDGET: ArgumentWidget = {
 const MAP_W = 10;
 const MAP_H = 7;
 
+// Map id → name, mirroring the `map_id` value-list above — the widget titles
+// itself with the chosen map's name (the inter-arg context carries the id).
+const MAP_NAMES: Record<string, string> = { "1": "Harbor", "5": "Old Temple", "9": "Catacombs" };
+
 export const EXAMPLE_MAP_POINT_WIDGET: ArgumentWidget = {
   type: "map_point",
   inline(ctx) {
@@ -259,7 +279,8 @@ export const EXAMPLE_MAP_POINT_WIDGET: ArgumentWidget = {
       const title = document.createElement("div");
       title.className = "host-example-map-title";
       const mapId = ctx.context?.map;
-      title.textContent = mapId !== undefined ? `Pick a point — map ${mapId}` : "Pick a point";
+      const mapName = mapId !== undefined ? (MAP_NAMES[mapId] ?? `map ${mapId}`) : undefined;
+      title.textContent = mapName !== undefined ? `Pick a point — ${mapName}` : "Pick a point";
       root.appendChild(title);
       const grid = document.createElement("div");
       grid.className = "host-example-map-grid";

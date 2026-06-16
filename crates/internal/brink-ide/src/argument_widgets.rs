@@ -39,8 +39,13 @@ pub struct GroupWidgetSite {
     pub param_indices: Vec<u32>,
     pub param_names: Vec<String>,
     pub state: GroupState,
-    /// Resolved inter-arg context: key → the sibling arg's literal value.
+    /// Resolved inter-arg context: key → the sibling arg's literal value (from
+    /// the document — what inline editing uses).
     pub context: Vec<(String, String)>,
+    /// Raw inter-arg context: key → the sibling param index. The Form resolves
+    /// context from its own live draft values via this map, so picking the map
+    /// first drives the point picker before anything is written to the document.
+    pub context_params: Vec<(String, u32)>,
 }
 
 /// The authoring state of an arg-group (uniform across its members).
@@ -65,6 +70,9 @@ pub struct SlotWidget {
     pub widget: Option<String>,
     /// The semantic-type name, if the param is typed.
     pub type_name: Option<String>,
+    /// Pickable values for this slot's type (#174) — the Form renders these as a
+    /// dropdown. Only static manifest items are surfaced here; empty otherwise.
+    pub values: Vec<brink_ir::ValueItem>,
     pub state: SlotState,
 }
 
@@ -210,10 +218,19 @@ fn collect(
             .and_then(|rp| rp.ty.as_ref());
         let widget = ty.and_then(|t| t.widget.as_ref()).map(|w| w.kind.clone());
         let type_name = ty.map(|t| t.name.clone());
+        // Static value-list items (#174) for the Form dropdown; host-sourced
+        // value-lists are not surfaced here yet.
+        let values = ty
+            .and_then(|t| match t.values.as_ref() {
+                Some(brink_ir::ValueSource::Static { items }) => Some(items.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
         slots.push(SlotWidget {
             param_name: param.name.clone(),
             widget,
             type_name,
+            values,
             state: state_for(i),
         });
     }
@@ -281,9 +298,13 @@ fn build_group(
         return None;
     };
 
-    // Inter-arg context: each key → the sibling arg's literal value.
+    // Inter-arg context: each key → the sibling arg's literal value (document-
+    // resolved, for inline editing) plus the raw key → param-index map (for the
+    // Form to resolve from its live draft values).
     let mut context = Vec::new();
+    let mut context_params = Vec::new();
     for (key, &arg_idx) in &gw.context {
+        context_params.push((key.clone(), arg_idx));
         if let Some(arg) = args.get(arg_idx as usize)
             && let Some(value) = literal_value(arg)
         {
@@ -298,6 +319,7 @@ fn build_group(
         param_names,
         state,
         context,
+        context_params,
     })
 }
 
@@ -333,7 +355,7 @@ mod tests {
     use crate::session::IdeSession;
     use brink_ir::{
         ArgGroupWidget, BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam,
-        SemanticTypeDef, TypeRef, WidgetDecl,
+        SemanticTypeDef, TypeRef, ValueItem, ValueSource, WidgetDecl,
     };
     use std::collections::BTreeMap;
 
@@ -375,16 +397,66 @@ mod tests {
                         context: BTreeMap::new(),
                     }],
                 },
+                // Mirrors the demo: a value-list `map` arg + an (x, y) group that
+                // takes the map as inter-arg context.
+                ManifestExternal {
+                    name: "teleport".into(),
+                    params: vec![
+                        ManifestParam {
+                            name: "map".into(),
+                            ty: TypeRef("map_id".into()),
+                        },
+                        ManifestParam {
+                            name: "x".into(),
+                            ty: TypeRef("int".into()),
+                        },
+                        ManifestParam {
+                            name: "y".into(),
+                            ty: TypeRef("int".into()),
+                        },
+                    ],
+                    returns: TypeRef::default(),
+                    kind: ExternalKind::Effect,
+                    doc: None,
+                    widgets: vec![ArgGroupWidget {
+                        group: vec![1, 2],
+                        ty: "map_point".into(),
+                        surface: Some("modal".into()),
+                        context: BTreeMap::from([("map".to_string(), 0)]),
+                    }],
+                },
             ],
-            types: vec![SemanticTypeDef {
-                name: "hex_color".into(),
-                base: BaseType::String,
-                constraint: None,
-                values: None,
-                widget: Some(WidgetDecl {
-                    kind: "color".into(),
-                }),
-            }],
+            types: vec![
+                SemanticTypeDef {
+                    name: "hex_color".into(),
+                    base: BaseType::String,
+                    constraint: None,
+                    values: None,
+                    widget: Some(WidgetDecl {
+                        kind: "color".into(),
+                    }),
+                },
+                SemanticTypeDef {
+                    name: "map_id".into(),
+                    base: BaseType::String,
+                    constraint: None,
+                    values: Some(ValueSource::Static {
+                        items: vec![
+                            ValueItem {
+                                value: "harbor".into(),
+                                label: "Harbor".into(),
+                                detail: None,
+                            },
+                            ValueItem {
+                                value: "old_temple".into(),
+                                label: "Old Temple".into(),
+                                detail: None,
+                            },
+                        ],
+                    }),
+                    widget: None,
+                },
+            ],
         }
     }
 
@@ -489,5 +561,31 @@ mod tests {
         let s = sites("EXTERNAL place_object(x, y)\n~ place_object(3)\n-> END\n");
         let call = s.iter().find(|c| c.callee == "place_object").expect("call");
         assert_eq!(call.groups.len(), 0);
+    }
+
+    #[test]
+    fn static_value_list_is_surfaced_on_slot() {
+        // The map slot's type is a static value-list; its items reach the Form.
+        let s = sites("EXTERNAL teleport(map, x, y)\n~ teleport(\"harbor\", 1, 2)\n-> END\n");
+        let call = s.iter().find(|c| c.callee == "teleport").expect("call");
+        let map = &call.slots[0];
+        assert_eq!(map.type_name.as_deref(), Some("map_id"));
+        let labels: Vec<_> = map.values.iter().map(|v| v.label.as_str()).collect();
+        assert_eq!(labels, vec!["Harbor", "Old Temple"]);
+        // Non-value-list slots carry no items.
+        assert!(call.slots[1].values.is_empty());
+    }
+
+    #[test]
+    fn group_context_params_carries_index_map() {
+        // The group both resolves `map` from the document AND exposes the raw
+        // key→index map so the Form can resolve from its live drafts.
+        let s = sites("EXTERNAL teleport(map, x, y)\n~ teleport(\"harbor\", 1, 2)\n-> END\n");
+        let call = s.iter().find(|c| c.callee == "teleport").expect("call");
+        assert_eq!(call.groups.len(), 1);
+        let g = &call.groups[0];
+        assert_eq!(g.param_indices, vec![1, 2]);
+        assert_eq!(g.context, vec![("map".to_string(), "harbor".to_string())]);
+        assert_eq!(g.context_params, vec![("map".to_string(), 0)]);
     }
 }

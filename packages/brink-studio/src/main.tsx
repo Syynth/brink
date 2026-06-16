@@ -30,13 +30,15 @@ EXTERNAL teleport(map, x, y)
 // Argument-widget demo. \`color\` (hex_color) is a studio built-in widget; the
 // filled call shows a swatch (Edit), the empty one a \`‹color›\` ghost (Fill).
 // \`region\` (region_id) is a HOST widget: a chip + a host popover picker.
-// teleport's (x, y) is an ARG-GROUP host widget: one chip over both args, a
-// MODAL map picker, taking the \`map\` arg as context.
+// teleport's \`map\` (map_id) is a value-list — the studio renders a name
+// dropdown in the Form + an inline name label. Its (x, y) is an ARG-GROUP
+// host widget: one chip over both args, a MODAL map picker taking the \`map\`
+// arg as context. In the Form you pick a map, then a spot on that map.
 === palette ===
 ~ set_tint("#FF8800")
 ~ set_tint()
 ~ go_region("harbor")
-~ teleport(5, 2, 3)
+~ teleport(5, 4, 3)
 -> DONE
 `;
 
