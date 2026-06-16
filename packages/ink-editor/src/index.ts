@@ -7,6 +7,8 @@ export type { BrinkStudioOptions } from "./extensions.js";
 export { openArgumentForm } from "./argument-form.js";
 export type { FormField, FormGroup, ArgumentFormOptions } from "./argument-form.js";
 export type { FormGlyphMode } from "./argument-widgets.js";
+// Live source range of an argument literal (quoted or bare) — host-widget edits.
+export { liveArgRange } from "./argument-widgets.js";
 // Host argument widgets (argument-widget-spec §3): registered at mount from
 // StudioExtensions.argumentWidgets.
 export { setHostWidgets } from "./widget-registry.js";
