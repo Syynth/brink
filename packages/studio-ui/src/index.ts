@@ -1,3 +1,13 @@
+// Self-host the editor font so embedders (e.g. RPG Maker MZ / NW.js) get
+// JetBrains Mono instead of falling back to the system monospace (#155). These
+// side-effect imports register `@font-face`s; the library build inlines the
+// woff2 into `style.css`, so consumers get a self-contained stylesheet with no
+// asset-path fragility. Latin subset only (code is Latin) and the three weights
+// the editor uses — regular, bold (knot/stitch headers), italic (comments) —
+// to keep the inlined payload small.
+import "@fontsource/jetbrains-mono/latin-400.css";
+import "@fontsource/jetbrains-mono/latin-700.css";
+import "@fontsource/jetbrains-mono/latin-400-italic.css";
 import "./styles/index.css";
 
 export { StoreProvider, useStudioStore, useStudioStoreApi } from "./StoreContext.js";
