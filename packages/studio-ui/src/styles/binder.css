@@ -73,6 +73,7 @@
   font-size: 14px;
   line-height: 1;
 }
+.brink-studio .brink-binder-icon-folder { color: var(--bs-fg-muted); }
 .brink-studio .brink-binder-icon-file { color: var(--bs-accent); }
 .brink-studio .brink-binder-icon-knot { color: var(--bs-symbol-knot); }
 .brink-studio .brink-binder-icon-function { color: var(--bs-symbol-function); font-style: italic; }
@@ -82,6 +83,10 @@
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.brink-studio .brink-binder-folder-row .brink-binder-label {
+  font-weight: 600;
+  color: var(--bs-fg-muted);
 }
 .brink-studio .brink-binder-file-row .brink-binder-label {
   font-weight: 600;
