@@ -25,6 +25,7 @@ import {
   DocumentSessions,
   ProjectSession,
   InMemoryFileProvider,
+  setHostWidgets,
   type FileChange,
 } from "@brink/ink-editor";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
@@ -675,6 +676,12 @@ export async function mountStudio(
         project.getSession(),
         extensions.argumentProviders,
       );
+    }
+    // Host argument widgets (argument-widget-spec §3): register into the editor's
+    // widget registry so a host can render the inline chip's label + a popover
+    // editor for a semantic type. The studio owns the chrome.
+    if (extensions.argumentWidgets !== undefined) {
+      setHostWidgets(extensions.argumentWidgets);
     }
   }
 

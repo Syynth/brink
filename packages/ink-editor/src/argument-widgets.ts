@@ -23,9 +23,16 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import type { CallWidgetSite } from "@brink/wasm-types";
-import { getBuiltinWidget, type WidgetEditorHost } from "./widget-registry.js";
+import type {
+  CallWidgetSite,
+  SlotWidget,
+  ArgumentWidget,
+  ArgumentWidgetContext,
+  ArgumentWidgetEditorHost,
+} from "@brink/wasm-types";
+import { getBuiltinWidget, getHostWidget, type WidgetEditorHost } from "./widget-registry.js";
 import { openArgumentForm, type FormField } from "./argument-form.js";
+import { openPopover } from "./widget-popover.js";
 import "./color-widget.js"; // side-effect: registers the built-in "color" widget
 
 /**
@@ -337,6 +344,163 @@ class FillGhostWidget extends WidgetType {
   }
 }
 
+// ── Host widgets (argument-widget-spec §3) ──────────────────────────
+
+/** A host widget registered for a slot's widget kind or its semantic type. */
+function matchHostWidget(slot: SlotWidget): ArgumentWidget | undefined {
+  if (slot.widget !== undefined) {
+    const byKind = getHostWidget(slot.widget);
+    if (byKind) return byKind;
+  }
+  return slot.type_name !== undefined ? getHostWidget(slot.type_name) : undefined;
+}
+
+/** Build the context handed to a host widget for a single slot. */
+function hostContext(
+  callee: string,
+  slot: SlotWidget,
+  type: string,
+  values: string[],
+): ArgumentWidgetContext {
+  return {
+    type,
+    external: callee,
+    paramNames: [slot.param_name],
+    values,
+  };
+}
+
+/** Open a host widget's editor in the studio popover chrome. `resolve(values)`
+ *  commits + closes; `cancel()` closes. (Modal surface is Stage 5.) */
+function openHostEditor(
+  anchor: HTMLElement,
+  widget: ArgumentWidget,
+  ctx: ArgumentWidgetContext,
+  onResolve: (values: string[]) => void,
+): void {
+  let teardown: (() => void) | undefined;
+  let popover: { close(): void } | null = null;
+  const host: ArgumentWidgetEditorHost = {
+    resolve: (values) => {
+      onResolve(values);
+      popover?.close();
+    },
+    cancel: () => popover?.close(),
+  };
+  popover = openPopover(
+    anchor,
+    (container) => {
+      teardown = widget.editor.render(ctx, host, container);
+    },
+    () => teardown?.(),
+  );
+}
+
+/** An inline chip on a filled literal, rendered from a host widget's label
+ *  data — clicking opens the host editor; resolve replaces the literal. */
+class HostEditWidget extends WidgetType {
+  constructor(
+    readonly widget: ArgumentWidget,
+    readonly type: string,
+    readonly callee: string,
+    readonly slot: SlotWidget,
+    readonly value: string,
+    readonly from: number,
+    readonly view: EditorView,
+  ) {
+    super();
+  }
+
+  eq(other: HostEditWidget): boolean {
+    return (
+      other.type === this.type && other.value === this.value && other.from === this.from
+    );
+  }
+
+  toDOM(): HTMLElement {
+    const el = document.createElement("span");
+    el.className = "brink-host-chip";
+    const ctx = hostContext(this.callee, this.slot, this.type, [this.value]);
+    const label = this.widget.inline?.(ctx);
+    el.textContent = label?.text ?? this.value;
+    if (label?.className) el.classList.add(label.className);
+    el.setAttribute("role", "button");
+    el.tabIndex = 0;
+    el.title = `Edit ${this.slot.param_name}`;
+    const open = (): void =>
+      openHostEditor(el, this.widget, ctx, (values) => {
+        const range = liveLiteralRange(this.view, this.from);
+        if (range && values.length > 0) {
+          this.view.dispatch({ changes: { from: range.from, to: range.to, insert: values[0] } });
+        }
+      });
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
+      }
+    });
+    return el;
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+/** A ghost on an empty slot whose type has a host widget — Fill via the host
+ *  editor; resolve inserts the literal. */
+class HostFillGhostWidget extends WidgetType {
+  constructor(
+    readonly widget: ArgumentWidget,
+    readonly type: string,
+    readonly callee: string,
+    readonly slot: SlotWidget,
+    readonly insertAt: number,
+    readonly needsComma: boolean,
+    readonly view: EditorView,
+  ) {
+    super();
+  }
+
+  eq(other: HostFillGhostWidget): boolean {
+    return (
+      other.type === this.type &&
+      other.insertAt === this.insertAt &&
+      other.needsComma === this.needsComma
+    );
+  }
+
+  toDOM(): HTMLElement {
+    const el = document.createElement("span");
+    el.className = "brink-fill-ghost";
+    el.textContent = `‹${this.slot.param_name}›`;
+    el.setAttribute("role", "button");
+    el.tabIndex = 0;
+    el.title = `Set ${this.slot.param_name}`;
+    const ctx = hostContext(this.callee, this.slot, this.type, []);
+    const open = (): void =>
+      openHostEditor(el, this.widget, ctx, (values) => {
+        if (values.length === 0) return;
+        const prefix = this.needsComma ? ", " : "";
+        this.view.dispatch({ changes: { from: this.insertAt, insert: prefix + values[0] } });
+      });
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
+      }
+    });
+    return el;
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
 /** A call-level glyph at the function name — opens the whole-call Form. */
 class FormGlyphWidget extends WidgetType {
   constructor(
@@ -411,29 +575,50 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
       let filledGhost = false; // render a ghost only for the first empty slot
       for (const slot of site.slots) {
         const kind = slot.widget;
-        if (kind === undefined || getBuiltinWidget(kind) === undefined) continue;
+        const builtin = kind !== undefined ? getBuiltinWidget(kind) : undefined;
+        const host = builtin ? undefined : matchHostWidget(slot);
+        if (builtin === undefined && host === undefined) continue;
+
         if (slot.state.kind === "filled") {
+          const widget =
+            builtin !== undefined
+              ? new EditWidget(kind!, slot.state.value, slot.state.start, view)
+              : new HostEditWidget(
+                  host!,
+                  host!.type,
+                  site.callee,
+                  slot,
+                  slot.state.value,
+                  slot.state.start,
+                  view,
+                );
           decos.push({
             pos: slot.state.start,
-            deco: Decoration.widget({
-              widget: new EditWidget(kind, slot.state.value, slot.state.start, view),
-              side: 2,
-            }),
+            deco: Decoration.widget({ widget, side: 2 }),
           });
         } else if (slot.state.kind === "empty" && !filledGhost) {
           filledGhost = true;
+          const widget =
+            builtin !== undefined
+              ? new FillGhostWidget(
+                  kind!,
+                  slot.param_name,
+                  slot.state.insert_at,
+                  slot.state.needs_leading_comma,
+                  view,
+                )
+              : new HostFillGhostWidget(
+                  host!,
+                  host!.type,
+                  site.callee,
+                  slot,
+                  slot.state.insert_at,
+                  slot.state.needs_leading_comma,
+                  view,
+                );
           decos.push({
             pos: slot.state.insert_at,
-            deco: Decoration.widget({
-              widget: new FillGhostWidget(
-                kind,
-                slot.param_name,
-                slot.state.insert_at,
-                slot.state.needs_leading_comma,
-                view,
-              ),
-              side: 2,
-            }),
+            deco: Decoration.widget({ widget, side: 2 }),
           });
         }
       }

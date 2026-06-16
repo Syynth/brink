@@ -166,6 +166,55 @@ export interface CallWidgetSite {
   slots: SlotWidget[];
 }
 
+// ── Host argument widgets (argument-widget-spec §3) ──────────────────
+//
+// Studio/host API types (not wasm-boundary types) — kept here as the shared
+// base both @brink/ink-editor (the registry) and @brink/studio-shell (the
+// `StudioExtensions.argumentWidgets` surface) import without a cross-dependency.
+
+/** Context handed to a host widget's renderers (one entry per group member). */
+export interface ArgumentWidgetContext {
+  /** The widget's semantic type / id. */
+  type: string;
+  /** The EXTERNAL being called. */
+  external: string;
+  /** Param name(s) in the group (one for a single-param widget). */
+  paramNames: string[];
+  /** Current literal value(s), quotes stripped; empty for an unfilled slot. */
+  values: string[];
+  /** Resolved inter-arg context, e.g. `{ map: "5" }` (Stage 5). */
+  context?: Record<string, string>;
+}
+
+/** The studio-provided handle a host widget editor resolves/cancels through. */
+export interface ArgumentWidgetEditorHost {
+  /** New literal value(s) for the group — the studio writes them back. */
+  resolve(values: string[]): void;
+  cancel(): void;
+}
+
+/**
+ * A host-provided argument widget. The inline chip is *studio-rendered* from
+ * label DATA (`inline` returns text + an optional CSS class); only the editor is
+ * host-rendered, into a studio-owned popover/modal via a mount-callback.
+ */
+export interface ArgumentWidget {
+  /** Semantic type / widget id this renders for. Host ids: `host.<vendor>.<name>`. */
+  type: string;
+  /** Optional inline label data — the studio draws the chip from it. */
+  inline?(ctx: ArgumentWidgetContext): { text: string; className?: string };
+  /** The editor — the only host-rendered surface. Mount the body into
+   *  `container`, resolve/cancel through `host`, and return a teardown. */
+  editor: {
+    surface?: "popover" | "modal";
+    render(
+      ctx: ArgumentWidgetContext,
+      host: ArgumentWidgetEditorHost,
+      container: HTMLElement,
+    ): () => void;
+  };
+}
+
 export interface SignatureInfo {
   label: string;
   documentation?: string;

@@ -12,6 +12,8 @@
  * resolving or cancelling through `WidgetEditorHost`.
  */
 
+import type { ArgumentWidget } from "@brink/wasm-types";
+
 /** The studio-provided handle a widget editor resolves/cancels through. */
 export interface WidgetEditorHost {
   /** The current literal value (quotes stripped), e.g. `#FF8800`. */
@@ -42,4 +44,24 @@ export function registerBuiltinWidget(widget: BuiltinWidget): void {
 /** Look up a built-in widget by kind. */
 export function getBuiltinWidget(kind: string): BuiltinWidget | undefined {
   return registry.get(kind);
+}
+
+// ── Host widgets (argument-widget-spec §3) ──────────────────────────
+//
+// Host-provided widgets (data-only inline label + mount-callback editor),
+// registered at mount from `StudioExtensions.argumentWidgets`. Kept in a
+// separate registry from built-ins: the studio renders built-in inlines as DOM
+// (the color swatch) but host inlines as a chip from label data.
+
+const hostRegistry = new Map<string, ArgumentWidget>();
+
+/** Register host argument widgets (replacing any previous set — mount-time). */
+export function setHostWidgets(widgets: readonly ArgumentWidget[]): void {
+  hostRegistry.clear();
+  for (const w of widgets) hostRegistry.set(w.type, w);
+}
+
+/** Look up a host widget by semantic type / id. */
+export function getHostWidget(type: string): ArgumentWidget | undefined {
+  return hostRegistry.get(type);
 }

@@ -156,6 +156,9 @@ importers:
 
   packages/studio-shell:
     dependencies:
+      '@brink/wasm-types':
+        specifier: workspace:*
+        version: link:../wasm-types
       '@floating-ui/react-dom':
         specifier: ^2.1.2
         version: 2.1.8(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
