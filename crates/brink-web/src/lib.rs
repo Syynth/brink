@@ -2589,8 +2589,18 @@ impl EditorSession {
                         }
                     })
                     .collect();
+                // The call-name span (UTF-16) anchors the form glyph; default to
+                // 0 if it falls outside the view (the studio guards end > start).
+                let name_start = self
+                    .to_relative(path, view, site.name_start.into())
+                    .unwrap_or(0);
+                let name_end = self
+                    .to_relative(path, view, site.name_end.into())
+                    .unwrap_or(0);
                 CallWidgetSiteJs {
                     callee: site.callee.clone(),
+                    name_start,
+                    name_end,
                     slots,
                 }
             })
@@ -3036,6 +3046,8 @@ struct ColorHintJs {
 #[derive(Serialize)]
 struct CallWidgetSiteJs {
     callee: String,
+    name_start: u32,
+    name_end: u32,
     slots: Vec<SlotWidgetJs>,
 }
 

@@ -82,6 +82,7 @@ import {
   createStudioApi,
   inkFileRef,
   loadDiagnosticsSettings,
+  loadEditorSettings,
   openPlayerSplit,
   registerCompiledOutputCommand,
   registerOpenPlayerCommand,
@@ -688,6 +689,15 @@ export async function mountStudio(
   // groups-store subscription above keeps focus tracking in sync as the
   // document component mounts).
   store.getState().initialize(project, documents);
+
+  // Restore the persisted editor settings (Settings → Editor). After initialize,
+  // so the actions reach `documents`; new views read them from slotOptions, open
+  // ones get the live switch.
+  {
+    const editor = loadEditorSettings(window.localStorage);
+    store.getState().setFormGlyph(editor.formGlyph);
+    store.getState().setAutoOpenForm(editor.autoOpenForm);
+  }
   store.getState().openTarget({ kind: "file", path: entryFile }, true);
 
   // Default layout (spec §4): the Inky two-up — entry file left, player in a

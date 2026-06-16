@@ -12,18 +12,143 @@
  * `color_hints` path.
  */
 
-import { RangeSetBuilder, type Extension } from "@codemirror/state";
+import { RangeSetBuilder, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { pickedCompletion } from "@codemirror/autocomplete";
 import {
   Decoration,
   type DecorationSet,
   EditorView,
+  keymap,
   ViewPlugin,
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
 import type { CallWidgetSite } from "@brink/wasm-types";
 import { getBuiltinWidget, type WidgetEditorHost } from "./widget-registry.js";
+import { openArgumentForm, type FormField } from "./argument-form.js";
 import "./color-widget.js"; // side-effect: registers the built-in "color" widget
+
+/**
+ * How the *inline* call-level glyph is shown (spec §6.5). Independent of the
+ * hover-card "edit arguments" action, which is always available (it costs no
+ * in-text chrome):
+ *  - `off`    — no inline glyph (the hover card + keybind + panel still launch the Form)
+ *  - `hover`  — inline glyph, revealed when the line is hovered
+ *  - `inline` — inline glyph, always visible
+ */
+export type FormGlyphMode = "off" | "hover" | "inline";
+
+/** The inline-glyph mode when none is configured — `off`, since the always-on
+ *  hover-card action already launches the Form without in-text chrome. */
+export const DEFAULT_FORM_GLYPH_MODE: FormGlyphMode = "off";
+
+// Live glyph mode: a StateField the decorations read, switched by an effect so
+// the Settings toggle reconfigures the glyph without rebuilding the editor.
+const setFormGlyphEffect = StateEffect.define<FormGlyphMode>();
+const formGlyphField = StateField.define<FormGlyphMode>({
+  create: () => DEFAULT_FORM_GLYPH_MODE,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setFormGlyphEffect)) return e.value;
+    return value;
+  },
+});
+
+/** Switch a view's inline-glyph mode live (the Settings toggle dispatches this). */
+export function setFormGlyphMode(view: EditorView, mode: FormGlyphMode): void {
+  view.dispatch({ effects: setFormGlyphEffect.of(mode) });
+}
+
+// Live auto-open flag: whether accepting a function completion opens the Form.
+const setAutoOpenEffect = StateEffect.define<boolean>();
+const autoOpenField = StateField.define<boolean>({
+  create: () => false,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setAutoOpenEffect)) return e.value;
+    return value;
+  },
+});
+
+/** Toggle a view's completion-accept auto-open live (the Settings toggle). */
+export function setFormAutoOpen(view: EditorView, on: boolean): void {
+  view.dispatch({ effects: setAutoOpenEffect.of(on) });
+}
+
+/** The form-launcher icon — a small "fields in a box" mark (currentColor). */
+export const FORM_GLYPH_ICON =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" ' +
+  'stroke-linecap="round" aria-hidden="true">' +
+  '<rect x="2.5" y="2.5" width="11" height="11" rx="2.5"/>' +
+  '<path d="M5 6h6M5 9h4"/></svg>';
+
+/**
+ * Open the whole-call Form for `site`, anchored to `anchor`. On Apply, the
+ * call's entire argument list is replaced (depth-counted paren range). Shared
+ * by the in-editor glyph and the hover-card action.
+ */
+export function openCallForm(anchor: HTMLElement, site: CallWidgetSite, view: EditorView): void {
+  const fields: FormField[] = site.slots.map((slot) => ({
+    paramName: slot.param_name,
+    typeName: slot.type_name,
+    widgetKind: slot.widget,
+    initial: slot.state.kind === "filled" ? slot.state.value : undefined,
+  }));
+  const sig = `${site.callee}(${site.slots.map((s) => s.param_name).join(", ")})`;
+  openArgumentForm(anchor, {
+    title: sig,
+    applyLabel: "Apply",
+    fields,
+    onApply: (literals) => {
+      const range = liveParenRange(view, site.name_end);
+      if (range) {
+        view.dispatch({
+          changes: { from: range.open + 1, to: range.close, insert: literals.join(", ") },
+        });
+      }
+    },
+    onCancel: () => {},
+  });
+}
+
+/**
+ * Open the Form for the call the cursor is inside (the keybinding command).
+ * Anchors a transient element at the cursor — the popover captures its rect, so
+ * it is removed immediately. Returns false (so the key falls through) when the
+ * cursor is not within a call.
+ */
+function openFormAtCursor(
+  view: EditorView,
+  getArgumentWidgets: (source: string, start: number, end: number) => CallWidgetSite[],
+): boolean {
+  const pos = view.state.selection.main.head;
+  const source = view.state.doc.toString();
+  let sites: CallWidgetSite[];
+  try {
+    sites = getArgumentWidgets(source, 0, source.length);
+  } catch {
+    return false;
+  }
+  const site = sites.find((s) => {
+    if (s.slots.length === 0) return false;
+    const range = liveParenRange(view, s.name_end);
+    const end = range ? range.close + 1 : s.name_end;
+    return pos >= s.name_start && pos <= end;
+  });
+  if (!site) return false;
+
+  const coords = view.coordsAtPos(pos);
+  const anchor = document.createElement("div");
+  anchor.style.position = "fixed";
+  if (coords) {
+    anchor.style.left = `${coords.left}px`;
+    anchor.style.top = `${coords.top}px`;
+    anchor.style.width = "1px";
+    anchor.style.height = `${Math.max(1, coords.bottom - coords.top)}px`;
+  }
+  document.body.appendChild(anchor);
+  openCallForm(anchor, site, view);
+  anchor.remove();
+  return true;
+}
 
 /**
  * The current quoted-literal range starting at `from` (the opening quote).
@@ -37,6 +162,45 @@ function liveLiteralRange(view: EditorView, from: number): { from: number; to: n
     if (doc.sliceString(i, i + 1) === '"') return { from, to: i + 1 };
   }
   return null;
+}
+
+/**
+ * The call's parenthesis range, scanning from just after the function name
+ * (`nameEnd`) — only whitespace may sit between the name and `(`. Returns the
+ * `(` and matching `)` positions (depth-counted, so nested calls in args are
+ * handled). The form replaces `[open+1, close)` with the composed arg list.
+ */
+function liveParenRange(view: EditorView, nameEnd: number): { open: number; close: number } | null {
+  const doc = view.state.doc;
+  let open = -1;
+  for (let i = nameEnd; i < doc.length; i++) {
+    const c = doc.sliceString(i, i + 1);
+    if (c === "(") {
+      open = i;
+      break;
+    }
+    if (c !== " " && c !== "\t") return null;
+  }
+  if (open < 0) return null;
+  let depth = 0;
+  for (let i = open; i < doc.length; i++) {
+    const c = doc.sliceString(i, i + 1);
+    if (c === "(") depth++;
+    else if (c === ")") {
+      depth--;
+      if (depth === 0) return { open, close: i };
+    }
+  }
+  return null;
+}
+
+/** A stable key for a call site — so the glyph reuses its DOM until the call's
+ *  identity or slot values change. */
+function siteKey(site: CallWidgetSite): string {
+  const slots = site.slots
+    .map((s) => `${s.param_name}:${s.state.kind === "filled" ? s.state.value : s.state.kind}`)
+    .join(",");
+  return `${site.name_end}|${site.callee}|${slots}`;
 }
 
 /** An inline editor affordance on a filled literal — Edit (replace in place). */
@@ -173,8 +337,49 @@ class FillGhostWidget extends WidgetType {
   }
 }
 
+/** A call-level glyph at the function name — opens the whole-call Form. */
+class FormGlyphWidget extends WidgetType {
+  constructor(
+    readonly site: CallWidgetSite,
+    readonly mode: FormGlyphMode,
+    readonly view: EditorView,
+  ) {
+    super();
+  }
+
+  eq(other: FormGlyphWidget): boolean {
+    return other.mode === this.mode && siteKey(other.site) === siteKey(this.site);
+  }
+
+  toDOM(): HTMLElement {
+    const el = document.createElement("span");
+    el.className =
+      this.mode === "hover" ? "brink-form-glyph brink-form-glyph--hover" : "brink-form-glyph";
+    el.innerHTML = FORM_GLYPH_ICON;
+    el.setAttribute("role", "button");
+    el.tabIndex = 0;
+    el.title = `Edit ${this.site.callee}(…)`;
+    el.addEventListener("click", () => openCallForm(el, this.site, this.view));
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openCallForm(el, this.site, this.view);
+      }
+    });
+    return el;
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
 export interface ArgumentWidgetsOptions {
   getArgumentWidgets: (source: string, start: number, end: number) => CallWidgetSite[];
+  /** How the inline call-level form glyph is shown. Default `off`. */
+  formGlyph?: FormGlyphMode;
+  /** Accepting a function completion inserts `()` + opens the Form. Default false. */
+  autoOpen?: boolean;
 }
 
 export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Extension {
@@ -189,8 +394,20 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
 
     // Collect (pos, side, deco) then sort — Fill ghosts and Edit swatches can
     // interleave across calls, and RangeSetBuilder needs sorted input.
+    const glyphMode = view.state.field(formGlyphField);
     const decos: { pos: number; deco: Decoration }[] = [];
     for (const site of sites) {
+      // Call-level form glyph, just after the function name (`off` shows none —
+      // the always-on hover-card action launches the Form without it).
+      if ((glyphMode === "inline" || glyphMode === "hover") && site.slots.length > 0) {
+        decos.push({
+          pos: site.name_end,
+          deco: Decoration.widget({
+            widget: new FormGlyphWidget(site, glyphMode, view),
+            side: 1,
+          }),
+        });
+      }
       let filledGhost = false; // render a ghost only for the first empty slot
       for (const slot of site.slots) {
         const kind = slot.widget;
@@ -231,18 +448,58 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
     return builder.finish();
   };
 
-  return ViewPlugin.fromClass(
+  const plugin = ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
       constructor(view: EditorView) {
         this.decorations = build(view);
       }
       update(update: ViewUpdate): void {
-        if (update.docChanged || update.viewportChanged) {
+        const modeChanged =
+          update.startState.field(formGlyphField) !== update.state.field(formGlyphField);
+        if (update.docChanged || update.viewportChanged || modeChanged) {
           this.decorations = build(update.view);
         }
       }
     },
     { decorations: (v) => v.decorations },
   );
+
+  // Mod-Shift-A opens the Form for the call the cursor is inside.
+  const keys = keymap.of([
+    {
+      key: "Mod-Shift-a",
+      run: (view) => openFormAtCursor(view, options.getArgumentWidgets),
+    },
+  ]);
+
+  // Auto-open: accepting a function/method completion inserts `()` and opens the
+  // Form. Deferred out of the update listener (dispatch isn't allowed in it) so
+  // the inserted parens are parsed before we query for the call.
+  const autoOpen = EditorView.updateListener.of((update) => {
+    if (!update.state.field(autoOpenField)) return;
+    const view = update.view;
+    for (const tr of update.transactions) {
+      const picked = tr.annotation(pickedCompletion);
+      if (!picked || (picked.type !== "function" && picked.type !== "method")) continue;
+      setTimeout(() => {
+        const pos = view.state.selection.main.head;
+        const doc = view.state.doc;
+        const nextChar = pos < doc.length ? doc.sliceString(pos, pos + 1) : "";
+        if (nextChar !== "(") {
+          view.dispatch({ changes: { from: pos, insert: "()" }, selection: { anchor: pos + 1 } });
+        }
+        openFormAtCursor(view, options.getArgumentWidgets);
+      }, 0);
+      break;
+    }
+  });
+
+  return [
+    formGlyphField.init(() => options.formGlyph ?? DEFAULT_FORM_GLYPH_MODE),
+    autoOpenField.init(() => options.autoOpen ?? false),
+    plugin,
+    keys,
+    autoOpen,
+  ];
 }

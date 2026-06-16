@@ -25,6 +25,7 @@
 import { useStudioApi, type StudioApi } from "@brink/studio-ui";
 import type { StudioExtensions } from "@brink/studio-shell";
 import type { HostManifest } from "@brink/wasm-types";
+import { openArgumentForm, type FormField } from "@brink/ink-editor";
 
 export const EXAMPLE_TOOL_WINDOW_ID = "host.example.functions";
 export const EXAMPLE_REVEAL_COMMAND_ID = "host.example.revealStart";
@@ -126,12 +127,14 @@ export interface HostFunctionItem {
   name: string;
   /** Display signature, e.g. `has_item(item: item_id) -> bool`. */
   signature: string;
-  /** The call snippet inserted on click — a call site only, no `EXTERNAL`. */
+  /** The call snippet inserted on a skeleton (modifier-click) — no `EXTERNAL`. */
   call: string;
   /** The manifest doc comment ("" when the entry carries none). */
   doc: string;
   /** The manifest kind tag ("query" | "effect" | "presentation" | "plain"). */
   kind: string;
+  /** Form fields, one per param (widget kind resolved from the manifest types). */
+  fields: FormField[];
 }
 
 /**
@@ -139,6 +142,7 @@ export interface HostFunctionItem {
  * renders exactly what the manifest registered, nothing else.
  */
 export function manifestPanelItems(manifest: HostManifest): HostFunctionItem[] {
+  const types = manifest.types ?? [];
   return (manifest.externals ?? []).map((ext) => {
     const params = ext.params ?? [];
     const sigParams = params
@@ -147,12 +151,17 @@ export function manifestPanelItems(manifest: HostManifest): HostFunctionItem[] {
     const returns =
       ext.returns !== undefined && ext.returns !== "void" ? ` -> ${ext.returns}` : "";
     const args = params.map((p) => p.name).join(", ");
+    const fields: FormField[] = params.map((p) => {
+      const typeDef = p.ty !== undefined ? types.find((t) => t.name === p.ty) : undefined;
+      return { paramName: p.name, typeName: p.ty, widgetKind: typeDef?.widget?.kind ?? undefined };
+    });
     return {
       name: ext.name,
       signature: `${ext.name}(${sigParams})${returns}`,
       call: `~ ${ext.name}(${args})\n`,
       doc: ext.doc ?? "",
       kind: ext.kind ?? "plain",
+      fields,
     };
   });
 }
@@ -163,7 +172,8 @@ function HostFunctionsPanel() {
   const api = useStudioApi();
   const items = manifestPanelItems(EXAMPLE_HOST_MANIFEST);
 
-  const insert = (item: HostFunctionItem): void => {
+  /** Insert a bare skeleton (`~ fn(a, b)`) at the cursor — the quick path. */
+  const insertSkeleton = (item: HostFunctionItem): void => {
     api.insertText(item.call);
     api.notify({
       severity: "info",
@@ -172,11 +182,35 @@ function HostFunctionsPanel() {
     });
   };
 
+  /** Click → compose the call in the Form, then insert the completed call.
+   *  Modifier-click (Alt) → the bare-skeleton quick path. Zero-param calls and
+   *  manifests without `@brink/ink-editor`'s Form just insert the skeleton. */
+  const launch = (item: HostFunctionItem, anchor: HTMLElement, quick: boolean): void => {
+    if (quick || item.fields.length === 0) {
+      insertSkeleton(item);
+      return;
+    }
+    openArgumentForm(anchor, {
+      title: item.signature,
+      applyLabel: "Insert",
+      fields: item.fields,
+      onApply: (literals) => {
+        api.insertText(`~ ${item.name}(${literals.join(", ")})\n`);
+        api.notify({
+          severity: "info",
+          source: "example host",
+          message: `Inserted ${item.name}(${literals.join(", ")})`,
+        });
+      },
+      onCancel: () => {},
+    });
+  };
+
   return (
     <div className="host-example-panel" style={{ padding: 8, overflow: "auto", height: "100%" }}>
       <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--bs-fg-muted)" }}>
         Functions the host provides (already declared in the story) — click to
-        insert a call at the cursor.
+        compose a call in the form, or Alt-click to insert a skeleton.
       </p>
       <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
         {items.map((item) => (
@@ -184,8 +218,8 @@ function HostFunctionsPanel() {
             <button
               type="button"
               className="host-example-fn"
-              onClick={() => insert(item)}
-              title={`${item.kind} — inserts ${item.call.trim()}`}
+              onClick={(e) => launch(item, e.currentTarget, e.altKey)}
+              title={`${item.kind} — ${item.fields.length > 0 ? "compose" : "insert"} ${item.name}(…) · Alt-click for a skeleton`}
               style={{
                 display: "block",
                 width: "100%",

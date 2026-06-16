@@ -160,6 +160,9 @@ export interface SlotWidget {
 /** A call site with a per-parameter widget slot (argument-widget spec §4). */
 export interface CallWidgetSite {
   callee: string;
+  /** The call-name span (UTF-16) — anchors the form glyph. */
+  name_start: number;
+  name_end: number;
   slots: SlotWidget[];
 }
 

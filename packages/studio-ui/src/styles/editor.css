@@ -161,6 +161,33 @@
 }
 .brink-studio .cm-diagnostic-error { border-left-color: var(--bs-error); }
 .brink-studio .cm-diagnostic-warning { border-left-color: var(--bs-warning); }
+/* Diagnostic hover tooltips (the "argument count mismatch" popups). The chrome
+   (radius/shadow) comes from .cm-tooltip; this lays out each message. */
+.brink-studio .cm-tooltip.cm-tooltip-lint {
+  padding: 0;
+}
+.brink-studio .cm-tooltip-lint .cm-diagnostic {
+  margin: 0;
+  padding: 8px 12px 8px 10px;
+  border-left: 3px solid var(--bs-error);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--bs-fg);
+}
+.brink-studio .cm-tooltip-lint .cm-diagnostic + .cm-diagnostic {
+  border-top: 1px solid color-mix(in srgb, var(--bs-border) 55%, transparent);
+}
+.brink-studio .cm-tooltip-lint .cm-diagnostic-error {
+  border-left-color: var(--bs-error);
+}
+.brink-studio .cm-tooltip-lint .cm-diagnostic-warning {
+  border-left-color: var(--bs-warning);
+}
+.brink-studio .cm-tooltip-lint .cm-diagnostic code,
+.brink-studio .cm-tooltip-lint .cm-diagnostic strong {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.92em;
+}
 /* CM6 chrome — panels (search), buttons, fields, tooltips, match
    highlights. CM6 ships hardcoded light/dark base styles; the brink theme
    no longer pins `dark: true`, so every visible piece of chrome is themed
@@ -229,6 +256,9 @@
 .brink-studio .cm-editor .cm-tooltip {
   background: var(--bs-panel-bg);
   border: 1px solid var(--bs-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
   color: var(--bs-fg);
 }
 .brink-studio .cm-editor .cm-tooltip-autocomplete ul li[aria-selected] {
@@ -243,25 +273,64 @@
   color: var(--bs-fg-muted);
 }
 
-/* Hover tooltip */
+/* Hover tooltip — chrome comes from .cm-tooltip; this lays out the content. */
 .brink-studio .brink-hover-tooltip {
-  background: var(--bs-panel-bg);
-  border: 1px solid var(--bs-border);
-  border-radius: 4px;
-  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  padding: 9px 12px;
   font-size: 13px;
-  max-width: 500px;
+  max-width: 460px;
+  line-height: 1.55;
+}
+/* The signature line (first) reads as a header, set off from the doc. */
+.brink-studio .brink-hover-tooltip > div:first-child {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 12.5px;
   line-height: 1.5;
+  padding-bottom: 6px;
+  margin-bottom: 1px;
+  border-bottom: 1px solid color-mix(in srgb, var(--bs-border) 55%, transparent);
 }
 .brink-studio .brink-hover-tooltip code {
   background: var(--bs-surface-bg);
-  padding: 1px 4px;
-  border-radius: 2px;
+  padding: 1px 5px;
+  border-radius: 3px;
   font-family: "JetBrains Mono", "Fira Code", monospace;
-  font-size: 12px;
+  font-size: 0.92em;
 }
 .brink-studio .brink-hover-tooltip strong {
   color: var(--bs-accent);
+  font-weight: 600;
+}
+.brink-studio .brink-hover-tooltip em {
+  color: var(--bs-fg-muted);
+  font-size: 12px;
+}
+/* The "Edit arguments" action folded into the hover card (hovercard mode). */
+.brink-studio .brink-hover-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  margin-top: 3px;
+  padding: 4px 9px;
+  font-size: 12px;
+  color: var(--bs-fg);
+  background: var(--bs-surface-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.brink-studio .brink-hover-action:hover {
+  border-color: var(--bs-accent);
+  color: var(--bs-accent);
+}
+.brink-studio .brink-hover-action svg {
+  width: 13px;
+  height: 13px;
 }
 /* Inlay hints */
 .brink-studio .brink-inlay-hint {
@@ -307,6 +376,45 @@
   opacity: 1;
   outline: 1px solid var(--bs-accent, var(--bs-border));
   outline-offset: 1px;
+}
+
+/* Call-level form glyph (argument-widget-spec §1.1, §6.5): a small icon button
+   just after the function name that opens the whole-call Form. Prototyped
+   variants — always-visible, and hover-revealed (shown only on line hover). */
+.brink-studio .brink-form-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15em;
+  height: 1.15em;
+  margin: 0 1px 0 3px;
+  vertical-align: -0.22em;
+  color: var(--bs-fg-muted);
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.55;
+  transition:
+    opacity 0.1s ease,
+    color 0.1s ease,
+    background 0.1s ease;
+}
+.brink-studio .brink-form-glyph svg {
+  width: 0.92em;
+  height: 0.92em;
+}
+.brink-studio .brink-form-glyph:hover {
+  opacity: 1;
+  color: var(--bs-accent, var(--bs-fg));
+  background: color-mix(in srgb, var(--bs-accent, var(--bs-fg-muted)) 16%, transparent);
+}
+.brink-studio .brink-form-glyph--hover {
+  opacity: 0;
+}
+.brink-studio .cm-line:hover .brink-form-glyph--hover {
+  opacity: 0.55;
+}
+.brink-studio .cm-line:hover .brink-form-glyph--hover:hover {
+  opacity: 1;
 }
 
 /* Studio-owned popover chrome for widget editors. */
@@ -405,6 +513,81 @@
 .brink-cp-preset:hover {
   outline: 1px solid var(--bs-accent, #888);
   outline-offset: 1px;
+}
+
+/* The argument Form (argument-widget-spec §1.1) — one field per parameter. */
+.brink-arg-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+  font: inherit;
+}
+.brink-arg-form-title {
+  font-family: var(--bs-font-mono, monospace);
+  font-size: 12px;
+  color: var(--bs-fg-muted, #aaa);
+  border-bottom: 1px solid var(--bs-border, #444);
+  padding-bottom: 6px;
+}
+.brink-arg-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.brink-arg-form-label {
+  flex: 0 0 auto;
+  min-width: 84px;
+  font-size: 12px;
+  color: var(--bs-fg, #ddd);
+  font-style: italic;
+}
+.brink-arg-form-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+.brink-arg-form-input,
+.brink-arg-form .brink-cp-hex {
+  flex: 1;
+  min-width: 90px;
+  font-family: var(--bs-font-mono, monospace);
+  font-size: 12px;
+  padding: 4px 6px;
+  background: var(--bs-surface-bg, #2a2a3a);
+  color: var(--bs-fg, #eee);
+  border: 1px solid var(--bs-border, #444);
+  border-radius: 4px;
+}
+.brink-arg-form-picker {
+  flex: 1 0 100%;
+  margin-top: 4px;
+}
+.brink-arg-form-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+.brink-arg-form-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--bs-border, #444);
+  background: var(--bs-surface-bg, #2a2a3a);
+  color: var(--bs-fg, #eee);
+  cursor: pointer;
+}
+.brink-arg-form-btn:hover {
+  border-color: var(--bs-accent, #888);
+}
+.brink-arg-form-btn-primary {
+  background: var(--bs-accent, #3b6ea5);
+  border-color: var(--bs-accent, #3b6ea5);
+  color: #fff;
 }
 /* Signature help */
 .brink-studio .brink-signature-help {

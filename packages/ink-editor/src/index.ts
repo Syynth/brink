@@ -2,6 +2,12 @@
 export { brinkStudio } from "./extensions.js";
 export type { BrinkStudioOptions } from "./extensions.js";
 
+// Argument Form (argument-widget spec §1.2) — opened from the in-editor glyph
+// and from a host's tool windows (e.g. the Host Functions panel launcher).
+export { openArgumentForm } from "./argument-form.js";
+export type { FormField, ArgumentFormOptions } from "./argument-form.js";
+export type { FormGlyphMode } from "./argument-widgets.js";
+
 // Types for line classification
 export { elementTypeField, ElementType } from "./element-type.js";
 export type { LineInfo } from "./element-type.js";

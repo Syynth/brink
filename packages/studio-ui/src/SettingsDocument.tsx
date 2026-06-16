@@ -107,6 +107,51 @@ export function saveDiagnosticsSettings(
   }
 }
 
+// ── Editor persistence ──────────────────────────────────────────────
+
+export const EDITOR_STORAGE_KEY = "brink-studio.editor.v1";
+
+export type FormGlyphMode = "off" | "hover" | "inline";
+
+export interface EditorSettings {
+  formGlyph: FormGlyphMode;
+  autoOpenForm: boolean;
+}
+
+const DEFAULT_EDITOR: EditorSettings = { formGlyph: "off", autoOpenForm: false };
+
+/** Load persisted editor settings. Never throws; defaults on garbage. */
+export function loadEditorSettings(storage: Pick<Storage, "getItem">): EditorSettings {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(EDITOR_STORAGE_KEY);
+  } catch {
+    return DEFAULT_EDITOR;
+  }
+  if (raw === null || raw === "") return DEFAULT_EDITOR;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return DEFAULT_EDITOR;
+  }
+  const obj = parsed as { formGlyph?: unknown; autoOpenForm?: unknown } | null;
+  const glyph = obj?.formGlyph === "hover" || obj?.formGlyph === "inline" ? obj.formGlyph : "off";
+  return { formGlyph: glyph, autoOpenForm: obj?.autoOpenForm === true };
+}
+
+/** Persist editor settings. Storage failures degrade to in-session. */
+export function saveEditorSettings(
+  storage: Pick<Storage, "setItem">,
+  settings: EditorSettings,
+): void {
+  try {
+    storage.setItem(EDITOR_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Quota/denied storage — the setting still applies for this session.
+  }
+}
+
 // ── Sections ────────────────────────────────────────────────────────
 
 function ThemeSection() {
@@ -219,11 +264,66 @@ function DiagnosticsSection() {
   );
 }
 
+function EditorSection() {
+  const formGlyph = useStudioStore((s) => s.formGlyph);
+  const setFormGlyph = useStudioStore((s) => s.setFormGlyph);
+  const autoOpenForm = useStudioStore((s) => s.autoOpenForm);
+  const setAutoOpenForm = useStudioStore((s) => s.setAutoOpenForm);
+  const selectId = useId();
+  const autoId = useId();
+
+  const onGlyphChange = (mode: FormGlyphMode): void => {
+    setFormGlyph(mode);
+    saveEditorSettings(window.localStorage, { formGlyph: mode, autoOpenForm });
+  };
+  const onAutoChange = (on: boolean): void => {
+    setAutoOpenForm(on);
+    saveEditorSettings(window.localStorage, { formGlyph, autoOpenForm: on });
+  };
+
+  return (
+    <section className="settings-section">
+      <h2 className="settings-section-title">Editor</h2>
+      <p className="settings-section-hint">
+        The inline argument-form glyph (the clickable mark after a function name).
+        The hover card{"'"}s {'"'}edit arguments{'"'} action and the Mod-Shift-A
+        shortcut are always available regardless of this setting.
+      </p>
+      <div className="settings-field">
+        <label htmlFor={selectId}>Argument-form glyph</label>
+        <select
+          id={selectId}
+          className="settings-select"
+          value={formGlyph}
+          onChange={(event) => onGlyphChange(event.target.value as FormGlyphMode)}
+        >
+          <option value="off">Off (card + shortcut only)</option>
+          <option value="hover">On line hover</option>
+          <option value="inline">Always visible</option>
+        </select>
+      </div>
+      <div className="settings-field">
+        <label htmlFor={autoId}>
+          <input
+            id={autoId}
+            type="checkbox"
+            checked={autoOpenForm}
+            onChange={(event) => onAutoChange(event.target.checked)}
+            style={{ marginRight: 8 }}
+          />
+          Open the form when accepting a function completion
+        </label>
+      </div>
+    </section>
+  );
+}
+
 export function SettingsDocument(_props: DocumentViewProps) {
   return (
     <div className="settings-doc">
       <div className="settings-doc-inner">
         <ThemeSection />
+        <EditorSection />
         <KeymapSection />
         <DiagnosticsSection />
       </div>
