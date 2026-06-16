@@ -406,23 +406,25 @@
   gap: 4px;
   min-width: 160px;
 }
+/* Fallbacks: the call Form is a popover mounted on document.body, outside the
+   `.brink-studio` token scope, so host content embedded there must degrade. */
 .host-example-region-btn {
   text-align: left;
   padding: 6px 10px;
   font: inherit;
   font-size: 13px;
-  color: var(--bs-fg);
-  background: var(--bs-surface-bg);
-  border: 1px solid var(--bs-border);
+  color: var(--bs-fg, #eee);
+  background: var(--bs-surface-bg, #2a2a3a);
+  border: 1px solid var(--bs-border, #444);
   border-radius: 5px;
   cursor: pointer;
 }
 .host-example-region-btn:hover {
-  border-color: var(--bs-accent, var(--bs-border));
+  border-color: var(--bs-accent, #3b6ea5);
 }
 .host-example-region-btn[aria-current="true"] {
-  border-color: var(--bs-accent, var(--bs-border));
-  color: var(--bs-accent, var(--bs-fg));
+  border-color: var(--bs-accent, #3b6ea5);
+  color: var(--bs-accent, #6a9fd4);
 }
 
 /* The example host's modal map-point editor (arg-group + modal + context). */
@@ -433,7 +435,7 @@
 }
 .host-example-map-title {
   font-size: 13px;
-  color: var(--bs-fg-muted);
+  color: var(--bs-fg-muted, #aaa);
 }
 .host-example-map-grid {
   display: grid;
@@ -443,17 +445,17 @@
   width: 22px;
   height: 22px;
   padding: 0;
-  background: var(--bs-surface-bg);
-  border: 1px solid var(--bs-border);
+  background: var(--bs-surface-bg, #2a2a3a);
+  border: 1px solid var(--bs-border, #444);
   border-radius: 3px;
   cursor: pointer;
 }
 .host-example-map-cell:hover {
-  background: color-mix(in srgb, var(--bs-accent, var(--bs-fg-muted)) 30%, transparent);
+  background: color-mix(in srgb, var(--bs-accent, #3b6ea5) 30%, transparent);
 }
 .host-example-map-cell[aria-current="true"] {
-  background: var(--bs-accent, var(--bs-fg-muted));
-  border-color: var(--bs-accent, var(--bs-fg-muted));
+  background: var(--bs-accent, #3b6ea5);
+  border-color: var(--bs-accent, #3b6ea5);
 }
 
 /* Call-level form glyph (argument-widget-spec §1.1, §6.5): a small icon button
