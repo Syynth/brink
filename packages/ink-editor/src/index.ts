@@ -5,7 +5,7 @@ export type { BrinkStudioOptions } from "./extensions.js";
 // Argument Form (argument-widget spec §1.2) — opened from the in-editor glyph
 // and from a host's tool windows (e.g. the Host Functions panel launcher).
 export { openArgumentForm } from "./argument-form.js";
-export type { FormField, ArgumentFormOptions } from "./argument-form.js";
+export type { FormField, FormGroup, ArgumentFormOptions } from "./argument-form.js";
 export type { FormGlyphMode } from "./argument-widgets.js";
 // Host argument widgets (argument-widget-spec §3): registered at mount from
 // StudioExtensions.argumentWidgets.

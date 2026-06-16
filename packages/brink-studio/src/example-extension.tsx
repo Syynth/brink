@@ -25,7 +25,7 @@
 import { useStudioApi, type StudioApi } from "@brink/studio-ui";
 import type { StudioExtensions } from "@brink/studio-shell";
 import type { HostManifest, ArgumentWidget } from "@brink/wasm-types";
-import { openArgumentForm, type FormField } from "@brink/ink-editor";
+import { openArgumentForm, type FormField, type FormGroup } from "@brink/ink-editor";
 
 export const EXAMPLE_TOOL_WINDOW_ID = "host.example.functions";
 export const EXAMPLE_REVEAL_COMMAND_ID = "host.example.revealStart";
@@ -176,16 +176,23 @@ export interface HostFunctionItem {
   doc: string;
   /** The manifest kind tag ("query" | "effect" | "presentation" | "plain"). */
   kind: string;
-  /** Form fields, one per param (widget kind resolved from the manifest types). */
+  /** Form fields, one per non-grouped param (widget/value-list from the types). */
   fields: FormField[];
+  /** Arg-group widgets (spec §2) spanning several params. */
+  groups: FormGroup[];
 }
 
 /**
- * Derive the panel's rows from a host-capability manifest. Pure — the panel
- * renders exactly what the manifest registered, nothing else.
+ * Derive the panel's rows from a host-capability manifest + the host's argument
+ * widgets. Pure — the panel renders exactly what the host registered. Composing
+ * a fresh call has no existing arguments, so every control starts empty.
  */
-export function manifestPanelItems(manifest: HostManifest): HostFunctionItem[] {
+export function manifestPanelItems(
+  manifest: HostManifest,
+  widgets: ArgumentWidget[] = [],
+): HostFunctionItem[] {
   const types = manifest.types ?? [];
+  const widgetByType = new Map(widgets.map((w) => [w.type, w]));
   return (manifest.externals ?? []).map((ext) => {
     const params = ext.params ?? [];
     const sigParams = params
@@ -194,10 +201,41 @@ export function manifestPanelItems(manifest: HostManifest): HostFunctionItem[] {
     const returns =
       ext.returns !== undefined && ext.returns !== "void" ? ` -> ${ext.returns}` : "";
     const args = params.map((p) => p.name).join(", ");
-    const fields: FormField[] = params.map((p) => {
+
+    // Arg-group widgets with a resolved host widget; their members are then
+    // rendered by the group control, not as individual fields.
+    const grouped = new Set<number>();
+    const groups: FormGroup[] = [];
+    for (const w of ext.widgets ?? []) {
+      const hostWidget = widgetByType.get(w.type);
+      if (hostWidget === undefined) continue;
+      for (const idx of w.group) grouped.add(idx);
+      groups.push({
+        paramIndices: w.group,
+        paramNames: w.group.map((i) => params[i]?.name ?? `arg${i}`),
+        typeName: w.type,
+        hostWidget,
+        surface: w.surface,
+        initialValues: [],
+        contextParams: w.context,
+      });
+    }
+
+    const fields: FormField[] = [];
+    params.forEach((p, i) => {
+      if (grouped.has(i)) return;
       const typeDef = p.ty !== undefined ? types.find((t) => t.name === p.ty) : undefined;
-      return { paramName: p.name, typeName: p.ty, widgetKind: typeDef?.widget?.kind ?? undefined };
+      const kind = typeDef?.widget?.kind;
+      fields.push({
+        paramName: p.name,
+        paramIndex: i,
+        typeName: p.ty,
+        widgetKind: kind ?? undefined,
+        values: typeDef?.values?.source === "static" ? typeDef.values.items : undefined,
+        hostWidget: kind !== undefined ? widgetByType.get(kind) : undefined,
+      });
     });
+
     return {
       name: ext.name,
       signature: `${ext.name}(${sigParams})${returns}`,
@@ -205,6 +243,7 @@ export function manifestPanelItems(manifest: HostManifest): HostFunctionItem[] {
       doc: ext.doc ?? "",
       kind: ext.kind ?? "plain",
       fields,
+      groups,
     };
   });
 }
@@ -310,7 +349,10 @@ export const EXAMPLE_MAP_POINT_WIDGET: ArgumentWidget = {
 
 function HostFunctionsPanel() {
   const api = useStudioApi();
-  const items = manifestPanelItems(EXAMPLE_HOST_MANIFEST);
+  const items = manifestPanelItems(EXAMPLE_HOST_MANIFEST, [
+    EXAMPLE_REGION_WIDGET,
+    EXAMPLE_MAP_POINT_WIDGET,
+  ]);
 
   /** Insert a bare skeleton (`~ fn(a, b)`) at the cursor — the quick path. */
   const insertSkeleton = (item: HostFunctionItem): void => {
@@ -326,14 +368,16 @@ function HostFunctionsPanel() {
    *  Modifier-click (Alt) → the bare-skeleton quick path. Zero-param calls and
    *  manifests without `@brink/ink-editor`'s Form just insert the skeleton. */
   const launch = (item: HostFunctionItem, anchor: HTMLElement, quick: boolean): void => {
-    if (quick || item.fields.length === 0) {
+    if (quick || (item.fields.length === 0 && item.groups.length === 0)) {
       insertSkeleton(item);
       return;
     }
     openArgumentForm(anchor, {
       title: item.signature,
+      external: item.name,
       applyLabel: "Insert",
       fields: item.fields,
+      groups: item.groups,
       onApply: (literals) => {
         api.insertText(`~ ${item.name}(${literals.join(", ")})\n`);
         api.notify({

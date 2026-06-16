@@ -9,8 +9,12 @@ import { describe, expect, it } from "vitest";
 import type { HostManifest } from "@brink/wasm-types";
 import {
   EXAMPLE_HOST_MANIFEST,
+  EXAMPLE_MAP_POINT_WIDGET,
+  EXAMPLE_REGION_WIDGET,
   manifestPanelItems,
 } from "../example-extension.js";
+
+const EXAMPLE_WIDGETS = [EXAMPLE_REGION_WIDGET, EXAMPLE_MAP_POINT_WIDGET];
 
 describe("manifestPanelItems", () => {
   it("maps a manifest entry to name, typed signature, doc, and kind", () => {
@@ -50,7 +54,15 @@ describe("manifestPanelItems", () => {
   it("tolerates sparse manifest entries (no params/returns/doc/kind)", () => {
     const sparse: HostManifest = { externals: [{ name: "ping" }] };
     expect(manifestPanelItems(sparse)).toEqual([
-      { name: "ping", signature: "ping()", call: "~ ping()\n", doc: "", kind: "plain", fields: [] },
+      {
+        name: "ping",
+        signature: "ping()",
+        call: "~ ping()\n",
+        doc: "",
+        kind: "plain",
+        fields: [],
+        groups: [],
+      },
     ]);
   });
 
@@ -63,10 +75,30 @@ describe("manifestPanelItems", () => {
     // set_tint(color: hex_color) — hex_color declares the `color` widget.
     const setTint = items.find((i) => i.name === "set_tint");
     expect(setTint?.fields).toEqual([
-      { paramName: "color", typeName: "hex_color", widgetKind: "color" },
+      { paramName: "color", paramIndex: 0, typeName: "hex_color", widgetKind: "color" },
     ]);
     // show_picture(name, x, y) — plain types, no widgets → text fields.
     const showPicture = items.find((i) => i.name === "show_picture");
     expect(showPicture?.fields.map((f) => f.widgetKind)).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("resolves value-lists, host widgets, and arg-groups from the host widgets", () => {
+    const items = manifestPanelItems(EXAMPLE_HOST_MANIFEST, EXAMPLE_WIDGETS);
+    // teleport(map: map_id, x, y) — map is a value-list; (x, y) is a group.
+    const teleport = items.find((i) => i.name === "teleport");
+    const mapField = teleport?.fields.find((f) => f.paramName === "map");
+    expect(mapField?.values?.map((v) => v.label)).toEqual(["Harbor", "Old Temple", "Catacombs"]);
+    // x and y are folded into one group control, not individual fields.
+    expect(teleport?.fields.map((f) => f.paramName)).toEqual(["map"]);
+    expect(teleport?.groups).toHaveLength(1);
+    expect(teleport?.groups[0]).toMatchObject({
+      paramIndices: [1, 2],
+      paramNames: ["x", "y"],
+      typeName: "map_point",
+      contextParams: { map: 0 },
+    });
+    // go_region(region: region_id) — a host widget, not a plain field.
+    const region = items.find((i) => i.name === "go_region")?.fields[0];
+    expect(region?.hostWidget?.type).toBe("host.example.region");
   });
 });
