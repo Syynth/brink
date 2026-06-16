@@ -53,3 +53,6 @@ export { convertLineToType, CONVERTIBLE_TYPES, extractLineContent, getLineSigilR
 // Transition helpers (for external update listeners)
 export { getHintsForElement, lineHasContent, buildContext } from "./transitions.js";
 export type { ElementConverter } from "./transitions.js";
+
+// Completion kind → CodeMirror completion type (icon + auto-open keying)
+export { completionType } from "./completions.js";
