@@ -52,7 +52,9 @@ export default defineConfig(({ command }) => ({
   server: {
     port: 5180,
     fs: {
-      allow: [wasmPkgPath, ".", ".."],
+      // `../..` is the monorepo root — lets the dev server serve workspace deps
+      // from the pnpm store (e.g. the self-hosted @fontsource woff2, #155).
+      allow: [wasmPkgPath, ".", "..", "../.."],
     },
   },
   optimizeDeps: {
