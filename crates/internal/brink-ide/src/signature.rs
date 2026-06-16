@@ -221,6 +221,8 @@ mod tests {
                 returns: TypeRef::default(),
                 kind: ExternalKind::Effect,
                 doc: None,
+
+                widgets: vec![],
             }],
             types: vec![SemanticTypeDef {
                 name: "switch_id".into(),
@@ -280,6 +282,8 @@ mod tests {
                 returns: TypeRef::default(),
                 kind: ExternalKind::Effect,
                 doc: None,
+
+                widgets: vec![],
             }],
             types: vec![SemanticTypeDef {
                 name: "item_id".into(),

@@ -2597,16 +2597,67 @@ impl EditorSession {
                 let name_end = self
                     .to_relative(path, view, site.name_end.into())
                     .unwrap_or(0);
+
+                // Arg-group widgets (UTF-16); a group with an out-of-view span is
+                // dropped (it stays a per-slot affordance).
+                let groups: Vec<GroupWidgetSiteJs> = site
+                    .groups
+                    .iter()
+                    .filter_map(|g| self.group_widget_js(path, view, g))
+                    .collect();
+
                 CallWidgetSiteJs {
                     callee: site.callee.clone(),
                     name_start,
                     name_end,
                     slots,
+                    groups,
                 }
             })
             .collect();
 
         serde_json::to_string(&out).unwrap_or_default()
+    }
+
+    /// Map one arg-group widget to its JSON shape (UTF-16); `None` when a span
+    /// falls outside the view (the group degrades to per-slot affordances).
+    fn group_widget_js(
+        &self,
+        path: &str,
+        view: Option<&ViewContext>,
+        g: &brink_ide::argument_widgets::GroupWidgetSite,
+    ) -> Option<GroupWidgetSiteJs> {
+        use brink_ide::argument_widgets::GroupState;
+        let state = match &g.state {
+            GroupState::Filled { spans, values } => {
+                let mut js_spans = Vec::with_capacity(spans.len());
+                for (s, e) in spans {
+                    js_spans.push((
+                        self.to_relative(path, view, (*s).into())?,
+                        self.to_relative(path, view, (*e).into())?,
+                    ));
+                }
+                GroupStateJs::Filled {
+                    spans: js_spans,
+                    values: values.clone(),
+                }
+            }
+            GroupState::Empty {
+                insert_at,
+                needs_leading_comma,
+            } => GroupStateJs::Empty {
+                insert_at: self.to_relative(path, view, (*insert_at).into())?,
+                needs_leading_comma: *needs_leading_comma,
+            },
+        };
+        Some(GroupWidgetSiteJs {
+            ty: g.ty.clone(),
+            surface: g.surface.clone(),
+            param_indices: g.param_indices.clone(),
+            param_names: g.param_names.clone(),
+            state,
+            context: g.context.iter().cloned().collect(),
+        })
     }
 
     fn signature_help_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
@@ -3049,6 +3100,32 @@ struct CallWidgetSiteJs {
     name_start: u32,
     name_end: u32,
     slots: Vec<SlotWidgetJs>,
+    groups: Vec<GroupWidgetSiteJs>,
+}
+
+#[derive(Serialize)]
+struct GroupWidgetSiteJs {
+    #[serde(rename = "type")]
+    ty: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    surface: Option<String>,
+    param_indices: Vec<u32>,
+    param_names: Vec<String>,
+    state: GroupStateJs,
+    context: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum GroupStateJs {
+    Filled {
+        spans: Vec<(u32, u32)>,
+        values: Vec<String>,
+    },
+    Empty {
+        insert_at: u32,
+        needs_leading_comma: bool,
+    },
 }
 
 #[derive(Serialize)]

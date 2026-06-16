@@ -23,17 +23,20 @@ EXTERNAL show_picture(name, x, y)
 EXTERNAL party_size()
 EXTERNAL set_tint(color)
 EXTERNAL go_region(region)
+EXTERNAL teleport(map, x, y)
 
 -> intro
 
 // Argument-widget demo. \`color\` (hex_color) is a studio built-in widget; the
 // filled call shows a swatch (Edit), the empty one a \`‹color›\` ghost (Fill).
-// \`region\` (region_id) is a HOST widget: a chip from the host's label + a
-// host-rendered popover picker on click.
+// \`region\` (region_id) is a HOST widget: a chip + a host popover picker.
+// teleport's (x, y) is an ARG-GROUP host widget: one chip over both args, a
+// MODAL map picker, taking the \`map\` arg as context.
 === palette ===
 ~ set_tint("#FF8800")
 ~ set_tint()
 ~ go_region("harbor")
+~ teleport(5, 2, 3)
 -> DONE
 `;
 

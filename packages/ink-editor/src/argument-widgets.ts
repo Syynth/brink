@@ -26,6 +26,7 @@ import {
 import type {
   CallWidgetSite,
   SlotWidget,
+  GroupWidgetSite,
   ArgumentWidget,
   ArgumentWidgetContext,
   ArgumentWidgetEditorHost,
@@ -33,6 +34,7 @@ import type {
 import { getBuiltinWidget, getHostWidget, type WidgetEditorHost } from "./widget-registry.js";
 import { openArgumentForm, type FormField } from "./argument-form.js";
 import { openPopover } from "./widget-popover.js";
+import { openModal } from "./widget-modal.js";
 import "./color-widget.js"; // side-effect: registers the built-in "color" widget
 
 /**
@@ -370,30 +372,39 @@ function hostContext(
   };
 }
 
-/** Open a host widget's editor in the studio popover chrome. `resolve(values)`
- *  commits + closes; `cancel()` closes. (Modal surface is Stage 5.) */
+/** Open a host widget's editor in the studio chrome — a popover, or a modal when
+ *  the widget requests `surface: "modal"`. `resolve(values)` commits + closes;
+ *  `cancel()` closes. */
 function openHostEditor(
   anchor: HTMLElement,
   widget: ArgumentWidget,
   ctx: ArgumentWidgetContext,
   onResolve: (values: string[]) => void,
+  surfaceOverride?: "popover" | "modal",
 ): void {
   let teardown: (() => void) | undefined;
-  let popover: { close(): void } | null = null;
+  let surface: { close(): void } | null = null;
   const host: ArgumentWidgetEditorHost = {
     resolve: (values) => {
       onResolve(values);
-      popover?.close();
+      surface?.close();
     },
-    cancel: () => popover?.close(),
+    cancel: () => surface?.close(),
   };
-  popover = openPopover(
-    anchor,
-    (container) => {
-      teardown = widget.editor.render(ctx, host, container);
-    },
-    () => teardown?.(),
-  );
+  const render = (container: HTMLElement): void => {
+    teardown = widget.editor.render(ctx, host, container);
+  };
+  // The manifest's per-call-site surface wins, else the widget's own preference.
+  const kind = surfaceOverride ?? widget.editor.surface;
+  // Mount the modal inside the `.brink-studio` root (theme tokens are scoped
+  // there) so host content inherits the `--bs-*` palette; the fixed backdrop
+  // still covers the viewport. The popover stays on body — it positions
+  // absolutely against the page and reparenting would shift its origin.
+  const root = anchor.closest<HTMLElement>(".brink-studio") ?? undefined;
+  surface =
+    kind === "modal"
+      ? openModal(render, () => teardown?.(), root)
+      : openPopover(anchor, render, () => teardown?.());
 }
 
 /** An inline chip on a filled literal, rendered from a host widget's label
@@ -501,6 +512,133 @@ class HostFillGhostWidget extends WidgetType {
   }
 }
 
+// ── Arg-group widgets (argument-widget-spec §2) ─────────────────────
+
+/** The context handed to a host widget for an arg-group. */
+function groupContext(
+  group: GroupWidgetSite,
+  callee: string,
+  values: string[],
+): ArgumentWidgetContext {
+  return {
+    type: group.type,
+    external: callee,
+    paramNames: group.param_names,
+    values,
+    context: group.context,
+  };
+}
+
+/** A chip over a uniformly-filled arg group — Edit; resolve multi-replaces each
+ *  member's span. Anchored at the first member's start. */
+class GroupEditWidget extends WidgetType {
+  constructor(
+    readonly widget: ArgumentWidget,
+    readonly group: GroupWidgetSite,
+    readonly callee: string,
+    readonly view: EditorView,
+  ) {
+    super();
+  }
+
+  eq(other: GroupEditWidget): boolean {
+    return JSON.stringify(other.group) === JSON.stringify(this.group);
+  }
+
+  toDOM(): HTMLElement {
+    const values = this.group.state.kind === "filled" ? this.group.state.values : [];
+    const ctx = groupContext(this.group, this.callee, values);
+    const label = this.widget.inline?.(ctx);
+    const el = document.createElement("span");
+    el.className = "brink-host-chip";
+    el.textContent = label?.text ?? `(${values.join(", ")})`;
+    if (label?.className) el.classList.add(label.className);
+    el.setAttribute("role", "button");
+    el.tabIndex = 0;
+    el.title = `Edit ${this.group.param_names.join(", ")}`;
+    const open = (): void =>
+      openHostEditor(
+        el,
+        this.widget,
+        ctx,
+        (newValues) => {
+          if (this.group.state.kind !== "filled") return;
+          const spans = this.group.state.spans;
+          const changes = spans
+            .slice(0, newValues.length)
+            .map((s, k) => ({ from: s[0], to: s[1], insert: newValues[k] }));
+          if (changes.length > 0) this.view.dispatch({ changes });
+        },
+        this.group.surface,
+      );
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
+      }
+    });
+    return el;
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+/** A ghost over an empty arg group — Fill; resolve inserts the members joined
+ *  by `, ` at the group's insert point. */
+class GroupFillWidget extends WidgetType {
+  constructor(
+    readonly widget: ArgumentWidget,
+    readonly group: GroupWidgetSite,
+    readonly callee: string,
+    readonly view: EditorView,
+  ) {
+    super();
+  }
+
+  eq(other: GroupFillWidget): boolean {
+    return JSON.stringify(other.group) === JSON.stringify(this.group);
+  }
+
+  toDOM(): HTMLElement {
+    const el = document.createElement("span");
+    el.className = "brink-fill-ghost";
+    el.textContent = `‹${this.group.param_names.join(", ")}›`;
+    el.setAttribute("role", "button");
+    el.tabIndex = 0;
+    el.title = `Set ${this.group.param_names.join(", ")}`;
+    const ctx = groupContext(this.group, this.callee, []);
+    const open = (): void =>
+      openHostEditor(
+        el,
+        this.widget,
+        ctx,
+        (newValues) => {
+          if (this.group.state.kind !== "empty" || newValues.length === 0) return;
+          const prefix = this.group.state.needs_leading_comma ? ", " : "";
+          this.view.dispatch({
+            changes: { from: this.group.state.insert_at, insert: prefix + newValues.join(", ") },
+          });
+        },
+        this.group.surface,
+      );
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
+      }
+    });
+    return el;
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
 /** A call-level glyph at the function name — opens the whole-call Form. */
 class FormGlyphWidget extends WidgetType {
   constructor(
@@ -572,8 +710,39 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
           }),
         });
       }
+      // Arg-group widgets (spec §2): one chip/ghost over the group, anchored at
+      // its first member. Grouped params are then skipped per-slot.
+      const groupedParams = new Set<number>();
+      for (const group of site.groups) {
+        const widget = getHostWidget(group.type);
+        if (widget === undefined) continue;
+        for (const idx of group.param_indices) groupedParams.add(idx);
+        if (group.state.kind === "filled") {
+          const pos = group.state.spans[0]?.[0];
+          if (pos !== undefined) {
+            decos.push({
+              pos,
+              deco: Decoration.widget({
+                widget: new GroupEditWidget(widget, group, site.callee, view),
+                side: 2,
+              }),
+            });
+          }
+        } else {
+          decos.push({
+            pos: group.state.insert_at,
+            deco: Decoration.widget({
+              widget: new GroupFillWidget(widget, group, site.callee, view),
+              side: 2,
+            }),
+          });
+        }
+      }
+
       let filledGhost = false; // render a ghost only for the first empty slot
-      for (const slot of site.slots) {
+      for (let slotIdx = 0; slotIdx < site.slots.length; slotIdx++) {
+        if (groupedParams.has(slotIdx)) continue; // rendered by the group widget
+        const slot = site.slots[slotIdx];
         const kind = slot.widget;
         const builtin = kind !== undefined ? getBuiltinWidget(kind) : undefined;
         const host = builtin ? undefined : matchHostWidget(slot);

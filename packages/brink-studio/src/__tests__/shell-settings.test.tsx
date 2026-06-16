@@ -341,7 +341,13 @@ describe("SettingsDocument — keymap section", () => {
 describe("SettingsDocument — diagnostics section", () => {
   it("dispatches the store action and persists under the versioned key", () => {
     const h = renderSettings();
-    const select = container!.querySelector<HTMLSelectElement>(".settings-select")!;
+    // Scope to the Diagnostics section — the Editor section also renders a
+    // `.settings-select` (the argument-form glyph) and renders first, so a bare
+    // `.settings-select` query would grab that one instead.
+    const diagSection = [...container!.querySelectorAll(".settings-section")].find(
+      (s) => s.querySelector(".settings-section-title")?.textContent === "Diagnostics",
+    )!;
+    const select = diagSection.querySelector<HTMLSelectElement>(".settings-select")!;
     expect(select.value).toBe("error");
 
     act(() => {
