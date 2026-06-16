@@ -7,6 +7,9 @@ export type { BrinkStudioOptions } from "./extensions.js";
 export { openArgumentForm } from "./argument-form.js";
 export type { FormField, ArgumentFormOptions } from "./argument-form.js";
 export type { FormGlyphMode } from "./argument-widgets.js";
+// Host argument widgets (argument-widget-spec §3): registered at mount from
+// StudioExtensions.argumentWidgets.
+export { setHostWidgets } from "./widget-registry.js";
 
 // Types for line classification
 export { elementTypeField, ElementType } from "./element-type.js";

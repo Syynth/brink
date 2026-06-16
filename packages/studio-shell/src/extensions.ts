@@ -15,6 +15,7 @@
  * `registerHost` paths validate this and reject collisions with clean errors.
  */
 
+import type { ArgumentWidget } from "@brink/wasm-types";
 import { CommandRegistry, type Command } from "./command.js";
 import { ToolWindowRegistry, type ToolWindowDescriptor } from "./toolwindow.js";
 import { StatusBarRegistry, type StatusBarItemDescriptor } from "./statusbar.js";
@@ -62,6 +63,13 @@ export interface StudioExtensions {
    * switches / items / …). Not registry-installed — applied to the session.
    */
   argumentProviders?: ArgumentProvider[];
+  /**
+   * Host-rendered argument widgets (Tier 3, argument-widget-spec §3), keyed by
+   * semantic type. The studio renders the inline chip from the host's label
+   * data and opens the host's editor in studio-owned popover chrome. Registered
+   * into the editor's widget registry at mount.
+   */
+  argumentWidgets?: ArgumentWidget[];
 }
 
 /** The registries an extension installs into (the same ones built-ins use). */
