@@ -1878,6 +1878,19 @@ impl EditorSession {
         }
     }
 
+    /// Rename or move a file, rewriting every `INCLUDE` that resolves to it
+    /// (inbound) plus the moved file's own relative includes (outbound).
+    /// Returns JSON `MoveResult` or error: `new_source` is the moved file's
+    /// content to write at `new`, `cross_file_edits` carry the referencing
+    /// files' rewrites. The op computes edits only — the caller applies them
+    /// (write `new`, remove `old`).
+    pub fn rename_file(&self, old: &str, new: &str) -> String {
+        match brink_ide::file_rename::rename_file(&self.session, old, new) {
+            Ok(result) => move_result_json(&self.session, result, old),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
     /// Promote a stitch to a top-level knot. Returns JSON `MoveResult` or error.
     ///
     /// `path`: file containing the knot.

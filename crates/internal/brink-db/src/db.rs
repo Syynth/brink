@@ -472,10 +472,139 @@ fn merge_manifest_into(dst: &mut SymbolManifest, src: &SymbolManifest) {
 ///
 /// Uses string-based path manipulation (`rfind('/')`) rather than
 /// `std::path::Path` to avoid platform-specific separator issues and
-/// to work in WASM contexts.
+/// to work in WASM contexts. The joined path is normalized so `.`/`..`
+/// segments collapse to a clean project-relative key (e.g.
+/// `a/b/../d.ink` → `a/d.ink`) — consistent across the compiler, runtime,
+/// and IDE so upward-relative includes resolve to real files.
 pub fn resolve_include_path(from_file: &str, include_path: &str) -> String {
-    match from_file.rfind('/') {
+    let joined = match from_file.rfind('/') {
         Some(i) => format!("{}/{include_path}", &from_file[..i]),
         None => include_path.to_string(),
+    };
+    normalize_path(&joined)
+}
+
+/// Collapse `.` and `..` segments in a `/`-separated path. A `..` pops the
+/// previous real segment; a `..` with nothing to pop (or above an existing
+/// `..`) is kept literally rather than escaping the root. A leading `/`
+/// (absolute path) is preserved — the test harness and disk-backed compiles
+/// resolve against absolute filesystem paths.
+fn normalize_path(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." if matches!(out.last(), Some(&s) if s != "..") => {
+                out.pop();
+            }
+            s => out.push(s),
+        }
+    }
+    let joined = out.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+/// Compute the relative INCLUDE target to reach `to_file` from `from_file`'s
+/// directory — the inverse of [`resolve_include_path`]:
+/// `normalize(resolve_include_path(from_file, compute_relative_path(from_file, to_file))) == to_file`
+/// for both forward and `..`-traversing layouts. Used when a file is
+/// renamed/moved to rewrite every `INCLUDE` that points at it (and the moved
+/// file's own includes).
+pub fn compute_relative_path(from_file: &str, to_file: &str) -> String {
+    let mut from_dirs: Vec<&str> = from_file.split('/').collect();
+    from_dirs.pop(); // drop the including file's own name
+    let to_all: Vec<&str> = to_file.split('/').collect();
+    let Some((to_name, to_dirs)) = to_all.split_last() else {
+        return to_file.to_owned();
+    };
+
+    // Longest common directory prefix.
+    let mut k = 0;
+    while k < from_dirs.len() && k < to_dirs.len() && from_dirs[k] == to_dirs[k] {
+        k += 1;
+    }
+
+    let mut parts: Vec<&str> = Vec::new();
+    parts.extend(std::iter::repeat_n("..", from_dirs.len() - k));
+    parts.extend_from_slice(&to_dirs[k..]);
+    parts.push(to_name);
+    parts.join("/")
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::{compute_relative_path, resolve_include_path};
+
+    #[test]
+    fn resolve_forward_includes() {
+        assert_eq!(
+            resolve_include_path("src/main.ink", "utils.ink"),
+            "src/utils.ink"
+        );
+        assert_eq!(resolve_include_path("story.ink", "other.ink"), "other.ink");
+        assert_eq!(resolve_include_path("a/b/c.ink", "d/e.ink"), "a/b/d/e.ink");
+    }
+
+    #[test]
+    fn resolve_normalizes_dot_and_dotdot() {
+        assert_eq!(resolve_include_path("a/b/c.ink", "../d.ink"), "a/d.ink");
+        assert_eq!(resolve_include_path("a/b/c.ink", "./d.ink"), "a/b/d.ink");
+        assert_eq!(resolve_include_path("a/b/c.ink", "../../d.ink"), "d.ink");
+        assert_eq!(
+            resolve_include_path("a/b/c.ink", "../x/../d.ink"),
+            "a/d.ink"
+        );
+    }
+
+    #[test]
+    fn compute_relative_is_inverse_of_resolve() {
+        // (from including file, target file) round-trips through resolve.
+        let cases = [
+            ("main.ink", "scenes/intro.ink"), // move into a subdir
+            ("a/b/c.ink", "a/d.ink"),         // sibling dir (needs ..)
+            ("a/b/c.ink", "a/b/renamed.ink"), // rename in place
+            ("scenes/intro.ink", "lib.ink"),  // up to root (needs ..)
+            ("a/b/c.ink", "x/y/z.ink"),       // fully divergent
+            ("main.ink", "other.ink"),        // both at root
+        ];
+        for (from, to) in cases {
+            let rel = compute_relative_path(from, to);
+            assert_eq!(
+                resolve_include_path(from, &rel),
+                to,
+                "round-trip failed for from={from} to={to} rel={rel}",
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_preserves_absolute_paths() {
+        // The test harness / disk-backed compiles pass absolute paths — the
+        // leading slash must survive normalization.
+        assert_eq!(
+            resolve_include_path("/proj/tier3/main.ink", "included.ink"),
+            "/proj/tier3/included.ink",
+        );
+        assert_eq!(
+            resolve_include_path("/proj/a/b/c.ink", "../d.ink"),
+            "/proj/a/d.ink"
+        );
+    }
+
+    #[test]
+    fn compute_relative_rename_in_place_is_bare_name() {
+        assert_eq!(
+            compute_relative_path("a/b/c.ink", "a/b/renamed.ink"),
+            "renamed.ink"
+        );
+        assert_eq!(
+            compute_relative_path("main.ink", "renamed.ink"),
+            "renamed.ink"
+        );
     }
 }

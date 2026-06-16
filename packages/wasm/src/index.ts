@@ -522,6 +522,19 @@ export class EditorSessionHandle {
     return JSON.parse(json) as MoveResult;
   }
 
+  /**
+   * Rename or move a file, rewriting every `INCLUDE` that points at it plus
+   * the moved file's own relative includes. `new_source` is the moved file's
+   * content (write it at `newPath`); `cross_file_edits` carry the referencing
+   * files' rewrites. The op computes edits only — the caller applies them
+   * (write `newPath`, remove `oldPath`).
+   */
+  renameFile(oldPath: string, newPath: string): MoveResult {
+    this.bump();
+    const json = this.session.rename_file(oldPath, newPath);
+    return JSON.parse(json) as MoveResult;
+  }
+
   /** Promote a stitch to a top-level knot. */
   promoteStitch(path: string, knot: string, stitch: string): MoveResult {
     this.bump();

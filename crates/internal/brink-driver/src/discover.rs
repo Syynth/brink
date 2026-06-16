@@ -88,12 +88,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_parent_traversal_not_normalized() {
-        // No normalization — matches ink behavior
-        assert_eq!(
-            resolve_include_path("a/b/c.ink", "../d.ink"),
-            "a/b/../d.ink"
-        );
+    fn resolve_parent_traversal_normalized() {
+        // `..` collapses to a clean key so upward includes resolve to real
+        // files (system-wide; see docs/decision-log.md).
+        assert_eq!(resolve_include_path("a/b/c.ink", "../d.ink"), "a/d.ink");
     }
 
     #[test]

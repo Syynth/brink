@@ -57,11 +57,30 @@ pub enum InkLoaderError {
 /// Resolve an `INCLUDE` path relative to the including file's directory.
 ///
 /// String-based (uses `/`) to match `brink-db`'s WASM-safe resolver and
-/// avoid platform separator issues.
+/// avoid platform separator issues. The joined path is normalized so `.`/`..`
+/// segments collapse to a clean key (matching `brink-db::resolve_include_path`
+/// system-wide; see docs/decision-log.md).
 fn resolve_include_path(from_file: &str, include_path: &str) -> String {
-    match from_file.rfind('/') {
+    let joined = match from_file.rfind('/') {
         Some(i) => format!("{}/{include_path}", &from_file[..i]),
         None => include_path.to_string(),
+    };
+    let absolute = joined.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for seg in joined.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." if matches!(out.last(), Some(&s) if s != "..") => {
+                out.pop();
+            }
+            s => out.push(s),
+        }
+    }
+    let joined = out.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
     }
 }
 
@@ -154,5 +173,11 @@ mod tests {
     #[test]
     fn resolves_nested_directory() {
         assert_eq!(resolve_include_path("a/b/c.ink", "d.ink"), "a/b/d.ink");
+    }
+
+    #[test]
+    fn normalizes_parent_traversal() {
+        assert_eq!(resolve_include_path("a/b/c.ink", "../d.ink"), "a/d.ink");
+        assert_eq!(resolve_include_path("a/b/c.ink", "../../d.ink"), "d.ink");
     }
 }
