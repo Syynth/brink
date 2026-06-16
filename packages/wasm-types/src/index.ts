@@ -192,8 +192,25 @@ export interface CallWidgetSite {
   name_start: number;
   name_end: number;
   slots: SlotWidget[];
-  /** Arg-group widgets (spec §2) — render the group inline, skip its slots. */
+  /** Arg-group widgets (spec §2) — render the group inline, skip its slots.
+   *  Only present when the group's members are uniformly filled/empty. */
   groups: GroupWidgetSite[];
+  /** Every declared arg-group for the callee, independent of the current args —
+   *  the Form renders these (seeding member values from `slots`), so a partial
+   *  or over-full call still gets its widgets. */
+  declared_groups?: DeclaredGroup[];
+}
+
+/** A declared arg-group widget — manifest structure with no arg-state (spec §2).
+ *  Used by the Form to render one control per declared group regardless of how
+ *  many arguments the call currently has. */
+export interface DeclaredGroup {
+  type: string;
+  surface?: "popover" | "modal";
+  param_indices: number[];
+  param_names: string[];
+  /** key → the sibling param index supplying its inter-arg context. */
+  context_params?: Record<string, number>;
 }
 
 // ── Host argument widgets (argument-widget-spec §3) ──────────────────

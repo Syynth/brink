@@ -1048,3 +1048,11 @@
 - **SCOPE:** moderate/architectural
 - **WHAT:** The call Form is a collection of per-argument widgets chosen by the argument's TYPE: native scalars → text inputs; host-declared enums → studio-rendered dropdowns (the host declares the value list; the studio owns the combobox — hosts never reinvent one); host custom widgets incl. arg-groups (the map-point picker) → the host's editor embedded inline. Inter-arg context resolves from the Form's LIVE draft state, not the committed document, so dependent-argument workflows ("pick a map, then a spot on that map") work inside the Form.
 - **WHY:** APIs are designed from the consumer's perspective — a host's job is to declare capability (enum values, a custom widget), not to rebuild standard UI; a value-list is simply what the studio presents for an enum type. Holding live draft state (vs. reading the document) is precisely what lets one argument parameterize another's editor before anything is written.
+
+## The call Form is driven by the signature metadata, not the live call-site
+- **WHEN:** 2026-06-16
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui (argument widgets)
+- **SCOPE:** moderate
+- **WHAT:** The Form structures itself from the callee's declared signature — one control per declared parameter, and every declared arg-group widget (e.g. the map-point picker) is always rendered — independent of how many arguments the current call has. Existing arguments only seed initial values (mapped positionally); on Apply the Form writes a well-formed N-argument call (too-few args are filled in; surplus args are truncated to the signature). The query surfaces a `declared_groups` set (manifest structure, no arg-state) for this, distinct from the arg-state-driven `groups` that drive the conservative *inline* chip/ghost.
+- **WHY:** The Form is a composition surface for a call per its signature; the live call-site is just the seed. A partial or malformed call is exactly when an author reaches for the Form, so its widgets must not disappear or degrade to plain text just because the arguments don't currently line up. Inline decorations stay conservative (only when arg state is unambiguous); the Form is metadata-complete.
