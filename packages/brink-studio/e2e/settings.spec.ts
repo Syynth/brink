@@ -131,10 +131,14 @@ test.describe("settings document", () => {
     page,
   }) => {
     await openSettings(page);
-    const select = page.locator(".settings-select");
-    await expect(select).toHaveValue("error");
+    // Two sections render a `.settings-select` (Editor + Diagnostics) — scope
+    // to the Diagnostics section by its heading.
+    const diagSelect = page
+      .locator(".settings-section", { hasText: "Diagnostics" })
+      .locator(".settings-select");
+    await expect(diagSelect).toHaveValue("error");
 
-    await select.selectOption("off");
+    await diagSelect.selectOption("off");
     expect(
       await page.evaluate(() =>
         localStorage.getItem("brink-studio.diagnostics.v1"),
@@ -144,6 +148,10 @@ test.describe("settings document", () => {
     await page.reload();
     await page.waitForSelector(".cm-content", { timeout: 10000 });
     await openSettings(page);
-    await expect(page.locator(".settings-select")).toHaveValue("off");
+    await expect(
+      page
+        .locator(".settings-section", { hasText: "Diagnostics" })
+        .locator(".settings-select"),
+    ).toHaveValue("off");
   });
 });
