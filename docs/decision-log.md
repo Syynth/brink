@@ -1056,3 +1056,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The Form structures itself from the callee's declared signature — one control per declared parameter, and every declared arg-group widget (e.g. the map-point picker) is always rendered — independent of how many arguments the current call has. Existing arguments only seed initial values (mapped positionally); on Apply the Form writes a well-formed N-argument call (too-few args are filled in; surplus args are truncated to the signature). The query surfaces a `declared_groups` set (manifest structure, no arg-state) for this, distinct from the arg-state-driven `groups` that drive the conservative *inline* chip/ghost.
 - **WHY:** The Form is a composition surface for a call per its signature; the live call-site is just the seed. A partial or malformed call is exactly when an author reaches for the Form, so its widgets must not disappear or degrade to plain text just because the arguments don't currently line up. Inline decorations stay conservative (only when arg state is unambiguous); the Form is metadata-complete.
+
+## The studio file lifecycle (rename/move/delete) lives in brink-ide, not studio TS
+- **WHEN:** 2026-06-16
+- **PROJECT:** brink
+- **SYSTEM:** brink-ide / editor-ui (file lifecycle, #164)
+- **SCOPE:** architectural
+- **WHAT:** Whole-file create/rename/delete/move (and the folder tree's path operations) are a brink-ide feature, not studio-TS glue. The non-trivial logic — rename/move with **INCLUDE-reference rewriting** (find referencing files via the include-graph reverse edges, recompute each `INCLUDE`'s new relative path, rewrite the token) — lives in brink-ide and is returned as a `MoveResult { new_source, cross_file_edits }`, mirroring the existing symbol rename/move (`rename.rs`, `structural_move.rs`). The studio is a thin UI that applies the result through the established `applyMoveResult` seam. Only the folder-tree *rendering* (Stage 1) was purely presentational.
+- **WHY:** The path/reference semantics (include graph, relative-path math, multi-file edits) are compiler-database concerns that already live in brink-ide; duplicating them in TS would diverge from the analyzer's source of truth and the symbol-move infrastructure. Keeping it in brink-ide reuses the proven cross-file-edit pattern and keeps the studio thin.
