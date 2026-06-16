@@ -157,6 +157,28 @@ export interface SlotWidget {
   state: SlotState;
 }
 
+/** The authoring state of an arg-group (uniform across members; spec §2). */
+export type GroupState =
+  /** All members are literals — Edit replaces each `spans[k]` with a value. */
+  | { kind: "filled"; spans: [number, number][]; values: string[] }
+  /** All members empty — Fill inserts the members joined by `, ` at `insert_at`. */
+  | { kind: "empty"; insert_at: number; needs_leading_comma: boolean };
+
+/** An arg-group widget at a call site (argument-widget spec §2) — one widget
+ *  spanning several params, with inter-arg context resolved. */
+export interface GroupWidgetSite {
+  /** Widget / semantic type (matches a host `ArgumentWidget.type`). */
+  type: string;
+  /** Editor container — `"popover"` (default) or `"modal"`. */
+  surface?: "popover" | "modal";
+  /** Param indices the group spans (the studio skips these per-slot). */
+  param_indices: number[];
+  param_names: string[];
+  state: GroupState;
+  /** Resolved inter-arg context: key → the sibling arg's literal value. */
+  context: Record<string, string>;
+}
+
 /** A call site with a per-parameter widget slot (argument-widget spec §4). */
 export interface CallWidgetSite {
   callee: string;
@@ -164,6 +186,8 @@ export interface CallWidgetSite {
   name_start: number;
   name_end: number;
   slots: SlotWidget[];
+  /** Arg-group widgets (spec §2) — render the group inline, skip its slots. */
+  groups: GroupWidgetSite[];
 }
 
 // ── Host argument widgets (argument-widget-spec §3) ──────────────────

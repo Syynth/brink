@@ -210,6 +210,8 @@ mod tests {
                 returns: TypeRef::default(),
                 kind: ExternalKind::Presentation,
                 doc: None,
+
+                widgets: vec![],
             }],
             types: vec![SemanticTypeDef {
                 name: "color".into(),

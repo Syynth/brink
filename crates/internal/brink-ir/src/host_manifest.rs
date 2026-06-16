@@ -41,6 +41,31 @@ pub struct ManifestExternal {
     pub kind: ExternalKind,
     #[serde(default)]
     pub doc: Option<String>,
+    /// Arg-group widgets (argument-widget spec §2): a single widget spanning
+    /// several params (e.g. `place_object(x, y)` → one `map_point` over `[0, 1]`).
+    /// Advisory tooling metadata; never affects the compiled program.
+    #[serde(default)]
+    pub widgets: Vec<ArgGroupWidget>,
+}
+
+/// A widget over an argument group on an external (argument-widget spec §2).
+/// Flat + serializable: the indices it spans, the widget/semantic type, the
+/// editor surface, and optional inter-arg context (sibling arg → a key the
+/// editor reads).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArgGroupWidget {
+    /// Argument indices the widget spans, e.g. `[0, 1]`.
+    pub group: Vec<u32>,
+    /// Semantic type / widget id (matches a host `ArgumentWidget.type`).
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// The editor container — `"popover"` (default) or `"modal"`.
+    #[serde(default)]
+    pub surface: Option<String>,
+    /// Inter-arg context: context key → the sibling arg index supplying it,
+    /// e.g. `{ "map": 1 }`. Sorted for deterministic resolution.
+    #[serde(default)]
+    pub context: std::collections::BTreeMap<String, u32>,
 }
 
 /// A single registered parameter: a name and a (possibly unspecified) type.

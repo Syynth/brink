@@ -53,6 +53,9 @@ pub struct SymbolMeta {
     pub params: Vec<ResolvedParam>,
     /// Initializer-derived value info (VAR/CONST only).
     pub value: Option<ValueMeta>,
+    /// Arg-group widgets declared on the external (argument-widget spec §2);
+    /// empty for non-externals.
+    pub group_widgets: Vec<brink_ir::ArgGroupWidget>,
 }
 
 /// Initializer-derived metadata for a VAR or CONST declaration. Purely
@@ -199,6 +202,7 @@ pub fn analyze_externals(
                 returns,
                 params,
                 value: None,
+                group_widgets: reg.map(|r| r.widgets.clone()).unwrap_or_default(),
             },
         );
     }
@@ -266,6 +270,7 @@ pub fn enrich_callables(
                 returns,
                 params,
                 value: None,
+                group_widgets: Vec::new(),
             },
         );
     }
@@ -364,6 +369,7 @@ fn add_value_meta(
             returns: None,
             params: Vec::new(),
             value,
+            group_widgets: Vec::new(),
         },
     );
 }
@@ -879,6 +885,8 @@ mod tests {
             returns: TypeRef("void".to_string()),
             kind: ExternalKind::Effect,
             doc: Some("Grant an item.".to_string()),
+
+            widgets: vec![],
         };
         let mut registered = BTreeMap::new();
         registered.insert("grant".to_string(), &reg_ext);
@@ -910,6 +918,8 @@ mod tests {
             returns: TypeRef("int".to_string()),
             kind: ExternalKind::Effect,
             doc: None,
+
+            widgets: vec![],
         };
         let mut registered = BTreeMap::new();
         registered.insert("has".to_string(), &reg_ext);
@@ -1019,6 +1029,8 @@ mod tests {
             returns: TypeRef::default(),
             kind: ExternalKind::default(),
             doc: None,
+
+            widgets: vec![],
         };
         let mut registered = BTreeMap::new();
         registered.insert("has".to_string(), &reg_ext);
@@ -1348,6 +1360,7 @@ mod tests {
                 ty: Some(ty),
             }],
             value: None,
+            group_widgets: Vec::new(),
         }
     }
 

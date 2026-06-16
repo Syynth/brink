@@ -227,6 +227,8 @@ mod tests {
                 returns: TypeRef::default(),
                 kind: ExternalKind::Effect,
                 doc: None,
+
+                widgets: vec![],
             }],
             types: vec![SemanticTypeDef {
                 name: "hex_color".into(),
@@ -285,6 +287,8 @@ EXTERNAL set_switch(id, on)
                 returns: TypeRef::default(),
                 kind: ExternalKind::Effect,
                 doc: None,
+
+                widgets: vec![],
             }],
             types: vec![SemanticTypeDef {
                 name: "switch_id".into(),
@@ -344,6 +348,8 @@ EXTERNAL set_switch(id, on)
                 returns: TypeRef::default(),
                 kind: ExternalKind::Effect,
                 doc: None,
+
+                widgets: vec![],
             }],
             types: vec![SemanticTypeDef {
                 name: "item_id".into(),
