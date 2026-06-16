@@ -33,7 +33,11 @@ export function openPopover(
   const panel = document.createElement("div");
   panel.className = "brink-widget-popover";
   panel.setAttribute("role", "dialog");
-  document.body.appendChild(panel);
+  // Mount inside the studio root so the panel and any embedded host content
+  // inherit the theme's `--bs-*` tokens (scoped to `.brink-studio`). The panel
+  // is `position: fixed`, so it stays viewport-anchored regardless of parent.
+  const mount = anchor.closest<HTMLElement>(".brink-studio") ?? document.body;
+  mount.appendChild(panel);
   render(panel);
 
   let closed = false;
@@ -67,8 +71,9 @@ export function openPopover(
     if (left + p.width > window.innerWidth - margin) {
       left = Math.max(margin, window.innerWidth - margin - p.width);
     }
-    panel.style.top = `${Math.round(top + window.scrollY)}px`;
-    panel.style.left = `${Math.round(left + window.scrollX)}px`;
+    // Fixed positioning is viewport-relative — no scroll offset.
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.left = `${Math.round(left)}px`;
   };
 
   const onKeyDown = (e: KeyboardEvent): void => {
