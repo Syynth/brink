@@ -425,6 +425,37 @@
   color: var(--bs-accent, var(--bs-fg));
 }
 
+/* The example host's modal map-point editor (arg-group + modal + context). */
+.host-example-map {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.host-example-map-title {
+  font-size: 13px;
+  color: var(--bs-fg-muted);
+}
+.host-example-map-grid {
+  display: grid;
+  gap: 2px;
+}
+.host-example-map-cell {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: var(--bs-surface-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.host-example-map-cell:hover {
+  background: color-mix(in srgb, var(--bs-accent, var(--bs-fg-muted)) 30%, transparent);
+}
+.host-example-map-cell[aria-current="true"] {
+  background: var(--bs-accent, var(--bs-fg-muted));
+  border-color: var(--bs-accent, var(--bs-fg-muted));
+}
+
 /* Call-level form glyph (argument-widget-spec §1.1, §6.5): a small icon button
    just after the function name that opens the whole-call Form. Prototyped
    variants — always-visible, and hover-revealed (shown only on line hover). */
@@ -473,6 +504,27 @@
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   padding: 8px;
+}
+
+/* Modal chrome for heavy host editors (argument-widget-spec §6.4). */
+.brink-widget-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.brink-widget-modal {
+  max-width: min(90vw, 720px);
+  max-height: 85vh;
+  overflow: auto;
+  background: var(--bs-panel-bg, #1e1e2e);
+  border: 1px solid var(--bs-border, #444);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  padding: 14px;
 }
 
 /* Light HSV color picker. */

@@ -80,6 +80,22 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       doc: "Move the party to a named region.",
     },
     {
+      // An ARG-GROUP host widget (spec §2): one `map_point` widget over (x, y),
+      // opened as a MODAL, taking inter-arg `context` (the `map` arg).
+      name: "teleport",
+      params: [
+        { name: "map", ty: "int" },
+        { name: "x", ty: "int" },
+        { name: "y", ty: "int" },
+      ],
+      returns: "void",
+      kind: "effect",
+      doc: "Teleport the party to a point on a map.",
+      widgets: [
+        { group: [1, 2], type: "map_point", surface: "modal", context: { map: 0 } },
+      ],
+    },
+    {
       name: "has_item",
       params: [{ name: "item", ty: "item_id" }],
       returns: "bool",
@@ -214,6 +230,55 @@ export const EXAMPLE_REGION_WIDGET: ArgumentWidget = {
         btn.addEventListener("click", () => host.resolve([`"${region.id}"`]));
         root.appendChild(btn);
       }
+      container.appendChild(root);
+      return () => root.remove();
+    },
+  },
+};
+
+// An ARG-GROUP host widget (spec §2): `teleport`'s `widgets` declares one
+// `map_point` over (x, y), opened as a MODAL, taking the `map` arg as context.
+// The inline chip shows the point; the modal is a click-to-place grid that
+// resolves both literals at once (a multi-slot write).
+
+const MAP_W = 10;
+const MAP_H = 7;
+
+export const EXAMPLE_MAP_POINT_WIDGET: ArgumentWidget = {
+  type: "map_point",
+  inline(ctx) {
+    const [x, y] = ctx.values;
+    const text = x !== undefined && y !== undefined ? `(${x}, ${y})` : "pick point";
+    return { text, className: "host-example-point" };
+  },
+  editor: {
+    surface: "modal",
+    render(ctx, host, container) {
+      const root = document.createElement("div");
+      root.className = "host-example-map";
+      const title = document.createElement("div");
+      title.className = "host-example-map-title";
+      const mapId = ctx.context?.map;
+      title.textContent = mapId !== undefined ? `Pick a point — map ${mapId}` : "Pick a point";
+      root.appendChild(title);
+      const grid = document.createElement("div");
+      grid.className = "host-example-map-grid";
+      grid.style.gridTemplateColumns = `repeat(${MAP_W}, 22px)`;
+      const cx = Number(ctx.values[0]);
+      const cy = Number(ctx.values[1]);
+      for (let y = 0; y < MAP_H; y++) {
+        for (let x = 0; x < MAP_W; x++) {
+          const cell = document.createElement("button");
+          cell.type = "button";
+          cell.className = "host-example-map-cell";
+          cell.title = `(${x}, ${y})`;
+          if (x === cx && y === cy) cell.setAttribute("aria-current", "true");
+          // int params — resolve unquoted literals for both x and y at once.
+          cell.addEventListener("click", () => host.resolve([String(x), String(y)]));
+          grid.appendChild(cell);
+        }
+      }
+      root.appendChild(grid);
       container.appendChild(root);
       return () => root.remove();
     },
@@ -381,6 +446,6 @@ export function createExampleExtension(api: StudioApi): StudioExtensions {
         },
       },
     ],
-    argumentWidgets: [EXAMPLE_REGION_WIDGET],
+    argumentWidgets: [EXAMPLE_REGION_WIDGET, EXAMPLE_MAP_POINT_WIDGET],
   };
 }

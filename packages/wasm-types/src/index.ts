@@ -578,6 +578,19 @@ export interface ManifestParam {
   ty?: TypeRef;
 }
 
+/** An arg-group widget on an external (argument-widget spec §2): one widget over
+ *  several params, with an editor surface + optional inter-arg context. */
+export interface ArgGroupWidget {
+  /** Argument indices the widget spans, e.g. `[0, 1]`. */
+  group: number[];
+  /** Semantic type / widget id (matches a host `ArgumentWidget.type`). */
+  type: string;
+  /** Editor container — `"popover"` (default) or `"modal"`. */
+  surface?: "popover" | "modal";
+  /** Inter-arg context: key → the sibling arg index supplying it, e.g. `{ map: 1 }`. */
+  context?: Record<string, number>;
+}
+
 /** A registered external-function signature. */
 export interface ManifestExternal {
   name: string;
@@ -585,6 +598,8 @@ export interface ManifestExternal {
   returns?: TypeRef;
   kind?: ExternalKind;
   doc?: string | null;
+  /** Arg-group widgets (argument-widget spec §2). */
+  widgets?: ArgGroupWidget[];
 }
 
 /** The host-owned, project-wide external vocabulary. */
