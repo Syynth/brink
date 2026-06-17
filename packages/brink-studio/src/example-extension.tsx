@@ -22,6 +22,7 @@
  * with zero extension-specific shell code.
  */
 
+import { useState, type ReactElement } from "react";
 import { useStudioApi, type StudioApi } from "@brink/studio-ui";
 import type { StudioExtensions } from "@brink/studio-shell";
 import type { HostManifest, ArgumentWidget } from "@brink/wasm-types";
@@ -87,6 +88,7 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       returns: "void",
       kind: "presentation",
       doc: "Tint the screen to a hex color.",
+      path: ["Presentation", "Screen"],
     },
     {
       name: "go_region",
@@ -94,6 +96,7 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       returns: "void",
       kind: "effect",
       doc: "Move the party to a named region.",
+      path: ["World"],
     },
     {
       // An ARG-GROUP host widget (spec §2): one `map_point` widget over (x, y),
@@ -107,6 +110,7 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       returns: "void",
       kind: "effect",
       doc: "Teleport the party to a point on a map.",
+      path: ["World"],
       widgets: [
         { group: [1, 2], type: "map_point", surface: "modal", context: { map: 0 } },
       ],
@@ -117,6 +121,7 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       returns: "bool",
       kind: "query",
       doc: "True if the party carries the item.",
+      path: ["Inventory"],
     },
     {
       name: "set_switch",
@@ -127,6 +132,7 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       returns: "void",
       kind: "effect",
       doc: "Set a game switch on or off.",
+      path: ["State"],
     },
     {
       name: "gain_gold",
@@ -134,6 +140,7 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       returns: "void",
       kind: "effect",
       doc: "Add gold to the party's purse.",
+      path: ["Economy"],
     },
     {
       name: "play_se",
@@ -141,6 +148,7 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       returns: "void",
       kind: "presentation",
       doc: "Play a sound effect by name.",
+      path: ["Presentation", "Audio"],
     },
     {
       name: "show_picture",
@@ -152,6 +160,7 @@ export const EXAMPLE_HOST_MANIFEST: HostManifest = {
       returns: "void",
       kind: "presentation",
       doc: "Show a picture at screen coordinates.",
+      path: ["Presentation", "Screen"],
     },
     {
       name: "party_size",
@@ -180,6 +189,9 @@ export interface HostFunctionItem {
   fields: FormField[];
   /** Arg-group widgets (spec §2) spanning several params. */
   groups: FormGroup[];
+  /** Host-declared grouping path (#210), e.g. ["Presentation","Audio"]. Empty =
+   *  ungrouped (rendered under the "Other" bucket). */
+  categoryPath: string[];
 }
 
 /**
@@ -244,8 +256,68 @@ export function manifestPanelItems(
       kind: ext.kind ?? "plain",
       fields,
       groups,
+      categoryPath: ext.path ?? [],
     };
   });
+}
+
+// ── Panel category tree + search (#210) ─────────────────────────────
+
+/** A node in the Host Functions panel's category tree. */
+export interface PanelCategory {
+  /** Segment name ("Audio"); "" for the synthetic root. */
+  name: string;
+  /** Full `/`-joined path key (stable collapse key), e.g. "Presentation/Audio". */
+  key: string;
+  subcategories: PanelCategory[];
+  items: HostFunctionItem[];
+}
+
+/** Bucket for externals the host left uncategorized. */
+export const UNCATEGORIZED_LABEL = "Other";
+
+/**
+ * Group panel items into a nested category tree by their `categoryPath`
+ * (#210). Uncategorized items land under a top-level "Other" bucket.
+ * Subcategories and items are sorted by name for determinism.
+ */
+export function buildPanelTree(items: HostFunctionItem[]): PanelCategory {
+  const root: PanelCategory = { name: "", key: "", subcategories: [], items: [] };
+  for (const item of items) {
+    const path = item.categoryPath.length > 0 ? item.categoryPath : [UNCATEGORIZED_LABEL];
+    let node = root;
+    let key = "";
+    for (const seg of path) {
+      key = key ? `${key}/${seg}` : seg;
+      let child = node.subcategories.find((c) => c.name === seg);
+      if (!child) {
+        child = { name: seg, key, subcategories: [], items: [] };
+        node.subcategories.push(child);
+      }
+      node = child;
+    }
+    node.items.push(item);
+  }
+  const sort = (n: PanelCategory): void => {
+    n.subcategories.sort((a, b) => a.name.localeCompare(b.name));
+    n.items.sort((a, b) => a.name.localeCompare(b.name));
+    n.subcategories.forEach(sort);
+  };
+  sort(root);
+  return root;
+}
+
+/** Substring filter on name, signature, and doc (case-insensitive). Empty
+ *  query returns every item. */
+export function filterPanelItems(items: HostFunctionItem[], query: string): HostFunctionItem[] {
+  const q = query.trim().toLowerCase();
+  if (q === "") return items;
+  return items.filter(
+    (it) =>
+      it.name.toLowerCase().includes(q) ||
+      it.signature.toLowerCase().includes(q) ||
+      it.doc.toLowerCase().includes(q),
+  );
 }
 
 // ── Host argument widget (argument-widget-spec §3) ──────────────────
@@ -353,6 +425,17 @@ function HostFunctionsPanel() {
     EXAMPLE_REGION_WIDGET,
     EXAMPLE_MAP_POINT_WIDGET,
   ]);
+  const [query, setQuery] = useState("");
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+
+  const toggle = (key: string): void => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   /** Insert a bare skeleton (`~ fn(a, b)`) at the cursor — the quick path. */
   const insertSkeleton = (item: HostFunctionItem): void => {
@@ -390,54 +473,125 @@ function HostFunctionsPanel() {
     });
   };
 
+  const renderFn = (item: HostFunctionItem): ReactElement => (
+    <li key={item.name} style={{ marginBottom: 4 }}>
+      <button
+        type="button"
+        className="host-example-fn"
+        onClick={(e) => launch(item, e.currentTarget, e.altKey)}
+        title={`${item.kind} — ${item.fields.length > 0 ? "compose" : "insert"} ${item.name}(…) · Alt-click for a skeleton`}
+        style={{
+          display: "block",
+          width: "100%",
+          textAlign: "left",
+          padding: "4px 6px",
+          font: "inherit",
+          fontSize: 12,
+          color: "var(--bs-fg)",
+          background: "var(--bs-surface-bg)",
+          border: "1px solid var(--bs-border)",
+          borderRadius: 4,
+          cursor: "pointer",
+        }}
+      >
+        <span style={{ display: "block", fontFamily: "monospace" }}>{item.signature}</span>
+        {item.doc !== "" && (
+          <span
+            className="host-example-fn-doc"
+            style={{ display: "block", marginTop: 2, fontSize: 11, color: "var(--bs-fg-muted)" }}
+          >
+            {item.doc}
+          </span>
+        )}
+      </button>
+    </li>
+  );
+
+  // A collapsible category section + its nested subcategories and functions.
+  const renderCategory = (cat: PanelCategory): ReactElement => {
+    const isCollapsed = collapsed.has(cat.key);
+    return (
+      <li key={`cat:${cat.key}`} style={{ listStyle: "none" }}>
+        <button
+          type="button"
+          className="host-example-category"
+          aria-expanded={!isCollapsed}
+          onClick={() => toggle(cat.key)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            width: "100%",
+            textAlign: "left",
+            padding: "3px 4px",
+            marginTop: 2,
+            font: "inherit",
+            fontSize: 11,
+            fontWeight: 600,
+            letterSpacing: "0.02em",
+            textTransform: "uppercase",
+            color: "var(--bs-fg-muted)",
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+          }}
+        >
+          <span aria-hidden style={{ fontSize: 9 }}>{isCollapsed ? "▶" : "▼"}</span>
+          {cat.name}
+        </button>
+        {!isCollapsed && (
+          <ul style={{ listStyle: "none", margin: 0, padding: "0 0 0 10px" }}>
+            {cat.subcategories.map(renderCategory)}
+            {cat.items.map(renderFn)}
+          </ul>
+        )}
+      </li>
+    );
+  };
+
+  const searching = query.trim() !== "";
+  const filtered = filterPanelItems(items, query);
+  const tree = buildPanelTree(items);
+
   return (
     <div className="host-example-panel" style={{ padding: 8, overflow: "auto", height: "100%" }}>
       <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--bs-fg-muted)" }}>
         Functions the host provides (already declared in the story) — click to
         compose a call in the form, or Alt-click to insert a skeleton.
       </p>
+      <input
+        className="host-example-search"
+        type="search"
+        placeholder="Search functions…"
+        aria-label="Search host functions"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          marginBottom: 8,
+          padding: "4px 6px",
+          font: "inherit",
+          fontSize: 12,
+          color: "var(--bs-fg)",
+          background: "var(--bs-input-bg, var(--bs-surface-bg))",
+          border: "1px solid var(--bs-border)",
+          borderRadius: 4,
+        }}
+      />
       <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-        {items.map((item) => (
-          <li key={item.name} style={{ marginBottom: 4 }}>
-            <button
-              type="button"
-              className="host-example-fn"
-              onClick={(e) => launch(item, e.currentTarget, e.altKey)}
-              title={`${item.kind} — ${item.fields.length > 0 ? "compose" : "insert"} ${item.name}(…) · Alt-click for a skeleton`}
-              style={{
-                display: "block",
-                width: "100%",
-                textAlign: "left",
-                padding: "4px 6px",
-                font: "inherit",
-                fontSize: 12,
-                color: "var(--bs-fg)",
-                background: "var(--bs-surface-bg)",
-                border: "1px solid var(--bs-border)",
-                borderRadius: 4,
-                cursor: "pointer",
-              }}
-            >
-              <span style={{ display: "block", fontFamily: "monospace" }}>
-                {item.signature}
-              </span>
-              {item.doc !== "" && (
-                <span
-                  className="host-example-fn-doc"
-                  style={{
-                    display: "block",
-                    marginTop: 2,
-                    fontSize: 11,
-                    color: "var(--bs-fg-muted)",
-                  }}
-                >
-                  {item.doc}
-                </span>
-              )}
-            </button>
-          </li>
-        ))}
+        {searching
+          ? filtered.map(renderFn)
+          : [...tree.subcategories.map(renderCategory), ...tree.items.map(renderFn)]}
       </ul>
+      {searching && filtered.length === 0 && (
+        <p
+          className="host-example-empty"
+          style={{ margin: "4px 6px", fontSize: 12, color: "var(--bs-fg-muted)" }}
+        >
+          No functions match “{query.trim()}”.
+        </p>
+      )}
       <button
         type="button"
         className="host-example-reveal"

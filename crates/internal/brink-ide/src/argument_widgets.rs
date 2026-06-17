@@ -437,6 +437,7 @@ mod tests {
                     doc: None,
 
                     widgets: vec![],
+                    path: Vec::new(),
                 },
                 ManifestExternal {
                     name: "place_object".into(),
@@ -460,6 +461,7 @@ mod tests {
                         surface: Some("modal".into()),
                         context: BTreeMap::new(),
                     }],
+                    path: Vec::new(),
                 },
                 // Mirrors the demo: a value-list `map` arg + an (x, y) group that
                 // takes the map as inter-arg context.
@@ -488,6 +490,7 @@ mod tests {
                         surface: Some("modal".into()),
                         context: BTreeMap::from([("map".to_string(), 0)]),
                     }],
+                    path: Vec::new(),
                 },
                 // A host-sourced value-list: `region` items come from the pushed
                 // host-values cache, not the manifest.
@@ -501,6 +504,7 @@ mod tests {
                     kind: ExternalKind::Effect,
                     doc: None,
                     widgets: vec![],
+                    path: Vec::new(),
                 },
             ],
             types: vec![

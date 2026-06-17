@@ -623,6 +623,9 @@ export interface ManifestExternal {
   doc?: string | null;
   /** Arg-group widgets (argument-widget spec §2). */
   widgets?: ArgGroupWidget[];
+  /** Category breadcrumb for the Host Functions panel (#210), e.g.
+   *  ["Map", "Movement"] → nested collapsible sections. Empty/absent = ungrouped. */
+  path?: string[];
 }
 
 /** The host-owned, project-wide external vocabulary. */

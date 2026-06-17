@@ -11,7 +11,11 @@ import {
   EXAMPLE_HOST_MANIFEST,
   EXAMPLE_MAP_POINT_WIDGET,
   EXAMPLE_REGION_WIDGET,
+  UNCATEGORIZED_LABEL,
+  buildPanelTree,
+  filterPanelItems,
   manifestPanelItems,
+  type HostFunctionItem,
 } from "../example-extension.js";
 
 const EXAMPLE_WIDGETS = [EXAMPLE_REGION_WIDGET, EXAMPLE_MAP_POINT_WIDGET];
@@ -62,6 +66,7 @@ describe("manifestPanelItems", () => {
         kind: "plain",
         fields: [],
         groups: [],
+        categoryPath: [],
       },
     ]);
   });
@@ -100,5 +105,73 @@ describe("manifestPanelItems", () => {
     // go_region(region: region_id) — a host widget, not a plain field.
     const region = items.find((i) => i.name === "go_region")?.fields[0];
     expect(region?.hostWidget?.type).toBe("host.example.region");
+  });
+
+  it("carries the host-declared category path (#210)", () => {
+    const items = manifestPanelItems(EXAMPLE_HOST_MANIFEST);
+    expect(items.find((i) => i.name === "play_se")?.categoryPath).toEqual([
+      "Presentation",
+      "Audio",
+    ]);
+    // party_size is intentionally uncategorized.
+    expect(items.find((i) => i.name === "party_size")?.categoryPath).toEqual([]);
+  });
+});
+
+// ── #210: panel category tree + search ──────────────────────────────
+
+const fn = (name: string, categoryPath: string[]): HostFunctionItem => ({
+  name,
+  signature: `${name}()`,
+  call: `~ ${name}()\n`,
+  doc: `does ${name}`,
+  kind: "plain",
+  fields: [],
+  groups: [],
+  categoryPath,
+});
+
+describe("buildPanelTree", () => {
+  it("nests items by category path and sorts deterministically", () => {
+    const tree = buildPanelTree([
+      fn("play_se", ["Presentation", "Audio"]),
+      fn("set_tint", ["Presentation", "Screen"]),
+      fn("teleport", ["World"]),
+      fn("go_region", ["World"]),
+    ]);
+    expect(tree.subcategories.map((c) => c.name)).toEqual(["Presentation", "World"]);
+    const presentation = tree.subcategories[0]!;
+    expect(presentation.key).toBe("Presentation");
+    expect(presentation.subcategories.map((c) => c.key)).toEqual([
+      "Presentation/Audio",
+      "Presentation/Screen",
+    ]);
+    expect(presentation.subcategories[0]!.items.map((i) => i.name)).toEqual(["play_se"]);
+    // Items within a category are sorted by name.
+    expect(tree.subcategories[1]!.items.map((i) => i.name)).toEqual(["go_region", "teleport"]);
+  });
+
+  it("buckets uncategorized items under 'Other'", () => {
+    const tree = buildPanelTree([fn("party_size", []), fn("teleport", ["World"])]);
+    const other = tree.subcategories.find((c) => c.name === UNCATEGORIZED_LABEL);
+    expect(other?.items.map((i) => i.name)).toEqual(["party_size"]);
+  });
+});
+
+describe("filterPanelItems", () => {
+  const items = [
+    fn("play_se", ["Presentation", "Audio"]),
+    fn("teleport", ["World"]),
+    fn("gain_gold", ["Economy"]),
+  ];
+
+  it("returns everything for an empty query", () => {
+    expect(filterPanelItems(items, "   ")).toHaveLength(3);
+  });
+
+  it("matches name, signature, and doc (case-insensitive substring)", () => {
+    expect(filterPanelItems(items, "TELE").map((i) => i.name)).toEqual(["teleport"]);
+    expect(filterPanelItems(items, "does gain_gold").map((i) => i.name)).toEqual(["gain_gold"]);
+    expect(filterPanelItems(items, "zzz")).toEqual([]);
   });
 });

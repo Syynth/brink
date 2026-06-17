@@ -887,6 +887,7 @@ mod tests {
             doc: Some("Grant an item.".to_string()),
 
             widgets: vec![],
+            path: Vec::new(),
         };
         let mut registered = BTreeMap::new();
         registered.insert("grant".to_string(), &reg_ext);
@@ -920,6 +921,7 @@ mod tests {
             doc: None,
 
             widgets: vec![],
+            path: Vec::new(),
         };
         let mut registered = BTreeMap::new();
         registered.insert("has".to_string(), &reg_ext);
@@ -1031,6 +1033,7 @@ mod tests {
             doc: None,
 
             widgets: vec![],
+            path: Vec::new(),
         };
         let mut registered = BTreeMap::new();
         registered.insert("has".to_string(), &reg_ext);

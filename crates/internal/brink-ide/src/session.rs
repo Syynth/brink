@@ -212,6 +212,7 @@ mod tests {
                 doc: None,
 
                 widgets: vec![],
+                path: Vec::new(),
             }],
             types: vec![SemanticTypeDef {
                 name: "color".into(),
