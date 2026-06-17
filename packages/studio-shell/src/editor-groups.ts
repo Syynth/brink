@@ -91,6 +91,13 @@ export interface EditorGroupsState {
   setActiveTab(groupId: string, key: string): void;
   /** Pin a preview tab (double-click, or first edit via auto-pin). */
   pinTab(groupId: string, key: string): void;
+  /**
+   * Replace a tab's document ref in place (file rename/move): finds the tab by
+   * its current `documentKey` across all groups and swaps in `newRef`, keeping
+   * pin state, order, and active selection. The active key follows when it
+   * matched. A no-op when no tab holds `oldKey`.
+   */
+  updateTabRef(oldKey: string, newRef: DocumentRef): void;
   /** Remember a group's splitter size in px. */
   setGroupSize(groupId: string, px: number): void;
   /**
@@ -210,6 +217,26 @@ export function createEditorGroupsStore(): EditorGroupsStore {
         });
 
         return { groups, focusedGroupId: groupId };
+      });
+    },
+
+    updateTabRef(oldKey, newRef) {
+      set((s) => {
+        const newKey = documentKey(newRef);
+        let changed = false;
+        const groups = s.groups.map((g) => {
+          const idx = g.tabs.findIndex((t) => documentKey(t.ref) === oldKey);
+          if (idx < 0) return g;
+          changed = true;
+          const tabs = [...g.tabs];
+          tabs[idx] = { ...tabs[idx]!, ref: newRef };
+          return {
+            ...g,
+            tabs,
+            activeKey: g.activeKey === oldKey ? newKey : g.activeKey,
+          };
+        });
+        return changed ? { groups } : {};
       });
     },
 

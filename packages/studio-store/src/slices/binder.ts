@@ -381,8 +381,9 @@ async function applyRename(
     return false;
   }
 
-  state.closeDocsForPath(oldPath);
-  get().openTarget({ kind: "file", path: newPath }, true);
+  // Re-key any open tabs/views for the file in place (preserve pin/split/
+  // selection) rather than closing and reopening.
+  state.renameDocPath(oldPath, newPath);
   for (const path of referrers) {
     documents.invalidateFile(path);
   }
