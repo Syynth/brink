@@ -475,6 +475,27 @@ export async function mountStudio(
     editorGroups.getState().openDocument(inkFileRef(target), { pinned });
   });
 
+  // The store's tab-closer (binder delete): close every tab for a file path —
+  // the file document and any of its `path::symbol` fragment tabs — across all
+  // groups. Closing the tabs is enough; the syncFromGroups subscriber below
+  // then prunes the matching DocumentSessions view-slots (growth guard).
+  store.getState().setDocCloser((path) => {
+    const symbolPrefix = `${path}::`;
+    const toClose: Array<{ groupId: string; key: string }> = [];
+    for (const group of editorGroups.getState().groups) {
+      for (const tab of group.tabs) {
+        if (tab.ref.typeId !== INK_FILE_TYPE_ID) continue;
+        if (tab.ref.docId === path || tab.ref.docId.startsWith(symbolPrefix)) {
+          toClose.push({ groupId: group.id, key: documentKey(tab.ref) });
+        }
+      }
+    }
+    // Collect first, then close — closeTab mutates the groups we iterated.
+    for (const { groupId, key } of toClose) {
+      editorGroups.getState().closeTab(groupId, key);
+    }
+  });
+
   // Keep the focused-view tracking and the store's activeDocKey mirror in
   // sync with the shell's groups store, and prune cached view slots for
   // closed tabs (unbounded-growth guard).

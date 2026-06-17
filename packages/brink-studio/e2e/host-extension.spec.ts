@@ -149,7 +149,11 @@ test("the registered manifest drives diagnostics; the external-check flag suppre
   // manifest-driven diagnostic is suppressed, badge gone.
   await page.keyboard.press("ControlOrMeta+,");
   await expect(page.locator(".settings-doc")).toBeVisible();
-  await page.locator(".settings-select").selectOption("off");
+  // Scope to the Diagnostics section — the Editor section also has a select.
+  await page
+    .locator(".settings-section", { hasText: "Diagnostics" })
+    .locator(".settings-select")
+    .selectOption("off");
   await expect(problemsBadge).toHaveCount(0, { timeout: 10000 });
 });
 

@@ -28,6 +28,12 @@ export interface FileProvider {
   /** Create a new file at the given path. */
   createFile(path: string, content: string): Promise<void>;
 
+  /** Delete a file. Optional — hosts that can't remove files (or don't want
+   *  the studio to) simply omit it, and the studio hides its delete UI. Kept
+   *  optional (unlike `createFile`) so adding delete doesn't break existing
+   *  provider implementations. */
+  deleteFile?(path: string): Promise<void>;
+
   /** Request save of the current project state. */
   requestSave?(): Promise<void>;
 }
@@ -63,6 +69,10 @@ export class InMemoryFileProvider implements FileProvider {
 
   async createFile(path: string, content: string): Promise<void> {
     this.files.set(path, content);
+  }
+
+  async deleteFile(path: string): Promise<void> {
+    this.files.delete(path);
   }
 
   onFileChanged(path: string, content: string): void {
