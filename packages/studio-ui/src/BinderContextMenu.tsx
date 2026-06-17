@@ -19,6 +19,8 @@ export type ContextMenuTarget =
       path: string;
       /** Whether the provider supports deletion (hides Delete when false). */
       canDelete: boolean;
+      /** Whether files can be renamed/moved (hides Rename when false). */
+      canRename: boolean;
     }
   | {
       kind: "folder";
@@ -27,6 +29,7 @@ export type ContextMenuTarget =
       /** All file paths under the folder (recursive). */
       paths: string[];
       canDelete: boolean;
+      canRename: boolean;
     };
 
 interface MenuItem {
@@ -55,7 +58,9 @@ export type ContextMenuAction =
   | { type: "demoteKnot"; path: string; knot: string; destKnot: string }
   | { type: "deleteFile"; path: string }
   | { type: "deleteFolder"; prefix: string; paths: string[] }
-  | { type: "newFileInFolder"; dir: string };
+  | { type: "newFileInFolder"; dir: string }
+  | { type: "renameFile"; path: string }
+  | { type: "renameFolder"; prefix: string };
 
 /** Directory of a file path, with trailing slash; "" for a root-level file. */
 function dirOf(path: string): string {
@@ -183,6 +188,12 @@ function buildItems(
         action: () => onAction({ type: "newFileInFolder", dir: dirOf(target.path) }),
       },
     ];
+    if (target.canRename) {
+      items.push({
+        label: "Rename",
+        action: () => onAction({ type: "renameFile", path: target.path }),
+      });
+    }
     if (target.canDelete) {
       items.push({ label: "---" });
       items.push({
@@ -200,6 +211,13 @@ function buildItems(
         action: () => onAction({ type: "newFileInFolder", dir: target.prefix }),
       },
     ];
+    if (target.canRename) {
+      items.push({
+        label: "Rename folder",
+        disabled: target.paths.length === 0,
+        action: () => onAction({ type: "renameFolder", prefix: target.prefix }),
+      });
+    }
     if (target.canDelete) {
       items.push({ label: "---" });
       items.push({

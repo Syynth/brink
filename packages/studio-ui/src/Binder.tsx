@@ -52,11 +52,81 @@ function displayName(path: string): string {
   return slash >= 0 ? path.substring(slash + 1) : path;
 }
 
+/** Directory of a file path, with trailing slash; "" for a root-level file. */
+function dirOf(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash >= 0 ? path.substring(0, slash + 1) : "";
+}
+
+/** Parent directory of a folder prefix ("a/b/" → "a/", "scenes/" → ""). */
+function parentOf(prefix: string): string {
+  const noTrail = prefix.replace(/\/$/, "");
+  const slash = noTrail.lastIndexOf("/");
+  return slash >= 0 ? noTrail.substring(0, slash + 1) : "";
+}
+
+// ── Inline rename input ────────────────────────────────────────────
+
+interface RenameInputProps {
+  initial: string;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}
+
+/** In-row rename field: Enter (or blur) commits, Escape cancels. A guard ref
+ *  prevents the blur fired by commit-driven unmount from double-firing. */
+function RenameInput({ initial, onCommit, onCancel }: RenameInputProps) {
+  const ref = useRef<HTMLInputElement>(null);
+  const done = useRef(false);
+
+  useEffect(() => {
+    const input = ref.current;
+    if (!input) return;
+    input.focus();
+    // Pre-select the basename (without extension) for a quick retype.
+    const dot = initial.lastIndexOf(".");
+    input.setSelectionRange(0, dot > 0 ? dot : initial.length);
+  }, [initial]);
+
+  const commit = useCallback(() => {
+    if (done.current) return;
+    done.current = true;
+    onCommit(ref.current?.value ?? initial);
+  }, [onCommit, initial]);
+
+  const cancel = useCallback(() => {
+    if (done.current) return;
+    done.current = true;
+    onCancel();
+  }, [onCancel]);
+
+  return (
+    <input
+      ref={ref}
+      className="brink-binder-rename-input"
+      defaultValue={initial}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancel();
+        }
+      }}
+      onBlur={commit}
+    />
+  );
+}
+
 // ── Drag state types ────────────────────────────────────────────────
 
 interface DragState {
   sourceKeys: string[];
-  sourceKind: "knot" | "stitch";
+  sourceKind: "knot" | "stitch" | "file";
   sourcePath: string;
   sourceParent?: string;
 }
@@ -85,6 +155,8 @@ interface RowProps {
   isDropInto: boolean;
   dropLinePosition: "before" | "after" | null;
   draggable: boolean;
+  /** When set, the row renders an inline rename field instead of its label. */
+  editing?: RenameInputProps;
   onChevronClick: () => void;
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
@@ -109,6 +181,7 @@ function BinderRow({
   isDropInto,
   dropLinePosition,
   draggable,
+  editing,
   onChevronClick,
   onClick,
   onDoubleClick,
@@ -201,7 +274,11 @@ function BinderRow({
         <span className={"brink-binder-icon " + iconClass(kind, isFunction)}>
           {iconChar(kind, isFunction)}
         </span>
-        <span className="brink-binder-label">{label}</span>
+        {editing ? (
+          <RenameInput {...editing} />
+        ) : (
+          <span className="brink-binder-label">{label}</span>
+        )}
       </div>
       {dropLinePosition === "after" && <div className="brink-binder-drop-line" />}
     </>
@@ -367,6 +444,9 @@ function BinderInner() {
   const applyMoveResult = useStudioStore((s) => s.applyMoveResult);
   const deleteFile = useStudioStore((s) => s.deleteFile);
   const deleteFolder = useStudioStore((s) => s.deleteFolder);
+  const renameFile = useStudioStore((s) => s.renameFile);
+  const moveFile = useStudioStore((s) => s.moveFile);
+  const renameFolder = useStudioStore((s) => s.renameFolder);
   const undo = useStudioStore((s) => s.undo);
   const undoStack = useStudioStore((s) => s.undoStack);
   const addFile = useStudioStore((s) => s.addFile);
@@ -391,6 +471,9 @@ function BinderInner() {
     run: () => void;
   } | null>(null);
 
+  // The row (file path or folder prefix) currently being inline-renamed.
+  const [renaming, setRenaming] = useState<{ key: string; isFolder: boolean } | null>(null);
+
   // Drag state
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
@@ -403,6 +486,10 @@ function BinderInner() {
     const state = storeApi.getState();
     return state._project?.getSession();
   }, [storeApi]);
+
+  // Whether file rename/move is available (gates file dragging). Read
+  // non-reactively — the project is bound once and outline updates re-render.
+  const canRenameFiles = storeApi.getState()._project?.canRenameFiles() ?? false;
 
   const executeAction = useCallback(
     async (action: ContextMenuAction) => {
@@ -538,6 +625,36 @@ function BinderInner() {
     [confirmInput, cancelInput],
   );
 
+  // ── Inline rename commit ────────────────────────────────────────
+
+  const commitRename = useCallback(
+    (value: string) => {
+      const target = renaming;
+      setRenaming(null);
+      if (!target) return;
+      const trimmed = value.trim();
+      if (!trimmed) return;
+
+      if (target.isFolder) {
+        const oldPrefix = target.key; // e.g. "scenes/act1/"
+        const newPrefix = parentOf(oldPrefix) + trimmed.replace(/\/$/, "") + "/";
+        if (newPrefix === oldPrefix) return;
+        const paths = outline.map((f) => f.path).filter((p) => p.startsWith(oldPrefix));
+        void renameFolder(oldPrefix, newPrefix, paths);
+      } else {
+        const oldPath = target.key;
+        let name = trimmed;
+        if (!name.includes(".")) name += ".ink";
+        const newPath = dirOf(oldPath) + name;
+        if (newPath === oldPath) return;
+        void renameFile(oldPath, newPath);
+      }
+    },
+    [renaming, outline, renameFile, renameFolder],
+  );
+
+  const cancelRename = useCallback(() => setRenaming(null), []);
+
   // ── Context menu handler ────────────────────────────────────────
 
   const handleContextMenu = useCallback(
@@ -547,16 +664,27 @@ function BinderInner() {
 
       let target: ContextMenuTarget;
       if (row.kind === "file") {
-        const canDelete = storeApi.getState()._project?.canDeleteFiles() ?? false;
-        target = { kind: "file", path: row.path, canDelete };
+        const project = storeApi.getState()._project;
+        target = {
+          kind: "file",
+          path: row.path,
+          canDelete: project?.canDeleteFiles() ?? false,
+          canRename: project?.canRenameFiles() ?? false,
+        };
       } else if (row.kind === "folder") {
         // Every file under the folder prefix (recursive); the folder row's
         // `path` is the directory key with a trailing slash.
         const paths = outline
           .map((f) => f.path)
           .filter((p) => p.startsWith(row.path));
-        const canDelete = storeApi.getState()._project?.canDeleteFiles() ?? false;
-        target = { kind: "folder", prefix: row.path, paths, canDelete };
+        const project = storeApi.getState()._project;
+        target = {
+          kind: "folder",
+          prefix: row.path,
+          paths,
+          canDelete: project?.canDeleteFiles() ?? false,
+          canRename: project?.canRenameFiles() ?? false,
+        };
       } else {
         target = {
           kind: row.kind,
@@ -578,6 +706,12 @@ function BinderInner() {
       switch (action.type) {
         case "newFileInFolder":
           openNewFileInput(action.dir);
+          return;
+        case "renameFile":
+          setRenaming({ key: action.path, isFolder: false });
+          return;
+        case "renameFolder":
+          setRenaming({ key: action.prefix, isFolder: true });
           return;
         case "deleteFile":
           setPendingDelete({
@@ -614,6 +748,16 @@ function BinderInner() {
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && undoStack.length > 0) {
         e.preventDefault();
         void undo();
+        return;
+      }
+
+      // F2: rename the focused file/folder row.
+      if (e.key === "F2" && focusedKey) {
+        const row = flatRows.find((r) => r.key === focusedKey);
+        if (row && (row.kind === "file" || row.kind === "folder")) {
+          e.preventDefault();
+          setRenaming({ key: row.key, isFolder: row.kind === "folder" });
+        }
         return;
       }
 
@@ -689,8 +833,16 @@ function BinderInner() {
 
   const handleDragStart = useCallback(
     (e: React.DragEvent, row: FlatRow) => {
-      if (row.kind === "file" || row.kind === "folder") {
+      if (row.kind === "folder") {
         e.preventDefault();
+        return;
+      }
+      if (row.kind === "file") {
+        // Dragging a file moves it (into a folder); knot/stitch reorder is
+        // unaffected (handlers branch on sourceKind).
+        setDragState({ sourceKeys: [row.key], sourceKind: "file", sourcePath: row.path });
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", row.key);
         return;
       }
       const keys = selectedKeys.has(row.key) ? [...selectedKeys] : [row.key];
@@ -715,6 +867,18 @@ function BinderInner() {
     (e: React.DragEvent, row: FlatRow) => {
       if (!dragState) return;
       e.preventDefault();
+
+      // File drag: only folders are drop targets (move into folder).
+      if (dragState.sourceKind === "file") {
+        if (row.kind === "folder") {
+          e.dataTransfer.dropEffect = "move";
+          setDropTarget({ kind: "into", targetKey: row.key });
+        } else {
+          e.dataTransfer.dropEffect = "none";
+          setDropTarget(null);
+        }
+        return;
+      }
 
       // Determine drop kind
       if (row.kind === "file") {
@@ -774,6 +938,18 @@ function BinderInner() {
       e.preventDefault();
       if (!dragState || !dropTarget) return;
 
+      // File drag onto a folder = move (its key changes; includes rewrite).
+      if (dragState.sourceKind === "file") {
+        if (dropTarget.kind === "into" && dropTarget.targetKey) {
+          const base = dragState.sourcePath.split("/").pop() ?? dragState.sourcePath;
+          const newPath = dropTarget.targetKey + base; // targetKey is "folder/"
+          if (newPath !== dragState.sourcePath) void moveFile(dragState.sourcePath, newPath);
+        }
+        setDragState(null);
+        setDropTarget(null);
+        return;
+      }
+
       const path = dragState.sourcePath;
       // All selected items move together (in their current relative order).
       const draggedNames = dragState.sourceKeys.map(lastSegment);
@@ -822,7 +998,7 @@ function BinderInner() {
       setDragState(null);
       setDropTarget(null);
     },
-    [dragState, dropTarget, executeAction, outline],
+    [dragState, dropTarget, executeAction, outline, moveFile],
   );
 
   // ── Drop line helper ───────────────────────────────────────────
@@ -952,18 +1128,23 @@ function BinderInner() {
           isActive={isActive}
           isSelected={selectedKeys.has(fileKey)}
           isFocused={focusedKey === fileKey}
-          isDragging={false}
+          isDragging={dragState?.sourceKind === "file" && dragState.sourcePath === fileKey}
           isDropInto={false}
           dropLinePosition={null}
-          draggable={false}
+          draggable={canRenameFiles}
+          editing={
+            renaming && !renaming.isFolder && renaming.key === fileKey
+              ? { initial: displayName(file.path), onCommit: commitRename, onCancel: cancelRename }
+              : undefined
+          }
           onChevronClick={() => toggleCollapsed(fileKey)}
           onClick={(e) => handleRowClick(fileKey, target, e)}
           onDoubleClick={() => handleOpenPinned(target)}
           onContextMenu={(e) => (fileRow ? handleContextMenu(e, fileRow) : e.preventDefault())}
-          onDragStart={() => {}}
-          onDragEnd={() => {}}
-          onDragOver={() => {}}
-          onDrop={() => {}}
+          onDragStart={(e) => fileRow && handleDragStart(e, fileRow)}
+          onDragEnd={handleDragEnd}
+          onDragOver={(e) => fileRow && handleDragOver(e, fileRow)}
+          onDrop={(e) => fileRow && handleDrop(e, fileRow)}
         />
         {isExpanded &&
           knots.map((k) => {
@@ -991,9 +1172,14 @@ function BinderInner() {
           isSelected={selectedKeys.has(folder.key)}
           isFocused={focusedKey === folder.key}
           isDragging={false}
-          isDropInto={false}
+          isDropInto={dropTarget?.kind === "into" && dropTarget.targetKey === folder.key}
           dropLinePosition={null}
           draggable={false}
+          editing={
+            renaming?.isFolder && renaming.key === folder.key
+              ? { initial: folder.name, onCommit: commitRename, onCancel: cancelRename }
+              : undefined
+          }
           onChevronClick={() => toggleCollapsed(folder.key)}
           onClick={() => {
             setFocusedKey(folder.key);
@@ -1002,9 +1188,9 @@ function BinderInner() {
           onDoubleClick={() => {}}
           onContextMenu={(e) => (folderRow ? handleContextMenu(e, folderRow) : e.preventDefault())}
           onDragStart={() => {}}
-          onDragEnd={() => {}}
-          onDragOver={() => {}}
-          onDrop={() => {}}
+          onDragEnd={handleDragEnd}
+          onDragOver={(e) => folderRow && handleDragOver(e, folderRow)}
+          onDrop={(e) => folderRow && handleDrop(e, folderRow)}
         />
         {isExpanded && renderTree(folder, depth + 1)}
       </div>

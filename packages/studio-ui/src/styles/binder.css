@@ -113,6 +113,20 @@
   padding: 4px 8px;
 }
 
+/* Inline rename field — replaces a row's label in place (F2 / context menu). */
+.brink-studio .brink-binder-rename-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  padding: 1px 4px;
+  color: var(--bs-fg);
+  background: var(--bs-input-bg, var(--bs-surface-bg));
+  border: 1px solid var(--bs-accent);
+  border-radius: 3px;
+  outline: none;
+}
+
 /* Binder: multi-select highlight */
 .brink-studio .brink-binder-row.brink-binder-selected {
   background: color-mix(in srgb, var(--bs-accent) 15%, transparent);

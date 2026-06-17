@@ -24,6 +24,9 @@ import type { MoveResult } from "@brink/wasm-types";
  * - `recreate` — files were deleted. Undo must *re-create* them, not rewrite
  *   them: the host no longer has these paths, so restoring egresses as
  *   `created` (via `project.addFile`) and the file tab is reopened.
+ * - `rename` — a file was renamed/moved. Undo is the inverse rename
+ *   (`from`→`to`); the rename op is self-inverting (INCLUDE rewrites included),
+ *   so no snapshot is needed.
  */
 export type UndoEntry =
   | {
@@ -35,6 +38,14 @@ export type UndoEntry =
       kind: "recreate";
       description: string;
       files: Array<{ path: string; source: string }>;
+    }
+  | {
+      kind: "rename";
+      description: string;
+      /** Undo applies each inverse rename (`from`→`to`), in reverse order. A
+       *  single file rename has one entry; a folder rename batches all its
+       *  files into one undoable step. */
+      renames: Array<{ from: string; to: string }>;
     };
 
 // ── Slice interface ─────────────────────────────────────────────────
@@ -56,6 +67,9 @@ export interface BinderSlice {
   ): Promise<void>;
   deleteFile(path: string): Promise<void>;
   deleteFolder(prefix: string, paths: string[]): Promise<void>;
+  renameFile(oldPath: string, newPath: string): Promise<void>;
+  moveFile(oldPath: string, newPath: string): Promise<void>;
+  renameFolder(oldPrefix: string, newPrefix: string, paths: string[]): Promise<void>;
   undo(): Promise<void>;
 }
 
@@ -205,6 +219,34 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     );
   },
 
+  async renameFile(oldPath, newPath) {
+    await renameWithUndo(get, set, oldPath, newPath, "Renamed");
+  },
+
+  async moveFile(oldPath, newPath) {
+    await renameWithUndo(get, set, oldPath, newPath, "Moved");
+  },
+
+  async renameFolder(oldPrefix, newPrefix, paths) {
+    if (oldPrefix === newPrefix || paths.length === 0) return;
+    const renames: Array<{ from: string; to: string }> = [];
+    for (const old of paths) {
+      const moved = newPrefix + old.slice(oldPrefix.length);
+      if (await applyRename(get, old, moved)) {
+        renames.unshift({ from: moved, to: old }); // reverse order for undo
+      }
+    }
+    if (renames.length === 0) return;
+    const label = `Renamed ${oldPrefix.replace(/\/$/, "")}/ → ${newPrefix.replace(/\/$/, "")}/`;
+    set({ undoStack: [...get().undoStack, { kind: "rename", description: label, renames }] });
+    get()._notify?.({
+      severity: "info",
+      source: "binder",
+      message: label,
+      actions: [{ label: "Undo", commandId: "binder.undo" }],
+    });
+  },
+
   async undo() {
     const state = get();
     const project = state._project;
@@ -226,7 +268,7 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       for (const { path } of entry.snapshots) {
         documents.invalidateFile(path);
       }
-    } else {
+    } else if (entry.kind === "recreate") {
       // Re-create deleted files: the host has no such paths, so this egresses
       // as `created` (via addFile), then reopen each file's tab.
       for (const { path, source } of entry.files) {
@@ -234,6 +276,12 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       }
       for (const { path } of entry.files) {
         get().openTarget({ kind: "file", path }, true);
+      }
+    } else {
+      // Inverse rename(s) — the op is self-inverting (INCLUDE rewrites
+      // included). Reverse order so a folder batch unwinds cleanly.
+      for (const { from, to } of [...entry.renames].reverse()) {
+        await applyRename(get, from, to);
       }
     }
 
@@ -291,6 +339,76 @@ async function deleteFilesWithUndo(
   // 5. Push undo + notify with Undo (binder.undo command, spec §7.5).
   //    Read the stack fresh (deletes are async — don't clobber concurrent ops).
   set({ undoStack: [...get().undoStack, { kind: "recreate", description, files }] });
+  get()._notify?.({
+    severity: "info",
+    source: "binder",
+    message: description,
+    actions: [{ label: "Undo", commandId: "binder.undo" }],
+  });
+}
+
+// ── Rename / move helper ────────────────────────────────────────────
+
+/**
+ * Apply a rename/move: close the old file's tabs before its key leaves the
+ * session, rename it (rewriting INCLUDE references via the session op), reopen
+ * it at the new path, refresh referrer views, and recompile. Returns false
+ * (with an error notification) on failure. Pushes no undo entry — callers
+ * manage the stack.
+ */
+async function applyRename(
+  get: () => StudioState,
+  oldPath: string,
+  newPath: string,
+): Promise<boolean> {
+  const state = get();
+  const project = state._project;
+  const documents = state._documents;
+  if (!project || !documents) return false;
+
+  state.closeDocsForPath(oldPath);
+
+  let referrers: string[];
+  try {
+    referrers = await project.renameFile(oldPath, newPath);
+  } catch (e) {
+    get()._notify?.({
+      severity: "error",
+      source: "binder",
+      message: e instanceof Error ? e.message : `cannot rename ${oldPath}`,
+    });
+    return false;
+  }
+
+  get().openTarget({ kind: "file", path: newPath }, true);
+  for (const path of referrers) {
+    documents.invalidateFile(path);
+  }
+  documents.triggerCompile();
+  return true;
+}
+
+/**
+ * Rename/move with an undo entry. Undo is the inverse rename — no snapshot
+ * needed, since the op round-trips (INCLUDE rewrites included).
+ */
+async function renameWithUndo(
+  get: () => StudioState,
+  set: (partial: Partial<StudioState>) => void,
+  oldPath: string,
+  newPath: string,
+  verb: string,
+): Promise<void> {
+  if (oldPath === newPath) return;
+  if (!(await applyRename(get, oldPath, newPath))) return;
+
+  const description = `${verb} ${oldPath} → ${newPath}`;
+  set({
+    undoStack: [
+      ...get().undoStack,
+      { kind: "rename", description, renames: [{ from: newPath, to: oldPath }] },
+    ],
+  });
   get()._notify?.({
     severity: "info",
     source: "binder",
