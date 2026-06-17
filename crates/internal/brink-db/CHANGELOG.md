@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/Syynth/brink/compare/brink-db-v0.0.4...brink-db-v0.0.5) - 2026-06-17
+
+### Added
+
+- *(ide)* file rename/move core (#164 Stage 3, PR A) ([#252](https://github.com/Syynth/brink/pull/252))
+
 ## [0.0.3](https://github.com/Syynth/brink/compare/brink-db-v0.0.2...brink-db-v0.0.3) - 2026-06-13
 
 ### Fixed

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/Syynth/brink/compare/brink-ide-v0.0.4...brink-ide-v0.0.5) - 2026-06-17
+
+### Added
+
+- *(ide)* file rename/move core (#164 Stage 3, PR A) ([#252](https://github.com/Syynth/brink/pull/252))
+- *(brink-ide,web)* host-sourced value-lists in the call Form ([#237](https://github.com/Syynth/brink/pull/237))
+- *(brink-ide,studio)* drive the call Form from signature metadata ([#233](https://github.com/Syynth/brink/pull/233))
+- *(studio)* typed argument widgets in the call Form + live inter-arg context ([#223](https://github.com/Syynth/brink/pull/223))
+- *(studio)* argument widgets stage 5 — arg-groups + inter-arg context + modal ([#222](https://github.com/Syynth/brink/pull/222))
+- *(studio)* argument widgets stage 3 — the call Form + launchers ([#220](https://github.com/Syynth/brink/pull/220))
+- *(studio)* argument widgets stage 2 — argument_widgets query + Fill ([#219](https://github.com/Syynth/brink/pull/219))
+- *(studio)* argument widgets stage 1 — registry + light color picker ([#218](https://github.com/Syynth/brink/pull/218))
+
 ## [0.0.4](https://github.com/Syynth/brink/compare/brink-ide-v0.0.3...brink-ide-v0.0.4) - 2026-06-15
 
 ### Added
