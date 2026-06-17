@@ -595,7 +595,13 @@ function openValuePicker(
         const ql = q.toLowerCase();
         list.replaceChildren();
         for (const it of items) {
-          if (ql && !it.label.toLowerCase().includes(ql) && !it.value.toLowerCase().includes(ql)) {
+          // Filter on label, value, AND detail (#211) — e.g. "Switch #5".
+          if (
+            ql &&
+            !it.label.toLowerCase().includes(ql) &&
+            !it.value.toLowerCase().includes(ql) &&
+            !(it.detail?.toLowerCase().includes(ql) ?? false)
+          ) {
             continue;
           }
           const btn = document.createElement("button");
