@@ -34,6 +34,12 @@ export interface FileProvider {
    *  provider implementations. */
   deleteFile?(path: string): Promise<void>;
 
+  /** Rename/move a file (its key changes; content is supplied separately via
+   *  the session). Optional — when absent, ProjectSession falls back to
+   *  `createFile(new)` + `deleteFile(old)`. A host with an atomic rename (or
+   *  that must preserve history) implements this instead. */
+  renameFile?(oldPath: string, newPath: string): Promise<void>;
+
   /** Request save of the current project state. */
   requestSave?(): Promise<void>;
 }
@@ -73,6 +79,14 @@ export class InMemoryFileProvider implements FileProvider {
 
   async deleteFile(path: string): Promise<void> {
     this.files.delete(path);
+  }
+
+  async renameFile(oldPath: string, newPath: string): Promise<void> {
+    const content = this.files.get(oldPath);
+    if (content !== undefined) {
+      this.files.set(newPath, content);
+      this.files.delete(oldPath);
+    }
   }
 
   onFileChanged(path: string, content: string): void {

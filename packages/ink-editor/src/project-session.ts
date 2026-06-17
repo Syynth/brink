@@ -128,6 +128,56 @@ export class ProjectSession {
     this.changes.record(path, "deleted");
   }
 
+  /** Whether files can be renamed/moved. True when the provider has an atomic
+   *  rename, or can delete (so the create+delete fallback can drop the old
+   *  file). Drives the binder's rename/move affordances. */
+  canRenameFiles(): boolean {
+    return this.provider.renameFile !== undefined || this.provider.deleteFile !== undefined;
+  }
+
+  /**
+   * Rename/move a file, rewriting `INCLUDE` references. The session's rename op
+   * (pure) computes the moved content + the referencing files' edits; this
+   * applies them: writes the content under `newPath`, drops `oldPath`, and
+   * rewrites referrers — recording created/deleted/modified so the host mirror
+   * follows. Returns the referrer paths whose `INCLUDE`s were rewritten (so the
+   * caller can refresh their views). Throws if the op fails (unknown source, or
+   * `newPath` taken).
+   */
+  async renameFile(oldPath: string, newPath: string): Promise<string[]> {
+    if (oldPath === newPath) return [];
+    const result = this.session.renameFile(oldPath, newPath);
+    if (!result.ok) {
+      throw new Error(result.error ?? `cannot rename ${oldPath}`);
+    }
+    const newSource = result.new_source ?? this.session.getFileSource(oldPath) ?? "";
+
+    // Session: add the moved file under its new key, drop the old one.
+    this.session.updateFile(newPath, newSource);
+    this.session.removeFile(oldPath);
+
+    // Cross-file INCLUDE rewrites — through the shared apply-edits seam.
+    const referrers: string[] = [];
+    for (const edit of result.cross_file_edits) {
+      this.applyEdit(edit.path, edit.new_source);
+      referrers.push(edit.path);
+    }
+
+    // Provider: atomic rename, or create-new + delete-old fallback.
+    if (this.provider.renameFile) {
+      await this.provider.renameFile(oldPath, newPath);
+    } else {
+      await this.provider.createFile(newPath, newSource);
+      await this.provider.deleteFile?.(oldPath);
+    }
+
+    // Host egress for the moved file itself.
+    this.changes.record(newPath, "created");
+    this.changes.record(oldPath, "deleted");
+
+    return referrers;
+  }
+
   /**
    * Compile the project from its entry file. Cached against the session's
    * mutation generation: with several live views each compiling on their own

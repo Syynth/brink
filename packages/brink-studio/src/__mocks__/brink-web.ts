@@ -164,6 +164,45 @@ export class EditorSession {
     return JSON.stringify({ ok: true });
   }
 
+  /**
+   * Mock of the real `rename_file` op (pure — computes edits, does not mutate
+   * the session). Returns a `MoveResult`: `new_source` is the moved file's
+   * content (outbound include rewriting is left to the real Rust op; the mock
+   * keeps it verbatim), and `cross_file_edits` rewrite any other file whose
+   * `INCLUDE` names the old basename to the new one — enough to exercise the
+   * studio's apply/egress plumbing. The real inbound/outbound math is covered
+   * by Rust unit tests in brink-ide.
+   */
+  rename_file(oldPath: string, newPath: string): string {
+    const source = this.files.get(oldPath);
+    if (source === undefined) {
+      return JSON.stringify({ ok: false, error: "file not loaded" });
+    }
+    if (oldPath !== newPath && this.files.has(newPath)) {
+      return JSON.stringify({ ok: false, error: `a file already exists at '${newPath}'` });
+    }
+    const oldBase = oldPath.split("/").pop()!;
+    const newBase = newPath.split("/").pop()!;
+    const escaped = oldBase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const includeRe = new RegExp(`(INCLUDE\\s+\\S*?)${escaped}\\b`, "g");
+    const crossFileEdits: { path: string; new_source: string }[] = [];
+    if (oldPath !== newPath) {
+      for (const [p, src] of this.files) {
+        if (p === oldPath) continue;
+        const rewritten = src.replace(includeRe, `$1${newBase}`);
+        if (rewritten !== src) {
+          crossFileEdits.push({ path: p, new_source: rewritten });
+        }
+      }
+    }
+    return JSON.stringify({
+      ok: true,
+      path: oldPath,
+      new_source: source,
+      cross_file_edits: crossFileEdits,
+    });
+  }
+
   // Host-capability manifest + value cache (#174) — no-ops in the mock.
   set_host_manifest(_json: string): void { /* no-op */ }
   clear_host_manifest(): void { /* no-op */ }
