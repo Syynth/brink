@@ -93,6 +93,35 @@ test.describe("file rename", () => {
     await expect.poll(() => problemCount(page)).toBe(0);
   });
 
+  test("renaming an open file re-keys its tab in place (not reopened)", async ({ page }) => {
+    // Open the included file in a pinned editor tab.
+    await fileRow(page, "toppled-temple.ink").locator(".brink-binder-label").dblclick();
+    const group = page.locator(".shell-editor-group").first();
+    await expect(
+      group.locator(".brink-tab .brink-tab-label", { hasText: /^toppled-temple\.ink$/ }),
+    ).toBeVisible();
+
+    // Rename it.
+    await fileRow(page, "toppled-temple.ink").click({ button: "right" });
+    await page
+      .locator(".brink-context-menu-item")
+      .filter({ hasText: /^Rename$/ })
+      .click();
+    const input = page.locator(".brink-binder-rename-input");
+    await input.fill("temple.ink");
+    await input.press("Enter");
+
+    // The same tab is re-labeled in place — exactly one temple.ink tab, no
+    // leftover toppled-temple.ink tab, and the editor still shows its content.
+    await expect(
+      group.locator(".brink-tab .brink-tab-label", { hasText: /^temple\.ink$/ }),
+    ).toHaveCount(1);
+    await expect(
+      group.locator(".brink-tab .brink-tab-label", { hasText: /^toppled-temple\.ink$/ }),
+    ).toHaveCount(0);
+    await expect.poll(() => problemCount(page)).toBe(0);
+  });
+
   test("Escape cancels an inline rename", async ({ page }) => {
     await fileRow(page, "toppled-temple.ink").click({ button: "right" });
     await page

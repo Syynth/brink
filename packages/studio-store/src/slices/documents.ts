@@ -31,18 +31,26 @@ export interface DocumentsSlice {
    *  for a file path (the file doc and any of its `path::symbol` docs) across
    *  all groups. Null until bound. */
   _closeDocsForPath: ((path: string) => void) | null;
+  /** Injected tab-renamer (main.tsx): re-keys every tab + view slot for a file
+   *  path in place when the file is renamed/moved. Null until bound. */
+  _renameDocPath: ((oldPath: string, newPath: string) => void) | null;
 
   /** Open an ink document (pinned, or as the group's preview tab). */
   openTarget(target: TabTarget, pinned: boolean): void;
   /** Close every open tab for `path` (file + its symbol docs). Used by delete
    *  so the shell tears the views down before the file leaves the session. */
   closeDocsForPath(path: string): void;
+  /** Re-key every open tab + view slot for `oldPath` to `newPath` in place
+   *  (rename/move), preserving pin/split/selection. */
+  renameDocPath(oldPath: string, newPath: string): void;
   /** Create a new file in the project and open it pinned. */
   addFile(name: string): Promise<void>;
   /** Bind the shell opener bridge (main.tsx, at bootstrap). */
   setDocumentOpener(open: (target: TabTarget, pinned: boolean) => void): void;
   /** Bind the shell tab-closer bridge (main.tsx, at bootstrap). */
   setDocCloser(close: (path: string) => void): void;
+  /** Bind the shell tab-renamer bridge (main.tsx, at bootstrap). */
+  setDocRenamer(rename: (oldPath: string, newPath: string) => void): void;
   /** Update the focused-document mirror (main.tsx subscription). */
   setActiveDocKey(key: string): void;
   /** Update the dirty-file summary (mount.tsx dirty listener). */
@@ -57,6 +65,7 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
   dirtyFiles: 0,
   _openTarget: null,
   _closeDocsForPath: null,
+  _renameDocPath: null,
 
   openTarget(target, pinned) {
     get()._openTarget?.(target, pinned);
@@ -64,6 +73,10 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
 
   closeDocsForPath(path) {
     get()._closeDocsForPath?.(path);
+  },
+
+  renameDocPath(oldPath, newPath) {
+    get()._renameDocPath?.(oldPath, newPath);
   },
 
   async addFile(name) {
@@ -79,6 +92,10 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
 
   setDocCloser(close) {
     set({ _closeDocsForPath: close });
+  },
+
+  setDocRenamer(rename) {
+    set({ _renameDocPath: rename });
   },
 
   setActiveDocKey(key) {

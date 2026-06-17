@@ -185,6 +185,37 @@ describe("editor groups store", () => {
     });
   });
 
+  describe("updateTabRef", () => {
+    it("re-keys a tab in place across groups, keeping pin/order/active", () => {
+      store.getState().openDocument(MAIN, { pinned: true });
+      store.getState().openDocument(OTHER, { pinned: true });
+      store.getState().splitGroup(); // duplicate OTHER into group 2 (focused, active)
+
+      const RENAMED = ref("util.ink");
+      store.getState().updateTabRef(KEY_OTHER, RENAMED);
+
+      const s = store.getState();
+      const keyRenamed = documentKey(RENAMED);
+      // group 1: main + util (renamed in place, order + pin preserved)
+      expect(s.groups[0]!.tabs.map((t) => documentKey(t.ref))).toEqual([KEY_MAIN, keyRenamed]);
+      expect(s.groups[0]!.tabs[1]!.pinned).toBe(true);
+      // group 2: the duplicate also re-keyed, and it was the active tab
+      expect(s.groups[1]!.tabs.map((t) => documentKey(t.ref))).toEqual([keyRenamed]);
+      expect(s.groups[1]!.activeKey).toBe(keyRenamed);
+      // no tab still holds the old key
+      expect(s.groups.flatMap((g) => g.tabs).some((t) => documentKey(t.ref) === KEY_OTHER)).toBe(
+        false,
+      );
+    });
+
+    it("is a no-op when no tab holds the key", () => {
+      store.getState().openDocument(MAIN);
+      const before = store.getState().groups;
+      store.getState().updateTabRef(documentKey(THIRD), ref("nope.ink"));
+      expect(store.getState().groups).toBe(before);
+    });
+  });
+
   describe("splitGroup", () => {
     it("duplicates the focused group's active tab into a new right group", () => {
       store.getState().openDocument(MAIN);

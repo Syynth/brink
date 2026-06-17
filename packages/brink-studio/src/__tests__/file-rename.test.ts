@@ -108,19 +108,19 @@ describe("ProjectSession.renameFile", () => {
 // ── Store renameFile / moveFile + undo ──────────────────────────────
 
 describe("store.renameFile", () => {
-  it("closes the old tabs, renames, and undo restores the original path + includes", async () => {
+  it("re-keys the open tabs in place, renames, and undo restores the original path + includes", async () => {
     const { project } = await makeProject();
-    const closeDocs = vi.fn();
+    const renameDoc = vi.fn();
     const store = createStudioStore();
     store.setState({
       _project: project,
       _documents: stubDocuments(),
-      _closeDocsForPath: closeDocs,
+      _renameDocPath: renameDoc,
     });
 
     await store.getState().renameFile("lib.ink", "util.ink");
 
-    expect(closeDocs).toHaveBeenCalledWith("lib.ink");
+    expect(renameDoc).toHaveBeenCalledWith("lib.ink", "util.ink");
     const session = project.getSession();
     expect(session.getFileSource("util.ink")).toBe(LIB);
     expect(session.getFileSource("lib.ink")).toBeNull();
@@ -138,20 +138,20 @@ describe("store.renameFile", () => {
 
   it("a failed rename (name collision) leaves the open tabs and file intact", async () => {
     const { project } = await makeProject();
-    const closeDocs = vi.fn();
+    const renameDoc = vi.fn();
     const notify = vi.fn();
     const store = createStudioStore();
     store.setState({
       _project: project,
       _documents: stubDocuments(),
-      _closeDocsForPath: closeDocs,
+      _renameDocPath: renameDoc,
       _notify: notify,
     });
 
     // lib.ink → main.ink collides; the rename must fail without side effects.
     await store.getState().renameFile("lib.ink", "main.ink");
 
-    expect(closeDocs).not.toHaveBeenCalled(); // tabs untouched
+    expect(renameDoc).not.toHaveBeenCalled(); // tabs untouched
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ severity: "error" }));
     expect(store.getState().undoStack).toHaveLength(0);
     const session = project.getSession();

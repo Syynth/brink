@@ -46,6 +46,7 @@ import {
   focusedTab,
   installStudioExtensions,
   resolveQualifiedSymbol,
+  type DocumentRef,
   type EditorGroupsState,
   type EditorGroupsStore,
   type Location as ShellLocation,
@@ -220,6 +221,22 @@ function compileLogMessage(
   }
   const summary = `Compile failed (${plural(errors, "error")})`;
   return error ? `${summary}: ${error}` : summary;
+}
+
+// Build an ink-file DocumentRef for a re-keyed docId ("path" or "path::symbol")
+// after a rename/move — recomputes the tab title (basename, or "symbol
+// (basename)") to match docTitleFor without needing the symbol's range.
+function rekeyInkRef(docId: string): DocumentRef {
+  const sep = docId.indexOf("::");
+  const path = sep < 0 ? docId : docId.slice(0, sep);
+  const symbol = sep < 0 ? null : docId.slice(sep + 2);
+  const slash = path.lastIndexOf("/");
+  const base = slash >= 0 ? path.slice(slash + 1) : path;
+  return {
+    typeId: INK_FILE_TYPE_ID,
+    docId,
+    title: symbol === null ? base : `${symbol} (${base})`,
+  };
 }
 
 // ── Root component ─────────────────────────────────────────────
@@ -494,6 +511,33 @@ export async function mountStudio(
     for (const { groupId, key } of toClose) {
       editorGroups.getState().closeTab(groupId, key);
     }
+  });
+
+  // The store's tab-renamer (binder rename/move): re-key every tab for a file
+  // path in place — the file document and its `path::symbol` fragment tabs —
+  // preserving pin/split/active state, then migrate the matching view slots.
+  store.getState().setDocRenamer((oldPath, newPath) => {
+    const symbolPrefix = `${oldPath}::`;
+    const updates: Array<{ oldKey: string; newRef: ReturnType<typeof rekeyInkRef> }> = [];
+    for (const group of editorGroups.getState().groups) {
+      for (const tab of group.tabs) {
+        if (tab.ref.typeId !== INK_FILE_TYPE_ID) continue;
+        const id = tab.ref.docId;
+        const newDocId =
+          id === oldPath
+            ? newPath
+            : id.startsWith(symbolPrefix)
+              ? newPath + id.slice(oldPath.length)
+              : null;
+        if (newDocId === null) continue;
+        updates.push({ oldKey: documentKey(tab.ref), newRef: rekeyInkRef(newDocId) });
+      }
+    }
+    for (const { oldKey, newRef } of updates) {
+      editorGroups.getState().updateTabRef(oldKey, newRef);
+    }
+    // Keep the per-view document machinery aligned with the re-keyed tabs.
+    documents.renameDocPath(oldPath, newPath);
   });
 
   // Keep the focused-view tracking and the store's activeDocKey mirror in
