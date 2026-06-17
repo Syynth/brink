@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/Syynth/brink/compare/bevy-brink-v0.0.4...bevy-brink-v0.0.5) - 2026-06-17
+
+### Added
+
+- *(ide)* file rename/move core (#164 Stage 3, PR A) ([#252](https://github.com/Syynth/brink/pull/252))
+
 ## [0.0.4](https://github.com/Syynth/brink/compare/bevy-brink-v0.0.3...bevy-brink-v0.0.4) - 2026-06-15
 
 ### Added

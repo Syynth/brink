@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/Syynth/brink/compare/brink-ir-v0.0.4...brink-ir-v0.0.5) - 2026-06-17
+
+### Added
+
+- *(studio)* argument widgets stage 5 — arg-groups + inter-arg context + modal ([#222](https://github.com/Syynth/brink/pull/222))
+- *(studio)* argument widgets stage 2 — argument_widgets query + Fill ([#219](https://github.com/Syynth/brink/pull/219))
+
 ## [0.0.4](https://github.com/Syynth/brink/compare/brink-ir-v0.0.3...brink-ir-v0.0.4) - 2026-06-15
 
 ### Added
