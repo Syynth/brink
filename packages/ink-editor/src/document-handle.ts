@@ -43,6 +43,11 @@ export class DocHandle {
   private closed = false;
   /** TS-side tracking of a fragment handle's file range (UTF-16). */
   private range: { start: number; end: number } | null = null;
+  /** The source string this handle last pushed — the cheap no-op guard (#14),
+   *  so a redundant push costs no wasm round-trip. A handle is opened fresh
+   *  (and re-created on fragment reopen / file invalidation), so this never
+   *  goes stale relative to the wasm doc it addresses. */
+  private lastPushed: string | null = null;
 
   constructor(
     private readonly session: EditorSessionHandle,
@@ -69,8 +74,12 @@ export class DocHandle {
    */
   pushSource(source: string): void {
     if (this.closed) return;
-    const current = this.session.getViewSourceDoc(this.id);
-    if (current === source) return;
+    // Cheap no-op guard (#14): compare against the last source WE pushed, not a
+    // full-source round-trip out of wasm (`getViewSourceDoc`). Redundant pushes
+    // — the same source re-queried by several extensions in one keystroke, or
+    // mirrored content — short-circuit here for free.
+    if (this.lastPushed === source) return;
+    this.lastPushed = source;
     const spec = this.session.updateDocument(this.id, source);
     if (spec !== null) this.pendingSpec = spec;
     if (this.range !== null) {

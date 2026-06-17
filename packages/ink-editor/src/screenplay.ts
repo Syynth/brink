@@ -226,7 +226,10 @@ const screenplayPlugin = ViewPlugin.fromClass(
     }
 
     update(update: ViewUpdate) {
-      if (update.docChanged || update.viewportChanged) {
+      // Line decorations span the whole doc and derive only from
+      // elementTypeField (which recomputes on docChanged), so a pure
+      // viewport scroll needs no rebuild — keep the existing set (#14).
+      if (update.docChanged) {
         this.decorations = buildLineDecos(update.view);
       }
     }
@@ -276,7 +279,9 @@ const bracketPlugin = ViewPlugin.fromClass(
     }
 
     update(update: ViewUpdate) {
-      if (update.docChanged || update.viewportChanged) {
+      // Same as the line plugin (#14): bracket marks are doc-wide + field-
+      // derived, so a viewport-only scroll keeps the existing set.
+      if (update.docChanged) {
         this.decorations = buildBracketDecos(update.view);
       }
     }
