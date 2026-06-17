@@ -92,7 +92,7 @@ test("host panel appears in the strip, palette, and hamburger; opens like a buil
   );
 });
 
-test("click inserts ONLY the call snippet at the editor cursor and notifies", async ({
+test("Alt-click inserts ONLY the call skeleton at the editor cursor and notifies", async ({
   page,
 }) => {
   await gotoStudio(page);
@@ -105,7 +105,10 @@ test("click inserts ONLY the call snippet at the editor cursor and notifies", as
     view.focus();
   });
 
-  await page.locator(".host-example-fn", { hasText: "has_item" }).click();
+  // Plain click composes in the Form; Alt-click is the bare-skeleton quick
+  // path (the panel's documented shortcut). `has_item` takes a param, so the
+  // skeleton insert is the Alt-click path.
+  await page.locator(".host-example-fn", { hasText: "has_item" }).click({ modifiers: ["Alt"] });
 
   // The cursor sits after the insertion, so [0, head) is exactly the
   // inserted text: a call site only — no EXTERNAL declaration (the story
