@@ -57,4 +57,4 @@ export { getHintsForElement, lineHasContent, buildContext } from "./transitions.
 export type { ElementConverter } from "./transitions.js";
 
 // Completion kind → CodeMirror completion type (icon + auto-open keying)
-export { completionType } from "./completions.js";
+export { completionType, toCompletionOption } from "./completions.js";

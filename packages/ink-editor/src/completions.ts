@@ -1,5 +1,10 @@
 import { type Extension } from "@codemirror/state";
-import { autocompletion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
+import {
+  autocompletion,
+  type Completion,
+  type CompletionContext,
+  type CompletionResult,
+} from "@codemirror/autocomplete";
 import type { CompletionItem } from "@brink/wasm-types";
 
 // Keys are the wasm `symbol_kind_str` values (snake_case) — NOT the Rust
@@ -28,6 +33,26 @@ export function completionType(kind: string): string {
   return KIND_MAP[kind] ?? "text";
 }
 
+/**
+ * Map a wasm completion to a CodeMirror option. Host value-list items
+ * (#174, kind `"value"`) show a human label but insert a different literal
+ * (e.g. an item id), so make them matchable by the label, the inserted value,
+ * AND the detail (#211): the `label` CM filters on is the combined terms, while
+ * `displayLabel` keeps the row showing just the name. Typing the name, the id,
+ * or the detail ("Switch #5") all narrow to the right value. Plain completions
+ * match and display their name as before.
+ */
+export function toCompletionOption(item: CompletionItem): Completion {
+  const apply = item.insert ?? undefined;
+  const detail = item.detail ?? undefined;
+  const type = completionType(item.kind);
+  if (item.kind === "value") {
+    const terms = [item.name, item.insert, item.detail].filter(Boolean).join(" ");
+    return { label: terms, displayLabel: item.name, type, detail, apply };
+  }
+  return { label: item.name, type, detail, apply };
+}
+
 export interface CompletionsOptions {
   getCompletions: (source: string, offset: number) => CompletionItem[];
 }
@@ -53,14 +78,7 @@ export function completionsExtension(options: CompletionsOptions): Extension {
 
         return {
           from,
-          options: items.map((item) => ({
-            label: item.name,
-            type: completionType(item.kind),
-            detail: item.detail ?? undefined,
-            // Host value picker (#174): display `item.name` (the label), insert
-            // `item.insert` (the literal). Omitted ⇒ CodeMirror inserts the label.
-            apply: item.insert ?? undefined,
-          })),
+          options: items.map(toCompletionOption),
         };
       },
     ],
