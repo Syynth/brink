@@ -366,12 +366,13 @@ async function applyRename(
   const documents = state._documents;
   if (!project || !documents) return false;
 
-  state.closeDocsForPath(oldPath);
-
   let referrers: string[];
   try {
     referrers = await project.renameFile(oldPath, newPath);
   } catch (e) {
+    // renameFile validates (and throws) before mutating the session, so a
+    // failed rename — e.g. a name collision — must leave the open file and
+    // its tabs untouched. Tear-down happens only on success, below.
     get()._notify?.({
       severity: "error",
       source: "binder",
@@ -380,6 +381,7 @@ async function applyRename(
     return false;
   }
 
+  state.closeDocsForPath(oldPath);
   get().openTarget({ kind: "file", path: newPath }, true);
   for (const path of referrers) {
     documents.invalidateFile(path);

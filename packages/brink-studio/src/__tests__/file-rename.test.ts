@@ -136,6 +136,29 @@ describe("store.renameFile", () => {
     expect(store.getState().undoStack).toHaveLength(0);
   });
 
+  it("a failed rename (name collision) leaves the open tabs and file intact", async () => {
+    const { project } = await makeProject();
+    const closeDocs = vi.fn();
+    const notify = vi.fn();
+    const store = createStudioStore();
+    store.setState({
+      _project: project,
+      _documents: stubDocuments(),
+      _closeDocsForPath: closeDocs,
+      _notify: notify,
+    });
+
+    // lib.ink → main.ink collides; the rename must fail without side effects.
+    await store.getState().renameFile("lib.ink", "main.ink");
+
+    expect(closeDocs).not.toHaveBeenCalled(); // tabs untouched
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ severity: "error" }));
+    expect(store.getState().undoStack).toHaveLength(0);
+    const session = project.getSession();
+    expect(session.getFileSource("lib.ink")).toBe(LIB); // file still there
+    expect(project.getFiles()["main.ink"]).toBe(MAIN); // referrer untouched
+  });
+
   it("moveFile relocates into a folder and round-trips on undo", async () => {
     const { project } = await makeProject();
     const store = createStudioStore();
