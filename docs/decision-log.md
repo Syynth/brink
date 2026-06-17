@@ -1064,3 +1064,11 @@
 - **SCOPE:** architectural
 - **WHAT:** Whole-file create/rename/delete/move (and the folder tree's path operations) are a brink-ide feature, not studio-TS glue. The non-trivial logic — rename/move with **INCLUDE-reference rewriting** (find referencing files via the include-graph reverse edges, recompute each `INCLUDE`'s new relative path, rewrite the token) — lives in brink-ide and is returned as a `MoveResult { new_source, cross_file_edits }`, mirroring the existing symbol rename/move (`rename.rs`, `structural_move.rs`). The studio is a thin UI that applies the result through the established `applyMoveResult` seam. Only the folder-tree *rendering* (Stage 1) was purely presentational.
 - **WHY:** The path/reference semantics (include graph, relative-path math, multi-file edits) are compiler-database concerns that already live in brink-ide; duplicating them in TS would diverge from the analyzer's source of truth and the symbol-move infrastructure. Keeping it in brink-ide reuses the proven cross-file-edit pattern and keeps the studio thin.
+
+## Normalize `..` in include-path resolution system-wide
+- **WHEN:** 2026-06-16
+- **PROJECT:** brink
+- **SYSTEM:** cross-system (include resolution — compiler/brink-driver, runtime/bevy-brink, IDE/brink-db + studio)
+- **SCOPE:** architectural
+- **WHAT:** Normalize `.`/`..` segments in include-path resolution (`resolve_include_path`) system-wide, so relative `INCLUDE` paths that traverse upward resolve to clean file keys. Update brink-db (the canonical impl), bevy-brink's duplicate copy (`source_loader.rs`), and the brink-driver tests that asserted the old literal (`a/b/../d.ink`) behavior.
+- **WHY:** Upward `../` includes previously resolved to literal non-existent keys across the compiler, runtime, and IDE — a latent system-wide bug. Stage 3 file move/rename (#164) must rewrite `INCLUDE`s to point at new locations and needs `..` for the common sibling/parent layouts; without normalization those rewrites would emit broken includes. Normalizing centrally fixes the latent bug and unblocks correct move/rename. Include resolution is compile/discovery-time, not runtime-episode-time, so the oracle corpus is expected unaffected — verified that no fixture relies on the literal behavior and the ratchet does not move.
