@@ -92,6 +92,41 @@ test("host panel appears in the strip, palette, and hamburger; opens like a buil
   );
 });
 
+test("the panel groups functions into collapsible categories and filters by search (#210)", async ({
+  page,
+}) => {
+  await gotoStudio(page);
+  await stripButton(page, "right", PANEL_TITLE).click();
+  const p = panel(page);
+
+  // Host-declared categories (category_path) render as section headers, incl.
+  // a nested subcategory and the "Other" bucket for uncategorized externals.
+  await expect(p.locator(".host-example-category", { hasText: "Presentation" })).toBeVisible();
+  await expect(p.locator(".host-example-category", { hasText: "World" })).toBeVisible();
+  await expect(p.locator(".host-example-category", { hasText: "Other" })).toBeVisible();
+  await expect(p.locator(".host-example-category", { hasText: "Audio" })).toBeVisible();
+  await expect(p.locator(".host-example-fn", { hasText: "play_se" })).toBeVisible();
+
+  // Collapsing a top category hides its functions.
+  await p.locator(".host-example-category", { hasText: "Presentation" }).first().click();
+  await expect(p.locator(".host-example-fn", { hasText: "play_se" })).toHaveCount(0);
+
+  // Search flattens to matches only — no category headers while searching.
+  await p.locator(".host-example-search").fill("tele");
+  await expect(p.locator(".host-example-fn")).toHaveCount(1);
+  await expect(p.locator(".host-example-fn", { hasText: "teleport" })).toBeVisible();
+  await expect(p.locator(".host-example-category")).toHaveCount(0);
+
+  // A non-matching query shows the empty hint.
+  await p.locator(".host-example-search").fill("zzzzz");
+  await expect(p.locator(".host-example-fn")).toHaveCount(0);
+  await expect(p.locator(".host-example-empty")).toBeVisible();
+
+  // Clearing the search restores the category tree.
+  await p.locator(".host-example-search").fill("");
+  await expect(p.locator(".host-example-category", { hasText: "World" })).toBeVisible();
+});
+
 test("Alt-click inserts ONLY the call skeleton at the editor cursor and notifies", async ({
   page,
 }) => {

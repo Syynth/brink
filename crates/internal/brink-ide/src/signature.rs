@@ -223,6 +223,7 @@ mod tests {
                 doc: None,
 
                 widgets: vec![],
+                path: Vec::new(),
             }],
             types: vec![SemanticTypeDef {
                 name: "switch_id".into(),
@@ -284,6 +285,7 @@ mod tests {
                 doc: None,
 
                 widgets: vec![],
+                path: Vec::new(),
             }],
             types: vec![SemanticTypeDef {
                 name: "item_id".into(),

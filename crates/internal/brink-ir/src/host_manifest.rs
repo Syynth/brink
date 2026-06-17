@@ -46,6 +46,11 @@ pub struct ManifestExternal {
     /// Advisory tooling metadata; never affects the compiled program.
     #[serde(default)]
     pub widgets: Vec<ArgGroupWidget>,
+    /// Category breadcrumb for the Host Functions panel (#210), e.g.
+    /// `["Map", "Movement"]` → nested collapsible sections. Advisory tooling
+    /// metadata; never affects the compiled program. Empty = ungrouped.
+    #[serde(default)]
+    pub path: Vec<String>,
 }
 
 /// A widget over an argument group on an external (argument-widget spec §2).
