@@ -42,9 +42,10 @@ export type UndoEntry =
   | {
       kind: "rename";
       description: string;
-      /** Undo renames `from` back to `to`. */
-      from: string;
-      to: string;
+      /** Undo applies each inverse rename (`from`→`to`), in reverse order. A
+       *  single file rename has one entry; a folder rename batches all its
+       *  files into one undoable step. */
+      renames: Array<{ from: string; to: string }>;
     };
 
 // ── Slice interface ─────────────────────────────────────────────────
@@ -68,6 +69,7 @@ export interface BinderSlice {
   deleteFolder(prefix: string, paths: string[]): Promise<void>;
   renameFile(oldPath: string, newPath: string): Promise<void>;
   moveFile(oldPath: string, newPath: string): Promise<void>;
+  renameFolder(oldPrefix: string, newPrefix: string, paths: string[]): Promise<void>;
   undo(): Promise<void>;
 }
 
@@ -225,6 +227,26 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     await renameWithUndo(get, set, oldPath, newPath, "Moved");
   },
 
+  async renameFolder(oldPrefix, newPrefix, paths) {
+    if (oldPrefix === newPrefix || paths.length === 0) return;
+    const renames: Array<{ from: string; to: string }> = [];
+    for (const old of paths) {
+      const moved = newPrefix + old.slice(oldPrefix.length);
+      if (await applyRename(get, old, moved)) {
+        renames.unshift({ from: moved, to: old }); // reverse order for undo
+      }
+    }
+    if (renames.length === 0) return;
+    const label = `Renamed ${oldPrefix.replace(/\/$/, "")}/ → ${newPrefix.replace(/\/$/, "")}/`;
+    set({ undoStack: [...get().undoStack, { kind: "rename", description: label, renames }] });
+    get()._notify?.({
+      severity: "info",
+      source: "binder",
+      message: label,
+      actions: [{ label: "Undo", commandId: "binder.undo" }],
+    });
+  },
+
   async undo() {
     const state = get();
     const project = state._project;
@@ -256,8 +278,11 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
         get().openTarget({ kind: "file", path }, true);
       }
     } else {
-      // Inverse rename — the op is self-inverting (INCLUDE rewrites included).
-      await applyRename(get, entry.from, entry.to);
+      // Inverse rename(s) — the op is self-inverting (INCLUDE rewrites
+      // included). Reverse order so a folder batch unwinds cleanly.
+      for (const { from, to } of [...entry.renames].reverse()) {
+        await applyRename(get, from, to);
+      }
     }
 
     // Trigger recompile
@@ -379,7 +404,10 @@ async function renameWithUndo(
 
   const description = `${verb} ${oldPath} → ${newPath}`;
   set({
-    undoStack: [...get().undoStack, { kind: "rename", description, from: newPath, to: oldPath }],
+    undoStack: [
+      ...get().undoStack,
+      { kind: "rename", description, renames: [{ from: newPath, to: oldPath }] },
+    ],
   });
   get()._notify?.({
     severity: "info",
