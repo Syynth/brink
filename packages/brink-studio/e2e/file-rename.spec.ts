@@ -1,0 +1,113 @@
+/**
+ * File rename/move e2e (#164 Stage 3). The default project is `main.ink`
+ * (`INCLUDE toppled-temple.ink`) + `toppled-temple.ink`, so renaming the
+ * included file exercises the real wasm `rename_file` op end-to-end: the
+ * referrer's `INCLUDE` must rewrite to the new name and the project must still
+ * compile (a broken include would raise an unresolved-include diagnostic).
+ */
+
+import { test, expect, type Page } from "@playwright/test";
+
+async function gotoStudio(page: Page): Promise<void> {
+  await page.goto("/");
+  await page.waitForSelector(".brink-binder-file-row", { timeout: 10000 });
+}
+
+function fileRow(page: Page, name: string) {
+  return page.locator(".brink-binder-file-row", { hasText: name });
+}
+
+async function fileLabels(page: Page): Promise<string[]> {
+  return page.locator(".brink-binder-file-row .brink-binder-label").allTextContents();
+}
+
+/** The Problems badge count, or 0 when absent (clean compile). */
+async function problemCount(page: Page): Promise<number> {
+  const badge = page
+    .locator('.shell-strip-bottom .shell-strip-btn[aria-label="Problems"] .shell-strip-badge')
+    .first();
+  if ((await badge.count()) === 0) return 0;
+  return Number((await badge.textContent()) ?? "0");
+}
+
+/** Open a file by its binder row and return the focused editor's text. */
+async function openFileContent(page: Page, name: string): Promise<string> {
+  await fileRow(page, name).locator(".brink-binder-label").click();
+  await page.waitForTimeout(300); // single-click open timer
+  return (await page.locator(".shell-editor-group .cm-content").first().textContent()) ?? "";
+}
+
+test.describe("file rename", () => {
+  test.beforeEach(async ({ page }) => {
+    await gotoStudio(page);
+    // Sanity: the two-file INCLUDE project loaded and compiles clean.
+    expect(await fileLabels(page)).toEqual(
+      expect.arrayContaining(["main.ink", "toppled-temple.ink"]),
+    );
+    await expect.poll(() => problemCount(page)).toBe(0);
+  });
+
+  test("context-menu Rename rewrites the referring INCLUDE and still compiles", async ({
+    page,
+  }) => {
+    // Right-click the included file → Rename.
+    await fileRow(page, "toppled-temple.ink").click({ button: "right" });
+    await page
+      .locator(".brink-context-menu-item")
+      .filter({ hasText: /^Rename$/ })
+      .click();
+
+    // The in-row input appears; rename to temple.ink.
+    const input = page.locator(".brink-binder-rename-input");
+    await expect(input).toBeVisible();
+    await input.fill("temple.ink");
+    await input.press("Enter");
+
+    // The binder reflects the new name; the old name is gone.
+    await expect(fileRow(page, "temple.ink")).toBeVisible({ timeout: 5000 });
+    await expect(fileRow(page, "toppled-temple.ink")).toHaveCount(0);
+
+    // The referrer's INCLUDE rewrote to the new name…
+    const main = await openFileContent(page, "main.ink");
+    expect(main).toContain("INCLUDE temple.ink");
+    expect(main).not.toContain("toppled-temple.ink");
+
+    // …and the project still compiles (a broken include would raise one).
+    await expect.poll(() => problemCount(page)).toBe(0);
+  });
+
+  test("F2 renames the focused file row", async ({ page }) => {
+    // Select the file (sets the binder's focused row), then F2 on the binder.
+    await fileRow(page, "toppled-temple.ink").locator(".brink-binder-label").click();
+    await page.waitForTimeout(300); // selection commit (single-click timer)
+    await page.locator(".brink-binder").focus();
+    await page.keyboard.press("F2");
+
+    const input = page.locator(".brink-binder-rename-input");
+    await expect(input).toBeVisible();
+    await input.fill("ruins.ink");
+    await input.press("Enter");
+
+    await expect(fileRow(page, "ruins.ink")).toBeVisible({ timeout: 5000 });
+    await expect(fileRow(page, "toppled-temple.ink")).toHaveCount(0);
+    await expect.poll(() => problemCount(page)).toBe(0);
+  });
+
+  test("Escape cancels an inline rename", async ({ page }) => {
+    await fileRow(page, "toppled-temple.ink").click({ button: "right" });
+    await page
+      .locator(".brink-context-menu-item")
+      .filter({ hasText: /^Rename$/ })
+      .click();
+
+    const input = page.locator(".brink-binder-rename-input");
+    await expect(input).toBeVisible();
+    await input.fill("nope.ink");
+    await input.press("Escape");
+
+    // Nothing changed.
+    await expect(input).toHaveCount(0);
+    await expect(fileRow(page, "toppled-temple.ink")).toBeVisible();
+    await expect(fileRow(page, "nope.ink")).toHaveCount(0);
+  });
+});
