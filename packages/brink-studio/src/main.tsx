@@ -65,9 +65,10 @@ A figure steps into the light.
 // folder, rename a folder). `main.ink` INCLUDEs both a nested file and a root
 // file, so a move/rename must rewrite the referrer's INCLUDE and still compile.
 const NESTED_FIXTURE: Record<string, string> = {
-  "main.ink": "INCLUDE scenes/intro.ink\nINCLUDE helper.ink\n-> intro\n",
+  "main.ink": "INCLUDE scenes/intro.ink\nINCLUDE helper.ink\nINCLUDE util.ink\n-> intro\n",
   "scenes/intro.ink": "=== intro ===\nThe intro scene.\n-> helper\n",
-  "helper.ink": "=== helper ===\nDone.\n-> END\n",
+  "helper.ink": "=== helper ===\nDone.\n-> util\n",
+  "util.ink": "=== util ===\n-> END\n",
 };
 
 // ── Bootstrap ──────────────────────────────────────────────────

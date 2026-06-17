@@ -445,7 +445,7 @@ function BinderInner() {
   const deleteFile = useStudioStore((s) => s.deleteFile);
   const deleteFolder = useStudioStore((s) => s.deleteFolder);
   const renameFile = useStudioStore((s) => s.renameFile);
-  const moveFile = useStudioStore((s) => s.moveFile);
+  const moveFiles = useStudioStore((s) => s.moveFiles);
   const renameFolder = useStudioStore((s) => s.renameFolder);
   const undo = useStudioStore((s) => s.undo);
   const undoStack = useStudioStore((s) => s.undoStack);
@@ -840,9 +840,11 @@ function BinderInner() {
         return;
       }
       if (row.kind === "file") {
-        // Dragging a file moves it (into a folder); knot/stitch reorder is
-        // unaffected (handlers branch on sourceKind).
-        setDragState({ sourceKeys: [row.key], sourceKind: "file", sourcePath: row.path });
+        // Dragging a file moves it (into a folder); when the dragged row is
+        // part of a multi-selection, the whole selection moves together.
+        // Knot/stitch reorder is unaffected (handlers branch on sourceKind).
+        const keys = selectedKeys.has(row.key) ? [...selectedKeys] : [row.key];
+        setDragState({ sourceKeys: keys, sourceKind: "file", sourcePath: row.path });
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/plain", row.key);
         return;
@@ -886,10 +888,11 @@ function BinderInner() {
       setDropTarget(null);
       setRootDropActive(false);
       if (ds?.sourceKind !== "file") return;
-      const base = ds.sourcePath.split("/").pop() ?? ds.sourcePath;
-      if (base !== ds.sourcePath) void moveFile(ds.sourcePath, base);
+      // Move every selected file out to the root; moveFiles skips ones already
+      // there.
+      void moveFiles(ds.sourceKeys, "");
     },
-    [dragState, moveFile],
+    [dragState, moveFiles],
   );
 
   const handleDragOver = useCallback(
@@ -967,12 +970,11 @@ function BinderInner() {
       e.preventDefault();
       if (!dragState || !dropTarget) return;
 
-      // File drag onto a folder = move (its key changes; includes rewrite).
+      // File drag onto a folder = move (keys change; includes rewrite). All
+      // selected files move together; a single drag is a batch of one.
       if (dragState.sourceKind === "file") {
         if (dropTarget.kind === "into" && dropTarget.targetKey) {
-          const base = dragState.sourcePath.split("/").pop() ?? dragState.sourcePath;
-          const newPath = dropTarget.targetKey + base; // targetKey is "folder/"
-          if (newPath !== dragState.sourcePath) void moveFile(dragState.sourcePath, newPath);
+          void moveFiles(dragState.sourceKeys, dropTarget.targetKey); // "folder/"
         }
         setDragState(null);
         setDropTarget(null);
@@ -1027,7 +1029,7 @@ function BinderInner() {
       setDragState(null);
       setDropTarget(null);
     },
-    [dragState, dropTarget, executeAction, outline, moveFile],
+    [dragState, dropTarget, executeAction, outline, moveFiles],
   );
 
   // ── Drop line helper ───────────────────────────────────────────
@@ -1157,7 +1159,7 @@ function BinderInner() {
           isActive={isActive}
           isSelected={selectedKeys.has(fileKey)}
           isFocused={focusedKey === fileKey}
-          isDragging={dragState?.sourceKind === "file" && dragState.sourcePath === fileKey}
+          isDragging={dragState?.sourceKind === "file" && dragState.sourceKeys.includes(fileKey)}
           isDropInto={false}
           dropLinePosition={null}
           draggable={canRenameFiles}
@@ -1243,7 +1245,7 @@ function BinderInner() {
       onKeyDown={handleKeyDown}
     >
       {renderTree(buildBinderTree(outline), 0)}
-      {dragState?.sourceKind === "file" && dragState.sourcePath.includes("/") && (
+      {dragState?.sourceKind === "file" && dragState.sourceKeys.some((k) => k.includes("/")) && (
         <div
           className={"brink-binder-root-drop" + (rootDropActive ? " active" : "")}
           onDragOver={handleRootDragOver}

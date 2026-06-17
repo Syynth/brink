@@ -178,3 +178,53 @@ describe("store.renameFile", () => {
     expect(store.getState().undoStack).toHaveLength(0);
   });
 });
+
+describe("store.moveFiles (batch)", () => {
+  const A = "=== a ===\n-> END\n";
+  const B = "=== b ===\n-> END\n";
+
+  it("moves several files into a folder as one undoable step", async () => {
+    const { project } = await makeProject({
+      "main.ink": "INCLUDE a.ink\nINCLUDE b.ink\n-> END\n",
+      "a.ink": A,
+      "b.ink": B,
+    });
+    const store = createStudioStore();
+    store.setState({ _project: project, _documents: stubDocuments() });
+    const session = project.getSession();
+
+    await store.getState().moveFiles(["a.ink", "b.ink"], "scenes/");
+
+    expect(session.getFileSource("scenes/a.ink")).toBe(A);
+    expect(session.getFileSource("scenes/b.ink")).toBe(B);
+    expect(session.getFileSource("a.ink")).toBeNull();
+    expect(session.getFileSource("b.ink")).toBeNull();
+    expect(store.getState().undoStack).toHaveLength(1); // one batch entry
+
+    // One undo restores both.
+    await store.getState().undo();
+    expect(session.getFileSource("a.ink")).toBe(A);
+    expect(session.getFileSource("b.ink")).toBe(B);
+    expect(session.getFileSource("scenes/a.ink")).toBeNull();
+    expect(store.getState().undoStack).toHaveLength(0);
+  });
+
+  it("skips a colliding file but moves the rest, still one undo", async () => {
+    const { project } = await makeProject({
+      "main.ink": "-> END\n",
+      "a.ink": A,
+      "scenes/a.ink": "=== existing ===\n-> END\n",
+      "b.ink": B,
+    });
+    const store = createStudioStore();
+    store.setState({ _project: project, _documents: stubDocuments(), _notify: vi.fn() });
+    const session = project.getSession();
+
+    // a.ink → scenes/a.ink collides; b.ink → scenes/b.ink succeeds.
+    await store.getState().moveFiles(["a.ink", "b.ink"], "scenes/");
+
+    expect(session.getFileSource("a.ink")).toBe(A); // collision: stayed put
+    expect(session.getFileSource("scenes/b.ink")).toBe(B); // moved
+    expect(store.getState().undoStack).toHaveLength(1); // the one success, batched
+  });
+});
