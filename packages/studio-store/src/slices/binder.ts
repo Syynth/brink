@@ -69,6 +69,7 @@ export interface BinderSlice {
   deleteFolder(prefix: string, paths: string[]): Promise<void>;
   renameFile(oldPath: string, newPath: string): Promise<void>;
   moveFile(oldPath: string, newPath: string): Promise<void>;
+  moveFiles(paths: string[], destPrefix: string): Promise<void>;
   renameFolder(oldPrefix: string, newPrefix: string, paths: string[]): Promise<void>;
   undo(): Promise<void>;
 }
@@ -225,6 +226,33 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
 
   async moveFile(oldPath, newPath) {
     await renameWithUndo(get, set, oldPath, newPath, "Moved");
+  },
+
+  async moveFiles(paths, destPrefix) {
+    if (paths.length === 0) return;
+    // Batch several files to a destination folder ("" = project root) as one
+    // undoable step. Files already at the destination are skipped; a per-file
+    // collision (applyRename → false) is dropped without aborting the rest.
+    const renames: Array<{ from: string; to: string }> = [];
+    for (const old of paths) {
+      const base = old.split("/").pop() ?? old;
+      const moved = destPrefix + base;
+      if (moved === old) continue;
+      if (await applyRename(get, old, moved)) {
+        renames.unshift({ from: moved, to: old }); // reverse order for undo
+      }
+    }
+    if (renames.length === 0) return;
+    const n = renames.length;
+    const dest = destPrefix === "" ? "project root" : destPrefix.replace(/\/$/, "") + "/";
+    const label = `Moved ${n} file${n === 1 ? "" : "s"} to ${dest}`;
+    set({ undoStack: [...get().undoStack, { kind: "rename", description: label, renames }] });
+    get()._notify?.({
+      severity: "info",
+      source: "binder",
+      message: label,
+      actions: [{ label: "Undo", commandId: "binder.undo" }],
+    });
   },
 
   async renameFolder(oldPrefix, newPrefix, paths) {

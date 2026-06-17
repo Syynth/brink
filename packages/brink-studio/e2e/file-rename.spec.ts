@@ -196,6 +196,36 @@ test.describe("file move + folder rename (nested)", () => {
     await expect.poll(() => problemCount(page)).toBe(0);
   });
 
+  test("multi-select then drag moves every selected file in one step", async ({ page }) => {
+    // Ctrl/Cmd-click two root files to multi-select (no tab opens).
+    await fileRow(page, "helper.ink")
+      .locator(".brink-binder-label")
+      .click({ modifiers: ["ControlOrMeta"] });
+    await page.waitForTimeout(250); // single-click timer
+    await fileRow(page, "util.ink")
+      .locator(".brink-binder-label")
+      .click({ modifiers: ["ControlOrMeta"] });
+    await page.waitForTimeout(250);
+
+    // Drag the selection onto the scenes folder.
+    const dt = await page.evaluateHandle(() => new DataTransfer());
+    await fileRow(page, "helper.ink").dispatchEvent("dragstart", { dataTransfer: dt });
+    const dst = folderRow(page, "scenes");
+    await dst.dispatchEvent("dragover", { dataTransfer: dt });
+    await dst.dispatchEvent("drop", { dataTransfer: dt });
+
+    // Both files moved (referrer INCLUDEs rewritten), one "Moved 2 files" toast.
+    await expect(
+      page.locator(".shell-notification", { hasText: "Moved 2 files" }),
+    ).toBeVisible();
+    const main = await openFileContent(page, "main.ink");
+    expect(main).toContain("INCLUDE scenes/helper.ink");
+    expect(main).toContain("INCLUDE scenes/util.ink");
+    expect(main).not.toMatch(/INCLUDE helper\.ink/);
+    expect(main).not.toMatch(/INCLUDE util\.ink/);
+    await expect.poll(() => problemCount(page)).toBe(0);
+  });
+
   test("renaming a folder re-keys its files and rewrites referrers", async ({ page }) => {
     await folderRow(page, "scenes").click({ button: "right" });
     await page
