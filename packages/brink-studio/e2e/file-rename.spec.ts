@@ -111,3 +111,62 @@ test.describe("file rename", () => {
     await expect(fileRow(page, "nope.ink")).toHaveCount(0);
   });
 });
+
+// ── Move into a folder + folder rename (nested fixture) ─────────────
+
+function folderRow(page: Page, name: string) {
+  return page.locator(".brink-binder-folder-row", { hasText: name });
+}
+
+/** Drive an HTML5 drag of a file row onto a folder row via a shared
+ *  DataTransfer (Chromium native DnD is unreliable through synthetic mouse). */
+async function dragFileOntoFolder(page: Page, file: string, folder: string): Promise<void> {
+  const src = fileRow(page, file);
+  const dst = folderRow(page, folder);
+  const dt = await page.evaluateHandle(() => new DataTransfer());
+  await src.dispatchEvent("dragstart", { dataTransfer: dt });
+  await dst.dispatchEvent("dragover", { dataTransfer: dt });
+  await dst.dispatchEvent("drop", { dataTransfer: dt });
+  await src.dispatchEvent("dragend", { dataTransfer: dt });
+}
+
+test.describe("file move + folder rename (nested)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/?fixture=nested");
+    await page.waitForSelector(".brink-binder-folder-row", { timeout: 10000 });
+    await expect.poll(() => problemCount(page)).toBe(0);
+  });
+
+  test("drag a root file onto a folder moves it and rewrites the INCLUDE", async ({ page }) => {
+    // helper.ink sits at root; scenes/ holds intro.ink. main.ink INCLUDEs both.
+    await expect(folderRow(page, "scenes")).toBeVisible();
+    await dragFileOntoFolder(page, "helper.ink", "scenes");
+
+    // The referrer's INCLUDE now points into the folder, and it still compiles.
+    const main = await openFileContent(page, "main.ink");
+    expect(main).toContain("INCLUDE scenes/helper.ink");
+    expect(main).not.toMatch(/INCLUDE helper\.ink\b/);
+    await expect.poll(() => problemCount(page)).toBe(0);
+  });
+
+  test("renaming a folder re-keys its files and rewrites referrers", async ({ page }) => {
+    await folderRow(page, "scenes").click({ button: "right" });
+    await page
+      .locator(".brink-context-menu-item")
+      .filter({ hasText: /^Rename folder$/ })
+      .click();
+
+    const input = page.locator(".brink-binder-rename-input");
+    await expect(input).toBeVisible();
+    await input.fill("acts");
+    await input.press("Enter");
+
+    // The folder re-labels; the contained file's INCLUDE rewrites; compiles.
+    await expect(folderRow(page, "acts")).toBeVisible({ timeout: 5000 });
+    await expect(folderRow(page, "scenes")).toHaveCount(0);
+    const main = await openFileContent(page, "main.ink");
+    expect(main).toContain("INCLUDE acts/intro.ink");
+    expect(main).not.toContain("scenes/intro.ink");
+    await expect.poll(() => problemCount(page)).toBe(0);
+  });
+});

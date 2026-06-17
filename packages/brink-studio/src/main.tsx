@@ -60,6 +60,16 @@ A figure steps into the light.
 -> END
 `;
 
+// Deterministic multi-file project with a nested folder, loaded via
+// `?fixture=nested` — for the binder file-lifecycle e2e (move a file into a
+// folder, rename a folder). `main.ink` INCLUDEs both a nested file and a root
+// file, so a move/rename must rewrite the referrer's INCLUDE and still compile.
+const NESTED_FIXTURE: Record<string, string> = {
+  "main.ink": "INCLUDE scenes/intro.ink\nINCLUDE helper.ink\n-> intro\n",
+  "scenes/intro.ink": "=== intro ===\nThe intro scene.\n-> helper\n",
+  "helper.ink": "=== helper ===\nDone.\n-> END\n",
+};
+
 // ── Bootstrap ──────────────────────────────────────────────────
 
 // HMR guard (dev only). Under Vite HMR an update that reaches this entry
@@ -89,10 +99,12 @@ async function main(): Promise<void> {
   const files: Record<string, string> =
     fixture === "screenplay"
       ? { "main.ink": SCREENPLAY_FIXTURE }
-      : {
-          "main.ink": MAIN_INK,
-          "toppled-temple.ink": toppledTemple,
-        };
+      : fixture === "nested"
+        ? NESTED_FIXTURE
+        : {
+            "main.ink": MAIN_INK,
+            "toppled-temple.ink": toppledTemple,
+          };
 
   const appRoot = document.getElementById("app");
   if (!appRoot) throw new Error("Missing #app container");
