@@ -477,6 +477,8 @@ function BinderInner() {
   // Drag state
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  // Whether the "move to project root" drop zone is currently hovered.
+  const [rootDropActive, setRootDropActive] = useState(false);
 
   const flatRows = buildFlatRows(outline, collapsed);
 
@@ -861,7 +863,34 @@ function BinderInner() {
   const handleDragEnd = useCallback(() => {
     setDragState(null);
     setDropTarget(null);
+    setRootDropActive(false);
   }, []);
+
+  // ── Root drop zone (move a nested file out to the project root) ──
+
+  const handleRootDragOver = useCallback(
+    (e: React.DragEvent) => {
+      if (dragState?.sourceKind !== "file") return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      setRootDropActive(true);
+    },
+    [dragState],
+  );
+
+  const handleRootDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      const ds = dragState;
+      setDragState(null);
+      setDropTarget(null);
+      setRootDropActive(false);
+      if (ds?.sourceKind !== "file") return;
+      const base = ds.sourcePath.split("/").pop() ?? ds.sourcePath;
+      if (base !== ds.sourcePath) void moveFile(ds.sourcePath, base);
+    },
+    [dragState, moveFile],
+  );
 
   const handleDragOver = useCallback(
     (e: React.DragEvent, row: FlatRow) => {
@@ -1214,6 +1243,16 @@ function BinderInner() {
       onKeyDown={handleKeyDown}
     >
       {renderTree(buildBinderTree(outline), 0)}
+      {dragState?.sourceKind === "file" && dragState.sourcePath.includes("/") && (
+        <div
+          className={"brink-binder-root-drop" + (rootDropActive ? " active" : "")}
+          onDragOver={handleRootDragOver}
+          onDragLeave={() => setRootDropActive(false)}
+          onDrop={handleRootDrop}
+        >
+          Move to project root
+        </div>
+      )}
       <div className="brink-binder-row brink-binder-new" onClick={handleNewClick}>
         + New file
       </div>

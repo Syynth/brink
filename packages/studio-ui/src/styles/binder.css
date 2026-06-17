@@ -113,6 +113,23 @@
   padding: 4px 8px;
 }
 
+/* "Move to project root" drop zone — appears only while dragging a nested file. */
+.brink-studio .brink-binder-root-drop {
+  margin: 4px 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--bs-fg-muted);
+  text-align: center;
+  border: 1px dashed color-mix(in srgb, var(--bs-fg-muted) 40%, transparent);
+  border-radius: 4px;
+  user-select: none;
+}
+.brink-studio .brink-binder-root-drop.active {
+  color: var(--bs-fg);
+  border-color: var(--bs-accent);
+  background: color-mix(in srgb, var(--bs-accent) 10%, transparent);
+}
+
 /* Inline rename field — replaces a row's label in place (F2 / context menu). */
 .brink-studio .brink-binder-rename-input {
   flex: 1;

@@ -178,6 +178,24 @@ test.describe("file move + folder rename (nested)", () => {
     await expect.poll(() => problemCount(page)).toBe(0);
   });
 
+  test("drag a nested file to the root zone moves it out of the folder", async ({ page }) => {
+    const src = fileRow(page, "intro.ink"); // scenes/intro.ink
+    const dt = await page.evaluateHandle(() => new DataTransfer());
+    await src.dispatchEvent("dragstart", { dataTransfer: dt });
+
+    // The "move to root" zone appears only while dragging a nested file.
+    const zone = page.locator(".brink-binder-root-drop");
+    await expect(zone).toBeVisible();
+    await zone.dispatchEvent("dragover", { dataTransfer: dt });
+    await zone.dispatchEvent("drop", { dataTransfer: dt });
+
+    // The referrer INCLUDE rewrites to the root path and it still compiles.
+    const main = await openFileContent(page, "main.ink");
+    expect(main).toContain("INCLUDE intro.ink");
+    expect(main).not.toContain("scenes/intro.ink");
+    await expect.poll(() => problemCount(page)).toBe(0);
+  });
+
   test("renaming a folder re-keys its files and rewrites referrers", async ({ page }) => {
     await folderRow(page, "scenes").click({ button: "right" });
     await page
