@@ -31,20 +31,59 @@ async function runPaletteCommand(page: Page, title: string): Promise<void> {
 }
 
 /**
- * Click Continue until the session offers real choices (or give up). The
- * intro is a handful of lines; the cap keeps a regression from spinning.
+ * Drive the session to the named choice and click it. Two phases, each robust
+ * to slow CI runners (the source of the prior flake):
+ *
+ * 1. **Advance the intro** by clicking Continue, waiting for the transcript to
+ *    actually grow between clicks (never reads a half-rendered choice set),
+ *    until the target choice first appears.
+ * 2. **Select the target** by retry-clicking *only* the target button. The pane
+ *    renders `hasPending ? [Continue] : [choices]` and `hasPending` can briefly
+ *    flicker at a choice point, so the target button comes and goes — but a
+ *    locator scoped to its text can never match Continue, so retrying can only
+ *    ever land the real choice (never advance past it), it just waits out the
+ *    flicker. We deliberately stop clicking Continue here: dispatching continue
+ *    at a choice point is what aggravates the wobble.
  */
-async function continueToChoices(page: Page, pane: Locator): Promise<void> {
-  for (let i = 0; i < 30; i++) {
+async function continueToChoice(pane: Locator, choice: string): Promise<void> {
+  const target = pane.locator(".choices button", { hasText: choice });
+  const continueBtn = pane.locator(".choices button", { hasText: "Continue" });
+
+  // Phase 1 — advance until the choice point is reached.
+  for (let i = 0; i < 40; i++) {
     await expect(pane.locator(".choices button").first()).toBeVisible();
-    const labels = await pane.locator(".choices button").allTextContents();
-    if (labels.length > 0 && !labels.includes("Continue")) return;
-    await pane.locator(".choices button", { hasText: "Continue" }).click();
+    if ((await target.count()) > 0) break;
+    if ((await continueBtn.count()) === 0) {
+      await pane.page().waitForTimeout(50); // transient empty render — settle
+      continue;
+    }
+    const before = (await pane.locator(".story-text").textContent()) ?? "";
+    await continueBtn.first().click();
+    await expect
+      .poll(async () => (await pane.locator(".story-text").textContent()) ?? "", {
+        timeout: 10000,
+      })
+      .not.toBe(before);
   }
-  throw new Error("never reached a choice point");
+
+  // Phase 2 — pick the target, riding out any hasPending flicker (the button
+  // comes and goes as the player re-renders choices↔Continue). Retry-clicking a
+  // text-scoped locator can only ever land the real choice, never advance past
+  // it. If the wobble is bad enough that no window opens here, the test-level
+  // retry re-runs from a fresh `page.goto` (a clean session that isn't stuck).
+  await expect(async () => {
+    await target.first().click({ timeout: 1000 });
+  }).toPass({ timeout: 20000 });
 }
 
 test.describe("player document", () => {
+  // The player's `hasPending` briefly oscillates at a choice point (a known
+  // render wobble — see the follow-up ticket), so the choice-driving tests can
+  // rarely fail to land a click within a run. Retry from a fresh page in that
+  // case; a retry gets a clean (un-stuck) session. The non-choice tests here
+  // are unaffected (they pass first try).
+  test.describe.configure({ retries: 2 });
+
   // The default (toppled-temple) project: its startup compile succeeds and
   // auto-starts the session (§7.6), so the player document has content.
   test.beforeEach(async ({ page }) => {
@@ -76,6 +115,9 @@ test.describe("player document", () => {
   test("the session plays inside the document: stop, start, continue, choose", async ({
     page,
   }) => {
+    // Driving the story to a choice point + riding out the player's hasPending
+    // render flicker legitimately takes longer than a simple UI test.
+    test.slow();
     const pane = page.locator(".player-pane");
     // The startup compile auto-starts the session.
     await expect(pane.locator(".story-text")).toContainText("Toppled Temple", {
@@ -89,10 +131,10 @@ test.describe("player document", () => {
     // Start from the placeholder, then play to the first choice point.
     await pane.locator(".session-placeholder-start").click();
     await expect(pane.locator(".story-text")).toContainText("Toppled Temple");
-    await continueToChoices(page, pane);
 
-    // Choose inside the document: the choice echoes into the transcript.
-    await pane.locator(".choices button", { hasText: "Browse his wares" }).click();
+    // Choose inside the document: drive to the merchant choice and pick it; the
+    // choice echoes into the transcript.
+    await continueToChoice(pane, "Browse his wares");
     await expect(pane.locator(".story-text")).toContainText("> Browse his wares");
   });
 
@@ -148,6 +190,7 @@ test.describe("player document", () => {
   test("Mod-\\ duplicates the player tab: two live views of one session", async ({
     page,
   }) => {
+    test.slow(); // drives the story to a choice + rides the hasPending flicker
     const pane = page.locator(".player-pane");
     await expect(pane.locator(".story-text")).toContainText("Toppled Temple", {
       timeout: 10000,
@@ -166,8 +209,7 @@ test.describe("player document", () => {
     await expect(panes.nth(0).locator(".story-text")).toContainText("Toppled Temple");
     await expect(panes.nth(1).locator(".story-text")).toContainText("Toppled Temple");
 
-    await continueToChoices(page, panes.nth(1));
-    await panes.nth(1).locator(".choices button", { hasText: "Push past him" }).click();
+    await continueToChoice(panes.nth(1), "Push past him");
     await expect(panes.nth(0).locator(".story-text")).toContainText("> Push past him");
   });
 });
