@@ -57,8 +57,16 @@ async function continueToChoice(pane: Locator, choice: string): Promise<void> {
       .not.toBe(before);
   }
 
+  // The choice list is now stable (it wins over Continue), so the target stays
+  // visible once reached. But the duplicate-view test drives one pane while both
+  // re-render on every shared-session update, so the button can be mid-re-render
+  // at click time — retry the (text-scoped) click to ride out that churn. This
+  // is ordinary dual-view timing, not the #273 flicker, so no test-level retry
+  // from a fresh page is needed.
   await expect(target).toBeVisible();
-  await target.first().click();
+  await expect(async () => {
+    await target.first().click({ timeout: 1000 });
+  }).toPass({ timeout: 20000 });
 }
 
 test.describe("player document", () => {
