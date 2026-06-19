@@ -1928,15 +1928,22 @@ dependencies = [
 name = "brink-cli"
 version = "0.0.6"
 dependencies = [
+ "brink-analyzer",
  "brink-compiler",
  "brink-converter",
+ "brink-db",
+ "brink-driver",
  "brink-fmt",
  "brink-format",
+ "brink-ide",
  "brink-intl",
+ "brink-ir",
  "brink-json",
  "brink-runtime",
  "clap",
  "ratatui",
+ "rowan",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
