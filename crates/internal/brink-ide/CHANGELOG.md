@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6](https://github.com/Syynth/brink/compare/brink-ide-v0.0.5...brink-ide-v0.0.6) - 2026-06-19
+
+### Added
+
+- *(studio)* host functions panel categories + search ([#210](https://github.com/Syynth/brink/pull/210)) ([#270](https://github.com/Syynth/brink/pull/270))
+
+### Fixed
+
+- *(ide)* don't highlight prose words that match ink keywords ([#275](https://github.com/Syynth/brink/pull/275)) ([#277](https://github.com/Syynth/brink/pull/277))
+
 ## [0.0.5](https://github.com/Syynth/brink/compare/brink-ide-v0.0.4...brink-ide-v0.0.5) - 2026-06-17
 
 ### Added
