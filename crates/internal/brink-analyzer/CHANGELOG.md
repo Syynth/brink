@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6](https://github.com/Syynth/brink/compare/brink-analyzer-v0.0.5...brink-analyzer-v0.0.6) - 2026-06-19
+
+### Added
+
+- *(studio)* host functions panel categories + search ([#210](https://github.com/Syynth/brink/pull/210)) ([#270](https://github.com/Syynth/brink/pull/270))
+
 ## [0.0.5](https://github.com/Syynth/brink/compare/brink-analyzer-v0.0.4...brink-analyzer-v0.0.5) - 2026-06-17
 
 ### Added
