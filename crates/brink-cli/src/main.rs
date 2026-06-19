@@ -1,4 +1,5 @@
 mod batch;
+mod ide;
 mod tui;
 
 use std::io::{BufRead, IsTerminal, Write as _};
@@ -116,6 +117,21 @@ enum Commands {
         #[arg(long)]
         locale: Option<PathBuf>,
     },
+    /// Scriptable IDE queries (definitions, references, …) over an ink project
+    #[command(long_about = "\
+Scriptable IDE queries over an ink project.
+
+Address a symbol by its qualified name — the same dotted paths ink uses:
+  intro            a knot
+  intro.evidence   a stitch
+  Colors.Red       a list item
+Build the project from an entry file with --entry/-e (INCLUDEs are followed).
+Use --format json for machine-readable output. Exit codes: 0 ok, 1 query-false,
+2 usage error.")]
+    Ide {
+        #[command(subcommand)]
+        command: ide::IdeCommand,
+    },
 }
 
 fn main() -> ExitCode {
@@ -215,6 +231,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
+            Commands::Ide { command } => return ide::run(&command),
         }
     }
 

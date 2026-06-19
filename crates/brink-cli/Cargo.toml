@@ -17,6 +17,11 @@ path = "src/main.rs"
 
 [dependencies]
 brink-compiler = { workspace = true }
+brink-driver = { workspace = true }
+brink-db = { workspace = true }
+brink-ide = { workspace = true }
+brink-ir = { workspace = true }
+brink-analyzer = { workspace = true }
 brink-fmt = { workspace = true }
 brink-format = { workspace = true, features = ["inkt"] }
 brink-json = { workspace = true }
@@ -25,6 +30,8 @@ brink-intl = { workspace = true }
 brink-runtime = { workspace = true }
 xliff2 = { workspace = true }
 clap.workspace = true
+rowan.workspace = true
+serde = { workspace = true }
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
