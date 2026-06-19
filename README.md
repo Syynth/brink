@@ -2,8 +2,8 @@
 
 **A Rust toolchain — compiler, runtime, and authoring studio — for [inkle's ink](https://github.com/inkle/ink) narrative scripting language.**
 
-[![Crates.io](https://img.shields.io/crates/v/brink)](https://crates.io/crates/brink)
-[![docs.rs](https://img.shields.io/docsrs/brink)](https://docs.rs/brink)
+[![Crates.io](https://img.shields.io/crates/v/brink-runtime)](https://crates.io/crates/brink-runtime)
+[![docs.rs](https://img.shields.io/docsrs/brink-runtime)](https://docs.rs/brink-runtime)
 [![CI](https://github.com/syynth/brink/actions/workflows/ci.yml/badge.svg)](https://github.com/syynth/brink/actions/workflows/ci.yml)
 [![Book](https://img.shields.io/badge/docs-book-blue)](https://syynth.github.io/brink/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
@@ -47,7 +47,7 @@ brink is one workspace spanning a Rust toolchain and a TypeScript/React studio:
 ### Command line
 
 ```sh
-cargo install brink
+cargo install brink-cli                 # installs the `brink` command
 brink compile story.ink -o story.inkb   # compile to bytecode
 brink play story.ink                    # compile and play in the terminal
 ```
@@ -87,7 +87,7 @@ npm install @brink-lang/studio   # the embeddable authoring studio
 
 | Crate / package | Purpose |
 |-----------------|---------|
-| `brink` | The CLI |
+| `brink-cli` | The CLI (installs the `brink` command) |
 | `brink-runtime` | Stack-based bytecode VM |
 | `brink-compiler` | Compiler pipeline driver |
 | `brink-converter` | `.ink.json` → `StoryData` reference pipeline |
