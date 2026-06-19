@@ -1,5 +1,13 @@
 # @brink-lang/studio
 
+## 0.5.1
+
+### Patch Changes
+
+- 080a715: Fix: screenplay indents (character / parenthetical / dialogue) no longer collapse to flush-left on browser engines without CSS container-query support (older Chromium-based embeds such as NW.js / CEF). The layout now degrades to viewport-relative scaling there, and keeps pane-relative scaling on engines that support container queries. (#188)
+- Updated dependencies [080a715]
+  - @brink-lang/web@0.5.1
+
 ## 0.5.0
 
 ### Minor Changes
