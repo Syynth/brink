@@ -298,8 +298,9 @@ test.describe("focused view content", () => {
     expect(fullContent).toContain("-> opening");
     // The blank line between the opening knot's last line and interrogation knot should be gone.
     // getEditorContent returns text without newlines (CM renders lines as separate elements),
-    // so "-> evidence" should be immediately followed by "=== interrogation ===" with no blank space.
-    expect(fullContent).toMatch(/-> evidence=== interrogation ===/);
+    // so "-> interrogation.evidence" should be immediately followed by "=== interrogation ==="
+    // with no blank space.
+    expect(fullContent).toMatch(/-> interrogation\.evidence=== interrogation ===/);
   });
 
   test("switching back to file tab shows full file", async ({ page }) => {
