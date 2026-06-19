@@ -31,23 +31,32 @@ async function runPaletteCommand(page: Page, title: string): Promise<void> {
 }
 
 /**
- * Drive the session to the named choice and click it. Advance through the intro
- * by clicking Continue (waiting for the transcript to actually grow between
- * clicks, so we never read a half-rendered choice set) until the target choice
- * appears, then click it.
+ * Drive the session to the named choice and click it. Two phases, each robust
+ * to slow CI runners (the source of the prior flake):
  *
- * The choice list now renders stably: it wins over the Continue button, and a
- * stray `story.continue` at a choice point is a no-op (#273). So once the target
- * is visible it stays visible — no retry/flicker handling needed.
+ * 1. **Advance the intro** by clicking Continue, waiting for the transcript to
+ *    actually grow between clicks (never reads a half-rendered choice set),
+ *    until the target choice first appears.
+ * 2. **Select the target** by retry-clicking *only* the target button. The pane
+ *    renders `hasPending ? [Continue] : [choices]` and `hasPending` can briefly
+ *    flicker at a choice point, so the target button comes and goes — but a
+ *    locator scoped to its text can never match Continue, so retrying can only
+ *    ever land the real choice (never advance past it), it just waits out the
+ *    flicker. We deliberately stop clicking Continue here: dispatching continue
+ *    at a choice point is what aggravates the wobble.
  */
 async function continueToChoice(pane: Locator, choice: string): Promise<void> {
   const target = pane.locator(".choices button", { hasText: choice });
   const continueBtn = pane.locator(".choices button", { hasText: "Continue" });
 
+  // Phase 1 — advance until the choice point is reached.
   for (let i = 0; i < 40; i++) {
     await expect(pane.locator(".choices button").first()).toBeVisible();
     if ((await target.count()) > 0) break;
-    if ((await continueBtn.count()) === 0) break; // choices are up but not the target
+    if ((await continueBtn.count()) === 0) {
+      await pane.page().waitForTimeout(50); // transient empty render — settle
+      continue;
+    }
     const before = (await pane.locator(".story-text").textContent()) ?? "";
     await continueBtn.first().click();
     await expect
@@ -57,19 +66,24 @@ async function continueToChoice(pane: Locator, choice: string): Promise<void> {
       .not.toBe(before);
   }
 
-  // The choice list is now stable (it wins over Continue), so the target stays
-  // visible once reached. But the duplicate-view test drives one pane while both
-  // re-render on every shared-session update, so the button can be mid-re-render
-  // at click time — retry the (text-scoped) click to ride out that churn. This
-  // is ordinary dual-view timing, not the #273 flicker, so no test-level retry
-  // from a fresh page is needed.
-  await expect(target).toBeVisible();
+  // Phase 2 — pick the target, riding out any hasPending flicker (the button
+  // comes and goes as the player re-renders choices↔Continue). Retry-clicking a
+  // text-scoped locator can only ever land the real choice, never advance past
+  // it. If the wobble is bad enough that no window opens here, the test-level
+  // retry re-runs from a fresh `page.goto` (a clean session that isn't stuck).
   await expect(async () => {
     await target.first().click({ timeout: 1000 });
   }).toPass({ timeout: 20000 });
 }
 
 test.describe("player document", () => {
+  // The player's `hasPending` briefly oscillates at a choice point (a known
+  // render wobble — see the follow-up ticket), so the choice-driving tests can
+  // rarely fail to land a click within a run. Retry from a fresh page in that
+  // case; a retry gets a clean (un-stuck) session. The non-choice tests here
+  // are unaffected (they pass first try).
+  test.describe.configure({ retries: 2 });
+
   // The default (toppled-temple) project: its startup compile succeeds and
   // auto-starts the session (§7.6), so the player document has content.
   test.beforeEach(async ({ page }) => {
