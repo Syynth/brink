@@ -268,12 +268,10 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           ))}
           {ended && <div className="end-marker">{"\u2014 End \u2014"}</div>}
         </div>
-        {hasPending && (
-          <div className="choices">
-            <button onClick={handleContinue}>Continue</button>
-          </div>
-        )}
-        {!hasPending && choices.length > 0 && (
+        {/* Choices win over Continue: whenever a choice list is present, show
+            it and never the Continue button — so a transient status wobble at a
+            choice point can't flicker the two against each other (#273). */}
+        {choices.length > 0 ? (
           <div className="choices">
             {choices.map((choice) => (
               <button key={choice.index} onClick={() => handleChoice(choice.index)}>
@@ -281,7 +279,11 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               </button>
             ))}
           </div>
-        )}
+        ) : hasPending ? (
+          <div className="choices">
+            <button onClick={handleContinue}>Continue</button>
+          </div>
+        ) : null}
       </div>
     </div>
   );

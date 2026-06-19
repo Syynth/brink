@@ -17,6 +17,7 @@ import { FlowSessionProvider } from "./flow-provider.js";
 
 import {
   ALL_CAPABILITIES,
+  sessionCanContinue,
   statusOfLine,
   type ProviderCallbacks,
   type SessionCapability,
@@ -326,6 +327,14 @@ export class LocalSessionProvider implements SessionProvider {
   }
 
   continue(): void {
+    // Only advance when the session actually can (mid-flow or at a `-> DONE`
+    // turn boundary). At a choice point the VM is blocked awaiting input, so a
+    // stray `story.continue` (a late click as choices appear) must be a no-op —
+    // otherwise it re-reveals and the status briefly flips off `awaiting-choice`,
+    // making the player flicker between the choice list and a Continue button
+    // (#273). The command's `when` already gates the button; this makes the
+    // provider authoritative too.
+    if (!sessionCanContinue(this.status)) return;
     this.reveal();
   }
 
