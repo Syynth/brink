@@ -52,7 +52,7 @@ const SCREENPLAY_FIXTURE = `// A short screenplay-style demo.
 === opening ===
 The lights dim.
 A figure steps into the light.
--> evidence
+-> interrogation.evidence
 
 === interrogation ===
 = evidence
