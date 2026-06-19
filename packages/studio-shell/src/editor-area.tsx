@@ -13,7 +13,15 @@
  * splitter drags) — commands cover the keyboard/palette surface.
  */
 
-import { useMemo, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type WheelEvent as ReactWheelEvent,
+} from "react";
 import { Group, Panel, Separator, type PanelSize } from "react-resizable-panels";
 import { useDocumentTypes, useEditorGroups, useShell } from "./shell-context.js";
 import { documentKey, type DocumentTypeDescriptor } from "./document.js";
@@ -35,9 +43,74 @@ interface GroupTabBarProps {
  */
 function GroupTabBar({ group, drag }: GroupTabBarProps) {
   const { editorGroups } = useShell();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Which scroll-affordance chevrons to show. The bar is a horizontal scroller
+  // (overflow-x: auto) with a hidden scrollbar, so without these the overflow
+  // tabs are unreachable — the "lost to the void" problem (#278).
+  const [overflow, setOverflow] = useState({ left: false, right: false });
+
+  const updateOverflow = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    setOverflow({ left: el.scrollLeft > 1, right: el.scrollLeft < max - 1 });
+  }, []);
+
+  // Recompute on size changes (group resized) and whenever the tab set changes.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el === null) return undefined;
+    updateOverflow();
+    const ro = new ResizeObserver(updateOverflow);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [updateOverflow, group.tabs.length]);
+
+  // Keep the active tab visible — opening/activating a tab that sits off-screen
+  // scrolls it into view rather than leaving it hidden past the edge.
+  useEffect(() => {
+    const active = scrollRef.current?.querySelector<HTMLElement>(".brink-tab.active");
+    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    updateOverflow();
+  }, [group.activeKey, updateOverflow]);
+
+  const scrollTabs = useCallback((dir: -1 | 1) => {
+    const el = scrollRef.current;
+    if (el === null) return;
+    el.scrollBy({ left: dir * Math.max(160, el.clientWidth * 0.6), behavior: "smooth" });
+  }, []);
+
+  // Most mice only scroll the Y axis; redirect that to horizontal so the wheel
+  // reaches overflow tabs. Trackpads (which emit deltaX) are left untouched.
+  const onWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    const el = scrollRef.current;
+    if (el === null || event.deltaX !== 0) return;
+    if (el.scrollWidth <= el.clientWidth) return;
+    el.scrollLeft += event.deltaY;
+  }, []);
+
   return (
-    <div className="brink-file-tabs" role="tablist" data-group={group.id}>
-      {group.tabs.map((tab) => {
+    <div className="brink-tab-strip">
+      {overflow.left && (
+        <button
+          type="button"
+          className="brink-tab-scroll left"
+          aria-label="Scroll tabs left"
+          tabIndex={-1}
+          onClick={() => scrollTabs(-1)}
+        >
+          {"‹"}
+        </button>
+      )}
+      <div
+        className="brink-file-tabs"
+        role="tablist"
+        data-group={group.id}
+        ref={scrollRef}
+        onScroll={updateOverflow}
+        onWheel={onWheel}
+      >
+        {group.tabs.map((tab) => {
         const key = documentKey(tab.ref);
         const active = key === group.activeKey;
         return (
@@ -75,6 +148,18 @@ function GroupTabBar({ group, drag }: GroupTabBarProps) {
           </div>
         );
       })}
+      </div>
+      {overflow.right && (
+        <button
+          type="button"
+          className="brink-tab-scroll right"
+          aria-label="Scroll tabs right"
+          tabIndex={-1}
+          onClick={() => scrollTabs(1)}
+        >
+          {"›"}
+        </button>
+      )}
     </div>
   );
 }
