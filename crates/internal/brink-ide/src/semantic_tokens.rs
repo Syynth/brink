@@ -145,6 +145,14 @@ fn classify_token(
     }
 
     if kind.is_keyword() {
+        // A keyword lexeme the parser absorbed into a prose run — e.g. the word
+        // "and" in "cats and dogs" — is just text, not a keyword. The parser's
+        // `text_content` bumps such tokens directly into a `TEXT` node, whereas
+        // real keywords live in expression/logic/declaration/divert nodes and
+        // are never a direct child of `TEXT`. So don't highlight those. (#275)
+        if token.parent().is_some_and(|p| p.kind() == SyntaxKind::TEXT) {
+            return None;
+        }
         return Some(Classification {
             token_type: TT_KEYWORD,
             modifiers: 0,
@@ -511,6 +519,29 @@ mod tests {
         let tokens = parse_and_tokens("VAR x = 5\n");
         let kw = tokens.iter().find(|t| t.token_type == TT_KEYWORD);
         assert!(kw.is_some(), "expected a keyword token for VAR");
+    }
+
+    #[test]
+    fn prose_words_matching_keywords_are_not_highlighted() {
+        // "and"/"or"/"not" are real English words; in narrative text they must
+        // not be coloured like ink keywords (#275).
+        let tokens = parse_and_tokens("Cats and dogs, rain or shine, why not.\n");
+        let kw = tokens.iter().find(|t| t.token_type == TT_KEYWORD);
+        assert!(
+            kw.is_none(),
+            "prose words matching keywords should not be highlighted, got {kw:?}"
+        );
+    }
+
+    #[test]
+    fn keywords_in_inline_logic_are_still_highlighted() {
+        // The same words ARE keywords inside an expression — `{ ... and ... }`.
+        let tokens = parse_and_tokens("{ x > 1 and x < 9 }\n");
+        let kw = tokens.iter().find(|t| t.token_type == TT_KEYWORD);
+        assert!(
+            kw.is_some(),
+            "`and` inside inline logic must still be highlighted as a keyword"
+        );
     }
 
     #[test]
