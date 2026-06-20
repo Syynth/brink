@@ -25,6 +25,9 @@ const UNUSED_FIXTURE: &str = "VAR gold = 0\nCONST UNUSED_MAX = 100\n\n-> intro\n
 /// A project with an unresolved divert (a compile error).
 const ERR_FIXTURE: &str = "-> nowhere\n\n=== intro ===\nHello.\n-> END\n";
 
+/// A project with an external + call site (for signature) and choices (graph).
+const CALL_FIXTURE: &str = "EXTERNAL damage(weapon, amount)\nVAR gold = 0\n\n-> intro\n\n=== intro ===\nYou have {gold} gold.\n~ damage(3, 5)\n* [Browse] -> shop\n+ [Leave] -> END\n\n=== shop ===\nWelcome.\n-> END\n";
+
 /// Write `content` to a unique temp file and return its path.
 #[expect(clippy::unwrap_used, reason = "test fixture setup")]
 fn write(tag: &str, content: &str) -> PathBuf {
@@ -313,5 +316,93 @@ fn rename_patch_is_a_git_applyable_diff() {
         fs::read_to_string(&f).unwrap().contains("VAR gold"),
         "patch mode must not write"
     );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn hover_describes_a_symbol() {
+    let f = fixture("hover");
+    let out = brink()
+        .args(["ide", "hover", "gold", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("variable"), "got: {s}");
+    assert!(s.contains("gold"), "got: {s}");
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn signature_at_a_call_shows_params() {
+    let f = write("sig", CALL_FIXTURE);
+    // Line 8 is `~ damage(3, 5)`; column 10 sits on the first argument.
+    let at = format!("{}:8:10", f.display());
+    let out = brink()
+        .args(["ide", "signature", "--at", &at, "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("damage("), "the signature label: {s}");
+    assert!(s.contains("weapon"), "the active parameter: {s}");
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn graph_text_and_dot_render() {
+    let f = write("graph", CALL_FIXTURE);
+    let text = brink()
+        .args(["ide", "graph", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(text.status.success());
+    let s = String::from_utf8(text.stdout).unwrap();
+    assert!(s.contains("knot intro"), "node listed: {s}");
+    assert!(s.contains("->"), "an edge listed: {s}");
+
+    let dot = brink()
+        .args(["ide", "graph", "--dot", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    let d = String::from_utf8(dot.stdout).unwrap();
+    assert!(d.starts_with("digraph story {"), "DOT header: {d}");
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn graph_json_is_parseable() {
+    let f = write("graph-json", CALL_FIXTURE);
+    let out = brink()
+        .args(["ide", "graph", "--format", "json", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["nodes"].is_array(), "has nodes: {v}");
+    assert!(v["edges"].is_array(), "has edges: {v}");
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn lines_classifies_each_line() {
+    let f = write("lines", CALL_FIXTURE);
+    let out = brink()
+        .args(["ide", "lines", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("KnotHeader"), "classifies knot headers: {s}");
+    assert!(s.contains("External"), "classifies the external decl: {s}");
     fs::remove_file(&f).ok();
 }
