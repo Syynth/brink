@@ -220,3 +220,98 @@ fn check_reports_errors_and_exits_nonzero() {
     assert!(v[0]["code"].as_str().unwrap().starts_with('E'));
     fs::remove_file(&f).ok();
 }
+
+#[test]
+fn rename_preview_lists_edits_without_writing() {
+    let f = fixture("rn-preview");
+    let out = brink()
+        .args(["ide", "rename", "gold", "--to", "coins", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .contains("gold -> coins"),
+        "preview should list edits"
+    );
+    assert!(
+        fs::read_to_string(&f).unwrap().contains("VAR gold"),
+        "preview must not touch the file"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn rename_write_applies_a_safe_rename() {
+    let f = fixture("rn-write");
+    let out = brink()
+        .args(["ide", "rename", "gold", "--to", "coins", "--write", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let src = fs::read_to_string(&f).unwrap();
+    assert!(
+        src.contains("VAR coins"),
+        "the declaration is renamed: {src}"
+    );
+    assert!(src.contains("{coins}"), "references are renamed: {src}");
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn rename_refuses_a_change_that_introduces_a_diagnostic() {
+    let f = fixture("rn-collide");
+    // intro -> shop collides with the existing `shop` knot (a duplicate warning).
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--write", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        fs::read_to_string(&f).unwrap().contains("=== intro ==="),
+        "the file must be left unchanged"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn rename_unsafe_overrides_the_safety_gate() {
+    let f = fixture("rn-unsafe");
+    let out = brink()
+        .args([
+            "ide", "rename", "intro", "--to", "shop", "--write", "--unsafe", "-e",
+        ])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        !fs::read_to_string(&f).unwrap().contains("=== intro ==="),
+        "--unsafe applies the rename anyway"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn rename_patch_is_a_git_applyable_diff() {
+    let f = fixture("rn-patch");
+    let out = brink()
+        .args(["ide", "rename", "gold", "--to", "coins", "--patch", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("diff --git"), "git header: {s}");
+    assert!(s.contains("@@ "), "a hunk: {s}");
+    assert!(s.contains("+VAR coins = 0"), "the renamed line: {s}");
+    assert!(
+        fs::read_to_string(&f).unwrap().contains("VAR gold"),
+        "patch mode must not write"
+    );
+    fs::remove_file(&f).ok();
+}
