@@ -112,12 +112,18 @@ export async function performSymbolRename(
   }
 
   if (result.safe || force) {
+    const oldName = req.currentName ?? req.stitch ?? req.knot;
     const label = req.currentName ?? (req.stitch ? `${req.knot}.${req.stitch}` : req.knot) ?? "symbol";
     await applyMoveResult(
       result,
       `Rename ${label} to ${newName}`,
       result.path ? [result.path] : [],
     );
+    // Keep an open symbol view of the renamed knot/stitch aligned: re-key its
+    // `path::oldName` tab to `path::newName` in place (#305).
+    if (oldName !== undefined && oldName !== newName) {
+      state.renameSymbolDocKey(req.path, oldName, newName);
+    }
     return { applied: true, diagnostics: result.introduced_diagnostics };
   }
 

@@ -34,6 +34,10 @@ export interface DocumentsSlice {
   /** Injected tab-renamer (main.tsx): re-keys every tab + view slot for a file
    *  path in place when the file is renamed/moved. Null until bound. */
   _renameDocPath: ((oldPath: string, newPath: string) => void) | null;
+  /** Injected symbol-tab-renamer (main.tsx): re-keys the open `path::oldName`
+   *  symbol tab + view slot to `path::newName` when a knot/stitch is renamed
+   *  (#305). Null until bound. */
+  _renameSymbolDoc: ((path: string, oldName: string, newName: string) => void) | null;
 
   /** Open an ink document (pinned, or as the group's preview tab). */
   openTarget(target: TabTarget, pinned: boolean): void;
@@ -43,6 +47,9 @@ export interface DocumentsSlice {
   /** Re-key every open tab + view slot for `oldPath` to `newPath` in place
    *  (rename/move), preserving pin/split/selection. */
   renameDocPath(oldPath: string, newPath: string): void;
+  /** Re-key the open `path::oldName` symbol tab + view slot to `path::newName`
+   *  in place when a knot/stitch is renamed (#305). No-op when no such tab. */
+  renameSymbolDocKey(path: string, oldName: string, newName: string): void;
   /** Create a new file in the project and open it pinned. */
   addFile(name: string): Promise<void>;
   /** Bind the shell opener bridge (main.tsx, at bootstrap). */
@@ -51,6 +58,10 @@ export interface DocumentsSlice {
   setDocCloser(close: (path: string) => void): void;
   /** Bind the shell tab-renamer bridge (main.tsx, at bootstrap). */
   setDocRenamer(rename: (oldPath: string, newPath: string) => void): void;
+  /** Bind the shell symbol-tab-renamer bridge (main.tsx, at bootstrap). */
+  setDocSymbolRenamer(
+    rename: (path: string, oldName: string, newName: string) => void,
+  ): void;
   /** Update the focused-document mirror (main.tsx subscription). */
   setActiveDocKey(key: string): void;
   /** Update the dirty-file summary (mount.tsx dirty listener). */
@@ -66,6 +77,7 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
   _openTarget: null,
   _closeDocsForPath: null,
   _renameDocPath: null,
+  _renameSymbolDoc: null,
 
   openTarget(target, pinned) {
     get()._openTarget?.(target, pinned);
@@ -77,6 +89,10 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
 
   renameDocPath(oldPath, newPath) {
     get()._renameDocPath?.(oldPath, newPath);
+  },
+
+  renameSymbolDocKey(path, oldName, newName) {
+    get()._renameSymbolDoc?.(path, oldName, newName);
   },
 
   async addFile(name) {
@@ -96,6 +112,10 @@ export const createDocumentsSlice: StateCreator<StudioState, [], [], DocumentsSl
 
   setDocRenamer(rename) {
     set({ _renameDocPath: rename });
+  },
+
+  setDocSymbolRenamer(rename) {
+    set({ _renameSymbolDoc: rename });
   },
 
   setActiveDocKey(key) {

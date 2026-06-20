@@ -58,10 +58,19 @@ test.describe("knot/stitch rename (#305)", () => {
     await input.fill("haggling");
     await page.keyboard.press("Enter");
 
-    // Prompt closes; the rename applied to the file (binder outline reflects it).
+    // Prompt closes; the rename applied (binder outline reflects it).
     await expect(input).toBeHidden();
     await expect(binderKnot(page, "haggling")).toHaveCount(1);
     await expect(binderKnot(page, "barter")).toHaveCount(0);
+
+    // The open symbol-view tab survives its own rename: it re-keys (tab label
+    // follows the new name) and the view re-resolves to the renamed knot rather
+    // than degrading to the full file (#305 follow-up).
+    await expect(page.locator(".brink-tab-label", { hasText: "haggling" })).toHaveCount(1);
+    await expect(page.locator(".brink-tab-label", { hasText: /^barter\b/ })).toHaveCount(0);
+    await expect(
+      page.locator(".cm-line", { hasText: "=== haggling ===" }).first(),
+    ).toBeVisible();
   });
 
   test("a colliding rename shows the breakage report; Force overrides", async ({ page }) => {
