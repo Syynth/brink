@@ -1,13 +1,16 @@
-//! `brink ide` — scriptable brink-ide queries (epic #289).
+//! `brink ide` — scriptable brink-ide queries and refactors (epic #289).
 //!
 //! The project loader + name/`--at` addressing + output framework; the
 //! read-queries `def`, `references`, `symbols`, `unused`, `check`, `hover`,
-//! `signature`, `graph` (story flow → text/JSON/DOT), and `lines`; and the
-//! `rename` refactor (preview / `--patch` / `--write`, safe-by-default against
-//! newly-introduced diagnostics). The CLI drives the same `brink-ide` engine the
-//! LSP and studio use, via a `brink_driver::Driver` that discovers the project
-//! from an entry `.ink` (following `INCLUDE`s) — identical to `brink compile`.
-//! See `docs/cli-ide-inventory.md`.
+//! `signature`, `graph` (story flow → text/JSON/DOT), `lines`, and `actions`
+//! (code actions at a cursor); and the mutations — `rename`, `move-file`
+//! (with `INCLUDE` rewriting), and `refactor *` (sort / reorder / move-stitch /
+//! promote / demote / convert-line). Every mutation shares the same modes:
+//! preview (default) / `--patch [FILE]` / `--write`, safe-by-default against
+//! newly-introduced diagnostics (`--unsafe` overrides). The CLI drives the same
+//! `brink-ide` engine the LSP and studio use, via a `brink_driver::Driver` that
+//! discovers the project from an entry `.ink` (following `INCLUDE`s) — identical
+//! to `brink compile`. See `docs/cli-ide-inventory.md`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -18,13 +21,22 @@ use std::process::ExitCode;
 use brink_analyzer::AnalysisResult;
 use brink_driver::Driver;
 use brink_ide::LineIndex;
+use brink_ide::code_actions::{CodeActionKind, code_actions};
 use brink_ide::document::{DocumentSymbol, document_symbols, workspace_symbols};
+use brink_ide::file_rename::rename_file;
+use brink_ide::formatting::{format_region, sort_knots_in_source, sort_stitches_in_knot};
 use brink_ide::hover::hover;
 use brink_ide::line_context::line_contexts;
+use brink_ide::line_convert::{ConvertTarget, convert_element};
 use brink_ide::navigation::{find_def_at_offset, find_references};
 use brink_ide::rename::{FileEdit, rename};
+use brink_ide::session::IdeSession;
 use brink_ide::signature::signature_help;
 use brink_ide::story_graph::{StoryEdgeKind, StoryGraph, StoryNodeKind, story_graph};
+use brink_ide::structural_move::{
+    Direction, MoveResult, demote_knot_to_stitch, move_stitch, promote_stitch_to_knot,
+    reorder_knot, reorder_knots, reorder_stitch, reorder_stitches,
+};
 use brink_ir::symbols::{SymbolInfo, SymbolKind};
 use brink_ir::{Diagnostic, FileId, HirFile};
 use clap::{Args, Subcommand, ValueEnum};
@@ -187,6 +199,156 @@ Examples:
         #[command(flatten)]
         opts: CommonOpts,
     },
+    /// Rename or move a file, rewriting every `INCLUDE` that points at it.
+    ///
+    /// Paths are project-relative (as they appear in `INCLUDE`s). Like every
+    /// mutation: preview by default, `--patch`/`--write` are safe-by-default.
+    #[command(after_help = "\
+Examples:
+  brink ide move-file scenes/intro.ink scenes/act1/intro.ink -e main.ink
+  brink ide move-file old.ink new.ink --patch -e main.ink
+  brink ide move-file old.ink new.ink --write -e main.ink")]
+    MoveFile {
+        /// Current project-relative path of the file.
+        #[arg(value_name = "OLD")]
+        old: String,
+        /// New project-relative path for the file.
+        #[arg(value_name = "NEW")]
+        new: String,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
+    /// Apply a structural refactor (sort / reorder / move / promote / convert).
+    ///
+    /// Each operation reuses the shared mutation modes (preview / `--patch` /
+    /// `--write`) and the safe-by-default diagnostic gate.
+    Refactor {
+        #[command(subcommand)]
+        op: RefactorOp,
+    },
+    /// List the code actions (refactors) available at a cursor position.
+    #[command(after_help = "\
+Examples:
+  brink ide actions --at main.ink:8:3 -e main.ink
+  brink ide actions --at main.ink:8:3 -e main.ink --format json")]
+    Actions {
+        /// Cursor position: `FILE:LINE:COL` (1-based).
+        #[arg(long, value_name = "FILE:LINE:COL")]
+        at: String,
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
+}
+
+/// A structural refactor operation. Each addresses a knot/stitch by its
+/// qualified name and routes through the shared mutation modes.
+#[derive(Subcommand)]
+pub enum RefactorOp {
+    /// Alphabetize the top-level knots in a file (preamble preserved).
+    SortKnots {
+        /// Operate on this file instead of the entry file.
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
+    /// Alphabetize the stitches within a knot.
+    SortStitches {
+        /// The knot whose stitches to sort.
+        #[arg(value_name = "KNOT")]
+        knot: String,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
+    /// Reformat just one knot (or one stitch with `KNOT.STITCH`).
+    Format {
+        /// `KNOT` or `KNOT.STITCH`.
+        #[arg(value_name = "KNOT[.STITCH]")]
+        target: String,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
+    /// Move a knot up or down in the file (pure text, no reference changes).
+    ReorderKnot {
+        #[arg(value_name = "KNOT")]
+        knot: String,
+        #[arg(value_name = "DIRECTION")]
+        direction: Dir,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
+    /// Move a stitch up or down within its knot (`KNOT.STITCH`).
+    ReorderStitch {
+        #[arg(value_name = "KNOT.STITCH")]
+        target: String,
+        #[arg(value_name = "DIRECTION")]
+        direction: Dir,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
+    /// Reorder all top-level knots to an explicit permutation.
+    ReorderKnots {
+        /// Comma-separated knot names, a permutation of the existing set.
+        #[arg(value_name = "A,B,C")]
+        order: String,
+        /// Operate on this file instead of the entry file.
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
+    /// Reorder a knot's stitches to an explicit permutation.
+    ReorderStitches {
+        #[arg(value_name = "KNOT")]
+        knot: String,
+        /// Comma-separated stitch names, a permutation of the existing set.
+        #[arg(value_name = "A,B,C")]
+        order: String,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
+    /// Move a stitch into another knot, re-qualifying references.
+    MoveStitch {
+        /// The stitch to move: `KNOT.STITCH`.
+        #[arg(value_name = "KNOT.STITCH")]
+        target: String,
+        /// The destination knot.
+        #[arg(long = "to", value_name = "DEST_KNOT")]
+        dest: String,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
+    /// Promote a stitch to a top-level knot (`KNOT.STITCH`).
+    PromoteStitch {
+        #[arg(value_name = "KNOT.STITCH")]
+        target: String,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
+    /// Demote a knot to a stitch under another knot.
+    DemoteKnot {
+        #[arg(value_name = "KNOT")]
+        knot: String,
+        /// The destination knot to nest under.
+        #[arg(long = "to", value_name = "DEST_KNOT")]
+        dest: String,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
+    /// Convert a line's structural type at a cursor, preserving weave depth.
+    #[command(after_help = "\
+Example:
+  brink ide refactor convert-line --at main.ink:9:1 choice -e main.ink")]
+    ConvertLine {
+        /// The line to convert: `FILE:LINE:COL` (1-based).
+        #[arg(long, value_name = "FILE:LINE:COL")]
+        at: String,
+        /// What to convert the line into.
+        #[arg(value_name = "TARGET")]
+        target: ConvertTo,
+        #[command(flatten)]
+        mode: MutOpts,
+    },
 }
 
 /// Options shared by every `brink ide` query.
@@ -217,6 +379,88 @@ pub struct Address {
 enum Format {
     Text,
     Json,
+}
+
+/// Options shared by every mutating command (move-file, refactor *). Unlike
+/// `CommonOpts` there is no `--kind`: these address by knot/stitch name or
+/// cursor, never by a bare ambiguous symbol.
+#[derive(Args)]
+pub struct MutOpts {
+    /// Entry-point `.ink` file; `INCLUDE`s are followed to build the project.
+    #[arg(long, short = 'e', value_name = "FILE")]
+    entry: PathBuf,
+    /// Output format (preview / JSON).
+    #[arg(long, value_enum, default_value_t = Format::Text)]
+    format: Format,
+    #[command(flatten)]
+    flags: ModeFlags,
+}
+
+/// The mutually-exclusive mutation output mode (default: preview).
+#[derive(Args)]
+pub struct ModeFlags {
+    /// Emit a `git apply`-able patch to stdout, or to FILE if given.
+    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = "-", conflicts_with = "write")]
+    patch: Option<String>,
+    /// Apply the edits to the project files in place.
+    #[arg(long)]
+    write: bool,
+    /// Produce the patch / write even if the change introduces new diagnostics.
+    #[arg(long = "unsafe", visible_alias = "force")]
+    unsafe_mode: bool,
+}
+
+impl ModeFlags {
+    fn mode(&self) -> Mode<'_> {
+        match (&self.patch, self.write) {
+            (Some(dest), _) => Mode::Patch(dest),
+            (None, true) => Mode::Write,
+            (None, false) => Mode::Preview,
+        }
+    }
+}
+
+/// Direction for the `reorder-knot` / `reorder-stitch` refactors.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum Dir {
+    Up,
+    Down,
+}
+
+impl From<Dir> for Direction {
+    fn from(d: Dir) -> Self {
+        match d {
+            Dir::Up => Direction::Up,
+            Dir::Down => Direction::Down,
+        }
+    }
+}
+
+/// Target structural type for `refactor convert-line`.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum ConvertTo {
+    /// Plain narrative text (strip sigils).
+    Narrative,
+    /// A choice line (`*`).
+    Choice,
+    /// A sticky choice line (`+`).
+    StickyChoice,
+    /// A gather line (`-`).
+    Gather,
+    /// Indented choice body (strip sigils, keep depth).
+    ChoiceBody,
+}
+
+impl From<ConvertTo> for ConvertTarget {
+    fn from(t: ConvertTo) -> Self {
+        match t {
+            ConvertTo::Narrative => ConvertTarget::Narrative,
+            ConvertTo::Choice => ConvertTarget::Choice { sticky: false },
+            ConvertTo::StickyChoice => ConvertTarget::Choice { sticky: true },
+            ConvertTo::Gather => ConvertTarget::Gather,
+            ConvertTo::ChoiceBody => ConvertTarget::ChoiceBody,
+        }
+    }
 }
 
 /// The symbol kinds addressable from the CLI (mirrors `SymbolKind`).
@@ -297,6 +541,9 @@ pub fn run(cmd: &IdeCommand) -> ExitCode {
         IdeCommand::Signature { at, opts } => run_signature(at, opts),
         IdeCommand::Graph { dot, opts } => run_graph(*dot, opts),
         IdeCommand::Lines { file, opts } => run_lines(file.as_deref(), opts),
+        IdeCommand::MoveFile { old, new, mode } => run_move_file(old, new, mode),
+        IdeCommand::Refactor { op } => run_refactor(op),
+        IdeCommand::Actions { at, opts } => run_actions(at, opts),
     };
     match result {
         Ok(code) => code,
@@ -515,6 +762,7 @@ fn run_check(opts: &CommonOpts) -> Result<ExitCode, String> {
 }
 
 /// What a mutation does with its computed edits.
+#[derive(Clone, Copy)]
 enum Mode<'a> {
     Preview,
     /// Emit a `git apply`-able patch — to stdout (`"-"`) or to a file path.
@@ -543,23 +791,58 @@ fn run_rename(
         return Err("rename produced no edits".to_string());
     }
 
-    // Apply edits in-memory, then re-analyze to find any *new* errors the rename
-    // would cause (a collision, a shadow, an orphaned reference).
+    // Apply the edits in-memory; `emit_mutation` re-analyzes to gate on any new
+    // diagnostic. Rename carries its fine-grained edits for a per-edit preview.
     let edited = project.apply_edits(&result.edits)?;
-    let introduced = project.introduced_diagnostics(&opts.entry, &edited)?;
-
     let mode = match (patch, write) {
         (Some(dest), _) => Mode::Patch(dest),
         (None, true) => Mode::Write,
         (None, false) => Mode::Preview,
     };
+    let mutation = Mutation {
+        edited,
+        edits: Some(result.edits),
+    };
+    emit_mutation(
+        &project,
+        &opts.entry,
+        &mutation,
+        &mode,
+        opts.format,
+        unsafe_mode,
+    )
+}
 
-    // `--patch`/`--write` are safe-by-default; preview is always informational.
+// ── Mutation pipeline (rename / move-file / refactor *) ──────────────
+
+/// A computed mutation ready to emit: the new full source for every file it
+/// touches, plus optional fine-grained edits for a richer preview.
+struct Mutation {
+    /// path → new full source, for every file the operation changes.
+    edited: BTreeMap<String, String>,
+    /// Fine-grained edits (rename) for a per-edit preview; `None` → diff preview.
+    edits: Option<Vec<FileEdit>>,
+}
+
+/// Emit a mutation through the requested mode, applying the safe-by-default
+/// diagnostic gate. `preview` always informs (prints edits + introduced
+/// diagnostics, exit 0); `--patch`/`--write` refuse on any newly-introduced
+/// diagnostic unless `unsafe_mode`. Returns the process exit code.
+fn emit_mutation(
+    project: &Project,
+    entry: &Path,
+    mutation: &Mutation,
+    mode: &Mode,
+    format: Format,
+    unsafe_mode: bool,
+) -> Result<ExitCode, String> {
+    let introduced = project.introduced_diagnostics(entry, &mutation.edited, None)?;
+
     if !matches!(mode, Mode::Preview) && !introduced.is_empty() && !unsafe_mode {
         let mut err = io::stderr().lock();
         writeln!(
             err,
-            "refusing: rename introduces {} new diagnostic(s) (re-run with --unsafe to override):",
+            "refusing: change introduces {} new diagnostic(s) (re-run with --unsafe to override):",
             introduced.len()
         )
         .map_err(|e| e.to_string())?;
@@ -580,31 +863,77 @@ fn run_rename(
     let mut out = io::stdout().lock();
     match mode {
         Mode::Preview => {
-            let entries = project.edit_entries(&result.edits);
-            emit_rename_preview(&mut out, opts.format, &entries, &introduced)?;
+            if let Some(edits) = &mutation.edits {
+                let entries = project.edit_entries(edits);
+                emit_rename_preview(&mut out, format, &entries, &introduced)?;
+            } else {
+                emit_diff_preview(&mut out, project, &mutation.edited, format, &introduced)?;
+            }
         }
         Mode::Patch(dest) => {
-            let diff = project.unified_diff(&edited)?;
-            if dest == "-" {
+            let diff = project.unified_diff(&mutation.edited)?;
+            if *dest == "-" {
                 write!(out, "{diff}").map_err(|e| e.to_string())?;
             } else {
                 std::fs::write(dest, diff).map_err(|e| format!("{dest}: {e}"))?;
             }
         }
         Mode::Write => {
-            for (path, src) in &edited {
+            for (path, src) in &mutation.edited {
                 std::fs::write(path, src).map_err(|e| format!("{path}: {e}"))?;
             }
-            writeln!(
-                out,
-                "applied {} edit(s) across {} file(s)",
-                result.edits.len(),
-                edited.len()
-            )
-            .map_err(|e| e.to_string())?;
+            writeln!(out, "wrote {} file(s)", mutation.edited.len()).map_err(|e| e.to_string())?;
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Preview a whole-file mutation as a unified diff (text) or
+/// `{ diff, files, introducedDiagnostics, safe }` (JSON), plus the diagnostics
+/// it would introduce.
+fn emit_diff_preview(
+    out: &mut impl Write,
+    project: &Project,
+    edited: &BTreeMap<String, String>,
+    format: Format,
+    introduced: &[DiagEntry],
+) -> Result<(), String> {
+    let diff = project.unified_diff(edited)?;
+    match format {
+        Format::Json => {
+            let files: Vec<&String> = edited.keys().collect();
+            let v = serde_json::json!({
+                "diff": diff,
+                "files": files,
+                "introducedDiagnostics": introduced,
+                "safe": introduced.is_empty(),
+            });
+            writeln!(out, "{}", to_json(&v)?).map_err(|e| e.to_string())?;
+        }
+        Format::Text => {
+            write!(out, "{diff}").map_err(|e| e.to_string())?;
+            if !introduced.is_empty() {
+                writeln!(
+                    out,
+                    "would introduce {} new diagnostic(s):",
+                    introduced.len()
+                )
+                .map_err(|e| e.to_string())?;
+                for d in introduced {
+                    writeln!(
+                        out,
+                        "  {}[{}] {} {}",
+                        d.severity,
+                        d.code,
+                        d.location.display(),
+                        d.message
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Render a rename preview — the edits plus any diagnostics it would introduce.
@@ -802,6 +1131,329 @@ fn run_lines(file: Option<&str>, opts: &CommonOpts) -> Result<ExitCode, String> 
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+// ── Mutating commands: move-file / refactor / actions ───────────────
+
+fn run_move_file(old: &str, new: &str, mode: &MutOpts) -> Result<ExitCode, String> {
+    let project = Project::load(&mode.entry)?;
+    let session = project.ide_session();
+    let result = rename_file(&session, old, new).map_err(|e| e.to_string())?;
+
+    // A file move changes the file *set*: the old path is removed and `new`
+    // appears with `result.new_source`. Inbound `INCLUDE` rewrites land on other
+    // files; the moved file itself is covered by `new_source`.
+    let mut edited = project.apply_edits(&result.cross_file_edits)?;
+    edited.remove(old);
+    edited.insert(new.to_string(), result.new_source);
+
+    // The destination is a brand-new path, so the whole-project re-analysis in
+    // the safety gate must read it. `introduced_diagnostics` already overlays the
+    // edited map onto the on-disk read closure, so `new` resolves to its content.
+    let mutation = Mutation {
+        edited,
+        edits: None,
+    };
+    emit_move_mutation(&project, &mode.entry, old, new, &mutation, mode)
+}
+
+/// Emit a file move. Like `emit_mutation`, but the diff/write must account for
+/// the path change (delete `old`, create `new`) rather than an in-place edit.
+fn emit_move_mutation(
+    project: &Project,
+    entry: &Path,
+    old: &str,
+    new: &str,
+    mutation: &Mutation,
+    mode: &MutOpts,
+) -> Result<ExitCode, String> {
+    let m = mode.flags.mode();
+    let introduced = project.introduced_diagnostics(entry, &mutation.edited, Some(old))?;
+
+    if !matches!(m, Mode::Preview) && !introduced.is_empty() && !mode.flags.unsafe_mode {
+        let mut err = io::stderr().lock();
+        writeln!(
+            err,
+            "refusing: move introduces {} new diagnostic(s) (re-run with --unsafe to override):",
+            introduced.len()
+        )
+        .map_err(|e| e.to_string())?;
+        for d in &introduced {
+            writeln!(
+                err,
+                "  {}[{}] {} {}",
+                d.severity,
+                d.code,
+                d.location.display(),
+                d.message
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        return Ok(ExitCode::from(1));
+    }
+
+    // Build the diff: a rename hunk for old→new, plus in-place hunks for the
+    // inbound-include files.
+    let db = project.driver.db();
+    let old_src = db
+        .file_id(old)
+        .and_then(|id| db.source(id))
+        .unwrap_or_default();
+    let new_src = mutation
+        .edited
+        .get(new)
+        .map(String::as_str)
+        .unwrap_or_default();
+
+    let mut out = io::stdout().lock();
+
+    if let Mode::Write = m {
+        if let Some(parent) = Path::new(new)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        std::fs::rename(old, new).map_err(|e| format!("{old} -> {new}: {e}"))?;
+        // The moved file's new content (outbound INCLUDE rewrites) is in `edited`
+        // under `new`; the rename above just relocated the old bytes.
+        for (path, src) in &mutation.edited {
+            std::fs::write(path, src).map_err(|e| format!("{path}: {e}"))?;
+        }
+        writeln!(
+            out,
+            "moved {old} -> {new} ({} file(s) updated)",
+            mutation.edited.len()
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Preview / Patch: build the diff (rename hunk + inbound-include hunks).
+    let mut diff = String::new();
+    rename_diff(&mut diff, old, new, old_src, new_src);
+    for (path, src) in &mutation.edited {
+        if path == new {
+            continue;
+        }
+        let old = db
+            .file_id(path)
+            .and_then(|id| db.source(id))
+            .unwrap_or_default();
+        file_diff(&mut diff, path, old, src);
+    }
+    match m {
+        Mode::Patch(dest) if dest != "-" => {
+            std::fs::write(dest, diff).map_err(|e| format!("{dest}: {e}"))?;
+        }
+        Mode::Patch(_) => write!(out, "{diff}").map_err(|e| e.to_string())?,
+        _ => {
+            write!(out, "{diff}").map_err(|e| e.to_string())?;
+            emit_introduced(&mut out, &introduced)?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_refactor(op: &RefactorOp) -> Result<ExitCode, String> {
+    match op {
+        RefactorOp::SortKnots { file, mode } => {
+            let project = Project::load(&mode.entry)?;
+            let (id, source) = project.file_or_entry(file.as_deref())?;
+            let new = sort_knots_in_source(&source);
+            project.emit_single(id, &source, new, mode)
+        }
+        RefactorOp::SortStitches { knot, mode } => {
+            let project = Project::load(&mode.entry)?;
+            let (id, source) = project.knot_file(knot)?;
+            let new = sort_stitches_in_knot(&source, knot);
+            project.emit_single(id, &source, new, mode)
+        }
+        RefactorOp::Format { target, mode } => {
+            let project = Project::load(&mode.entry)?;
+            let (knot, stitch) = split_dotted(target);
+            let (id, source) = project.knot_file(knot)?;
+            let new = format_region(&source, knot, stitch);
+            project.emit_single(id, &source, new, mode)
+        }
+        RefactorOp::ReorderKnot {
+            knot,
+            direction,
+            mode,
+        } => {
+            let project = Project::load(&mode.entry)?;
+            let (id, source) = project.knot_file(knot)?;
+            let new =
+                reorder_knot(&source, knot, (*direction).into()).map_err(|e| e.to_string())?;
+            project.emit_single(id, &source, new, mode)
+        }
+        RefactorOp::ReorderStitch {
+            target,
+            direction,
+            mode,
+        } => {
+            let project = Project::load(&mode.entry)?;
+            let (knot, stitch) = split_dotted(target);
+            let stitch = stitch.ok_or("reorder-stitch needs KNOT.STITCH")?;
+            let (id, source) = project.knot_file(knot)?;
+            let new = reorder_stitch(&source, knot, stitch, (*direction).into())
+                .map_err(|e| e.to_string())?;
+            project.emit_single(id, &source, new, mode)
+        }
+        RefactorOp::ReorderKnots { order, file, mode } => {
+            let project = Project::load(&mode.entry)?;
+            let (id, source) = project.file_or_entry(file.as_deref())?;
+            let names = parse_order(order);
+            let new = reorder_knots(&source, &names).map_err(|e| e.to_string())?;
+            project.emit_single(id, &source, new, mode)
+        }
+        RefactorOp::ReorderStitches { knot, order, mode } => {
+            let project = Project::load(&mode.entry)?;
+            let (id, source) = project.knot_file(knot)?;
+            let names = parse_order(order);
+            let new = reorder_stitches(&source, knot, &names).map_err(|e| e.to_string())?;
+            project.emit_single(id, &source, new, mode)
+        }
+        RefactorOp::MoveStitch { target, dest, mode } => {
+            let project = Project::load(&mode.entry)?;
+            let (knot, stitch) = split_dotted(target);
+            let stitch = stitch.ok_or("move-stitch needs KNOT.STITCH")?;
+            let (id, source) = project.knot_file(knot)?;
+            let result = move_stitch(&source, &project.analysis, id, knot, stitch, dest)
+                .map_err(|e| e.to_string())?;
+            project.emit_move_result(id, result, mode)
+        }
+        RefactorOp::PromoteStitch { target, mode } => {
+            let project = Project::load(&mode.entry)?;
+            let (knot, stitch) = split_dotted(target);
+            let stitch = stitch.ok_or("promote-stitch needs KNOT.STITCH")?;
+            let (id, source) = project.knot_file(knot)?;
+            let result = promote_stitch_to_knot(&source, &project.analysis, id, knot, stitch)
+                .map_err(|e| e.to_string())?;
+            project.emit_move_result(id, result, mode)
+        }
+        RefactorOp::DemoteKnot { knot, dest, mode } => {
+            let project = Project::load(&mode.entry)?;
+            let (id, source) = project.knot_file(knot)?;
+            let result = demote_knot_to_stitch(&source, &project.analysis, id, knot, dest)
+                .map_err(|e| e.to_string())?;
+            project.emit_move_result(id, result, mode)
+        }
+        RefactorOp::ConvertLine { at, target, mode } => run_convert_line(at, *target, mode),
+    }
+}
+
+fn run_convert_line(at: &str, target: ConvertTo, mode: &MutOpts) -> Result<ExitCode, String> {
+    let project = Project::load(&mode.entry)?;
+    let (file, line, col) = parse_at(at)?;
+    let db = project.driver.db();
+    let id = db
+        .file_id(&file)
+        .ok_or_else(|| format!("file not in project: {file}"))?;
+    let source = db.source(id).unwrap_or_default().to_string();
+    let hir = db.hir(id).ok_or("no HIR for that file")?;
+    let root = db.parse(id).ok_or("no parse tree for that file")?.syntax();
+    let offset = LineIndex::new(&source).offset(line.saturating_sub(1), col.saturating_sub(1));
+    let edit = convert_element(&source, hir, &root, u32::from(offset), target.into())
+        .ok_or("that line cannot be converted to the requested type")?;
+    let mut new = source.clone();
+    new.replace_range(edit.from as usize..edit.to as usize, &edit.insert);
+    project.emit_single(id, &source, new, mode)
+}
+
+fn run_actions(at: &str, opts: &CommonOpts) -> Result<ExitCode, String> {
+    let project = Project::load(&opts.entry)?;
+    let (file, line, col) = parse_at(at)?;
+    let db = project.driver.db();
+    let id = db
+        .file_id(&file)
+        .ok_or_else(|| format!("file not in project: {file}"))?;
+    let source = db.source(id).unwrap_or_default();
+    let offset = LineIndex::new(source).offset(line.saturating_sub(1), col.saturating_sub(1));
+    let actions = code_actions(source, u32::from(offset) as usize);
+
+    let mut out = io::stdout().lock();
+    match opts.format {
+        Format::Json => {
+            let arr: Vec<_> = actions
+                .iter()
+                .map(|a| serde_json::json!({ "title": a.title, "kind": action_kind_name(&a.kind) }))
+                .collect();
+            writeln!(out, "{}", to_json(&arr)?).map_err(|e| e.to_string())?;
+        }
+        Format::Text => {
+            for a in &actions {
+                writeln!(out, "{}", a.title).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn action_kind_name(k: &CodeActionKind) -> &'static str {
+    match k {
+        CodeActionKind::QuickFix => "quickfix",
+        CodeActionKind::Refactor => "refactor",
+        CodeActionKind::Source => "source",
+    }
+}
+
+/// Split `KNOT` / `KNOT.STITCH` into its parts (only the first dot is honored).
+fn split_dotted(s: &str) -> (&str, Option<&str>) {
+    match s.split_once('.') {
+        Some((knot, stitch)) => (knot, Some(stitch)),
+        None => (s, None),
+    }
+}
+
+/// Parse a comma-separated permutation list, trimming whitespace.
+fn parse_order(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// Append a `git`-style file-rename diff (delete `old`, create `new`).
+fn rename_diff(out: &mut String, old: &str, new: &str, old_src: &str, new_src: &str) {
+    let old_lines: Vec<&str> = old_src.split_inclusive('\n').collect();
+    let new_lines: Vec<&str> = new_src.split_inclusive('\n').collect();
+    let _ = write!(
+        out,
+        "diff --git a/{old} b/{new}\nrename from {old}\nrename to {new}\n--- a/{old}\n+++ b/{new}\n@@ -1,{} +1,{} @@\n",
+        old_lines.len(),
+        new_lines.len()
+    );
+    for l in &old_lines {
+        push_diff_line(out, '-', l);
+    }
+    for l in &new_lines {
+        push_diff_line(out, '+', l);
+    }
+}
+
+fn emit_introduced(out: &mut impl Write, introduced: &[DiagEntry]) -> Result<(), String> {
+    if !introduced.is_empty() {
+        writeln!(
+            out,
+            "would introduce {} new diagnostic(s):",
+            introduced.len()
+        )
+        .map_err(|e| e.to_string())?;
+        for d in introduced {
+            writeln!(
+                out,
+                "  {}[{}] {} {}",
+                d.severity,
+                d.code,
+                d.location.display(),
+                d.message
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 // ── Story-graph rendering ───────────────────────────────────────────
@@ -1013,11 +1665,20 @@ impl Project {
         &self,
         entry: &Path,
         edited: &BTreeMap<String, String>,
+        removed: Option<&str>,
     ) -> Result<Vec<DiagEntry>, String> {
         let entry_s = entry.to_string_lossy().into_owned();
         let mut driver = Driver::new();
         driver
             .discover(&entry_s, |p| {
+                // A moved file no longer exists at its old path: surface any
+                // stale reference as a diagnostic instead of reading the disk copy.
+                if Some(p) == removed {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("{p}: file moved"),
+                    ));
+                }
                 if let Some(s) = edited.get(p) {
                     Ok(s.clone())
                 } else {
@@ -1117,6 +1778,129 @@ impl Project {
             file_diff(&mut out, path, old, new_src);
         }
         Ok(out)
+    }
+
+    /// Build an `IdeSession` seeded with every project file (db-level only — no
+    /// analysis), for the `brink-ide` ops (`file_rename`) that take a session.
+    fn ide_session(&self) -> IdeSession {
+        let db = self.driver.db();
+        let mut session = IdeSession::new();
+        let ids: Vec<FileId> = db.file_ids().collect();
+        for id in ids {
+            if let (Some(path), Some(src)) = (db.file_path(id), db.source(id)) {
+                session.update_source(path, src.to_string());
+            }
+        }
+        session
+    }
+
+    /// The `(id, source)` for `file` (project-relative) or, if `None`, the entry.
+    fn file_or_entry(&self, file: Option<&str>) -> Result<(FileId, String), String> {
+        let db = self.driver.db();
+        let id = match file {
+            Some(f) => db
+                .file_id(f)
+                .ok_or_else(|| format!("file not in project: {f}"))?,
+            None => self.entry_id,
+        };
+        let src = db.source(id).unwrap_or_default().to_string();
+        Ok((id, src))
+    }
+
+    /// Resolve a knot name to the file that declares it (and that file's source).
+    fn knot_file(&self, knot: &str) -> Result<(FileId, String), String> {
+        let sym = self.resolve_unique(knot, Some(KindFilter::Knot))?;
+        let file = sym.file;
+        let src = self
+            .driver
+            .db()
+            .source(file)
+            .unwrap_or_default()
+            .to_string();
+        Ok((file, src))
+    }
+
+    /// Emit a single-file refactor result (`old_source` → `new_source`) through
+    /// the requested mode. Reports "no change" if the refactor is a no-op.
+    fn emit_single(
+        &self,
+        id: FileId,
+        old_source: &str,
+        new_source: String,
+        mode: &MutOpts,
+    ) -> Result<ExitCode, String> {
+        if new_source == old_source {
+            let mut out = io::stdout().lock();
+            match mode.format {
+                Format::Text => writeln!(out, "no change").map_err(|e| e.to_string())?,
+                Format::Json => writeln!(
+                    out,
+                    "{}",
+                    to_json(&serde_json::json!({
+                        "changed": false,
+                        "diff": "",
+                        "files": Vec::<String>::new(),
+                        "introducedDiagnostics": Vec::<DiagEntry>::new(),
+                        "safe": true,
+                    }))?
+                )
+                .map_err(|e| e.to_string())?,
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
+        let path = self
+            .driver
+            .db()
+            .file_path(id)
+            .ok_or("refactor targets an unknown file")?
+            .to_string();
+        let mut edited = BTreeMap::new();
+        edited.insert(path, new_source);
+        let mutation = Mutation {
+            edited,
+            edits: None,
+        };
+        let m = mode.flags.mode();
+        emit_mutation(
+            self,
+            &mode.entry,
+            &mutation,
+            &m,
+            mode.format,
+            mode.flags.unsafe_mode,
+        )
+    }
+
+    /// Emit a cross-file `MoveResult` (primary `new_source` + reference edits in
+    /// other files) through the requested mode. The primary file is covered by
+    /// `new_source`, so any cross-file edit landing on it is overridden.
+    fn emit_move_result(
+        &self,
+        primary: FileId,
+        result: MoveResult,
+        mode: &MutOpts,
+    ) -> Result<ExitCode, String> {
+        let primary_path = self
+            .driver
+            .db()
+            .file_path(primary)
+            .ok_or("move targets an unknown file")?
+            .to_string();
+        let mut edited = self.apply_edits(&result.cross_file_edits)?;
+        edited.insert(primary_path, result.new_source);
+        let mutation = Mutation {
+            edited,
+            edits: None,
+        };
+        let m = mode.flags.mode();
+        emit_mutation(
+            self,
+            &mode.entry,
+            &mutation,
+            &m,
+            mode.format,
+            mode.flags.unsafe_mode,
+        )
     }
 }
 
