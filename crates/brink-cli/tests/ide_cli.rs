@@ -106,3 +106,28 @@ fn json_output_is_parseable() {
     assert_eq!(v["kind"], "variable");
     fs::remove_file(&f).ok();
 }
+
+#[test]
+fn at_addressing_resolves_cursor_to_definition() {
+    let f = fixture("at");
+    // Line 7 is `~ gold = gold + 5`; column 3 sits on the first `gold`, a use of
+    // the VAR declared on line 1 — def should resolve there.
+    let at = format!("{}:7:3", f.display());
+    let out = brink()
+        .args(["ide", "def", "--at", &at, "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.starts_with("variable "), "got: {stdout}");
+    assert!(
+        stdout.contains(":1:"),
+        "VAR is declared on line 1: {stdout}"
+    );
+    fs::remove_file(&f).ok();
+}
