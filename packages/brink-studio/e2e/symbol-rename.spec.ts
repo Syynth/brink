@@ -37,6 +37,33 @@ test.describe("knot/stitch rename (#305)", () => {
     await expect(binderKnot(page, "barter")).toHaveCount(0);
   });
 
+  test("F2 in the editor opens the safe rename prompt seeded at the cursor", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
+
+    // Open a knot in the editor, then click its name token in the header to
+    // place the cursor squarely on the symbol (robust to CM line layout).
+    await binderKnot(page, "barter").first().click();
+    await page.waitForSelector(".cm-content");
+    const nameToken = page.locator(".cm-content").getByText("barter", { exact: true }).first();
+    await expect(nameToken).toBeVisible();
+    await nameToken.click();
+    await page.keyboard.press("F2");
+
+    // The shared rename prompt opens (proof F2 resolved a renameable symbol and
+    // routed through the store, not a native prompt()), seeded with the name.
+    const input = page.locator("#brink-rename-input");
+    await expect(input).toBeVisible();
+    await expect(input).toHaveValue("barter");
+    await input.fill("haggling");
+    await page.keyboard.press("Enter");
+
+    // Prompt closes; the rename applied to the file (binder outline reflects it).
+    await expect(input).toBeHidden();
+    await expect(binderKnot(page, "haggling")).toHaveCount(1);
+    await expect(binderKnot(page, "barter")).toHaveCount(0);
+  });
+
   test("a colliding rename shows the breakage report; Force overrides", async ({ page }) => {
     await page.goto("/");
     await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
