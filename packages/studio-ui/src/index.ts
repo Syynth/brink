@@ -24,6 +24,8 @@ export {
 export { App } from "./App.js";
 export { Binder, computeReorder, buildBinderTree } from "./Binder.js";
 export type { FolderNode } from "./Binder.js";
+export { SymbolContextMenuHost } from "./SymbolContextMenuHost.js";
+export { useSymbolMenuActions } from "./useSymbolMenuActions.js";
 export { INK_FILE_TYPE_ID, InkFileDocument, inkFileRef } from "./InkFileDocument.js";
 export {
   COMPILED_OUTPUT_DOC_ID,

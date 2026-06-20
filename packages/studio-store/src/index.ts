@@ -15,6 +15,7 @@ import type { SessionSlice } from "./slices/session.js";
 import type { BinderSlice } from "./slices/binder.js";
 import type { OutputSlice } from "./slices/output.js";
 import type { SearchSlice } from "./slices/search.js";
+import type { SymbolMenuSlice } from "./slices/symbol-menu.js";
 import type { DocumentSessions, ProjectSession } from "./types.js";
 
 import { createEditorSlice } from "./slices/editor.js";
@@ -24,6 +25,7 @@ import { createSessionSlice } from "./slices/session.js";
 import { createBinderSlice } from "./slices/binder.js";
 import { createOutputSlice } from "./slices/output.js";
 import { createSearchSlice } from "./slices/search.js";
+import { createSymbolMenuSlice } from "./slices/symbol-menu.js";
 
 // ── Notifications (store → shell bridge) ────────────────────────────
 
@@ -53,7 +55,8 @@ export interface StudioState
     SessionSlice,
     BinderSlice,
     OutputSlice,
-    SearchSlice {
+    SearchSlice,
+    SymbolMenuSlice {
   // Non-reactive refs — imperative handles that don't trigger re-renders
   _documents: DocumentSessions | null;
   _project: ProjectSession | null;
@@ -80,6 +83,7 @@ export const createStudioStore = () =>
       ...createBinderSlice(...args),
       ...createOutputSlice(...args),
       ...createSearchSlice(...args),
+      ...createSymbolMenuSlice(...args),
 
       // Non-reactive refs
       _documents: null,
@@ -139,6 +143,9 @@ export {
 // Problems ordering (canonical sort, unit-testable pure helper) + the
 // external-check severity level (Settings document, #93).
 export { sortDiagnostics, type ExternalCheckLevel } from "./slices/compile.js";
+
+// Shared knot/stitch context-menu transport (#186 follow-up).
+export type { SymbolMenuRequest } from "./slices/symbol-menu.js";
 
 // Output log (Output tool window, spec §4) — entries + growth cap.
 export {

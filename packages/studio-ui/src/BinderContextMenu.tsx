@@ -85,18 +85,21 @@ function BinderContextMenuInner({ x, y, target, outline, onAction, onClose }: Pr
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    // The menu is fixed-positioned at the right-click coords, so a scroll /
-    // resize / focus loss would strand it — close on any of those.
+    // The menu is fixed-positioned at the click coords, so a page scroll / resize
+    // / focus loss would strand it — close on those. Use a *non-capturing*
+    // scroll listener so only genuine page scroll closes it; a capturing one
+    // also fires on inner-element scrolls (e.g. CodeMirror's scroller emits one
+    // on right-click), which would dismiss the menu the instant it opens.
     const close = () => onClose();
     document.addEventListener("mousedown", handleClick);
     document.addEventListener("keydown", handleKey);
-    window.addEventListener("scroll", close, true);
+    window.addEventListener("scroll", close);
     window.addEventListener("resize", close);
     window.addEventListener("blur", close);
     return () => {
       document.removeEventListener("mousedown", handleClick);
       document.removeEventListener("keydown", handleKey);
-      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("scroll", close);
       window.removeEventListener("resize", close);
       window.removeEventListener("blur", close);
     };

@@ -75,4 +75,21 @@ test.describe("play from here (#186)", () => {
       page.locator(".brink-session-select option", { hasText: "intro" }),
     ).toHaveCount(1);
   });
+
+  test("editor right-click on a knot shows the shared refactor menu", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForSelector(".cm-content");
+
+    // Right-click a knot header → the shared symbol menu (play + refactors).
+    const header = page.locator(".cm-line").filter({ hasText: /^===/ }).first();
+    await header.click({ button: "right" });
+
+    await expect(
+      page.locator(".brink-context-menu-item", { hasText: "Play from here" }),
+    ).toBeVisible();
+    // The structural refactors are present too (a knot offers Move Up/Down).
+    await expect(
+      page.locator(".brink-context-menu-item", { hasText: /Move/ }).first(),
+    ).toBeVisible();
+  });
 });

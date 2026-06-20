@@ -51,9 +51,11 @@ export interface BrinkStudioOptions {
   getSignatureHelp?: (source: string, offset: number) => SignatureInfo | null;
   getFoldingRanges?: (source: string) => FoldRange[];
   /** Start a play session entered at a knot/stitch (`onPlayFrom("knot.stitch")`).
-   *  When provided, the editor shows a hover ▶ run-icon + right-click menu on
-   *  knot/stitch declarations (#186). */
+   *  When provided, the editor shows a hover ▶ run-icon on knot/stitch
+   *  declarations (#186). */
   onPlayFrom?: (inkPath: string, label?: string) => void;
+  /** Right-click a knot/stitch declaration → the shared symbol context menu. */
+  onSymbolContextMenu?: (info: { knot: string; stitch?: string }, x: number, y: number) => void;
 }
 
 // Compartments for runtime toggling
@@ -109,7 +111,12 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     ideExtensions.push(codeActionsExtension({ getCodeActions: options.getCodeActions }));
   }
   if (options.onPlayFrom) {
-    ideExtensions.push(playFromHereExtension({ onPlayFrom: options.onPlayFrom }));
+    ideExtensions.push(
+      playFromHereExtension({
+        onPlayFrom: options.onPlayFrom,
+        onSymbolContextMenu: options.onSymbolContextMenu,
+      }),
+    );
   }
 
   return [
