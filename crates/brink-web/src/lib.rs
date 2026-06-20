@@ -2020,8 +2020,12 @@ impl EditorSession {
             return error_json("file not loaded");
         };
         let abs_offset = self.to_absolute(path, None, offset);
-        match brink_ide::rename::rename_safe(&self.session, file_id, TextSize::new(abs_offset), new_name)
-        {
+        match brink_ide::rename::rename_safe(
+            &self.session,
+            file_id,
+            TextSize::new(abs_offset),
+            new_name,
+        ) {
             Some(result) => rename_result_json(&self.session, &result, path),
             None => error_json("cannot rename this symbol"),
         }
@@ -3774,7 +3778,10 @@ mod tests {
         assert!(v["introduced_diagnostics"].as_array().unwrap().is_empty());
         let new_source = v["new_source"].as_str().unwrap();
         assert!(new_source.contains("=== greeting ==="));
-        assert!(new_source.contains("-> greeting"), "divert rewritten: {new_source}");
+        assert!(
+            new_source.contains("-> greeting"),
+            "divert rewritten: {new_source}"
+        );
     }
 
     #[test]
@@ -3824,10 +3831,20 @@ mod tests {
             serde_json::from_str(&s.rename_symbol_at("main.ink", offset, "greeting")).unwrap();
         assert_eq!(v["ok"], true, "{v}");
         assert_eq!(v["safe"], true);
-        assert!(v["new_source"].as_str().unwrap().contains("=== greeting ==="));
+        assert!(
+            v["new_source"]
+                .as_str()
+                .unwrap()
+                .contains("=== greeting ===")
+        );
         let cfe = v["cross_file_edits"].as_array().unwrap();
         let other = cfe.iter().find(|e| e["path"] == "other.ink").unwrap();
-        assert!(other["new_source"].as_str().unwrap().contains("-> greeting"));
+        assert!(
+            other["new_source"]
+                .as_str()
+                .unwrap()
+                .contains("-> greeting")
+        );
     }
 
     #[test]

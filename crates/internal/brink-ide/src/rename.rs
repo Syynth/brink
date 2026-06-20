@@ -149,7 +149,10 @@ pub fn rename_safe(
         edits.sort_by_key(|e| std::cmp::Reverse(e.range.start()));
         for e in edits {
             let (start, end) = (usize::from(e.range.start()), usize::from(e.range.end()));
-            if start <= end && end <= s.len() && s.is_char_boundary(start) && s.is_char_boundary(end)
+            if start <= end
+                && end <= s.len()
+                && s.is_char_boundary(start)
+                && s.is_char_boundary(end)
             {
                 s.replace_range(start..end, &e.new_text);
             }
@@ -183,7 +186,9 @@ fn introduced_diagnostics(
 
     let mut introduced = Vec::new();
     for d in &new_analysis.diagnostics {
-        let count = baseline.entry((d.code.as_str(), d.message.as_str())).or_default();
+        let count = baseline
+            .entry((d.code.as_str(), d.message.as_str()))
+            .or_default();
         if *count > 0 {
             *count -= 1;
             continue;
