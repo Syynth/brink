@@ -6,7 +6,8 @@ import {
   type ContextMenuAction,
   type ContextMenuTarget,
 } from "./BinderContextMenu.js";
-import type { FileOutline, DocumentSymbol, MoveResult } from "@brink/wasm-types";
+import { dispatchSymbolAction } from "./symbolMenuActions.js";
+import type { FileOutline, DocumentSymbol } from "@brink/wasm-types";
 import type { TabTarget } from "@brink/studio-store";
 
 // ── Icons ──────────────────────────────────────────────────────────
@@ -484,63 +485,17 @@ function BinderInner() {
 
   // ── Helpers ─────────────────────────────────────────────────────
 
-  const getSession = useCallback(() => {
-    const state = storeApi.getState();
-    return state._project?.getSession();
-  }, [storeApi]);
-
   // Whether file rename/move is available (gates file dragging). Read
   // non-reactively — the project is bound once and outline updates re-render.
   const canRenameFiles = storeApi.getState()._project?.canRenameFiles() ?? false;
 
+  // The shared symbol-action dispatcher (play-from-here + structural refactors),
+  // used here for both the context menu and the drag-drop reorder/move handlers.
+  // File/folder lifecycle actions are handled in handleContextMenuAction.
   const executeAction = useCallback(
-    async (action: ContextMenuAction) => {
-      const session = getSession();
-      if (!session) return;
-
-      let result: MoveResult;
-      let description: string;
-
-      switch (action.type) {
-        case "reorderStitch":
-          result = session.reorderStitch(action.path, action.knot, action.stitch, action.direction);
-          description = `Reorder ${action.stitch} ${action.direction > 0 ? "down" : "up"}`;
-          break;
-        case "reorderKnot":
-          result = session.reorderKnot(action.path, action.knot, action.direction);
-          description = `Reorder ${action.knot} ${action.direction > 0 ? "down" : "up"}`;
-          break;
-        case "reorderStitches":
-          result = session.reorderStitches(action.path, action.knot, action.order);
-          description = `Reorder stitches in ${action.knot}`;
-          break;
-        case "reorderKnots":
-          result = session.reorderKnots(action.path, action.order);
-          description = `Reorder knots`;
-          break;
-        case "moveStitch":
-          result = session.moveStitch(action.path, action.srcKnot, action.stitch, action.destKnot);
-          description = `Move ${action.stitch} to ${action.destKnot}`;
-          break;
-        case "promoteStitch":
-          result = session.promoteStitch(action.path, action.knot, action.stitch);
-          description = `Promote ${action.stitch} to knot`;
-          break;
-        case "demoteKnot":
-          result = session.demoteKnot(action.path, action.knot, action.destKnot);
-          description = `Demote ${action.knot} into ${action.destKnot}`;
-          break;
-        default:
-          // Lifecycle actions (delete*, newFileInFolder) are handled by
-          // handleContextMenuAction, never reach the structural-move path.
-          return;
-      }
-
-      if (result.ok && result.path) {
-        await applyMoveResult(result, description, [result.path]);
-      }
-    },
-    [getSession, applyMoveResult],
+    (action: ContextMenuAction) =>
+      dispatchSymbolAction(storeApi.getState(), applyMoveResult, action),
+    [storeApi, applyMoveResult],
   );
 
   // ── Tab open helpers ────────────────────────────────────────────
@@ -706,9 +661,6 @@ function BinderInner() {
     (action: ContextMenuAction) => {
       setContextMenu(null);
       switch (action.type) {
-        case "playFromHere":
-          storeApi.getState().openSession({ path: action.inkPath, label: action.label });
-          return;
         case "newFileInFolder":
           openNewFileInput(action.dir);
           return;

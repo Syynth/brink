@@ -79,6 +79,7 @@ import {
   StateView,
   StorySegment,
   StoreProvider,
+  SymbolContextMenuHost,
   StoryGraphDocument,
   StudioApiProvider,
   createStudioApi,
@@ -290,6 +291,7 @@ function Root({
       <StoreProvider store={store}>
         <StudioApiProvider api={api}>
           <App />
+          <SymbolContextMenuHost />
         </StudioApiProvider>
       </StoreProvider>
     </ShellProvider>
@@ -474,6 +476,9 @@ export async function mountStudio(
       }),
     // "Play from here" (#186): a fresh session entered at the knot/stitch path.
     onPlayFrom: (inkPath, label) => store.getState().openSession({ path: inkPath, label }),
+    // Right-click a knot/stitch → the shared symbol context menu (rendered by
+    // <SymbolContextMenuHost/>).
+    onSymbolContextMenu: (info, x, y) => store.getState().openSymbolMenu({ ...info, x, y }),
   });
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush

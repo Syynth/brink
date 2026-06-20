@@ -13,11 +13,14 @@
 import { StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter } from "@codemirror/view";
 import { elementTypeField, ElementType } from "./element-type.js";
-import { openPopover } from "./widget-popover.js";
 
 export interface PlayFromHereOptions {
-  /** Start a session at `inkPath` (`knot` or `knot.stitch`). */
+  /** Start a session at `inkPath` (`knot` or `knot.stitch`) — the gutter ▶. */
   onPlayFrom: (inkPath: string, label?: string) => void;
+  /** Right-click a knot/stitch declaration: open the shared symbol context
+   *  menu (play-from-here + structural refactors) at the pointer. The host
+   *  fills in the file path. */
+  onSymbolContextMenu?: (info: { knot: string; stitch?: string }, x: number, y: number) => void;
 }
 
 // ── Path computation ────────────────────────────────────────────────
@@ -115,40 +118,23 @@ class PlayMarker extends GutterMarker {
 }
 const playMarker = new PlayMarker();
 
-// ── Right-click menu ────────────────────────────────────────────────
+// ── Right-click target ──────────────────────────────────────────────
 
-/** A one-item DOM context menu anchored at the pointer. */
-function openPlayMenu(
-  view: EditorView,
-  clientX: number,
-  clientY: number,
-  inkPath: string,
-  onPlayFrom: (p: string, label?: string) => void,
-): void {
-  const anchor = document.createElement("div");
-  anchor.style.cssText = `position:fixed;left:${clientX}px;top:${clientY}px;width:0;height:0;`;
-  (view.dom.closest<HTMLElement>(".brink-studio") ?? document.body).appendChild(anchor);
-
-  const handle = openPopover(
-    anchor,
-    (container) => {
-      const item = document.createElement("button");
-      item.className = "brink-play-menu-item";
-      item.textContent = `Play from ${inkPath}`;
-      item.addEventListener("click", () => {
-        onPlayFrom(inkPath, inkPath);
-        handle.close();
-      });
-      container.appendChild(item);
-    },
-    () => anchor.remove(),
-  );
+/** The knot/stitch declared on `lineNo`, split into parts, or `null`. */
+function symbolAtLine(
+  state: EditorState,
+  lineNo: number,
+): { knot: string; stitch?: string } | null {
+  const path = inkPathForLine(state, lineNo);
+  if (!path) return null;
+  const dot = path.indexOf(".");
+  return dot >= 0 ? { knot: path.slice(0, dot), stitch: path.slice(dot + 1) } : { knot: path };
 }
 
 // ── Extension ───────────────────────────────────────────────────────
 
 export function playFromHereExtension(options: PlayFromHereOptions): Extension {
-  const { onPlayFrom } = options;
+  const { onPlayFrom, onSymbolContextMenu } = options;
 
   const playGutter = gutter({
     class: "brink-play-gutter",
@@ -211,12 +197,13 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
 
   const contextMenu = EditorView.domEventHandlers({
     contextmenu(event, view) {
+      if (!onSymbolContextMenu) return false;
       const lineNo = lineAtPointer(view, event.clientX, event.clientY);
       if (lineNo == null) return false;
-      const path = inkPathForLine(view.state, lineNo);
-      if (!path) return false;
+      const info = symbolAtLine(view.state, lineNo);
+      if (!info) return false;
       event.preventDefault();
-      openPlayMenu(view, event.clientX, event.clientY, path, onPlayFrom);
+      onSymbolContextMenu(info, event.clientX, event.clientY);
       return true;
     },
   });
@@ -247,18 +234,5 @@ const playFromHereTheme = EditorView.baseTheme({
   },
   ".brink-play-gutter-icon:hover": {
     opacity: "1",
-  },
-  ".brink-play-menu-item": {
-    all: "unset",
-    display: "block",
-    padding: "4px 12px",
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-    fontSize: "0.85em",
-    color: "var(--bs-fg, inherit)",
-  },
-  ".brink-play-menu-item:hover": {
-    background: "var(--bs-accent, #3b82f6)",
-    color: "#fff",
   },
 });
