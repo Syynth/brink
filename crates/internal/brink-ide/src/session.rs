@@ -144,6 +144,46 @@ impl IdeSession {
         self.analysis.as_ref()
     }
 
+    /// Re-analyze the project with `overlay` (project-relative path → source)
+    /// replacing the on-disk content of matching files, **without mutating this
+    /// session**. Files absent from the overlay keep their current source.
+    ///
+    /// Returns the fresh analysis paired with the throwaway `ProjectDb` it was
+    /// run against — the db reassigns `FileId`s, so callers must resolve any
+    /// `FileId` in the result (paths, sources) through the returned db, not
+    /// through this session.
+    ///
+    /// Used by safe-rename (and other hypothetical refactors) to gate on the
+    /// diagnostics an edit *would* introduce before applying it. This re-lowers
+    /// every file, so it is for one-shot author actions — never a hot path.
+    #[must_use]
+    pub fn analyze_overlay(
+        &self,
+        overlay: &std::collections::BTreeMap<String, String>,
+    ) -> (AnalysisResult, ProjectDb) {
+        let mut db = ProjectDb::new();
+        for id in self.db.file_ids() {
+            let Some(path) = self.db.file_path(id) else {
+                continue;
+            };
+            let source = overlay
+                .get(path)
+                .cloned()
+                .or_else(|| self.db.source(id).map(str::to_owned))
+                .unwrap_or_default();
+            db.update_file(path, source);
+        }
+        let result = {
+            let inputs = db.analysis_inputs();
+            let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
+                .iter()
+                .map(|(id, hir, manifest)| (*id, hir, manifest))
+                .collect();
+            brink_analyzer::analyze_with_options(&refs, &self.analysis_options())
+        };
+        (result, db)
+    }
+
     /// The current analysis options (registered host manifest + external-check
     /// severity), for callers that run their own analysis/compile pass.
     pub fn analysis_options(&self) -> AnalysisOptions {
