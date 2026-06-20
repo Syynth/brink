@@ -1,7 +1,8 @@
 //! `brink ide` — scriptable brink-ide queries (epic #289).
 //!
-//! The project loader + name/`--at` addressing + output framework, the
-//! read-queries `def`, `references`, `symbols`, `unused`, `check`, and the
+//! The project loader + name/`--at` addressing + output framework; the
+//! read-queries `def`, `references`, `symbols`, `unused`, `check`, `hover`,
+//! `signature`, `graph` (story flow → text/JSON/DOT), and `lines`; and the
 //! `rename` refactor (preview / `--patch` / `--write`, safe-by-default against
 //! newly-introduced diagnostics). The CLI drives the same `brink-ide` engine the
 //! LSP and studio use, via a `brink_driver::Driver` that discovers the project
@@ -18,10 +19,14 @@ use brink_analyzer::AnalysisResult;
 use brink_driver::Driver;
 use brink_ide::LineIndex;
 use brink_ide::document::{DocumentSymbol, document_symbols, workspace_symbols};
+use brink_ide::hover::hover;
+use brink_ide::line_context::line_contexts;
 use brink_ide::navigation::{find_def_at_offset, find_references};
 use brink_ide::rename::{FileEdit, rename};
+use brink_ide::signature::signature_help;
+use brink_ide::story_graph::{StoryEdgeKind, StoryGraph, StoryNodeKind, story_graph};
 use brink_ir::symbols::{SymbolInfo, SymbolKind};
-use brink_ir::{Diagnostic, FileId};
+use brink_ir::{Diagnostic, FileId, HirFile};
 use clap::{Args, Subcommand, ValueEnum};
 use rowan::TextRange;
 
@@ -136,6 +141,52 @@ Examples:
         #[command(flatten)]
         opts: CommonOpts,
     },
+    /// Show hover info (kind, signature, docs) for a symbol.
+    #[command(after_help = "\
+Examples:
+  brink ide hover gold -e main.ink
+  brink ide hover --at main.ink:5:5 -e main.ink")]
+    Hover {
+        #[command(flatten)]
+        addr: Address,
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
+    /// Show the signature of the call at a cursor position.
+    #[command(after_help = "\
+Example:
+  brink ide signature --at main.ink:8:14 -e main.ink")]
+    Signature {
+        /// Cursor inside the call: `FILE:LINE:COL` (1-based).
+        #[arg(long, value_name = "FILE:LINE:COL")]
+        at: String,
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
+    /// Print the story flow graph (knots/stitches and their diverts/choices).
+    #[command(after_help = "\
+Examples:
+  brink ide graph -e main.ink
+  brink ide graph --dot -e main.ink | dot -Tsvg -o story.svg")]
+    Graph {
+        /// Emit Graphviz DOT instead of text/JSON.
+        #[arg(long)]
+        dot: bool,
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
+    /// Print a file's per-line structural classification.
+    #[command(after_help = "\
+Examples:
+  brink ide lines -e main.ink
+  brink ide lines --file scenes/intro.ink -e main.ink --format json")]
+    Lines {
+        /// Classify this file instead of the entry file.
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
 }
 
 /// Options shared by every `brink ide` query.
@@ -242,6 +293,10 @@ pub fn run(cmd: &IdeCommand) -> ExitCode {
             unsafe_mode,
             opts,
         } => run_rename(addr, new_name, patch.as_deref(), *write, *unsafe_mode, opts),
+        IdeCommand::Hover { addr, opts } => run_hover(addr, opts),
+        IdeCommand::Signature { at, opts } => run_signature(at, opts),
+        IdeCommand::Graph { dot, opts } => run_graph(*dot, opts),
+        IdeCommand::Lines { file, opts } => run_lines(file.as_deref(), opts),
     };
     match result {
         Ok(code) => code,
@@ -594,6 +649,224 @@ fn emit_rename_preview(
             }
         }
     }
+    Ok(())
+}
+
+fn run_hover(addr: &Address, opts: &CommonOpts) -> Result<ExitCode, String> {
+    let project = Project::load(&opts.entry)?;
+    let sym = project.resolve(addr, opts.kind)?;
+    let db = project.driver.db();
+    let source = db.source(sym.file).unwrap_or_default();
+    let ids: Vec<FileId> = db.file_ids().collect();
+    let project_files: Vec<(FileId, String, String)> = ids
+        .iter()
+        .filter_map(|&id| {
+            Some((
+                id,
+                db.file_path(id)?.to_string(),
+                db.source(id)?.to_string(),
+            ))
+        })
+        .collect();
+    let info = hover(
+        &project.analysis,
+        sym.file,
+        source,
+        sym.range.start(),
+        &project_files,
+    )
+    .ok_or("no hover information for that symbol")?;
+
+    let mut out = io::stdout().lock();
+    match opts.format {
+        Format::Json => {
+            let v = serde_json::json!({
+                "content": info.content,
+                "location": project.location_of(sym.file, sym.range),
+            });
+            writeln!(out, "{}", to_json(&v)?).map_err(|e| e.to_string())?;
+        }
+        Format::Text => writeln!(out, "{}", info.content.trim_end()).map_err(|e| e.to_string())?,
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_signature(at: &str, opts: &CommonOpts) -> Result<ExitCode, String> {
+    let project = Project::load(&opts.entry)?;
+    let (file, line, col) = parse_at(at)?;
+    let db = project.driver.db();
+    let file_id = db
+        .file_id(&file)
+        .ok_or_else(|| format!("file not in project: {file}"))?;
+    let source = db.source(file_id).unwrap_or_default();
+    let offset = LineIndex::new(source).offset(line.saturating_sub(1), col.saturating_sub(1));
+    let sig = signature_help(&project.analysis, source, u32::from(offset) as usize)
+        .ok_or("no call signature at that position")?;
+
+    let mut out = io::stdout().lock();
+    match opts.format {
+        Format::Json => {
+            let params: Vec<&str> = sig.parameters.iter().map(|p| p.label.as_str()).collect();
+            let v = serde_json::json!({
+                "label": sig.label,
+                "documentation": sig.documentation,
+                "parameters": params,
+                "activeParameter": sig.active_parameter,
+            });
+            writeln!(out, "{}", to_json(&v)?).map_err(|e| e.to_string())?;
+        }
+        Format::Text => {
+            writeln!(out, "{}", sig.label).map_err(|e| e.to_string())?;
+            if let Some(doc) = &sig.documentation {
+                writeln!(out, "{doc}").map_err(|e| e.to_string())?;
+            }
+            if let Some(p) = sig.parameters.get(sig.active_parameter as usize) {
+                writeln!(out, "active parameter: {}", p.label).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_graph(dot: bool, opts: &CommonOpts) -> Result<ExitCode, String> {
+    let project = Project::load(&opts.entry)?;
+    let db = project.driver.db();
+    let ids: Vec<FileId> = db.file_ids().collect();
+    let files: Vec<(FileId, &HirFile)> = ids
+        .iter()
+        .filter_map(|&id| db.hir(id).map(|h| (id, h)))
+        .collect();
+    let graph = story_graph(&project.analysis, &files);
+
+    let mut out = io::stdout().lock();
+    if dot {
+        write_graph_dot(&mut out, &graph)?;
+    } else {
+        match opts.format {
+            Format::Json => {
+                writeln!(out, "{}", to_json(&graph_json(&graph))?).map_err(|e| e.to_string())?;
+            }
+            Format::Text => {
+                for n in &graph.nodes {
+                    writeln!(out, "{} {}", node_kind_name(n.kind), n.id)
+                        .map_err(|e| e.to_string())?;
+                }
+                for e in &graph.edges {
+                    writeln!(out, "{} --{}-> {}", e.from, edge_kind_name(e.kind), e.to)
+                        .map_err(|x| x.to_string())?;
+                }
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_lines(file: Option<&str>, opts: &CommonOpts) -> Result<ExitCode, String> {
+    let project = Project::load(&opts.entry)?;
+    let db = project.driver.db();
+    let file_id = match file {
+        Some(f) => db
+            .file_id(f)
+            .ok_or_else(|| format!("file not in project: {f}"))?,
+        None => project.entry_id,
+    };
+    let hir = db.hir(file_id).ok_or("no HIR for that file")?;
+    let source = db.source(file_id).unwrap_or_default();
+    let root = db
+        .parse(file_id)
+        .ok_or("no parse tree for that file")?
+        .syntax();
+    let ctxs = line_contexts(hir, source, &root);
+
+    let mut out = io::stdout().lock();
+    match opts.format {
+        Format::Json => {
+            let arr: Vec<_> = ctxs
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    serde_json::json!({
+                        "line": i + 1,
+                        "element": format!("{:?}", c.element),
+                        "depth": c.weave.depth,
+                    })
+                })
+                .collect();
+            writeln!(out, "{}", to_json(&arr)?).map_err(|e| e.to_string())?;
+        }
+        Format::Text => {
+            for (i, c) in ctxs.iter().enumerate() {
+                writeln!(out, "{}: {:?} depth={}", i + 1, c.element, c.weave.depth)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+// ── Story-graph rendering ───────────────────────────────────────────
+
+fn node_kind_name(k: StoryNodeKind) -> &'static str {
+    match k {
+        StoryNodeKind::Knot => "knot",
+        StoryNodeKind::Stitch => "stitch",
+        StoryNodeKind::End => "end",
+        StoryNodeKind::Done => "done",
+    }
+}
+
+fn edge_kind_name(k: StoryEdgeKind) -> &'static str {
+    match k {
+        StoryEdgeKind::Divert => "divert",
+        StoryEdgeKind::Choice => "choice",
+        StoryEdgeKind::Tunnel => "tunnel",
+        StoryEdgeKind::Thread => "thread",
+    }
+}
+
+fn graph_json(graph: &StoryGraph) -> serde_json::Value {
+    let nodes: Vec<_> = graph
+        .nodes
+        .iter()
+        .map(|n| {
+            serde_json::json!({
+                "id": n.id,
+                "name": n.name,
+                "kind": node_kind_name(n.kind),
+                "parent": n.parent,
+            })
+        })
+        .collect();
+    let edges: Vec<_> = graph
+        .edges
+        .iter()
+        .map(|e| serde_json::json!({ "from": e.from, "to": e.to, "kind": edge_kind_name(e.kind) }))
+        .collect();
+    serde_json::json!({ "nodes": nodes, "edges": edges })
+}
+
+fn write_graph_dot(out: &mut impl Write, graph: &StoryGraph) -> Result<(), String> {
+    writeln!(out, "digraph story {{").map_err(|e| e.to_string())?;
+    for n in &graph.nodes {
+        writeln!(
+            out,
+            "  {:?} [label={:?}];",
+            n.id,
+            format!("{} ({})", n.name, node_kind_name(n.kind))
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for e in &graph.edges {
+        writeln!(
+            out,
+            "  {:?} -> {:?} [label={:?}];",
+            e.from,
+            e.to,
+            edge_kind_name(e.kind)
+        )
+        .map_err(|x| x.to_string())?;
+    }
+    writeln!(out, "}}").map_err(|e| e.to_string())?;
     Ok(())
 }
 
