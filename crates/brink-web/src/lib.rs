@@ -1997,6 +1997,30 @@ impl EditorSession {
             Err(e) => error_json(&e.to_string()),
         }
     }
+
+    /// Rename a knot or stitch by name, safe-by-default. Returns a
+    /// `MoveResult`-shaped JSON payload (`new_source` for `path`,
+    /// `cross_file_edits` for referencing files) extended with
+    /// `introduced_diagnostics` and a `safe` flag. When `safe` is false the
+    /// rename would introduce the listed diagnostics — the caller shows a
+    /// breakage report and applies the (already-computed) edits only on an
+    /// explicit force. An empty `stitch` renames the knot itself.
+    pub fn rename_symbol(&self, path: &str, knot: &str, stitch: &str, new_name: &str) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return error_json("file not loaded");
+        };
+        let Some(hir) = self.session.hir(file_id) else {
+            return error_json("no analysis");
+        };
+        let stitch = (!stitch.is_empty()).then_some(stitch);
+        let Some(offset) = brink_ide::rename::declaration_offset(hir, knot, stitch) else {
+            return error_json("symbol not found");
+        };
+        match brink_ide::rename::rename_safe(&self.session, file_id, offset, new_name) {
+            Some(result) => rename_result_json(&self.session, &result, path),
+            None => error_json("cannot rename this symbol"),
+        }
+    }
 }
 
 // ── View context helpers (private, not wasm-exported) ───────────────
@@ -3455,6 +3479,107 @@ fn move_result_json(
     serde_json::to_string(&resp).unwrap_or_default()
 }
 
+// ── Safe-rename payload ──────────────────────────────────────────────
+
+/// A `MoveResult` extended with the safe-rename gate: the diagnostics the
+/// rename would introduce and a `safe` flag. Structurally a superset of
+/// `MoveResultJs`, so the studio can feed it straight into `applyMoveResult`.
+#[derive(Serialize)]
+struct RenameResultJs {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_source: Option<String>,
+    cross_file_edits: Vec<CrossFileEditJs>,
+    /// Diagnostics present after the rename but not before. Empty ⇒ `safe`.
+    introduced_diagnostics: Vec<RenameDiagJs>,
+    /// True when the rename introduces no new diagnostics.
+    safe: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// One entry in a rename's breakage report.
+#[derive(Serialize)]
+struct RenameDiagJs {
+    severity: String,
+    code: String,
+    message: String,
+    path: String,
+    /// 1-based line of the diagnostic's start.
+    line: u32,
+    /// 1-based column of the diagnostic's start.
+    col: u32,
+}
+
+/// Package a `SafeRenameResult` for the studio: apply the per-file edits, route
+/// the primary file's result to `new_source` and the rest to `cross_file_edits`
+/// (resolved to full new sources, like `move_result_json`), and carry the
+/// introduced-diagnostic breakage report plus the `safe` flag.
+fn rename_result_json(
+    session: &IdeSession,
+    result: &brink_ide::rename::SafeRenameResult,
+    path: &str,
+) -> String {
+    // Group edits by file (BTreeMap for deterministic output; FileId isn't Ord).
+    let mut by_file: std::collections::BTreeMap<u32, Vec<(usize, usize, String)>> =
+        std::collections::BTreeMap::new();
+    for e in &result.edits {
+        by_file.entry(e.file.0).or_default().push((
+            usize::from(e.range.start()),
+            usize::from(e.range.end()),
+            e.new_text.clone(),
+        ));
+    }
+
+    let mut new_source: Option<String> = None;
+    let mut cross: Vec<CrossFileEditJs> = Vec::new();
+    for (raw, file_edits) in by_file {
+        let file_id = brink_ir::FileId(raw);
+        let (Some(src), Some(fpath)) = (session.source(file_id), session.file_path(file_id)) else {
+            continue;
+        };
+        let applied = apply_edits(src, file_edits);
+        if fpath == path {
+            new_source = Some(applied);
+        } else {
+            cross.push(CrossFileEditJs {
+                path: fpath.to_owned(),
+                new_source: applied,
+            });
+        }
+    }
+
+    let introduced_diagnostics: Vec<RenameDiagJs> = result
+        .introduced
+        .iter()
+        .map(|d| RenameDiagJs {
+            severity: match d.severity {
+                brink_ir::Severity::Error => "error",
+                brink_ir::Severity::Warning => "warning",
+            }
+            .to_owned(),
+            code: d.code.as_str().to_owned(),
+            message: d.message.clone(),
+            path: d.path.clone(),
+            line: d.line,
+            col: d.col,
+        })
+        .collect();
+
+    let resp = RenameResultJs {
+        ok: true,
+        path: Some(path.to_owned()),
+        new_source,
+        cross_file_edits: cross,
+        safe: introduced_diagnostics.is_empty(),
+        introduced_diagnostics,
+        error: None,
+    };
+    serde_json::to_string(&resp).unwrap_or_default()
+}
+
 fn move_result_json_simple(new_source: String, path: &str) -> String {
     let resp = MoveResultJs {
         ok: true,
@@ -3670,6 +3795,65 @@ mod tests {
         // It carries the full file source (path-keyed), not byte ranges.
         assert!(other.get("new_source").is_some());
         assert!(other.get("start").is_none());
+    }
+
+    // ── Safe symbol rename (#305) ───────────────────────────────────
+
+    #[test]
+    fn rename_symbol_safe_rewrites_refs_with_empty_breakage() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "-> hello\n=== hello ===\nHi.\n-> END\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let v: serde_json::Value =
+            serde_json::from_str(&s.rename_symbol("main.ink", "hello", "", "greeting")).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["safe"], true, "consistent rename is safe: {v}");
+        assert!(v["introduced_diagnostics"].as_array().unwrap().is_empty());
+        let new_source = v["new_source"].as_str().unwrap();
+        assert!(new_source.contains("=== greeting ==="));
+        assert!(new_source.contains("-> greeting"), "divert rewritten: {new_source}");
+    }
+
+    #[test]
+    fn rename_symbol_collision_reports_breakage_and_cross_file_edits() {
+        // `other.ink` diverts `-> a`; renaming knot `a` to `b` both collides
+        // with the existing `b` (breakage) and rewrites the cross-file divert.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== a ===\n-> END\n\n=== b ===\n-> END\n");
+        s.update_file("other.ink", "-> a\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let v: serde_json::Value =
+            serde_json::from_str(&s.rename_symbol("main.ink", "a", "", "b")).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["safe"], false, "collision is unsafe: {v}");
+
+        let diags = v["introduced_diagnostics"].as_array().unwrap();
+        assert!(
+            diags.iter().any(|d| d["code"] == "E022"),
+            "expected E022 duplicate-knot in breakage report: {diags:?}"
+        );
+        // Every diag carries the fields the report renders.
+        let first = &diags[0];
+        for key in ["severity", "code", "message", "path", "line", "col"] {
+            assert!(first.get(key).is_some(), "diag missing {key}: {first:?}");
+        }
+
+        // The cross-file divert is still rewritten (edits computed regardless).
+        let cfe = v["cross_file_edits"].as_array().unwrap();
+        let other = cfe.iter().find(|e| e["path"] == "other.ink").unwrap();
+        assert!(other["new_source"].as_str().unwrap().contains("-> b"));
+    }
+
+    #[test]
+    fn rename_symbol_unknown_returns_error() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== a ===\n-> END\n");
+        assert!(s.set_active_file("main.ink"));
+        let v: serde_json::Value =
+            serde_json::from_str(&s.rename_symbol("main.ink", "nope", "", "x")).unwrap();
+        assert_eq!(v["ok"], false);
     }
 
     // ── Document handles (#122) ─────────────────────────────────────
