@@ -1,12 +1,15 @@
 //! `brink ide` — scriptable brink-ide queries (epic #289).
 //!
-//! The project loader + name/`--at` addressing + output framework, plus the
-//! read-queries `def`, `references`, `symbols`, `unused`, and `check`. The CLI
-//! drives the same `brink-ide` engine the LSP and studio use, via a
-//! `brink_driver::Driver` that discovers the project from an entry `.ink`
-//! (following `INCLUDE`s) — identical to `brink compile`. Mutating refactors
-//! (`rename`, …) land in a later slice. See `docs/cli-ide-inventory.md`.
+//! The project loader + name/`--at` addressing + output framework, the
+//! read-queries `def`, `references`, `symbols`, `unused`, `check`, and the
+//! `rename` refactor (preview / `--patch` / `--write`, safe-by-default against
+//! newly-introduced diagnostics). The CLI drives the same `brink-ide` engine the
+//! LSP and studio use, via a `brink_driver::Driver` that discovers the project
+//! from an entry `.ink` (following `INCLUDE`s) — identical to `brink compile`.
+//! See `docs/cli-ide-inventory.md`.
 
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -16,6 +19,7 @@ use brink_driver::Driver;
 use brink_ide::LineIndex;
 use brink_ide::document::{DocumentSymbol, document_symbols, workspace_symbols};
 use brink_ide::navigation::{find_def_at_offset, find_references};
+use brink_ide::rename::{FileEdit, rename};
 use brink_ir::symbols::{SymbolInfo, SymbolKind};
 use brink_ir::{Diagnostic, FileId};
 use clap::{Args, Subcommand, ValueEnum};
@@ -100,6 +104,35 @@ Examples:
   brink ide check -e main.ink
   brink ide check -e main.ink --format json")]
     Check {
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
+    /// Rename a symbol and all its references across the project.
+    ///
+    /// Default output is a preview (the edits + any diagnostics the rename would
+    /// introduce). `--patch`/`--write` are safe-by-default: they refuse to
+    /// produce output if the rename introduces a new error, unless `--unsafe`.
+    #[command(after_help = "\
+Examples:
+  brink ide rename gold --to coins -e main.ink            # preview the edits
+  brink ide rename gold --to coins --patch -e main.ink    # git-applyable diff to stdout
+  brink ide rename gold --to coins --patch out.diff -e main.ink
+  brink ide rename --at main.ink:5:5 --to newname --write -e main.ink")]
+    Rename {
+        #[command(flatten)]
+        addr: Address,
+        /// The new name for the symbol.
+        #[arg(long = "to", value_name = "NEW_NAME")]
+        new_name: String,
+        /// Emit a `git apply`-able patch to stdout, or to FILE if given.
+        #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = "-", conflicts_with = "write")]
+        patch: Option<String>,
+        /// Apply the edits to the project files in place.
+        #[arg(long)]
+        write: bool,
+        /// Produce the patch / write even if the rename introduces new errors.
+        #[arg(long = "unsafe", visible_alias = "force")]
+        unsafe_mode: bool,
         #[command(flatten)]
         opts: CommonOpts,
     },
@@ -201,6 +234,14 @@ pub fn run(cmd: &IdeCommand) -> ExitCode {
         }
         IdeCommand::Unused { opts } => run_unused(opts),
         IdeCommand::Check { opts } => run_check(opts),
+        IdeCommand::Rename {
+            addr,
+            new_name,
+            patch,
+            write,
+            unsafe_mode,
+            opts,
+        } => run_rename(addr, new_name, patch.as_deref(), *write, *unsafe_mode, opts),
     };
     match result {
         Ok(code) => code,
@@ -418,6 +459,144 @@ fn run_check(opts: &CommonOpts) -> Result<ExitCode, String> {
     })
 }
 
+/// What a mutation does with its computed edits.
+enum Mode<'a> {
+    Preview,
+    /// Emit a `git apply`-able patch — to stdout (`"-"`) or to a file path.
+    Patch(&'a str),
+    Write,
+}
+
+fn run_rename(
+    addr: &Address,
+    new_name: &str,
+    patch: Option<&str>,
+    write: bool,
+    unsafe_mode: bool,
+    opts: &CommonOpts,
+) -> Result<ExitCode, String> {
+    let project = Project::load(&opts.entry)?;
+    let sym = project.resolve(addr, opts.kind)?;
+    let result =
+        rename(&project.analysis, sym.file, sym.range.start(), new_name).ok_or_else(|| {
+            format!(
+                "'{}' cannot be renamed (a built-in or unresolved symbol)",
+                sym.name
+            )
+        })?;
+    if result.edits.is_empty() {
+        return Err("rename produced no edits".to_string());
+    }
+
+    // Apply edits in-memory, then re-analyze to find any *new* errors the rename
+    // would cause (a collision, a shadow, an orphaned reference).
+    let edited = project.apply_edits(&result.edits)?;
+    let introduced = project.introduced_diagnostics(&opts.entry, &edited)?;
+
+    let mode = match (patch, write) {
+        (Some(dest), _) => Mode::Patch(dest),
+        (None, true) => Mode::Write,
+        (None, false) => Mode::Preview,
+    };
+
+    // `--patch`/`--write` are safe-by-default; preview is always informational.
+    if !matches!(mode, Mode::Preview) && !introduced.is_empty() && !unsafe_mode {
+        let mut err = io::stderr().lock();
+        writeln!(
+            err,
+            "refusing: rename introduces {} new diagnostic(s) (re-run with --unsafe to override):",
+            introduced.len()
+        )
+        .map_err(|e| e.to_string())?;
+        for d in &introduced {
+            writeln!(
+                err,
+                "  {}[{}] {} {}",
+                d.severity,
+                d.code,
+                d.location.display(),
+                d.message
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        return Ok(ExitCode::from(1));
+    }
+
+    let mut out = io::stdout().lock();
+    match mode {
+        Mode::Preview => {
+            let entries = project.edit_entries(&result.edits);
+            emit_rename_preview(&mut out, opts.format, &entries, &introduced)?;
+        }
+        Mode::Patch(dest) => {
+            let diff = project.unified_diff(&edited)?;
+            if dest == "-" {
+                write!(out, "{diff}").map_err(|e| e.to_string())?;
+            } else {
+                std::fs::write(dest, diff).map_err(|e| format!("{dest}: {e}"))?;
+            }
+        }
+        Mode::Write => {
+            for (path, src) in &edited {
+                std::fs::write(path, src).map_err(|e| format!("{path}: {e}"))?;
+            }
+            writeln!(
+                out,
+                "applied {} edit(s) across {} file(s)",
+                result.edits.len(),
+                edited.len()
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Render a rename preview — the edits plus any diagnostics it would introduce.
+fn emit_rename_preview(
+    out: &mut impl Write,
+    format: Format,
+    entries: &[EditEntry],
+    introduced: &[DiagEntry],
+) -> Result<(), String> {
+    match format {
+        Format::Json => {
+            let v = serde_json::json!({
+                "edits": entries,
+                "introducedDiagnostics": introduced,
+                "safe": introduced.is_empty(),
+            });
+            writeln!(out, "{}", to_json(&v)?).map_err(|e| e.to_string())?;
+        }
+        Format::Text => {
+            for e in entries {
+                writeln!(out, "{}  {} -> {}", e.location.display(), e.old, e.new)
+                    .map_err(|x| x.to_string())?;
+            }
+            if !introduced.is_empty() {
+                writeln!(
+                    out,
+                    "would introduce {} new diagnostic(s):",
+                    introduced.len()
+                )
+                .map_err(|x| x.to_string())?;
+                for d in introduced {
+                    writeln!(
+                        out,
+                        "  {}[{}] {} {}",
+                        d.severity,
+                        d.code,
+                        d.location.display(),
+                        d.message
+                    )
+                    .map_err(|x| x.to_string())?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── Project loader ──────────────────────────────────────────────────
 
 struct Project {
@@ -525,6 +704,174 @@ impl Project {
             location: self.location_of(d.file, d.range),
         }
     }
+
+    /// Apply rename edits in-memory, returning the new source per touched file.
+    fn apply_edits(&self, edits: &[FileEdit]) -> Result<BTreeMap<String, String>, String> {
+        let db = self.driver.db();
+        let mut by_file: HashMap<FileId, Vec<&FileEdit>> = HashMap::new();
+        for e in edits {
+            by_file.entry(e.file).or_default().push(e);
+        }
+        let mut out = BTreeMap::new();
+        for (file, mut es) in by_file {
+            let path = db
+                .file_path(file)
+                .ok_or("edit targets an unknown file")?
+                .to_string();
+            let mut src = db.source(file).unwrap_or_default().to_string();
+            // Splice from the end so earlier offsets stay valid.
+            es.sort_by_key(|e| std::cmp::Reverse(e.range.start()));
+            for e in es {
+                src.replace_range(
+                    usize::from(e.range.start())..usize::from(e.range.end()),
+                    &e.new_text,
+                );
+            }
+            out.insert(path, src);
+        }
+        Ok(out)
+    }
+
+    /// Re-analyze the project with the edited sources and return the diagnostics
+    /// the edit *introduced* — any error or warning present now but not in the
+    /// baseline (matched by code + message). A rename that creates a collision or
+    /// shadow surfaces as a warning, so warnings count.
+    fn introduced_diagnostics(
+        &self,
+        entry: &Path,
+        edited: &BTreeMap<String, String>,
+    ) -> Result<Vec<DiagEntry>, String> {
+        let entry_s = entry.to_string_lossy().into_owned();
+        let mut driver = Driver::new();
+        driver
+            .discover(&entry_s, |p| {
+                if let Some(s) = edited.get(p) {
+                    Ok(s.clone())
+                } else {
+                    std::fs::read_to_string(p)
+                        .map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))
+                }
+            })
+            .map_err(|e| format!("{e}"))?;
+        let new_analysis = driver.analyze().clone();
+        let new_entry = driver
+            .db()
+            .file_id(&entry_s)
+            .ok_or("entry file vanished during re-analysis")?;
+        let new_report = driver.collect_diagnostics(&new_analysis, Some(new_entry));
+        let base_report = self
+            .driver
+            .collect_diagnostics(&self.analysis, Some(self.entry_id));
+
+        // Baseline diagnostic multiset (errors + warnings) keyed by (code, message).
+        let mut baseline: HashMap<(String, String), i32> = HashMap::new();
+        for d in base_report.errors.iter().chain(base_report.warnings.iter()) {
+            *baseline
+                .entry((d.code.as_str().to_string(), d.message.clone()))
+                .or_default() += 1;
+        }
+
+        let new_diags = new_report
+            .errors
+            .iter()
+            .map(|d| ("error", d))
+            .chain(new_report.warnings.iter().map(|d| ("warning", d)));
+
+        let mut introduced = Vec::new();
+        for (severity, d) in new_diags {
+            let key = (d.code.as_str().to_string(), d.message.clone());
+            let count = baseline.entry(key).or_default();
+            if *count > 0 {
+                *count -= 1;
+            } else {
+                // Location lives in the *new* driver's db.
+                let path = driver
+                    .db()
+                    .file_path(d.file)
+                    .unwrap_or_default()
+                    .to_string();
+                let src = driver.db().source(d.file).unwrap_or_default();
+                let (line, col) = LineIndex::new(src).line_col(d.range.start());
+                introduced.push(DiagEntry {
+                    severity: severity.into(),
+                    code: d.code.as_str().into(),
+                    message: d.message.clone(),
+                    location: Loc {
+                        path,
+                        line: line + 1,
+                        col: col + 1,
+                        byte_start: u32::from(d.range.start()),
+                        byte_end: u32::from(d.range.end()),
+                    },
+                });
+            }
+        }
+        Ok(introduced)
+    }
+
+    /// One preview entry per edit: where, and the old → new text.
+    fn edit_entries(&self, edits: &[FileEdit]) -> Vec<EditEntry> {
+        let db = self.driver.db();
+        let mut v: Vec<EditEntry> = edits
+            .iter()
+            .map(|e| {
+                let src = db.source(e.file).unwrap_or_default();
+                let old = src
+                    .get(usize::from(e.range.start())..usize::from(e.range.end()))
+                    .unwrap_or_default()
+                    .to_string();
+                EditEntry {
+                    location: self.location_of(e.file, e.range),
+                    old,
+                    new: e.new_text.clone(),
+                }
+            })
+            .collect();
+        v.sort_by(|a, b| {
+            (&a.location.path, a.location.byte_start)
+                .cmp(&(&b.location.path, b.location.byte_start))
+        });
+        v
+    }
+
+    /// A `git apply`-able patch for the edited files (whole-file hunks).
+    fn unified_diff(&self, edited: &BTreeMap<String, String>) -> Result<String, String> {
+        let db = self.driver.db();
+        let mut out = String::new();
+        for (path, new_src) in edited {
+            let file = db.file_id(path).ok_or("diff targets an unknown file")?;
+            let old = db.source(file).unwrap_or_default();
+            file_diff(&mut out, path, old, new_src);
+        }
+        Ok(out)
+    }
+}
+
+/// Append a whole-file unified-diff hunk for `path` (old → new) to `out`.
+fn file_diff(out: &mut String, path: &str, old: &str, new: &str) {
+    let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
+    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
+    let _ = write!(
+        out,
+        "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,{} +1,{} @@\n",
+        old_lines.len(),
+        new_lines.len()
+    );
+    for l in &old_lines {
+        push_diff_line(out, '-', l);
+    }
+    for l in &new_lines {
+        push_diff_line(out, '+', l);
+    }
+}
+
+fn push_diff_line(out: &mut String, sign: char, line: &str) {
+    out.push(sign);
+    out.push_str(line.strip_suffix('\n').unwrap_or(line));
+    out.push('\n');
+    if !line.ends_with('\n') {
+        out.push_str("\\ No newline at end of file\n");
+    }
 }
 
 /// Recursively convert a `brink-ide` outline node into an output entry.
@@ -622,4 +969,12 @@ struct DiagEntry {
     code: String,
     message: String,
     location: Loc,
+}
+
+/// One edit in a rename preview: where, and the old → new text.
+#[derive(serde::Serialize)]
+struct EditEntry {
+    location: Loc,
+    old: String,
+    new: String,
 }
