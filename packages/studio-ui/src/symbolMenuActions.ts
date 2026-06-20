@@ -5,8 +5,8 @@
  * drag-drop), the editor, and the Story Graph all drive identical logic.
  */
 
-import type { MoveResult } from "@brink/wasm-types";
-import type { StudioState } from "@brink/studio-store";
+import type { MoveResult, RenameDiagnostic } from "@brink/wasm-types";
+import type { StudioState, SymbolRenameRequest } from "@brink/studio-store";
 import type { ContextMenuAction } from "./BinderContextMenu.js";
 
 export async function dispatchSymbolAction(
@@ -16,6 +16,13 @@ export async function dispatchSymbolAction(
 ): Promise<void> {
   if (action.type === "playFromHere") {
     state.openSession({ path: action.inkPath, label: action.label });
+    return;
+  }
+
+  // Rename opens an interactive prompt (name → breakage report); the rename
+  // itself runs from the prompt via `performSymbolRename` (#305).
+  if (action.type === "renameSymbol") {
+    state.openRenamePrompt({ path: action.path, knot: action.knot, stitch: action.stitch });
     return;
   }
 
@@ -61,4 +68,48 @@ export async function dispatchSymbolAction(
   if (result.ok && result.path) {
     await applyMoveResult(result, description, [result.path]);
   }
+}
+
+/** The outcome of attempting a symbol rename. */
+export interface SymbolRenameOutcome {
+  /** True when the edits were applied (safe, or forced). */
+  applied: boolean;
+  /** The diagnostics the rename would introduce (the breakage report). */
+  diagnostics: RenameDiagnostic[];
+  /** An error from the rename op (symbol vanished, etc.), if any. */
+  error?: string;
+}
+
+/**
+ * Run a knot/stitch rename, safe-by-default (#305). Computes the rename and its
+ * introduced-diagnostic breakage report; applies the edits when the rename is
+ * safe or `force` is set, otherwise returns the report so the prompt can show
+ * it. Used by `SymbolRenamePrompt`.
+ */
+export async function performSymbolRename(
+  state: StudioState,
+  applyMoveResult: StudioState["applyMoveResult"],
+  req: SymbolRenameRequest,
+  newName: string,
+  force: boolean,
+): Promise<SymbolRenameOutcome> {
+  const session = state._project?.getSession();
+  if (!session) return { applied: false, diagnostics: [] };
+
+  const result = session.renameSymbol(req.path, req.knot, req.stitch ?? "", newName);
+  if (!result.ok) {
+    return { applied: false, diagnostics: [], error: result.error };
+  }
+
+  if (result.safe || force) {
+    const label = req.stitch ? `${req.knot}.${req.stitch}` : req.knot;
+    await applyMoveResult(
+      result,
+      `Rename ${label} to ${newName}`,
+      result.path ? [result.path] : [],
+    );
+    return { applied: true, diagnostics: result.introduced_diagnostics };
+  }
+
+  return { applied: false, diagnostics: result.introduced_diagnostics };
 }

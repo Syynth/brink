@@ -25,6 +25,12 @@ export { App } from "./App.js";
 export { Binder, computeReorder, buildBinderTree } from "./Binder.js";
 export type { FolderNode } from "./Binder.js";
 export { SymbolContextMenuHost } from "./SymbolContextMenuHost.js";
+export { SymbolRenamePrompt } from "./SymbolRenamePrompt.js";
+export {
+  dispatchSymbolAction,
+  performSymbolRename,
+  type SymbolRenameOutcome,
+} from "./symbolMenuActions.js";
 export { useSymbolMenuActions } from "./useSymbolMenuActions.js";
 export { INK_FILE_TYPE_ID, InkFileDocument, inkFileRef } from "./InkFileDocument.js";
 export {

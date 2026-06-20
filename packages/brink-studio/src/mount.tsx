@@ -80,6 +80,7 @@ import {
   StorySegment,
   StoreProvider,
   SymbolContextMenuHost,
+  SymbolRenamePrompt,
   StoryGraphDocument,
   StudioApiProvider,
   createStudioApi,
@@ -292,6 +293,7 @@ function Root({
         <StudioApiProvider api={api}>
           <App />
           <SymbolContextMenuHost />
+          <SymbolRenamePrompt />
         </StudioApiProvider>
       </StoreProvider>
     </ShellProvider>
