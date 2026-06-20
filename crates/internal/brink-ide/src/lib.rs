@@ -5,7 +5,7 @@ mod completion;
 pub mod document;
 pub mod file_rename;
 pub mod folding;
-mod formatting;
+pub mod formatting;
 pub mod hover;
 pub mod inlay_hints;
 pub mod line_context;

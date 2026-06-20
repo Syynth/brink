@@ -406,3 +406,319 @@ fn lines_classifies_each_line() {
     assert!(s.contains("External"), "classifies the external decl: {s}");
     fs::remove_file(&f).ok();
 }
+
+// ── Phase 3b: refactors, move-file, actions ─────────────────────────
+
+/// A project with knots out of alphabetical order, a stitch + a self-reference
+/// (`-> intro.evidence`) to exercise sort / reorder / promote / convert.
+const REFAC: &str = "\
+-> intro
+
+=== zebra ===
+Z.
+-> intro
+
+=== intro ===
+Hi.
+* [x] -> intro.evidence
+= evidence
+A clue. -> intro.evidence
+-> END
+
+=== apple ===
+A.
+-> END
+";
+
+/// Create a multi-file project under a fresh temp dir; return the dir.
+#[expect(clippy::unwrap_used, reason = "test fixture setup")]
+fn project(tag: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("brink-ide-proj-{}-{}", std::process::id(), tag));
+    let _ = fs::remove_dir_all(&dir);
+    for (rel, content) in files {
+        let p = dir.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, content).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn refactor_sort_knots_previews_a_diff() {
+    let f = write("rf-sort", REFAC);
+    let out = brink()
+        .args(["ide", "refactor", "sort-knots", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("diff --git"), "a git diff: {s}");
+    // apple sorts before intro/zebra: the `=== apple ===` header is added early.
+    assert!(s.contains("+=== apple ==="), "apple moves up: {s}");
+    // preview never writes.
+    assert!(
+        fs::read_to_string(&f).unwrap().starts_with("-> intro"),
+        "unchanged"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn refactor_reorder_stitch_needs_qualified_name() {
+    let f = write("rf-ro-bad", REFAC);
+    // A bare knot name is not a KNOT.STITCH — usage error (exit 2).
+    let out = brink()
+        .args(["ide", "refactor", "reorder-stitch", "intro", "up", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn refactor_promote_preview_shows_edits_and_breakage() {
+    // `evidence` is referenced by qualified name within the same file
+    // (`-> intro.evidence`). brink-ide's promote does not rewrite same-file refs,
+    // so the promotion would dangle them. Preview is never gated: it shows the
+    // structural edit AND the diagnostics the change would introduce.
+    let f = write("rf-promote-prev", REFAC);
+    let out = brink()
+        .args(["ide", "refactor", "promote-stitch", "intro.evidence", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "preview is never gated");
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        s.contains("+=== evidence ==="),
+        "the promotion is shown: {s}"
+    );
+    assert!(s.contains("would introduce"), "breakage is surfaced: {s}");
+    // preview must not write.
+    assert!(
+        fs::read_to_string(&f).unwrap().contains("= evidence"),
+        "unchanged"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn refactor_write_is_safe_by_default_and_unsafe_overrides() {
+    // The same promote refuses under `--write` (exit 1, file untouched) ...
+    let f = write("rf-promote-gate", REFAC);
+    let refused = brink()
+        .args([
+            "ide",
+            "refactor",
+            "promote-stitch",
+            "intro.evidence",
+            "--write",
+            "-e",
+        ])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "write is gated on new diagnostics"
+    );
+    assert!(
+        fs::read_to_string(&f).unwrap().contains("= evidence"),
+        "left unchanged"
+    );
+
+    // ... but `--unsafe` applies it anyway.
+    let forced = brink()
+        .args([
+            "ide",
+            "refactor",
+            "promote-stitch",
+            "intro.evidence",
+            "--write",
+            "--unsafe",
+            "-e",
+        ])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(forced.status.success(), "--unsafe overrides the gate");
+    assert!(
+        fs::read_to_string(&f).unwrap().contains("=== evidence ==="),
+        "the stitch was promoted under --unsafe"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn refactor_convert_line_changes_a_lines_sigil() {
+    let f = write("rf-convert", REFAC);
+    // Line 8 is the narrative `Hi.`; convert it to a choice.
+    let at = format!("{}:8:1", f.display());
+    let out = brink()
+        .args([
+            "ide",
+            "refactor",
+            "convert-line",
+            "--at",
+            &at,
+            "choice",
+            "-e",
+        ])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("-Hi."), "old narrative line removed: {s}");
+    assert!(
+        s.lines()
+            .any(|l| l.starts_with('+') && l.contains("Hi.") && l.contains('*')),
+        "new line is a choice: {s}"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn refactor_reorder_knots_write_applies_a_permutation() {
+    let f = write("rf-perm", REFAC);
+    let out = brink()
+        .args([
+            "ide",
+            "refactor",
+            "reorder-knots",
+            "apple,intro,zebra",
+            "--write",
+            "-e",
+        ])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let src = fs::read_to_string(&f).unwrap();
+    let apple = src.find("=== apple ===").unwrap();
+    let zebra = src.find("=== zebra ===").unwrap();
+    assert!(apple < zebra, "apple now precedes zebra: {src}");
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn actions_lists_available_refactors() {
+    let f = write("rf-actions", REFAC);
+    // Cursor on the `intro` knot header (line 7) offers a Format-knot action.
+    let at = format!("{}:7:5", f.display());
+    let out = brink()
+        .args(["ide", "actions", "--at", &at, "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        s.to_lowercase().contains("intro"),
+        "an action names the knot: {s}"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn move_file_previews_rename_and_include_rewrite() {
+    let dir = project(
+        "mv-prev",
+        &[
+            ("main.ink", "INCLUDE scenes/intro.ink\n\n-> intro\n"),
+            ("scenes/intro.ink", "=== intro ===\nHello.\n-> END\n"),
+        ],
+    );
+    let out = brink()
+        .current_dir(&dir)
+        .args([
+            "ide",
+            "move-file",
+            "scenes/intro.ink",
+            "scenes/act1/intro.ink",
+            "-e",
+            "main.ink",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        s.contains("rename from scenes/intro.ink"),
+        "git rename header: {s}"
+    );
+    assert!(
+        s.contains("+INCLUDE scenes/act1/intro.ink"),
+        "inbound INCLUDE rewritten: {s}"
+    );
+    // preview never touches disk.
+    assert!(
+        dir.join("scenes/intro.ink").exists(),
+        "preview must not move the file"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn move_file_write_relocates_and_rewrites_includes() {
+    let dir = project(
+        "mv-write",
+        &[
+            ("main.ink", "INCLUDE scenes/intro.ink\n\n-> intro\n"),
+            ("scenes/intro.ink", "=== intro ===\nHello.\n-> END\n"),
+        ],
+    );
+    let out = brink()
+        .current_dir(&dir)
+        .args([
+            "ide",
+            "move-file",
+            "scenes/intro.ink",
+            "scenes/act1/intro.ink",
+            "--write",
+            "-e",
+            "main.ink",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(dir.join("scenes/act1/intro.ink").exists(), "file relocated");
+    assert!(!dir.join("scenes/intro.ink").exists(), "old path gone");
+    assert!(
+        fs::read_to_string(dir.join("main.ink"))
+            .unwrap()
+            .contains("scenes/act1/intro.ink"),
+        "INCLUDE rewritten on disk"
+    );
+    // The relocated project still analyzes clean.
+    let chk = brink()
+        .current_dir(&dir)
+        .args(["ide", "check", "-e", "main.ink"])
+        .status()
+        .unwrap();
+    assert!(chk.success(), "clean after move");
+    fs::remove_dir_all(&dir).ok();
+}
