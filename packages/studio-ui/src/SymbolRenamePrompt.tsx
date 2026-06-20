@@ -46,7 +46,7 @@ export function SymbolRenamePrompt() {
   const [busy, setBusy] = useState(false);
 
   const open = req != null;
-  const currentName = req ? (req.stitch ?? req.knot) : "";
+  const currentName = req ? (req.currentName ?? req.stitch ?? req.knot ?? "") : "";
 
   // Reset transient state and focus/select the input on each fresh open.
   useEffect(() => {
@@ -67,7 +67,7 @@ export function SymbolRenamePrompt() {
 
   if (!req) return null;
 
-  const label = req.stitch ? `${req.knot}.${req.stitch}` : req.knot;
+  const label = req.stitch ? `${req.knot}.${req.stitch}` : (req.knot ?? currentName);
 
   const run = async (newName: string, force: boolean): Promise<void> => {
     if (busy) return;

@@ -22,7 +22,12 @@ export async function dispatchSymbolAction(
   // Rename opens an interactive prompt (name → breakage report); the rename
   // itself runs from the prompt via `performSymbolRename` (#305).
   if (action.type === "renameSymbol") {
-    state.openRenamePrompt({ path: action.path, knot: action.knot, stitch: action.stitch });
+    state.openRenamePrompt({
+      path: action.path,
+      knot: action.knot,
+      stitch: action.stitch,
+      currentName: action.stitch ?? action.knot,
+    });
     return;
   }
 
@@ -96,13 +101,18 @@ export async function performSymbolRename(
   const session = state._project?.getSession();
   if (!session) return { applied: false, diagnostics: [] };
 
-  const result = session.renameSymbol(req.path, req.knot, req.stitch ?? "", newName);
+  // Offset-based (F2) covers any symbol under the cursor; name-based (menu)
+  // targets a knot/stitch. Both return the same safe-rename payload.
+  const result =
+    req.offset != null
+      ? session.renameSymbolAt(req.path, req.offset, newName)
+      : session.renameSymbol(req.path, req.knot ?? "", req.stitch ?? "", newName);
   if (!result.ok) {
     return { applied: false, diagnostics: [], error: result.error };
   }
 
   if (result.safe || force) {
-    const label = req.stitch ? `${req.knot}.${req.stitch}` : req.knot;
+    const label = req.currentName ?? (req.stitch ? `${req.knot}.${req.stitch}` : req.knot) ?? "symbol";
     await applyMoveResult(
       result,
       `Rename ${label} to ${newName}`,

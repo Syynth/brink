@@ -481,6 +481,9 @@ export async function mountStudio(
     // Right-click a knot/stitch → the shared symbol context menu (rendered by
     // <SymbolContextMenuHost/>).
     onSymbolContextMenu: (info, x, y) => store.getState().openSymbolMenu({ ...info, x, y }),
+    // F2 (#305): open the safe rename prompt seeded at the cursor symbol
+    // (rendered by <SymbolRenamePrompt/>).
+    onRename: (req) => store.getState().openRenamePrompt(req),
   });
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush

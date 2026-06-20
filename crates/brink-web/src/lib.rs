@@ -1429,14 +1429,6 @@ impl EditorSession {
         self.prepare_rename_impl(&d.path, d.view.as_ref(), offset)
     }
 
-    /// Compute rename edits for a document handle. Returns JSON array or "null".
-    pub fn rename_doc(&self, doc: u32, offset: u32, new_name: &str) -> String {
-        let Some(d) = self.docs.get(&doc) else {
-            return "null".to_owned();
-        };
-        self.rename_impl(&d.path, d.view.as_ref(), offset, new_name)
-    }
-
     /// Compute code actions for a document handle. Returns JSON array.
     pub fn code_actions_doc(&self, doc: u32, offset: u32) -> String {
         let Some(d) = self.docs.get(&doc) else {
@@ -1764,11 +1756,6 @@ impl EditorSession {
         self.prepare_rename_impl(&self.active_path, self.view.as_ref(), offset)
     }
 
-    /// Compute rename edits. Returns JSON array or "null".
-    pub fn rename(&self, offset: u32, new_name: &str) -> String {
-        self.rename_impl(&self.active_path, self.view.as_ref(), offset, new_name)
-    }
-
     /// Compute code actions. Returns JSON array.
     pub fn code_actions(&self, offset: u32) -> String {
         self.code_actions_impl(&self.active_path, self.view.as_ref(), offset)
@@ -2017,6 +2004,24 @@ impl EditorSession {
             return error_json("symbol not found");
         };
         match brink_ide::rename::rename_safe(&self.session, file_id, offset, new_name) {
+            Some(result) => rename_result_json(&self.session, &result, path),
+            None => error_json("cannot rename this symbol"),
+        }
+    }
+
+    /// Rename the symbol at a UTF-16 **file** offset, safe-by-default — the
+    /// offset-based sibling of `rename_symbol`, used by the editor's F2 (which
+    /// resolves any symbol under the cursor, not just knots/stitches). Returns
+    /// the same `RenameResultJs` payload. The offset is a whole-file UTF-16
+    /// offset (the caller folds any fragment-view origin in); it is converted
+    /// to a byte offset here.
+    pub fn rename_symbol_at(&self, path: &str, offset: u32, new_name: &str) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return error_json("file not loaded");
+        };
+        let abs_offset = self.to_absolute(path, None, offset);
+        match brink_ide::rename::rename_safe(&self.session, file_id, TextSize::new(abs_offset), new_name)
+        {
             Some(result) => rename_result_json(&self.session, &result, path),
             None => error_json("cannot rename this symbol"),
         }
@@ -2419,42 +2424,6 @@ impl EditorSession {
                     }
                     _ => "null".to_owned(),
                 }
-            }
-            None => "null".to_owned(),
-        }
-    }
-
-    fn rename_impl(
-        &self,
-        path: &str,
-        view: Option<&ViewContext>,
-        offset: u32,
-        new_name: &str,
-    ) -> String {
-        let Some(file_id) = self.session.file_id(path) else {
-            return "null".to_owned();
-        };
-        let Some(analysis) = self.session.analysis() else {
-            return "null".to_owned();
-        };
-
-        let abs_offset = self.to_absolute(path, view, offset);
-        match brink_ide::rename::rename(analysis, file_id, TextSize::new(abs_offset), new_name) {
-            Some(result) => {
-                let edits: Vec<FileEditJs> = result
-                    .edits
-                    .iter()
-                    .filter_map(|e| {
-                        let start = self.to_relative(path, view, e.range.start().into())?;
-                        let end = self.to_relative(path, view, e.range.end().into())?;
-                        Some(FileEditJs {
-                            start,
-                            end,
-                            new_text: e.new_text.clone(),
-                        })
-                    })
-                    .collect();
-                serde_json::to_string(&edits).unwrap_or_default()
             }
             None => "null".to_owned(),
         }
@@ -3128,13 +3097,6 @@ struct LocationJs {
     file: String,
     start: u32,
     end: u32,
-}
-
-#[derive(Serialize)]
-struct FileEditJs {
-    start: u32,
-    end: u32,
-    new_text: String,
 }
 
 #[derive(Serialize)]
@@ -3844,6 +3806,28 @@ mod tests {
         let cfe = v["cross_file_edits"].as_array().unwrap();
         let other = cfe.iter().find(|e| e["path"] == "other.ink").unwrap();
         assert!(other["new_source"].as_str().unwrap().contains("-> b"));
+    }
+
+    #[test]
+    fn rename_symbol_at_renames_by_offset_cross_file() {
+        // F2's offset-based path: rename the knot whose declaration the cursor
+        // sits in, rewriting a divert in another file.
+        let mut s = EditorSession::new();
+        let main = "=== hello ===\nHi.\n-> END\n";
+        s.update_file("main.ink", main);
+        s.update_file("other.ink", "-> hello\n");
+        assert!(s.set_active_file("main.ink"));
+
+        // Offset of the `hello` name in `=== hello ===` (ASCII ⇒ UTF-16 == byte).
+        let offset = u32::try_from(main.find("hello").unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&s.rename_symbol_at("main.ink", offset, "greeting")).unwrap();
+        assert_eq!(v["ok"], true, "{v}");
+        assert_eq!(v["safe"], true);
+        assert!(v["new_source"].as_str().unwrap().contains("=== greeting ==="));
+        let cfe = v["cross_file_edits"].as_array().unwrap();
+        let other = cfe.iter().find(|e| e["path"] == "other.ink").unwrap();
+        assert!(other["new_source"].as_str().unwrap().contains("-> greeting"));
     }
 
     #[test]

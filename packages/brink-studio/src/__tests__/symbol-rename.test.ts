@@ -60,6 +60,29 @@ describe("performSymbolRename", () => {
     expect(src).toContain("-> greeting");
   });
 
+  it("renames by offset (F2 path) across files", async () => {
+    const MAIN = "=== hello ===\nHi.\n-> END\n";
+    const { store, project } = await makeStore({
+      "main.ink": MAIN,
+      "other.ink": "-> hello\n",
+    });
+    const state = store.getState();
+    const offset = MAIN.indexOf("hello"); // cursor in the `hello` declaration
+
+    const outcome = await performSymbolRename(
+      state,
+      state.applyMoveResult,
+      { path: "main.ink", offset, currentName: "hello" },
+      "greeting",
+      false,
+    );
+
+    expect(outcome.applied).toBe(true);
+    const session = project.getSession();
+    expect(session.getFileSource("main.ink")).toContain("=== greeting ===");
+    expect(session.getFileSource("other.ink")).toContain("-> greeting");
+  });
+
   it("blocks an unsafe rename, returns the breakage report, and force applies", async () => {
     const TWO = "-> a\n=== a ===\n-> END\n=== b ===\n-> END\n";
     const { store, project } = await makeStore({ "main.ink": TWO });

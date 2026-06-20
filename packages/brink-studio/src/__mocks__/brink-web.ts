@@ -280,6 +280,30 @@ export class EditorSession {
     });
   }
 
+  /**
+   * Offset-based rename (F2). Resolves the knot/stitch whose *declaration name*
+   * the UTF-16 file `offset` lands in, then delegates to `rename_symbol`. The
+   * mock only resolves declaration sites (enough for the plumbing); the real
+   * wasm also resolves references and non-container symbols.
+   */
+  rename_symbol_at(path: string, offset: number, newName: string): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return JSON.stringify({ ok: false, error: "file not loaded" });
+    }
+    for (const knot of parseOutline(source)) {
+      if (offset >= knot.start && offset <= knot.end) {
+        return this.rename_symbol(path, knot.name, "", newName);
+      }
+      for (const st of knot.children) {
+        if (offset >= st.start && offset <= st.end) {
+          return this.rename_symbol(path, knot.name, st.name, newName);
+        }
+      }
+    }
+    return JSON.stringify({ ok: false, error: "cannot rename this symbol" });
+  }
+
   // Host-capability manifest + value cache (#174) — no-ops in the mock.
   set_host_manifest(_json: string): void { /* no-op */ }
   clear_host_manifest(): void { /* no-op */ }
@@ -388,7 +412,6 @@ export class EditorSession {
   goto_definition_doc(_doc: number, _offset: number): string { return "null"; }
   find_references_doc(_doc: number, _offset: number): string { return "[]"; }
   prepare_rename_doc(_doc: number, _offset: number): string { return "null"; }
-  rename_doc(_doc: number, _offset: number, _name: string): string { return "[]"; }
   code_actions_doc(_doc: number, _offset: number): string { return "[]"; }
   inlay_hints_doc(_doc: number, _start: number, _end: number): string { return "[]"; }
   signature_help_doc(_doc: number, _offset: number): string { return "null"; }

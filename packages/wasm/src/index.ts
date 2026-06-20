@@ -23,7 +23,6 @@ import type {
   CompletionItem,
   HoverInfo,
   Location,
-  FileEdit,
   InlayHint,
   ColorHint,
   CallWidgetSite,
@@ -307,11 +306,6 @@ export class EditorSessionHandle {
     return result ?? null;
   }
 
-  doRenameDoc(doc: DocumentId, offset: number, newName: string): FileEdit[] {
-    const json = this.session.rename_doc(doc, offset, newName);
-    return JSON.parse(json) as FileEdit[];
-  }
-
   getCodeActionsDoc(doc: DocumentId, offset: number): CodeAction[] {
     const json = this.session.code_actions_doc(doc, offset);
     return JSON.parse(json) as CodeAction[];
@@ -437,11 +431,6 @@ export class EditorSessionHandle {
     return result ?? null;
   }
 
-  doRename(offset: number, newName: string): FileEdit[] {
-    const json = this.session.rename(offset, newName);
-    return JSON.parse(json) as FileEdit[];
-  }
-
   getCodeActions(offset: number): CodeAction[] {
     const json = this.session.code_actions(offset);
     return JSON.parse(json) as CodeAction[];
@@ -559,6 +548,18 @@ export class EditorSessionHandle {
   renameSymbol(path: string, knot: string, stitch: string, newName: string): SymbolRenameResult {
     this.bump();
     const json = this.session.rename_symbol(path, knot, stitch, newName);
+    return JSON.parse(json) as SymbolRenameResult;
+  }
+
+  /**
+   * Offset-based sibling of {@link renameSymbol}, used by the editor's F2 to
+   * rename any symbol under the cursor (not just knots/stitches). `offset` is a
+   * whole-file UTF-16 offset (fold in any fragment-view origin first). Same
+   * safe-by-default `SymbolRenameResult`.
+   */
+  renameSymbolAt(path: string, offset: number, newName: string): SymbolRenameResult {
+    this.bump();
+    const json = this.session.rename_symbol_at(path, offset, newName);
     return JSON.parse(json) as SymbolRenameResult;
   }
 

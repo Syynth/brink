@@ -22,15 +22,23 @@ export interface SymbolMenuRequest {
   y: number;
 }
 
-/** A pending request to rename a knot or stitch. Holds only primitives; the
- * prompt component drives the safe-by-default flow (#305). */
+/** A pending request to rename a symbol. Holds only primitives; the prompt
+ * component drives the safe-by-default flow (#305). Two seedings:
+ *  - **name-based** (context menu): `knot` (+ optional `stitch`).
+ *  - **offset-based** (editor F2): `offset` (a whole-file UTF-16 offset),
+ *    covering any symbol under the cursor, not just knots/stitches.
+ * `currentName` seeds the input (defaults to `stitch ?? knot`). */
 export interface SymbolRenameRequest {
   /** Project-relative file path of the symbol's declaration. */
   path: string;
-  /** The knot name (the stitch's parent knot, for a stitch). */
-  knot: string;
+  /** The knot name (the stitch's parent knot, for a stitch). Name-based seed. */
+  knot?: string;
   /** The stitch name, when the target is a stitch. */
   stitch?: string;
+  /** Whole-file UTF-16 offset of the symbol under the cursor. Offset-based seed (F2). */
+  offset?: number;
+  /** The symbol's current name, used to pre-fill the input. */
+  currentName?: string;
 }
 
 export interface SymbolMenuSlice {
