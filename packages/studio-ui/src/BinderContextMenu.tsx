@@ -49,6 +49,7 @@ interface Props {
 }
 
 export type ContextMenuAction =
+  | { type: "playFromHere"; path: string; inkPath: string; label: string }
   | { type: "reorderStitch"; path: string; knot: string; stitch: string; direction: number }
   | { type: "reorderKnot"; path: string; knot: string; direction: number }
   | { type: "reorderStitches"; path: string; knot: string; order: string[] }
@@ -234,6 +235,17 @@ function buildItems(
   const fileOutline = outline.find((f) => f.path === target.path);
   const allKnots: DocumentSymbol[] = fileOutline?.symbols.filter((s) => s.kind === "knot") ?? [];
   const items: MenuItem[] = [];
+
+  // Play from here — start a fresh session entered at this knot/stitch. The ink
+  // path is the qualified name `choose_path_string` expects (`knot` or
+  // `knot.stitch`), not the binder row key.
+  const inkPath = target.kind === "stitch" ? `${target.knot}.${target.stitch}` : target.knot;
+  items.push({
+    label: "Play from here",
+    action: () =>
+      onAction({ type: "playFromHere", path: target.path, inkPath, label: inkPath }),
+  });
+  items.push({ label: "---" });
 
   if (target.kind === "stitch") {
     items.push({

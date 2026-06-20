@@ -16,6 +16,7 @@ import { signatureHelpExtension } from "./signature-help.js";
 import { referencesExtension } from "./references.js";
 import { renameExtension } from "./rename.js";
 import { codeActionsExtension } from "./code-actions.js";
+import { playFromHereExtension } from "./play-from-here.js";
 
 export interface BrinkStudioOptions {
   compile: (source: string) => CompileResult;
@@ -49,6 +50,10 @@ export interface BrinkStudioOptions {
   argumentAutoOpen?: boolean;
   getSignatureHelp?: (source: string, offset: number) => SignatureInfo | null;
   getFoldingRanges?: (source: string) => FoldRange[];
+  /** Start a play session entered at a knot/stitch (`onPlayFrom("knot.stitch")`).
+   *  When provided, the editor shows a hover ▶ run-icon + right-click menu on
+   *  knot/stitch declarations (#186). */
+  onPlayFrom?: (inkPath: string, label?: string) => void;
 }
 
 // Compartments for runtime toggling
@@ -102,6 +107,9 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   }
   if (options.getCodeActions) {
     ideExtensions.push(codeActionsExtension({ getCodeActions: options.getCodeActions }));
+  }
+  if (options.onPlayFrom) {
+    ideExtensions.push(playFromHereExtension({ onPlayFrom: options.onPlayFrom }));
   }
 
   return [
