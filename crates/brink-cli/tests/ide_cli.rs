@@ -482,11 +482,12 @@ fn refactor_reorder_stitch_needs_qualified_name() {
 }
 
 #[test]
-fn refactor_promote_preview_shows_edits_and_breakage() {
+fn refactor_promote_preview_requalifies_same_file_refs() {
     // `evidence` is referenced by qualified name within the same file
-    // (`-> intro.evidence`). brink-ide's promote does not rewrite same-file refs,
-    // so the promotion would dangle them. Preview is never gated: it shows the
-    // structural edit AND the diagnostics the change would introduce.
+    // (`-> intro.evidence`) and by a self-divert inside its own body. Promote
+    // folds the requalified references into the new source, so the preview shows
+    // the promotion AND the rewritten bare `-> evidence` references — and
+    // introduces no new diagnostics.
     let f = write("rf-promote-prev", REFAC);
     let out = brink()
         .args(["ide", "refactor", "promote-stitch", "intro.evidence", "-e"])
@@ -499,7 +500,18 @@ fn refactor_promote_preview_shows_edits_and_breakage() {
         s.contains("+=== evidence ==="),
         "the promotion is shown: {s}"
     );
-    assert!(s.contains("would introduce"), "breakage is surfaced: {s}");
+    assert!(
+        s.contains("+* [x] -> evidence"),
+        "the external same-file ref is requalified to bare: {s}"
+    );
+    assert!(
+        s.contains("+A clue. -> evidence"),
+        "the in-stitch self-divert is requalified to bare: {s}"
+    );
+    assert!(
+        !s.contains("would introduce"),
+        "no dangling reference, so no breakage is surfaced: {s}"
+    );
     // preview must not write.
     assert!(
         fs::read_to_string(&f).unwrap().contains("= evidence"),
@@ -509,10 +521,11 @@ fn refactor_promote_preview_shows_edits_and_breakage() {
 }
 
 #[test]
-fn refactor_write_is_safe_by_default_and_unsafe_overrides() {
-    // The same promote refuses under `--write` (exit 1, file untouched) ...
+fn refactor_promote_writes_cleanly_without_unsafe() {
+    // Promote now updates same-file references, so it introduces no new
+    // diagnostics and the safety gate lets a plain `--write` through.
     let f = write("rf-promote-gate", REFAC);
-    let refused = brink()
+    let out = brink()
         .args([
             "ide",
             "refactor",
@@ -524,34 +537,18 @@ fn refactor_write_is_safe_by_default_and_unsafe_overrides() {
         .arg(&f)
         .output()
         .unwrap();
-    assert_eq!(
-        refused.status.code(),
-        Some(1),
-        "write is gated on new diagnostics"
+    assert!(
+        out.status.success(),
+        "a non-breaking promote writes without --unsafe"
+    );
+    let written = fs::read_to_string(&f).unwrap();
+    assert!(
+        written.contains("=== evidence ==="),
+        "the stitch was promoted: {written}"
     );
     assert!(
-        fs::read_to_string(&f).unwrap().contains("= evidence"),
-        "left unchanged"
-    );
-
-    // ... but `--unsafe` applies it anyway.
-    let forced = brink()
-        .args([
-            "ide",
-            "refactor",
-            "promote-stitch",
-            "intro.evidence",
-            "--write",
-            "--unsafe",
-            "-e",
-        ])
-        .arg(&f)
-        .output()
-        .unwrap();
-    assert!(forced.status.success(), "--unsafe overrides the gate");
-    assert!(
-        fs::read_to_string(&f).unwrap().contains("=== evidence ==="),
-        "the stitch was promoted under --unsafe"
+        !written.contains("intro.evidence"),
+        "no dangling qualified reference remains in the written file: {written}"
     );
     fs::remove_file(&f).ok();
 }

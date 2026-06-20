@@ -357,6 +357,16 @@ fn compute_reference_edits(
     let new_parts: Vec<&str> = new_qual.split('.').collect();
     let old_parts: Vec<&str> = old_qual.split('.').collect();
 
+    // The analyzer records a self-resolution at the definition's own name token
+    // (target == def_id, range == the header name). That is the declaration, not
+    // a reference — the header is rewritten structurally by the move op, so it
+    // must not be treated as a reference edit.
+    let def_site = analysis
+        .index
+        .symbols
+        .get(&def_id)
+        .map(|info| (info.file, info.range));
+
     // Parse the source to find which knot each reference lives in.
     let parse = brink_syntax::parse(source);
     let tree = parse.tree();
@@ -366,6 +376,11 @@ fn compute_reference_edits(
 
     for resolved in &analysis.resolutions {
         if resolved.target != def_id {
+            continue;
+        }
+
+        // Skip the definition's own name token (see `def_site` above).
+        if def_site == Some((resolved.file, resolved.range)) {
             continue;
         }
 
@@ -414,6 +429,55 @@ fn compute_reference_edits(
     }
 
     edits
+}
+
+/// Partition reference edits into same-file and cross-file groups.
+///
+/// Same-file edits must be folded into the rebuilt `new_source` (see
+/// [`apply_window`]); cross-file edits travel out as [`MoveResult::cross_file_edits`].
+fn split_same_file(ref_edits: Vec<FileEdit>, file_id: FileId) -> (Vec<FileEdit>, Vec<FileEdit>) {
+    ref_edits.into_iter().partition(|e| e.file == file_id)
+}
+
+/// Apply the same-file ref edits that fall within `[base, limit)` to the slice
+/// `source[base..limit]`, rebasing each edit's offset to the slice, and return
+/// the edited slice.
+///
+/// Structural-move ops rebuild `new_source` by concatenating verbatim slices of
+/// the original source plus the relocated/header-rewritten moved text. Routing
+/// every such slice through this helper folds the requalified references into
+/// the output without disturbing the slice boundaries or whitespace handling.
+/// References are atomic tokens fully contained in one knot body, so they never
+/// straddle a slice boundary and the windows partition cleanly. Edits are
+/// applied in descending offset order so earlier offsets stay valid.
+fn apply_window(source: &str, base: usize, limit: usize, same_file: &[FileEdit]) -> String {
+    let mut local: Vec<(usize, usize, &str)> = same_file
+        .iter()
+        .filter_map(|e| {
+            let start: usize = e.range.start().into();
+            let end: usize = e.range.end().into();
+            (start >= base && end <= limit).then(|| (start - base, end - base, e.new_text.as_str()))
+        })
+        .collect();
+    local.sort_by_key(|e| std::cmp::Reverse(e.0));
+
+    let mut slice = source[base..limit].to_owned();
+    for (start, end, text) in local {
+        slice.replace_range(start..end, text);
+    }
+    slice
+}
+
+/// Insertion point at the end of a destination knot's region, for appending a
+/// stitch. Clamped before the next knot's doc block (node ends swallow trailing
+/// trivia), and placed after the knot's last existing stitch if it has one.
+fn dest_insert_offset(source: &str, knots: &[KnotDef], dki: usize, dest: &KnotDef) -> usize {
+    let region_end = knot_end_offset(source, knots, dki);
+    let end: usize = match dest.body().and_then(|b| b.stitches().last()) {
+        Some(last) => last.syntax().text_range().end().into(),
+        None => dest.syntax().text_range().end().into(),
+    };
+    end.min(region_end)
 }
 
 /// Split a reference text into the name portion and any trailing `(args...)`.
@@ -557,27 +621,17 @@ pub fn move_stitch(
 
     let stitch_text = &source[stitch_start..stitch_end];
 
-    // Compute reference edits before modifying source.
+    // Compute reference edits before modifying source. Same-file edits are
+    // folded into `new_source` via `apply_window`; cross-file edits travel out.
     let old_qual = format!("{src_knot}.{stitch_name}");
     let new_qual = format!("{dest_knot}.{stitch_name}");
-    let mut ref_edits = compute_reference_edits(source, analysis, file_id, &old_qual, &new_qual);
+    let (same_file, cross_file_edits) = split_same_file(
+        compute_reference_edits(source, analysis, file_id, &old_qual, &new_qual),
+        file_id,
+    );
 
-    // Find the insertion point: end of the destination knot's region, clamped
-    // before the next knot's doc block (node ends swallow trailing trivia).
-    let dest_region_end = knot_end_offset(source, &knots, dki);
-    let insert_offset = if let Some(body) = dest_knot_node.body() {
-        let dest_stitches: Vec<_> = body.stitches().collect();
-        if let Some(last) = dest_stitches.last() {
-            let end: usize = last.syntax().text_range().end().into();
-            end.min(dest_region_end)
-        } else {
-            let end: usize = dest_knot_node.syntax().text_range().end().into();
-            end.min(dest_region_end)
-        }
-    } else {
-        let end: usize = dest_knot_node.syntax().text_range().end().into();
-        end.min(dest_region_end)
-    };
+    // Find the insertion point: end of the destination knot's region.
+    let insert_offset = dest_insert_offset(source, &knots, dki, dest_knot_node);
 
     // Build the new source by:
     // 1. Removing the stitch from the source knot
@@ -592,52 +646,56 @@ pub fn move_stitch(
         || insert_offset >= source.len()
         || source.as_bytes().get(insert_offset) == Some(&b'\n');
 
+    // The moved stitch carries any references that live inside it (e.g. a
+    // self/recursive divert), requalified for its new parent.
+    let moved_stitch = apply_window(source, stitch_start, stitch_end, &same_file);
+
     let mut insert_text = String::new();
     if needs_newline_before {
         insert_text.push('\n');
     }
-    insert_text.push_str(stitch_text);
+    insert_text.push_str(&moved_stitch);
     if !needs_newline_after && !stitch_text.ends_with('\n') {
         insert_text.push('\n');
     }
 
-    // Apply edits in reverse offset order to preserve positions.
+    // Apply edits in reverse offset order to preserve positions. Each verbatim
+    // slice is routed through `apply_window` so same-file references outside the
+    // moved stitch are requalified in place.
     let new_source = if stitch_start > insert_offset {
         // Destination is before source: insert first, then remove.
         let mut s = String::with_capacity(source.len());
-        s.push_str(&source[..insert_offset]);
+        s.push_str(&apply_window(source, 0, insert_offset, &same_file));
         s.push_str(&insert_text);
-        s.push_str(&source[insert_offset..stitch_start]);
-        s.push_str(&source[stitch_end..]);
+        s.push_str(&apply_window(
+            source,
+            insert_offset,
+            stitch_start,
+            &same_file,
+        ));
+        s.push_str(&apply_window(source, stitch_end, source.len(), &same_file));
         s
     } else {
         // Source is before destination: remove first, then insert.
         // Adjust insert offset by the removed length.
         let removed_len = stitch_end - stitch_start;
         let adjusted_insert = insert_offset - removed_len;
+        let middle_end =
+            stitch_end + (adjusted_insert - stitch_start).min(source.len() - stitch_end);
         let mut s = String::with_capacity(source.len());
-        s.push_str(&source[..stitch_start]);
-        s.push_str(
-            &source[stitch_end
-                ..stitch_end + (adjusted_insert - stitch_start).min(source.len() - stitch_end)],
-        );
+        s.push_str(&apply_window(source, 0, stitch_start, &same_file));
+        s.push_str(&apply_window(source, stitch_end, middle_end, &same_file));
         s.push_str(&insert_text);
-        let remaining_start = insert_offset;
-        if remaining_start < source.len() {
-            s.push_str(&source[remaining_start..]);
+        if insert_offset < source.len() {
+            s.push_str(&apply_window(
+                source,
+                insert_offset,
+                source.len(),
+                &same_file,
+            ));
         }
         s
     };
-
-    // Separate cross-file edits from same-file edits (same-file edits are
-    // already reflected in the text reconstruction).
-    let cross_file_edits: Vec<FileEdit> =
-        ref_edits.drain(..).filter(|e| e.file != file_id).collect();
-
-    // For same-file reference edits, we need to apply them to the new source.
-    // This is complex because offsets have shifted. For now, re-analyze after
-    // text manipulation to get correct results. The caller should re-analyze.
-    // TODO: adjust same-file ref offsets based on the cut/paste delta.
 
     Ok(MoveResult {
         new_source,
@@ -693,21 +751,33 @@ pub fn promote_stitch_to_knot(
         })
     };
 
-    let stitch_text = &source[stitch_start..stitch_end];
-
-    // Rewrite the header: `= name` or `= name(params)` → `=== name ===` or `=== name(params) ===`
-    let promoted_text = rewrite_stitch_to_knot_header(stitch_text, stitch_name);
-
-    // Compute reference edits.
+    // Compute reference edits. Same-file edits are folded into `new_source`;
+    // cross-file edits travel out.
     let old_qual = format!("{knot_name}.{stitch_name}");
     let new_qual = stitch_name.to_owned();
-    let ref_edits = compute_reference_edits(source, analysis, file_id, &old_qual, &new_qual);
+    let (same_file, cross_file_edits) = split_same_file(
+        compute_reference_edits(source, analysis, file_id, &old_qual, &new_qual),
+        file_id,
+    );
+
+    // Rewrite the header: `= name` or `= name(params)` → `=== name ===` or
+    // `=== name(params) ===`. References inside the promoted stitch (e.g. a
+    // self-divert) are requalified first, then the header line is rewritten.
+    let edited_stitch = apply_window(source, stitch_start, stitch_end, &same_file);
+    let promoted_text = rewrite_stitch_to_knot_header(&edited_stitch, stitch_name);
 
     // Remove stitch from parent knot, insert as new knot after the parent.
+    // Verbatim slices are routed through `apply_window` so same-file references
+    // outside the moved stitch are requalified in place.
     let mut new_source = String::with_capacity(source.len() + 10);
-    new_source.push_str(&source[..stitch_start]);
+    new_source.push_str(&apply_window(source, 0, stitch_start, &same_file));
     // Skip removed stitch text, continue with rest of knot.
-    new_source.push_str(&source[stitch_end..knot_region_end]);
+    new_source.push_str(&apply_window(
+        source,
+        stitch_end,
+        knot_region_end,
+        &same_file,
+    ));
     // Insert promoted knot.
     if !new_source.ends_with('\n') {
         new_source.push('\n');
@@ -717,12 +787,12 @@ pub fn promote_stitch_to_knot(
         new_source.push('\n');
     }
     // Rest of file after the original knot.
-    new_source.push_str(&source[knot_region_end..]);
-
-    let cross_file_edits: Vec<FileEdit> = ref_edits
-        .into_iter()
-        .filter(|e| e.file != file_id)
-        .collect();
+    new_source.push_str(&apply_window(
+        source,
+        knot_region_end,
+        source.len(),
+        &same_file,
+    ));
 
     Ok(MoveResult {
         new_source,
@@ -771,32 +841,24 @@ pub fn demote_knot_to_stitch(
 
     let knot_start: usize = decl_region_start(source, knot.syntax());
     let knot_end: usize = knot_end_offset(source, &knots, ki);
-    let knot_text = &source[knot_start..knot_end];
 
-    // Rewrite the header: `=== name ===` → `= name`
-    let demoted_text = rewrite_knot_to_stitch_header(knot_text, knot_name);
-
-    // Compute reference edits.
+    // Compute reference edits. Same-file edits are folded into `new_source`;
+    // cross-file edits travel out.
     let old_qual = knot_name.to_owned();
     let new_qual = format!("{dest_knot}.{knot_name}");
-    let ref_edits = compute_reference_edits(source, analysis, file_id, &old_qual, &new_qual);
+    let (same_file, cross_file_edits) = split_same_file(
+        compute_reference_edits(source, analysis, file_id, &old_qual, &new_qual),
+        file_id,
+    );
 
-    // Find insertion point in destination knot, clamped before the next
-    // knot's doc block (node ends swallow trailing trivia).
-    let dest_region_end = knot_end_offset(source, &knots, dki);
-    let dest_insert = if let Some(body) = dest.body() {
-        let dest_stitches: Vec<_> = body.stitches().collect();
-        if let Some(last) = dest_stitches.last() {
-            let end: usize = last.syntax().text_range().end().into();
-            end.min(dest_region_end)
-        } else {
-            let end: usize = dest.syntax().text_range().end().into();
-            end.min(dest_region_end)
-        }
-    } else {
-        let end: usize = dest.syntax().text_range().end().into();
-        end.min(dest_region_end)
-    };
+    // Rewrite the header: `=== name ===` → `= name`. References inside the
+    // demoted knot (e.g. a self-divert) are requalified first, then the header
+    // line is rewritten.
+    let edited_knot = apply_window(source, knot_start, knot_end, &same_file);
+    let demoted_text = rewrite_knot_to_stitch_header(&edited_knot, knot_name);
+
+    // Find insertion point at the end of the destination knot's region.
+    let dest_insert = dest_insert_offset(source, &knots, dki, dest);
 
     // Build new source. Handle ordering: if the knot being demoted is before
     // the destination, we remove first then insert (with adjusted offset).
@@ -811,34 +873,30 @@ pub fn demote_knot_to_stitch(
         insert_text.push('\n');
     }
 
+    // Verbatim slices are routed through `apply_window` so same-file references
+    // outside the demoted knot are requalified in place.
     let new_source = if knot_start < dest_insert {
         // Source knot is before destination.
         let removed_len = knot_end - knot_start;
         let adjusted_insert = dest_insert - removed_len;
         let mut s = String::with_capacity(source.len());
-        s.push_str(&source[..knot_start]);
+        s.push_str(&apply_window(source, 0, knot_start, &same_file));
         let middle_end = knot_end + (adjusted_insert - knot_start).min(source.len() - knot_end);
-        s.push_str(&source[knot_end..middle_end]);
+        s.push_str(&apply_window(source, knot_end, middle_end, &same_file));
         s.push_str(&insert_text);
-        let remaining_start = dest_insert;
-        if remaining_start < source.len() {
-            s.push_str(&source[remaining_start..]);
+        if dest_insert < source.len() {
+            s.push_str(&apply_window(source, dest_insert, source.len(), &same_file));
         }
         s
     } else {
         // Source knot is after destination.
         let mut s = String::with_capacity(source.len());
-        s.push_str(&source[..dest_insert]);
+        s.push_str(&apply_window(source, 0, dest_insert, &same_file));
         s.push_str(&insert_text);
-        s.push_str(&source[dest_insert..knot_start]);
-        s.push_str(&source[knot_end..]);
+        s.push_str(&apply_window(source, dest_insert, knot_start, &same_file));
+        s.push_str(&apply_window(source, knot_end, source.len(), &same_file));
         s
     };
-
-    let cross_file_edits: Vec<FileEdit> = ref_edits
-        .into_iter()
-        .filter(|e| e.file != file_id)
-        .collect();
 
     Ok(MoveResult {
         new_source,
@@ -1097,6 +1155,102 @@ N.
         assert!(
             s.contains("/// Neighbor doc.\n=== neighbor ==="),
             "the following knot keeps its doc: {s}"
+        );
+    }
+
+    // ── same-file reference requalification ─────────────────────────
+
+    #[test]
+    fn promote_requalifies_same_file_reference() {
+        let source = "\
+=== intro ===
+Intro.
+= evidence
+The evidence.
+-> END
+=== other ===
+-> intro.evidence
+";
+        let analysis = analyzed(source);
+        let result =
+            promote_stitch_to_knot(source, &analysis, FileId(0), "intro", "evidence").unwrap();
+        let s = &result.new_source;
+        assert!(
+            s.contains("=== evidence ==="),
+            "stitch promoted to a top-level knot: {s}"
+        );
+        assert!(
+            s.contains("-> evidence\n"),
+            "the same-file reference is rewritten to the bare promoted name: {s}"
+        );
+        assert!(
+            !s.contains("intro.evidence"),
+            "no dangling qualified reference to the old stitch remains: {s}"
+        );
+        // The same-file edit is folded into new_source, not emitted as cross-file.
+        assert!(
+            result.cross_file_edits.is_empty(),
+            "same-file edits do not leak into cross_file_edits (count {})",
+            result.cross_file_edits.len()
+        );
+    }
+
+    #[test]
+    fn demote_requalifies_same_file_reference() {
+        let source = "\
+=== dest ===
+Dest.
+=== mover ===
+Body.
+-> END
+=== other ===
+-> mover
+";
+        let analysis = analyzed(source);
+        let result = demote_knot_to_stitch(source, &analysis, FileId(0), "mover", "dest").unwrap();
+        let s = &result.new_source;
+        assert!(
+            s.contains("= mover"),
+            "knot demoted to a stitch of dest: {s}"
+        );
+        assert!(
+            s.contains("-> dest.mover"),
+            "the same-file reference is requalified to dest.mover: {s}"
+        );
+        assert!(
+            result.cross_file_edits.is_empty(),
+            "same-file edits do not leak into cross_file_edits (count {})",
+            result.cross_file_edits.len()
+        );
+    }
+
+    #[test]
+    fn move_stitch_requalifies_same_file_reference() {
+        let source = "\
+=== src ===
+= movable
+Body.
+-> END
+=== dst ===
+Dest.
+=== other ===
+-> src.movable
+";
+        let analysis = analyzed(source);
+        let result = move_stitch(source, &analysis, FileId(0), "src", "movable", "dst").unwrap();
+        let s = &result.new_source;
+        assert!(
+            s.contains("-> dst.movable"),
+            "the same-file reference follows the stitch to its new parent: {s}"
+        );
+        assert!(
+            !s.contains("src.movable"),
+            "no dangling reference to the old qualification remains: {s}"
+        );
+        assert!(
+            result.cross_file_edits.is_empty(),
+            "same-file edits do not leak into cross_file_edits (count {})",
+            result.cross_file_edits.len()
         );
     }
 
