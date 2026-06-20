@@ -351,6 +351,20 @@ function StoryGraphCanvas({ graph }: { graph: StoryGraph }) {
     [commands],
   );
 
+  // "Play from here" (#186): right-click a knot/stitch node → menu → a fresh
+  // session entered at that node. The node id is the qualified ink path.
+  const openSession = useStudioStore((s) => s.openSession);
+  const [playMenu, setPlayMenu] = useState<{ x: number; y: number; path: string } | null>(null);
+  const onNodeContextMenu = useCallback(
+    (e: React.MouseEvent, n: StoryFlowNode) => {
+      const node = n.data.node;
+      if (node.kind !== "knot" && node.kind !== "stitch") return;
+      e.preventDefault();
+      setPlayMenu({ x: e.clientX, y: e.clientY, path: node.id });
+    },
+    [],
+  );
+
   return (
     <div className="brink-story-graph" data-graph-ready="true">
       <EdgeMarkerDefs />
@@ -368,6 +382,7 @@ function StoryGraphCanvas({ graph }: { graph: StoryGraph }) {
         zoomOnDoubleClick={false}
         proOptions={{ hideAttribution: true }}
         onNodeClick={(_e, node) => revealNode(node as StoryFlowNode)}
+        onNodeContextMenu={(e, node) => onNodeContextMenu(e, node as StoryFlowNode)}
         onNodeDoubleClick={(_e, node) => {
           const data = (node as StoryFlowNode).data;
           if (data.node.expandable) onToggle(data.node.id);
@@ -379,6 +394,34 @@ function StoryGraphCanvas({ graph }: { graph: StoryGraph }) {
           <Legend />
         </Panel>
       </ReactFlow>
+      {playMenu && (
+        <>
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 999 }}
+            onClick={() => setPlayMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setPlayMenu(null);
+            }}
+          />
+          <div
+            className="brink-context-menu"
+            role="menu"
+            style={{ position: "fixed", left: playMenu.x, top: playMenu.y, zIndex: 1000 }}
+          >
+            <div
+              className="brink-context-menu-item"
+              role="menuitem"
+              onClick={() => {
+                openSession({ path: playMenu.path, label: playMenu.path });
+                setPlayMenu(null);
+              }}
+            >
+              Play from here
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -472,6 +472,8 @@ export async function mountStudio(
         file: location.file,
         span: { start: location.start, end: location.end },
       }),
+    // "Play from here" (#186): a fresh session entered at the knot/stitch path.
+    onPlayFrom: (inkPath, label) => store.getState().openSession({ path: inkPath, label }),
   });
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush

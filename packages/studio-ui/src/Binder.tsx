@@ -706,6 +706,9 @@ function BinderInner() {
     (action: ContextMenuAction) => {
       setContextMenu(null);
       switch (action.type) {
+        case "playFromHere":
+          storeApi.getState().openSession({ path: action.inkPath, label: action.label });
+          return;
         case "newFileInFolder":
           openNewFileInput(action.dir);
           return;
@@ -733,7 +736,7 @@ function BinderInner() {
           void executeAction(action);
       }
     },
-    [executeAction, openNewFileInput, deleteFile, deleteFolder],
+    [executeAction, openNewFileInput, deleteFile, deleteFolder, storeApi],
   );
 
   // ── Keyboard handler ────────────────────────────────────────────

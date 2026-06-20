@@ -17,6 +17,11 @@ export { setHostWidgets } from "./widget-registry.js";
 export { elementTypeField, ElementType } from "./element-type.js";
 export type { LineInfo } from "./element-type.js";
 
+// "Play from here" (#186): hover ▶ gutter + right-click menu on knot/stitch
+// declarations. `qualifiedInkPath`/`headerName` are the pure path core.
+export { playFromHereExtension, qualifiedInkPath, headerName } from "./play-from-here.js";
+export type { PlayFromHereOptions } from "./play-from-here.js";
+
 // Per-view wasm document handles (issue #122 / #90)
 export {
   DocHandle,
