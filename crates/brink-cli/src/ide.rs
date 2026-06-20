@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use brink_analyzer::AnalysisResult;
 use brink_driver::Driver;
 use brink_ide::LineIndex;
-use brink_ide::navigation::find_references;
+use brink_ide::navigation::{find_def_at_offset, find_references};
 use brink_ir::FileId;
 use brink_ir::symbols::{SymbolInfo, SymbolKind};
 use clap::{Args, Subcommand, ValueEnum};
@@ -34,10 +34,10 @@ pub enum IdeCommand {
 Examples:
   brink ide def intro --entry main.ink
   brink ide def intro.evidence -e main.ink --format json
-  brink ide def gold -e main.ink --kind variable")]
+  brink ide def --at main.ink:7:5 -e main.ink   # the symbol under that cursor")]
     Def {
-        /// Qualified symbol name (knot / knot.stitch / List.Item / var / …).
-        symbol: String,
+        #[command(flatten)]
+        addr: Address,
         #[command(flatten)]
         opts: CommonOpts,
     },
@@ -48,8 +48,8 @@ Examples:
   brink ide references intro --exists -e main.ink   # exit 0 if used, 1 if not
   brink ide references gold --count -e main.ink --format json")]
     References {
-        /// Qualified symbol name.
-        symbol: String,
+        #[command(flatten)]
+        addr: Address,
         /// Include the declaration site in the results.
         #[arg(long)]
         include_decl: bool,
@@ -76,6 +76,16 @@ pub struct CommonOpts {
     /// Output format.
     #[arg(long, value_enum, default_value_t = Format::Text)]
     format: Format,
+}
+
+/// How a query addresses its target — by qualified name or by cursor position.
+#[derive(Args)]
+pub struct Address {
+    /// Qualified symbol name (knot / knot.stitch / List.Item / var / …).
+    symbol: Option<String>,
+    /// Address by cursor position instead: `FILE:LINE:COL` (1-based line & column).
+    #[arg(long, value_name = "FILE:LINE:COL", conflicts_with = "symbol")]
+    at: Option<String>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -137,14 +147,14 @@ fn kind_name(k: SymbolKind) -> &'static str {
 /// Run a `brink ide` subcommand. Returns the process exit code.
 pub fn run(cmd: &IdeCommand) -> ExitCode {
     let result = match cmd {
-        IdeCommand::Def { symbol, opts } => run_def(symbol, opts),
+        IdeCommand::Def { addr, opts } => run_def(addr, opts),
         IdeCommand::References {
-            symbol,
+            addr,
             include_decl,
             exists,
             count,
             opts,
-        } => run_references(symbol, *include_decl, *exists, *count, opts),
+        } => run_references(addr, *include_decl, *exists, *count, opts),
     };
     match result {
         Ok(code) => code,
@@ -157,9 +167,9 @@ pub fn run(cmd: &IdeCommand) -> ExitCode {
 
 // ── Commands ────────────────────────────────────────────────────────
 
-fn run_def(symbol: &str, opts: &CommonOpts) -> Result<ExitCode, String> {
+fn run_def(addr: &Address, opts: &CommonOpts) -> Result<ExitCode, String> {
     let project = Project::load(&opts.entry)?;
-    let sym = project.resolve_unique(symbol, opts.kind)?;
+    let sym = project.resolve(addr, opts.kind)?;
     let loc = project.location_of(sym.file, sym.range);
 
     let mut out = io::stdout().lock();
@@ -176,14 +186,14 @@ fn run_def(symbol: &str, opts: &CommonOpts) -> Result<ExitCode, String> {
 }
 
 fn run_references(
-    symbol: &str,
+    addr: &Address,
     include_decl: bool,
     exists: bool,
     count: bool,
     opts: &CommonOpts,
 ) -> Result<ExitCode, String> {
     let project = Project::load(&opts.entry)?;
-    let sym = project.resolve_unique(symbol, opts.kind)?;
+    let sym = project.resolve(addr, opts.kind)?;
     // The definition offset is a valid query position: find_references resolves
     // the symbol there and collects every use (optionally including the decl).
     let refs = find_references(&project.analysis, sym.file, sym.range.start(), include_decl);
@@ -254,6 +264,28 @@ impl Project {
         Ok(Self { driver, analysis })
     }
 
+    /// Resolve a query's target to a single symbol — by `--at FILE:LINE:COL`
+    /// (cursor → the symbol there, resolving a reference to its definition) or
+    /// by qualified name.
+    fn resolve(&self, addr: &Address, kind: Option<KindFilter>) -> Result<&SymbolInfo, String> {
+        if let Some(at) = &addr.at {
+            let (file, line, col) = parse_at(at)?;
+            let db = self.driver.db();
+            let file_id = db
+                .file_id(&file)
+                .ok_or_else(|| format!("file not in project: {file}"))?;
+            let src = db.source(file_id).unwrap_or_default();
+            // `--at` is 1-based; LineIndex (like line_col) is 0-based.
+            let offset = LineIndex::new(src).offset(line.saturating_sub(1), col.saturating_sub(1));
+            find_def_at_offset(&self.analysis, file_id, offset)
+                .ok_or_else(|| format!("no symbol at {at}"))
+        } else if let Some(name) = &addr.symbol {
+            self.resolve_unique(name, kind)
+        } else {
+            Err("provide a symbol name or --at FILE:LINE:COL".to_string())
+        }
+    }
+
     /// Resolve a qualified name to exactly one symbol, honoring `--kind`.
     fn resolve_unique(&self, name: &str, kind: Option<KindFilter>) -> Result<&SymbolInfo, String> {
         let ids = self.analysis.index.by_name.get(name);
@@ -297,6 +329,24 @@ impl Project {
             byte_start: u32::from(range.start()),
             byte_end: u32::from(range.end()),
         }
+    }
+}
+
+/// Parse `FILE:LINE:COL` (line/col 1-based). The file may itself contain `:`,
+/// so split the two numeric fields off the right.
+fn parse_at(s: &str) -> Result<(String, u32, u32), String> {
+    let mut parts = s.rsplitn(3, ':');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(col), Some(line), Some(file)) if !file.is_empty() => {
+            let line = line
+                .parse::<u32>()
+                .map_err(|_| format!("bad line in --at '{s}'"))?;
+            let col = col
+                .parse::<u32>()
+                .map_err(|_| format!("bad column in --at '{s}'"))?;
+            Ok((file.to_string(), line, col))
+        }
+        _ => Err(format!("--at must be FILE:LINE:COL, got '{s}'")),
     }
 }
 
