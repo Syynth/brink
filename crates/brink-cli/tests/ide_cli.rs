@@ -722,3 +722,39 @@ fn move_file_write_relocates_and_rewrites_includes() {
     assert!(chk.success(), "clean after move");
     fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn move_file_json_preview_has_the_mutation_shape() {
+    let dir = project(
+        "mv-json",
+        &[
+            ("main.ink", "INCLUDE scenes/intro.ink\n\n-> intro\n"),
+            ("scenes/intro.ink", "=== intro ===\nHello.\n-> END\n"),
+        ],
+    );
+    let out = brink()
+        .current_dir(&dir)
+        .args([
+            "ide",
+            "move-file",
+            "scenes/intro.ink",
+            "scenes/act1/intro.ink",
+            "--format",
+            "json",
+            "-e",
+            "main.ink",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["diff"].is_string(), "diff present: {v}");
+    assert!(v["files"].is_array(), "files present: {v}");
+    assert_eq!(v["safe"], true, "clean move is safe: {v}");
+    assert!(v["introducedDiagnostics"].as_array().unwrap().is_empty());
+    fs::remove_dir_all(&dir).ok();
+}

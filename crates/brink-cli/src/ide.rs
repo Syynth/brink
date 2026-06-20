@@ -1243,14 +1243,28 @@ fn emit_move_mutation(
         file_diff(&mut diff, path, old, src);
     }
     match m {
+        // A patch is always a raw diff, regardless of `--format`.
         Mode::Patch(dest) if dest != "-" => {
             std::fs::write(dest, diff).map_err(|e| format!("{dest}: {e}"))?;
         }
         Mode::Patch(_) => write!(out, "{diff}").map_err(|e| e.to_string())?,
-        _ => {
-            write!(out, "{diff}").map_err(|e| e.to_string())?;
-            emit_introduced(&mut out, &introduced)?;
-        }
+        // Preview honors `--format`, matching `refactor` / `rename`.
+        _ => match mode.format {
+            Format::Json => {
+                let files: Vec<&String> = mutation.edited.keys().collect();
+                let v = serde_json::json!({
+                    "diff": diff,
+                    "files": files,
+                    "introducedDiagnostics": introduced,
+                    "safe": introduced.is_empty(),
+                });
+                writeln!(out, "{}", to_json(&v)?).map_err(|e| e.to_string())?;
+            }
+            Format::Text => {
+                write!(out, "{diff}").map_err(|e| e.to_string())?;
+                emit_introduced(&mut out, &introduced)?;
+            }
+        },
     }
     Ok(ExitCode::SUCCESS)
 }

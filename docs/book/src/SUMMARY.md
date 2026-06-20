@@ -10,6 +10,7 @@
   - [brink compile](./toolchain/cli/compile.md)
   - [brink convert](./toolchain/cli/convert.md)
   - [brink play](./toolchain/cli/play.md)
+  - [brink ide](./toolchain/cli/ide.md)
 - [Embedding the Runtime](./toolchain/embedding/index.md)
   - [Loading & Linking](./toolchain/embedding/loading.md)
   - [External Functions](./toolchain/embedding/external-functions.md)
