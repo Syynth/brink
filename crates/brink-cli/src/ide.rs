@@ -1,10 +1,11 @@
 //! `brink ide` — scriptable brink-ide queries (epic #289).
 //!
-//! Phase 1: the project loader + name/`--at` addressing + output framework, plus
-//! the two headline read-queries `def` and `references`. The CLI drives the same
-//! `brink-ide` engine the LSP and studio use, via a `brink_driver::Driver` that
-//! discovers the project from an entry `.ink` (following `INCLUDE`s) — identical
-//! to `brink compile`. See `docs/cli-ide-inventory.md`.
+//! The project loader + name/`--at` addressing + output framework, plus the
+//! read-queries `def`, `references`, `symbols`, `unused`, and `check`. The CLI
+//! drives the same `brink-ide` engine the LSP and studio use, via a
+//! `brink_driver::Driver` that discovers the project from an entry `.ink`
+//! (following `INCLUDE`s) — identical to `brink compile`. Mutating refactors
+//! (`rename`, …) land in a later slice. See `docs/cli-ide-inventory.md`.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -13,9 +14,10 @@ use std::process::ExitCode;
 use brink_analyzer::AnalysisResult;
 use brink_driver::Driver;
 use brink_ide::LineIndex;
+use brink_ide::document::{DocumentSymbol, document_symbols, workspace_symbols};
 use brink_ide::navigation::{find_def_at_offset, find_references};
-use brink_ir::FileId;
 use brink_ir::symbols::{SymbolInfo, SymbolKind};
+use brink_ir::{Diagnostic, FileId};
 use clap::{Args, Subcommand, ValueEnum};
 use rowan::TextRange;
 
@@ -59,6 +61,45 @@ Examples:
         /// Print only the number of references.
         #[arg(long)]
         count: bool,
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
+    /// List a file's outline, or search symbols across the project.
+    #[command(after_help = "\
+Examples:
+  brink ide symbols -e main.ink                  # outline of the entry file
+  brink ide symbols --file scenes/intro.ink -e main.ink
+  brink ide symbols --search gold -e main.ink    # project-wide name search
+  brink ide symbols --kind knot -e main.ink")]
+    Symbols {
+        /// Outline this file instead of the entry file.
+        #[arg(long, value_name = "FILE")]
+        file: Option<String>,
+        /// Project-wide substring search by name instead of an outline.
+        #[arg(long, value_name = "QUERY")]
+        search: Option<String>,
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
+    /// List declared symbols that have no references (dead-code lint).
+    ///
+    /// Exit 1 if any are found. Note: this is reference-based, not reachability
+    /// — an entry knot reached implicitly (no `->`) can show up here.
+    #[command(after_help = "\
+Examples:
+  brink ide unused -e main.ink
+  brink ide unused --kind variable -e main.ink
+  brink ide unused -e main.ink --format json")]
+    Unused {
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
+    /// Report project diagnostics (exit 1 if any error).
+    #[command(after_help = "\
+Examples:
+  brink ide check -e main.ink
+  brink ide check -e main.ink --format json")]
+    Check {
         #[command(flatten)]
         opts: CommonOpts,
     },
@@ -155,6 +196,11 @@ pub fn run(cmd: &IdeCommand) -> ExitCode {
             count,
             opts,
         } => run_references(addr, *include_decl, *exists, *count, opts),
+        IdeCommand::Symbols { file, search, opts } => {
+            run_symbols(file.as_deref(), search.as_deref(), opts)
+        }
+        IdeCommand::Unused { opts } => run_unused(opts),
+        IdeCommand::Check { opts } => run_check(opts),
     };
     match result {
         Ok(code) => code,
@@ -237,11 +283,147 @@ fn run_references(
     Ok(ExitCode::SUCCESS)
 }
 
+fn run_symbols(
+    file: Option<&str>,
+    search: Option<&str>,
+    opts: &CommonOpts,
+) -> Result<ExitCode, String> {
+    let project = Project::load(&opts.entry)?;
+    let mut out = io::stdout().lock();
+
+    let entries: Vec<SymEntry> = if let Some(query) = search {
+        // Project-wide name search (flat list).
+        workspace_symbols(std::iter::once(&project.analysis), query)
+            .into_iter()
+            .filter(|s| opts.kind.is_none_or(|k| k.matches(s.kind)))
+            .map(|s| SymEntry {
+                name: s.name,
+                kind: kind_name(s.kind).into(),
+                detail: None,
+                location: project.location_of(s.file, s.range),
+                children: Vec::new(),
+            })
+            .collect()
+    } else {
+        // Outline of one file (default: the entry file). The full tree is kept;
+        // `--kind` applies to search/unused, not the hierarchical outline.
+        let db = project.driver.db();
+        let file_id = match file {
+            Some(f) => db
+                .file_id(f)
+                .ok_or_else(|| format!("file not in project: {f}"))?,
+            None => project.entry_id,
+        };
+        let hir = db.hir(file_id).ok_or("no HIR for that file")?;
+        let manifest = db.manifest(file_id).ok_or("no manifest for that file")?;
+        let source = db.source(file_id).unwrap_or_default();
+        document_symbols(hir, manifest, source)
+            .iter()
+            .map(|d| doc_to_entry(&project, file_id, d))
+            .collect()
+    };
+
+    match opts.format {
+        Format::Json => {
+            writeln!(out, "{}", to_json(&entries)?).map_err(|e| e.to_string())?;
+        }
+        Format::Text => print_tree(&mut out, &entries, 0)?,
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_unused(opts: &CommonOpts) -> Result<ExitCode, String> {
+    let project = Project::load(&opts.entry)?;
+    let mut unused: Vec<SymEntry> = project
+        .analysis
+        .index
+        .symbols
+        .values()
+        .filter(|info| opts.kind.is_none_or(|k| k.matches(info.kind)))
+        .filter(|info| {
+            find_references(&project.analysis, info.file, info.range.start(), false).is_empty()
+        })
+        .map(|info| SymEntry {
+            name: info.name.clone(),
+            kind: kind_name(info.kind).into(),
+            detail: None,
+            location: project.location_of(info.file, info.range),
+            children: Vec::new(),
+        })
+        .collect();
+    unused.sort_by(|a, b| {
+        (&a.location.path, a.location.byte_start).cmp(&(&b.location.path, b.location.byte_start))
+    });
+
+    let any = !unused.is_empty();
+    let mut out = io::stdout().lock();
+    match opts.format {
+        Format::Json => writeln!(out, "{}", to_json(&unused)?).map_err(|e| e.to_string())?,
+        Format::Text => {
+            for e in &unused {
+                writeln!(out, "{} {} {}", e.kind, e.name, e.location.display())
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(if any {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn run_check(opts: &CommonOpts) -> Result<ExitCode, String> {
+    let project = Project::load(&opts.entry)?;
+    let report = project
+        .driver
+        .collect_diagnostics(&project.analysis, Some(project.entry_id));
+
+    let mut diags: Vec<DiagEntry> = report
+        .errors
+        .iter()
+        .map(|d| project.diag_entry(d, "error"))
+        .chain(
+            report
+                .warnings
+                .iter()
+                .map(|d| project.diag_entry(d, "warning")),
+        )
+        .collect();
+    diags.sort_by(|a, b| {
+        (&a.location.path, a.location.byte_start).cmp(&(&b.location.path, b.location.byte_start))
+    });
+
+    let mut out = io::stdout().lock();
+    match opts.format {
+        Format::Json => writeln!(out, "{}", to_json(&diags)?).map_err(|e| e.to_string())?,
+        Format::Text => {
+            for d in &diags {
+                writeln!(
+                    out,
+                    "{}[{}] {} {}",
+                    d.severity,
+                    d.code,
+                    d.location.display(),
+                    d.message
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(if report.errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
 // ── Project loader ──────────────────────────────────────────────────
 
 struct Project {
     driver: Driver,
     analysis: AnalysisResult,
+    entry_id: FileId,
 }
 
 impl Project {
@@ -257,11 +439,15 @@ impl Project {
             })
             .map_err(|e| format!("{e}"))?;
         let analysis = driver.analyze().clone();
-        driver
+        let entry_id = driver
             .db()
             .file_id(&entry)
             .ok_or_else(|| format!("entry file not found after discovery: {entry}"))?;
-        Ok(Self { driver, analysis })
+        Ok(Self {
+            driver,
+            analysis,
+            entry_id,
+        })
     }
 
     /// Resolve a query's target to a single symbol — by `--at FILE:LINE:COL`
@@ -330,6 +516,56 @@ impl Project {
             byte_end: u32::from(range.end()),
         }
     }
+
+    fn diag_entry(&self, d: &Diagnostic, severity: &str) -> DiagEntry {
+        DiagEntry {
+            severity: severity.to_string(),
+            code: d.code.as_str().to_string(),
+            message: d.message.clone(),
+            location: self.location_of(d.file, d.range),
+        }
+    }
+}
+
+/// Recursively convert a `brink-ide` outline node into an output entry.
+fn doc_to_entry(project: &Project, file: FileId, d: &DocumentSymbol) -> SymEntry {
+    SymEntry {
+        name: d.name.clone(),
+        kind: kind_name(d.kind).into(),
+        detail: d.detail.clone(),
+        location: project.location_of(file, d.range),
+        children: d
+            .children
+            .iter()
+            .map(|c| doc_to_entry(project, file, c))
+            .collect(),
+    }
+}
+
+fn print_tree(out: &mut impl Write, entries: &[SymEntry], depth: usize) -> Result<(), String> {
+    for e in entries {
+        let indent = "  ".repeat(depth);
+        let detail = e
+            .detail
+            .as_deref()
+            .map(|d| format!(" [{d}]"))
+            .unwrap_or_default();
+        writeln!(
+            out,
+            "{indent}{} {}{}  {}",
+            e.kind,
+            e.name,
+            detail,
+            e.location.display()
+        )
+        .map_err(|x| x.to_string())?;
+        print_tree(out, &e.children, depth + 1)?;
+    }
+    Ok(())
+}
+
+fn to_json<T: serde::Serialize>(v: &T) -> Result<String, String> {
+    serde_json::to_string(v).map_err(|e| e.to_string())
 }
 
 /// Parse `FILE:LINE:COL` (line/col 1-based). The file may itself contain `:`,
@@ -365,4 +601,25 @@ impl Loc {
     fn display(&self) -> String {
         format!("{}:{}:{}", self.path, self.line, self.col)
     }
+}
+
+/// An outline / search / unused entry (a symbol with an optional child list).
+#[derive(serde::Serialize)]
+struct SymEntry {
+    name: String,
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    location: Loc,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<SymEntry>,
+}
+
+/// A diagnostic entry for `brink ide check`.
+#[derive(serde::Serialize)]
+struct DiagEntry {
+    severity: String,
+    code: String,
+    message: String,
+    location: Loc,
 }
