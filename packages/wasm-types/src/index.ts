@@ -339,6 +339,31 @@ export interface MoveResult {
   error?: string;
 }
 
+// ── Safe-rename types (#305) ────────────────────────────────────
+
+/** One entry in a rename's breakage report — a diagnostic the rename would
+ * introduce. Locations are 1-based, matching the editor's status surfaces. */
+export interface RenameDiagnostic {
+  severity: "error" | "warning";
+  /** Stable diagnostic code, e.g. `E022`. */
+  code: string;
+  message: string;
+  /** Project-relative path of the file the diagnostic lands in. */
+  path: string;
+  /** 1-based line of the diagnostic's start. */
+  line: number;
+  /** 1-based column of the diagnostic's start. */
+  col: number;
+}
+
+/** A `MoveResult` extended with the safe-rename gate. `safe` is true when the
+ * rename introduces no new diagnostics; otherwise `introduced_diagnostics`
+ * holds the breakage report and the edits apply only on an explicit force. */
+export interface SymbolRenameResult extends MoveResult {
+  introduced_diagnostics: RenameDiagnostic[];
+  safe: boolean;
+}
+
 // ── Multi-file project types ────────────────────────────────────
 
 export interface ProjectFile {

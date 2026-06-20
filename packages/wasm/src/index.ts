@@ -42,6 +42,7 @@ import type {
   DocumentChangeSpec,
   Line,
   MoveResult,
+  SymbolRenameResult,
   DebugState,
   ProgramModel,
   SaveState,
@@ -547,6 +548,18 @@ export class EditorSessionHandle {
     this.bump();
     const json = this.session.demote_knot(path, knot, destKnot);
     return JSON.parse(json) as MoveResult;
+  }
+
+  /**
+   * Rename a knot (`stitch` omitted) or a stitch, safe-by-default. The result
+   * is a `MoveResult` superset: when `safe` it can be applied directly via
+   * `applyMoveResult`; otherwise `introduced_diagnostics` carries the breakage
+   * report and the caller applies the (already-computed) edits only on force.
+   */
+  renameSymbol(path: string, knot: string, stitch: string, newName: string): SymbolRenameResult {
+    this.bump();
+    const json = this.session.rename_symbol(path, knot, stitch, newName);
+    return JSON.parse(json) as SymbolRenameResult;
   }
 
   free(): void {
