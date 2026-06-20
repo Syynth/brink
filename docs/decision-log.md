@@ -1080,3 +1080,19 @@
 - **SCOPE:** moderate
 - **WHAT:** `promote_stitch_to_knot`, `demote_knot_to_stitch`, and `move_stitch` must apply same-file reference edits to the rebuilt `new_source` (not just drop them and emit only cross-file edits). The chosen mechanism is a slice-local `apply_window(source, base, limit, edits)` helper: each verbatim slice the op already concatenates is routed through it, and inside-region refs are applied to the moved text before header rewrite. This preserves all existing structural/whitespace/doc-attachment logic. `move_stitch`'s unfinished `// TODO: adjust same-file ref offsets` is resolved by the same helper — all three ops fixed together.
 - **WHY:** Both consumers (brink-web `move_result_json`, brink-cli `emit_move_result`) treat `new_source` as the complete primary-file result and discard/override any primary-file edit, so dropped same-file edits leave dangling references (E024). Slice-local application was chosen over manual offset-delta math because it reuses the existing slice partition (references are atomic, never straddling a boundary), avoids fragile arithmetic across the before/after ordering branches, and keeps the structural reconstruction — already pinned by snapshot tests — untouched.
+
+## Studio symbol Rename is safe-by-default with an in-place breakage report (#305)
+- **WHEN:** 2026-06-20
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui (studio shared symbol context menu / rename)
+- **SCOPE:** moderate
+- **WHAT:** The knot/stitch **Rename** action (on the shared symbol context menu — editor / Binder / Story Graph, per #305) is **safe-by-default**: it computes the cross-file rename, re-analyzes the hypothetical result, and if that introduces diagnostics it does **not** apply — instead the rename prompt flips to a **breakage report** ("Renaming X → Y would break N places:" with a clickable severity · file:line · message list). The only override is a **Force rename** button living *inside* that report (no upfront "unsafe" checkbox on the initial prompt). Force rename applies anyway but still surfaces the introduced diagnostics (toast) so breakage is never silent. This mirrors the `brink ide rename` CLI's safe-by-default + `--unsafe`.
+- **WHY:** The valuable part of an "unsafe rename" is the *report of what breaks*, not a scary checkbox you tick before you know there's a problem. Always trying safe first and surfacing breakage only when it exists keeps the common case frictionless, makes the consequence (not the mechanism) the thing the user acts on, and keeps the studio consistent with the CLI's safe-by-default refactor contract. No upfront checkbox avoids asking the user to pre-authorize a risk they can't yet see.
+
+## F2 inline rename is a full cross-file, safe-by-default rename (#305 follow-up)
+- **WHEN:** 2026-06-20
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui (studio editor F2 rename / shared rename pipeline)
+- **WHAT:** The editor's **F2 inline rename** performs a **full cross-file rename** and is **safe-by-default**, sharing the menu "Rename…" pipeline (`rename_safe` → breakage report → Force rename) seeded from the symbol under the cursor. The previous F2 (`rename_doc`/`rename_impl`) only rewrote the active file and silently dropped cross-file reference edits — that was a bug, not a feature. F2's native `prompt()` is replaced by the store-driven rename prompt; both rename entry points (context menu + F2) now flow through one `rename_safe`-backed path, so there is exactly one rename pipeline and one safety guarantee.
+- **SCOPE:** moderate
+- **WHY:** A rename that rewrites a declaration but not its references is broken and dangerous — it leaves dangling references. Cross-file correctness and the safe-by-default guard must be uniform across every rename entry point, not split into a fast-but-unsafe F2 alongside a careful menu path. Unifying on one pipeline removes the divergent (buggy) code path and guarantees F2 gets the same breakage report the menu does.

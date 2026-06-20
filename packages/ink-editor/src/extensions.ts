@@ -1,5 +1,5 @@
 import { Compartment, type Extension } from "@codemirror/state";
-import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, FileEdit, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction } from "@brink/wasm-types";
+import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
@@ -40,7 +40,9 @@ export interface BrinkStudioOptions {
   getActiveFile?: () => string;
   findReferences?: (source: string, offset: number) => Location[];
   prepareRename?: (source: string, offset: number) => Location | null;
-  doRename?: (source: string, offset: number, newName: string) => FileEdit[];
+  /** F2 — begin a rename of the symbol under the cursor; the host opens the
+   *  safe-by-default rename prompt (cross-file + breakage report). */
+  startRename?: (offset: number, currentName: string) => void;
   getCodeActions?: (source: string, offset: number) => CodeAction[];
   getInlayHints?: (source: string, start: number, end: number) => InlayHint[];
   getArgumentWidgets?: (source: string, start: number, end: number) => CallWidgetSite[];
@@ -104,8 +106,10 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   if (options.findReferences) {
     ideExtensions.push(referencesExtension({ findReferences: options.findReferences }));
   }
-  if (options.prepareRename && options.doRename) {
-    ideExtensions.push(renameExtension({ prepareRename: options.prepareRename, doRename: options.doRename }));
+  if (options.prepareRename && options.startRename) {
+    ideExtensions.push(
+      renameExtension({ prepareRename: options.prepareRename, startRename: options.startRename }),
+    );
   }
   if (options.getCodeActions) {
     ideExtensions.push(codeActionsExtension({ getCodeActions: options.getCodeActions }));

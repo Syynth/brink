@@ -325,6 +325,29 @@ describe("DocumentSessions", () => {
     });
   });
 
+  describe("renameSymbolDoc (#305)", () => {
+    it("re-keys an open symbol view to the renamed knot", () => {
+      harness.documents.noteTarget(START_TARGET);
+      const { view } = harness.mount("main.ink::start", "group-1");
+      expect(docText(view)).toBe(START_KNOT_TEXT);
+
+      // Rename `start` → `begin` in the file, then re-key the open symbol view —
+      // the same flow the studio runs after applyMoveResult.
+      const renamed = MAIN_INK.replace("=== start ===", "=== begin ===");
+      harness.project.getSession().updateFile("main.ink", renamed);
+      harness.documents.invalidateFile("main.ink"); // `start` gone → degrades
+      harness.documents.renameSymbolDoc("main.ink", "start", "begin");
+
+      // The same view now shows the renamed knot, re-resolved by the new name —
+      // not the degraded full file.
+      const begin = renamed.slice(
+        renamed.indexOf("=== begin ==="),
+        renamed.indexOf("=== story ==="),
+      );
+      expect(docText(view)).toBe(begin);
+    });
+  });
+
   describe("focus tracking", () => {
     it("reports the focused view via onFocusedViewChange", async () => {
       const focusChanges: (EditorView | null)[] = [];

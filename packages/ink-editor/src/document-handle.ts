@@ -17,7 +17,6 @@ import type {
   ConvertTarget,
   DocumentChangeSpec,
   DocumentId,
-  FileEdit,
   FoldRange,
   HoverInfo,
   InlayHint,
@@ -140,10 +139,6 @@ export class DocHandle {
 
   prepareRename(offset: number): Location | null {
     return this.session.prepareRenameDoc(this.id, offset);
-  }
-
-  doRename(offset: number, newName: string): FileEdit[] {
-    return this.session.doRenameDoc(this.id, offset, newName);
   }
 
   codeActions(offset: number): CodeAction[] {

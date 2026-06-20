@@ -203,6 +203,107 @@ export class EditorSession {
     });
   }
 
+  /**
+   * Mock of the real `rename_symbol` op (pure — computes edits, does not
+   * mutate the session). Rewrites the symbol's header plus `->`/`<-` diverts
+   * to it across every file, and flags an `E022` breakage when renaming a knot
+   * onto an existing top-level knot name (the safe-by-default gate, #305). The
+   * precise rename + diagnostic-diff math is covered by Rust tests; the mock is
+   * enough to drive the studio prompt/report plumbing.
+   */
+  rename_symbol(path: string, knot: string, stitch: string, newName: string): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return JSON.stringify({ ok: false, error: "file not loaded" });
+    }
+    const oldName = stitch || knot;
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    // Breakage: renaming a knot onto an existing top-level knot collides.
+    const introduced: {
+      severity: string;
+      code: string;
+      message: string;
+      path: string;
+      line: number;
+      col: number;
+    }[] = [];
+    if (!stitch && newName !== knot) {
+      const lines = source.split("\n");
+      const collisionLine = lines.findIndex(
+        (l) => new RegExp(`^\\s*={2,3}\\s*${esc(newName)}\\b`).test(l),
+      );
+      if (collisionLine >= 0) {
+        introduced.push({
+          severity: "error",
+          code: "E022",
+          message: "duplicate knot definition",
+          path,
+          line: collisionLine + 1,
+          col: 1,
+        });
+      }
+    }
+
+    // Rewrite a file's references to `oldName` → `newName`: the header (knot
+    // `=== name ===` or stitch `= name`) plus diverts/threads (`-> name`,
+    // `<- name`, qualified `knot.name`).
+    const rewrite = (src: string): string => {
+      let out = src;
+      if (stitch) {
+        out = out.replace(new RegExp(`(^|\\n)(\\s*=\\s*)${esc(oldName)}\\b`, "g"), `$1$2${newName}`);
+      } else {
+        out = out.replace(
+          new RegExp(`(={2,3}\\s*)${esc(oldName)}(\\s*={0,3})`, "g"),
+          `$1${newName}$2`,
+        );
+      }
+      out = out.replace(new RegExp(`((?:->|<-)\\s*)${esc(oldName)}\\b`, "g"), `$1${newName}`);
+      return out;
+    };
+
+    const newSource = rewrite(source);
+    const crossFileEdits: { path: string; new_source: string }[] = [];
+    for (const [p, src] of this.files) {
+      if (p === path) continue;
+      const rewritten = rewrite(src);
+      if (rewritten !== src) crossFileEdits.push({ path: p, new_source: rewritten });
+    }
+
+    return JSON.stringify({
+      ok: true,
+      path,
+      new_source: newSource,
+      cross_file_edits: crossFileEdits,
+      introduced_diagnostics: introduced,
+      safe: introduced.length === 0,
+    });
+  }
+
+  /**
+   * Offset-based rename (F2). Resolves the knot/stitch whose *declaration name*
+   * the UTF-16 file `offset` lands in, then delegates to `rename_symbol`. The
+   * mock only resolves declaration sites (enough for the plumbing); the real
+   * wasm also resolves references and non-container symbols.
+   */
+  rename_symbol_at(path: string, offset: number, newName: string): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return JSON.stringify({ ok: false, error: "file not loaded" });
+    }
+    for (const knot of parseOutline(source)) {
+      if (offset >= knot.start && offset <= knot.end) {
+        return this.rename_symbol(path, knot.name, "", newName);
+      }
+      for (const st of knot.children) {
+        if (offset >= st.start && offset <= st.end) {
+          return this.rename_symbol(path, knot.name, st.name, newName);
+        }
+      }
+    }
+    return JSON.stringify({ ok: false, error: "cannot rename this symbol" });
+  }
+
   // Host-capability manifest + value cache (#174) — no-ops in the mock.
   set_host_manifest(_json: string): void { /* no-op */ }
   clear_host_manifest(): void { /* no-op */ }
@@ -311,7 +412,6 @@ export class EditorSession {
   goto_definition_doc(_doc: number, _offset: number): string { return "null"; }
   find_references_doc(_doc: number, _offset: number): string { return "[]"; }
   prepare_rename_doc(_doc: number, _offset: number): string { return "null"; }
-  rename_doc(_doc: number, _offset: number, _name: string): string { return "[]"; }
   code_actions_doc(_doc: number, _offset: number): string { return "[]"; }
   inlay_hints_doc(_doc: number, _start: number, _end: number): string { return "[]"; }
   signature_help_doc(_doc: number, _offset: number): string { return "null"; }

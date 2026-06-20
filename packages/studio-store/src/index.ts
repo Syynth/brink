@@ -145,7 +145,7 @@ export {
 export { sortDiagnostics, type ExternalCheckLevel } from "./slices/compile.js";
 
 // Shared knot/stitch context-menu transport (#186 follow-up).
-export type { SymbolMenuRequest } from "./slices/symbol-menu.js";
+export type { SymbolMenuRequest, SymbolRenameRequest } from "./slices/symbol-menu.js";
 
 // Output log (Output tool window, spec §4) — entries + growth cap.
 export {

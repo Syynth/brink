@@ -80,6 +80,7 @@ import {
   StorySegment,
   StoreProvider,
   SymbolContextMenuHost,
+  SymbolRenamePrompt,
   StoryGraphDocument,
   StudioApiProvider,
   createStudioApi,
@@ -292,6 +293,7 @@ function Root({
         <StudioApiProvider api={api}>
           <App />
           <SymbolContextMenuHost />
+          <SymbolRenamePrompt />
         </StudioApiProvider>
       </StoreProvider>
     </ShellProvider>
@@ -479,6 +481,9 @@ export async function mountStudio(
     // Right-click a knot/stitch → the shared symbol context menu (rendered by
     // <SymbolContextMenuHost/>).
     onSymbolContextMenu: (info, x, y) => store.getState().openSymbolMenu({ ...info, x, y }),
+    // F2 (#305): open the safe rename prompt seeded at the cursor symbol
+    // (rendered by <SymbolRenamePrompt/>).
+    onRename: (req) => store.getState().openRenamePrompt(req),
   });
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush
@@ -545,6 +550,27 @@ export async function mountStudio(
     }
     // Keep the per-view document machinery aligned with the re-keyed tabs.
     documents.renameDocPath(oldPath, newPath);
+  });
+
+  // The store's symbol-tab-renamer (#305 knot/stitch rename): re-key the open
+  // `path::oldName` symbol tab to `path::newName` in place, then migrate the
+  // matching view slot, so a symbol view survives its own rename.
+  store.getState().setDocSymbolRenamer((path, oldName, newName) => {
+    if (oldName === newName) return;
+    const oldDocId = `${path}::${oldName}`;
+    const newDocId = `${path}::${newName}`;
+    const updates: Array<{ oldKey: string; newRef: ReturnType<typeof rekeyInkRef> }> = [];
+    for (const group of editorGroups.getState().groups) {
+      for (const tab of group.tabs) {
+        if (tab.ref.typeId !== INK_FILE_TYPE_ID) continue;
+        if (tab.ref.docId !== oldDocId) continue;
+        updates.push({ oldKey: documentKey(tab.ref), newRef: rekeyInkRef(newDocId) });
+      }
+    }
+    for (const { oldKey, newRef } of updates) {
+      editorGroups.getState().updateTabRef(oldKey, newRef);
+    }
+    documents.renameSymbolDoc(path, oldName, newName);
   });
 
   // Keep the focused-view tracking and the store's activeDocKey mirror in

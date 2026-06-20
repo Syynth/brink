@@ -50,6 +50,7 @@ interface Props {
 
 export type ContextMenuAction =
   | { type: "playFromHere"; path: string; inkPath: string; label: string }
+  | { type: "renameSymbol"; path: string; knot: string; stitch?: string }
   | { type: "reorderStitch"; path: string; knot: string; stitch: string; direction: number }
   | { type: "reorderKnot"; path: string; knot: string; direction: number }
   | { type: "reorderStitches"; path: string; knot: string; order: string[] }
@@ -247,6 +248,20 @@ function buildItems(
     label: "Play from here",
     action: () =>
       onAction({ type: "playFromHere", path: target.path, inkPath, label: inkPath }),
+  });
+  items.push({ label: "---" });
+
+  // Rename — safe-by-default; the prompt flips to a breakage report if the
+  // rename would introduce diagnostics (#305).
+  items.push({
+    label: "Rename…",
+    action: () =>
+      onAction({
+        type: "renameSymbol",
+        path: target.path,
+        knot: target.knot,
+        stitch: target.kind === "stitch" ? target.stitch : undefined,
+      }),
   });
   items.push({ label: "---" });
 
