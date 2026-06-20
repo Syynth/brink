@@ -1,0 +1,63 @@
+import { test, expect, type Page } from "@playwright/test";
+
+/**
+ * Knot/stitch Rename (#305) — the shared symbol context menu's "Rename…" item
+ * opens a safe-by-default prompt: a clean rename applies immediately; a rename
+ * that would introduce diagnostics flips to a breakage report whose only
+ * override is an explicit "Force rename".
+ */
+
+function binderKnot(page: Page, name: string) {
+  return page.locator(".brink-binder-knot", {
+    has: page.locator(".brink-binder-label", { hasText: new RegExp(`^${name}$`) }),
+  });
+}
+
+async function openRename(page: Page, knot: string): Promise<void> {
+  await binderKnot(page, knot).first().click({ button: "right" });
+  const item = page.locator(".brink-context-menu-item", { hasText: "Rename" });
+  await expect(item).toBeVisible();
+  await item.click();
+  await expect(page.locator("#brink-rename-input")).toBeVisible();
+}
+
+test.describe("knot/stitch rename (#305)", () => {
+  test("a clean rename applies and the binder shows the new name", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
+    await expect(binderKnot(page, "barter")).toHaveCount(1);
+
+    await openRename(page, "barter");
+    await page.locator("#brink-rename-input").fill("haggle");
+    await page.keyboard.press("Enter");
+
+    // Prompt closes; the binder outline refreshes with the renamed knot.
+    await expect(page.locator("#brink-rename-input")).toBeHidden();
+    await expect(binderKnot(page, "haggle")).toHaveCount(1);
+    await expect(binderKnot(page, "barter")).toHaveCount(0);
+  });
+
+  test("a colliding rename shows the breakage report; Force overrides", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
+
+    // Rename `threshold` onto the existing `intro` knot → duplicate-knot breakage.
+    await openRename(page, "threshold");
+    await page.locator("#brink-rename-input").fill("intro");
+    await page.keyboard.press("Enter");
+
+    // Safe-by-default: the rename is blocked and the report is shown instead.
+    const report = page.locator(".brink-rename-report");
+    await expect(report).toBeVisible();
+    await expect(report).toContainText(/would break/i);
+    await expect(report.locator(".brink-rename-diag")).not.toHaveCount(0);
+    // Still not applied — `threshold` is intact.
+    await expect(binderKnot(page, "threshold")).toHaveCount(1);
+
+    // Force overrides; the report closes and the rename applies (now two `intro`).
+    await page.locator(".brink-rename-force").click();
+    await expect(report).toBeHidden();
+    await expect(binderKnot(page, "threshold")).toHaveCount(0);
+    await expect(binderKnot(page, "intro")).toHaveCount(2);
+  });
+});
