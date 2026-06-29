@@ -1,14 +1,52 @@
 {
-  "name": "@brink/ink-editor",
-  "version": "0.0.1",
-  "private": true,
+  "name": "@brink-lang/editor",
+  "version": "0.6.0",
+  "description": "CodeMirror 6 editor for the brink ink language: syntax highlighting, IDE features (completions, hover, diagnostics, rename, goto), screenplay decorations, argument widgets, and multi-file project/session management. Pairs with @brink-lang/web.",
+  "license": "MIT",
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "homepage": "https://github.com/Syynth/brink",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Syynth/brink.git",
+    "directory": "packages/ink-editor"
+  },
+  "bugs": {
+    "url": "https://github.com/Syynth/brink/issues"
+  },
+  "keywords": [
+    "ink",
+    "narrative",
+    "interactive-fiction",
+    "codemirror",
+    "editor"
+  ],
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "prepack": "pnpm run build"
+  },
   "dependencies": {
-    "@brink/wasm-types": "workspace:*",
-    "@brink-lang/web": "workspace:*",
-    "@brink/ink-operations": "workspace:*",
+    "@brink-lang/web": "workspace:*"
+  },
+  "peerDependencies": {
     "@codemirror/autocomplete": "^6.18.6",
     "@codemirror/commands": "^6.8.0",
     "@codemirror/language": "^6.10.8",
@@ -17,9 +55,28 @@
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.5",
     "@lezer/highlight": "^1.2.1",
-    "codemirror": "^6.0.1"
-  },
-  "peerDependencies": {
+    "codemirror": "^6.0.1",
     "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@brink/ink-operations": "workspace:*",
+    "@brink/wasm-types": "workspace:*",
+    "@codemirror/autocomplete": "^6.18.6",
+    "@codemirror/commands": "^6.8.0",
+    "@codemirror/language": "^6.10.8",
+    "@codemirror/lint": "^6.8.5",
+    "@codemirror/search": "^6.5.10",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.36.5",
+    "@lezer/highlight": "^1.2.1",
+    "codemirror": "^6.0.1",
+    "react": "^19.0.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.7.0"
   }
 }

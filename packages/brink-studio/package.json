@@ -59,7 +59,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@brink/ink-editor": "workspace:*",
+    "@brink-lang/editor": "workspace:*",
     "@brink/ink-operations": "workspace:*",
     "@brink/studio-shell": "workspace:*",
     "@brink/studio-store": "workspace:*",

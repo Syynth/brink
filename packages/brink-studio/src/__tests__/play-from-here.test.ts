@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ElementType, headerName, qualifiedInkPath } from "@brink/ink-editor";
+import { ElementType, headerName, qualifiedInkPath } from "@brink-lang/editor";
 
 describe("headerName", () => {
   it("strips knot/stitch sigils and params", () => {

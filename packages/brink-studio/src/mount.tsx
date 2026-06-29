@@ -27,7 +27,7 @@ import {
   InMemoryFileProvider,
   setHostWidgets,
   type FileChange,
-} from "@brink/ink-editor";
+} from "@brink-lang/editor";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
 import {
   CommandRegistry,

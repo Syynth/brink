@@ -16,3 +16,4 @@ test-results/
 # Per-machine Claude session tooling (worktrees, preview launch configs)
 .claude/
 packages/wasm/dist/
+packages/ink-editor/dist/

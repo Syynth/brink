@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { FileChangeHub, type FileChange } from "@brink/ink-editor";
+import { FileChangeHub, type FileChange } from "@brink-lang/editor";
 
 function harness(opts: { withFlush?: boolean; debounceMs?: number } = {}) {
   const files = new Map<string, string>();

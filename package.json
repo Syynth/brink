@@ -1,6 +1,6 @@
 {
 	"scripts": {
-		"release": "pnpm --filter @brink-lang/web build && pnpm --filter @brink-lang/studio build && pnpm changeset publish"
+		"release": "pnpm --filter @brink-lang/web build && pnpm --filter @brink-lang/editor build && pnpm --filter @brink-lang/studio build && pnpm changeset publish"
 	},
 	"devDependencies": {
 		"@changesets/cli": "^2.31.0",

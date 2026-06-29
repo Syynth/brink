@@ -176,7 +176,7 @@ export {
 } from "./search-engine.js";
 
 // Document key/title helpers (shared with the shell's DocumentRefs).
-export { docKeyFor, docTitleFor } from "@brink/ink-editor";
+export { docKeyFor, docTitleFor } from "@brink-lang/editor";
 
 export type {
   ElementType,

@@ -5,7 +5,7 @@
  */
 
 import type { StateCreator } from "zustand";
-import type { FormGlyphMode } from "@brink/ink-editor";
+import type { FormGlyphMode } from "@brink-lang/editor";
 import type { StudioState } from "../index.js";
 import type { LineInfo, KeyHint } from "../types.js";
 

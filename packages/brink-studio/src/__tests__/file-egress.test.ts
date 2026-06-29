@@ -16,7 +16,7 @@ import {
   InMemoryFileProvider,
   ProjectSession,
   type FileChange,
-} from "@brink/ink-editor";
+} from "@brink-lang/editor";
 import { initWasm } from "@brink-lang/web";
 import type { MoveResult } from "@brink/wasm-types";
 import { CommandRegistry, Keymap, NotificationCenter } from "@brink/studio-shell";

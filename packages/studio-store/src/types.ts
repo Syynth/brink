@@ -1,7 +1,7 @@
 /**
  * Local type definitions for studio-store.
  *
- * Types that will eventually come from @brink/ink-editor are defined here
+ * Types that will eventually come from @brink-lang/editor are defined here
  * as forward-compatible stubs until that package is created.
  */
 
@@ -49,6 +49,6 @@ export type TabTarget =
   | { kind: "file"; path: string }
   | { kind: "symbol"; path: string; name: string; start: number; end: number };
 
-// ── Editor types (the real classes from @brink/ink-editor) ───────────
+// ── Editor types (the real classes from @brink-lang/editor) ───────────
 
-export type { DocumentSessions, ProjectSession } from "@brink/ink-editor";
+export type { DocumentSessions, ProjectSession } from "@brink-lang/editor";
