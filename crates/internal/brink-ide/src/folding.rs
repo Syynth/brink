@@ -20,6 +20,22 @@ pub fn folding_ranges(hir: &HirFile, source: &str) -> Vec<FoldRange> {
     let idx = LineIndex::new(source);
     let mut ranges = Vec::new();
 
+    // Leading INCLUDE block (#313 G): collapse a run of two-or-more leading
+    // INCLUDEs into one region. The span is derived from the shared
+    // `include_block_span` detector so fold and auto-import agree on its
+    // bounds. A single INCLUDE is detected by the shared helper but is not
+    // worth folding.
+    if let Some(span) = crate::include_block::include_block_span(hir, source)
+        && span.count >= 2
+    {
+        ranges.push(FoldRange {
+            start_line: span.start_line,
+            end_line: span.end_line,
+            collapsed_text: Some(format!("INCLUDE … ({} files)", span.count)),
+            from_line_start: false,
+        });
+    }
+
     // Root-level block content
     collect_block_folds(&hir.root_content, source, &idx, &mut ranges);
 
@@ -398,6 +414,38 @@ text
         assert!(
             !ranges.iter().any(|&(s, _, _)| s == 0),
             "a single-line standalone doc has nothing to fold: {ranges:?}"
+        );
+    }
+
+    /// `(start_line, end_line, collapsed_text)` triples for `src`.
+    fn folds_with_text(src: &str) -> Vec<(u32, u32, Option<String>)> {
+        let parsed = brink_syntax::parse(src);
+        let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
+        super::folding_ranges(&hir, src)
+            .into_iter()
+            .map(|r| (r.start_line, r.end_line, r.collapsed_text))
+            .collect()
+    }
+
+    #[test]
+    fn include_block_folds_when_two_or_more() {
+        let src = "INCLUDE a.ink\nINCLUDE b.ink\nINCLUDE c.ink\n== hub ==\ntext\n";
+        let folds = folds_with_text(src);
+        assert!(
+            folds.contains(&(0, 2, Some("INCLUDE … (3 files)".to_owned()))),
+            "{folds:?}"
+        );
+    }
+
+    #[test]
+    fn single_include_does_not_fold() {
+        let src = "INCLUDE a.ink\n== hub ==\ntext\n";
+        let folds = folds_with_text(src);
+        assert!(
+            !folds.iter().any(
+                |(s, _, t)| *s == 0 && t.as_deref().is_some_and(|t| t.starts_with("INCLUDE …"))
+            ),
+            "a single INCLUDE must not fold: {folds:?}"
         );
     }
 }

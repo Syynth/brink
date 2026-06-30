@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use brink_ir::suppressions::{Suppressions, parse_suppressions};
 use brink_ir::{
@@ -304,6 +304,16 @@ impl ProjectDb {
         self.include_graph.compute_projects(&all)
     }
 
+    /// All files reachable from `entry` via the forward `INCLUDE` graph,
+    /// `entry` included.
+    ///
+    /// A forward DFS over `INCLUDE` edges (transitive). The result is a
+    /// [`BTreeSet`], so iteration order is deterministic regardless of graph
+    /// internals — callers that compare or render the set get stable output.
+    pub fn reachable_from(&self, entry: FileId) -> BTreeSet<FileId> {
+        self.include_graph.reachable_from(entry)
+    }
+
     /// Snapshot analysis inputs for a subset of files.
     ///
     /// Like `analysis_inputs()` but filtered to the given set.
@@ -606,5 +616,80 @@ mod path_tests {
             compute_relative_path("main.ink", "renamed.ink"),
             "renamed.ink"
         );
+    }
+}
+
+#[cfg(test)]
+mod reachable_tests {
+    use super::ProjectDb;
+
+    /// Load files in dependency order then rebuild the graph so every edge is
+    /// linked regardless of insertion order.
+    fn db_with(files: &[(&str, &str)]) -> ProjectDb {
+        let mut db = ProjectDb::new();
+        for (path, src) in files {
+            db.set_file(path, (*src).to_owned());
+        }
+        db.rebuild_include_graph();
+        db
+    }
+
+    #[test]
+    fn entry_is_always_reachable_from_itself() {
+        let db = db_with(&[("main.ink", "== hub ==\ntext\n")]);
+        let main = db.file_id("main.ink").expect("main");
+        let reachable = db.reachable_from(main);
+        assert_eq!(reachable.into_iter().collect::<Vec<_>>(), vec![main]);
+    }
+
+    #[test]
+    fn direct_includes_are_reachable() {
+        let db = db_with(&[
+            ("main.ink", "INCLUDE a.ink\nINCLUDE b.ink\n"),
+            ("a.ink", "== a ==\n"),
+            ("b.ink", "== b ==\n"),
+        ]);
+        let main = db.file_id("main.ink").expect("main");
+        let a = db.file_id("a.ink").expect("a");
+        let b = db.file_id("b.ink").expect("b");
+        let reachable: Vec<_> = db.reachable_from(main).into_iter().collect();
+        assert!(reachable.contains(&main));
+        assert!(reachable.contains(&a));
+        assert!(reachable.contains(&b));
+        assert_eq!(reachable.len(), 3);
+    }
+
+    #[test]
+    fn transitive_includes_are_reachable() {
+        let db = db_with(&[
+            ("main.ink", "INCLUDE a.ink\n"),
+            ("a.ink", "INCLUDE b.ink\n"),
+            ("b.ink", "== b ==\n"),
+            ("unrelated.ink", "== x ==\n"),
+        ]);
+        let main = db.file_id("main.ink").expect("main");
+        let a = db.file_id("a.ink").expect("a");
+        let b = db.file_id("b.ink").expect("b");
+        let unrelated = db.file_id("unrelated.ink").expect("unrelated");
+        let reachable = db.reachable_from(main);
+        assert!(reachable.contains(&main));
+        assert!(reachable.contains(&a));
+        assert!(reachable.contains(&b));
+        assert!(
+            !reachable.contains(&unrelated),
+            "unrelated file is not reachable"
+        );
+    }
+
+    #[test]
+    fn reachable_terminates_on_cycles() {
+        // a -> b -> a; reachability must not loop forever.
+        let db = db_with(&[("a.ink", "INCLUDE b.ink\n"), ("b.ink", "INCLUDE a.ink\n")]);
+        let a = db.file_id("a.ink").expect("a");
+        let b = db.file_id("b.ink").expect("b");
+        let reachable: Vec<_> = db.reachable_from(a).into_iter().collect();
+        assert!(reachable.contains(&a));
+        assert!(reachable.contains(&b));
+        assert_eq!(reachable.len(), 2);
     }
 }
