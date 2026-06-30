@@ -4550,8 +4550,8 @@ mod tests {
             serde_json::from_str(&s.code_actions(0)).expect("valid JSON array");
         let data = find_action(&actions, "Sort knots")["data"].to_string();
 
-        let result: serde_json::Value =
-            serde_json::from_str(&s.resolve_code_action(&data, 0)).expect("valid StructuralResult JSON");
+        let result: serde_json::Value = serde_json::from_str(&s.resolve_code_action(&data, 0))
+            .expect("valid StructuralResult JSON");
         assert_eq!(result["ok"], true, "resolve succeeds: {result}");
         let new_source = result["new_source"]
             .as_str()
