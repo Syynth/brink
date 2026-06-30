@@ -181,6 +181,73 @@ mod tests {
     }
 
     #[test]
+    fn move_shallower_rewrites_outbound_to_bare_names() {
+        // Regression (#318): moving a file UP a directory (chapters/main.ink →
+        // main.ink) must rewrite its own relative includes from `../host.ink`
+        // to the bare `host.ink`, not leave them pointing at the old dir.
+        let s = session(&[
+            (
+                "chapters/main.ink",
+                "INCLUDE ../host.ink\nINCLUDE ../phone.ink\n-> END\n",
+            ),
+            ("host.ink", "=== host ===\n-> END\n"),
+            ("phone.ink", "=== phone ===\n-> END\n"),
+        ]);
+        let result = rename_file(&s, "chapters/main.ink", "main.ink").unwrap();
+        assert!(
+            result.new_source.contains("INCLUDE host.ink"),
+            "host include not rewritten to bare name: {}",
+            result.new_source
+        );
+        assert!(
+            result.new_source.contains("INCLUDE phone.ink"),
+            "phone include not rewritten to bare name: {}",
+            result.new_source
+        );
+        assert!(
+            !result.new_source.contains("chapters/host.ink"),
+            "stale chapters/ prefix leaked: {}",
+            result.new_source
+        );
+        assert!(
+            !result.new_source.contains("../host.ink"),
+            "stale ../ prefix leaked: {}",
+            result.new_source
+        );
+    }
+
+    #[test]
+    fn move_deeper_then_shallower_round_trips_outbound() {
+        // Regression (#318): a deeper move followed by the inverse shallower
+        // move restores the original include text exactly.
+        let original = "INCLUDE lib.ink\n=== intro ===\n-> END\n";
+        let s = session(&[
+            ("intro.ink", original),
+            ("lib.ink", "=== helper ===\n-> END\n"),
+        ]);
+
+        // Deeper: intro.ink → scenes/intro.ink, so `lib.ink` → `../lib.ink`.
+        let deeper = rename_file(&s, "intro.ink", "scenes/intro.ink").unwrap();
+        assert!(
+            deeper.new_source.contains("INCLUDE ../lib.ink"),
+            "deeper move did not rewrite outbound: {}",
+            deeper.new_source
+        );
+
+        // Rebuild the session as if the deeper move had been applied, then move
+        // back to the root.
+        let s2 = session(&[
+            ("scenes/intro.ink", &deeper.new_source),
+            ("lib.ink", "=== helper ===\n-> END\n"),
+        ]);
+        let shallower = rename_file(&s2, "scenes/intro.ink", "intro.ink").unwrap();
+        assert_eq!(
+            shallower.new_source, original,
+            "round-trip did not restore original include text",
+        );
+    }
+
+    #[test]
     fn rename_noop_when_old_equals_new() {
         let s = session(&[("a.ink", "INCLUDE b.ink\n-> END\n"), ("b.ink", "-> END\n")]);
         let r = rename_file(&s, "a.ink", "a.ink").unwrap();
