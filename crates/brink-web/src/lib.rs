@@ -1418,7 +1418,7 @@ impl EditorSession {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
         };
-        self.find_references_impl(&d.path, d.view.as_ref(), offset)
+        self.find_references_impl(&d.path, d.view.as_ref(), offset, true)
     }
 
     /// Check if rename is possible for a document handle. Returns JSON or "null".
@@ -1748,7 +1748,46 @@ impl EditorSession {
 
     /// Find all references. Returns JSON array.
     pub fn find_references(&self, offset: u32) -> String {
-        self.find_references_impl(&self.active_path, self.view.as_ref(), offset)
+        self.find_references_impl(&self.active_path, self.view.as_ref(), offset, true)
+    }
+
+    /// Find all references at an explicit file path + offset, with control over
+    /// whether the declaration itself is included. Document-agnostic: resolves
+    /// the file by `path` against the session, not the active document. Returns
+    /// a JSON `Location[]` array (`"[]"` if the path or analysis is unavailable).
+    pub fn find_references_at(&self, path: &str, offset: u32, include_declaration: bool) -> String {
+        self.find_references_impl(path, None, offset, include_declaration)
+    }
+
+    /// Find all references to a symbol identified by its canonical name. Resolves
+    /// the symbol via the analysis index; returns `"[]"` (fail-safe, deterministic)
+    /// if the name is unknown or ambiguous (more than one matching definition).
+    /// Otherwise locates the symbol's declaration (file + range start) and returns
+    /// its references as a JSON `Location[]` array.
+    pub fn references_to_symbol(&self, symbol_name: &str, include_declaration: bool) -> String {
+        let Some(analysis) = self.session.analysis() else {
+            return "[]".to_owned();
+        };
+        // Resolve the symbol name to a single definition. Unknown or ambiguous
+        // names fail safe to an empty result rather than guessing.
+        let ids = match analysis.index.by_name.get(symbol_name) {
+            Some(ids) if ids.len() == 1 => ids,
+            _ => return "[]".to_owned(),
+        };
+        let Some(info) = analysis.index.symbols.get(&ids[0]) else {
+            return "[]".to_owned();
+        };
+        let Some(path) = self.session.file_path(info.file) else {
+            return "[]".to_owned();
+        };
+        let Some(source) = self.session.source(info.file) else {
+            return "[]".to_owned();
+        };
+        // The impl expects a UTF-16, view-relative offset; with no view that is
+        // the file-absolute UTF-16 offset of the declaration's name start.
+        let offset = byte_to_utf16(source, info.range.start().into());
+        let path = path.to_owned();
+        self.find_references_impl(&path, None, offset, include_declaration)
     }
 
     /// Check if rename is possible. Returns JSON or "null".
@@ -2360,7 +2399,13 @@ impl EditorSession {
         }
     }
 
-    fn find_references_impl(&self, path: &str, view: Option<&ViewContext>, offset: u32) -> String {
+    fn find_references_impl(
+        &self,
+        path: &str,
+        view: Option<&ViewContext>,
+        offset: u32,
+        include_declaration: bool,
+    ) -> String {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
@@ -2373,7 +2418,7 @@ impl EditorSession {
             analysis,
             file_id,
             TextSize::new(abs_offset),
-            true,
+            include_declaration,
         );
 
         let db = self.session.db();
@@ -4142,6 +4187,122 @@ mod tests {
             a.story_graph(),
             b.story_graph(),
             "story graph JSON must be identical regardless of insertion order"
+        );
+    }
+
+    // ── Document-agnostic / symbol-keyed references (#317) ──────────
+
+    fn refs_count(json: &str) -> usize {
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        v.as_array().map_or(0, Vec::len)
+    }
+
+    #[test]
+    fn find_references_at_same_file() {
+        // Two diverts into `hello` plus its declaration, all in one file.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "-> hello\n=== hello ===\nHi.\n-> hello\n");
+        assert!(s.set_active_file("main.ink"));
+
+        // Offset on the first `-> hello` reference (the `h` of the target).
+        let json = s.find_references_at("main.ink", 3, true);
+        // Declaration + two divert references = 3.
+        assert_eq!(refs_count(&json), 3, "same-file refs incl. decl: {json}");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for loc in v.as_array().unwrap() {
+            assert_eq!(loc["file"], "main.ink");
+        }
+    }
+
+    #[test]
+    fn find_references_at_cross_file() {
+        // `other.ink` diverts into `hello` declared in `main.ink`.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== hello ===\nHi.\n-> END\n");
+        s.update_file("other.ink", "-> hello\n");
+        assert!(s.set_active_file("main.ink"));
+
+        // Offset on the `hello` of the declaration `=== hello ===` (utf16 = byte).
+        let json = s.find_references_at("main.ink", 4, true);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let files: std::collections::BTreeSet<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["file"].as_str().unwrap())
+            .collect();
+        assert!(
+            files.contains("main.ink") && files.contains("other.ink"),
+            "cross-file refs must span both files: {json}"
+        );
+    }
+
+    #[test]
+    fn find_references_at_honors_include_declaration() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "-> hello\n=== hello ===\nHi.\n-> hello\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let with_decl = refs_count(&s.find_references_at("main.ink", 3, true));
+        let without_decl = refs_count(&s.find_references_at("main.ink", 3, false));
+        assert_eq!(
+            with_decl,
+            without_decl + 1,
+            "excluding the declaration drops exactly one result"
+        );
+    }
+
+    #[test]
+    fn references_to_symbol_name_keyed_lookup() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== hello ===\nHi.\n-> END\n");
+        s.update_file("other.ink", "-> hello\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let json = s.references_to_symbol("hello", true);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let files: std::collections::BTreeSet<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["file"].as_str().unwrap())
+            .collect();
+        assert!(
+            files.contains("main.ink") && files.contains("other.ink"),
+            "symbol-keyed lookup resolves the declaration + cross-file ref: {json}"
+        );
+
+        // include_declaration is honored through the symbol-keyed path too.
+        let with_decl = refs_count(&json);
+        let without_decl = refs_count(&s.references_to_symbol("hello", false));
+        assert_eq!(with_decl, without_decl + 1);
+    }
+
+    #[test]
+    fn references_to_symbol_nonexistent_is_empty() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== hello ===\nHi.\n-> END\n");
+        assert!(s.set_active_file("main.ink"));
+
+        assert_eq!(
+            s.references_to_symbol("does_not_exist", true),
+            "[]",
+            "unknown symbol fails safe to []"
+        );
+    }
+
+    #[test]
+    fn references_to_symbol_ambiguous_is_empty() {
+        // A knot and a variable share the name `dup`. They are different kinds,
+        // so both land under one `by_name` key → ambiguous (two ids).
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "VAR dup = 0\n=== dup ===\nhi.\n-> END\n");
+        assert!(s.set_active_file("main.ink"));
+
+        assert_eq!(
+            s.references_to_symbol("dup", true),
+            "[]",
+            "ambiguous symbol name fails safe to []"
         );
     }
 }
