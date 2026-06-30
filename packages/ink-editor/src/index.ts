@@ -63,3 +63,8 @@ export type { ElementConverter } from "./transitions.js";
 
 // Completion kind → CodeMirror completion type (icon + auto-open keying)
 export { completionType, toCompletionOption } from "./completions.js";
+
+// Find panel (#319 Track N): opt-in @codemirror/search factory. Not auto-enabled
+// in the studio editor — hosts opt in by adding the returned extension.
+export { findPanel } from "./find-panel.js";
+export type { FindPanelOptions } from "./find-panel.js";
