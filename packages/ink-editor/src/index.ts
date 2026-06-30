@@ -2,6 +2,23 @@
 export { brinkStudio } from "./extensions.js";
 export type { BrinkStudioOptions } from "./extensions.js";
 
+// Inline rename (#323/#324): the in-editor rename widget + its pure badge/report
+// logic (unit-tested via @brink-lang/studio).
+export {
+  renameExtension,
+  startInlineRename,
+  startInlineRenameEffect,
+  isSafeRename,
+  breakageCount,
+  breakageEntries,
+  RenameQueryCache,
+} from "./rename.js";
+export type {
+  RenameOptions,
+  BreakageEntry,
+  BreakageContext,
+} from "./rename.js";
+
 // Argument Form (argument-widget spec §1.2) — opened from the in-editor glyph
 // and from a host's tool windows (e.g. the Host Functions panel launcher).
 export { openArgumentForm } from "./argument-form.js";

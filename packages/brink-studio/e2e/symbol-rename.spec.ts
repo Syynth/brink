@@ -37,7 +37,7 @@ test.describe("knot/stitch rename (#305)", () => {
     await expect(binderKnot(page, "barter")).toHaveCount(0);
   });
 
-  test("F2 in the editor opens the safe rename prompt seeded at the cursor", async ({ page }) => {
+  test("F2 in the editor opens the inline rename seeded at the cursor (#323)", async ({ page }) => {
     await page.goto("/");
     await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
 
@@ -50,16 +50,18 @@ test.describe("knot/stitch rename (#305)", () => {
     await nameToken.click();
     await page.keyboard.press("F2");
 
-    // The shared rename prompt opens (proof F2 resolved a renameable symbol and
-    // routed through the store, not a native prompt()), seeded with the name.
-    const input = page.locator("#brink-rename-input");
+    // The INLINE rename widget mounts in the editor (not the modal), seeded with
+    // the current name — proof F2 resolved a renameable symbol and routed
+    // through the in-editor surface (#323).
+    const input = page.locator(".brink-inline-rename-input");
     await expect(input).toBeVisible();
     await expect(input).toHaveValue("barter");
+    await expect(page.locator("#brink-rename-input")).toHaveCount(0); // no modal
     await input.fill("haggling");
     await page.keyboard.press("Enter");
 
-    // Prompt closes; the rename applied (binder outline reflects it).
-    await expect(input).toBeHidden();
+    // Widget tears down; the safe rename applied (binder outline reflects it).
+    await expect(input).toHaveCount(0);
     await expect(binderKnot(page, "haggling")).toHaveCount(1);
     await expect(binderKnot(page, "barter")).toHaveCount(0);
 
@@ -71,6 +73,46 @@ test.describe("knot/stitch rename (#305)", () => {
     await expect(
       page.locator(".cm-line", { hasText: "=== haggling ===" }).first(),
     ).toBeVisible();
+  });
+
+  test("inline rename shows '⚠ breaks N' + inline report; Rename anyway overrides (#324)", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
+
+    // Open `threshold` in the editor and F2 on its name token.
+    await binderKnot(page, "threshold").first().click();
+    await page.waitForSelector(".cm-content");
+    const nameToken = page.locator(".cm-content").getByText("threshold", { exact: true }).first();
+    await expect(nameToken).toBeVisible();
+    await nameToken.click();
+    await page.keyboard.press("F2");
+
+    const input = page.locator(".brink-inline-rename-input");
+    await expect(input).toBeVisible();
+    // Rename `threshold` onto the existing `intro` knot → duplicate-knot break.
+    await input.fill("intro");
+
+    // The badge appears (debounced) with the breakage count, and clicking it
+    // expands the INLINE report (not a modal).
+    const badge = page.locator(".brink-inline-rename-badge");
+    await expect(badge).toBeVisible();
+    await expect(badge).toContainText(/breaks \d+/);
+    await badge.click();
+    const report = page.locator(".brink-inline-rename-report");
+    await expect(report).toBeVisible();
+    await expect(report.locator(".brink-inline-rename-report-item")).not.toHaveCount(0);
+    await expect(page.locator("#brink-rename-input")).toHaveCount(0); // no modal
+
+    // Still not applied — `threshold` is intact.
+    await expect(binderKnot(page, "threshold")).toHaveCount(1);
+
+    // "Rename anyway" overrides; the rename applies (now two `intro`).
+    await page.locator(".brink-inline-rename-force").click();
+    await expect(input).toHaveCount(0);
+    await expect(binderKnot(page, "threshold")).toHaveCount(0);
+    await expect(binderKnot(page, "intro")).toHaveCount(2);
   });
 
   test("a colliding rename shows the breakage report; Force overrides", async ({ page }) => {

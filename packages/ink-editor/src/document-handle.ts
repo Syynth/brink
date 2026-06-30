@@ -25,6 +25,7 @@ import type {
   Location,
   SemanticToken,
   SignatureInfo,
+  SymbolRenameResult,
   TextEdit,
 } from "@brink/wasm-types";
 
@@ -139,6 +140,16 @@ export class DocHandle {
 
   prepareRename(offset: number): Location | null {
     return this.session.prepareRenameDoc(this.id, offset);
+  }
+
+  /**
+   * Compute the safe-rename result for renaming the symbol at `offset` (a
+   * whole-file UTF-16 offset) to `newName`. Side-effect-free — the wasm side
+   * computes the new sources + breakage report without applying anything, so
+   * the inline-rename badge can query it live on each keystroke (#324).
+   */
+  renameSymbolAt(offset: number, newName: string): SymbolRenameResult {
+    return this.session.renameSymbolAt(this.path, offset, newName);
   }
 
   codeActions(offset: number): CodeAction[] {

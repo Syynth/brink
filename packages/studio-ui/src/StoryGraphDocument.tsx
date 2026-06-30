@@ -367,6 +367,7 @@ function StoryGraphCanvas({ graph }: { graph: StoryGraph }) {
         stitch: dot >= 0 ? node.id.slice(dot + 1) : undefined,
         x: e.clientX,
         y: e.clientY,
+        source: "graph",
       });
     },
     [openSymbolMenu],

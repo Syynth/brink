@@ -5,9 +5,33 @@
  * drag-drop), the editor, and the Story Graph all drive identical logic.
  */
 
-import type { MoveResult, RenameDiagnostic } from "@brink/wasm-types";
+import type {
+  FileOutline,
+  MoveResult,
+  RenameDiagnostic,
+  SymbolRenameResult,
+} from "@brink/wasm-types";
 import type { StudioState, SymbolRenameRequest } from "@brink/studio-store";
 import type { ContextMenuAction } from "./BinderContextMenu.js";
+
+/** The declaration-name offset (whole-file UTF-16) of a knot or stitch in the
+ *  project outline, or null when the symbol is not found. Used to seed the
+ *  editor's inline rename from the context menu (which carries names, not an
+ *  offset). */
+function symbolDeclarationOffset(
+  outline: FileOutline[],
+  path: string,
+  knot: string,
+  stitch?: string,
+): number | null {
+  const file = outline.find((f) => f.path === path);
+  if (!file) return null;
+  const knotSym = file.symbols.find((s) => s.kind === "knot" && s.name === knot);
+  if (!knotSym) return null;
+  if (stitch === undefined) return knotSym.start;
+  const stitchSym = knotSym.children.find((c) => c.kind === "stitch" && c.name === stitch);
+  return stitchSym ? stitchSym.start : null;
+}
 
 export async function dispatchSymbolAction(
   state: StudioState,
@@ -19,9 +43,22 @@ export async function dispatchSymbolAction(
     return;
   }
 
-  // Rename opens an interactive prompt (name → breakage report); the rename
-  // itself runs from the prompt via `performSymbolRename` (#305).
+  // Rename. Editor-origin renames run inline in the editor (#323/#324): resolve
+  // the symbol's declaration offset from the outline and start the inline widget
+  // in the mounted view. Graph-origin (and any case with no mounted editor view)
+  // falls back to the modal prompt, which drives `performSymbolRename` (#305).
   if (action.type === "renameSymbol") {
+    if (action.source === "editor") {
+      const offset = symbolDeclarationOffset(
+        state.outline,
+        action.path,
+        action.knot,
+        action.stitch,
+      );
+      if (offset !== null && state._documents?.startInlineRenameAt(action.path, offset)) {
+        return;
+      }
+    }
     state.openRenamePrompt({
       path: action.path,
       knot: action.knot,
@@ -128,4 +165,27 @@ export async function performSymbolRename(
   }
 
   return { applied: false, diagnostics: result.introduced_diagnostics };
+}
+
+/**
+ * Apply an already-computed `SymbolRenameResult` — the commit path for the
+ * editor's inline rename (#323/#324). The inline badge computed `result` live;
+ * here we apply its cross-file edits through `applyMoveResult` (one undoable
+ * step) and re-key any open symbol tab from `currentName` to `newName`, exactly
+ * like `performSymbolRename`'s apply branch but skipping the re-query.
+ */
+export async function applyComputedRename(
+  state: StudioState,
+  applyMoveResult: StudioState["applyMoveResult"],
+  args: { path: string; currentName: string; newName: string; result: SymbolRenameResult },
+): Promise<void> {
+  const { path, currentName, newName, result } = args;
+  await applyMoveResult(
+    result,
+    `Rename ${currentName} to ${newName}`,
+    result.path ? [result.path] : [],
+  );
+  if (currentName !== newName) {
+    state.renameSymbolDocKey(path, currentName, newName);
+  }
 }

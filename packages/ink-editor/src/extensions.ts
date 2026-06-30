@@ -1,5 +1,5 @@
 import { Compartment, type Extension } from "@codemirror/state";
-import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction } from "@brink/wasm-types";
+import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, SymbolRenameResult } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
@@ -14,7 +14,7 @@ import { inlayHintsExtension } from "./inlay-hints.js";
 import { argumentWidgetsExtension, type FormGlyphMode } from "./argument-widgets.js";
 import { signatureHelpExtension } from "./signature-help.js";
 import { referencesExtension } from "./references.js";
-import { renameExtension } from "./rename.js";
+import { renameExtension, type BreakageContext } from "./rename.js";
 import { codeActionsExtension } from "./code-actions.js";
 import { playFromHereExtension } from "./play-from-here.js";
 
@@ -40,9 +40,17 @@ export interface BrinkStudioOptions {
   getActiveFile?: () => string;
   findReferences?: (source: string, offset: number) => Location[];
   prepareRename?: (source: string, offset: number) => Location | null;
-  /** F2 — begin a rename of the symbol under the cursor; the host opens the
-   *  safe-by-default rename prompt (cross-file + breakage report). */
-  startRename?: (offset: number, currentName: string) => void;
+  /** Live (debounced) safe-rename query for the inline-rename badge (#323/#324):
+   *  computes the new sources + breakage report without applying anything.
+   *  `offset` is in view coords; the host folds in any fragment-view origin. */
+  renameSymbolAt?: (offset: number, newName: string) => SymbolRenameResult;
+  /** Commit an inline rename — apply the (already-computed) edits across files.
+   *  Called on a safe Enter or an explicit "Rename anyway". `currentName` is the
+   *  symbol's original name (for re-keying open symbol tabs). */
+  commitRename?: (result: SymbolRenameResult, newName: string, currentName: string) => void;
+  /** Optional host override for the inline breakage surface (#324). Return
+   *  `true` to suppress the default inline report and render your own. */
+  onRenameBreakage?: (result: SymbolRenameResult, ctx: BreakageContext) => boolean;
   getCodeActions?: (source: string, offset: number) => CodeAction[];
   getInlayHints?: (source: string, start: number, end: number) => InlayHint[];
   getArgumentWidgets?: (source: string, start: number, end: number) => CallWidgetSite[];
@@ -106,9 +114,14 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   if (options.findReferences) {
     ideExtensions.push(referencesExtension({ findReferences: options.findReferences }));
   }
-  if (options.prepareRename && options.startRename) {
+  if (options.prepareRename && options.renameSymbolAt && options.commitRename) {
     ideExtensions.push(
-      renameExtension({ prepareRename: options.prepareRename, startRename: options.startRename }),
+      renameExtension({
+        prepareRename: options.prepareRename,
+        renameSymbolAt: options.renameSymbolAt,
+        commitRename: options.commitRename,
+        onBreakage: options.onRenameBreakage,
+      }),
     );
   }
   if (options.getCodeActions) {

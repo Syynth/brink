@@ -81,6 +81,7 @@ import {
   StoreProvider,
   SymbolContextMenuHost,
   SymbolRenamePrompt,
+  applyComputedRename,
   StoryGraphDocument,
   StudioApiProvider,
   createStudioApi,
@@ -480,10 +481,16 @@ export async function mountStudio(
     onPlayFrom: (inkPath, label) => store.getState().openSession({ path: inkPath, label }),
     // Right-click a knot/stitch → the shared symbol context menu (rendered by
     // <SymbolContextMenuHost/>).
-    onSymbolContextMenu: (info, x, y) => store.getState().openSymbolMenu({ ...info, x, y }),
-    // F2 (#305): open the safe rename prompt seeded at the cursor symbol
-    // (rendered by <SymbolRenamePrompt/>).
-    onRename: (req) => store.getState().openRenamePrompt(req),
+    onSymbolContextMenu: (info, x, y) =>
+      store.getState().openSymbolMenu({ ...info, x, y, source: "editor" }),
+    // Inline rename (#323/#324): the editor's F2 / context-menu rename runs
+    // fully in the editor — the badge computes the breakage live, and this
+    // commit applies the (already-computed) edits + re-keys the symbol tab.
+    // The modal <SymbolRenamePrompt/> stays for Binder/Story-Graph renames.
+    onRenameCommit: (req) => {
+      const state = store.getState();
+      void applyComputedRename(state, state.applyMoveResult, req);
+    },
   });
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush

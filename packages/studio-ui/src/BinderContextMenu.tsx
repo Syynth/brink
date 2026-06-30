@@ -50,7 +50,7 @@ interface Props {
 
 export type ContextMenuAction =
   | { type: "playFromHere"; path: string; inkPath: string; label: string }
-  | { type: "renameSymbol"; path: string; knot: string; stitch?: string }
+  | { type: "renameSymbol"; path: string; knot: string; stitch?: string; source?: "editor" | "graph" }
   | { type: "reorderStitch"; path: string; knot: string; stitch: string; direction: number }
   | { type: "reorderKnot"; path: string; knot: string; direction: number }
   | { type: "reorderStitches"; path: string; knot: string; order: string[] }

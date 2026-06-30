@@ -29,6 +29,7 @@ export { SymbolRenamePrompt } from "./SymbolRenamePrompt.js";
 export {
   dispatchSymbolAction,
   performSymbolRename,
+  applyComputedRename,
   type SymbolRenameOutcome,
 } from "./symbolMenuActions.js";
 export { useSymbolMenuActions } from "./useSymbolMenuActions.js";
