@@ -90,3 +90,125 @@
   background: var(--bs-error) !important;
   color: var(--bs-panel-bg) !important;
 }
+
+/* ── Inline rename (#323/#324) ──────────────────────────────────────
+   The in-editor rename widget: a chip hosting a name input, a "⚠ breaks N"
+   badge, and (expanded) an inline breakage report. Rendered inside the CM6
+   content via Decoration.replace, so it inherits the editor font; colors use
+   only the semantic --bs-* tokens. */
+.brink-studio .brink-inline-rename {
+  display: inline-block;
+  vertical-align: baseline;
+}
+.brink-studio .brink-inline-rename-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.brink-studio .brink-inline-rename-input {
+  font: inherit;
+  color: var(--bs-fg);
+  background: var(--bs-input-bg, var(--bs-panel-bg));
+  border: 1px solid var(--bs-accent, var(--bs-border));
+  border-radius: 3px;
+  padding: 0 4px;
+  min-width: 6ch;
+  /* Grow with content up to a sane cap so the line doesn't jump. */
+  width: auto;
+  outline: none;
+}
+.brink-studio .brink-inline-rename-input:focus {
+  border-color: var(--bs-accent);
+  box-shadow: 0 0 0 1px var(--bs-accent);
+}
+.brink-studio .brink-inline-rename-badge {
+  font: inherit;
+  font-size: 0.85em;
+  line-height: 1.4;
+  padding: 0 6px;
+  border-radius: 3px;
+  border: 1px solid var(--bs-warning);
+  color: var(--bs-warning);
+  background: color-mix(in srgb, var(--bs-warning) 14%, transparent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.brink-studio .brink-inline-rename-badge:hover {
+  background: color-mix(in srgb, var(--bs-warning) 24%, transparent);
+}
+.brink-studio .brink-inline-rename-badge[hidden] {
+  display: none;
+}
+
+/* The expanded inline breakage report — a block beneath the input row. */
+.brink-studio .brink-inline-rename-report {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  min-width: 320px;
+  max-width: 520px;
+  border: 1px solid var(--bs-border);
+  border-left: 2px solid var(--bs-warning);
+  border-radius: 4px;
+  background: var(--bs-panel-bg);
+  white-space: normal;
+}
+.brink-studio .brink-inline-rename-report[hidden] {
+  display: none;
+}
+.brink-studio .brink-inline-rename-report-head {
+  margin: 0;
+  font-size: 0.85em;
+  color: var(--bs-fg);
+}
+.brink-studio .brink-inline-rename-report-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.brink-studio .brink-inline-rename-report-item {
+  display: flex;
+  gap: 6px;
+  font-size: 0.8em;
+  line-height: 1.4;
+}
+.brink-studio .brink-inline-rename-report-loc {
+  color: var(--bs-accent);
+  flex: none;
+}
+.brink-studio .brink-inline-rename-report-msg {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .brink-inline-rename-report-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.brink-studio .brink-inline-rename-report-actions button {
+  font: inherit;
+  font-size: 0.85em;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--bs-border);
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg);
+  cursor: pointer;
+}
+.brink-studio .brink-inline-rename-report-actions button:hover {
+  background: var(--bs-list-active-bg);
+}
+.brink-studio .brink-inline-rename-force {
+  border-color: var(--bs-error) !important;
+  color: var(--bs-error) !important;
+}
+.brink-studio .brink-inline-rename-force:hover {
+  background: var(--bs-error) !important;
+  color: var(--bs-panel-bg) !important;
+}
