@@ -42,6 +42,24 @@ export interface FileChange {
   content?: string;
 }
 
+/**
+ * An external (on-disk) change that would clobber unsaved studio edits
+ * (issue #320). Reported when the host rewrites a file the studio has a
+ * dirty buffer for, and the host's new on-disk content differs from that
+ * buffer. The studio must NOT silently overwrite the editor buffer in this
+ * case — it keeps the buffer, flags the path conflicted, and surfaces the
+ * three texts so a merge/diff UI (Track V) can let the user reconcile.
+ */
+export interface FileConflict {
+  path: string;
+  /** The host's new on-disk content (the external change). */
+  disk: string;
+  /** The studio's current, unsaved editor-buffer content. */
+  buffer: string;
+  /** The last host-synced baseline the dirty buffer diverged from. */
+  baseline: string;
+}
+
 export interface FileChangeHubOptions {
   /** Read a file's current session content (null when unknown/removed). */
   getContent(path: string): string | null;
@@ -50,6 +68,11 @@ export interface FileChangeHubOptions {
   onFlush?: (changes: FileChange[]) => void;
   /** Dirty-file count changed (drives the public-state summary). */
   onDirtyChange?: (dirtyCount: number) => void;
+  /** An external change collided with an unsaved studio buffer (issue #320).
+   *  Fired by the session's external-change handler when
+   *  {@link FileChangeHub.detectExternalConflict} returns a conflict, so a
+   *  merge/diff surface can reconcile the two versions. */
+  onFileConflict?: (conflict: FileConflict) => void;
   /** Trailing debounce before an automatic flush (default 500 ms). */
   debounceMs?: number;
 }
@@ -62,6 +85,7 @@ export class FileChangeHub {
   private readonly getContent: (path: string) => string | null;
   private readonly onFlush?: (changes: FileChange[]) => void;
   private onDirtyChange?: (dirtyCount: number) => void;
+  private readonly onFileConflict?: (conflict: FileConflict) => void;
   private readonly debounceMs: number;
 
   /** Pending (recorded, not yet flushed) changes, coalesced per path. */
@@ -70,6 +94,9 @@ export class FileChangeHub {
   private readonly baselines = new Map<string, string>();
   /** Paths whose session content diverges from baseline. */
   private readonly dirty = new Set<string>();
+  /** Paths whose dirty buffer collided with an external change and was kept
+   *  (issue #320). Cleared when the path is re-baselined or saved. */
+  private readonly conflicted = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
@@ -77,6 +104,7 @@ export class FileChangeHub {
     this.getContent = options.getContent;
     this.onFlush = options.onFlush;
     this.onDirtyChange = options.onDirtyChange;
+    this.onFileConflict = options.onFileConflict;
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   }
 
@@ -138,7 +166,52 @@ export class FileChangeHub {
       this.baselines.set(path, content);
     }
     this.pending.delete(path);
+    // Re-baselining to the host's content resolves any standing conflict.
+    this.conflicted.delete(path);
     this.updateDirty(path);
+  }
+
+  // ── External conflicts (issue #320) ──────────────────────────────
+
+  /**
+   * Decide whether an external change to `path` (the host's new on-disk
+   * content `disk`) would clobber an unsaved studio edit. Returns a
+   * {@link FileConflict} ONLY when all hold:
+   *
+   * - the path is dirty (its buffer diverges from the baseline), AND
+   * - the host's `disk` content differs from that live buffer, AND
+   * - a baseline exists (the studio knows what the buffer diverged from).
+   *
+   * Otherwise (clean buffer, or buffer already equals disk, or no baseline)
+   * there is nothing to reconcile and `null` is returned — the caller is
+   * free to overwrite the buffer and re-baseline as before. Pure query: it
+   * records no state, so the caller decides what to do with a conflict.
+   */
+  detectExternalConflict(path: string, disk: string): FileConflict | null {
+    if (!this.dirty.has(path)) return null;
+    const baseline = this.baselines.get(path);
+    if (baseline === undefined) return null;
+    const buffer = this.getContent(path);
+    if (buffer === null) return null;
+    if (buffer === disk) return null;
+    return { path, disk, buffer, baseline };
+  }
+
+  /**
+   * Apply the safe default for an unresolved external conflict (issue #320):
+   * KEEP the dirty editor buffer (do not overwrite it, do not re-baseline)
+   * and flag the path as conflicted. Caller invokes this after
+   * {@link detectExternalConflict} returns non-null instead of the
+   * overwrite+re-baseline path.
+   */
+  markConflicted(path: string): void {
+    this.conflicted.add(path);
+  }
+
+  /** Paths whose dirty buffer collided with an external change and was kept,
+   *  not yet reconciled (issue #320). Sorted for deterministic output. */
+  conflictedPaths(): string[] {
+    return [...this.conflicted].sort();
   }
 
   /** Re-baseline `paths` to their current session content (explicit save).
@@ -152,6 +225,8 @@ export class FileChangeHub {
         this.baselines.set(path, content);
       }
       this.pending.delete(path);
+      // Saving the kept buffer resolves any standing conflict for the path.
+      this.conflicted.delete(path);
       this.updateDirty(path);
     }
   }
@@ -227,6 +302,8 @@ export class FileChangeHub {
       this.dirty.add(path);
     } else {
       this.dirty.delete(path);
+      // A clean path (buffer back at baseline) has nothing left to reconcile.
+      this.conflicted.delete(path);
     }
     if (this.dirty.size !== before) {
       this.onDirtyChange?.(this.dirty.size);
