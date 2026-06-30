@@ -16,6 +16,7 @@ import {
   InMemoryFileProvider,
   ProjectSession,
   type FileChange,
+  type FileConflict,
 } from "@brink/ink-editor";
 import { initWasm } from "@brink-lang/web";
 import type { MoveResult } from "@brink/wasm-types";
@@ -131,6 +132,111 @@ describe("ProjectSession egress seam", () => {
     project.applyEdit("main.ink", "v2");
     project.markAllSaved();
     expect(counts).toEqual([0, 1, 0]); // immediate report on bind, then transitions
+  });
+});
+
+// ── External-change conflict handling, end-to-end (#320) ────────────
+//
+// These drive a REAL ProjectSession through `provider.onExternalChange` —
+// the production handler in project-session.ts that contained the silent
+// data-loss bug. Unlike the FileChangeHub unit tests (which exercise the
+// hub primitives in isolation), these prove the handler itself does NOT
+// clobber the live wasm buffer, fires `onFileConflict`, and flags the path
+// conflicted. A reintroduction of the original two-part clobber
+// (updateFile + applyExternal on a dirty path) would fail these.
+
+/** InMemoryFileProvider that also emits external (on-disk) changes, so a
+ *  ProjectSession's `provider.onExternalChange` registration can be driven
+ *  the way a real filesystem watcher would (issue #320). */
+class WatchedFileProvider extends InMemoryFileProvider {
+  private watchers = new Set<(path: string, content: string | null) => void>();
+
+  onExternalChange(callback: (path: string, content: string | null) => void): () => void {
+    this.watchers.add(callback);
+    return () => this.watchers.delete(callback);
+  }
+
+  /** Simulate the host rewriting `path` on disk to `content` (null = delete)
+   *  and notifying watchers — exactly what a filesystem watcher would do. */
+  emitExternalChange(path: string, content: string | null): void {
+    if (content === null) void this.deleteFile(path);
+    else void this.createFile(path, content);
+    for (const w of this.watchers) w(path, content);
+  }
+}
+
+async function makeWatchedProject(): Promise<{
+  provider: WatchedFileProvider;
+  project: ProjectSession;
+  conflicts: FileConflict[];
+  externals: { path: string; content: string | null }[];
+}> {
+  await initWasm();
+  const provider = new WatchedFileProvider({ "main.ink": MAIN_INK, "side.ink": SIDE_INK });
+  const conflicts: FileConflict[] = [];
+  const externals: { path: string; content: string | null }[] = [];
+  const project = new ProjectSession({
+    provider,
+    entryFile: "main.ink",
+    onFileConflict: (c) => conflicts.push(c),
+    onExternalFileChange: (path, content) => externals.push({ path, content }),
+  });
+  await project.initialize();
+  return { provider, project, conflicts, externals };
+}
+
+describe("ProjectSession external-change handler (#320)", () => {
+  it("does NOT clobber a dirty wasm buffer; flags conflicted; fires onFileConflict", async () => {
+    const { provider, project, conflicts, externals } = await makeWatchedProject();
+
+    // The studio has an unsaved, divergent edit to main.ink.
+    project.applyEdit("main.ink", "studio edit");
+    expect(project.dirtyPaths()).toEqual(["main.ink"]);
+
+    // The host rewrites main.ink on disk to something else.
+    provider.emitExternalChange("main.ink", "host edit");
+
+    // The live wasm buffer is UNTOUCHED — the unsaved edit survives. This is
+    // the exact data-loss the original two-part clobber caused.
+    expect(project.getSession().getFileSource("main.ink")).toBe("studio edit");
+    // The path is flagged conflicted (safe default), still dirty.
+    expect(project.conflictedPaths()).toEqual(["main.ink"]);
+    expect(project.dirtyPaths()).toEqual(["main.ink"]);
+    // The conflict hook fired with all three texts for a merge surface.
+    expect(conflicts).toEqual([
+      { path: "main.ink", disk: "host edit", buffer: "studio edit", baseline: MAIN_INK },
+    ]);
+    // The non-conflict external-change callback did NOT fire (no re-baseline).
+    expect(externals).toEqual([]);
+  });
+
+  it("a clean (non-dirty) path is updated by the external change — no conflict", async () => {
+    const { provider, project, conflicts, externals } = await makeWatchedProject();
+    expect(project.dirtyPaths()).toEqual([]);
+
+    provider.emitExternalChange("main.ink", "host rewrite");
+
+    // Clean buffer: the host content wins, the wasm buffer updates.
+    expect(project.getSession().getFileSource("main.ink")).toBe("host rewrite");
+    expect(project.conflictedPaths()).toEqual([]);
+    expect(project.dirtyPaths()).toEqual([]); // re-baselined to disk
+    expect(conflicts).toEqual([]);
+    expect(externals).toEqual([{ path: "main.ink", content: "host rewrite" }]);
+  });
+
+  it("an external change matching the dirty buffer is not a conflict", async () => {
+    const { provider, project, conflicts, externals } = await makeWatchedProject();
+    project.applyEdit("main.ink", "converged");
+    expect(project.dirtyPaths()).toEqual(["main.ink"]);
+
+    // The host wrote the same text the studio edited to: nothing to reconcile.
+    provider.emitExternalChange("main.ink", "converged");
+
+    expect(project.getSession().getFileSource("main.ink")).toBe("converged");
+    expect(project.conflictedPaths()).toEqual([]);
+    expect(project.dirtyPaths()).toEqual([]); // re-baselined; buffer === disk
+    expect(conflicts).toEqual([]);
+    expect(externals).toEqual([{ path: "main.ink", content: "converged" }]);
   });
 });
 
