@@ -19,7 +19,7 @@
 import type { FileProvider } from "./provider.js";
 import { EditorSessionHandle } from "@brink-lang/web";
 import type { CompileResult } from "@brink/wasm-types";
-import { FileChangeHub, type FileChange } from "./file-change-hub.js";
+import { FileChangeHub, type FileChange, type FileConflict } from "./file-change-hub.js";
 
 export interface ProjectSessionOptions {
   provider: FileProvider;
@@ -28,6 +28,13 @@ export interface ProjectSessionOptions {
   session?: EditorSessionHandle;
   /** Called when an external file change is detected. */
   onExternalFileChange?: (path: string, content: string | null) => void;
+  /**
+   * Called when an external change collides with an unsaved studio buffer
+   * (issue #320). The studio keeps the dirty buffer (the SAFE DEFAULT) and
+   * flags the path conflicted; this hook lets a merge/diff surface (Track V)
+   * reconcile the host's on-disk content with the kept buffer.
+   */
+  onFileConflict?: (conflict: FileConflict) => void;
   /**
    * Host egress callback (issue #154): receives debounced, batched change
    * notifications for every session-content mutation. See FileChangeHub.
@@ -43,6 +50,7 @@ export class ProjectSession {
   private session: EditorSessionHandle;
   private readonly changes: FileChangeHub;
   private onExternalFileChange?: (path: string, content: string | null) => void;
+  private onFileConflict?: (conflict: FileConflict) => void;
   private unsubscribeExternal?: () => void;
   private destroyed = false;
   private lastCompile: { generation: number; result: CompileResult } | null = null;
@@ -52,9 +60,11 @@ export class ProjectSession {
     this.entryFile = options.entryFile;
     this.session = options.session ?? new EditorSessionHandle();
     this.onExternalFileChange = options.onExternalFileChange;
+    this.onFileConflict = options.onFileConflict;
     this.changes = new FileChangeHub({
       getContent: (path) => (this.destroyed ? null : this.session.getFileSource(path)),
       onFlush: options.onFilesChanged,
+      onFileConflict: options.onFileConflict,
       debounceMs: options.changeDebounceMs,
     });
   }
@@ -77,13 +87,30 @@ export class ProjectSession {
     // would call into a freed wasm session (use-after-free).
     this.unsubscribeExternal = this.provider.onExternalChange?.((path, content) => {
       if (this.destroyed) return;
+
+      // Guard against silent data loss (issue #320): if the host rewrites a
+      // file the studio has an unsaved, divergent buffer for, overwriting the
+      // wasm buffer + re-baselining would clobber the pending edit with no
+      // recourse. Detect that BEFORE mutating anything.
+      const conflict =
+        content === null ? null : this.changes.detectExternalConflict(path, content);
+      if (conflict !== null) {
+        // SAFE DEFAULT: keep the editor buffer (no updateFile), do not
+        // re-baseline (no applyExternal) — flag the path conflicted and hand
+        // both versions to the host for reconciliation (Track V merge view).
+        this.changes.markConflicted(path);
+        this.onFileConflict?.(conflict);
+        return;
+      }
+
       if (content === null) {
         this.session.removeFile(path);
       } else {
         this.session.updateFile(path, content);
       }
-      // The host's content is the new truth — re-baseline, supersede any
-      // pending studio-side change for the path (no echo back to the host).
+      // No conflict (clean buffer, or buffer already equals disk): the host's
+      // content is the new truth — re-baseline, supersede any pending
+      // studio-side change for the path (no echo back to the host).
       this.changes.applyExternal(path, content);
       this.onExternalFileChange?.(path, content);
     });
@@ -254,6 +281,12 @@ export class ProjectSession {
   /** Paths whose content diverges from the last-saved/notified baseline. */
   dirtyPaths(): string[] {
     return this.changes.dirtyPaths();
+  }
+
+  /** Paths whose dirty buffer collided with an external change and was kept,
+   *  not yet reconciled (issue #320). */
+  conflictedPaths(): string[] {
+    return this.changes.conflictedPaths();
   }
 
   /** Observe the dirty-file count (drives the public-state summary). */

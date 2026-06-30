@@ -45,7 +45,12 @@ export type { ProjectSessionOptions } from "./project-session.js";
 
 // File-change egress (issues #154/#137): the shared notify seam.
 export { FileChangeHub } from "./file-change-hub.js";
-export type { FileChange, FileChangeType, FileChangeHubOptions } from "./file-change-hub.js";
+export type {
+  FileChange,
+  FileChangeType,
+  FileChangeHubOptions,
+  FileConflict,
+} from "./file-change-hub.js";
 
 // Provider
 export { InMemoryFileProvider } from "./provider.js";
@@ -88,3 +93,8 @@ export type {
   SearchPatternResult,
   SearchQueryOptions,
 } from "./project-search.js";
+
+// Find panel (#319 Track N): opt-in @codemirror/search factory. Not auto-enabled
+// in the studio editor — hosts opt in by adding the returned extension.
+export { findPanel } from "./find-panel.js";
+export type { FindPanelOptions } from "./find-panel.js";

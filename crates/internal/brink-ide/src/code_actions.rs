@@ -9,6 +9,13 @@ pub enum CodeActionKind {
 }
 
 /// Data identifying which code action to perform on resolve.
+///
+/// Serializes to a self-describing, internally-tagged JSON object (the `action`
+/// field is the discriminator). This is the payload carried in a code action's
+/// `data` field over the wasm boundary so a selected action can be passed back
+/// to `resolve_code_action` without re-deriving it from the cursor position.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "action")]
 pub enum CodeActionData {
     SortKnots,
     SortStitches {

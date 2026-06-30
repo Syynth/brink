@@ -1761,6 +1761,29 @@ impl EditorSession {
         self.code_actions_impl(&self.active_path, self.view.as_ref(), offset)
     }
 
+    /// Apply a code action selected from [`code_actions`](Self::code_actions).
+    ///
+    /// `data_json` is the `data` field of a `CodeAction` (the self-describing,
+    /// internally-tagged discriminator). `offset` is the cursor position the
+    /// action was offered at — unused for the source-level actions (format /
+    /// sort / structural move) but accepted for parity with the other queries
+    /// and so future cursor-scoped actions need no signature change.
+    ///
+    /// Returns `MoveResult`-shaped JSON: `new_source` for the primary file plus
+    /// any `cross_file_edits` for structural moves, or `ok: false` with an
+    /// `error` when the data is malformed or the action is a no-op.
+    pub fn resolve_code_action(&self, data_json: &str, offset: u32) -> String {
+        self.resolve_code_action_impl(&self.active_path, self.view.as_ref(), data_json, offset)
+    }
+
+    /// Document-handle variant of [`resolve_code_action`](Self::resolve_code_action).
+    pub fn resolve_code_action_doc(&self, doc: u32, data_json: &str, offset: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return error_json("unknown document handle");
+        };
+        self.resolve_code_action_impl(&d.path, d.view.as_ref(), data_json, offset)
+    }
+
     /// Compute inlay hints. Returns JSON array.
     pub fn inlay_hints(&self, start: u32, end: u32) -> String {
         self.inlay_hints_impl(&self.active_path, self.view.as_ref(), start, end)
@@ -2473,10 +2496,45 @@ impl EditorSession {
             .map(|a| CodeActionJs {
                 title: a.title.clone(),
                 kind: code_action_kind_str(&a.kind).to_owned(),
+                data: serde_json::to_value(&a.data).unwrap_or(serde_json::Value::Null),
             })
             .collect();
 
         serde_json::to_string(&items).unwrap_or_default()
+    }
+
+    fn resolve_code_action_impl(
+        &self,
+        path: &str,
+        _view: Option<&ViewContext>,
+        data_json: &str,
+        _offset: u32,
+    ) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return error_json("file not loaded");
+        };
+        let Some(source) = self.session.source(file_id) else {
+            return error_json("no source");
+        };
+
+        let data: brink_ide::code_actions::CodeActionData = match serde_json::from_str(data_json) {
+            Ok(d) => d,
+            Err(e) => return error_json(&format!("invalid code-action data: {e}")),
+        };
+
+        // Structural moves (move / promote / demote) need analysis context;
+        // everything else (format / sort / reorder) is a pure source rewrite.
+        if let Some(analysis) = self.session.analysis()
+            && let Some(result) =
+                brink_ide::code_actions::resolve_structural_action(source, analysis, file_id, &data)
+        {
+            return move_result_json(&self.session, result, path);
+        }
+
+        match brink_ide::code_actions::resolve_code_action(source, &data) {
+            Some(new_source) => move_result_json_simple(new_source, path),
+            None => error_json("code action produced no change"),
+        }
     }
 
     fn inlay_hints_impl(
@@ -3281,6 +3339,11 @@ struct DocumentSymbolJs {
 struct CodeActionJs {
     title: String,
     kind: String,
+    /// Self-describing, internally-tagged payload (the `action` field is the
+    /// discriminator) identifying which transformation this action performs.
+    /// Pass it straight back to `resolve_code_action` to apply the action — the
+    /// studio never has to reconstruct it from the cursor position.
+    data: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -4178,6 +4241,125 @@ mod tests {
             a.story_graph(),
             b.story_graph(),
             "story graph JSON must be identical regardless of insertion order"
+        );
+    }
+
+    // ── resolve_code_action (#321 Track N) ──────────────────────────
+    // The code_actions JSON carries a self-describing `data` discriminator;
+    // feeding that payload back to resolve_code_action applies the action and
+    // returns MoveResult-shaped JSON with the rewritten source.
+
+    /// The byte offset (cursor) inside the first knot's body — enough to scope
+    /// cursor-anchored actions to that knot.
+    const UNSORTED_KNOTS: &str = "=== beta ===\nhi\n-> END\n=== alpha ===\nyo\n-> END\n";
+
+    fn find_action<'a>(
+        actions: &'a serde_json::Value,
+        title_contains: &str,
+    ) -> &'a serde_json::Value {
+        actions
+            .as_array()
+            .expect("code_actions returns a JSON array")
+            .iter()
+            .find(|a| {
+                a["title"]
+                    .as_str()
+                    .is_some_and(|t| t.contains(title_contains))
+            })
+            .expect("a code action whose title matches the expected substring")
+    }
+
+    #[test]
+    fn code_action_data_is_self_describing() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", UNSORTED_KNOTS);
+        assert!(s.set_active_file("main.ink"));
+
+        let actions: serde_json::Value =
+            serde_json::from_str(&s.code_actions(0)).expect("valid JSON array");
+        let sort = find_action(&actions, "Sort knots");
+        // The tagged discriminator must be present and round-trippable.
+        assert_eq!(
+            sort["data"]["action"], "SortKnots",
+            "data carries the tagged discriminator: {actions}"
+        );
+    }
+
+    #[test]
+    fn resolve_sort_action_yields_sorted_source() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", UNSORTED_KNOTS);
+        assert!(s.set_active_file("main.ink"));
+
+        let actions: serde_json::Value =
+            serde_json::from_str(&s.code_actions(0)).expect("valid JSON array");
+        let data = find_action(&actions, "Sort knots")["data"].to_string();
+
+        let result: serde_json::Value =
+            serde_json::from_str(&s.resolve_code_action(&data, 0)).expect("valid MoveResult JSON");
+        assert_eq!(result["ok"], true, "resolve succeeds: {result}");
+        let new_source = result["new_source"]
+            .as_str()
+            .expect("new_source is present and a string");
+        assert!(
+            !new_source.is_empty(),
+            "sort action produces non-empty edits"
+        );
+        // alpha now precedes beta.
+        let alpha = new_source.find("alpha").expect("alpha knot present");
+        let beta = new_source.find("beta").expect("beta knot present");
+        assert!(
+            alpha < beta,
+            "knots are sorted alphabetically: {new_source:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_format_action_yields_formatted_source() {
+        // A knot whose body has a formatting deviation the formatter fixes.
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "=== k ===\n* [opt]   trailing spaces   \n-> END\n",
+        );
+        assert!(s.set_active_file("main.ink"));
+
+        // Cursor inside the knot body.
+        let offset = 12;
+        let actions: serde_json::Value =
+            serde_json::from_str(&s.code_actions(offset)).expect("valid JSON array");
+        let format = find_action(&actions, "Format knot");
+        assert_eq!(
+            format["data"]["action"], "FormatKnot",
+            "format action carries its discriminator: {actions}"
+        );
+        let data = format["data"].to_string();
+
+        let result: serde_json::Value = serde_json::from_str(&s.resolve_code_action(&data, offset))
+            .expect("valid MoveResult JSON");
+        assert_eq!(result["ok"], true, "resolve succeeds: {result}");
+        let new_source = result["new_source"]
+            .as_str()
+            .expect("new_source is present and a string");
+        assert!(
+            !new_source.is_empty(),
+            "format action produces non-empty edits"
+        );
+    }
+
+    #[test]
+    fn resolve_rejects_malformed_data() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", UNSORTED_KNOTS);
+        assert!(s.set_active_file("main.ink"));
+
+        let result: serde_json::Value =
+            serde_json::from_str(&s.resolve_code_action("{ not valid }", 0))
+                .expect("error is still MoveResult-shaped JSON");
+        assert_eq!(result["ok"], false, "malformed data -> ok:false: {result}");
+        assert!(
+            result["error"].as_str().is_some(),
+            "an error message is present"
         );
     }
 }
