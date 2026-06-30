@@ -22,6 +22,7 @@ import {
 import { QuickOpen } from "./QuickOpen.js";
 import { NewFilePrompt } from "./NewFilePrompt.js";
 import { SearchCommands } from "./SearchView.js";
+import { ConflictMergeView } from "./ConflictMergeView.js";
 
 function App() {
   const tier = useShellLayout((s) => s.tier);
@@ -39,6 +40,7 @@ function App() {
       <QuickOpen />
       <NewFilePrompt />
       <SearchCommands />
+      <ConflictMergeView />
       <NotificationStack />
     </div>
   );

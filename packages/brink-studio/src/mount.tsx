@@ -27,6 +27,8 @@ import {
   InMemoryFileProvider,
   setHostWidgets,
   type FileChange,
+  type FileConflict,
+  type FileProvider,
 } from "@brink/ink-editor";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
 import {
@@ -132,6 +134,15 @@ export interface MountStudioOptions {
    * MZ writing `data/brink/**`; see docs/embedder-api.md "File egress").
    */
   onFilesChanged?: (changes: FileChange[]) => void;
+  /**
+   * File provider override (issue #320 / testability). Defaults to an
+   * {@link InMemoryFileProvider} seeded from `files`. A host can pass its own
+   * provider (e.g. one whose `onExternalChange` is driven by a real filesystem
+   * watcher) so external on-disk changes — and the conflict merge view they
+   * surface — work against live host I/O. When omitted, `files` seeds the
+   * default in-memory provider as before.
+   */
+  provider?: FileProvider;
   /**
    * Where to load the wasm binary from — forwarded to `initWasm`. By
    * default the binary resolves relative to the module URL, which cannot
@@ -317,14 +328,24 @@ export async function mountStudio(
 
   // Initialize the project BEFORE rendering so the wasm session has files
   // loaded.
-  const provider = new InMemoryFileProvider(options.files);
+  const provider = options.provider ?? new InMemoryFileProvider(options.files);
   const { entryFile } = options;
+  // Holder so the conflict bridge can reach the store: the ProjectSession
+  // callback only fires after `initialize`, by which point `storeRef.current`
+  // is the live store.
+  const storeRef: { current: StudioStore | null } = { current: null };
   const project = new ProjectSession({
     provider,
     entryFile,
     // Host egress (#154): every session-content mutation reports through
     // the project's FileChangeHub, which batches + debounces into this.
     onFilesChanged: options.onFilesChanged,
+    // External-conflict surface (#320, Track V): the B1 hook fires here when
+    // an on-disk change collides with an unsaved buffer. Mirror it into the
+    // store so the merge view (banner + 2-way MergeView) can render + resolve.
+    onFileConflict: (conflict: FileConflict) => {
+      storeRef.current?.getState().setConflict(conflict);
+    },
   });
   await project.initialize();
 
@@ -335,6 +356,7 @@ export async function mountStudio(
   }
 
   const store = createStudioStore();
+  storeRef.current = store;
 
   // Mirror the project's dirty-file count into the store — it feeds the
   // StudioPublicState.dirtyFiles summary (#154). Cheap scalar only; file

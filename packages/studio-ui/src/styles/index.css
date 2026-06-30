@@ -6,6 +6,7 @@
    .brink-studio. */
 
 @import "./binder.css";
+@import "./conflict.css";
 @import "./context-menu.css";
 @import "./editor.css";
 @import "./output.css";

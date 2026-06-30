@@ -115,3 +115,9 @@ export type {
 // in the studio editor — hosts opt in by adding the returned extension.
 export { findPanel } from "./find-panel.js";
 export type { FindPanelOptions } from "./find-panel.js";
+
+// External-conflict merge view (#320 Track V): self-contained banner +
+// side-by-side 2-way @codemirror/merge surface for a kept-buffer conflict.
+// Framework-agnostic — the studio mounts it into a host container.
+export { ConflictView } from "./conflict-view.js";
+export type { ConflictViewOptions } from "./conflict-view.js";

@@ -1,0 +1,134 @@
+/* External-conflict merge view (issue #320, Track V).
+   Scoped under .brink-studio; colors reference only the semantic --bs-*
+   tokens (spec §7.4), so both themes render correctly. The overlay covers the
+   editor area: a conflict is a modal "reconcile this" moment. */
+
+.brink-studio .brink-conflict-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  background: color-mix(in srgb, var(--bs-surface-bg) 70%, transparent);
+  padding: 12px;
+}
+
+.brink-studio .brink-conflict-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bs-panel-bg);
+  box-shadow: 0 8px 32px color-mix(in srgb, black 35%, transparent);
+}
+
+/* ── Banner ───────────────────────────────────────────────────────── */
+
+.brink-studio .brink-conflict-banner {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--bs-border);
+  border-left: 3px solid var(--bs-warning);
+  background: color-mix(in srgb, var(--bs-warning) 12%, var(--bs-panel-bg));
+  font-size: 12px;
+}
+
+.brink-studio .brink-conflict-message {
+  flex: 1;
+  min-width: 0;
+  color: var(--bs-fg);
+  line-height: 1.4;
+}
+
+.brink-studio .brink-conflict-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+}
+
+.brink-studio .brink-conflict-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--bs-border);
+  background: var(--bs-panel-bg);
+  color: var(--bs-fg);
+  cursor: pointer;
+}
+.brink-studio .brink-conflict-btn:hover:not(:disabled) {
+  background: var(--bs-hover-bg);
+}
+.brink-studio .brink-conflict-btn:focus-visible {
+  outline: 2px solid var(--bs-accent);
+  outline-offset: 1px;
+}
+.brink-studio .brink-conflict-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The primary "Use disk" (destructive-ish: discards local edits) reads accent;
+   "Apply merge" reads accent-filled once enabled. */
+.brink-studio .brink-conflict-use-disk {
+  border-color: var(--bs-accent);
+  color: var(--bs-accent);
+}
+.brink-studio .brink-conflict-apply-merge:not(:disabled) {
+  background: var(--bs-accent);
+  border-color: var(--bs-accent);
+  color: var(--bs-on-accent);
+}
+
+/* ── Pane captions (YOURS | ON DISK) ──────────────────────────────── */
+
+.brink-studio .brink-conflict-captions {
+  flex-shrink: 0;
+  display: flex;
+  border-bottom: 1px solid var(--bs-border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--bs-fg-muted);
+  background: var(--bs-surface-bg);
+}
+.brink-studio .brink-conflict-caption {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 12px;
+}
+.brink-studio .brink-conflict-caption-disk {
+  border-left: 1px solid var(--bs-border);
+}
+
+/* ── Merge surface ────────────────────────────────────────────────── */
+
+.brink-studio .brink-conflict-merge {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+/* @codemirror/merge styles its outer container `.cm-mergeView`; make it fill
+   the panel and scroll internally (the package ships unscrollable by default). */
+.brink-studio .brink-conflict-merge .cm-mergeView {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+}
+.brink-studio .brink-conflict-merge .cm-mergeViewEditors {
+  height: 100%;
+}
+.brink-studio .brink-conflict-merge .cm-editor {
+  height: 100%;
+}
