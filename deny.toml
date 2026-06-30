@@ -12,6 +12,9 @@ ignore = [
     # `rand` unsoundness only triggers with a custom logger calling `rand::rng()`;
     # we don't hit that path. Pulled in transitively (bevy, etc.).
     "RUSTSEC-2026-0097",
+    # `ttf-parser` is unmaintained but has no known vulnerability; transitive via the
+    # bevy / wgpu font stack. Re-evaluate on the next dep bump.
+    "RUSTSEC-2026-0192",
 ]
 
 [licenses]
