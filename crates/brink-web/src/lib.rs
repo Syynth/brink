@@ -1917,6 +1917,30 @@ impl EditorSession {
         }
     }
 
+    /// Ensure `current` `INCLUDE`s `target` (#312 F core).
+    ///
+    /// Returns JSON `{ ok, already_reachable, edit?: TextEdit, error? }`. When
+    /// `target` is already reachable from `current`'s INCLUDE graph the op is a
+    /// no-op (`already_reachable: true`, no `edit`). Otherwise `edit` is the
+    /// byte-range insertion the caller applies to `current`'s source.
+    pub fn auto_import_include(&self, current: &str, target: &str) -> String {
+        let resp = match brink_ide::auto_import::ensure_include(&self.session, current, target) {
+            Ok(result) => AutoImportJs {
+                ok: true,
+                already_reachable: result.already_reachable,
+                edit: result.edit,
+                error: None,
+            },
+            Err(e) => AutoImportJs {
+                ok: false,
+                already_reachable: false,
+                edit: None,
+                error: Some(e.to_string()),
+            },
+        };
+        serde_json::to_string(&resp).unwrap_or_default()
+    }
+
     /// Promote a stitch to a top-level knot. Returns JSON `MoveResult` or error.
     ///
     /// `path`: file containing the knot.
@@ -3400,6 +3424,18 @@ fn convert_document_symbol(
             .map(|c| convert_document_symbol(c, source))
             .collect(),
     }
+}
+
+// ── Auto-import helper ───────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct AutoImportJs {
+    ok: bool,
+    already_reachable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edit: Option<brink_ide::line_convert::TextEdit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 // ── Structural move helpers ──────────────────────────────────────────
