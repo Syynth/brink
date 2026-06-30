@@ -4,7 +4,11 @@ use rowan::TextRange;
 // ─── File identity ──────────────────────────────────────────────────
 
 /// Opaque identifier for a source file within a multi-file project.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// `Ord` orders by the underlying `u32`, giving deterministic iteration when
+/// `FileId`s are collected into a `BTreeSet`/`BTreeMap` (e.g. the include
+/// graph's `reachable_from`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FileId(pub u32);
 
 // ─── Source provenance ──────────────────────────────────────────────

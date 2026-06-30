@@ -10,6 +10,32 @@ pub(crate) struct IncludeGraph {
     reverse: HashMap<FileId, Vec<FileId>>,
 }
 
+impl IncludeGraph {
+    /// Files that `file` includes.
+    pub fn includes(&self, file: FileId) -> &[FileId] {
+        self.forward.get(&file).map_or(&[], Vec::as_slice)
+    }
+
+    /// All files reachable from `entry` via forward `INCLUDE` edges
+    /// (transitive), `entry` included. Returned as a [`BTreeSet`] so iteration
+    /// is deterministic regardless of internal graph storage.
+    pub fn reachable_from(&self, entry: FileId) -> std::collections::BTreeSet<FileId> {
+        let mut reachable = std::collections::BTreeSet::new();
+        let mut stack = vec![entry];
+        while let Some(node) = stack.pop() {
+            if !reachable.insert(node) {
+                continue;
+            }
+            for &child in self.includes(node) {
+                if !reachable.contains(&child) {
+                    stack.push(child);
+                }
+            }
+        }
+        reachable
+    }
+}
+
 #[expect(dead_code, reason = "graph queries used by LSP")]
 impl IncludeGraph {
     pub fn new() -> Self {
@@ -36,11 +62,6 @@ impl IncludeGraph {
         }
 
         self.forward.insert(file, includes);
-    }
-
-    /// Files that `file` includes.
-    pub fn includes(&self, file: FileId) -> &[FileId] {
-        self.forward.get(&file).map_or(&[], Vec::as_slice)
     }
 
     /// Files that include `file`.
