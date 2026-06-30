@@ -1,4 +1,5 @@
 pub mod argument_widgets;
+pub mod auto_import;
 pub mod code_actions;
 pub mod color;
 mod completion;
@@ -7,6 +8,7 @@ pub mod file_rename;
 pub mod folding;
 pub mod formatting;
 pub mod hover;
+pub mod include_block;
 pub mod inlay_hints;
 pub mod line_context;
 pub mod line_convert;
