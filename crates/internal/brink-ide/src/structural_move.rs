@@ -38,7 +38,7 @@ pub struct MoveResult {
 }
 
 /// Direction for reorder operations.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     Up,
     Down,
