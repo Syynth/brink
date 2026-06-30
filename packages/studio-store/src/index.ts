@@ -16,6 +16,7 @@ import type { BinderSlice } from "./slices/binder.js";
 import type { OutputSlice } from "./slices/output.js";
 import type { SearchSlice } from "./slices/search.js";
 import type { SymbolMenuSlice } from "./slices/symbol-menu.js";
+import type { ConflictSlice } from "./slices/conflict.js";
 import type { DocumentSessions, ProjectSession } from "./types.js";
 
 import { createEditorSlice } from "./slices/editor.js";
@@ -26,6 +27,7 @@ import { createBinderSlice } from "./slices/binder.js";
 import { createOutputSlice } from "./slices/output.js";
 import { createSearchSlice } from "./slices/search.js";
 import { createSymbolMenuSlice } from "./slices/symbol-menu.js";
+import { createConflictSlice } from "./slices/conflict.js";
 
 // ── Notifications (store → shell bridge) ────────────────────────────
 
@@ -56,7 +58,8 @@ export interface StudioState
     BinderSlice,
     OutputSlice,
     SearchSlice,
-    SymbolMenuSlice {
+    SymbolMenuSlice,
+    ConflictSlice {
   // Non-reactive refs — imperative handles that don't trigger re-renders
   _documents: DocumentSessions | null;
   _project: ProjectSession | null;
@@ -84,6 +87,7 @@ export const createStudioStore = () =>
       ...createOutputSlice(...args),
       ...createSearchSlice(...args),
       ...createSymbolMenuSlice(...args),
+      ...createConflictSlice(...args),
 
       // Non-reactive refs
       _documents: null,
@@ -187,6 +191,12 @@ export type {
   TabTarget,
   DocumentSessions,
   ProjectSession,
+  FileConflict,
 } from "./types.js";
 
 export { ElementType as ElementTypeEnum } from "./types.js";
+
+// External-conflict merge state (#320, Track V): the conflict slice plus the
+// deterministic sorted-paths helper for badging conflicted files.
+export { conflictPaths } from "./slices/conflict.js";
+export type { ConflictSlice } from "./slices/conflict.js";

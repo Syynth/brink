@@ -185,6 +185,69 @@ async function makeWatchedProject(): Promise<{
   return { provider, project, conflicts, externals };
 }
 
+/** Drive a project to a standing conflict on main.ink: dirty studio edit +
+ *  divergent on-disk change. Returns the project and the captured conflict. */
+async function makeConflictedProject(): Promise<{
+  provider: WatchedFileProvider;
+  project: ProjectSession;
+  conflict: FileConflict;
+}> {
+  const { provider, project, conflicts } = await makeWatchedProject();
+  project.applyEdit("main.ink", "studio edit");
+  provider.emitExternalChange("main.ink", "host edit");
+  expect(project.conflictedPaths()).toEqual(["main.ink"]);
+  return { provider, project, conflict: conflicts[0]! };
+}
+
+describe("ProjectSession conflict resolution (#320, Track V)", () => {
+  it("resolveConflictUseDisk: buffer becomes disk, re-baselined, clean", async () => {
+    const { project, conflict } = await makeConflictedProject();
+
+    project.resolveConflictUseDisk("main.ink", conflict.disk);
+
+    expect(project.getSession().getFileSource("main.ink")).toBe("host edit");
+    // Re-baselined to disk → no longer dirty, conflict cleared.
+    expect(project.dirtyPaths()).toEqual([]);
+    expect(project.conflictedPaths()).toEqual([]);
+    expect(project.hasConflict("main.ink")).toBe(false);
+  });
+
+  it("resolveConflictKeepMine: buffer kept, stays dirty, conflict cleared", async () => {
+    const { project } = await makeConflictedProject();
+
+    project.resolveConflictKeepMine("main.ink");
+
+    // The kept buffer is untouched and still diverges from the host baseline,
+    // so it stays dirty — but the conflict flag is gone.
+    expect(project.getSession().getFileSource("main.ink")).toBe("studio edit");
+    expect(project.dirtyPaths()).toEqual(["main.ink"]);
+    expect(project.conflictedPaths()).toEqual([]);
+  });
+
+  it("resolveConflictMerged: merged text becomes the dirty buffer, conflict cleared", async () => {
+    const { project } = await makeConflictedProject();
+
+    project.resolveConflictMerged("main.ink", "studio edit + host edit");
+
+    expect(project.getSession().getFileSource("main.ink")).toBe("studio edit + host edit");
+    // The merged result diverges from baseline → still dirty (saveable), but
+    // the conflict is resolved.
+    expect(project.dirtyPaths()).toEqual(["main.ink"]);
+    expect(project.conflictedPaths()).toEqual([]);
+  });
+
+  it("a save after Keep-mine re-baselines the kept buffer (conflict already clear)", async () => {
+    const { project } = await makeConflictedProject();
+    project.resolveConflictKeepMine("main.ink");
+    expect(project.dirtyPaths()).toEqual(["main.ink"]);
+
+    project.markFilesSaved(["main.ink"]);
+
+    expect(project.dirtyPaths()).toEqual([]);
+    expect(project.conflictedPaths()).toEqual([]);
+  });
+});
+
 describe("ProjectSession external-change handler (#320)", () => {
   it("does NOT clobber a dirty wasm buffer; flags conflicted; fires onFileConflict", async () => {
     const { provider, project, conflicts, externals } = await makeWatchedProject();

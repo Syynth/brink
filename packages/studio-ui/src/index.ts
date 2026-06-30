@@ -85,6 +85,7 @@ export {
   type EditorSettings,
 } from "./SettingsDocument.js";
 export { NewFilePrompt, FILE_NEW_COMMAND_ID } from "./NewFilePrompt.js";
+export { ConflictMergeView } from "./ConflictMergeView.js";
 export {
   CompileStatusSegment,
   CursorSegment,

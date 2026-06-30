@@ -50,6 +50,8 @@ export interface FileProvider {
  */
 export class InMemoryFileProvider implements FileProvider {
   private files: Map<string, string>;
+  /** External-change subscribers (filesystem-watcher analogue). */
+  private externalListeners = new Set<(path: string, content: string | null) => void>();
 
   constructor(initialFiles?: Record<string, string>) {
     this.files = new Map(
@@ -91,5 +93,28 @@ export class InMemoryFileProvider implements FileProvider {
 
   onFileChanged(path: string, content: string): void {
     this.files.set(path, content);
+  }
+
+  onExternalChange(
+    callback: (path: string, content: string | null) => void,
+  ): () => void {
+    this.externalListeners.add(callback);
+    return () => this.externalListeners.delete(callback);
+  }
+
+  /**
+   * Simulate an external (on-disk) change to `path`, as a filesystem watcher
+   * would report it — updates the backing store and notifies subscribers
+   * (content `null` deletes). The studio's external-change handler then runs
+   * its conflict detection (issue #320). Exercised by the playground's
+   * dev/e2e hook to drive the Track V merge view without a real filesystem.
+   */
+  pushExternalChange(path: string, content: string | null): void {
+    if (content === null) {
+      this.files.delete(path);
+    } else {
+      this.files.set(path, content);
+    }
+    for (const listener of this.externalListeners) listener(path, content);
   }
 }
