@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { FileChangeHub, type FileChange } from "@brink/ink-editor";
+import { FileChangeHub, type FileChange, type FileConflict } from "@brink/ink-editor";
 
 function harness(opts: { withFlush?: boolean; debounceMs?: number } = {}) {
   const files = new Map<string, string>();
@@ -193,6 +193,120 @@ describe("without a host hook", () => {
     expect(hub.dirtyPaths()).toEqual(["a.ink"]); // still unsaved
 
     hub.markSaved(["a.ink"]);
+    expect(hub.dirtyPaths()).toEqual([]);
+  });
+});
+
+describe("external conflicts (issue #320)", () => {
+  /**
+   * Mirrors ProjectSession's onExternalChange handler: detect first, and on a
+   * conflict KEEP the buffer (no overwrite) and do NOT re-baseline — instead
+   * flag the path and fire the hook. This is the exact two-part-clobber the
+   * handler must stop, exercised at the hub's decision point.
+   */
+  function applyHostChange(
+    hub: FileChangeHub,
+    files: Map<string, string>,
+    path: string,
+    disk: string,
+    onConflict: (c: FileConflict) => void,
+  ): void {
+    const conflict = hub.detectExternalConflict(path, disk);
+    if (conflict !== null) {
+      // SAFE DEFAULT: do not clobber the buffer, do not re-baseline.
+      hub.markConflicted(path);
+      onConflict(conflict);
+      return;
+    }
+    // No conflict: the host's content is the new truth.
+    files.set(path, disk);
+    hub.applyExternal(path, disk);
+  }
+
+  it("does NOT clobber a dirty buffer; fires the hook with the right FileConflict", () => {
+    const { files, hub } = harness({ withFlush: false });
+    files.set("a.ink", "saved"); // host baseline
+    hub.setBaseline("a.ink", "saved");
+    files.set("a.ink", "studio edit"); // unsaved studio buffer
+    hub.record("a.ink", "modified");
+    expect(hub.dirtyPaths()).toEqual(["a.ink"]);
+
+    const conflicts: FileConflict[] = [];
+    applyHostChange(hub, files, "a.ink", "host edit", (c) => conflicts.push(c));
+
+    // The editor buffer was NOT overwritten with the host's content.
+    expect(files.get("a.ink")).toBe("studio edit");
+    // The hook fired with all three texts for a merge surface.
+    expect(conflicts).toEqual([
+      { path: "a.ink", disk: "host edit", buffer: "studio edit", baseline: "saved" },
+    ]);
+    // The path is flagged conflicted and remains dirty (not re-baselined).
+    expect(hub.conflictedPaths()).toEqual(["a.ink"]);
+    expect(hub.dirtyPaths()).toEqual(["a.ink"]);
+  });
+
+  it("a non-dirty path is updated by the external change (no conflict)", () => {
+    const { files, hub } = harness({ withFlush: false });
+    files.set("a.ink", "saved");
+    hub.setBaseline("a.ink", "saved"); // clean — buffer === baseline
+    expect(hub.dirtyPaths()).toEqual([]);
+
+    const conflicts: FileConflict[] = [];
+    applyHostChange(hub, files, "a.ink", "host edit", (c) => conflicts.push(c));
+
+    // Clean path: the host's content wins and re-baselines.
+    expect(conflicts).toEqual([]);
+    expect(files.get("a.ink")).toBe("host edit");
+    expect(hub.conflictedPaths()).toEqual([]);
+    expect(hub.dirtyPaths()).toEqual([]);
+  });
+
+  it("no conflict when the dirty buffer already equals the host's disk content", () => {
+    const { files, hub } = harness({ withFlush: false });
+    files.set("a.ink", "saved");
+    hub.setBaseline("a.ink", "saved");
+    files.set("a.ink", "converged"); // studio edited to the same text the host wrote
+    hub.record("a.ink", "modified");
+
+    expect(hub.detectExternalConflict("a.ink", "converged")).toBeNull();
+  });
+
+  it("no conflict without a baseline (the studio never synced the path)", () => {
+    const { files, hub } = harness({ withFlush: false });
+    files.set("new.ink", "draft");
+    hub.record("new.ink", "created"); // dirty, but no baseline
+    expect(hub.dirtyPaths()).toEqual(["new.ink"]);
+
+    expect(hub.detectExternalConflict("new.ink", "host text")).toBeNull();
+  });
+
+  it("re-baselining (host re-sync) clears a standing conflict", () => {
+    const { files, hub } = harness({ withFlush: false });
+    files.set("a.ink", "saved");
+    hub.setBaseline("a.ink", "saved");
+    files.set("a.ink", "studio edit");
+    hub.record("a.ink", "modified");
+    applyHostChange(hub, files, "a.ink", "host edit", () => {});
+    expect(hub.conflictedPaths()).toEqual(["a.ink"]);
+
+    // Reconciliation re-syncs the path to the host's content.
+    files.set("a.ink", "host edit");
+    hub.applyExternal("a.ink", "host edit");
+    expect(hub.conflictedPaths()).toEqual([]);
+    expect(hub.dirtyPaths()).toEqual([]);
+  });
+
+  it("saving the kept buffer clears a standing conflict", () => {
+    const { files, hub } = harness({ withFlush: false });
+    files.set("a.ink", "saved");
+    hub.setBaseline("a.ink", "saved");
+    files.set("a.ink", "studio edit");
+    hub.record("a.ink", "modified");
+    applyHostChange(hub, files, "a.ink", "host edit", () => {});
+    expect(hub.conflictedPaths()).toEqual(["a.ink"]);
+
+    hub.markSaved(["a.ink"]); // user keeps their buffer and saves over disk
+    expect(hub.conflictedPaths()).toEqual([]);
     expect(hub.dirtyPaths()).toEqual([]);
   });
 });
