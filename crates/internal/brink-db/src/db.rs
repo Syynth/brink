@@ -607,4 +607,25 @@ mod path_tests {
             "renamed.ink"
         );
     }
+
+    #[test]
+    fn compute_relative_move_shallower_is_bare_name() {
+        // Regression (#318): after a shallower move (chapters/main.ink →
+        // main.ink), the outbound-INCLUDE rewrite relativizes the resolved
+        // target against the NEW path. From the root, a root-level sibling is a
+        // bare name — no stale `chapters/` or `../` prefix.
+        assert_eq!(compute_relative_path("main.ink", "host.ink"), "host.ink");
+        // And from the OLD subdir location, the same root-level target is
+        // `../host.ink` — relative to `chapters/`, reaching the root needs `..`.
+        // (This is the value resolve→compute round-trips through; the rewrite
+        // uses the NEW path above to drop the prefix.)
+        assert_eq!(
+            compute_relative_path("chapters/main.ink", "host.ink"),
+            "../host.ink"
+        );
+        assert_eq!(
+            resolve_include_path("chapters/main.ink", "../host.ink"),
+            "host.ink"
+        );
+    }
 }
