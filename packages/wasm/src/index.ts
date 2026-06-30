@@ -30,6 +30,7 @@ import type {
   FoldRange,
   DocumentSymbol,
   CodeAction,
+  CodeActionData,
   ProjectFile,
   FileOutline,
   StoryGraph,
@@ -311,6 +312,13 @@ export class EditorSessionHandle {
     return JSON.parse(json) as CodeAction[];
   }
 
+  /** Document-handle variant of `resolveCodeAction`. */
+  resolveCodeActionDoc(doc: DocumentId, data: CodeActionData, offset: number): MoveResult {
+    this.bump();
+    const json = this.session.resolve_code_action_doc(doc, JSON.stringify(data), offset);
+    return JSON.parse(json) as MoveResult;
+  }
+
   getInlayHintsDoc(doc: DocumentId, start: number, end: number): InlayHint[] {
     const json = this.session.inlay_hints_doc(doc, start, end);
     return JSON.parse(json) as InlayHint[];
@@ -467,6 +475,18 @@ export class EditorSessionHandle {
   getCodeActions(offset: number): CodeAction[] {
     const json = this.session.code_actions(offset);
     return JSON.parse(json) as CodeAction[];
+  }
+
+  /**
+   * Apply a code action selected from `getCodeActions`. Pass the action's
+   * `data` payload back verbatim; `offset` is the cursor the action was offered
+   * at. Returns a `MoveResult` (`new_source` plus any `cross_file_edits`), or
+   * `ok: false` with an `error` for malformed data or a no-op action.
+   */
+  resolveCodeAction(data: CodeActionData, offset: number): MoveResult {
+    this.bump();
+    const json = this.session.resolve_code_action(JSON.stringify(data), offset);
+    return JSON.parse(json) as MoveResult;
   }
 
   getInlayHints(start: number, end: number): InlayHint[] {

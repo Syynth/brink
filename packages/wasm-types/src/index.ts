@@ -291,9 +291,23 @@ export interface DocumentSymbol {
   children: DocumentSymbol[];
 }
 
+/**
+ * Self-describing, internally-tagged payload identifying which transformation a
+ * code action performs. The `action` field is the discriminator; the remaining
+ * fields depend on it (e.g. `FormatStitch` carries `knot` and `stitch`). Pass
+ * the whole object back to `resolveCodeAction` to apply the action — the caller
+ * never reconstructs it from the cursor position.
+ */
+export interface CodeActionData {
+  action: string;
+  [key: string]: unknown;
+}
+
 export interface CodeAction {
   title: string;
   kind: string;
+  /** Opaque, self-describing payload — feed back to `resolveCodeAction`. */
+  data: CodeActionData;
 }
 
 // ── Document handles (multi-document EditorSession) ─────────────
