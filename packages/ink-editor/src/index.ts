@@ -69,6 +69,31 @@ export type { ElementConverter } from "./transitions.js";
 // Completion kind → CodeMirror completion type (icon + auto-open keying)
 export { completionType, toCompletionOption } from "./completions.js";
 
+// Project-wide search engine (issue #94 / #322): framework-agnostic, pure
+// string search over file sources — no CodeMirror/React involvement. UTF-16
+// offsets match `editor.reveal` source spans so a match can be dispatched to
+// the navigation protocol verbatim.
+export {
+  DEFAULT_SEARCH_OPTIONS,
+  SEARCH_CONTEXT_BEFORE,
+  SEARCH_RESULT_CAP,
+  applyReplacements,
+  buildSearchPattern,
+  escapeRegExp,
+  matchLineSegments,
+  replacementTextFor,
+  searchSources,
+} from "./project-search.js";
+export type {
+  FileSearchResult,
+  MatchLineSegments,
+  ProjectSearchResult,
+  ReplacementEdit,
+  SearchMatch,
+  SearchPatternResult,
+  SearchQueryOptions,
+} from "./project-search.js";
+
 // Find panel (#319 Track N): opt-in @codemirror/search factory. Not auto-enabled
 // in the studio editor — hosts opt in by adding the returned extension.
 export { findPanel } from "./find-panel.js";
