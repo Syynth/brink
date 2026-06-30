@@ -4,6 +4,7 @@ use brink_syntax::ast::{AstNode as _, KnotDef, StitchDef};
 
 use crate::doc_extended_start;
 use crate::rename::FileEdit;
+use crate::structural_result::StructuralResult;
 
 /// A declaration's region start for slicing: extended backward over its
 /// attached `///` doc block, so docs travel with the declaration they
@@ -29,12 +30,19 @@ pub enum MoveError {
     InvalidReorder,
 }
 
-/// The result of a structural move operation.
-pub struct MoveResult {
-    /// The new full source text for the primary file.
-    pub new_source: String,
-    /// Reference edits in other files that must be applied.
-    pub cross_file_edits: Vec<FileEdit>,
+/// Build an un-gated [`StructuralResult`] from a structural move's primary
+/// source and cross-file edits. The pure move ops do not run the breakage gate
+/// themselves (they have no session); the session-aware caller overlays these
+/// edits via [`crate::structural_result::gate_with_source`] and fills in
+/// `safe` / `introduced`. Until then the result is optimistically marked safe
+/// with no introduced diagnostics.
+fn move_result(new_source: String, cross_file_edits: Vec<FileEdit>) -> StructuralResult {
+    StructuralResult {
+        new_source: Some(new_source),
+        cross_file_edits,
+        safe: true,
+        introduced: Vec::new(),
+    }
 }
 
 /// Direction for reorder operations.
@@ -576,7 +584,7 @@ pub fn move_stitch(
     src_knot: &str,
     stitch_name: &str,
     dest_knot: &str,
-) -> Result<MoveResult, MoveError> {
+) -> Result<StructuralResult, MoveError> {
     let parse = brink_syntax::parse(source);
     let tree = parse.tree();
 
@@ -697,10 +705,7 @@ pub fn move_stitch(
         s
     };
 
-    Ok(MoveResult {
-        new_source,
-        cross_file_edits,
-    })
+    Ok(move_result(new_source, cross_file_edits))
 }
 
 // ── Phase 4: promote_stitch_to_knot ─────────────────────────────────
@@ -715,7 +720,7 @@ pub fn promote_stitch_to_knot(
     file_id: FileId,
     knot_name: &str,
     stitch_name: &str,
-) -> Result<MoveResult, MoveError> {
+) -> Result<StructuralResult, MoveError> {
     let parse = brink_syntax::parse(source);
     let tree = parse.tree();
     let knots: Vec<_> = tree.knots().collect();
@@ -794,10 +799,7 @@ pub fn promote_stitch_to_knot(
         &same_file,
     ));
 
-    Ok(MoveResult {
-        new_source,
-        cross_file_edits,
-    })
+    Ok(move_result(new_source, cross_file_edits))
 }
 
 // ── Phase 5: demote_knot_to_stitch ──────────────────────────────────
@@ -812,7 +814,7 @@ pub fn demote_knot_to_stitch(
     file_id: FileId,
     knot_name: &str,
     dest_knot: &str,
-) -> Result<MoveResult, MoveError> {
+) -> Result<StructuralResult, MoveError> {
     let parse = brink_syntax::parse(source);
     let tree = parse.tree();
     let knots: Vec<_> = tree.knots().collect();
@@ -898,10 +900,7 @@ pub fn demote_knot_to_stitch(
         s
     };
 
-    Ok(MoveResult {
-        new_source,
-        cross_file_edits,
-    })
+    Ok(move_result(new_source, cross_file_edits))
 }
 
 // ── Header rewriting helpers ────────────────────────────────────────
@@ -1096,7 +1095,7 @@ Dest.
 ";
         let analysis = analyzed(source);
         let result = move_stitch(source, &analysis, FileId(0), "src", "movable", "dst").unwrap();
-        let s = &result.new_source;
+        let s = result.new_source.as_deref().unwrap();
         assert!(
             s.contains("/// Mine.\n= movable"),
             "doc travels with the moved stitch: {s}"
@@ -1124,12 +1123,10 @@ Body.
         let analysis = analyzed(source);
         let result =
             promote_stitch_to_knot(source, &analysis, FileId(0), "parent", "riser").unwrap();
+        let s = result.new_source.as_deref().unwrap();
         assert!(
-            result
-                .new_source
-                .contains("/// Promoted doc.\n=== riser ==="),
-            "doc precedes the promoted header: {}",
-            result.new_source
+            s.contains("/// Promoted doc.\n=== riser ==="),
+            "doc precedes the promoted header: {s}"
         );
     }
 
@@ -1147,7 +1144,7 @@ N.
 ";
         let analysis = analyzed(source);
         let result = demote_knot_to_stitch(source, &analysis, FileId(0), "sinker", "dest").unwrap();
-        let s = &result.new_source;
+        let s = result.new_source.as_deref().unwrap();
         assert!(
             s.contains("/// Sinking doc.\n= sinker"),
             "doc precedes the demoted header: {s}"
@@ -1174,7 +1171,7 @@ The evidence.
         let analysis = analyzed(source);
         let result =
             promote_stitch_to_knot(source, &analysis, FileId(0), "intro", "evidence").unwrap();
-        let s = &result.new_source;
+        let s = result.new_source.as_deref().unwrap();
         assert!(
             s.contains("=== evidence ==="),
             "stitch promoted to a top-level knot: {s}"
@@ -1208,7 +1205,7 @@ Body.
 ";
         let analysis = analyzed(source);
         let result = demote_knot_to_stitch(source, &analysis, FileId(0), "mover", "dest").unwrap();
-        let s = &result.new_source;
+        let s = result.new_source.as_deref().unwrap();
         assert!(
             s.contains("= mover"),
             "knot demoted to a stitch of dest: {s}"
@@ -1238,7 +1235,7 @@ Dest.
 ";
         let analysis = analyzed(source);
         let result = move_stitch(source, &analysis, FileId(0), "src", "movable", "dst").unwrap();
-        let s = &result.new_source;
+        let s = result.new_source.as_deref().unwrap();
         assert!(
             s.contains("-> dst.movable"),
             "the same-file reference follows the stitch to its new parent: {s}"

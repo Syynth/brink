@@ -201,13 +201,15 @@ pub fn resolve_code_action(source: &str, data: &CodeActionData) -> Option<String
 
 /// Resolve a structural move action that requires analysis context.
 ///
-/// Returns a `MoveResult` with the new source and any cross-file edits.
+/// Returns an un-gated [`StructuralResult`](crate::structural_result::StructuralResult)
+/// with the new source and any cross-file edits. The breakage gate is applied by
+/// the session-aware caller (brink-web), which overlays these edits.
 pub fn resolve_structural_action(
     source: &str,
     analysis: &brink_analyzer::AnalysisResult,
     file_id: brink_ir::FileId,
     data: &CodeActionData,
-) -> Option<structural_move::MoveResult> {
+) -> Option<crate::structural_result::StructuralResult> {
     match data {
         CodeActionData::MoveStitch {
             src_knot,

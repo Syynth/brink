@@ -19,7 +19,7 @@ import {
   type FileConflict,
 } from "@brink/ink-editor";
 import { initWasm } from "@brink-lang/web";
-import type { MoveResult } from "@brink/wasm-types";
+import type { StructuralResult } from "@brink/wasm-types";
 import { CommandRegistry, Keymap, NotificationCenter } from "@brink/studio-shell";
 import { createStudioStore, type DocumentSessions as StoreDocs } from "@brink/studio-store";
 import { createStudioApi } from "@brink/studio-ui";
@@ -249,11 +249,13 @@ describe("binder structural ops (#137)", () => {
     const store = createStudioStore();
     store.setState({ _project: project, _documents: stubDocuments() });
 
-    const result: MoveResult = {
+    const result: StructuralResult = {
       ok: true,
       path: "main.ink",
       new_source: "moved main",
       cross_file_edits: [{ path: "side.ink", new_source: "retargeted side" }],
+      safe: true,
+      introduced_diagnostics: [],
     };
     await store.getState().applyMoveResult(result, "Moved start", ["main.ink"]);
 
@@ -276,11 +278,13 @@ describe("binder structural ops (#137)", () => {
     const store = createStudioStore();
     store.setState({ _project: project, _documents: stubDocuments() });
 
-    const result: MoveResult = {
+    const result: StructuralResult = {
       ok: true,
       path: "main.ink",
       new_source: "moved",
       cross_file_edits: [],
+      safe: true,
+      introduced_diagnostics: [],
     };
     await store.getState().applyMoveResult(result, "Moved start", ["main.ink"]);
     vi.advanceTimersByTime(500);

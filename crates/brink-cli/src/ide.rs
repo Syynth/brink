@@ -34,9 +34,10 @@ use brink_ide::session::IdeSession;
 use brink_ide::signature::signature_help;
 use brink_ide::story_graph::{StoryEdgeKind, StoryGraph, StoryNodeKind, story_graph};
 use brink_ide::structural_move::{
-    Direction, MoveResult, demote_knot_to_stitch, move_stitch, promote_stitch_to_knot,
-    reorder_knot, reorder_knots, reorder_stitch, reorder_stitches,
+    Direction, demote_knot_to_stitch, move_stitch, promote_stitch_to_knot, reorder_knot,
+    reorder_knots, reorder_stitch, reorder_stitches,
 };
+use brink_ide::structural_result::StructuralResult;
 use brink_ir::symbols::{SymbolInfo, SymbolKind};
 use brink_ir::{Diagnostic, FileId, HirFile};
 use clap::{Args, Subcommand, ValueEnum};
@@ -1143,9 +1144,12 @@ fn run_move_file(old: &str, new: &str, mode: &MutOpts) -> Result<ExitCode, Strin
     // A file move changes the file *set*: the old path is removed and `new`
     // appears with `result.new_source`. Inbound `INCLUDE` rewrites land on other
     // files; the moved file itself is covered by `new_source`.
+    let new_source = result
+        .new_source
+        .ok_or("file rename produced no primary source")?;
     let mut edited = project.apply_edits(&result.cross_file_edits)?;
     edited.remove(old);
-    edited.insert(new.to_string(), result.new_source);
+    edited.insert(new.to_string(), new_source);
 
     // The destination is a brand-new path, so the whole-project re-analysis in
     // the safety gate must read it. `introduced_diagnostics` already overlays the
@@ -1885,13 +1889,13 @@ impl Project {
         )
     }
 
-    /// Emit a cross-file `MoveResult` (primary `new_source` + reference edits in
-    /// other files) through the requested mode. The primary file is covered by
-    /// `new_source`, so any cross-file edit landing on it is overridden.
+    /// Emit a cross-file [`StructuralResult`] (primary `new_source` + reference
+    /// edits in other files) through the requested mode. The primary file is
+    /// covered by `new_source`, so any cross-file edit landing on it is overridden.
     fn emit_move_result(
         &self,
         primary: FileId,
-        result: MoveResult,
+        result: StructuralResult,
         mode: &MutOpts,
     ) -> Result<ExitCode, String> {
         let primary_path = self
@@ -1900,8 +1904,11 @@ impl Project {
             .file_path(primary)
             .ok_or("move targets an unknown file")?
             .to_string();
+        let new_source = result
+            .new_source
+            .ok_or("structural move produced no primary source")?;
         let mut edited = self.apply_edits(&result.cross_file_edits)?;
-        edited.insert(primary_path, result.new_source);
+        edited.insert(primary_path, new_source);
         let mutation = Mutation {
             edited,
             edits: None,

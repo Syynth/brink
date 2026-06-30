@@ -344,18 +344,7 @@ export interface CrossFileEdit {
   new_source: string;
 }
 
-export interface MoveResult {
-  ok: boolean;
-  /** The file path this result applies to. */
-  path?: string;
-  new_source?: string;
-  cross_file_edits: CrossFileEdit[];
-  error?: string;
-}
-
-// ── Safe-rename types (#305) ────────────────────────────────────
-
-/** One entry in a rename's breakage report — a diagnostic the rename would
+/** One entry in a structural op's breakage report — a diagnostic the op would
  * introduce. Locations are 1-based, matching the editor's status surfaces. */
 export interface RenameDiagnostic {
   severity: "error" | "warning";
@@ -370,12 +359,23 @@ export interface RenameDiagnostic {
   col: number;
 }
 
-/** A `MoveResult` extended with the safe-rename gate. `safe` is true when the
- * rename introduces no new diagnostics; otherwise `introduced_diagnostics`
- * holds the breakage report and the edits apply only on an explicit force. */
-export interface SymbolRenameResult extends MoveResult {
+/** The unified result of every mutating structural op (#316): rename, move,
+ * promote, demote, reorder, file-rename, and delete. `new_source` is the
+ * rewritten primary file; `cross_file_edits` carry the referencing files'
+ * rewrites. `safe` is true when the op introduces no new diagnostics; otherwise
+ * `introduced_diagnostics` holds the breakage report and the edits apply only on
+ * an explicit force. Reorders are trivially safe (empty breakage). */
+export interface StructuralResult {
+  ok: boolean;
+  /** The file path this result applies to. */
+  path?: string;
+  new_source?: string;
+  cross_file_edits: CrossFileEdit[];
+  /** Diagnostics present after the op but not before. Empty ⇒ `safe`. */
   introduced_diagnostics: RenameDiagnostic[];
+  /** True when the op introduces no new diagnostics. */
   safe: boolean;
+  error?: string;
 }
 
 // ── Multi-file project types ────────────────────────────────────

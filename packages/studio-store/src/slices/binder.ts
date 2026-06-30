@@ -11,7 +11,7 @@
 
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
-import type { MoveResult } from "@brink/wasm-types";
+import type { StructuralResult } from "@brink/wasm-types";
 
 // ── Undo entry ──────────────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ export interface BinderSlice {
   clearSelection(): void;
   setFocusedKey(key: string | null): void;
   applyMoveResult(
-    result: MoveResult,
+    result: StructuralResult,
     description: string,
     affectedPaths: string[],
   ): Promise<void>;

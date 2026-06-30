@@ -1808,7 +1808,7 @@ impl EditorSession {
     /// sort / structural move) but accepted for parity with the other queries
     /// and so future cursor-scoped actions need no signature change.
     ///
-    /// Returns `MoveResult`-shaped JSON: `new_source` for the primary file plus
+    /// Returns `StructuralResult`-shaped JSON: `new_source` for the primary file plus
     /// any `cross_file_edits` for structural moves, or `ok: false` with an
     /// `error` when the data is malformed or the action is a no-op.
     pub fn resolve_code_action(&self, data_json: &str, offset: u32) -> String {
@@ -1882,7 +1882,7 @@ impl EditorSession {
         self.format_document_impl(&self.active_path)
     }
 
-    /// Reorder a stitch within its parent knot. Returns JSON `MoveResult` or error string.
+    /// Reorder a stitch within its parent knot. Returns JSON `StructuralResult` or error string.
     ///
     /// `path`: file containing the knot.
     /// `direction`: 1 = down, -1 = up.
@@ -1906,7 +1906,7 @@ impl EditorSession {
         }
     }
 
-    /// Move a stitch from one knot to another. Returns JSON `MoveResult` or error.
+    /// Move a stitch from one knot to another. Returns JSON `StructuralResult` or error.
     ///
     /// `path`: file containing both knots.
     pub fn move_stitch(&self, path: &str, src_knot: &str, stitch: &str, dest_knot: &str) -> String {
@@ -1922,20 +1922,20 @@ impl EditorSession {
         match brink_ide::structural_move::move_stitch(
             source, analysis, file_id, src_knot, stitch, dest_knot,
         ) {
-            Ok(result) => move_result_json(&self.session, result, path),
+            Ok(result) => gated_move_json(&self.session, result, path),
             Err(e) => error_json(&e.to_string()),
         }
     }
 
     /// Rename or move a file, rewriting every `INCLUDE` that resolves to it
     /// (inbound) plus the moved file's own relative includes (outbound).
-    /// Returns JSON `MoveResult` or error: `new_source` is the moved file's
+    /// Returns JSON `StructuralResult` or error: `new_source` is the moved file's
     /// content to write at `new`, `cross_file_edits` carry the referencing
     /// files' rewrites. The op computes edits only — the caller applies them
     /// (write `new`, remove `old`).
     pub fn rename_file(&self, old: &str, new: &str) -> String {
         match brink_ide::file_rename::rename_file(&self.session, old, new) {
-            Ok(result) => move_result_json(&self.session, result, old),
+            Ok(result) => structural_result_json(&self.session, &result, old),
             Err(e) => error_json(&e.to_string()),
         }
     }
@@ -1964,7 +1964,7 @@ impl EditorSession {
         serde_json::to_string(&resp).unwrap_or_default()
     }
 
-    /// Promote a stitch to a top-level knot. Returns JSON `MoveResult` or error.
+    /// Promote a stitch to a top-level knot. Returns JSON `StructuralResult` or error.
     ///
     /// `path`: file containing the knot.
     pub fn promote_stitch(&self, path: &str, knot: &str, stitch: &str) -> String {
@@ -1980,12 +1980,12 @@ impl EditorSession {
         match brink_ide::structural_move::promote_stitch_to_knot(
             source, analysis, file_id, knot, stitch,
         ) {
-            Ok(result) => move_result_json(&self.session, result, path),
+            Ok(result) => gated_move_json(&self.session, result, path),
             Err(e) => error_json(&e.to_string()),
         }
     }
 
-    /// Reorder a knot within the top-level knot list. Returns JSON `MoveResult` or error.
+    /// Reorder a knot within the top-level knot list. Returns JSON `StructuralResult` or error.
     ///
     /// `path`: file containing the knot.
     /// `direction`: 1 = down, -1 = up.
@@ -2011,7 +2011,7 @@ impl EditorSession {
 
     /// Reorder all stitches in a knot to match `order` (a permutation of the
     /// knot's stitch names). Used by drag-and-drop and multi-select moves,
-    /// which know the full destination order. Returns JSON `MoveResult` or error.
+    /// which know the full destination order. Returns JSON `StructuralResult` or error.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "wasm-bindgen requires owned Vec<String> across the boundary"
@@ -2031,7 +2031,7 @@ impl EditorSession {
     }
 
     /// Reorder all top-level knots to match `order` (a permutation of the knot
-    /// names). Returns JSON `MoveResult` or error.
+    /// names). Returns JSON `StructuralResult` or error.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "wasm-bindgen requires owned Vec<String> across the boundary"
@@ -2050,7 +2050,7 @@ impl EditorSession {
         }
     }
 
-    /// Demote a top-level knot to a stitch inside another knot. Returns JSON `MoveResult` or error.
+    /// Demote a top-level knot to a stitch inside another knot. Returns JSON `StructuralResult` or error.
     ///
     /// `path`: file containing both knots.
     pub fn demote_knot(&self, path: &str, knot: &str, dest_knot: &str) -> String {
@@ -2066,13 +2066,30 @@ impl EditorSession {
         match brink_ide::structural_move::demote_knot_to_stitch(
             source, analysis, file_id, knot, dest_knot,
         ) {
-            Ok(result) => move_result_json(&self.session, result, path),
+            Ok(result) => gated_move_json(&self.session, result, path),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    /// Delete a knot (`stitch` empty) or a stitch, safe-by-default (#316).
+    ///
+    /// Removes the knot's whole region (header, body, nested stitches) or the
+    /// named stitch's region, then runs the breakage gate: every divert /
+    /// thread / tunnel / call that targeted the removed symbol now dangles, and
+    /// those introduced diagnostics travel out so the caller can show a breakage
+    /// report and apply the delete only on an explicit force. Returns the
+    /// unified `StructuralResult` JSON (`new_source` for `path`, `safe`,
+    /// `introduced_diagnostics`) or an error.
+    pub fn delete_symbol(&self, path: &str, knot: &str, stitch: &str) -> String {
+        let stitch = (!stitch.is_empty()).then_some(stitch);
+        match brink_ide::structural_delete::delete_symbol(&self.session, path, knot, stitch) {
+            Ok(result) => structural_result_json(&self.session, &result, path),
             Err(e) => error_json(&e.to_string()),
         }
     }
 
     /// Rename a knot or stitch by name, safe-by-default. Returns a
-    /// `MoveResult`-shaped JSON payload (`new_source` for `path`,
+    /// `StructuralResult`-shaped JSON payload (`new_source` for `path`,
     /// `cross_file_edits` for referencing files) extended with
     /// `introduced_diagnostics` and a `safe` flag. When `safe` is false the
     /// rename would introduce the listed diagnostics — the caller shows a
@@ -2090,7 +2107,7 @@ impl EditorSession {
             return error_json("symbol not found");
         };
         match brink_ide::rename::rename_safe(&self.session, file_id, offset, new_name) {
-            Some(result) => rename_result_json(&self.session, &result, path),
+            Some(result) => structural_result_json(&self.session, &result, path),
             None => error_json("cannot rename this symbol"),
         }
     }
@@ -2112,7 +2129,7 @@ impl EditorSession {
             TextSize::new(abs_offset),
             new_name,
         ) {
-            Some(result) => rename_result_json(&self.session, &result, path),
+            Some(result) => structural_result_json(&self.session, &result, path),
             None => error_json("cannot rename this symbol"),
         }
     }
@@ -2573,7 +2590,7 @@ impl EditorSession {
             && let Some(result) =
                 brink_ide::code_actions::resolve_structural_action(source, analysis, file_id, &data)
         {
-            return move_result_json(&self.session, result, path);
+            return gated_move_json(&self.session, result, path);
         }
 
         match brink_ide::code_actions::resolve_code_action(source, &data) {
@@ -3501,10 +3518,15 @@ struct AutoImportJs {
     error: Option<String>,
 }
 
-// ── Structural move helpers ──────────────────────────────────────────
+// ── Structural result helpers (#316) ─────────────────────────────────
 
+/// The unified JSON payload for every mutating structural op (rename, move,
+/// promote, demote, reorder, file-rename, delete). `new_source` is the rewritten
+/// primary file; `cross_file_edits` carry the referencing files' rewrites
+/// (resolved to full source). `safe` + `introduced_diagnostics` are the
+/// safe-by-default breakage gate — empty/`true` for reorders and clean ops.
 #[derive(Serialize)]
-struct MoveResultJs {
+struct StructuralResultJs {
     ok: bool,
     /// The file path this result applies to.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3512,6 +3534,10 @@ struct MoveResultJs {
     #[serde(skip_serializing_if = "Option::is_none")]
     new_source: Option<String>,
     cross_file_edits: Vec<CrossFileEditJs>,
+    /// Diagnostics present after the op but not before. Empty ⇒ `safe`.
+    introduced_diagnostics: Vec<RenameDiagJs>,
+    /// True when the op introduces no new diagnostics.
+    safe: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -3546,71 +3572,7 @@ fn apply_edits(src: &str, mut edits: Vec<(usize, usize, String)>) -> String {
     out
 }
 
-fn move_result_json(
-    session: &IdeSession,
-    result: brink_ide::structural_move::MoveResult,
-    path: &str,
-) -> String {
-    // Group reference edits by file (BTreeMap for deterministic output).
-    let mut by_file: std::collections::BTreeMap<u32, Vec<(usize, usize, String)>> =
-        std::collections::BTreeMap::new();
-    for e in &result.cross_file_edits {
-        by_file.entry(e.file.0).or_default().push((
-            usize::from(e.range.start()),
-            usize::from(e.range.end()),
-            e.new_text.clone(),
-        ));
-    }
-
-    let db = session.db();
-    let mut edits: Vec<CrossFileEditJs> = Vec::new();
-    for (file_raw, file_edits) in by_file {
-        let file_id = brink_ir::FileId(file_raw);
-        let (Some(src), Some(fpath)) = (session.source(file_id), db.file_path(file_id)) else {
-            continue;
-        };
-        // The primary file is already covered by `new_source`.
-        if fpath == path {
-            continue;
-        }
-        edits.push(CrossFileEditJs {
-            path: fpath.to_owned(),
-            new_source: apply_edits(src, file_edits),
-        });
-    }
-
-    let resp = MoveResultJs {
-        ok: true,
-        path: Some(path.to_owned()),
-        new_source: Some(result.new_source),
-        cross_file_edits: edits,
-        error: None,
-    };
-    serde_json::to_string(&resp).unwrap_or_default()
-}
-
-// ── Safe-rename payload ──────────────────────────────────────────────
-
-/// A `MoveResult` extended with the safe-rename gate: the diagnostics the
-/// rename would introduce and a `safe` flag. Structurally a superset of
-/// `MoveResultJs`, so the studio can feed it straight into `applyMoveResult`.
-#[derive(Serialize)]
-struct RenameResultJs {
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    new_source: Option<String>,
-    cross_file_edits: Vec<CrossFileEditJs>,
-    /// Diagnostics present after the rename but not before. Empty ⇒ `safe`.
-    introduced_diagnostics: Vec<RenameDiagJs>,
-    /// True when the rename introduces no new diagnostics.
-    safe: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-/// One entry in a rename's breakage report.
+/// One entry in a structural op's breakage report.
 #[derive(Serialize)]
 struct RenameDiagJs {
     severity: String,
@@ -3623,19 +3585,35 @@ struct RenameDiagJs {
     col: u32,
 }
 
-/// Package a `SafeRenameResult` for the studio: apply the per-file edits, route
-/// the primary file's result to `new_source` and the rest to `cross_file_edits`
-/// (resolved to full new sources, like `move_result_json`), and carry the
-/// introduced-diagnostic breakage report plus the `safe` flag.
-fn rename_result_json(
+/// Map a brink-ide [`IntroducedDiagnostic`](brink_ide::structural_result::IntroducedDiagnostic)
+/// to its JSON shape.
+fn diag_js(d: &brink_ide::structural_result::IntroducedDiagnostic) -> RenameDiagJs {
+    RenameDiagJs {
+        severity: match d.severity {
+            brink_ir::Severity::Error => "error",
+            brink_ir::Severity::Warning => "warning",
+        }
+        .to_owned(),
+        code: d.code.as_str().to_owned(),
+        message: d.message.clone(),
+        path: d.path.clone(),
+        line: d.line,
+        col: d.col,
+    }
+}
+
+/// Resolve a [`StructuralResult`](brink_ide::structural_result::StructuralResult)'s
+/// cross-file `FileEdit`s to full new file sources (applying each file's
+/// byte-range edits against its current source), excluding the primary `path`
+/// (already covered by `new_source`). Deterministic (BTreeMap-grouped).
+fn resolve_cross_file_edits(
     session: &IdeSession,
-    result: &brink_ide::rename::SafeRenameResult,
+    result: &brink_ide::structural_result::StructuralResult,
     path: &str,
-) -> String {
-    // Group edits by file (BTreeMap for deterministic output; FileId isn't Ord).
+) -> Vec<CrossFileEditJs> {
     let mut by_file: std::collections::BTreeMap<u32, Vec<(usize, usize, String)>> =
         std::collections::BTreeMap::new();
-    for e in &result.edits {
+    for e in &result.cross_file_edits {
         by_file.entry(e.file.0).or_default().push((
             usize::from(e.range.start()),
             usize::from(e.range.end()),
@@ -3643,70 +3621,89 @@ fn rename_result_json(
         ));
     }
 
-    let mut new_source: Option<String> = None;
-    let mut cross: Vec<CrossFileEditJs> = Vec::new();
-    for (raw, file_edits) in by_file {
-        let file_id = brink_ir::FileId(raw);
+    let mut edits: Vec<CrossFileEditJs> = Vec::new();
+    for (file_raw, file_edits) in by_file {
+        let file_id = brink_ir::FileId(file_raw);
         let (Some(src), Some(fpath)) = (session.source(file_id), session.file_path(file_id)) else {
             continue;
         };
-        let applied = apply_edits(src, file_edits);
         if fpath == path {
-            new_source = Some(applied);
-        } else {
-            cross.push(CrossFileEditJs {
-                path: fpath.to_owned(),
-                new_source: applied,
-            });
+            continue;
         }
+        edits.push(CrossFileEditJs {
+            path: fpath.to_owned(),
+            new_source: apply_edits(src, file_edits),
+        });
     }
+    edits
+}
 
-    let introduced_diagnostics: Vec<RenameDiagJs> = result
-        .introduced
-        .iter()
-        .map(|d| RenameDiagJs {
-            severity: match d.severity {
-                brink_ir::Severity::Error => "error",
-                brink_ir::Severity::Warning => "warning",
-            }
-            .to_owned(),
-            code: d.code.as_str().to_owned(),
-            message: d.message.clone(),
-            path: d.path.clone(),
-            line: d.line,
-            col: d.col,
-        })
-        .collect();
-
-    let resp = RenameResultJs {
+/// Serialize a fully-formed [`StructuralResult`](brink_ide::structural_result::StructuralResult)
+/// (already carrying `safe` / `introduced`) to the unified `StructuralResultJs`
+/// JSON. Used by rename, file-rename, and delete — ops that gate themselves.
+fn structural_result_json(
+    session: &IdeSession,
+    result: &brink_ide::structural_result::StructuralResult,
+    path: &str,
+) -> String {
+    let cross_file_edits = resolve_cross_file_edits(session, result, path);
+    let introduced_diagnostics: Vec<RenameDiagJs> = result.introduced.iter().map(diag_js).collect();
+    let resp = StructuralResultJs {
         ok: true,
         path: Some(path.to_owned()),
-        new_source,
-        cross_file_edits: cross,
-        safe: introduced_diagnostics.is_empty(),
+        new_source: result.new_source.clone(),
+        cross_file_edits,
+        safe: result.safe,
         introduced_diagnostics,
         error: None,
     };
     serde_json::to_string(&resp).unwrap_or_default()
 }
 
+/// Run the op-agnostic breakage gate over a structural *move*'s result (which
+/// arrives un-gated from the pure ops), then serialize. The move's primary
+/// source is a full-file rewrite, so the gate overlays it wholesale and the
+/// cross-file edits onto their own files.
+fn gated_move_json(
+    session: &IdeSession,
+    mut result: brink_ide::structural_result::StructuralResult,
+    path: &str,
+) -> String {
+    if let Some(new_source) = result.new_source.as_deref() {
+        let introduced = brink_ide::structural_result::gate_with_source(
+            session,
+            path,
+            new_source,
+            &result.cross_file_edits,
+        );
+        result.safe = introduced.is_empty();
+        result.introduced = introduced;
+    }
+    structural_result_json(session, &result, path)
+}
+
+/// A trivially-safe single-file rewrite (reorders): no gate, empty breakage.
 fn move_result_json_simple(new_source: String, path: &str) -> String {
-    let resp = MoveResultJs {
+    let resp = StructuralResultJs {
         ok: true,
         path: Some(path.to_owned()),
         new_source: Some(new_source),
         cross_file_edits: Vec::new(),
+        introduced_diagnostics: Vec::new(),
+        safe: true,
         error: None,
     };
     serde_json::to_string(&resp).unwrap_or_default()
 }
 
 fn error_json(msg: &str) -> String {
-    let resp = MoveResultJs {
+    let resp = StructuralResultJs {
         ok: false,
         path: None,
         new_source: None,
         cross_file_edits: Vec::new(),
+        introduced_diagnostics: Vec::new(),
+        safe: true,
         error: Some(msg.to_owned()),
     };
     serde_json::to_string(&resp).unwrap_or_default()
@@ -3999,6 +3996,118 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&s.rename_symbol("main.ink", "nope", "", "x")).unwrap();
         assert_eq!(v["ok"], false);
+    }
+
+    // ── Unified StructuralResult + deleteSymbol (#316) ──────────────
+
+    #[test]
+    fn delete_symbol_referenced_knot_reports_breakage() {
+        // `start` diverts to `target`; deleting `target` dangles that divert.
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "=== start ===\n-> target\n=== target ===\n-> END\n",
+        );
+        assert!(s.set_active_file("main.ink"));
+
+        let v: serde_json::Value =
+            serde_json::from_str(&s.delete_symbol("main.ink", "target", "")).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(
+            v["safe"], false,
+            "deleting a referenced knot is unsafe: {v}"
+        );
+        let diags = v["introduced_diagnostics"].as_array().unwrap();
+        assert!(
+            !diags.is_empty(),
+            "the dangling divert is reported: {diags:?}"
+        );
+        // Every diag carries the breakage-report fields.
+        for key in ["severity", "code", "message", "path", "line", "col"] {
+            assert!(diags[0].get(key).is_some(), "diag missing {key}: {diags:?}");
+        }
+        let new_source = v["new_source"].as_str().unwrap();
+        assert!(
+            !new_source.contains("=== target ==="),
+            "target removed: {new_source}"
+        );
+    }
+
+    #[test]
+    fn delete_symbol_unreferenced_is_safe() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== a ===\n-> END\n=== b ===\n-> END\n");
+        assert!(s.set_active_file("main.ink"));
+        let v: serde_json::Value =
+            serde_json::from_str(&s.delete_symbol("main.ink", "b", "")).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["safe"], true, "no references, so safe: {v}");
+        assert!(v["introduced_diagnostics"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_symbol_stitch_keeps_siblings() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== k ===\n= a\nA.\n= b\nB.\n= c\nC.\n");
+        assert!(s.set_active_file("main.ink"));
+        let v: serde_json::Value =
+            serde_json::from_str(&s.delete_symbol("main.ink", "k", "b")).unwrap();
+        let new_source = v["new_source"].as_str().unwrap();
+        assert!(!new_source.contains("= b"), "b removed: {new_source}");
+        assert!(
+            new_source.contains("= a") && new_source.contains("= c"),
+            "siblings kept: {new_source}"
+        );
+    }
+
+    #[test]
+    fn delete_symbol_unknown_returns_error() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== a ===\n-> END\n");
+        assert!(s.set_active_file("main.ink"));
+        let v: serde_json::Value =
+            serde_json::from_str(&s.delete_symbol("main.ink", "ghost", "")).unwrap();
+        assert_eq!(v["ok"], false);
+    }
+
+    #[test]
+    fn reorder_returns_safe_with_empty_breakage() {
+        // Reorders change no qualification — the unified result is trivially safe.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== a ===\n-> END\n=== b ===\n-> END\n");
+        assert!(s.set_active_file("main.ink"));
+        let v: serde_json::Value =
+            serde_json::from_str(&s.reorder_knot("main.ink", "a", 1)).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["safe"], true);
+        assert!(v["introduced_diagnostics"].as_array().unwrap().is_empty());
+        // The unified result still round-trips through the StructuralResult JSON:
+        // every field the studio reads is present.
+        assert!(v.get("new_source").is_some());
+        assert!(v.get("cross_file_edits").is_some());
+    }
+
+    #[test]
+    fn breaking_move_reports_introduced_diagnostics() {
+        // Moving a stitch whose bare same-knot reference can't be requalified
+        // into the destination is gated. Here a divert in `other` targets the
+        // qualified stitch; the move rewrites it, staying safe — but a move that
+        // collides surfaces breakage. We assert the unified result always carries
+        // the gate fields regardless of outcome.
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "=== src ===\n= movable\n-> END\n=== dst ===\nDest.\n",
+        );
+        assert!(s.set_active_file("main.ink"));
+        let v: serde_json::Value =
+            serde_json::from_str(&s.move_stitch("main.ink", "src", "movable", "dst")).unwrap();
+        assert_eq!(v["ok"], true);
+        assert!(v.get("safe").is_some(), "move carries the gate flag: {v}");
+        assert!(
+            v.get("introduced_diagnostics").is_some(),
+            "move carries the breakage list: {v}"
+        );
     }
 
     // ── Document handles (#122) ─────────────────────────────────────
@@ -4393,7 +4502,7 @@ mod tests {
     // ── resolve_code_action (#321 Track N) ──────────────────────────
     // The code_actions JSON carries a self-describing `data` discriminator;
     // feeding that payload back to resolve_code_action applies the action and
-    // returns MoveResult-shaped JSON with the rewritten source.
+    // returns StructuralResult-shaped JSON with the rewritten source.
 
     /// The byte offset (cursor) inside the first knot's body — enough to scope
     /// cursor-anchored actions to that knot.
@@ -4442,7 +4551,7 @@ mod tests {
         let data = find_action(&actions, "Sort knots")["data"].to_string();
 
         let result: serde_json::Value =
-            serde_json::from_str(&s.resolve_code_action(&data, 0)).expect("valid MoveResult JSON");
+            serde_json::from_str(&s.resolve_code_action(&data, 0)).expect("valid StructuralResult JSON");
         assert_eq!(result["ok"], true, "resolve succeeds: {result}");
         let new_source = result["new_source"]
             .as_str()
@@ -4497,7 +4606,7 @@ mod tests {
         let data = format["data"].to_string();
 
         let result: serde_json::Value = serde_json::from_str(&s.resolve_code_action(&data, offset))
-            .expect("valid MoveResult JSON");
+            .expect("valid StructuralResult JSON");
         assert_eq!(result["ok"], true, "resolve succeeds: {result}");
         let new_source = result["new_source"]
             .as_str()
@@ -4516,7 +4625,7 @@ mod tests {
 
         let result: serde_json::Value =
             serde_json::from_str(&s.resolve_code_action("{ not valid }", 0))
-                .expect("error is still MoveResult-shaped JSON");
+                .expect("error is still StructuralResult-shaped JSON");
         assert_eq!(result["ok"], false, "malformed data -> ok:false: {result}");
         assert!(
             result["error"].as_str().is_some(),

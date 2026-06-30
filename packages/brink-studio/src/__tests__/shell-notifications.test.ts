@@ -19,7 +19,7 @@ import {
   SEVERITY_TIMEOUTS,
 } from "@brink/studio-shell";
 import { createStudioStore, type StoreNotification } from "@brink/studio-store";
-import type { MoveResult } from "@brink/wasm-types";
+import type { StructuralResult } from "@brink/wasm-types";
 
 describe("NotificationCenter", () => {
   let center: NotificationCenter;
@@ -268,11 +268,13 @@ describe("binder notification bridge", () => {
     return { store, session, sources, notify };
   }
 
-  const moveResult: MoveResult = {
+  const moveResult: StructuralResult = {
     ok: true,
     path: "main.ink",
     new_source: "new source",
     cross_file_edits: [],
+    safe: true,
+    introduced_diagnostics: [],
   };
 
   it("applyMoveResult notifies with an Undo action dispatching binder.undo", async () => {

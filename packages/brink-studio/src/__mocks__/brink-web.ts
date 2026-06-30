@@ -200,6 +200,78 @@ export class EditorSession {
       path: oldPath,
       new_source: source,
       cross_file_edits: crossFileEdits,
+      // Unified StructuralResult gate (#316). The mock does not model the
+      // INCLUDE-graph breakage, so a rename is reported safe.
+      introduced_diagnostics: [],
+      safe: true,
+    });
+  }
+
+  /**
+   * Mock of the real `delete_symbol` op (#316). Removes the named knot's whole
+   * region (header + body + nested stitches) or a stitch's region, and reports
+   * `E020`-style breakage when any other line still diverts/threads to the
+   * removed symbol — enough to drive the studio's safe-by-default report. The
+   * precise dangling-reference math is covered by Rust tests.
+   */
+  delete_symbol(path: string, knot: string, stitch: string): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return JSON.stringify({ ok: false, error: "file not loaded" });
+    }
+    const name = stitch || knot;
+    const lines = source.split("\n");
+    const headerRe = stitch
+      ? new RegExp(`^\\s*=\\s+${name}\\b`)
+      : new RegExp(`^\\s*={2,3}\\s*${name}\\b`);
+    const start = lines.findIndex((l) => headerRe.test(l));
+    if (start < 0) {
+      return JSON.stringify({ ok: false, error: "symbol not found" });
+    }
+    // The region runs until the next header at the same-or-shallower level.
+    const stopRe = stitch ? /^\s*={1,3}/ : /^\s*={2,3}/;
+    let end = start + 1;
+    while (end < lines.length && !stopRe.test(lines[end]!)) end++;
+    const kept = [...lines.slice(0, start), ...lines.slice(end)];
+    const newSource = kept.join("\n");
+
+    // Breakage: any remaining `-> name` / `<- name` (here or in another file).
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const refRe = new RegExp(`(?:->|<-)\\s*${esc}\\b`);
+    const introduced: {
+      severity: string;
+      code: string;
+      message: string;
+      path: string;
+      line: number;
+      col: number;
+    }[] = [];
+    const scan = (p: string, src: string) => {
+      src.split("\n").forEach((l, i) => {
+        if (refRe.test(l)) {
+          introduced.push({
+            severity: "error",
+            code: "E020",
+            message: `unresolved divert to '${name}'`,
+            path: p,
+            line: i + 1,
+            col: 1,
+          });
+        }
+      });
+    };
+    scan(path, newSource);
+    for (const [p, src] of this.files) {
+      if (p !== path) scan(p, src);
+    }
+
+    return JSON.stringify({
+      ok: true,
+      path,
+      new_source: newSource,
+      cross_file_edits: [],
+      introduced_diagnostics: introduced,
+      safe: introduced.length === 0,
     });
   }
 

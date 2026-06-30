@@ -41,8 +41,7 @@ import type {
   DocumentId,
   DocumentChangeSpec,
   Line,
-  MoveResult,
-  SymbolRenameResult,
+  StructuralResult,
   DebugState,
   ProgramModel,
   SaveState,
@@ -313,10 +312,10 @@ export class EditorSessionHandle {
   }
 
   /** Document-handle variant of `resolveCodeAction`. */
-  resolveCodeActionDoc(doc: DocumentId, data: CodeActionData, offset: number): MoveResult {
+  resolveCodeActionDoc(doc: DocumentId, data: CodeActionData, offset: number): StructuralResult {
     this.bump();
     const json = this.session.resolve_code_action_doc(doc, JSON.stringify(data), offset);
-    return JSON.parse(json) as MoveResult;
+    return JSON.parse(json) as StructuralResult;
   }
 
   getInlayHintsDoc(doc: DocumentId, start: number, end: number): InlayHint[] {
@@ -480,13 +479,13 @@ export class EditorSessionHandle {
   /**
    * Apply a code action selected from `getCodeActions`. Pass the action's
    * `data` payload back verbatim; `offset` is the cursor the action was offered
-   * at. Returns a `MoveResult` (`new_source` plus any `cross_file_edits`), or
+   * at. Returns a `StructuralResult` (`new_source` plus any `cross_file_edits`), or
    * `ok: false` with an `error` for malformed data or a no-op action.
    */
-  resolveCodeAction(data: CodeActionData, offset: number): MoveResult {
+  resolveCodeAction(data: CodeActionData, offset: number): StructuralResult {
     this.bump();
     const json = this.session.resolve_code_action(JSON.stringify(data), offset);
-    return JSON.parse(json) as MoveResult;
+    return JSON.parse(json) as StructuralResult;
   }
 
   getInlayHints(start: number, end: number): InlayHint[] {
@@ -527,17 +526,17 @@ export class EditorSessionHandle {
   }
 
   /** Reorder a stitch within its knot. direction: 1 = down, -1 = up. */
-  reorderStitch(path: string, knot: string, stitch: string, direction: number): MoveResult {
+  reorderStitch(path: string, knot: string, stitch: string, direction: number): StructuralResult {
     this.bump();
     const json = this.session.reorder_stitch(path, knot, stitch, direction);
-    return JSON.parse(json) as MoveResult;
+    return JSON.parse(json) as StructuralResult;
   }
 
   /** Reorder a knot within the top-level knot list. direction: 1 = down, -1 = up. */
-  reorderKnot(path: string, knot: string, direction: number): MoveResult {
+  reorderKnot(path: string, knot: string, direction: number): StructuralResult {
     this.bump();
     const json = this.session.reorder_knot(path, knot, direction);
-    return JSON.parse(json) as MoveResult;
+    return JSON.parse(json) as StructuralResult;
   }
 
   /**
@@ -545,24 +544,24 @@ export class EditorSessionHandle {
    * knot's stitch names). Used by drag-and-drop, which knows the full
    * destination order, and by multi-select moves.
    */
-  reorderStitches(path: string, knot: string, order: string[]): MoveResult {
+  reorderStitches(path: string, knot: string, order: string[]): StructuralResult {
     this.bump();
     const json = this.session.reorder_stitches(path, knot, order);
-    return JSON.parse(json) as MoveResult;
+    return JSON.parse(json) as StructuralResult;
   }
 
   /** Reorder all top-level knots to match `order` (a permutation of the knot names). */
-  reorderKnots(path: string, order: string[]): MoveResult {
+  reorderKnots(path: string, order: string[]): StructuralResult {
     this.bump();
     const json = this.session.reorder_knots(path, order);
-    return JSON.parse(json) as MoveResult;
+    return JSON.parse(json) as StructuralResult;
   }
 
   /** Move a stitch from one knot to another. */
-  moveStitch(path: string, srcKnot: string, stitch: string, destKnot: string): MoveResult {
+  moveStitch(path: string, srcKnot: string, stitch: string, destKnot: string): StructuralResult {
     this.bump();
     const json = this.session.move_stitch(path, srcKnot, stitch, destKnot);
-    return JSON.parse(json) as MoveResult;
+    return JSON.parse(json) as StructuralResult;
   }
 
   /**
@@ -572,48 +571,62 @@ export class EditorSessionHandle {
    * files' rewrites. The op computes edits only — the caller applies them
    * (write `newPath`, remove `oldPath`).
    */
-  renameFile(oldPath: string, newPath: string): MoveResult {
+  renameFile(oldPath: string, newPath: string): StructuralResult {
     this.bump();
     const json = this.session.rename_file(oldPath, newPath);
-    return JSON.parse(json) as MoveResult;
+    return JSON.parse(json) as StructuralResult;
   }
 
   /** Promote a stitch to a top-level knot. */
-  promoteStitch(path: string, knot: string, stitch: string): MoveResult {
+  promoteStitch(path: string, knot: string, stitch: string): StructuralResult {
     this.bump();
     const json = this.session.promote_stitch(path, knot, stitch);
-    return JSON.parse(json) as MoveResult;
+    return JSON.parse(json) as StructuralResult;
   }
 
   /** Demote a top-level knot to a stitch inside another knot. */
-  demoteKnot(path: string, knot: string, destKnot: string): MoveResult {
+  demoteKnot(path: string, knot: string, destKnot: string): StructuralResult {
     this.bump();
     const json = this.session.demote_knot(path, knot, destKnot);
-    return JSON.parse(json) as MoveResult;
+    return JSON.parse(json) as StructuralResult;
+  }
+
+  /**
+   * Delete a knot (`stitch` omitted) or a stitch, safe-by-default (#316).
+   * Removes the knot's whole region (header, body, nested stitches) or the named
+   * stitch's region, then runs the breakage gate: every divert / thread /
+   * tunnel / call that targeted the removed symbol now dangles, surfacing in
+   * `introduced_diagnostics`. When `safe`, apply directly via `applyMoveResult`;
+   * otherwise show the breakage report and apply only on an explicit force.
+   */
+  deleteSymbol(path: string, knot: string, stitch?: string): StructuralResult {
+    this.bump();
+    const json = this.session.delete_symbol(path, knot, stitch ?? "");
+    return JSON.parse(json) as StructuralResult;
   }
 
   /**
    * Rename a knot (`stitch` omitted) or a stitch, safe-by-default. The result
-   * is a `MoveResult` superset: when `safe` it can be applied directly via
+   * is a `StructuralResult` superset: when `safe` it can be applied directly via
    * `applyMoveResult`; otherwise `introduced_diagnostics` carries the breakage
    * report and the caller applies the (already-computed) edits only on force.
    */
-  renameSymbol(path: string, knot: string, stitch: string, newName: string): SymbolRenameResult {
+  renameSymbol(path: string, knot: string, stitch: string, newName: string): StructuralResult {
     this.bump();
     const json = this.session.rename_symbol(path, knot, stitch, newName);
-    return JSON.parse(json) as SymbolRenameResult;
+    return JSON.parse(json) as StructuralResult;
   }
 
   /**
    * Offset-based sibling of {@link renameSymbol}, used by the editor's F2 to
    * rename any symbol under the cursor (not just knots/stitches). `offset` is a
    * whole-file UTF-16 offset (fold in any fragment-view origin first). Same
-   * safe-by-default `SymbolRenameResult`.
+   * safe-by-default `StructuralResult`.
    */
-  renameSymbolAt(path: string, offset: number, newName: string): SymbolRenameResult {
+  renameSymbolAt(path: string, offset: number, newName: string): StructuralResult {
     this.bump();
     const json = this.session.rename_symbol_at(path, offset, newName);
-    return JSON.parse(json) as SymbolRenameResult;
+    return JSON.parse(json) as StructuralResult;
   }
 
   free(): void {

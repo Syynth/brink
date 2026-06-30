@@ -5,7 +5,7 @@
  * drag-drop), the editor, and the Story Graph all drive identical logic.
  */
 
-import type { MoveResult, RenameDiagnostic } from "@brink/wasm-types";
+import type { StructuralResult, RenameDiagnostic } from "@brink/wasm-types";
 import type { StudioState, SymbolRenameRequest } from "@brink/studio-store";
 import type { ContextMenuAction } from "./BinderContextMenu.js";
 
@@ -34,7 +34,7 @@ export async function dispatchSymbolAction(
   const session = state._project?.getSession();
   if (!session) return;
 
-  let result: MoveResult;
+  let result: StructuralResult;
   let description: string;
   switch (action.type) {
     case "reorderStitch":
