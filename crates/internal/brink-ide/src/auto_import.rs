@@ -108,9 +108,18 @@ fn relative_include(current: &str, target: &str) -> String {
 fn insertion_edit(hir: &brink_ir::HirFile, source: &str, rel_path: &str) -> TextEdit {
     let line = format!("INCLUDE {rel_path}");
     let byte = insertion_byte(hir, source);
-    // Insert a full line at `byte` (which is always the start of a line),
-    // pushing existing content down.
-    let insert = format!("{line}\n");
+    // The insertion byte is normally the start of a line, so a trailing `\n`
+    // makes the INCLUDE its own line. But when `current` lacks a trailing
+    // newline and the insertion point is the end of the file (e.g. a
+    // single-INCLUDE or comment-only file), `byte` lands mid-line — directly
+    // after the last character. Prepend a `\n` in that case so the new INCLUDE
+    // is not concatenated onto the preceding line.
+    let needs_leading_newline = byte > 0 && source.as_bytes().get(byte - 1) != Some(&b'\n');
+    let insert = if needs_leading_newline {
+        format!("\n{line}\n")
+    } else {
+        format!("{line}\n")
+    };
     let at = u32::try_from(byte).unwrap_or(u32::MAX);
     TextEdit {
         from: at,
@@ -234,5 +243,115 @@ mod tests {
         let e1 = include_insertion_edit(&hir, src, "b.ink");
         let e2 = include_insertion_edit(&hir, src, "b.ink");
         assert_eq!(e1, e2);
+    }
+
+    #[test]
+    fn single_include_without_trailing_newline_stays_on_its_own_line() {
+        // The whole file is one INCLUDE and has no trailing newline; the
+        // insertion point is the end of the file (mid-line). The new INCLUDE
+        // must not be concatenated onto the existing one.
+        let src = "INCLUDE a.ink";
+        let hir = hir_of(src);
+        let edit = include_insertion_edit(&hir, src, "c.ink");
+        let after = applied(src, &edit);
+        assert_eq!(after, "INCLUDE a.ink\nINCLUDE c.ink\n");
+    }
+
+    #[test]
+    fn comment_only_without_trailing_newline_stays_on_its_own_line() {
+        // A comment-only file with no trailing newline: the new INCLUDE must
+        // land on its own line, not be swallowed into the comment.
+        let src = "// hdr";
+        let hir = hir_of(src);
+        let edit = include_insertion_edit(&hir, src, "c.ink");
+        let after = applied(src, &edit);
+        assert_eq!(after, "// hdr\nINCLUDE c.ink\n");
+    }
+
+    #[test]
+    fn multi_include_block_without_trailing_newline_stays_on_its_own_line() {
+        let src = "INCLUDE a.ink\nINCLUDE b.ink";
+        let hir = hir_of(src);
+        let edit = include_insertion_edit(&hir, src, "c.ink");
+        let after = applied(src, &edit);
+        assert_eq!(after, "INCLUDE a.ink\nINCLUDE b.ink\nINCLUDE c.ink\n");
+    }
+
+    fn session_with(files: &[(&str, &str)]) -> IdeSession {
+        let mut session = IdeSession::new();
+        // First pass: register every file so each path has a `FileId`.
+        for (path, src) in files {
+            session.update_source(path, (*src).to_string());
+        }
+        // Second pass: re-update so every `INCLUDE` edge resolves now that all
+        // target files exist in the db (edges only bind to existing ids).
+        for (path, src) in files {
+            session.update_and_analyze(path, (*src).to_string());
+        }
+        session
+    }
+
+    #[test]
+    fn ensure_include_idempotent_when_directly_reachable() {
+        let session = session_with(&[
+            ("main.ink", "INCLUDE util.ink\n== hub ==\n"),
+            ("util.ink", "== helper ==\n"),
+        ]);
+        let result = ensure_include(&session, "main.ink", "util.ink").expect("ensure");
+        assert_eq!(
+            result,
+            AutoImport {
+                already_reachable: true,
+                edit: None,
+            }
+        );
+    }
+
+    #[test]
+    fn ensure_include_idempotent_when_transitively_reachable() {
+        let session = session_with(&[
+            ("main.ink", "INCLUDE mid.ink\n== hub ==\n"),
+            ("mid.ink", "INCLUDE leaf.ink\n== m ==\n"),
+            ("leaf.ink", "== l ==\n"),
+        ]);
+        let result = ensure_include(&session, "main.ink", "leaf.ink").expect("ensure");
+        assert!(result.already_reachable);
+        assert_eq!(result.edit, None);
+    }
+
+    #[test]
+    fn ensure_include_idempotent_for_self() {
+        let session = session_with(&[("main.ink", "== hub ==\n")]);
+        let result = ensure_include(&session, "main.ink", "main.ink").expect("ensure");
+        assert!(result.already_reachable);
+        assert_eq!(result.edit, None);
+    }
+
+    #[test]
+    fn ensure_include_produces_edit_when_not_reachable() {
+        let session = session_with(&[
+            ("main.ink", "INCLUDE a.ink\n== hub ==\n"),
+            ("a.ink", "== a ==\n"),
+            ("b.ink", "== b ==\n"),
+        ]);
+        let result = ensure_include(&session, "main.ink", "b.ink").expect("ensure");
+        assert!(!result.already_reachable);
+        let edit = result.edit.expect("edit");
+        let after = applied("INCLUDE a.ink\n== hub ==\n", &edit);
+        assert_eq!(after, "INCLUDE a.ink\nINCLUDE b.ink\n== hub ==\n");
+    }
+
+    #[test]
+    fn ensure_include_current_not_found() {
+        let session = session_with(&[("target.ink", "== t ==\n")]);
+        let err = ensure_include(&session, "missing.ink", "target.ink").unwrap_err();
+        assert_eq!(err, AutoImportError::CurrentNotFound("missing.ink".into()));
+    }
+
+    #[test]
+    fn ensure_include_target_not_found() {
+        let session = session_with(&[("main.ink", "== hub ==\n")]);
+        let err = ensure_include(&session, "main.ink", "missing.ink").unwrap_err();
+        assert_eq!(err, AutoImportError::TargetNotFound("missing.ink".into()));
     }
 }
