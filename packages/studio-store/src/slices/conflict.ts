@@ -73,6 +73,13 @@ export const createConflictSlice: StateCreator<StudioState, [], [], ConflictSlic
       const conflict = get().conflicts[path];
       if (!conflict) return;
       get()._project?.resolveConflictUseDisk(path, conflict.disk);
+      // The resolve mutated the wasm session out-of-band (session.updateFile),
+      // so every mounted CM6 view for `path` must re-sync from the session —
+      // otherwise the open editor keeps showing the stale pre-resolution buffer
+      // and the next keystroke mirrors it back, silently reverting the resolve.
+      // Mirrors the search/binder apply-edits seam (search.ts:147-148).
+      get()._documents?.invalidateFile(path);
+      get()._documents?.triggerCompile();
       drop(path);
     },
 
@@ -85,6 +92,11 @@ export const createConflictSlice: StateCreator<StudioState, [], [], ConflictSlic
     resolveMerge(path, merged) {
       if (!get().conflicts[path]) return;
       get()._project?.resolveConflictMerged(path, merged);
+      // applyEdit mutated the session out-of-band; re-sync mounted views so the
+      // editor shows the merged text instead of the stale buffer. See the
+      // resolveUseDisk note above and the search/binder seam.
+      get()._documents?.invalidateFile(path);
+      get()._documents?.triggerCompile();
       drop(path);
     },
   };
