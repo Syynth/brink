@@ -433,6 +433,39 @@ export class EditorSessionHandle {
     return JSON.parse(json) as Location[];
   }
 
+  /**
+   * Find all references at an explicit file path + offset, with control over
+   * whether the declaration itself is included. Document-agnostic: resolves the
+   * file by `path` rather than the active document.
+   */
+  findReferencesAt(
+    path: string,
+    offset: number,
+    includeDeclaration: boolean,
+  ): Location[] {
+    const json = this.session.find_references_at(
+      path,
+      offset,
+      includeDeclaration,
+    );
+    return JSON.parse(json) as Location[];
+  }
+
+  /**
+   * Find all references to a symbol identified by its canonical name. Returns
+   * an empty array if the name is unknown or ambiguous.
+   */
+  referencesToSymbol(
+    symbolName: string,
+    includeDeclaration: boolean,
+  ): Location[] {
+    const json = this.session.references_to_symbol(
+      symbolName,
+      includeDeclaration,
+    );
+    return JSON.parse(json) as Location[];
+  }
+
   prepareRename(offset: number): Location | null {
     const json = this.session.prepare_rename(offset);
     const result = JSON.parse(json);
