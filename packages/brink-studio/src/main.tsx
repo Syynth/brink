@@ -6,7 +6,7 @@
  */
 
 import { mountStudio, type StudioHandle } from "./mount.js";
-import { InMemoryFileProvider, type FileChange } from "@brink/ink-editor";
+import { InMemoryFileProvider, type FileChange } from "@brink-lang/editor";
 import { createExampleExtension, EXAMPLE_HOST_MANIFEST } from "./example-extension.js";
 import toppledTemple from "./stories/toppled-temple.ink.txt?raw";
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { liveArgRange } from "@brink/ink-editor";
+import { liveArgRange } from "@brink-lang/editor";
 
 // liveArgRange resolves the source range of an argument literal at `from`, used
 // to replace a host-widget's value in place. Quote-only matching left an Edit on

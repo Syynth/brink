@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { DocumentSessions, InMemoryFileProvider, ProjectSession } from "@brink/ink-editor";
+import { DocumentSessions, InMemoryFileProvider, ProjectSession } from "@brink-lang/editor";
 import { initWasm, type EditorSessionHandle } from "@brink-lang/web";
 import { EditorView } from "@codemirror/view";
 

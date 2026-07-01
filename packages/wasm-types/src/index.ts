@@ -227,7 +227,7 @@ export interface DeclaredGroup {
 // ── Host argument widgets (argument-widget-spec §3) ──────────────────
 //
 // Studio/host API types (not wasm-boundary types) — kept here as the shared
-// base both @brink/ink-editor (the registry) and @brink/studio-shell (the
+// base both @brink-lang/editor (the registry) and @brink/studio-shell (the
 // `StudioExtensions.argumentWidgets` surface) import without a cross-dependency.
 
 /** Context handed to a host widget's renderers (one entry per group member). */

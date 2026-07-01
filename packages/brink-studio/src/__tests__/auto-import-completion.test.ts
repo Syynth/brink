@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { Completion } from "@codemirror/autocomplete";
-import { toCompletionOption } from "@brink/ink-editor";
+import { toCompletionOption } from "@brink-lang/editor";
 import type { AutoImportResult, CompletionItem } from "@brink/wasm-types";
 
 const item = (partial: Partial<CompletionItem>): CompletionItem =>

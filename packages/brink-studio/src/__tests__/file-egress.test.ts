@@ -17,7 +17,7 @@ import {
   ProjectSession,
   type FileChange,
   type FileConflict,
-} from "@brink/ink-editor";
+} from "@brink-lang/editor";
 import { initWasm } from "@brink-lang/web";
 import type { StructuralResult } from "@brink/wasm-types";
 import { CommandRegistry, Keymap, NotificationCenter } from "@brink/studio-shell";

@@ -24,7 +24,7 @@ importers:
         specifier: workspace:^
         version: link:../wasm
     devDependencies:
-      '@brink/ink-editor':
+      '@brink-lang/editor':
         specifier: workspace:*
         version: link:../ink-editor
       '@brink/ink-operations':
@@ -109,14 +109,8 @@ importers:
   packages/ink-editor:
     dependencies:
       '@brink-lang/web':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../wasm
-      '@brink/ink-operations':
-        specifier: workspace:*
-        version: link:../ink-operations
-      '@brink/wasm-types':
-        specifier: workspace:*
-        version: link:../wasm-types
       '@codemirror/autocomplete':
         specifier: ^6.18.6
         version: 6.20.1
@@ -150,6 +144,19 @@ importers:
       react:
         specifier: ^19.0.0
         version: 19.2.4
+    devDependencies:
+      '@brink/ink-operations':
+        specifier: workspace:*
+        version: link:../ink-operations
+      '@brink/wasm-types':
+        specifier: workspace:*
+        version: link:../wasm-types
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(@microsoft/api-extractor@7.58.8(@types/node@12.20.55))(postcss@8.5.8)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
 
   packages/ink-operations:
     dependencies:
@@ -177,12 +184,12 @@ importers:
 
   packages/studio-store:
     dependencies:
+      '@brink-lang/editor':
+        specifier: workspace:*
+        version: link:../ink-editor
       '@brink-lang/web':
         specifier: workspace:*
         version: link:../wasm
-      '@brink/ink-editor':
-        specifier: workspace:*
-        version: link:../ink-editor
       '@brink/ink-operations':
         specifier: workspace:*
         version: link:../ink-operations

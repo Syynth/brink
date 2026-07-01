@@ -9,8 +9,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ConflictView } from "@brink/ink-editor";
-import type { FileConflict } from "@brink/ink-editor";
+import { ConflictView } from "@brink-lang/editor";
+import type { FileConflict } from "@brink-lang/editor";
 import { EditorView } from "@codemirror/view";
 
 const CONFLICT: FileConflict = {

@@ -8,7 +8,7 @@
   "dependencies": {
     "@brink/wasm-types": "workspace:*",
     "@brink-lang/web": "workspace:*",
-    "@brink/ink-editor": "workspace:*",
+    "@brink-lang/editor": "workspace:*",
     "@brink/ink-operations": "workspace:*",
     "zustand": "^5.0.0"
   },

@@ -17,7 +17,7 @@ import {
   syncAnnotation,
   type DocTarget,
   type DocumentCallbacks,
-} from "@brink/ink-editor";
+} from "@brink-lang/editor";
 import { initWasm } from "@brink-lang/web";
 import { EditorView } from "@codemirror/view";
 

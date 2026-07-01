@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { InMemoryFileProvider, ProjectSession } from "@brink/ink-editor";
+import { InMemoryFileProvider, ProjectSession } from "@brink-lang/editor";
 import { initWasm } from "@brink-lang/web";
 import { createStudioStore, type DocumentSessions as StoreDocs } from "@brink/studio-store";
 import { performSymbolRename } from "@brink/studio-ui";

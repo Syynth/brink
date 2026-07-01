@@ -26,7 +26,7 @@ import { useState, type ReactElement } from "react";
 import { useStudioApi, type StudioApi } from "@brink/studio-ui";
 import type { StudioExtensions } from "@brink/studio-shell";
 import type { HostManifest, ArgumentWidget } from "@brink/wasm-types";
-import { openArgumentForm, type FormField, type FormGroup } from "@brink/ink-editor";
+import { openArgumentForm, type FormField, type FormGroup } from "@brink-lang/editor";
 
 export const EXAMPLE_TOOL_WINDOW_ID = "host.example.functions";
 export const EXAMPLE_REVEAL_COMMAND_ID = "host.example.revealStart";
@@ -449,7 +449,7 @@ function HostFunctionsPanel() {
 
   /** Click → compose the call in the Form, then insert the completed call.
    *  Modifier-click (Alt) → the bare-skeleton quick path. Zero-param calls and
-   *  manifests without `@brink/ink-editor`'s Form just insert the skeleton. */
+   *  manifests without `@brink-lang/editor`'s Form just insert the skeleton. */
   const launch = (item: HostFunctionItem, anchor: HTMLElement, quick: boolean): void => {
     if (quick || (item.fields.length === 0 && item.groups.length === 0)) {
       insertSkeleton(item);

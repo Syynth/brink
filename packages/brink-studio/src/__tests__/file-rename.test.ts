@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { InMemoryFileProvider, ProjectSession, type FileChange } from "@brink/ink-editor";
+import { InMemoryFileProvider, ProjectSession, type FileChange } from "@brink-lang/editor";
 import { initWasm } from "@brink-lang/web";
 import { createStudioStore, type DocumentSessions as StoreDocs } from "@brink/studio-store";
 

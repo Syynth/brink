@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { completionType, toCompletionOption } from "@brink/ink-editor";
+import { completionType, toCompletionOption } from "@brink-lang/editor";
 import type { CompletionItem } from "@brink/wasm-types";
 
 const item = (partial: Partial<CompletionItem>): CompletionItem =>

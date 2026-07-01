@@ -11,7 +11,7 @@
  * through the store.
  *
  * The actual banner + MergeView are owned by the framework-agnostic
- * {@link ConflictView} (in @brink/ink-editor): this component only mounts it
+ * {@link ConflictView} (in @brink-lang/editor): this component only mounts it
  * into a container for its lifetime and tears it down on unmount / conflict
  * change — `ConflictView.destroy()` removes every listener + DOM node and
  * destroys the MergeView (CM6 teardown contract; leaks are bugs).
@@ -22,7 +22,7 @@
  */
 
 import { useEffect, useRef } from "react";
-import { ConflictView, type FileConflict } from "@brink/ink-editor";
+import { ConflictView, type FileConflict } from "@brink-lang/editor";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 
 /** The file path for a docKey ("main.ink" or "main.ink::start"). */

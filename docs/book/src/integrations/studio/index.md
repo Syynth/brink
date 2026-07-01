@@ -37,13 +37,13 @@ capability lives in libraries, each independently testable.
 | `@brink-lang/studio` | app shell + entry point (Vite) |
 | `@brink/studio-ui` | React components: layout, activity bar, binder, state view, player, tabs, status bar |
 | `@brink/studio-store` | Zustand store — `editor` / `compile` / `tabs` / `player` / `binder` / `layout` slices |
-| `@brink/ink-editor` | the CodeMirror 6 editor, state management, IDE extensions, screenplay sigils |
+| `@brink-lang/editor` | the CodeMirror 6 editor, state management, IDE extensions, screenplay sigils |
 | `@brink/ink-operations` | pure line-editing functions (no CM6, React, or wasm) |
 | `@brink-lang/web` | ergonomic wrappers over the `brink-web` FFI |
 | `@brink/wasm-types` | shared TypeScript interfaces (zero runtime) — decouples everything from the FFI |
 
 The dependency flow is one-directional: `@brink/wasm-types` is depended on by
-all; `@brink-lang/web` wraps the raw `brink-web` module; `@brink/ink-editor` consumes
+all; `@brink-lang/web` wraps the raw `brink-web` module; `@brink-lang/editor` consumes
 `@brink-lang/web` + `@brink/ink-operations`; `@brink/studio-store` orchestrates
 editor, compile, and player state; `@brink-lang/studio` assembles the lot.
 
