@@ -1,5 +1,5 @@
 import { Compartment, type Extension } from "@codemirror/state";
-import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, SymbolRenameResult, AutoImportResult } from "@brink/wasm-types";
+import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult, AutoImportResult } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
@@ -47,14 +47,14 @@ export interface BrinkStudioOptions {
   /** Live (debounced) safe-rename query for the inline-rename badge (#323/#324):
    *  computes the new sources + breakage report without applying anything.
    *  `offset` is in view coords; the host folds in any fragment-view origin. */
-  renameSymbolAt?: (offset: number, newName: string) => SymbolRenameResult;
+  renameSymbolAt?: (offset: number, newName: string) => StructuralResult;
   /** Commit an inline rename — apply the (already-computed) edits across files.
    *  Called on a safe Enter or an explicit "Rename anyway". `currentName` is the
    *  symbol's original name (for re-keying open symbol tabs). */
-  commitRename?: (result: SymbolRenameResult, newName: string, currentName: string) => void;
+  commitRename?: (result: StructuralResult, newName: string, currentName: string) => void;
   /** Optional host override for the inline breakage surface (#324). Return
    *  `true` to suppress the default inline report and render your own. */
-  onRenameBreakage?: (result: SymbolRenameResult, ctx: BreakageContext) => boolean;
+  onRenameBreakage?: (result: StructuralResult, ctx: BreakageContext) => boolean;
   getCodeActions?: (source: string, offset: number) => CodeAction[];
   getInlayHints?: (source: string, start: number, end: number) => InlayHint[];
   getArgumentWidgets?: (source: string, start: number, end: number) => CallWidgetSite[];

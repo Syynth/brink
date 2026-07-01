@@ -19,7 +19,9 @@ pub mod semantic_tokens;
 pub mod session;
 pub mod signature;
 pub mod story_graph;
+pub mod structural_delete;
 pub mod structural_move;
+pub mod structural_result;
 mod text;
 
 pub use completion::{

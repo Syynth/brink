@@ -7,9 +7,8 @@
 
 import type {
   FileOutline,
-  MoveResult,
+  StructuralResult,
   RenameDiagnostic,
-  SymbolRenameResult,
 } from "@brink/wasm-types";
 import type { StudioState, SymbolRenameRequest } from "@brink/studio-store";
 import type { ContextMenuAction } from "./BinderContextMenu.js";
@@ -71,7 +70,7 @@ export async function dispatchSymbolAction(
   const session = state._project?.getSession();
   if (!session) return;
 
-  let result: MoveResult;
+  let result: StructuralResult;
   let description: string;
   switch (action.type) {
     case "reorderStitch":
@@ -168,7 +167,7 @@ export async function performSymbolRename(
 }
 
 /**
- * Apply an already-computed `SymbolRenameResult` — the commit path for the
+ * Apply an already-computed `StructuralResult` — the commit path for the
  * editor's inline rename (#323/#324). The inline badge computed `result` live;
  * here we apply its cross-file edits through `applyMoveResult` (one undoable
  * step) and re-key any open symbol tab from `currentName` to `newName`, exactly
@@ -177,7 +176,7 @@ export async function performSymbolRename(
 export async function applyComputedRename(
   state: StudioState,
   applyMoveResult: StudioState["applyMoveResult"],
-  args: { path: string; currentName: string; newName: string; result: SymbolRenameResult },
+  args: { path: string; currentName: string; newName: string; result: StructuralResult },
 ): Promise<void> {
   const { path, currentName, newName, result } = args;
   await applyMoveResult(

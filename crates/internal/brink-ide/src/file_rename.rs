@@ -9,11 +9,12 @@
 //!   against its *old* directory; moving it to a new directory changes what
 //!   those relative paths resolve to.
 //!
-//! [`rename_file`] computes both as a [`MoveResult`]: outbound edits are folded
-//! into `new_source` (the moved file's content, otherwise unchanged), inbound
-//! edits become `cross_file_edits` (the wasm layer resolves each to a full file
-//! source). The op is pure — it reads the session and returns edits; the caller
-//! applies them. Relative-path math reuses `brink-db`'s
+//! [`rename_file`] computes both as a [`StructuralResult`]: outbound edits are
+//! folded into `new_source` (the moved file's content, otherwise unchanged),
+//! inbound edits become `cross_file_edits` (the wasm layer resolves each to a
+//! full file source). The op runs the op-agnostic breakage gate (#316): a
+//! rename whose `INCLUDE` rewrites would dangle (e.g. a missing destination)
+//! surfaces the introduced diagnostics. Relative-path math reuses `brink-db`'s
 //! [`resolve_include_path`] / [`compute_relative_path`] (inverses of each other).
 
 use brink_db::{compute_relative_path, resolve_include_path};
@@ -23,7 +24,7 @@ use rowan::TextRange;
 
 use crate::rename::FileEdit;
 use crate::session::IdeSession;
-use crate::structural_move::MoveResult;
+use crate::structural_result::{StructuralResult, gate_with_source};
 
 /// Errors from a file rename/move.
 #[derive(Debug, thiserror::Error)]
@@ -40,7 +41,11 @@ pub enum RenameError {
 /// # Errors
 /// [`RenameError::NotFound`] if `old` is not loaded; [`RenameError::DestinationExists`]
 /// if a different file already occupies `new`.
-pub fn rename_file(session: &IdeSession, old: &str, new: &str) -> Result<MoveResult, RenameError> {
+pub fn rename_file(
+    session: &IdeSession,
+    old: &str,
+    new: &str,
+) -> Result<StructuralResult, RenameError> {
     let old_id = session
         .file_id(old)
         .ok_or_else(|| RenameError::NotFound(old.to_owned()))?;
@@ -50,10 +55,7 @@ pub fn rename_file(session: &IdeSession, old: &str, new: &str) -> Result<MoveRes
 
     if old == new {
         // No-op: the file keeps its content and no includes change.
-        return Ok(MoveResult {
-            new_source: old_source.to_owned(),
-            cross_file_edits: Vec::new(),
-        });
+        return Ok(StructuralResult::safe_source(old_source.to_owned()));
     }
     if session.file_id(new).is_some() {
         return Err(RenameError::DestinationExists(new.to_owned()));
@@ -108,9 +110,21 @@ pub fn rename_file(session: &IdeSession, old: &str, new: &str) -> Result<MoveRes
         }
     }
 
-    Ok(MoveResult {
-        new_source: apply_text_edits(old_source, own_edits),
+    let new_source = apply_text_edits(old_source, own_edits);
+
+    // Breakage gate (#316): overlay the inbound INCLUDE rewrites (and the moved
+    // file's rewritten content, keyed at its current path) and re-analyze. A
+    // rename whose rewrites leave an INCLUDE pointing at a non-existent file, or
+    // otherwise break resolution, surfaces here. The path relocation itself is
+    // an INCLUDE-graph change the overlay can't fully model, so this gate is
+    // conservative — it never fabricates breakage for a clean rename.
+    let introduced = gate_with_source(session, old, &new_source, &cross_file_edits);
+
+    Ok(StructuralResult {
+        new_source: Some(new_source),
         cross_file_edits,
+        safe: introduced.is_empty(),
+        introduced,
     })
 }
 
@@ -147,6 +161,11 @@ mod tests {
         s
     }
 
+    /// The rewritten primary-file source of a structural result (`unwrap`ped).
+    fn ns(result: &crate::structural_result::StructuralResult) -> &str {
+        result.new_source.as_deref().expect("new_source")
+    }
+
     #[test]
     fn rename_in_place_rewrites_inbound_filename() {
         let s = session(&[
@@ -155,7 +174,7 @@ mod tests {
         ]);
         let result = rename_file(&s, "lib.ink", "util.ink").unwrap();
         // No outbound includes — the moved file's content is untouched.
-        assert_eq!(result.new_source, "=== helper ===\n-> END\n");
+        assert_eq!(ns(&result), "=== helper ===\n-> END\n");
         // main.ink's INCLUDE token is re-pointed at the new bare name.
         assert_eq!(result.cross_file_edits.len(), 1);
         assert_eq!(result.cross_file_edits[0].new_text, "util.ink");
@@ -171,9 +190,9 @@ mod tests {
         let result = rename_file(&s, "intro.ink", "scenes/intro.ink").unwrap();
         // Outbound: intro's own include of lib.ink, now one level deeper → ../lib.ink.
         assert!(
-            result.new_source.contains("INCLUDE ../lib.ink"),
+            ns(&result).contains("INCLUDE ../lib.ink"),
             "outbound not rewritten: {}",
-            result.new_source
+            ns(&result)
         );
         // Inbound: main.ink now includes scenes/intro.ink.
         assert_eq!(result.cross_file_edits.len(), 1);
@@ -195,24 +214,24 @@ mod tests {
         ]);
         let result = rename_file(&s, "chapters/main.ink", "main.ink").unwrap();
         assert!(
-            result.new_source.contains("INCLUDE host.ink"),
+            ns(&result).contains("INCLUDE host.ink"),
             "host include not rewritten to bare name: {}",
-            result.new_source
+            ns(&result)
         );
         assert!(
-            result.new_source.contains("INCLUDE phone.ink"),
+            ns(&result).contains("INCLUDE phone.ink"),
             "phone include not rewritten to bare name: {}",
-            result.new_source
+            ns(&result)
         );
         assert!(
-            !result.new_source.contains("chapters/host.ink"),
+            !ns(&result).contains("chapters/host.ink"),
             "stale chapters/ prefix leaked: {}",
-            result.new_source
+            ns(&result)
         );
         assert!(
-            !result.new_source.contains("../host.ink"),
+            !ns(&result).contains("../host.ink"),
             "stale ../ prefix leaked: {}",
-            result.new_source
+            ns(&result)
         );
     }
 
@@ -229,20 +248,22 @@ mod tests {
         // Deeper: intro.ink → scenes/intro.ink, so `lib.ink` → `../lib.ink`.
         let deeper = rename_file(&s, "intro.ink", "scenes/intro.ink").unwrap();
         assert!(
-            deeper.new_source.contains("INCLUDE ../lib.ink"),
+            ns(&deeper).contains("INCLUDE ../lib.ink"),
             "deeper move did not rewrite outbound: {}",
-            deeper.new_source
+            ns(&deeper)
         );
 
         // Rebuild the session as if the deeper move had been applied, then move
         // back to the root.
+        let deeper_source = ns(&deeper).to_owned();
         let s2 = session(&[
-            ("scenes/intro.ink", &deeper.new_source),
+            ("scenes/intro.ink", &deeper_source),
             ("lib.ink", "=== helper ===\n-> END\n"),
         ]);
         let shallower = rename_file(&s2, "scenes/intro.ink", "intro.ink").unwrap();
         assert_eq!(
-            shallower.new_source, original,
+            ns(&shallower),
+            original,
             "round-trip did not restore original include text",
         );
     }
@@ -252,7 +273,7 @@ mod tests {
         let s = session(&[("a.ink", "INCLUDE b.ink\n-> END\n"), ("b.ink", "-> END\n")]);
         let r = rename_file(&s, "a.ink", "a.ink").unwrap();
         assert!(r.cross_file_edits.is_empty());
-        assert_eq!(r.new_source, "INCLUDE b.ink\n-> END\n");
+        assert_eq!(ns(&r), "INCLUDE b.ink\n-> END\n");
     }
 
     #[test]
