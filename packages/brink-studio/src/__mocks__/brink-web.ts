@@ -394,6 +394,69 @@ export class EditorSession {
     return JSON.stringify({ path: d.path, start: 0, end: prevLength });
   }
 
+  /**
+   * Mock of `auto_import_include_doc` (#312 F): report whether `target` is
+   * reachable from the file backing `doc` and, when not, the whole-file
+   * INCLUDE-insertion edit. The mock's reachability is a plain substring check
+   * for an `INCLUDE <target-basename>` line — enough to drive the studio
+   * accept path. The edit always inserts at file top (offset 0).
+   */
+  auto_import_include_doc(doc: number, target: string): string {
+    const d = this.docs.get(doc);
+    if (!d) {
+      return JSON.stringify({ ok: false, already_reachable: false, error: "unknown handle" });
+    }
+    const source = this.files.get(d.path) ?? "";
+    const base = target.split("/").pop()!;
+    const reachable = new RegExp(`^INCLUDE\\s+\\S*${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "m").test(source);
+    if (reachable) {
+      return JSON.stringify({ ok: true, already_reachable: true });
+    }
+    return JSON.stringify({
+      ok: true,
+      already_reachable: false,
+      edit: { from: 0, to: 0, insert: `INCLUDE ${base}\n` },
+    });
+  }
+
+  /**
+   * Mock of `auto_import_apply_include_doc` (#312 F, fragment-view path): apply
+   * the INCLUDE to the whole file AND rebase every open fragment view on that
+   * file that begins at/after the insertion point. This mirrors the real op —
+   * without the rebase, the next `update_document` fragment splice would clobber
+   * the INCLUDE line (the very bug under test). Returns the applied edit (as a
+   * shift descriptor) with no expectation the caller re-applies it.
+   */
+  auto_import_apply_include_doc(doc: number, target: string): string {
+    const d = this.docs.get(doc);
+    if (!d) {
+      return JSON.stringify({ ok: false, already_reachable: false, error: "unknown handle" });
+    }
+    const source = this.files.get(d.path) ?? "";
+    const base = target.split("/").pop()!;
+    const reachable = new RegExp(`^INCLUDE\\s+\\S*${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "m").test(source);
+    if (reachable) {
+      return JSON.stringify({ ok: true, already_reachable: true });
+    }
+    const insert = `INCLUDE ${base}\n`;
+    const at = 0;
+    // Apply at file top.
+    this.files.set(d.path, insert + source);
+    // Rebase every open fragment view on this file whose range starts at/after
+    // the insertion point.
+    const delta = insert.length;
+    for (const od of this.docs.values()) {
+      if (od.path !== d.path) continue;
+      if (od.viewStart != null && od.viewStart >= at) od.viewStart += delta;
+      if (od.viewEnd != null && od.viewEnd >= at) od.viewEnd += delta;
+    }
+    return JSON.stringify({
+      ok: true,
+      already_reachable: false,
+      edit: { from: at, to: at, insert },
+    });
+  }
+
   get_view_source_doc(doc: number): string {
     const d = this.docs.get(doc);
     if (!d) return JSON.stringify(null);

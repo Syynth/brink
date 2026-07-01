@@ -13,6 +13,7 @@ import {
   DocumentSessions,
   ProjectSession,
   InMemoryFileProvider,
+  documentHandleFacet,
   syncAnnotation,
   type DocTarget,
   type DocumentCallbacks,
@@ -304,6 +305,100 @@ describe("DocumentSessions", () => {
       const pos = MAIN_INK.indexOf("Hello");
       typeAt(file.view, pos, "Well ");
       expect(docText(frag.view)).toContain("Well Hello, world!");
+    });
+  });
+
+  describe("auto-import in a fragment view (#312 F)", () => {
+    // The fragment-view completion-accept path: an out-of-scope divert accepted
+    // in a symbol tab must (1) prepend the INCLUDE to the whole file and (2)
+    // rebase the open fragment view so the SUBSEQUENT symbol dispatch splices at
+    // the shifted range — NOT clobber the INCLUDE line / knot header. This is
+    // the regression the raw-applyEdit path caused (stale fragment offsets).
+    const FILES = {
+      "main.ink": "=== start ===\nThe cursor is here.\n",
+      "economy.ink": "=== trade ===\nbuy.\n-> END\n",
+    };
+    const START_FRAG: DocTarget = {
+      kind: "symbol",
+      path: "main.ink",
+      name: "start",
+      start: 0,
+      end: FILES["main.ink"].length,
+    };
+
+    // Read the live wasm handle out of a mounted view's facet.
+    function handleOf(view: EditorView) {
+      const slot = view.state.facet(documentHandleFacet);
+      const handle = slot?.handle;
+      if (!handle) throw new Error("no handle on view");
+      return handle;
+    }
+
+    it("prepends the INCLUDE and rebases the fragment so the next push doesn't corrupt the file", async () => {
+      const h = await createHarness(FILES);
+      try {
+        h.documents.noteTarget(START_FRAG);
+        const { view } = h.mount("main.ink::start", "group-1");
+        const handle = handleOf(view);
+        expect(handle.fragmentRange()).not.toBeNull();
+
+        // Accept an out-of-scope completion → apply-and-rebase the INCLUDE.
+        const result = handle.autoImportApply("economy.ink");
+        expect(result.ok).toBe(true);
+        expect(result.already_reachable).toBe(false);
+        // The apply path returns no edit for the caller to dispatch.
+        expect(result.edit ?? null).toBeNull();
+
+        // The whole file now carries the INCLUDE above the untouched knot.
+        expect(h.project.getSession().getFileSource("main.ink")).toBe(
+          "INCLUDE economy.ink\n=== start ===\nThe cursor is here.\n",
+        );
+
+        // Now the completion dispatches the symbol into the FRAGMENT view. This
+        // triggers pushSource → update_document, splicing at the rebased range.
+        const body = view.state.doc.toString();
+        const cursor = body.indexOf("here.") + "here.".length;
+        view.dispatch({ changes: { from: cursor, insert: " -> trade" } });
+
+        // INCLUDE + knot header intact; only the body changed.
+        expect(h.project.getSession().getFileSource("main.ink")).toBe(
+          "INCLUDE economy.ink\n=== start ===\nThe cursor is here. -> trade\n",
+        );
+      } finally {
+        h.cleanup();
+      }
+    });
+
+    it("adds no INCLUDE when the file already reaches the target (idempotent)", async () => {
+      const h = await createHarness({
+        "main.ink": "INCLUDE economy.ink\n=== start ===\nbody.\n",
+        "economy.ink": "=== trade ===\n-> END\n",
+      });
+      try {
+        const frag: DocTarget = {
+          kind: "symbol",
+          path: "main.ink",
+          name: "start",
+          start: 0,
+          end: "INCLUDE economy.ink\n=== start ===\nbody.\n".length,
+        };
+        h.documents.noteTarget(frag);
+        const { view } = h.mount("main.ink::start", "group-1");
+        const handle = handleOf(view);
+
+        const result = handle.autoImportApply("economy.ink");
+        expect(result.already_reachable).toBe(true);
+
+        // Exactly one INCLUDE, and the fragment push still lands correctly.
+        const cursor = view.state.doc.toString().indexOf("body.") + "body.".length;
+        view.dispatch({ changes: { from: cursor, insert: " -> trade" } });
+        const full = h.project.getSession().getFileSource("main.ink")!;
+        expect(full.match(/INCLUDE economy\.ink/g) ?? []).toHaveLength(1);
+        expect(full).toContain("=== start ===");
+        expect(full).toContain("body. -> trade");
+      } finally {
+        h.cleanup();
+      }
     });
   });
 
