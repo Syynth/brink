@@ -58,7 +58,17 @@ export function SearchResultsBufferView({ results }: { results: ProjectSearchRes
     });
     bufferRef.current = buffer;
 
+    // e2e / manual-verification hook, like DocumentSessions' `__brinkView` and
+    // CompiledOutputDocument's `__brinkCompiledOutputView`: CM6 renders only the
+    // viewport into the DOM, so full-document assertions over the results buffer
+    // (file grouping, match counts) need the view's state.
+    const w = window as unknown as Record<string, unknown>;
+    w.__brinkSearchBufferView = buffer.editorView ?? undefined;
+
     return () => {
+      if (w.__brinkSearchBufferView === buffer.editorView) {
+        w.__brinkSearchBufferView = undefined;
+      }
       // CM6 teardown: destroy the EditorView + listeners + DOM.
       buffer.destroy();
       bufferRef.current = null;

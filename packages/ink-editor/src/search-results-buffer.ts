@@ -280,6 +280,17 @@ export class SearchResultsBuffer {
     this.host.replaceChildren();
   }
 
+  /**
+   * The live EditorView, or null before mount / after destroy. Exposed for the
+   * host's e2e / manual-verification hook (`__brinkSearchBufferView`), mirroring
+   * DocumentSessions' `__brinkView` and CompiledOutputDocument's
+   * `__brinkCompiledOutputView`: CM6 only renders the viewport into the DOM, so
+   * full-document assertions (grouping, match counts) need the view's state.
+   */
+  get editorView(): EditorView | null {
+    return this.view;
+  }
+
   // ── Internal ─────────────────────────────────────────────────────
 
   private mount(): void {
