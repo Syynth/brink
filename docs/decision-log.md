@@ -1096,3 +1096,11 @@
 - **WHAT:** The editor's **F2 inline rename** performs a **full cross-file rename** and is **safe-by-default**, sharing the menu "Rename…" pipeline (`rename_safe` → breakage report → Force rename) seeded from the symbol under the cursor. The previous F2 (`rename_doc`/`rename_impl`) only rewrote the active file and silently dropped cross-file reference edits — that was a bug, not a feature. F2's native `prompt()` is replaced by the store-driven rename prompt; both rename entry points (context menu + F2) now flow through one `rename_safe`-backed path, so there is exactly one rename pipeline and one safety guarantee.
 - **SCOPE:** moderate
 - **WHY:** A rename that rewrites a declaration but not its references is broken and dangerous — it leaves dangling references. Cross-file correctness and the safe-by-default guard must be uniform across every rename entry point, not split into a fast-but-unsafe F2 alongside a careful menu path. Unifying on one pipeline removes the divergent (buggy) code path and guarantees F2 gets the same breakage report the menu does.
+
+## Editor epic ships as one npm release
+- **WHEN:** 2026-06-30
+- **PROJECT:** brink
+- **SYSTEM:** brink-studio / @brink-lang/editor
+- **SCOPE:** moderate
+- **WHAT:** The #311 @brink-lang/editor enhancement sweep (A–H + inline-rename badge + infra #314/#316/#317/#318) ships as a SINGLE npm release of @brink-lang/editor (+ @brink-lang/web), not incremental cuts. The phased build order (correctness → wasm blocks → editor UX → INCLUDE ergonomics → structural refactors) is internal sequencing only.
+- **WHY:** A single coherent quality lift reads better in a changelog and avoids piecemeal version churn; the tight dependency spine (#317→#316→#314/H) means a partial release would expose half-finished structural surfaces.
