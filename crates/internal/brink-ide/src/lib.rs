@@ -3,6 +3,7 @@ pub mod auto_import;
 pub mod code_actions;
 pub mod color;
 mod completion;
+pub mod dir_rename;
 pub mod document;
 pub mod file_rename;
 pub mod folding;

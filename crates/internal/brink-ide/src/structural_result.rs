@@ -161,7 +161,7 @@ pub fn gate_with_source(
 /// diagnostics that the edit introduced — present now but not before, matched
 /// as a multiset keyed by `(code, message)` so duplicate messages are counted.
 /// Locations resolve through `new_db` (the overlay db owns the new `FileId`s).
-fn introduced_diagnostics(
+pub(crate) fn introduced_diagnostics(
     analysis: &AnalysisResult,
     new_analysis: &AnalysisResult,
     new_db: &brink_db::ProjectDb,
