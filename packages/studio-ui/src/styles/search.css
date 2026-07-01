@@ -185,6 +185,16 @@
   overflow-y: auto;
 }
 
+/* Editable results buffer (#322 Track V, design D): the CM6 view fills the
+   results region and owns its own scroll. */
+.brink-studio .search-results-buffer {
+  height: 100%;
+  min-height: 0;
+}
+.brink-studio .search-results-buffer .cm-editor {
+  height: 100%;
+}
+
 .brink-studio .search-empty,
 .brink-studio .search-capped {
   margin: 0;

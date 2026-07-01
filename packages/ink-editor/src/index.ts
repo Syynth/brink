@@ -111,6 +111,21 @@ export type {
   SearchQueryOptions,
 } from "./project-search.js";
 
+// Editable search results buffer (#322 Track V, design D): the Zed-style
+// editor-owned buffer. `buildResultsRows` / `mapRowEditToSource` are the pure,
+// unit-testable model; `SearchResultsBuffer` is the self-contained CM6 surface
+// that routes match-row edits back to the source via the apply-edits seam.
+export {
+  buildResultsRows,
+  mapRowEditToSource,
+  SearchResultsBuffer,
+} from "./search-results-buffer.js";
+export type {
+  ResultRow,
+  ResultsBufferModel,
+  SearchResultsBufferOptions,
+} from "./search-results-buffer.js";
+
 // Find panel (#319 Track N): opt-in @codemirror/search factory. Not auto-enabled
 // in the studio editor — hosts opt in by adding the returned extension.
 export { findPanel } from "./find-panel.js";
