@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8](https://github.com/Syynth/brink/compare/brink-ir-v0.0.7...brink-ir-v0.0.8) - 2026-07-01
+
+### Other
+
+- #312 + #313 (Track N core): shared INCLUDE-block detector + fold/auto-import cores ([#331](https://github.com/Syynth/brink/pull/331))
+
 ## [0.0.7](https://github.com/Syynth/brink/compare/brink-ir-v0.0.6...brink-ir-v0.0.7) - 2026-06-20
 
 ### Other

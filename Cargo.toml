@@ -4,7 +4,7 @@ exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-format/fu
 resolver = "2"
 
 [workspace.package]
-version = "0.0.7"
+version = "0.0.8"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/syynth/brink"
@@ -75,25 +75,25 @@ quote = "1"
 proc-macro2 = "1"
 
 # Internal brink crates (versioned for crates.io publish; release-plz keeps these in sync)
-bevy-brink-derive = { path = "crates/internal/bevy-brink-derive", version = "0.0.7" }
-brink-analyzer = { path = "crates/internal/brink-analyzer", version = "0.0.7" }
-brink-codegen-inkb = { path = "crates/internal/brink-codegen-inkb", version = "0.0.7" }
-brink-codegen-json = { path = "crates/internal/brink-codegen-json", version = "0.0.7" }
-brink-compiler = { path = "crates/brink-compiler", version = "0.0.7" }
-brink-converter = { path = "crates/internal/brink-converter", version = "0.0.7" }
-brink-db = { path = "crates/internal/brink-db", version = "0.0.7" }
-brink-driver = { path = "crates/internal/brink-driver", version = "0.0.7" }
-brink-fmt = { path = "crates/internal/brink-fmt", version = "0.0.7" }
-brink-format = { path = "crates/internal/brink-format", version = "0.0.7" }
-brink-ide = { path = "crates/internal/brink-ide", version = "0.0.7" }
-brink-intl = { path = "crates/internal/brink-intl", version = "0.0.7" }
-brink-ir = { path = "crates/internal/brink-ir", version = "0.0.7" }
-brink-json = { path = "crates/internal/brink-json", version = "0.0.7" }
-brink-runtime = { path = "crates/brink-runtime", version = "0.0.7" }
-brink-syntax = { path = "crates/internal/brink-syntax", version = "0.0.7" }
+bevy-brink-derive = { path = "crates/internal/bevy-brink-derive", version = "0.0.8" }
+brink-analyzer = { path = "crates/internal/brink-analyzer", version = "0.0.8" }
+brink-codegen-inkb = { path = "crates/internal/brink-codegen-inkb", version = "0.0.8" }
+brink-codegen-json = { path = "crates/internal/brink-codegen-json", version = "0.0.8" }
+brink-compiler = { path = "crates/brink-compiler", version = "0.0.8" }
+brink-converter = { path = "crates/internal/brink-converter", version = "0.0.8" }
+brink-db = { path = "crates/internal/brink-db", version = "0.0.8" }
+brink-driver = { path = "crates/internal/brink-driver", version = "0.0.8" }
+brink-fmt = { path = "crates/internal/brink-fmt", version = "0.0.8" }
+brink-format = { path = "crates/internal/brink-format", version = "0.0.8" }
+brink-ide = { path = "crates/internal/brink-ide", version = "0.0.8" }
+brink-intl = { path = "crates/internal/brink-intl", version = "0.0.8" }
+brink-ir = { path = "crates/internal/brink-ir", version = "0.0.8" }
+brink-json = { path = "crates/internal/brink-json", version = "0.0.8" }
+brink-runtime = { path = "crates/brink-runtime", version = "0.0.8" }
+brink-syntax = { path = "crates/internal/brink-syntax", version = "0.0.8" }
 # Unpublished (dev-only): no version, so `cargo publish` strips it from dependents.
 brink-test-harness = { path = "crates/internal/brink-test-harness" }
-xliff2 = { path = "crates/internal/xliff2", version = "0.0.7" }
+xliff2 = { path = "crates/internal/xliff2", version = "0.0.8" }
 
 # Config for 'dist'
 [workspace.metadata.dist]
