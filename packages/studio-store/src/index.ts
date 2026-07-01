@@ -172,13 +172,20 @@ export {
   matchLineSegments,
   replacementTextFor,
   searchSources,
+  buildResultsRows,
+  mapRowEditToSource,
+  SearchResultsBuffer,
+  DEFAULT_COMMIT_DELAY_MS,
   type FileSearchResult,
   type MatchLineSegments,
   type ProjectSearchResult,
   type ReplacementEdit,
+  type ResultRow,
+  type ResultsBufferModel,
   type SearchMatch,
   type SearchPatternResult,
   type SearchQueryOptions,
+  type SearchResultsBufferOptions,
 } from "@brink/ink-editor";
 
 // Document key/title helpers (shared with the shell's DocumentRefs).
