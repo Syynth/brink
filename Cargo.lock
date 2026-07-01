@@ -2050,9 +2050,11 @@ name = "brink-ide"
 version = "0.0.7"
 dependencies = [
  "brink-analyzer",
+ "brink-compiler",
  "brink-db",
  "brink-fmt",
  "brink-ir",
+ "brink-runtime",
  "brink-syntax",
  "rowan",
  "serde",

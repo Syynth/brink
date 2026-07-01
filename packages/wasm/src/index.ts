@@ -677,6 +677,44 @@ export class EditorSessionHandle {
     return JSON.parse(json) as StructuralResult;
   }
 
+  /**
+   * Extract the selected lines into a new top-level `=== name ===` knot,
+   * replacing the selection with a tunnel call `-> name ->` (#315 H).
+   * `startOffset`/`endOffset` are whole-file UTF-16 offsets; the selection is
+   * snapped to whole lines and the new knot is appended at end of file (ending
+   * with a `->->` tunnel return). The result is a safe-by-default
+   * `StructuralResult`: when `safe`, apply directly via `applyMoveResult`;
+   * otherwise `introduced_diagnostics` reports the weave/gather/local scope the
+   * extraction would break, and the caller applies only on an explicit force.
+   */
+  extractToKnot(
+    path: string,
+    startOffset: number,
+    endOffset: number,
+    name: string,
+  ): StructuralResult {
+    this.bump();
+    const json = this.session.extract_to_knot(path, startOffset, endOffset, name);
+    return JSON.parse(json) as StructuralResult;
+  }
+
+  /**
+   * Extract the selected lines into a new `=== function name() ===`, replacing
+   * the selection with the call — `{name()}` for a single value expression,
+   * `~ name()` for a statement (#315 H). Same offset/gate semantics as
+   * {@link extractToKnot}.
+   */
+  extractToFunction(
+    path: string,
+    startOffset: number,
+    endOffset: number,
+    name: string,
+  ): StructuralResult {
+    this.bump();
+    const json = this.session.extract_to_function(path, startOffset, endOffset, name);
+    return JSON.parse(json) as StructuralResult;
+  }
+
   free(): void {
     this.session.free();
   }

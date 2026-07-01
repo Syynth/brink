@@ -2273,6 +2273,56 @@ impl EditorSession {
         }
     }
 
+    /// Extract the selected lines into a new top-level `=== name ===` knot,
+    /// replacing the selection with a tunnel call `-> name ->` (#315 H).
+    ///
+    /// `start_offset`/`end_offset` are whole-file UTF-16 offsets into `path`'s
+    /// source (converted to bytes here). The selection is snapped to whole lines;
+    /// the new knot is appended at end of file and ends with a `->->` return.
+    /// Returns the unified `StructuralResult` JSON — `safe` is false and
+    /// `introduced_diagnostics` is populated when the extraction pulls a
+    /// weave/gather label or a local/temp reference out of scope. On failure a
+    /// `StructuralResult`-shaped error is returned.
+    pub fn extract_to_knot(
+        &self,
+        path: &str,
+        start_offset: u32,
+        end_offset: u32,
+        name: &str,
+    ) -> String {
+        let Some(source) = self.source_of(path) else {
+            return error_json("file not loaded");
+        };
+        let start = utf16_to_byte(source, start_offset) as usize;
+        let end = utf16_to_byte(source, end_offset) as usize;
+        match brink_ide::extract::extract_to_knot(&self.session, path, start, end, name) {
+            Ok(result) => structural_result_json(&self.session, &result, path),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
+    /// Extract the selected lines into a new `=== function name() ===`, replacing
+    /// the selection with the call — `{name()}` for a single value expression,
+    /// `~ name()` for a statement (#315 H). Same offset/gate semantics as
+    /// [`extract_to_knot`](Self::extract_to_knot).
+    pub fn extract_to_function(
+        &self,
+        path: &str,
+        start_offset: u32,
+        end_offset: u32,
+        name: &str,
+    ) -> String {
+        let Some(source) = self.source_of(path) else {
+            return error_json("file not loaded");
+        };
+        let start = utf16_to_byte(source, start_offset) as usize;
+        let end = utf16_to_byte(source, end_offset) as usize;
+        match brink_ide::extract::extract_to_function(&self.session, path, start, end, name) {
+            Ok(result) => structural_result_json(&self.session, &result, path),
+            Err(e) => error_json(&e.to_string()),
+        }
+    }
+
     /// Rename a knot or stitch by name, safe-by-default. Returns a
     /// `StructuralResult`-shaped JSON payload (`new_source` for `path`,
     /// `cross_file_edits` for referencing files) extended with
@@ -4573,6 +4623,77 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&s.delete_symbol("main.ink", "ghost", "")).unwrap();
         assert_eq!(v["ok"], false);
+    }
+
+    // ── extract-selection ops (#315 H) ─────────────────────────────
+
+    #[test]
+    fn extract_to_knot_returns_structural_result_with_tunnel_call() {
+        let mut s = EditorSession::new();
+        let src = "=== start ===\nHello.\nWorld.\n-> END\n";
+        s.update_file("main.ink", src);
+        assert!(s.set_active_file("main.ink"));
+        // UTF-16 offsets == byte offsets here (ASCII source).
+        let start = src.find("Hello.").unwrap() as u32;
+        let end = src.find("-> END").unwrap() as u32;
+        let v: serde_json::Value =
+            serde_json::from_str(&s.extract_to_knot("main.ink", start, end, "greeting")).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["safe"], true, "self-contained extraction is safe: {v}");
+        let new_source = v["new_source"].as_str().unwrap();
+        assert!(new_source.contains("=== greeting ==="), "{new_source}");
+        assert!(new_source.contains("-> greeting ->"), "{new_source}");
+        assert!(new_source.contains("->->"), "tunnel return: {new_source}");
+    }
+
+    #[test]
+    fn extract_to_function_returns_structural_result_with_call() {
+        let mut s = EditorSession::new();
+        let src = "=== start ===\n{2 + 3}\n-> END\n";
+        s.update_file("main.ink", src);
+        assert!(s.set_active_file("main.ink"));
+        let start = src.find("{2 + 3}").unwrap() as u32;
+        let end = src.find("-> END").unwrap() as u32;
+        let v: serde_json::Value =
+            serde_json::from_str(&s.extract_to_function("main.ink", start, end, "calc")).unwrap();
+        assert_eq!(v["ok"], true);
+        let new_source = v["new_source"].as_str().unwrap();
+        assert!(
+            new_source.contains("=== function calc() ==="),
+            "{new_source}"
+        );
+        assert!(new_source.contains("{calc()}"), "inline call: {new_source}");
+    }
+
+    #[test]
+    fn extract_that_breaks_scope_reports_breakage() {
+        let mut s = EditorSession::new();
+        let src = "=== start ===\n~ temp count = 3\n{count}\n-> END\n";
+        s.update_file("main.ink", src);
+        assert!(s.set_active_file("main.ink"));
+        let start = src.find("{count}").unwrap() as u32;
+        let end = src.find("-> END").unwrap() as u32;
+        let v: serde_json::Value =
+            serde_json::from_str(&s.extract_to_knot("main.ink", start, end, "shower")).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["safe"], false, "out-of-scope temp makes it unsafe: {v}");
+        assert!(
+            !v["introduced_diagnostics"].as_array().unwrap().is_empty(),
+            "breakage reported: {v}"
+        );
+    }
+
+    #[test]
+    fn extract_header_crossing_returns_error() {
+        let mut s = EditorSession::new();
+        let src = "=== a ===\nContent.\n=== b ===\n-> END\n";
+        s.update_file("main.ink", src);
+        assert!(s.set_active_file("main.ink"));
+        let start = src.find("Content.").unwrap() as u32;
+        let end = src.find("-> END").unwrap() as u32;
+        let v: serde_json::Value =
+            serde_json::from_str(&s.extract_to_knot("main.ink", start, end, "x")).unwrap();
+        assert_eq!(v["ok"], false, "crossing a header is rejected: {v}");
     }
 
     #[test]

@@ -276,6 +276,69 @@ export class EditorSession {
   }
 
   /**
+   * Mock of the real `extract_to_knot` op (#315 H): lift the selected lines
+   * (snapped to whole lines) into a new top-level `=== name ===` knot ending
+   * with a `->->` tunnel return, and replace them with `-> name ->`. Offsets are
+   * whole-file UTF-16 (== byte offsets for the ASCII fixtures the studio tests
+   * use). The precise scope-breakage gate is covered by Rust tests; the mock
+   * always reports `safe: true`.
+   */
+  extract_to_knot(path: string, startOffset: number, endOffset: number, name: string): string {
+    return this.extractImpl(path, startOffset, endOffset, name, "knot");
+  }
+
+  /**
+   * Mock of the real `extract_to_function` op (#315 H): as {@link extract_to_knot}
+   * but into a `=== function name() ===` decl, replacing the selection with
+   * `~ name()`.
+   */
+  extract_to_function(path: string, startOffset: number, endOffset: number, name: string): string {
+    return this.extractImpl(path, startOffset, endOffset, name, "function");
+  }
+
+  private extractImpl(
+    path: string,
+    startOffset: number,
+    endOffset: number,
+    name: string,
+    kind: "knot" | "function",
+  ): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return JSON.stringify({ ok: false, error: "file not loaded" });
+    }
+    const lo = Math.min(startOffset, endOffset);
+    const hi = Math.max(startOffset, endOffset);
+    if (lo === hi) {
+      return JSON.stringify({ ok: false, error: "empty selection: nothing to extract" });
+    }
+    // Snap to whole lines.
+    const selStart = source.lastIndexOf("\n", lo - 1) + 1;
+    const nextNl = source.indexOf("\n", hi);
+    const selEnd = nextNl < 0 ? source.length : nextNl + 1;
+    const selected = source.slice(selStart, selEnd);
+
+    const call = kind === "knot" ? `-> ${name} ->\n` : `~ ${name}()\n`;
+    const header = kind === "knot" ? `=== ${name} ===\n` : `=== function ${name}() ===\n`;
+    let body = selected.endsWith("\n") ? selected : `${selected}\n`;
+    if (kind === "knot") body += "->->\n";
+
+    let out = source.slice(0, selStart) + call + source.slice(selEnd);
+    if (!out.endsWith("\n")) out += "\n";
+    if (!out.endsWith("\n\n")) out += "\n";
+    out += header + body;
+
+    return JSON.stringify({
+      ok: true,
+      path,
+      new_source: out,
+      cross_file_edits: [],
+      introduced_diagnostics: [],
+      safe: true,
+    });
+  }
+
+  /**
    * Mock of the real `rename_symbol` op (pure — computes edits, does not
    * mutate the session). Rewrites the symbol's header plus `->`/`<-` diverts
    * to it across every file, and flags an `E022` breakage when renaming a knot

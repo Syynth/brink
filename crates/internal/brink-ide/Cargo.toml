@@ -19,5 +19,9 @@ rowan.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+brink-compiler = { workspace = true }
+brink-runtime = { workspace = true }
+
 [lints]
 workspace = true
