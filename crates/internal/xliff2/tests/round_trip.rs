@@ -539,3 +539,48 @@ fn validate_note_priority_out_of_range() {
     let errors = validate::validate(&doc);
     assert!(errors.iter().any(|e| e.message.contains("priority")));
 }
+
+/// Guards the decode + entity-unescape semantics of text/inline reading.
+///
+/// quick-xml 0.39 emits entity references as standalone `GeneralRef` events, so
+/// mixed text-and-entity runs must be resolved *and* merged. This parses raw
+/// XLIFF containing predefined entities, a numeric char ref, and a hex char ref
+/// interleaved with plain text and asserts they decode to their characters and
+/// coalesce into single text nodes. A bare `decode()` (no entity unescape) would
+/// leave the literal `&amp;`/`&#38;` in the output and fail this test.
+#[test]
+fn read_resolves_entities_in_text_and_inline() {
+    let xml = r#"<?xml version="1.0"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en">
+  <file id="f1">
+    <notes>
+      <note>Tom &amp; Jerry &lt;3 &#38; &#x41;BC</note>
+    </notes>
+    <unit id="u1">
+      <segment>
+        <source>a &amp; b &lt;tag&gt; &#38; end</source>
+      </segment>
+    </unit>
+  </file>
+</xliff>"#;
+
+    let doc = read::read_xliff(xml).unwrap();
+
+    // Note content: entities and char refs decoded, adjacent text merged.
+    assert_eq!(doc.files[0].notes[0].content, "Tom & Jerry <3 & ABC");
+
+    // Inline source: a single coalesced Text element with decoded entities.
+    assert_eq!(
+        doc.files[0].units[0].sub_units,
+        vec![SubUnit::Segment(Segment {
+            id: None,
+            state: None,
+            sub_state: None,
+            source: Content {
+                lang: None,
+                elements: vec![InlineElement::Text("a & b <tag> & end".to_owned())],
+            },
+            target: None,
+        })],
+    );
+}

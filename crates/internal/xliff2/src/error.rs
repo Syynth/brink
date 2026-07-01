@@ -4,6 +4,12 @@ pub enum Xliff2Error {
     #[error("XML error: {0}")]
     Xml(#[from] quick_xml::Error),
 
+    #[error("XML encoding error: {0}")]
+    XmlEncoding(#[from] quick_xml::encoding::EncodingError),
+
+    #[error("XML escape error: {0}")]
+    XmlEscape(#[from] quick_xml::escape::EscapeError),
+
     #[error("XML attribute error: {0}")]
     XmlAttribute(#[from] quick_xml::events::attributes::AttrError),
 
