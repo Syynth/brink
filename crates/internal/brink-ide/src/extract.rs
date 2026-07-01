@@ -47,8 +47,12 @@ pub enum ExtractError {
     CrossesHeader,
     #[error("name collision: '{0}' already exists as a top-level knot")]
     NameCollision(String),
+    #[error("name collision: '{0}' already exists as a variable, const, or list")]
+    VarCollision(String),
     #[error("invalid extraction name: '{0}'")]
     InvalidName(String),
+    #[error("selection cannot be a function body: it contains a divert, choice, or gather")]
+    IllegalFunctionBody,
 }
 
 /// Extract the selected lines into a new top-level `=== name ===` knot,
@@ -104,6 +108,15 @@ pub fn extract_to_function(
         .ok_or(ExtractError::FileNotFound)?;
 
     let plan = plan_extraction(source, start, end, name)?;
+
+    // Ink functions cannot divert or present choices/gathers (WritingWithInk.md
+    // §Functions). A selection that contains any of those markers would produce
+    // a structurally-illegal function body; refuse rather than silently accept
+    // it as "safe". (extract_to_knot has no such restriction — a knot may divert
+    // and branch freely.)
+    if selection_has_flow_control(&plan.selected) {
+        return Err(ExtractError::IllegalFunctionBody);
+    }
 
     let call_line = if is_value_expression(&plan.selected) {
         format!("{}{{{name}()}}\n", plan.indent)
@@ -182,6 +195,21 @@ fn plan_extraction(
         .any(|k| k.header().and_then(|h| h.name()).as_deref() == Some(name))
     {
         return Err(ExtractError::NameCollision(name.to_owned()));
+    }
+
+    // Name collision with a declared VAR / CONST / LIST. The analyzer does not
+    // model var↔knot/function clashes, so the #316 overlay gate cannot catch
+    // this — but the op knows the new name up front, so reject it deterministically
+    // here. Both extract-to-knot and extract-to-function introduce a top-level
+    // symbol that would shadow / clash with a global of the same name.
+    let name_clashes = tree
+        .var_decls()
+        .filter_map(|v| v.name())
+        .chain(tree.const_decls().filter_map(|c| c.name()))
+        .chain(tree.list_decls().filter_map(|l| l.name()))
+        .any(|n| n == name);
+    if name_clashes {
+        return Err(ExtractError::VarCollision(name.to_owned()));
     }
 
     let selected = source[sel_start..sel_end].to_owned();
@@ -329,6 +357,39 @@ fn is_value_expression(selected: &str) -> bool {
         || t.starts_with('='))
 }
 
+/// Whether the selection contains ink flow-control that is illegal inside a
+/// function body: a divert (`->`, including tunnel `->->` / `-> knot ->`), a
+/// choice (`*` / `+` at line start), or a gather (`-` at line start, but not a
+/// logic line `~`). Used to reject function extraction of a non-function-shaped
+/// selection. This is intentionally conservative — a leading marker or an
+/// anywhere-`->` flags the selection.
+fn selection_has_flow_control(selected: &str) -> bool {
+    for line in selected.lines() {
+        let t = line.trim_start();
+        if t.is_empty() {
+            continue;
+        }
+        // A divert / tunnel anywhere on the line (`-> knot`, `text -> knot`,
+        // `->->`). Functions cannot divert at all.
+        if t.contains("->") {
+            return true;
+        }
+        // Line-leading choice or gather markers. `-` is a gather unless it is the
+        // start of a `->` divert (already handled above) or a logic line marker
+        // (`~`). A bare leading `-` (followed by space or content) is a gather.
+        let first = t.as_bytes().first().copied();
+        match first {
+            Some(b'*' | b'+') => return true,
+            Some(b'-') => {
+                // Not `->` (handled above); a leading `-` is a gather.
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Two half-open byte windows overlap.
 fn ranges_intersect(a_start: usize, a_end: usize, r: rowan::TextRange) -> bool {
     let (r_start, r_end): (usize, usize) = (r.start().into(), r.end().into());
@@ -395,7 +456,12 @@ mod tests {
     fn extract_to_knot_runs_identically() {
         // The story: prints A, B, then ends. After extracting the two prints
         // into a tunnel, the visible output must be identical.
-        let src = "=== start ===\nA\nB\n-> END\n";
+        //
+        // A top-level `-> start` divert is required so the `start` knot is
+        // actually entered and its content runs — without it the runtime emits
+        // no output for either side and the identity assertion would pass
+        // vacuously (`[] == []`), verifying nothing about the extraction.
+        let src = "-> start\n=== start ===\nA\nB\n-> END\n";
         let s = session(src);
         let start = line_start(src, "A\n");
         let end = line_start(src, "-> END");
@@ -404,6 +470,8 @@ mod tests {
 
         let before = run_story(src);
         let after = run_story(out);
+        // Guard against the vacuous case: the story must actually emit output.
+        assert_eq!(before, vec!["A\n", "B\n"], "fixture actually runs");
         assert_eq!(before, after, "extraction preserves runtime output\n{out}");
         assert!(r.safe, "self-contained extraction is safe: {:?}", codes(&r));
     }
@@ -480,6 +548,84 @@ mod tests {
         let end = line_start(src, "-> END\n=== taken");
         let r = extract_to_knot(&s, "main.ink", start, end, "taken");
         assert!(matches!(r, Err(super::ExtractError::NameCollision(_))));
+    }
+
+    #[test]
+    fn extract_rejects_collision_with_var() {
+        // A VAR of the same name is a genuine collision the analyzer does not
+        // model; the extract op must reject it up front rather than reporting
+        // safe=true.
+        let src = "VAR foo = 0\n-> start\n=== start ===\nContent.\n-> END\n";
+        let s = session(src);
+        let start = line_start(src, "Content.");
+        let end = line_start(src, "-> END");
+        let r = extract_to_knot(&s, "main.ink", start, end, "foo");
+        assert!(matches!(r, Err(super::ExtractError::VarCollision(_))));
+    }
+
+    #[test]
+    fn extract_to_function_rejects_collision_with_var() {
+        // Same clash, function form: `=== function foo() ===` vs `VAR foo`.
+        let src = "VAR foo = 0\n=== start ===\n{2 + 3}\n-> END\n";
+        let s = session(src);
+        let start = line_start(src, "{2 + 3}");
+        let end = line_start(src, "-> END");
+        let r = extract_to_function(&s, "main.ink", start, end, "foo");
+        assert!(matches!(r, Err(super::ExtractError::VarCollision(_))));
+    }
+
+    #[test]
+    fn extract_rejects_collision_with_const_and_list() {
+        let src_const = "CONST bar = 7\n=== start ===\n{2 + 3}\n-> END\n";
+        let s = session(src_const);
+        let start = line_start(src_const, "{2 + 3}");
+        let end = line_start(src_const, "-> END");
+        let r = extract_to_function(&s, "main.ink", start, end, "bar");
+        assert!(
+            matches!(r, Err(super::ExtractError::VarCollision(_))),
+            "const collision"
+        );
+
+        let src_list = "LIST baz = a, b, c\n=== start ===\n{2 + 3}\n-> END\n";
+        let s = session(src_list);
+        let start = line_start(src_list, "{2 + 3}");
+        let end = line_start(src_list, "-> END");
+        let r = extract_to_function(&s, "main.ink", start, end, "baz");
+        assert!(
+            matches!(r, Err(super::ExtractError::VarCollision(_))),
+            "list collision"
+        );
+    }
+
+    #[test]
+    fn extract_to_function_rejects_divert_in_selection() {
+        // A function cannot divert; a selection containing `-> other` must be
+        // refused, not marked safe.
+        let src = "-> start\n=== start ===\nHi.\n-> other\n=== other ===\n-> END\n";
+        let s = session(src);
+        let start = line_start(src, "Hi.");
+        let end = line_start(src, "=== other ===");
+        let r = extract_to_function(&s, "main.ink", start, end, "f");
+        assert!(
+            matches!(r, Err(super::ExtractError::IllegalFunctionBody)),
+            "divert in function body rejected"
+        );
+        // extract_to_knot has no such restriction — the same selection is fine.
+        let k = extract_to_knot(&s, "main.ink", start, end, "f");
+        assert!(k.is_ok(), "knot extraction allows diverts");
+    }
+
+    #[test]
+    fn extract_to_function_rejects_choice_in_selection() {
+        let src = "-> start\n=== start ===\n* [Go] Went.\n- Done.\n-> END\n";
+        let s = session(src);
+        let start = line_start(src, "* [Go]");
+        let end = line_start(src, "-> END");
+        let r = extract_to_function(&s, "main.ink", start, end, "f");
+        assert!(
+            matches!(r, Err(super::ExtractError::IllegalFunctionBody)),
+            "choice/gather in function body rejected"
+        );
     }
 
     #[test]
