@@ -2,8 +2,9 @@ mod extensions;
 mod inline;
 
 use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::attributes::Attributes;
+use quick_xml::events::{BytesRef, Event};
 
 use crate::error::Xliff2Error;
 use crate::model::extensions::Extensions;
@@ -180,7 +181,8 @@ fn read_skeleton(attrs: &Attributes, reader: &mut Reader<&[u8]>) -> Result<Skele
     let mut content = String::new();
     loop {
         match reader.read_event()? {
-            Event::Text(e) => content.push_str(&e.unescape()?),
+            Event::Text(e) => content.push_str(&e.decode()?),
+            Event::GeneralRef(e) => content.push_str(&resolve_general_ref(&e)?),
             Event::CData(e) => {
                 content.push_str(std::str::from_utf8(&e)?);
             }
@@ -273,7 +275,8 @@ fn read_note(attrs: &Attributes, reader: &mut Reader<&[u8]>) -> Result<Note, Xli
     let mut content = String::new();
     loop {
         match reader.read_event()? {
-            Event::Text(e) => content.push_str(&e.unescape()?),
+            Event::Text(e) => content.push_str(&e.decode()?),
+            Event::GeneralRef(e) => content.push_str(&resolve_general_ref(&e)?),
             Event::CData(e) => content.push_str(std::str::from_utf8(&e)?),
             Event::End(e) if local_name_end(&e) == "note" => break,
             Event::Eof => return Err(Xliff2Error::UnexpectedEof),
@@ -453,7 +456,8 @@ fn read_data_entry(
     let mut content = String::new();
     loop {
         match reader.read_event()? {
-            Event::Text(e) => content.push_str(&e.unescape()?),
+            Event::Text(e) => content.push_str(&e.decode()?),
+            Event::GeneralRef(e) => content.push_str(&resolve_general_ref(&e)?),
             Event::CData(e) => content.push_str(std::str::from_utf8(&e)?),
             Event::End(e) if local_name_end(&e) == "data" => break,
             Event::Eof => return Err(Xliff2Error::UnexpectedEof),
@@ -647,5 +651,28 @@ fn strip_prefix(name: &str) -> String {
     match name.find(':') {
         Some(pos) => name[pos + 1..].to_owned(),
         None => name.to_owned(),
+    }
+}
+
+/// Resolve a general entity reference (`&amp;`, `&lt;`, `&#65;`, `&#x41;`, …) to
+/// its textual value.
+///
+/// quick-xml 0.39 tokenizes entity references in character data into standalone
+/// [`Event::GeneralRef`] events instead of including them in the surrounding
+/// [`Event::Text`]. This helper restores the decode-and-unescape behaviour of the
+/// old `BytesText::unescape()`: character references are resolved numerically and
+/// the five predefined XML entities (`amp`, `lt`, `gt`, `quot`, `apos`) are
+/// resolved to their replacement characters. An unrecognized entity is surfaced as
+/// an error rather than being silently dropped.
+pub(super) fn resolve_general_ref(e: &BytesRef) -> Result<String, Xliff2Error> {
+    if let Some(ch) = e.resolve_char_ref()? {
+        return Ok(ch.to_string());
+    }
+    let name = e.decode()?;
+    match resolve_predefined_entity(&name) {
+        Some(replacement) => Ok(replacement.to_owned()),
+        None => Err(Xliff2Error::XmlEscape(
+            quick_xml::escape::EscapeError::UnrecognizedEntity(0..name.len(), name.into_owned()),
+        )),
     }
 }

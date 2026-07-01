@@ -60,16 +60,14 @@ fn read_ext_element(
     loop {
         match reader.read_event()? {
             Event::Text(e) => {
-                let text = e.unescape()?.into_owned();
-                if !text.is_empty() {
-                    // Merge adjacent text nodes (e.g. when XML comments between
-                    // text are dropped, the surrounding text events should coalesce).
-                    if let Some(ExtensionNode::Text(prev)) = children.last_mut() {
-                        prev.push_str(&text);
-                    } else {
-                        children.push(ExtensionNode::Text(text));
-                    }
-                }
+                // Merge adjacent text nodes (e.g. when XML comments between
+                // text are dropped, the surrounding text events should coalesce).
+                push_ext_text(&mut children, &e.decode()?);
+            }
+            // quick-xml 0.39 emits entity references (`&amp;`, `&#65;`, …) as
+            // standalone events; resolve and merge them into the surrounding text.
+            Event::GeneralRef(e) => {
+                push_ext_text(&mut children, &super::resolve_general_ref(&e)?);
             }
             Event::CData(e) => {
                 let text = std::str::from_utf8(&e)?.to_owned();
@@ -104,6 +102,19 @@ fn read_ext_element(
         attributes,
         children,
     })
+}
+
+/// Append `text` to the extension children, merging into a trailing text node so
+/// that adjacent text and resolved entity references coalesce into one node.
+fn push_ext_text(children: &mut Vec<ExtensionNode>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(ExtensionNode::Text(prev)) = children.last_mut() {
+        prev.push_str(text);
+    } else {
+        children.push(ExtensionNode::Text(text.to_owned()));
+    }
 }
 
 fn read_ext_attrs(attrs: &Attributes) -> Result<Vec<(String, String)>, Xliff2Error> {

@@ -18,10 +18,17 @@ pub fn read_inline_content(
     loop {
         match reader.read_event()? {
             Event::Text(e) => {
-                let text = e.unescape()?.into_owned();
+                let text = e.decode()?;
                 if !text.is_empty() {
-                    elements.push(InlineElement::Text(text));
+                    push_text(&mut elements, &text);
                 }
+            }
+            // quick-xml 0.39 emits entity references (`&amp;`, `&#65;`, …) as
+            // standalone events. Resolve and merge them into the surrounding text
+            // so `a &amp; b` round-trips as a single `Text("a & b")`.
+            Event::GeneralRef(e) => {
+                let text = super::resolve_general_ref(&e)?;
+                push_text(&mut elements, &text);
             }
             Event::CData(e) => {
                 let text = std::str::from_utf8(&e)?.to_owned();
@@ -75,6 +82,19 @@ pub fn read_inline_content(
     }
 
     Ok(elements)
+}
+
+/// Append `text` to the inline element list, merging into a trailing text node so
+/// that adjacent text and resolved entity references coalesce into one element.
+fn push_text(elements: &mut Vec<InlineElement>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(InlineElement::Text(prev)) = elements.last_mut() {
+        prev.push_str(text);
+    } else {
+        elements.push(InlineElement::Text(text.to_owned()));
+    }
 }
 
 fn read_ph_attrs(attrs: &Attributes) -> Result<Ph, Xliff2Error> {
