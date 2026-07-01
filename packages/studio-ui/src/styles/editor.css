@@ -101,6 +101,14 @@
   color: var(--bs-symbol-knot);
   font-weight: 700;
 }
+/* Collapsed leading INCLUDE block: "INCLUDE … (N files)" */
+.brink-studio .brink-fold-include {
+  cursor: pointer;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .brink-fold-include-label {
+  font-style: italic;
+}
 .brink-studio .cm-line.brink-choice {
   color: var(--bs-accent);
 }

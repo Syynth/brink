@@ -34,6 +34,11 @@ export { setHostWidgets } from "./widget-registry.js";
 export { elementTypeField, ElementType } from "./element-type.js";
 export type { LineInfo } from "./element-type.js";
 
+// Code folding (#313 G): HIR-driven fold ranges, including the leading
+// INCLUDE-block fold whose Rust `collapsed_text` renders as its placeholder.
+export { foldingExtension } from "./folding.js";
+export type { FoldingOptions, FoldPlaceholder } from "./folding.js";
+
 // "Play from here" (#186): hover ▶ gutter + right-click menu on knot/stitch
 // declarations. `qualifiedInkPath`/`headerName` are the pure path core.
 export { playFromHereExtension, qualifiedInkPath, headerName } from "./play-from-here.js";
