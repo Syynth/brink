@@ -53,6 +53,18 @@ export interface SearchSlice {
   replaceSearchMatch(path: string, match: SearchMatch): void;
   /** Replace every listed result. All-or-nothing on stale results. */
   replaceAllSearchMatches(): void;
+
+  // ── Editable results buffer (#322 Track V, design D) ──────────────
+
+  /** Live source of a file, for the results buffer's stale/skip guard. Null
+   *  when no project is loaded or the file is gone. */
+  getSearchSource(path: string): string | null;
+  /**
+   * Apply an edit the user made in the editable results buffer, routed to the
+   * source through the shared apply-edits seam (updateFile + invalidate +
+   * compile), then re-run the search so the buffer reflects the new sources.
+   */
+  applySearchRowEdit(path: string, edit: ReplacementEdit): void;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -215,6 +227,33 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
       source: "search",
       message: `Replaced ${plural(results.totalMatches, "match", "matches")} in ${plural(planned.length, "file", "files")}`,
     });
+    get().runSearch();
+  },
+
+  getSearchSource(path) {
+    const project = get()._project;
+    if (!project) return null;
+    return project.getSession().getFileSource(path);
+  },
+
+  applySearchRowEdit(path, edit) {
+    const state = get();
+    const project = state._project;
+    const documents = state._documents;
+    if (!project || !documents) return;
+
+    const source = project.getSession().getFileSource(path);
+    if (source === null) {
+      // File vanished underneath — refresh, apply nothing.
+      get().runSearch();
+      return;
+    }
+
+    // Through the shared apply-edits seam (#137), exactly like the tree's
+    // per-row replace: provider write-back + host egress + view refresh.
+    project.applyEdit(path, applyReplacements(source, [edit]));
+    documents.invalidateFile(path);
+    documents.triggerCompile();
     get().runSearch();
   },
 });

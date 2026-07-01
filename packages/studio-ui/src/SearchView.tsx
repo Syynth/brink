@@ -1,13 +1,15 @@
 /**
- * Search — project-wide find/replace tool window (issue #94, spec §4).
+ * Search — project-wide find/replace tool window (issue #94, spec §4;
+ * editable results buffer #322 Track V).
  *
  * The view is a thin surface over the store's search slice: it debounces
- * live search as the user types, renders results grouped by file
- * (collapsible headers), and dispatches `editor.reveal` with a source
- * Location for each row — navigation goes through the shared protocol
- * (§6.1) exactly like ProblemsView rows. Replacements run through the
- * slice, which reuses the binder structural-op path (updateFile +
- * invalidateFile + triggerCompile) so open editor views refresh.
+ * live search as the user types and renders the results through the
+ * editor-owned *editable* results buffer ({@link SearchResultsBufferView} —
+ * the locked Zed-style design D): a synthetic CodeMirror document mirroring
+ * the cross-file matches (file headers + match lines), where editing a match
+ * row routes the change back to the source document through the shared
+ * apply-edits seam. Double-clicking a match row dispatches `editor.reveal`
+ * exactly like the old tree rows.
  *
  * Replace-all is gated by an inline confirmation step (the acceptance
  * criterion "replace with confirmation"): the first click arms a confirm
@@ -17,21 +19,16 @@
  * session; the tool window's placement persists like any other.
  */
 
-import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
-  EDITOR_REVEAL_COMMAND_ID,
   ensureToolWindowOpen,
   useShell,
   type CommandRegistry,
   type ShellLayoutStore,
 } from "@brink/studio-shell";
-import {
-  SEARCH_RESULT_CAP,
-  matchLineSegments,
-  type SearchMatch,
-  type StudioStore,
-} from "@brink/studio-store";
+import { SEARCH_RESULT_CAP, type StudioStore } from "@brink/studio-store";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
+import { SearchResultsBufferView } from "./SearchResultsBufferView.js";
 
 export const SEARCH_TOOL_WINDOW_ID = "search";
 export const SEARCH_FOCUS_COMMAND_ID = "search.focus";
@@ -82,13 +79,7 @@ export function SearchCommands() {
 
 // ── View ────────────────────────────────────────────────────────────
 
-interface FlatRow {
-  path: string;
-  match: SearchMatch;
-}
-
 function SearchViewInner() {
-  const { commands } = useShell();
   const query = useStudioStore((s) => s.searchQuery);
   const options = useStudioStore((s) => s.searchOptions);
   const replaceText = useStudioStore((s) => s.searchReplace);
@@ -99,13 +90,10 @@ function SearchViewInner() {
   const toggleOption = useStudioStore((s) => s.toggleSearchOption);
   const setReplace = useStudioStore((s) => s.setSearchReplace);
   const runSearch = useStudioStore((s) => s.runSearch);
-  const replaceMatch = useStudioStore((s) => s.replaceSearchMatch);
   const replaceAll = useStudioStore((s) => s.replaceAllSearchMatches);
 
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [confirmingAll, setConfirmingAll] = useState(false);
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
-  const [selected, setSelected] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Live search, debounced while typing (also runs on mount, which simply
@@ -122,53 +110,11 @@ function SearchViewInner() {
     inputRef.current?.select();
   }, [focusSeq]);
 
-  // New results disarm a pending replace-all confirmation and reset the
-  // keyboard cursor — the confirmed counts must match what's on screen.
+  // New results disarm a pending replace-all confirmation — the confirmed
+  // counts must match what's on screen.
   useEffect(() => {
     setConfirmingAll(false);
-    setSelected(-1);
   }, [results]);
-
-  const flatRows = useMemo<FlatRow[]>(() => {
-    if (results === null) return [];
-    const rows: FlatRow[] = [];
-    for (const file of results.files) {
-      if (collapsed.has(file.path)) continue;
-      for (const match of file.matches) rows.push({ path: file.path, match });
-    }
-    return rows;
-  }, [results, collapsed]);
-
-  const reveal = (path: string, match: SearchMatch): void => {
-    commands.dispatch(EDITOR_REVEAL_COMMAND_ID, {
-      kind: "source",
-      file: path,
-      span: { start: match.start, end: match.end },
-    });
-  };
-
-  // Up/down + Enter from the query input walk the visible result rows.
-  const onQueryKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setSelected((i) => Math.min(i + 1, flatRows.length - 1));
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setSelected((i) => Math.max(i - 1, 0));
-    } else if (event.key === "Enter") {
-      const row = flatRows[selected] ?? flatRows[0];
-      if (row !== undefined) reveal(row.path, row.match);
-    }
-  };
-
-  const toggleCollapsed = (path: string): void => {
-    setCollapsed((current) => {
-      const next = new Set(current);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-  };
 
   const optionButton = (
     key: "caseSensitive" | "wholeWord" | "regex",
@@ -189,7 +135,6 @@ function SearchViewInner() {
 
   const total = results?.totalMatches ?? 0;
   const fileCount = results?.files.length ?? 0;
-  let rowIndex = -1;
 
   return (
     <div className="search-view">
@@ -217,7 +162,6 @@ function SearchViewInner() {
                 spellCheck={false}
                 aria-label="Search query"
                 onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={onQueryKeyDown}
               />
               <div className="search-options" role="group" aria-label="Search options">
                 {optionButton("caseSensitive", "Aa", "Match case")}
@@ -290,74 +234,12 @@ function SearchViewInner() {
           </p>
         )}
         {results !== null && total > 0 && (
-          <ul className="search-file-list">
-            {results.files.map((file) => {
-              const isCollapsed = collapsed.has(file.path);
-              return (
-                <li key={file.path} className="search-file">
-                  <button
-                    type="button"
-                    className="search-file-header"
-                    aria-expanded={!isCollapsed}
-                    onClick={() => toggleCollapsed(file.path)}
-                  >
-                    <span
-                      className={"search-chevron" + (isCollapsed ? " collapsed" : "")}
-                    >
-                      {"▶"}
-                    </span>
-                    <span className="search-file-path">{file.path}</span>
-                    <span className="search-file-count">{file.matches.length}</span>
-                  </button>
-                  {!isCollapsed && (
-                    <ul className="search-match-list">
-                      {file.matches.map((match, i) => {
-                        rowIndex++;
-                        const isSelected = rowIndex === selected;
-                        const segments = matchLineSegments(match);
-                        return (
-                          <li
-                            key={`${match.start}:${i}`}
-                            className={
-                              "search-result-row" + (isSelected ? " selected" : "")
-                            }
-                          >
-                            <button
-                              type="button"
-                              className="search-result-line"
-                              title={`${file.path}:${match.line}`}
-                              onClick={() => reveal(file.path, match)}
-                            >
-                              <span className="search-line-before">
-                                {segments.before}
-                              </span>
-                              <mark className="search-line-match">
-                                {segments.matchText}
-                              </mark>
-                              <span className="search-line-after">
-                                {segments.after}
-                              </span>
-                            </button>
-                            {replaceOpen && (
-                              <button
-                                type="button"
-                                className="search-row-replace"
-                                title="Replace this match"
-                                aria-label="Replace this match"
-                                onClick={() => replaceMatch(file.path, match)}
-                              >
-                                {"⇆"}
-                              </button>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          // Editor-owned editable results buffer (#322 Track V, design D):
+          // headers + match lines in a scrollable CM6 document; editing a
+          // match row routes back to the source. Keyed on the total so a
+          // structural change (files added/removed between searches) remounts
+          // cleanly; in-place edits keep the same view via setResult.
+          <SearchResultsBufferView key={fileCount} results={results} />
         )}
       </div>
     </div>

@@ -1964,6 +1964,174 @@ impl EditorSession {
         serde_json::to_string(&resp).unwrap_or_default()
     }
 
+    /// Auto-import `target` into the file backing document handle `doc` (#312 F,
+    /// completion-accept path). Same `{ ok, already_reachable, edit?, error? }`
+    /// shape as [`auto_import_include`], but the edit's `from`/`to` are
+    /// **whole-file UTF-16** offsets (the INCLUDE block is a whole-file concept
+    /// regardless of a fragment view), so the editor can apply it to the file
+    /// source directly. Idempotent — no edit when `target` is already reachable.
+    pub fn auto_import_include_doc(&self, doc: u32, target: &str) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return serde_json::to_string(&AutoImportJs {
+                ok: false,
+                already_reachable: false,
+                edit: None,
+                error: Some("unknown document handle".to_owned()),
+            })
+            .unwrap_or_default();
+        };
+        let current = d.path.clone();
+        let resp = match brink_ide::auto_import::ensure_include(&self.session, &current, target) {
+            Ok(result) => {
+                // Convert the byte-offset edit to whole-file UTF-16 so it can be
+                // applied against the file source (or a whole-file view).
+                let edit = result.edit.and_then(|e| {
+                    let source = self.source_of(&current)?;
+                    Some(brink_ide::line_convert::TextEdit {
+                        from: byte_to_utf16(source, e.from),
+                        to: byte_to_utf16(source, e.to),
+                        insert: e.insert,
+                    })
+                });
+                AutoImportJs {
+                    ok: true,
+                    already_reachable: result.already_reachable,
+                    edit,
+                    error: None,
+                }
+            }
+            Err(e) => AutoImportJs {
+                ok: false,
+                already_reachable: false,
+                edit: None,
+                error: Some(e.to_string()),
+            },
+        };
+        serde_json::to_string(&resp).unwrap_or_default()
+    }
+
+    /// Auto-import `target` into the file backing document handle `doc` **and
+    /// apply the INCLUDE edit out-of-band**, rebasing every open fragment view
+    /// on that file (#312 F, fragment-view completion-accept path).
+    ///
+    /// A fragment (symbol-tab / "play from here") view cannot dispatch the
+    /// whole-file INCLUDE edit into its own CM document — the INCLUDE lives
+    /// above the fragment. So the caller applies it here. A raw whole-file
+    /// replace ([`update_file`]) would prepend the INCLUDE but leave every open
+    /// fragment handle's stored `ViewContext` pointing at pre-shift byte
+    /// offsets, so the next fragment splice would clobber the INCLUDE line and
+    /// surrounding content. This method inserts the INCLUDE *and* shifts the
+    /// byte range (and start line) of every fragment view on the file that
+    /// begins at/after the insertion point, keeping them consistent.
+    ///
+    /// Returns the same `{ ok, already_reachable, edit?, error? }` shape as
+    /// [`auto_import_include_doc`]. On success the `edit` (whole-file UTF-16)
+    /// **describes the shift that was already applied** — the caller must NOT
+    /// re-apply it; it exists only so the caller can rebase its own TS-side
+    /// fragment-range mirror by the UTF-16 delta before inserting the symbol
+    /// text into the fragment view. When `target` is already reachable this is
+    /// a no-op (`already_reachable: true`, no `edit`).
+    pub fn auto_import_apply_include_doc(&mut self, doc: u32, target: &str) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return serde_json::to_string(&AutoImportJs {
+                ok: false,
+                already_reachable: false,
+                edit: None,
+                error: Some("unknown document handle".to_owned()),
+            })
+            .unwrap_or_default();
+        };
+        let current = d.path.clone();
+        let result = match brink_ide::auto_import::ensure_include(&self.session, &current, target) {
+            Ok(result) => result,
+            Err(e) => {
+                return serde_json::to_string(&AutoImportJs {
+                    ok: false,
+                    already_reachable: false,
+                    edit: None,
+                    error: Some(e.to_string()),
+                })
+                .unwrap_or_default();
+            }
+        };
+
+        // Already reachable, or no edit produced: nothing to apply.
+        let Some(edit) = result.edit.filter(|_| !result.already_reachable) else {
+            return serde_json::to_string(&AutoImportJs {
+                ok: true,
+                already_reachable: result.already_reachable,
+                edit: None,
+                error: None,
+            })
+            .unwrap_or_default();
+        };
+
+        // `ensure_include` returns byte offsets for `from`/`to` into the current
+        // file source. Apply the insertion to the whole-file source.
+        let Some(source) = self.source_of(&current).map(str::to_owned) else {
+            return serde_json::to_string(&AutoImportJs {
+                ok: false,
+                already_reachable: false,
+                edit: None,
+                error: Some("current file source unavailable".to_owned()),
+            })
+            .unwrap_or_default();
+        };
+        let from = (edit.from as usize).min(source.len());
+        let to = (edit.to as usize).clamp(from, source.len());
+        let mut merged = String::with_capacity(source.len() + edit.insert.len());
+        merged.push_str(&source[..from]);
+        merged.push_str(&edit.insert);
+        merged.push_str(&source[to..]);
+
+        // Rebase every open fragment view on this file whose range starts at or
+        // after the insertion point. The edit removes `to - from` bytes and
+        // inserts `edit.insert`, so downstream offsets shift by the net delta;
+        // start lines shift by (inserted newlines − removed newlines).
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "ink files are always < 4GB, so byte counts fit i64"
+        )]
+        let byte_delta = edit.insert.len() as i64 - (to - from) as i64;
+        let removed_newlines = count_newlines(&source[from..to]);
+        let inserted_newlines = count_newlines(&edit.insert);
+        let line_delta = i64::from(inserted_newlines) - i64::from(removed_newlines);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "ink files are always < 4GB"
+        )]
+        let insert_at = from as u32;
+        for state in self.docs.values_mut() {
+            if state.path != current {
+                continue;
+            }
+            let Some(view) = state.view.as_mut() else {
+                continue;
+            };
+            rebase_view(view, insert_at, byte_delta, line_delta);
+        }
+
+        // The whole-file UTF-16 edit that was applied, so the caller can rebase
+        // its own TS-side fragment range mirror by the UTF-16 delta. This edit
+        // is NOT for the caller to re-apply (it is already applied) — it merely
+        // describes the shift.
+        let applied_edit = brink_ide::line_convert::TextEdit {
+            from: byte_to_utf16(&source, edit.from),
+            to: byte_to_utf16(&source, edit.to),
+            insert: edit.insert,
+        };
+
+        self.session.update_and_analyze(&current, merged);
+
+        serde_json::to_string(&AutoImportJs {
+            ok: true,
+            already_reachable: false,
+            edit: Some(applied_edit),
+            error: None,
+        })
+        .unwrap_or_default()
+    }
+
     /// Promote a stitch to a top-level knot. Returns JSON `StructuralResult` or error.
     ///
     /// `path`: file containing the knot.
@@ -2346,18 +2514,47 @@ impl EditorSession {
         let ctx = brink_ide::detect_completion_context(source, abs_offset as usize);
         let scope = brink_ide::cursor_scope(source, abs_offset as usize);
 
+        // Auto-import (#312 F): symbols declared in files NOT reachable from the
+        // current file's INCLUDE graph are still offered, but tagged as
+        // out-of-scope so the editor can render a "from <file>" affordance and
+        // insert the INCLUDE on accept. Reachability includes the current file
+        // itself; locals (params/temps) carry no owning importable file.
+        let reachable = self
+            .session
+            .file_id(path)
+            .map(|id| self.session.db().reachable_from(id));
+
         let symbol_items = analysis
             .index
             .symbols
             .values()
             .filter(|info| brink_ide::is_visible_in_context(&ctx, info, &scope))
-            .map(|info| CompletionItemJs {
-                name: info.name.clone(),
-                kind: symbol_kind_str(info.kind).to_owned(),
-                // Callables get a typed signature from /// docs or the host
-                // manifest, if any; otherwise the kind-derived detail.
-                detail: typed_detail(analysis, info).or_else(|| info.detail.clone()),
-                insert: None,
+            .map(|info| {
+                let is_local = matches!(
+                    info.kind,
+                    brink_ir::SymbolKind::Param | brink_ir::SymbolKind::Temp
+                );
+                // A symbol is out of scope when its declaring file is not
+                // reachable from the current file. Locals are never imported.
+                let out_of_scope = !is_local
+                    && reachable
+                        .as_ref()
+                        .is_some_and(|set| !set.contains(&info.file));
+                let source_file = if out_of_scope {
+                    self.session.file_path(info.file).map(str::to_owned)
+                } else {
+                    None
+                };
+                CompletionItemJs {
+                    name: info.name.clone(),
+                    kind: symbol_kind_str(info.kind).to_owned(),
+                    // Callables get a typed signature from /// docs or the host
+                    // manifest, if any; otherwise the kind-derived detail.
+                    detail: typed_detail(analysis, info).or_else(|| info.detail.clone()),
+                    insert: None,
+                    out_of_scope,
+                    source_file,
+                }
             });
 
         // Host value picker (#174): in an argument slot whose param has a value
@@ -2379,9 +2576,18 @@ impl EditorSession {
                     kind: "value".to_owned(),
                     detail: v.detail,
                     insert: Some(v.value),
+                    out_of_scope: false,
+                    source_file: None,
                 }),
             );
         }
+
+        // Multiple definitions of one name (#312 F): when a name is declared in
+        // several out-of-scope files, keep only the nearest by relative-path
+        // distance so the auto-import targets a single deterministic file. In-
+        // scope duplicates (already reachable) are left untouched — they insert
+        // no INCLUDE. `dedupe_out_of_scope` sorts, so the result is stable.
+        let symbol_items = dedupe_out_of_scope(path, symbol_items.collect());
         items.extend(symbol_items);
 
         serde_json::to_string(&items).unwrap_or_default()
@@ -3055,6 +3261,51 @@ fn floor_char_boundary(s: &str, i: usize) -> usize {
     i
 }
 
+// ── Fragment view rebasing ──────────────────────────────────────────
+
+/// Shift a fragment `ViewContext` in place to account for an out-of-band
+/// whole-file edit that inserted/removed content at byte `insert_at`.
+///
+/// `byte_delta` is the net byte change of the edit (inserted − removed) and
+/// `line_delta` the net newline change. Only views that begin at or after
+/// `insert_at` move — a view before the edit is unaffected. This keeps the
+/// stored byte range (and start line) of every open fragment handle consistent
+/// with the mutated file, so a subsequent fragment splice targets the correct
+/// window instead of clobbering the shifted content.
+fn rebase_view(view: &mut ViewContext, insert_at: u32, byte_delta: i64, line_delta: i64) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "offsets stay within a <4GB file and never go negative for a valid edit"
+    )]
+    let shift = |offset: u32| -> u32 {
+        if offset < insert_at {
+            offset
+        } else {
+            (i64::from(offset) + byte_delta).max(0) as u32
+        }
+    };
+    let start_moves = view.start >= insert_at;
+    // The insertion point sits at (or before) the view start for the auto-import
+    // case (INCLUDE block above the fragment), so both boundaries move together.
+    view.start = shift(view.start);
+    view.end = shift(view.end);
+    if start_moves {
+        // The view's start byte shifted, so its first line shifts by the net
+        // newline delta of the edit.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "line counts stay within a <4GB file"
+        )]
+        if line_delta >= 0 {
+            view.start_line = view.start_line.saturating_add(line_delta as u32);
+        } else {
+            view.start_line = view.start_line.saturating_sub((-line_delta) as u32);
+        }
+    }
+}
+
 // ── Fragment splicing ───────────────────────────────────────────────
 
 /// Result of splicing a fragment into its full file.
@@ -3186,6 +3437,84 @@ struct CompletionItemJs {
     /// picker (#174): show `HarborGate`, insert `5`. `None` ⇒ insert `name`.
     #[serde(skip_serializing_if = "Option::is_none")]
     insert: Option<String>,
+    /// `true` when the symbol is defined in a file NOT reachable from the
+    /// current file's INCLUDE graph (#312 F). The editor tags such rows with a
+    /// "from <file>" affordance and, on accept, auto-inserts the INCLUDE.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    out_of_scope: bool,
+    /// The project-relative path of the file that declares this symbol, set
+    /// only for out-of-scope completions — the auto-import target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_file: Option<String>,
+}
+
+/// Relative-path distance from `current` to `target` (#312 F). Lower is nearer:
+/// primarily the number of `..` hops out of the current directory, then total
+/// segment count, then the path string for a deterministic final tie-break.
+fn include_distance(current: &str, target: &str) -> (usize, usize, String) {
+    let rel = brink_db::compute_relative_path(current, target);
+    let dotdots = rel.split('/').filter(|s| *s == "..").count();
+    let segments = rel.split('/').count();
+    (dotdots, segments, rel)
+}
+
+/// Collapse multiple out-of-scope definitions of one name down to the single
+/// nearest one (#312 F): when a name is offered from several not-yet-reachable
+/// files, keep only the closest by [`include_distance`] so the auto-import
+/// targets one deterministic file. If a name also has an in-scope definition
+/// (already reachable), its out-of-scope variants are dropped entirely — the
+/// in-scope row inserts with no INCLUDE. Order is otherwise preserved for
+/// in-scope items; the surviving out-of-scope items are stably ordered.
+fn dedupe_out_of_scope(current: &str, items: Vec<CompletionItemJs>) -> Vec<CompletionItemJs> {
+    use std::collections::HashSet;
+
+    // Names that have at least one in-scope definition — their out-of-scope
+    // duplicates are redundant.
+    let in_scope_names: HashSet<String> = items
+        .iter()
+        .filter(|i| !i.out_of_scope)
+        .map(|i| i.name.clone())
+        .collect();
+
+    // For each out-of-scope name, remember the index of the nearest variant.
+    let mut best: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (idx, item) in items.iter().enumerate() {
+        if !item.out_of_scope || in_scope_names.contains(item.name.as_str()) {
+            continue;
+        }
+        let dist = item
+            .source_file
+            .as_deref()
+            .map(|f| include_distance(current, f));
+        let is_better = match best.get(&item.name) {
+            None => true,
+            Some(&prev) => {
+                let prev_dist = items[prev]
+                    .source_file
+                    .as_deref()
+                    .map(|f| include_distance(current, f));
+                dist < prev_dist
+            }
+        };
+        if is_better {
+            best.insert(item.name.clone(), idx);
+        }
+    }
+
+    items
+        .into_iter()
+        .enumerate()
+        .filter(|(idx, item)| {
+            if !item.out_of_scope {
+                return true;
+            }
+            if in_scope_names.contains(item.name.as_str()) {
+                return false;
+            }
+            best.get(&item.name) == Some(idx)
+        })
+        .map(|(_, item)| item)
+        .collect()
 }
 
 /// Build a typed signature detail for a callable (external, knot, stitch)
@@ -4581,6 +4910,245 @@ mod tests {
             s.references_to_symbol("dup", true),
             "[]",
             "ambiguous symbol name fails safe to []"
+        );
+    }
+
+    #[test]
+    fn completions_tag_out_of_scope_symbols_with_source_file() {
+        // main.ink INCLUDEs included.ink but NOT economy.ink. A knot from the
+        // reachable file is in scope; one from the unreachable file is tagged
+        // out-of-scope with its source path (#312 F).
+        let mut s = EditorSession::new();
+        s.update_file("included.ink", "=== reachable_knot ===\nhi.\n-> END\n");
+        s.update_file("economy.ink", "=== trade ===\nbuy.\n-> END\n");
+        let main = "INCLUDE included.ink\n=== start ===\n-> re\n";
+        s.update_file("main.ink", main);
+        assert!(s.set_active_file("main.ink"));
+
+        // Cursor after `-> re` (a divert context, which surfaces knots).
+        let offset = u32::try_from(main.find("-> re").expect("divert present") + 5)
+            .expect("offset fits u32");
+        let items: serde_json::Value =
+            serde_json::from_str(&s.completions(offset)).expect("valid completions JSON");
+        let arr = items.as_array().expect("completions is an array");
+
+        let reachable = arr
+            .iter()
+            .find(|i| i["name"] == "reachable_knot")
+            .expect("reachable knot offered");
+        assert!(
+            reachable.get("out_of_scope").is_none(),
+            "in-scope knot is not flagged out_of_scope: {reachable}"
+        );
+
+        let trade = arr
+            .iter()
+            .find(|i| i["name"] == "trade")
+            .expect("out-of-scope knot offered");
+        assert_eq!(
+            trade["out_of_scope"], true,
+            "unreachable knot flagged out_of_scope: {trade}"
+        );
+        assert_eq!(
+            trade["source_file"], "economy.ink",
+            "out-of-scope knot carries its source file: {trade}"
+        );
+    }
+
+    #[test]
+    fn completions_dedupe_out_of_scope_keeps_nearest() {
+        // Two unreachable files both define `dup`. The nearer one (same dir as
+        // the current file) wins deterministically; only one row survives.
+        let mut s = EditorSession::new();
+        s.update_file("near.ink", "=== dup ===\nn.\n-> END\n");
+        s.update_file("deep/far.ink", "=== dup ===\nf.\n-> END\n");
+        let main = "=== start ===\n-> du\n";
+        s.update_file("main.ink", main);
+        assert!(s.set_active_file("main.ink"));
+
+        let offset = u32::try_from(main.find("-> du").expect("divert present") + 5)
+            .expect("offset fits u32");
+        let items: serde_json::Value =
+            serde_json::from_str(&s.completions(offset)).expect("valid completions JSON");
+        let dups: Vec<&serde_json::Value> = items
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter(|i| i["name"] == "dup")
+            .collect();
+
+        assert_eq!(
+            dups.len(),
+            1,
+            "duplicate out-of-scope name collapses to one: {dups:?}"
+        );
+        assert_eq!(
+            dups[0]["source_file"], "near.ink",
+            "nearest source file wins: {:?}",
+            dups[0]
+        );
+    }
+
+    #[test]
+    fn auto_import_apply_include_doc_rebases_open_fragment_view() {
+        // Regression (#312 F): the fragment-view auto-import path. A raw
+        // whole-file INCLUDE write shifts the fragment content right but leaves
+        // the open fragment handle's view range at pre-shift offsets, so the
+        // NEXT fragment splice clobbers the INCLUDE line and the knot header.
+        // `auto_import_apply_include_doc` must apply the INCLUDE *and* rebase
+        // the open fragment view so the subsequent splice lands correctly.
+        let mut s = EditorSession::new();
+        s.update_file("economy.ink", "=== trade ===\nbuy.\n-> END\n");
+        let main_src = "=== start ===\nThe cursor is here.\n";
+        s.update_file("main.ink", main_src);
+
+        // Open a fragment over the knot BODY ("The cursor is here.\n"). The body
+        // begins right after the "=== start ===\n" header (byte 14) and runs to
+        // end of file.
+        let body_start = "=== start ===\n".len() as u32;
+        let body_end = main_src.len() as u32;
+        let doc = s.open_fragment("main.ink", body_start, body_end);
+        assert_ne!(doc, 0, "fragment handle opened");
+
+        // Accept an out-of-scope completion: auto-import economy.ink into the
+        // fragment's file, applying + rebasing out-of-band.
+        let applied: serde_json::Value =
+            serde_json::from_str(&s.auto_import_apply_include_doc(doc, "economy.ink"))
+                .expect("valid auto-import JSON");
+        assert_eq!(applied["ok"], true, "op ok: {applied}");
+        assert_eq!(
+            applied["already_reachable"], false,
+            "not yet reachable: {applied}"
+        );
+        // The returned edit DESCRIBES the applied shift (for the caller to
+        // rebase its own TS-side range) — it is NOT to be re-applied.
+        assert_eq!(
+            applied["edit"]["insert"].as_str(),
+            Some("INCLUDE economy.ink\n"),
+            "returned edit describes the applied INCLUDE shift: {applied}"
+        );
+        assert_eq!(
+            applied["edit"]["from"], 0,
+            "INCLUDE inserted at file top: {applied}"
+        );
+
+        // The whole file now carries the INCLUDE above the untouched knot.
+        let full_after_import = s.source_of("main.ink").expect("source").to_owned();
+        assert_eq!(
+            full_after_import, "INCLUDE economy.ink\n=== start ===\nThe cursor is here.\n",
+            "INCLUDE prepended, knot intact"
+        );
+
+        // Now the completion dispatches the accepted symbol into the FRAGMENT
+        // view (the edited body). This routes through update_document, which
+        // splices at the (now rebased) view range.
+        let edited_body = "The cursor is here.trade\n";
+        let spec = s.update_document(doc, edited_body);
+        assert_ne!(spec, "null", "fragment push produced a change spec");
+
+        // The INCLUDE line and knot header must survive; only the body changed.
+        let full_after_push = s.source_of("main.ink").expect("source");
+        assert_eq!(
+            full_after_push, "INCLUDE economy.ink\n=== start ===\nThe cursor is here.trade\n",
+            "INCLUDE + header intact; only the fragment body was replaced"
+        );
+    }
+
+    #[test]
+    fn raw_update_file_then_fragment_push_corrupts_without_rebase() {
+        // Documents the pre-fix bug (#312 F): applying the INCLUDE via the raw
+        // whole-file `update_file` (which does NOT rebase open fragment views)
+        // and then pushing the fragment splices at the STALE view range,
+        // clobbering the INCLUDE line and the knot header. This is exactly the
+        // corruption `auto_import_apply_include_doc` avoids. If this assertion
+        // ever flips to producing clean output, `update_file` grew rebase
+        // semantics and the fragment auto-import path can be simplified.
+        let mut s = EditorSession::new();
+        s.update_file("economy.ink", "=== trade ===\n-> END\n");
+        let main_src = "=== start ===\nThe cursor is here.\n";
+        s.update_file("main.ink", main_src);
+
+        let body_start = "=== start ===\n".len() as u32;
+        let doc = s.open_fragment("main.ink", body_start, main_src.len() as u32);
+
+        // OLD path: prepend INCLUDE via a raw whole-file replace (no rebase).
+        s.update_file("main.ink", &format!("INCLUDE economy.ink\n{main_src}"));
+        // Then push the edited fragment — splices at the stale [14, 34) range.
+        s.update_document(doc, "The cursor is here.trade\n");
+
+        let corrupted = s.source_of("main.ink").expect("source");
+        assert_ne!(
+            corrupted, "INCLUDE economy.ink\n=== start ===\nThe cursor is here.trade\n",
+            "raw path corrupts — this is the bug the apply-and-rebase op fixes"
+        );
+    }
+
+    #[test]
+    fn auto_import_apply_include_doc_idempotent_when_reachable() {
+        // When the target is already reachable, the apply-and-rebase op is a
+        // no-op: no INCLUDE added, view range untouched.
+        let mut s = EditorSession::new();
+        s.update_file("economy.ink", "=== trade ===\n-> END\n");
+        let main_src = "INCLUDE economy.ink\n=== start ===\nbody.\n";
+        s.update_file("main.ink", main_src);
+        // Re-analyze so the INCLUDE edge binds to the now-loaded target.
+        s.update_file("main.ink", main_src);
+
+        let body_start = "INCLUDE economy.ink\n=== start ===\n".len() as u32;
+        let doc = s.open_fragment("main.ink", body_start, main_src.len() as u32);
+        assert_ne!(doc, 0);
+
+        let applied: serde_json::Value =
+            serde_json::from_str(&s.auto_import_apply_include_doc(doc, "economy.ink"))
+                .expect("valid JSON");
+        assert_eq!(applied["already_reachable"], true, "already reachable");
+        assert!(applied.get("edit").is_none(), "no edit");
+
+        // Pushing the fragment still lands correctly (view range never moved).
+        s.update_document(doc, "body.\n-> trade\n");
+        assert_eq!(
+            s.source_of("main.ink").expect("source"),
+            "INCLUDE economy.ink\n=== start ===\nbody.\n-> trade\n"
+        );
+    }
+
+    #[test]
+    fn auto_import_doc_edit_is_utf16_and_idempotent() {
+        // The doc-based auto-import returns a whole-file edit for an unreachable
+        // target, and no edit once the file already reaches it.
+        let mut s = EditorSession::new();
+        s.update_file("economy.ink", "=== trade ===\nbuy.\n-> END\n");
+        s.update_file("main.ink", "=== start ===\n-> END\n");
+        assert!(s.set_active_file("main.ink"));
+        let doc = s.open_document("main.ink");
+
+        let first: serde_json::Value =
+            serde_json::from_str(&s.auto_import_include_doc(doc, "economy.ink"))
+                .expect("valid auto-import JSON");
+        assert_eq!(first["ok"], true, "op ok: {first}");
+        assert_eq!(
+            first["already_reachable"], false,
+            "not yet reachable: {first}"
+        );
+        let insert = first["edit"]["insert"]
+            .as_str()
+            .expect("edit carries an insert string");
+        assert!(
+            insert.contains("INCLUDE economy.ink"),
+            "insert adds the INCLUDE: {first}"
+        );
+
+        // Apply the edit, re-analyze, then a second call is a no-op.
+        s.update_file("main.ink", &format!("{insert}=== start ===\n-> END\n"));
+        assert!(s.set_active_file("main.ink"));
+        let doc2 = s.open_document("main.ink");
+        let second: serde_json::Value =
+            serde_json::from_str(&s.auto_import_include_doc(doc2, "economy.ink"))
+                .expect("valid auto-import JSON");
+        assert_eq!(second["already_reachable"], true, "now reachable: {second}");
+        assert!(
+            second.get("edit").is_none(),
+            "idempotent — no second INCLUDE: {second}"
         );
     }
 

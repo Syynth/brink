@@ -1,5 +1,5 @@
 import { Compartment, type Extension } from "@codemirror/state";
-import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult } from "@brink/wasm-types";
+import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult, AutoImportResult } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
@@ -32,6 +32,10 @@ export interface BrinkStudioOptions {
 
   // IDE features (all optional — features are enabled when provided)
   getCompletions?: (source: string, offset: number) => CompletionItem[];
+  /** Auto-import (#312 F): on accepting an out-of-scope completion, ensure the
+   *  current file `INCLUDE`s the symbol's source file. Only consulted when
+   *  `getCompletions` is also provided. */
+  autoImport?: (target: string) => AutoImportResult;
   getHover?: (source: string, offset: number) => HoverInfo | null;
   gotoDefinition?: (source: string, offset: number) => Location | null;
   /** Called when goto-definition targets a different file. */
@@ -76,7 +80,12 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   const ideExtensions: Extension[] = [];
 
   if (options.getCompletions) {
-    ideExtensions.push(completionsExtension({ getCompletions: options.getCompletions }));
+    ideExtensions.push(
+      completionsExtension({
+        getCompletions: options.getCompletions,
+        autoImport: options.autoImport,
+      }),
+    );
   }
   if (options.getHover) {
     ideExtensions.push(

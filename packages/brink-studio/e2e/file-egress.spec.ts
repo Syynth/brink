@@ -125,7 +125,9 @@ test.describe("file egress — search replace-all (#137)", () => {
 
     await page.keyboard.press("ControlOrMeta+Shift+F");
     await page.locator(".search-input").fill("intro");
-    await expect(page.locator(".search-file-header").first()).toBeVisible();
+    // Results rendered in the editable buffer (design D): its CM6 content is the
+    // signal that the debounced search produced matches to replace.
+    await expect(page.locator(".search-results-buffer .cm-content")).toBeVisible();
 
     await page.locator(".search-replace-toggle").click();
     await page.locator(".search-replace-input").fill("prologue");

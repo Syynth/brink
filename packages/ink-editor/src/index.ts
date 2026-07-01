@@ -34,6 +34,11 @@ export { setHostWidgets } from "./widget-registry.js";
 export { elementTypeField, ElementType } from "./element-type.js";
 export type { LineInfo } from "./element-type.js";
 
+// Code folding (#313 G): HIR-driven fold ranges, including the leading
+// INCLUDE-block fold whose Rust `collapsed_text` renders as its placeholder.
+export { foldingExtension } from "./folding.js";
+export type { FoldingOptions, FoldPlaceholder } from "./folding.js";
+
 // "Play from here" (#186): hover ▶ gutter + right-click menu on knot/stitch
 // declarations. `qualifiedInkPath`/`headerName` are the pure path core.
 export { playFromHereExtension, qualifiedInkPath, headerName } from "./play-from-here.js";
@@ -110,6 +115,22 @@ export type {
   SearchPatternResult,
   SearchQueryOptions,
 } from "./project-search.js";
+
+// Editable search results buffer (#322 Track V, design D): the Zed-style
+// editor-owned buffer. `buildResultsRows` / `mapRowEditToSource` are the pure,
+// unit-testable model; `SearchResultsBuffer` is the self-contained CM6 surface
+// that routes match-row edits back to the source via the apply-edits seam.
+export {
+  buildResultsRows,
+  mapRowEditToSource,
+  SearchResultsBuffer,
+  DEFAULT_COMMIT_DELAY_MS,
+} from "./search-results-buffer.js";
+export type {
+  ResultRow,
+  ResultsBufferModel,
+  SearchResultsBufferOptions,
+} from "./search-results-buffer.js";
 
 // Find panel (#319 Track N): opt-in @codemirror/search factory. Not auto-enabled
 // in the studio editor — hosts opt in by adding the returned extension.
