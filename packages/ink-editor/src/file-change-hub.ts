@@ -208,6 +208,24 @@ export class FileChangeHub {
     this.conflicted.add(path);
   }
 
+  /**
+   * Resolve a standing conflict by KEEPING the editor buffer (issue #320):
+   * clear the conflicted flag only. The baseline is untouched, so the path
+   * stays dirty — the kept buffer still diverges from the last host-synced
+   * content and is re-delivered on the next flush/save. This is the "Keep
+   * mine" merge action. A merged-edit resolution instead routes its text
+   * through `record` (via {@link ProjectSession.applyEdit}) first, then calls
+   * this to drop the flag. No-op for an unconflicted path.
+   */
+  clearConflict(path: string): void {
+    this.conflicted.delete(path);
+  }
+
+  /** Whether `path` has a kept-but-unreconciled external conflict (#320). */
+  isConflicted(path: string): boolean {
+    return this.conflicted.has(path);
+  }
+
   /** Paths whose dirty buffer collided with an external change and was kept,
    *  not yet reconciled (issue #320). Sorted for deterministic output. */
   conflictedPaths(): string[] {

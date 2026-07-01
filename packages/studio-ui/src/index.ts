@@ -29,6 +29,7 @@ export { SymbolRenamePrompt } from "./SymbolRenamePrompt.js";
 export {
   dispatchSymbolAction,
   performSymbolRename,
+  applyComputedRename,
   type SymbolRenameOutcome,
 } from "./symbolMenuActions.js";
 export { useSymbolMenuActions } from "./useSymbolMenuActions.js";
@@ -85,6 +86,7 @@ export {
   type EditorSettings,
 } from "./SettingsDocument.js";
 export { NewFilePrompt, FILE_NEW_COMMAND_ID } from "./NewFilePrompt.js";
+export { ConflictMergeView } from "./ConflictMergeView.js";
 export {
   CompileStatusSegment,
   CursorSegment,

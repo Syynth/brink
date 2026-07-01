@@ -2,6 +2,23 @@
 export { brinkStudio } from "./extensions.js";
 export type { BrinkStudioOptions } from "./extensions.js";
 
+// Inline rename (#323/#324): the in-editor rename widget + its pure badge/report
+// logic (unit-tested via @brink-lang/studio).
+export {
+  renameExtension,
+  startInlineRename,
+  startInlineRenameEffect,
+  isSafeRename,
+  breakageCount,
+  breakageEntries,
+  RenameQueryCache,
+} from "./rename.js";
+export type {
+  RenameOptions,
+  BreakageEntry,
+  BreakageContext,
+} from "./rename.js";
+
 // Argument Form (argument-widget spec §1.2) — opened from the in-editor glyph
 // and from a host's tool windows (e.g. the Host Functions panel launcher).
 export { openArgumentForm } from "./argument-form.js";
@@ -98,3 +115,9 @@ export type {
 // in the studio editor — hosts opt in by adding the returned extension.
 export { findPanel } from "./find-panel.js";
 export type { FindPanelOptions } from "./find-panel.js";
+
+// External-conflict merge view (#320 Track V): self-contained banner +
+// side-by-side 2-way @codemirror/merge surface for a kept-buffer conflict.
+// Framework-agnostic — the studio mounts it into a host container.
+export { ConflictView } from "./conflict-view.js";
+export type { ConflictViewOptions } from "./conflict-view.js";

@@ -289,6 +289,46 @@ export class ProjectSession {
     return this.changes.conflictedPaths();
   }
 
+  /** Whether `path` has a kept-but-unreconciled external conflict (#320). */
+  hasConflict(path: string): boolean {
+    return this.changes.isConflicted(path);
+  }
+
+  /**
+   * Resolve an external conflict (issue #320, Track V) by taking the host's
+   * on-disk content: overwrite the session buffer with `disk`, re-baseline to
+   * it, and clear the conflict flag (the path goes clean). This is the
+   * "Use disk" merge action — the studio's dirty edit is discarded in favor
+   * of what landed on disk.
+   */
+  resolveConflictUseDisk(path: string, disk: string): void {
+    this.session.updateFile(path, disk);
+    // applyExternal re-baselines to `disk` and clears the conflict flag.
+    this.changes.applyExternal(path, disk);
+  }
+
+  /**
+   * Resolve an external conflict (issue #320, Track V) by KEEPING the studio
+   * buffer: clear the conflict flag without touching the buffer or baseline.
+   * The path stays dirty — the kept edit still diverges from disk and is
+   * re-delivered on the next flush/save. This is the "Keep mine" merge action.
+   */
+  resolveConflictKeepMine(path: string): void {
+    this.changes.clearConflict(path);
+  }
+
+  /**
+   * Resolve an external conflict (issue #320, Track V) with a hand-merged
+   * result: write `merged` through the shared apply-edits seam (so the host
+   * egress + provider write-back see it) and clear the conflict flag. The
+   * merged text becomes the new dirty buffer over the still-unchanged
+   * baseline, so the user can save it normally.
+   */
+  resolveConflictMerged(path: string, merged: string): void {
+    this.applyEdit(path, merged);
+    this.changes.clearConflict(path);
+  }
+
   /** Observe the dirty-file count (drives the public-state summary). */
   setDirtyListener(listener: ((dirtyCount: number) => void) | undefined): void {
     this.changes.setDirtyListener(listener);

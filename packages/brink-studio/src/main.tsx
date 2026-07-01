@@ -6,7 +6,7 @@
  */
 
 import { mountStudio, type StudioHandle } from "./mount.js";
-import type { FileChange } from "@brink/ink-editor";
+import { InMemoryFileProvider, type FileChange } from "@brink/ink-editor";
 import { createExampleExtension, EXAMPLE_HOST_MANIFEST } from "./example-extension.js";
 import toppledTemple from "./stories/toppled-temple.ink.txt?raw";
 
@@ -127,8 +127,20 @@ async function main(): Promise<void> {
       }
     : undefined;
 
+  // The playground owns its provider so the external-conflict merge view
+  // (#320, Track V) is verifiable without a real filesystem: a watcher would
+  // call `pushExternalChange`; here `window.__brinkSimulateExternalChange`
+  // does, exercising the conflict detection → kept buffer → merge surface.
+  const provider = new InMemoryFileProvider(files);
+  const w = window as unknown as {
+    __brinkSimulateExternalChange?: (path: string, content: string | null) => void;
+  };
+  w.__brinkSimulateExternalChange = (path, content) =>
+    provider.pushExternalChange(path, content);
+
   const handle: StudioHandle = await mountStudio(appRoot, {
     files,
+    provider,
     entryFile: "main.ink",
     extensions: withExtension ? createExampleExtension : undefined,
     // The pretend host's capability manifest (the panel renders the same

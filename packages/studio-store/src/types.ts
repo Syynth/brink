@@ -51,4 +51,4 @@ export type TabTarget =
 
 // ── Editor types (the real classes from @brink/ink-editor) ───────────
 
-export type { DocumentSessions, ProjectSession } from "@brink/ink-editor";
+export type { DocumentSessions, ProjectSession, FileConflict } from "@brink/ink-editor";

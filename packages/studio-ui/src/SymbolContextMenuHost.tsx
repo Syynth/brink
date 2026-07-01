@@ -11,7 +11,11 @@ import type { ReactElement } from "react";
 import type { FileOutline } from "@brink/wasm-types";
 import type { SymbolMenuRequest } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
-import { BinderContextMenu, type ContextMenuTarget } from "./BinderContextMenu.js";
+import {
+  BinderContextMenu,
+  type ContextMenuAction,
+  type ContextMenuTarget,
+} from "./BinderContextMenu.js";
 import { useSymbolMenuActions } from "./useSymbolMenuActions.js";
 
 /** Resolve a `{path, knot, stitch?}` request to a full menu target (with the
@@ -55,13 +59,21 @@ export function SymbolContextMenuHost(): ReactElement | null {
   const target = buildSymbolTarget(outline, symbolMenu);
   if (!target) return null;
 
+  // Tag the rename action with the surface that raised the menu so the
+  // dispatcher can route an editor-origin rename to the inline widget
+  // (#323/#324) while graph-origin renames keep the modal prompt.
+  const source = symbolMenu.source;
+  const onAction = (action: ContextMenuAction): void => {
+    dispatch(action.type === "renameSymbol" ? { ...action, source } : action);
+  };
+
   return (
     <BinderContextMenu
       x={symbolMenu.x}
       y={symbolMenu.y}
       target={target}
       outline={outline}
-      onAction={dispatch}
+      onAction={onAction}
       onClose={closeSymbolMenu}
     />
   );
