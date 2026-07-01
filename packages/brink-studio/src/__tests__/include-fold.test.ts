@@ -19,8 +19,14 @@ import type { FoldRange } from "@brink/wasm-types";
 import { foldingExtension } from "@brink/ink-editor";
 
 // Deterministic stand-in for the wasm `getFoldingRanges`, mirroring what
-// brink-ide emits: an INCLUDE-block fold (N>=2) with `collapsed_text`, plus a
-// whole-declaration knot fold with `from_line_start`.
+// brink-ide emits: an INCLUDE-block fold (N>=2) with `collapsed_text`, a
+// whole-declaration knot fold with `from_line_start`, and — crucially —
+// conditional/sequence folds carrying the internal `{...}` sentinel
+// `collapsed_text`. The real core emits `collapsed_text: Some("{...}")` for
+// every Conditional/Sequence/InlineConditional/InlineSequence fold (see
+// crates/internal/brink-ide/src/folding.rs); this stub must reproduce that so
+// the "only the INCLUDE block gets the include placeholder" guarantee is
+// actually exercised.
 function fakeRanges(source: string): FoldRange[] {
   const lines = source.split("\n");
   const ranges: FoldRange[] = [];
@@ -46,6 +52,22 @@ function fakeRanges(source: string): FoldRange[] {
   const knot = lines.findIndex((l) => l.startsWith("=="));
   if (knot >= 0 && knot + 1 < lines.length) {
     ranges.push({ start_line: knot, end_line: knot + 1, from_line_start: true });
+  }
+
+  // Multi-line conditional/sequence: a line whose trimmed text starts with `{`
+  // opens a block that a later `}`-only line closes. The core emits a body fold
+  // (from_line_start false) carrying the internal `{...}` sentinel
+  // `collapsed_text`. Model that here so the placeholder path is exercised.
+  const openIdx = lines.findIndex((l) => l.trimStart().startsWith("{"));
+  if (openIdx >= 0) {
+    const closeIdx = lines.findIndex((l, i) => i > openIdx && l.trim() === "}");
+    if (closeIdx > openIdx) {
+      ranges.push({
+        start_line: openIdx,
+        end_line: closeIdx,
+        collapsed_text: "{...}",
+      });
+    }
   }
 
   return ranges;
@@ -140,5 +162,35 @@ describe("leading INCLUDE-block fold", () => {
     // A decl fold renders its hidden header, not an include label.
     expect(v.dom.querySelector(".brink-fold-include")).toBeNull();
     expect(placeholderText(v)).toBe("== hub ==");
+  });
+
+  // Regression (#337): the core also emits a `{...}` sentinel `collapsed_text`
+  // on conditional/sequence folds. Presence of `collapsed_text` alone must NOT
+  // route a fold through the INCLUDE placeholder — only the leading INCLUDE
+  // block (whose `collapsed_text` starts with "INCLUDE") may.
+  const COND =
+    "INCLUDE a.ink\nINCLUDE b.ink\n== hub ==\n{ cond:\n  - a\n  - else: b\n}\ntail\n";
+
+  it("does not render a folded multi-line conditional as an INCLUDE block", () => {
+    const v = mount(COND);
+    // Line 3 is the `{ cond:` opener; its fold carries `collapsed_text: "{...}"`.
+    const region = foldLine(v, 3);
+    expect(region).not.toBeNull();
+    // It must fall through to the default placeholder, never the include one.
+    expect(v.dom.querySelector(".brink-fold-include")).toBeNull();
+    // Default CM fold placeholder: "…" with the generic "folded code" label.
+    const el = v.dom.querySelector<HTMLElement>(".cm-foldPlaceholder");
+    expect(el).not.toBeNull();
+    expect(el?.textContent).toBe("…");
+    expect(el?.getAttribute("aria-label")).toBe("folded code");
+    // The literal sentinel text must never surface to the user.
+    expect(v.dom.textContent ?? "").not.toContain("{...}");
+  });
+
+  it("still folds the INCLUDE block correctly when conditionals are present", () => {
+    const v = mount(COND);
+    foldLine(v, 0);
+    expect(v.dom.querySelector(".brink-fold-include")).not.toBeNull();
+    expect(placeholderText(v)).toBe("INCLUDE … (2 files)");
   });
 });

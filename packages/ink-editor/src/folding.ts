@@ -70,6 +70,20 @@ export type FoldPlaceholder =
   | { kind: "collapsed"; text: string } // Rust `collapsed_text`, rendered verbatim.
   | { kind: "decl"; header: string | null }; // whole-declaration header (or none).
 
+/** True when a `FoldRange` is the leading INCLUDE-block fold, i.e. the one fold
+ *  whose Rust `collapsed_text` is a human-readable placeholder we render
+ *  verbatim (e.g. `INCLUDE … (3 files)`).
+ *
+ *  Conditional/sequence folds also carry a `collapsed_text`, but it is the
+ *  internal `{...}` sentinel the Rust core uses to trigger brace-span
+ *  extension — never a display label. Those must fall through to the default
+ *  placeholder, not be styled/announced as INCLUDE blocks. So presence of
+ *  `collapsed_text` alone is NOT a valid discriminator; the include block is
+ *  identified by its `INCLUDE` prefix. */
+function isIncludeBlockFold(fr: FoldRange): boolean {
+  return typeof fr.collapsed_text === "string" && fr.collapsed_text.startsWith("INCLUDE");
+}
+
 /** Build the `codeFolding` placeholder config. `preparePlaceholder` first
  *  looks for a `FoldRange` whose resolved fold matches this fold and carries a
  *  Rust-supplied `collapsed_text` (the INCLUDE-block fold) and renders that
@@ -78,13 +92,18 @@ export function placeholderConfig(rangesFor: (state: EditorState) => FoldRange[]
   return {
     preparePlaceholder(state: EditorState, range: { from: number; to: number }): FoldPlaceholder {
       // A FoldRange whose `collapsed_text` should render verbatim — the
-      // INCLUDE-block fold. Match on the resolved fold bounds so the Rust
-      // text, not a doc-slice re-derivation, drives the placeholder.
+      // INCLUDE-block fold specifically. Match on the resolved fold bounds so
+      // the Rust text, not a doc-slice re-derivation, drives the placeholder.
+      // Conditional/sequence folds also carry a `collapsed_text` (the internal
+      // `{...}` sentinel), so gate on the INCLUDE-block discriminator, not mere
+      // presence of `collapsed_text`, or those folds get mislabeled as INCLUDE
+      // blocks.
       for (const fr of rangesFor(state)) {
-        if (!fr.collapsed_text) continue;
+        if (!isIncludeBlockFold(fr)) continue;
         const resolved = resolveFold(state, fr);
         if (resolved && resolved.from === range.from && resolved.to === range.to) {
-          return { kind: "collapsed", text: fr.collapsed_text };
+          // Non-null: isIncludeBlockFold guarantees a string collapsed_text.
+          return { kind: "collapsed", text: fr.collapsed_text as string };
         }
       }
       return { kind: "decl", header: prepareDeclPlaceholder(state, range) };
