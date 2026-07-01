@@ -297,6 +297,23 @@ export class EditorSessionHandle {
     return JSON.parse(json) as AutoImportResult;
   }
 
+  /**
+   * Auto-import (#312 F, fragment-view path) `target` into the file backing
+   * `doc` **and apply the INCLUDE edit out-of-band**, rebasing every open
+   * fragment view on that file so a subsequent fragment splice lands at the
+   * correct (post-shift) range. Unlike {@link autoImportIncludeDoc} this
+   * mutates the session (it applies the INCLUDE), so it `bump()`s. Returns the
+   * same result shape but with **no `edit`** on success — the INCLUDE is
+   * already applied, so the caller only inserts the symbol text into the
+   * fragment view. Use this for fragment (symbol-tab) views, where the INCLUDE
+   * lives above the fragment and cannot be dispatched into its CM document.
+   */
+  autoImportApplyIncludeDoc(doc: DocumentId, target: string): AutoImportResult {
+    this.bump();
+    const json = this.session.auto_import_apply_include_doc(doc, target);
+    return JSON.parse(json) as AutoImportResult;
+  }
+
   getHoverDoc(doc: DocumentId, offset: number): HoverInfo | null {
     const json = this.session.hover_doc(doc, offset);
     const result = JSON.parse(json);

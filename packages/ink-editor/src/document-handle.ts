@@ -136,6 +136,39 @@ export class DocHandle {
     return this.session.autoImportIncludeDoc(this.id, target);
   }
 
+  /**
+   * Auto-import (#312 F, fragment-view path): ensure the file backing this
+   * fragment handle `INCLUDE`s `target`, **applying the INCLUDE out-of-band**
+   * (it lives above the fragment and cannot be dispatched into this view) and
+   * rebasing the wasm-side view range. This handle's TS-side fragment range is
+   * rebased here to match, so a subsequent {@link pushSource} splices at the
+   * correct (post-shift) window. Returns `{ edit: null }` on success — the
+   * INCLUDE is already applied, so the caller only inserts the symbol text.
+   * Idempotent — already-reachable ⇒ no INCLUDE, no rebase.
+   */
+  autoImportApply(target: string): AutoImportResult {
+    const result = this.session.autoImportApplyIncludeDoc(this.id, target);
+    // Rebase this fragment's TS-side range by the applied INCLUDE's UTF-16
+    // delta so it stays consistent with the wasm view (which was rebased in
+    // the same op). The returned `edit` describes the applied shift; it must
+    // NOT be re-applied to the CM view.
+    if (result.ok && !result.already_reachable && result.edit && this.range !== null) {
+      const edit = result.edit;
+      const delta = edit.insert.length - (edit.to - edit.from);
+      // Only shift when the edit landed at/before the fragment start (the
+      // INCLUDE block sits above the fragment — the normal case).
+      if (edit.from <= this.range.start) {
+        this.range = {
+          start: this.range.start + delta,
+          end: this.range.end + delta,
+        };
+      }
+    }
+    // The INCLUDE is applied; the caller must not dispatch an edit into the
+    // fragment CM view. Strip it so `outOfScopeApply` only inserts the symbol.
+    return { ...result, edit: null };
+  }
+
   hover(offset: number): HoverInfo | null {
     return this.session.getHoverDoc(this.id, offset);
   }

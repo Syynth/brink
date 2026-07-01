@@ -2010,6 +2010,128 @@ impl EditorSession {
         serde_json::to_string(&resp).unwrap_or_default()
     }
 
+    /// Auto-import `target` into the file backing document handle `doc` **and
+    /// apply the INCLUDE edit out-of-band**, rebasing every open fragment view
+    /// on that file (#312 F, fragment-view completion-accept path).
+    ///
+    /// A fragment (symbol-tab / "play from here") view cannot dispatch the
+    /// whole-file INCLUDE edit into its own CM document — the INCLUDE lives
+    /// above the fragment. So the caller applies it here. A raw whole-file
+    /// replace ([`update_file`]) would prepend the INCLUDE but leave every open
+    /// fragment handle's stored `ViewContext` pointing at pre-shift byte
+    /// offsets, so the next fragment splice would clobber the INCLUDE line and
+    /// surrounding content. This method inserts the INCLUDE *and* shifts the
+    /// byte range (and start line) of every fragment view on the file that
+    /// begins at/after the insertion point, keeping them consistent.
+    ///
+    /// Returns the same `{ ok, already_reachable, edit?, error? }` shape as
+    /// [`auto_import_include_doc`]. On success the `edit` (whole-file UTF-16)
+    /// **describes the shift that was already applied** — the caller must NOT
+    /// re-apply it; it exists only so the caller can rebase its own TS-side
+    /// fragment-range mirror by the UTF-16 delta before inserting the symbol
+    /// text into the fragment view. When `target` is already reachable this is
+    /// a no-op (`already_reachable: true`, no `edit`).
+    pub fn auto_import_apply_include_doc(&mut self, doc: u32, target: &str) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return serde_json::to_string(&AutoImportJs {
+                ok: false,
+                already_reachable: false,
+                edit: None,
+                error: Some("unknown document handle".to_owned()),
+            })
+            .unwrap_or_default();
+        };
+        let current = d.path.clone();
+        let result = match brink_ide::auto_import::ensure_include(&self.session, &current, target) {
+            Ok(result) => result,
+            Err(e) => {
+                return serde_json::to_string(&AutoImportJs {
+                    ok: false,
+                    already_reachable: false,
+                    edit: None,
+                    error: Some(e.to_string()),
+                })
+                .unwrap_or_default();
+            }
+        };
+
+        // Already reachable, or no edit produced: nothing to apply.
+        let Some(edit) = result.edit.filter(|_| !result.already_reachable) else {
+            return serde_json::to_string(&AutoImportJs {
+                ok: true,
+                already_reachable: result.already_reachable,
+                edit: None,
+                error: None,
+            })
+            .unwrap_or_default();
+        };
+
+        // `ensure_include` returns byte offsets for `from`/`to` into the current
+        // file source. Apply the insertion to the whole-file source.
+        let Some(source) = self.source_of(&current).map(str::to_owned) else {
+            return serde_json::to_string(&AutoImportJs {
+                ok: false,
+                already_reachable: false,
+                edit: None,
+                error: Some("current file source unavailable".to_owned()),
+            })
+            .unwrap_or_default();
+        };
+        let from = (edit.from as usize).min(source.len());
+        let to = (edit.to as usize).clamp(from, source.len());
+        let mut merged = String::with_capacity(source.len() + edit.insert.len());
+        merged.push_str(&source[..from]);
+        merged.push_str(&edit.insert);
+        merged.push_str(&source[to..]);
+
+        // Rebase every open fragment view on this file whose range starts at or
+        // after the insertion point. The edit removes `to - from` bytes and
+        // inserts `edit.insert`, so downstream offsets shift by the net delta;
+        // start lines shift by (inserted newlines − removed newlines).
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "ink files are always < 4GB, so byte counts fit i64"
+        )]
+        let byte_delta = edit.insert.len() as i64 - (to - from) as i64;
+        let removed_newlines = count_newlines(&source[from..to]);
+        let inserted_newlines = count_newlines(&edit.insert);
+        let line_delta = i64::from(inserted_newlines) - i64::from(removed_newlines);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "ink files are always < 4GB"
+        )]
+        let insert_at = from as u32;
+        for state in self.docs.values_mut() {
+            if state.path != current {
+                continue;
+            }
+            let Some(view) = state.view.as_mut() else {
+                continue;
+            };
+            rebase_view(view, insert_at, byte_delta, line_delta);
+        }
+
+        // The whole-file UTF-16 edit that was applied, so the caller can rebase
+        // its own TS-side fragment range mirror by the UTF-16 delta. This edit
+        // is NOT for the caller to re-apply (it is already applied) — it merely
+        // describes the shift.
+        let applied_edit = brink_ide::line_convert::TextEdit {
+            from: byte_to_utf16(&source, edit.from),
+            to: byte_to_utf16(&source, edit.to),
+            insert: edit.insert,
+        };
+
+        self.session.update_and_analyze(&current, merged);
+
+        serde_json::to_string(&AutoImportJs {
+            ok: true,
+            already_reachable: false,
+            edit: Some(applied_edit),
+            error: None,
+        })
+        .unwrap_or_default()
+    }
+
     /// Promote a stitch to a top-level knot. Returns JSON `MoveResult` or error.
     ///
     /// `path`: file containing the knot.
@@ -3120,6 +3242,51 @@ fn floor_char_boundary(s: &str, i: usize) -> usize {
         i -= 1;
     }
     i
+}
+
+// ── Fragment view rebasing ──────────────────────────────────────────
+
+/// Shift a fragment `ViewContext` in place to account for an out-of-band
+/// whole-file edit that inserted/removed content at byte `insert_at`.
+///
+/// `byte_delta` is the net byte change of the edit (inserted − removed) and
+/// `line_delta` the net newline change. Only views that begin at or after
+/// `insert_at` move — a view before the edit is unaffected. This keeps the
+/// stored byte range (and start line) of every open fragment handle consistent
+/// with the mutated file, so a subsequent fragment splice targets the correct
+/// window instead of clobbering the shifted content.
+fn rebase_view(view: &mut ViewContext, insert_at: u32, byte_delta: i64, line_delta: i64) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "offsets stay within a <4GB file and never go negative for a valid edit"
+    )]
+    let shift = |offset: u32| -> u32 {
+        if offset < insert_at {
+            offset
+        } else {
+            (i64::from(offset) + byte_delta).max(0) as u32
+        }
+    };
+    let start_moves = view.start >= insert_at;
+    // The insertion point sits at (or before) the view start for the auto-import
+    // case (INCLUDE block above the fragment), so both boundaries move together.
+    view.start = shift(view.start);
+    view.end = shift(view.end);
+    if start_moves {
+        // The view's start byte shifted, so its first line shifts by the net
+        // newline delta of the edit.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "line counts stay within a <4GB file"
+        )]
+        if line_delta >= 0 {
+            view.start_line = view.start_line.saturating_add(line_delta as u32);
+        } else {
+            view.start_line = view.start_line.saturating_sub((-line_delta) as u32);
+        }
+    }
 }
 
 // ── Fragment splicing ───────────────────────────────────────────────
@@ -4710,6 +4877,129 @@ mod tests {
             dups[0]["source_file"], "near.ink",
             "nearest source file wins: {:?}",
             dups[0]
+        );
+    }
+
+    #[test]
+    fn auto_import_apply_include_doc_rebases_open_fragment_view() {
+        // Regression (#312 F): the fragment-view auto-import path. A raw
+        // whole-file INCLUDE write shifts the fragment content right but leaves
+        // the open fragment handle's view range at pre-shift offsets, so the
+        // NEXT fragment splice clobbers the INCLUDE line and the knot header.
+        // `auto_import_apply_include_doc` must apply the INCLUDE *and* rebase
+        // the open fragment view so the subsequent splice lands correctly.
+        let mut s = EditorSession::new();
+        s.update_file("economy.ink", "=== trade ===\nbuy.\n-> END\n");
+        let main_src = "=== start ===\nThe cursor is here.\n";
+        s.update_file("main.ink", main_src);
+
+        // Open a fragment over the knot BODY ("The cursor is here.\n"). The body
+        // begins right after the "=== start ===\n" header (byte 14) and runs to
+        // end of file.
+        let body_start = "=== start ===\n".len() as u32;
+        let body_end = main_src.len() as u32;
+        let doc = s.open_fragment("main.ink", body_start, body_end);
+        assert_ne!(doc, 0, "fragment handle opened");
+
+        // Accept an out-of-scope completion: auto-import economy.ink into the
+        // fragment's file, applying + rebasing out-of-band.
+        let applied: serde_json::Value =
+            serde_json::from_str(&s.auto_import_apply_include_doc(doc, "economy.ink"))
+                .expect("valid auto-import JSON");
+        assert_eq!(applied["ok"], true, "op ok: {applied}");
+        assert_eq!(
+            applied["already_reachable"], false,
+            "not yet reachable: {applied}"
+        );
+        // The returned edit DESCRIBES the applied shift (for the caller to
+        // rebase its own TS-side range) — it is NOT to be re-applied.
+        assert_eq!(
+            applied["edit"]["insert"].as_str(),
+            Some("INCLUDE economy.ink\n"),
+            "returned edit describes the applied INCLUDE shift: {applied}"
+        );
+        assert_eq!(
+            applied["edit"]["from"], 0,
+            "INCLUDE inserted at file top: {applied}"
+        );
+
+        // The whole file now carries the INCLUDE above the untouched knot.
+        let full_after_import = s.source_of("main.ink").expect("source").to_owned();
+        assert_eq!(
+            full_after_import, "INCLUDE economy.ink\n=== start ===\nThe cursor is here.\n",
+            "INCLUDE prepended, knot intact"
+        );
+
+        // Now the completion dispatches the accepted symbol into the FRAGMENT
+        // view (the edited body). This routes through update_document, which
+        // splices at the (now rebased) view range.
+        let edited_body = "The cursor is here.trade\n";
+        let spec = s.update_document(doc, edited_body);
+        assert_ne!(spec, "null", "fragment push produced a change spec");
+
+        // The INCLUDE line and knot header must survive; only the body changed.
+        let full_after_push = s.source_of("main.ink").expect("source");
+        assert_eq!(
+            full_after_push, "INCLUDE economy.ink\n=== start ===\nThe cursor is here.trade\n",
+            "INCLUDE + header intact; only the fragment body was replaced"
+        );
+    }
+
+    #[test]
+    fn raw_update_file_then_fragment_push_corrupts_without_rebase() {
+        // Documents the pre-fix bug (#312 F): applying the INCLUDE via the raw
+        // whole-file `update_file` (which does NOT rebase open fragment views)
+        // and then pushing the fragment splices at the STALE view range,
+        // clobbering the INCLUDE line and the knot header. This is exactly the
+        // corruption `auto_import_apply_include_doc` avoids. If this assertion
+        // ever flips to producing clean output, `update_file` grew rebase
+        // semantics and the fragment auto-import path can be simplified.
+        let mut s = EditorSession::new();
+        s.update_file("economy.ink", "=== trade ===\n-> END\n");
+        let main_src = "=== start ===\nThe cursor is here.\n";
+        s.update_file("main.ink", main_src);
+
+        let body_start = "=== start ===\n".len() as u32;
+        let doc = s.open_fragment("main.ink", body_start, main_src.len() as u32);
+
+        // OLD path: prepend INCLUDE via a raw whole-file replace (no rebase).
+        s.update_file("main.ink", &format!("INCLUDE economy.ink\n{main_src}"));
+        // Then push the edited fragment — splices at the stale [14, 34) range.
+        s.update_document(doc, "The cursor is here.trade\n");
+
+        let corrupted = s.source_of("main.ink").expect("source");
+        assert_ne!(
+            corrupted, "INCLUDE economy.ink\n=== start ===\nThe cursor is here.trade\n",
+            "raw path corrupts — this is the bug the apply-and-rebase op fixes"
+        );
+    }
+
+    #[test]
+    fn auto_import_apply_include_doc_idempotent_when_reachable() {
+        // When the target is already reachable, the apply-and-rebase op is a
+        // no-op: no INCLUDE added, view range untouched.
+        let mut s = EditorSession::new();
+        s.update_file("economy.ink", "=== trade ===\n-> END\n");
+        let main_src = "INCLUDE economy.ink\n=== start ===\nbody.\n";
+        s.update_file("main.ink", main_src);
+        // Re-analyze so the INCLUDE edge binds to the now-loaded target.
+        s.update_file("main.ink", main_src);
+
+        let body_start = "INCLUDE economy.ink\n=== start ===\n".len() as u32;
+        let doc = s.open_fragment("main.ink", body_start, main_src.len() as u32);
+        assert_ne!(doc, 0);
+
+        let applied: serde_json::Value =
+            serde_json::from_str(&s.auto_import_apply_include_doc(doc, "economy.ink"))
+                .expect("valid JSON");
+        assert_eq!(applied["already_reachable"], true, "already reachable");
+        assert!(applied.get("edit").is_none(), "no edit");
+
+        // Pushing the fragment still lands correctly (view range never moved).
+        s.update_document(doc, "body.\n-> trade\n");
+        assert_eq!(
+            s.source_of("main.ink").expect("source"),
+            "INCLUDE economy.ink\n=== start ===\nbody.\n-> trade\n"
         );
     }
 
