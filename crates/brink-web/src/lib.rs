@@ -1940,6 +1940,23 @@ impl EditorSession {
         }
     }
 
+    /// Atomically rename or move a directory (#314): relocate every file under
+    /// `old_prefix` to `new_prefix`, rewriting all affected `INCLUDE`s against a
+    /// single pre-move snapshot (moved files' outbound includes, inbound includes
+    /// from files outside the folder, and intra-folder sibling includes — all
+    /// mutually consistent). Returns JSON `DirMoveResult`: `moved_files` are the
+    /// relocated files (`old_path`, `new_path`, rewritten `new_source`),
+    /// `cross_file_edits` carry the outside referrers' rewrites. `safe` +
+    /// `introduced_diagnostics` are the shared safe-by-default breakage gate. The
+    /// op computes edits only — the caller writes the new files, removes the old
+    /// ones, and applies the inbound edits.
+    pub fn rename_dir(&self, old_prefix: &str, new_prefix: &str) -> String {
+        match brink_ide::dir_rename::rename_dir(&self.session, old_prefix, new_prefix) {
+            Ok(result) => dir_move_result_json(&self.session, &result),
+            Err(e) => dir_error_json(&e.to_string()),
+        }
+    }
+
     /// Ensure `current` `INCLUDE`s `target` (#312 F core).
     ///
     /// Returns JSON `{ ok, already_reachable, edit?: TextEdit, error? }`. When
@@ -4011,6 +4028,103 @@ fn gated_move_json(
     structural_result_json(session, &result, path)
 }
 
+// ── Directory-move result helpers (#314) ─────────────────────────────
+
+/// The JSON payload for an atomic directory rename/move (#314) — the multi-file
+/// analog of [`StructuralResultJs`]. `moved_files` are the relocated files (each
+/// carrying its new path + rewritten source); `cross_file_edits` carry the
+/// outside referrers' rewrites. `safe` + `introduced_diagnostics` are the shared
+/// safe-by-default breakage gate.
+#[derive(Serialize)]
+struct DirMoveResultJs {
+    ok: bool,
+    /// Every file relocated by the move.
+    moved_files: Vec<MovedFileJs>,
+    /// Reference edits in files outside the moved directory, resolved to full
+    /// new source.
+    cross_file_edits: Vec<CrossFileEditJs>,
+    /// Diagnostics present after the move but not before. Empty ⇒ `safe`.
+    introduced_diagnostics: Vec<RenameDiagJs>,
+    /// True when the move introduces no new diagnostics.
+    safe: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// One relocated file: written at `new_path` (with `new_source`), removed from
+/// `old_path`.
+#[derive(Serialize)]
+struct MovedFileJs {
+    old_path: String,
+    new_path: String,
+    new_source: String,
+}
+
+/// Serialize a [`DirMoveResult`](brink_ide::dir_rename::DirMoveResult) to its
+/// JSON shape. Cross-file (inbound) edits are resolved to full new source
+/// deterministically (BTreeMap-grouped); moved files are already full sources.
+fn dir_move_result_json(
+    session: &IdeSession,
+    result: &brink_ide::dir_rename::DirMoveResult,
+) -> String {
+    let moved_files: Vec<MovedFileJs> = result
+        .moved_files
+        .iter()
+        .map(|m| MovedFileJs {
+            old_path: m.old_path.clone(),
+            new_path: m.new_path.clone(),
+            new_source: m.new_source.clone(),
+        })
+        .collect();
+
+    // Inbound edits land in files outside the folder — resolve each to full
+    // source. Group by file id for determinism (BTreeMap), splice from the end.
+    let mut by_file: std::collections::BTreeMap<u32, Vec<(usize, usize, String)>> =
+        std::collections::BTreeMap::new();
+    for e in &result.cross_file_edits {
+        by_file.entry(e.file.0).or_default().push((
+            usize::from(e.range.start()),
+            usize::from(e.range.end()),
+            e.new_text.clone(),
+        ));
+    }
+    let mut cross_file_edits: Vec<CrossFileEditJs> = Vec::new();
+    for (file_raw, file_edits) in by_file {
+        let file_id = brink_ir::FileId(file_raw);
+        let (Some(src), Some(fpath)) = (session.source(file_id), session.file_path(file_id)) else {
+            continue;
+        };
+        cross_file_edits.push(CrossFileEditJs {
+            path: fpath.to_owned(),
+            new_source: apply_edits(src, file_edits),
+        });
+    }
+
+    let introduced_diagnostics: Vec<RenameDiagJs> = result.introduced.iter().map(diag_js).collect();
+    let resp = DirMoveResultJs {
+        ok: true,
+        moved_files,
+        cross_file_edits,
+        safe: result.safe,
+        introduced_diagnostics,
+        error: None,
+    };
+    serde_json::to_string(&resp).unwrap_or_default()
+}
+
+/// A `DirMoveResult`-shaped error payload (`ok: false`).
+fn dir_error_json(msg: &str) -> String {
+    let resp = DirMoveResultJs {
+        ok: false,
+        moved_files: Vec::new(),
+        cross_file_edits: Vec::new(),
+        introduced_diagnostics: Vec::new(),
+        safe: true,
+        error: Some(msg.to_owned()),
+    };
+    serde_json::to_string(&resp).unwrap_or_default()
+}
+
 /// A trivially-safe single-file rewrite (reorders): no gate, empty breakage.
 fn move_result_json_simple(new_source: String, path: &str) -> String {
     let resp = StructuralResultJs {
@@ -4231,6 +4345,68 @@ mod tests {
         // It carries the full file source (path-keyed), not byte ranges.
         assert!(other.get("new_source").is_some());
         assert!(other.get("start").is_none());
+    }
+
+    // ── Directory rename/move (#314) ────────────────────────────────
+
+    #[test]
+    fn rename_dir_returns_moved_files_and_inbound_edits() {
+        let mut s = EditorSession::new();
+        // main.ink (outside) includes into the folder; a folder file includes an
+        // outside lib; two folder siblings include each other.
+        s.update_file("main.ink", "INCLUDE chapters/intro.ink\n-> END\n");
+        s.update_file("lib.ink", "=== helper ===\n-> END\n");
+        s.update_file(
+            "chapters/intro.ink",
+            "INCLUDE ../lib.ink\nINCLUDE scene.ink\n-> END\n",
+        );
+        s.update_file("chapters/scene.ink", "=== scene ===\n-> END\n");
+
+        let json = s.rename_dir("chapters", "book/chapters");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["ok"], true, "dir move should succeed: {json}");
+        assert_eq!(v["safe"], true, "content-preserving move is safe: {json}");
+
+        // Two moved files at their new paths.
+        let moved = v["moved_files"].as_array().unwrap();
+        assert_eq!(moved.len(), 2);
+        let intro = moved
+            .iter()
+            .find(|m| m["new_path"] == "book/chapters/intro.ink")
+            .unwrap();
+        assert_eq!(intro["old_path"], "chapters/intro.ink");
+        // Outbound: ../lib.ink now two levels deep; sibling stays bare.
+        let intro_src = intro["new_source"].as_str().unwrap();
+        assert!(
+            intro_src.contains("INCLUDE ../../lib.ink"),
+            "outbound not recomputed: {intro_src}"
+        );
+        assert!(
+            intro_src.contains("INCLUDE scene.ink"),
+            "sibling include should stay bare: {intro_src}"
+        );
+
+        // Inbound: main re-points into the new folder, delivered as full source.
+        let cfe = v["cross_file_edits"].as_array().unwrap();
+        let main_edit = cfe.iter().find(|e| e["path"] == "main.ink").unwrap();
+        assert!(
+            main_edit["new_source"]
+                .as_str()
+                .unwrap()
+                .contains("INCLUDE book/chapters/intro.ink"),
+            "inbound not rewritten: {main_edit:?}"
+        );
+    }
+
+    #[test]
+    fn rename_dir_error_is_dir_move_shaped_json() {
+        let mut s = EditorSession::new();
+        s.update_file("a.ink", "-> END\n");
+        let json = s.rename_dir("ghost", "x");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["ok"], false);
+        assert!(v["error"].as_str().is_some());
+        assert!(v["moved_files"].as_array().unwrap().is_empty());
     }
 
     // ── Safe symbol rename (#305) ───────────────────────────────────

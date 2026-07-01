@@ -389,6 +389,39 @@ export interface StructuralResult {
   error?: string;
 }
 
+/** One file relocated by an atomic directory rename/move (#314). The caller
+ * writes `new_source` at `new_path` and removes `old_path`. `new_source` already
+ * carries the file's own outbound-include rewrites. */
+export interface MovedFile {
+  /** The file's project-relative path before the move. */
+  old_path: string;
+  /** The file's project-relative path after the move. */
+  new_path: string;
+  /** The moved file's full source with its relative includes rewritten. */
+  new_source: string;
+}
+
+/** The result of an atomic directory rename/move (#314) — the multi-file analog
+ * of {@link StructuralResult}. Every affected `INCLUDE` is rewritten against one
+ * pre-move snapshot, so moved files' outbound includes, inbound includes from
+ * outside the folder, and intra-folder sibling includes stay mutually
+ * consistent. `moved_files` are the relocated files; `cross_file_edits` carry
+ * the outside referrers' rewrites (full new source, path-keyed). `safe` is true
+ * when the move introduces no new diagnostics; otherwise `introduced_diagnostics`
+ * holds the breakage report and the edits apply only on an explicit force. */
+export interface DirMoveResult {
+  ok: boolean;
+  /** Every file relocated by the move. */
+  moved_files: MovedFile[];
+  /** Reference edits in files outside the moved directory (full new source). */
+  cross_file_edits: CrossFileEdit[];
+  /** Diagnostics present after the move but not before. Empty ⇒ `safe`. */
+  introduced_diagnostics: RenameDiagnostic[];
+  /** True when the move introduces no new diagnostics. */
+  safe: boolean;
+  error?: string;
+}
+
 // ── Multi-file project types ────────────────────────────────────
 
 export interface ProjectFile {

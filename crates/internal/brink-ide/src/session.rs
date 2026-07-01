@@ -184,6 +184,37 @@ impl IdeSession {
         (result, db)
     }
 
+    /// Analyze a *complete* project projection — an explicit `path → source`
+    /// map that stands in for the entire file set, **without mutating this
+    /// session**. Unlike [`analyze_overlay`](Self::analyze_overlay) (which keeps
+    /// the current paths and only substitutes sources), this replaces the whole
+    /// project, so files may appear at *different* paths than they do now. Used
+    /// by directory rename/move (#314), where the gate must model files that
+    /// have relocated to new keys.
+    ///
+    /// Returns the fresh analysis paired with the throwaway `ProjectDb` it ran
+    /// against — the db owns the new `FileId`s, so callers must resolve any
+    /// `FileId` in the result (paths, sources) through the returned db.
+    #[must_use]
+    pub fn analyze_projection(
+        &self,
+        projection: &std::collections::BTreeMap<String, String>,
+    ) -> (AnalysisResult, ProjectDb) {
+        let mut db = ProjectDb::new();
+        for (path, source) in projection {
+            db.update_file(path, source.clone());
+        }
+        let result = {
+            let inputs = db.analysis_inputs();
+            let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
+                .iter()
+                .map(|(id, hir, manifest)| (*id, hir, manifest))
+                .collect();
+            brink_analyzer::analyze_with_options(&refs, &self.analysis_options())
+        };
+        (result, db)
+    }
+
     /// The current analysis options (registered host manifest + external-check
     /// severity), for callers that run their own analysis/compile pass.
     pub fn analysis_options(&self) -> AnalysisOptions {

@@ -43,6 +43,7 @@ import type {
   DocumentChangeSpec,
   Line,
   StructuralResult,
+  DirMoveResult,
   DebugState,
   ProgramModel,
   SaveState,
@@ -605,6 +606,23 @@ export class EditorSessionHandle {
     this.bump();
     const json = this.session.rename_file(oldPath, newPath);
     return JSON.parse(json) as StructuralResult;
+  }
+
+  /**
+   * Atomically rename or move a directory (#314): relocate every file under
+   * `oldPrefix` to `newPrefix`, rewriting all affected `INCLUDE`s against a
+   * single pre-move snapshot (moved files' outbound includes, inbound includes
+   * from files outside the folder, and intra-folder sibling includes — all
+   * mutually consistent, unlike a per-file rename loop). `moved_files` are the
+   * relocated files (write each `new_source` at `new_path`, remove `old_path`);
+   * `cross_file_edits` carry the outside referrers' rewrites. `safe` +
+   * `introduced_diagnostics` are the safe-by-default breakage gate. The op
+   * computes edits only — the caller applies them.
+   */
+  renameDir(oldPrefix: string, newPrefix: string): DirMoveResult {
+    this.bump();
+    const json = this.session.rename_dir(oldPrefix, newPrefix);
+    return JSON.parse(json) as DirMoveResult;
   }
 
   /** Promote a stitch to a top-level knot. */
