@@ -21,11 +21,13 @@ import {
   searchSources,
   buildSearchPattern,
   DEFAULT_SEARCH_OPTIONS,
+  DEFAULT_COMMIT_DELAY_MS,
   SEARCH_RESULT_CAP,
   type ProjectSearchResult,
   type ResultRow,
   type SearchQueryOptions,
 } from "@brink/studio-store";
+import { runScopeHandlers, type EditorView } from "@codemirror/view";
 
 function options(over: Partial<SearchQueryOptions> = {}): SearchQueryOptions {
   return { ...DEFAULT_SEARCH_OPTIONS, ...over };
@@ -173,6 +175,7 @@ describe("mapRowEditToSource", () => {
 function makeBuffer(
   result: ProjectSearchResult,
   sources: Record<string, string>,
+  commitDelayMs = 0,
 ) {
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -182,8 +185,22 @@ function makeBuffer(
     getSource: (path) => sources[path] ?? null,
     onSourceEdit,
     onReveal,
+    // Tests commit synchronously by default (single atomic transaction); the
+    // debounce path is exercised explicitly with fake timers below.
+    commitDelayMs,
   });
   return { host, buffer, onSourceEdit, onReveal };
+}
+
+/** Reach into the private EditorView for direct dispatch in tests. */
+function viewOf(buffer: SearchResultsBuffer): EditorView {
+  return (buffer as unknown as { view: EditorView }).view;
+}
+
+/** Run the "editor" keymap scope for a key, as CM6 would on a real keydown. */
+function runKey(view: EditorView, key: string): boolean {
+  const event = new KeyboardEvent("keydown", { key });
+  return runScopeHandlers(view, event, "editor");
 }
 
 beforeEach(() => {
@@ -212,7 +229,7 @@ describe("SearchResultsBuffer", () => {
     // Buffer line 2 (0-based line index 1) is the match line; overwrite the
     // word "figure" with "shadow" in the source portion. Compute the doc
     // offset of "figure" within the synthetic buffer.
-    const view = (buffer as unknown as { view: import("@codemirror/view").EditorView }).view;
+    const view = viewOf(buffer);
     const docText = view.state.doc.toString();
     const at = docText.indexOf("figure");
     expect(at).toBeGreaterThan(0);
@@ -229,7 +246,7 @@ describe("SearchResultsBuffer", () => {
       search([{ path: "a.ink", source }], "figure"),
       { "a.ink": source },
     );
-    const view = (buffer as unknown as { view: import("@codemirror/view").EditorView }).view;
+    const view = viewOf(buffer);
     const before = view.state.doc.toString();
     // Try to insert at offset 0 (inside the header line).
     view.dispatch({ changes: { from: 0, to: 0, insert: "XXX" } });
@@ -245,7 +262,7 @@ describe("SearchResultsBuffer", () => {
     );
     const other = "the beginning\n";
     buffer.setResult(search([{ path: "b.ink", source: other }], "the"));
-    const view = (buffer as unknown as { view: import("@codemirror/view").EditorView }).view;
+    const view = viewOf(buffer);
     expect(view.state.doc.toString()).toContain("b.ink (1)");
     expect(onSourceEdit).not.toHaveBeenCalled();
     buffer.destroy();
@@ -259,5 +276,158 @@ describe("SearchResultsBuffer", () => {
     buffer.destroy();
     expect(host.querySelector(".cm-editor")).toBeNull();
     expect(host.childElementCount).toBe(0);
+  });
+
+  // ── Issue 1: read-only contract vs inserted newlines ────────────────
+
+  it("rejects inserting a newline mid-match-line (row table must not desync)", () => {
+    const { buffer, onSourceEdit } = makeBuffer(
+      search([{ path: "a.ink", source }], "figure"),
+      { "a.ink": source },
+    );
+    const view = viewOf(buffer);
+    const before = view.state.doc.toString();
+    const beforeLines = view.state.doc.lines;
+    // Enter mid-match-line: insert a bare "\n" inside the editable source region.
+    const docText = view.state.doc.toString();
+    const at = docText.indexOf("figure");
+    view.dispatch({ changes: { from: at, to: at, insert: "\n" } });
+    // Filtered out entirely — no split, doc + line count unchanged.
+    expect(view.state.doc.toString()).toBe(before);
+    expect(view.state.doc.lines).toBe(beforeLines);
+    expect(onSourceEdit).not.toHaveBeenCalled();
+    buffer.destroy();
+  });
+
+  it("rejects a multi-line paste over a match-line word (no source corruption)", () => {
+    const { buffer, onSourceEdit } = makeBuffer(
+      search([{ path: "a.ink", source }], "figure"),
+      { "a.ink": source },
+    );
+    const view = viewOf(buffer);
+    const before = view.state.doc.toString();
+    const docText = view.state.doc.toString();
+    const at = docText.indexOf("figure");
+    // Paste containing a newline over "figure".
+    view.dispatch({
+      changes: { from: at, to: at + "figure".length, insert: "INJECT\nEDNEWLINE" },
+    });
+    expect(view.state.doc.toString()).toBe(before); // rejected wholesale
+    expect(onSourceEdit).not.toHaveBeenCalled();
+    buffer.destroy();
+  });
+
+  // ── Issues 2 & 3: caret survival + no per-keystroke reset ────────────
+
+  it("preserves the caret across a same-content setResult (no yank to 0)", () => {
+    const { buffer } = makeBuffer(search([{ path: "a.ink", source }], "figure"), {
+      "a.ink": source,
+    });
+    const view = viewOf(buffer);
+    const at = view.state.doc.toString().indexOf("figure");
+    view.dispatch({ selection: { anchor: at } });
+    // Host re-runs search after a commit and pushes the same result back.
+    buffer.setResult(search([{ path: "a.ink", source }], "figure"));
+    // Same content ⇒ untouched doc ⇒ caret stays put (not collapsed to 0).
+    expect(view.state.selection.main.head).toBe(at);
+    buffer.destroy();
+  });
+
+  it("clamps (does not zero) the caret when a changed setResult shrinks the doc", () => {
+    const { buffer } = makeBuffer(search([{ path: "a.ink", source }], "the"), {
+      "a.ink": source,
+    });
+    const view = viewOf(buffer);
+    // Put caret near the end of the buffer.
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    // A new (shorter) result replaces it.
+    buffer.setResult(search([{ path: "a.ink", source: "the end\n" }], "the"));
+    const head = view.state.selection.main.head;
+    expect(head).toBeGreaterThan(0); // not yanked to a read-only header
+    expect(head).toBeLessThanOrEqual(view.state.doc.length); // clamped in-bounds
+    buffer.destroy();
+  });
+
+  it("debounces: no source write until the idle window elapses, then one write", () => {
+    vi.useFakeTimers();
+    try {
+      const { buffer, onSourceEdit } = makeBuffer(
+        search([{ path: "a.ink", source }], "figure"),
+        { "a.ink": source },
+        DEFAULT_COMMIT_DELAY_MS,
+      );
+      const view = viewOf(buffer);
+      const docText = view.state.doc.toString();
+      const at = docText.indexOf("figure");
+      // Type "shadow" one char at a time (six separate transactions).
+      view.dispatch({ changes: { from: at, to: at + "figure".length, insert: "s" } });
+      view.dispatch({ changes: { from: at + 1, to: at + 1, insert: "h" } });
+      view.dispatch({ changes: { from: at + 2, to: at + 2, insert: "a" } });
+      view.dispatch({ changes: { from: at + 3, to: at + 3, insert: "d" } });
+      view.dispatch({ changes: { from: at + 4, to: at + 4, insert: "o" } });
+      view.dispatch({ changes: { from: at + 5, to: at + 5, insert: "w" } });
+      // Nothing committed yet — no compile-per-keystroke.
+      expect(onSourceEdit).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(DEFAULT_COMMIT_DELAY_MS);
+      // Exactly one coherent write with the whole replacement.
+      expect(onSourceEdit).toHaveBeenCalledTimes(1);
+      expect(onSourceEdit.mock.calls[0][1].text).toBe(
+        "A shadow steps into the light.",
+      );
+      buffer.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("flushes a pending edit on destroy() (no lost write)", () => {
+    vi.useFakeTimers();
+    try {
+      const { buffer, onSourceEdit } = makeBuffer(
+        search([{ path: "a.ink", source }], "figure"),
+        { "a.ink": source },
+        DEFAULT_COMMIT_DELAY_MS,
+      );
+      const view = viewOf(buffer);
+      const at = view.state.doc.toString().indexOf("figure");
+      view.dispatch({ changes: { from: at, to: at + "figure".length, insert: "shadow" } });
+      expect(onSourceEdit).not.toHaveBeenCalled(); // still pending
+      buffer.destroy(); // teardown must flush
+      expect(onSourceEdit).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ── Issue 4: keyboard reveal ────────────────────────────────────────
+
+  it("reveals a match on Enter from the match line (keyboard-reachable)", () => {
+    const { buffer, onReveal } = makeBuffer(
+      search([{ path: "a.ink", source }], "figure"),
+      { "a.ink": source },
+    );
+    const view = viewOf(buffer);
+    // Caret on the match line (line 2).
+    const lineStart = view.state.doc.line(2).from;
+    view.dispatch({ selection: { anchor: lineStart + 5 } });
+    // Simulate the Enter keybinding firing, as CM6 does from a keydown event.
+    const handled = runKey(view, "Enter");
+    expect(handled).toBe(true);
+    expect(onReveal).toHaveBeenCalledTimes(1);
+    expect(onReveal.mock.calls[0][0]).toBe("a.ink");
+    buffer.destroy();
+  });
+
+  it("does not reveal on Enter from a header line (falls through)", () => {
+    const { buffer, onReveal } = makeBuffer(
+      search([{ path: "a.ink", source }], "figure"),
+      { "a.ink": source },
+    );
+    const view = viewOf(buffer);
+    view.dispatch({ selection: { anchor: 0 } }); // header line
+    const handled = runKey(view, "Enter");
+    expect(handled).toBe(false);
+    expect(onReveal).not.toHaveBeenCalled();
+    buffer.destroy();
   });
 });

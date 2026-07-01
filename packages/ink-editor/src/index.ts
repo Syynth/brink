@@ -119,6 +119,7 @@ export {
   buildResultsRows,
   mapRowEditToSource,
   SearchResultsBuffer,
+  DEFAULT_COMMIT_DELAY_MS,
 } from "./search-results-buffer.js";
 export type {
   ResultRow,

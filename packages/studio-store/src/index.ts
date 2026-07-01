@@ -175,6 +175,7 @@ export {
   buildResultsRows,
   mapRowEditToSource,
   SearchResultsBuffer,
+  DEFAULT_COMMIT_DELAY_MS,
   type FileSearchResult,
   type MatchLineSegments,
   type ProjectSearchResult,

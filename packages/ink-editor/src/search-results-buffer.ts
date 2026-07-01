@@ -29,11 +29,12 @@
 
 import {
   Annotation,
+  EditorSelection,
   EditorState,
   type Extension,
   type Transaction,
 } from "@codemirror/state";
-import { EditorView, lineNumbers } from "@codemirror/view";
+import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { brinkTheme } from "./theme.js";
 import type {
   ProjectSearchResult,
@@ -174,11 +175,27 @@ export interface SearchResultsBufferOptions {
    * seam (`ProjectSession.applyEdit` + invalidate + compile) and typically
    * re-runs the search, which feeds a fresh {@link ResultsBufferModel} back in
    * via {@link SearchResultsBuffer.setResult}.
+   *
+   * Edits are *committed*, not fired per keystroke: a match row is written
+   * back once the user pauses typing ({@link SearchResultsBufferOptions.commitDelayMs})
+   * or moves focus away. This keeps a multi-character replacement (e.g.
+   * `figure` → `shadow`) a single, coherent source write + compile rather than
+   * one write/compile/re-search per keystroke.
    */
   onSourceEdit(path: string, edit: ReplacementEdit): void;
-  /** Reveal a match in the normal editor (row activation — click / Enter). */
+  /** Reveal a match in the normal editor (row activation — dbl-click / Enter). */
   onReveal?(path: string, match: SearchMatch): void;
+  /**
+   * Idle delay (ms) after the last keystroke before a pending match-row edit is
+   * committed to the source. Defaults to {@link DEFAULT_COMMIT_DELAY_MS}. Any
+   * pending edit is also flushed immediately on blur and on `destroy()`. Pass 0
+   * to commit synchronously (used by tests that dispatch a single atomic edit).
+   */
+  commitDelayMs?: number;
 }
+
+/** Default idle window before a match-row edit is written back to the source. */
+export const DEFAULT_COMMIT_DELAY_MS = 350;
 
 function baseExtensions(): Extension[] {
   return [lineNumbers(), brinkTheme, EditorView.lineWrapping];
@@ -192,8 +209,12 @@ const RESET = Annotation.define<boolean>();
 export class SearchResultsBuffer {
   private readonly host: HTMLElement;
   private readonly options: SearchResultsBufferOptions;
+  private readonly commitDelayMs: number;
   private view: EditorView | null = null;
   private model: ResultsBufferModel = { text: "", rows: [] };
+  /** Set of buffer line numbers with an edit awaiting commit (debounced). */
+  private pendingLines = new Set<number>();
+  private commitTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     host: HTMLElement,
@@ -202,6 +223,7 @@ export class SearchResultsBuffer {
   ) {
     this.host = host;
     this.options = options;
+    this.commitDelayMs = options.commitDelayMs ?? DEFAULT_COMMIT_DELAY_MS;
     this.model = buildResultsRows(result);
     this.mount();
   }
@@ -210,25 +232,47 @@ export class SearchResultsBuffer {
    * Replace the displayed results (a new search ran). Re-derives the buffer
    * text + row table and resets the document. Keeps the same EditorView so
    * scroll wiring / listeners are not re-created churnily.
+   *
+   * The reset preserves the user's caret: without this, a full-document swap
+   * collapses the selection to offset 0 (into a read-only header), which — when
+   * the host re-runs the search after each committed edit — would yank the
+   * cursor out of the row the moment an edit lands. When the new text is
+   * identical to what is already displayed (the common case: an edit that
+   * doesn't change which lines match), the document is left untouched so there
+   * is no churn at all.
    */
   setResult(result: ProjectSearchResult): void {
     this.model = buildResultsRows(result);
-    if (this.view) {
-      this.view.dispatch({
-        changes: { from: 0, to: this.view.state.doc.length, insert: this.model.text },
-        // A programmatic reset is not a user edit — mark it so the filter lets
-        // it through without trying to map it back to the source.
-        annotations: RESET.of(true),
-      });
-    }
+    const view = this.view;
+    if (!view) return;
+
+    // No content change ⇒ nothing to do; leave the doc (and caret) untouched.
+    if (view.state.doc.toString() === this.model.text) return;
+
+    // Preserve the caret across the swap by clamping the current head/anchor
+    // into the new document length (the row it sat on may have moved or gone).
+    const prev = view.state.selection.main;
+    const nextLen = this.model.text.length;
+    const anchor = Math.min(prev.anchor, nextLen);
+    const head = Math.min(prev.head, nextLen);
+
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: this.model.text },
+      selection: EditorSelection.range(anchor, head),
+      // A programmatic reset is not a user edit — mark it so the filter lets
+      // it through without trying to map it back to the source.
+      annotations: RESET.of(true),
+    });
   }
 
   /**
-   * Tear down: destroy the EditorView (removes its DOM + the transaction
-   * filter and update listener registered as extensions) and clear the host.
-   * Mirrors the ConflictView teardown contract — leaks are bugs.
+   * Tear down: flush any pending edit, destroy the EditorView (removes its DOM
+   * + the transaction filter and update listener registered as extensions) and
+   * clear the host. Mirrors the ConflictView teardown contract — leaks are
+   * bugs.
    */
   destroy(): void {
+    this.flushPendingCommit();
     if (this.view) {
       this.view.destroy();
       this.view = null;
@@ -245,7 +289,10 @@ export class SearchResultsBuffer {
     // dropped. Programmatic resets (setResult) bypass the filter.
     const filter = EditorState.transactionFilter.of((tr) => this.filterTransaction(tr));
 
-    // On a committed doc change to a match line, map it back to a source edit.
+    // On a doc change to a match line, mark that line dirty and (re)arm the
+    // commit timer. Edits are *not* written back per keystroke — a
+    // multi-character replacement is one coherent source write, committed once
+    // the user pauses (see onUserEdit / flushPendingCommit).
     const listener = EditorView.updateListener.of((update) => {
       if (!update.docChanged) return;
       for (const tr of update.transactions) {
@@ -254,10 +301,19 @@ export class SearchResultsBuffer {
       }
     });
 
+    // Commit any pending edit the moment focus leaves the buffer, so a row the
+    // user finished editing is written back even before the idle timer fires.
+    const blur = EditorView.domEventHandlers({
+      blur: () => {
+        this.flushPendingCommit();
+        return false;
+      },
+    });
+
     this.view = new EditorView({
       state: EditorState.create({
         doc: this.model.text,
-        extensions: [...baseExtensions(), filter, listener, this.revealKeymap()],
+        extensions: [...baseExtensions(), filter, listener, blur, this.revealKeymap()],
       }),
       parent: this.host,
     });
@@ -265,18 +321,31 @@ export class SearchResultsBuffer {
 
   /**
    * Permit a transaction only if every changed range lies within the
-   * *editable* (source-text) portion of a single match line. Header, blank,
-   * and prefix (line-number) regions are read-only; a change touching them,
-   * or spanning a line boundary, is rejected (returns the empty transaction
-   * spec, i.e. no change).
+   * *editable* (source-text) portion of a single match line, and no inserted
+   * text introduces a line break. Header, blank, and prefix (line-number)
+   * regions are read-only; a change touching them, spanning a line boundary,
+   * or *inserting* a newline (Enter, a multi-line paste) is rejected (returns
+   * the empty transaction spec, i.e. no change).
+   *
+   * The inserted-newline guard is essential: without it a pure insertion whose
+   * `fromA === toA` sits on a single old-doc line, so the old-doc-range check
+   * alone would accept text containing `\n`. That would split one buffer row
+   * into two and permanently desync the row table (`this.model.rows`) from the
+   * document — every later row would look up the wrong file/line. A match row
+   * is a single source line by construction; it must stay one line.
    */
   private filterTransaction(tr: Transaction): Transaction | readonly Transaction[] {
     if (!tr.docChanged) return tr;
     if (tr.annotation(RESET)) return tr;
 
     let ok = true;
-    tr.changes.iterChangedRanges((fromA, toA) => {
+    tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
       if (!ok) return;
+      // Reject any inserted line break — a match row must stay a single line.
+      if (inserted.lines > 1) {
+        ok = false;
+        return;
+      }
       if (!this.rangeIsEditable(fromA, toA)) ok = false;
     });
     return ok ? tr : [];
@@ -296,14 +365,52 @@ export class SearchResultsBuffer {
     return from - lineFrom.from >= row.sourceCol;
   }
 
-  /** Map a committed user edit to a source edit and forward it. */
+  /**
+   * Record which match rows a user edit touched, then (re)arm the idle timer.
+   * The actual source write-back happens in {@link flushPendingCommit}, once
+   * the user pauses ({@link commitDelayMs}) or focus leaves the buffer — never
+   * per keystroke. `commitDelayMs === 0` commits synchronously (test path).
+   */
   private onUserEdit(tr: Transaction): void {
     const doc = tr.state.doc;
-    const touched = new Set<number>();
     tr.changes.iterChangedRanges((_fromA, _toA, fromB) => {
-      touched.add(doc.lineAt(fromB).number);
+      this.pendingLines.add(doc.lineAt(fromB).number);
     });
-    for (const lineNumber of touched) {
+    if (this.pendingLines.size === 0) return;
+
+    if (this.commitDelayMs <= 0) {
+      this.flushPendingCommit();
+      return;
+    }
+    if (this.commitTimer !== null) clearTimeout(this.commitTimer);
+    this.commitTimer = setTimeout(() => {
+      this.commitTimer = null;
+      this.flushPendingCommit();
+    }, this.commitDelayMs);
+  }
+
+  /**
+   * Write every pending match-row edit back to its source (deduped by line),
+   * mapping the *current* buffer line through {@link mapRowEditToSource} so the
+   * committed text reflects the full edit, not an intermediate keystroke.
+   * Clears the timer + pending set. Idempotent — a no-op when nothing pends.
+   */
+  private flushPendingCommit(): void {
+    if (this.commitTimer !== null) {
+      clearTimeout(this.commitTimer);
+      this.commitTimer = null;
+    }
+    if (this.pendingLines.size === 0) return;
+    const view = this.view;
+    if (!view) {
+      this.pendingLines.clear();
+      return;
+    }
+    const doc = view.state.doc;
+    const lines = [...this.pendingLines].sort((a, b) => a - b);
+    this.pendingLines.clear();
+    for (const lineNumber of lines) {
+      if (lineNumber < 1 || lineNumber > doc.lines) continue;
       const row = this.model.rows[lineNumber - 1];
       if (!row || row.kind !== "match") continue;
       const bufferLine = doc.line(lineNumber).text;
@@ -314,19 +421,31 @@ export class SearchResultsBuffer {
     }
   }
 
-  /** Enter / Mod-Enter on a match line reveals it in the normal editor. */
+  /**
+   * Reveal the match on the caret's line in the normal editor. Wired to both a
+   * double-click and an Enter / Mod-Enter keymap so the surface is
+   * keyboard-reachable (a keyboard-only user can focus a row and press Enter);
+   * returns false on non-match lines so the key falls through to the default.
+   */
   private revealKeymap(): Extension {
-    return EditorView.domEventHandlers({
-      dblclick: (_event, view) => {
-        const pos = view.state.selection.main.head;
-        const lineNumber = view.state.doc.lineAt(pos).number;
-        const row = this.model.rows[lineNumber - 1];
-        if (row && row.kind === "match") {
-          this.options.onReveal?.(row.path, row.match);
-          return true;
-        }
-        return false;
-      },
-    });
+    const reveal = (view: EditorView): boolean => {
+      const pos = view.state.selection.main.head;
+      const lineNumber = view.state.doc.lineAt(pos).number;
+      const row = this.model.rows[lineNumber - 1];
+      if (row && row.kind === "match") {
+        this.options.onReveal?.(row.path, row.match);
+        return true;
+      }
+      return false;
+    };
+    return [
+      EditorView.domEventHandlers({
+        dblclick: (_event, view) => reveal(view),
+      }),
+      keymap.of([
+        { key: "Enter", run: reveal },
+        { key: "Mod-Enter", run: reveal },
+      ]),
+    ];
   }
 }

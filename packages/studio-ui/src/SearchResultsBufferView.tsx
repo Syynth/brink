@@ -15,8 +15,9 @@
  * `setResult`, tearing it down on unmount — `SearchResultsBuffer.destroy()`
  * removes the view + every listener (CM6 teardown contract; leaks are bugs).
  *
- * Double-click a match row reveals it in the normal editor through the shared
- * `editor.reveal` command, exactly like the tree rows did.
+ * Double-click a match row — or focus it and press Enter / Mod-Enter — reveals
+ * it in the normal editor through the shared `editor.reveal` command, exactly
+ * like the tree rows did (and keyboard-reachable, unlike the tree's buttons).
  */
 
 import { useEffect, useRef } from "react";
