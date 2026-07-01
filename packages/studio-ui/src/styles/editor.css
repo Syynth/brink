@@ -881,8 +881,13 @@
   cursor: pointer;
   border-radius: 4px;
 }
-.brink-studio .brink-code-action-item:hover {
+.brink-studio .brink-code-action-item:hover,
+.brink-studio .brink-code-action-item:focus {
   background: var(--bs-list-active-bg);
+  outline: none;
+}
+.brink-studio .brink-code-action-item:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--bs-accent);
 }
 
 /* Editor content floor — below the minimum, scroll within the pane rather

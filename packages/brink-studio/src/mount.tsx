@@ -513,6 +513,19 @@ export async function mountStudio(
       const state = store.getState();
       void applyComputedRename(state, state.applyMoveResult, req);
     },
+    // Code-actions menu + Extract to knot/function (#315 H / #321 studio side):
+    // apply the resolved/extracted StructuralResult through the same undoable
+    // apply seam as binder moves — one step, toast + Undo. Safe-by-default is
+    // enforced in the editor (unsafe surfaces the inline report and applies only
+    // on force), so an unsafe result never reaches here unforced.
+    onApplyStructural: (req) => {
+      const state = store.getState();
+      void state.applyMoveResult(
+        req.result,
+        req.description,
+        req.result.path ? [req.result.path] : [],
+      );
+    },
   });
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush

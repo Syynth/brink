@@ -14,6 +14,7 @@ import type { EditorSessionHandle } from "@brink-lang/web";
 import type {
   AutoImportResult,
   CodeAction,
+  CodeActionData,
   CompletionItem,
   ConvertTarget,
   DocumentChangeSpec,
@@ -197,6 +198,36 @@ export class DocHandle {
 
   codeActions(offset: number): CodeAction[] {
     return this.session.getCodeActionsDoc(this.id, offset);
+  }
+
+  /**
+   * Resolve a (non-extract) code action chosen from the menu (#321): compute
+   * the action's `StructuralResult` from its opaque `data` payload. `offset` is
+   * a whole-file UTF-16 offset (the doc-handle variant folds fragment origin).
+   * Side-effect-free — the caller applies the returned edits through the host
+   * apply seam.
+   */
+  resolveCodeAction(data: CodeActionData, offset: number): StructuralResult {
+    return this.session.resolveCodeActionDoc(this.id, data, offset);
+  }
+
+  /**
+   * Extract the selected lines into a new `=== name ===` knot, replacing the
+   * selection with the tunnel call `-> name ->` (#315 H). `start`/`end` are
+   * whole-file UTF-16 offsets (fold any fragment-view origin first). Returns a
+   * safe-by-default `StructuralResult`; the caller applies via the apply seam.
+   */
+  extractToKnot(start: number, end: number, name: string): StructuralResult {
+    return this.session.extractToKnot(this.path, start, end, name);
+  }
+
+  /**
+   * Extract the selected lines into a new `=== function name() ===`, replacing
+   * the selection with `{name()}` / `~ name()` (#315 H). Same offset/gate
+   * semantics as {@link extractToKnot}.
+   */
+  extractToFunction(start: number, end: number, name: string): StructuralResult {
+    return this.session.extractToFunction(this.path, start, end, name);
   }
 
   inlayHints(start: number, end: number): InlayHint[] {

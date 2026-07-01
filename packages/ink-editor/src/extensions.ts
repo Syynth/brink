@@ -16,6 +16,14 @@ import { signatureHelpExtension } from "./signature-help.js";
 import { referencesExtension } from "./references.js";
 import { renameExtension, type BreakageContext } from "./rename.js";
 import { codeActionsExtension } from "./code-actions.js";
+import {
+  extractActionsExtension,
+  extractCodeActions,
+  isExtractAction,
+  startExtractPrompt,
+  EXTRACT_TO_KNOT_ACTION,
+  type ExtractKind,
+} from "./extract-actions.js";
 import { playFromHereExtension } from "./play-from-here.js";
 
 export interface BrinkStudioOptions {
@@ -56,6 +64,29 @@ export interface BrinkStudioOptions {
    *  `true` to suppress the default inline report and render your own. */
   onRenameBreakage?: (result: StructuralResult, ctx: BreakageContext) => boolean;
   getCodeActions?: (source: string, offset: number) => CodeAction[];
+  /**
+   * Resolve + apply a (non-extract) code action chosen from the menu (#321
+   * studio side): compute its `StructuralResult` via `resolveCodeAction` and
+   * apply it through the host's apply seam (toast + Undo). Only wired alongside
+   * `getCodeActions`. Absent ⇒ the menu just dismisses (the pre-#315 behavior).
+   */
+  applyCodeAction?: (action: CodeAction) => void;
+  /**
+   * Compute an extract (#315 H) `StructuralResult` for the current selection
+   * (view coords) + name — side-effect-free. The host folds any fragment-view
+   * origin into whole-file offsets and calls `extractToKnot` / `extractToFunction`.
+   * When both this and `applyExtract` are provided, a multi-line selection
+   * surfaces "Extract to knot/function" in the code-actions menu.
+   */
+  computeExtract?: (
+    kind: ExtractKind,
+    start: number,
+    end: number,
+    name: string,
+  ) => StructuralResult | null;
+  /** Apply an already-computed extract result — the host's apply seam
+   *  (toast + Undo). Called on a safe Enter or an explicit "Extract anyway". */
+  applyExtract?: (kind: ExtractKind, result: StructuralResult, name: string) => void;
   getInlayHints?: (source: string, start: number, end: number) => InlayHint[];
   getArgumentWidgets?: (source: string, start: number, end: number) => CallWidgetSite[];
   /** How the inline call-level argument-form glyph is shown. Default `off`. */
@@ -134,7 +165,36 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     );
   }
   if (options.getCodeActions) {
-    ideExtensions.push(codeActionsExtension({ getCodeActions: options.getCodeActions }));
+    const { computeExtract, applyExtract, applyCodeAction } = options;
+    const extractEnabled = computeExtract !== undefined && applyExtract !== undefined;
+    ideExtensions.push(
+      codeActionsExtension({
+        getCodeActions: options.getCodeActions,
+        // Extract entries appear only when the extract seam is wired.
+        getSelectionActions: extractEnabled
+          ? (view) => extractCodeActions(view.state)
+          : undefined,
+        // Dispatch: extract actions open the name prompt; everything else
+        // resolves + applies through the #321 apply seam.
+        onSelect: (action, view) => {
+          if (isExtractAction(action)) {
+            if (!extractEnabled) return;
+            const kind: ExtractKind =
+              action.data.action === EXTRACT_TO_KNOT_ACTION ? "knot" : "function";
+            const sel = view.state.selection.main;
+            // Snap to whole lines so the prompt anchor + wasm op agree.
+            const start = view.state.doc.lineAt(sel.from).from;
+            const end = view.state.doc.lineAt(sel.to).to;
+            startExtractPrompt(view, kind, { start, end });
+            return;
+          }
+          applyCodeAction?.(action);
+        },
+      }),
+    );
+    if (computeExtract !== undefined && applyExtract !== undefined) {
+      ideExtensions.push(extractActionsExtension({ computeExtract, applyExtract }));
+    }
   }
   if (options.onPlayFrom) {
     ideExtensions.push(
