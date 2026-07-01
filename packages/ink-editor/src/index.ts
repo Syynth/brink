@@ -19,6 +19,24 @@ export type {
   BreakageContext,
 } from "./rename.js";
 
+// Shared inline name-prompt primitive (#315 H): the chip + "⚠ breaks N" badge +
+// inline breakage report behind both inline rename and extract-to-knot/function.
+export { InlineNameInput } from "./inline-name-input.js";
+export type {
+  InlineNameInputOptions,
+  InlineNameBreakageContext,
+} from "./inline-name-input.js";
+
+// Extract selection → knot/function code actions (#315 H): the code-actions
+// menu entries + the name-prompt → wasm extract → apply flow.
+export {
+  extractCodeActions,
+  isExtractAction,
+  EXTRACT_TO_KNOT_ACTION,
+  EXTRACT_TO_FUNCTION_ACTION,
+} from "./extract-actions.js";
+export type { ExtractActionsOptions, ExtractKind } from "./extract-actions.js";
+
 // Argument Form (argument-widget spec §1.2) — opened from the in-editor glyph
 // and from a host's tool windows (e.g. the Host Functions panel launcher).
 export { openArgumentForm } from "./argument-form.js";
