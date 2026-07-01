@@ -19,12 +19,12 @@ import {
   isExtractAction,
   EXTRACT_TO_KNOT_ACTION,
   EXTRACT_TO_FUNCTION_ACTION,
-} from "@brink/ink-editor";
-// The extension factories are internal to @brink/ink-editor; import them from
+} from "@brink-lang/editor";
+// The extension factories are internal to @brink-lang/editor; import them from
 // the built entry the studio consumes (source) via the package's extensions
 // module. They are re-exported for the studio wiring, but for a focused unit
 // test we mount them directly through brinkStudio's public option surface.
-import { brinkStudio } from "@brink/ink-editor";
+import { brinkStudio } from "@brink-lang/editor";
 
 const DOC = "=== opening ===\nThe lights dim.\nA figure steps.\n-> END\n";
 

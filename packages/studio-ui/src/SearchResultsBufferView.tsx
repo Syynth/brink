@@ -8,7 +8,7 @@
  * line in the underlying document, routed back through the shared apply-edits
  * seam (`ProjectSession.applyEdit`) by the store's `applySearchRowEdit`.
  *
- * The framework-agnostic {@link SearchResultsBuffer} (in @brink/ink-editor)
+ * The framework-agnostic {@link SearchResultsBuffer} (in @brink-lang/editor)
  * owns the EditorView, the read-only filter (only match-line source columns
  * are editable), and the edit→source mapping. This component only mounts it
  * into a host container for its lifetime and feeds it fresh results via

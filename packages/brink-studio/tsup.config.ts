@@ -14,10 +14,12 @@ export default defineConfig({
   format: ["esm"],
   dts: {
     only: true,
-    // Inline the private workspace packages (@brink/studio-shell, studio-ui,
-    // studio-store, ink-editor, ink-operations, wasm-types). Note this does
-    // NOT match @brink-lang/* — that scope stays external.
-    resolve: [/^@brink\//],
+    // Inline the workspace packages that studio BUNDLES into its own dist:
+    // the private @brink/* packages (studio-shell, studio-ui, studio-store,
+    // ink-operations, wasm-types) plus @brink-lang/editor (bundled via the
+    // vite alias, so its types must be inlined here too). @brink-lang/web
+    // stays external (a real versioned dependency).
+    resolve: [/^@brink\//, "@brink-lang/editor"],
   },
   tsconfig: "tsconfig.build.json",
   external: ["@brink-lang/web", "react", "react-dom"],

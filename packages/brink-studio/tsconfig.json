@@ -16,7 +16,7 @@
       "@brink/wasm-types": ["../wasm-types/src/index.ts"],
       "@brink-lang/web": ["../wasm/src/index.ts"],
       "@brink/ink-operations": ["../ink-operations/src/index.ts"],
-      "@brink/ink-editor": ["../ink-editor/src/index.ts"],
+      "@brink-lang/editor": ["../ink-editor/src/index.ts"],
       "@brink/studio-shell": ["../studio-shell/src/index.ts"],
       "@brink/studio-store": ["../studio-store/src/index.ts"],
       "@brink/studio-ui": ["../studio-ui/src/index.ts"]

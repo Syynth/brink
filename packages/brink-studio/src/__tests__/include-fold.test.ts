@@ -16,7 +16,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { foldable, foldEffect, unfoldEffect, foldedRanges } from "@codemirror/language";
 import type { FoldRange } from "@brink/wasm-types";
-import { foldingExtension } from "@brink/ink-editor";
+import { foldingExtension } from "@brink-lang/editor";
 
 // Deterministic stand-in for the wasm `getFoldingRanges`, mirroring what
 // brink-ide emits: an INCLUDE-block fold (N>=2) with `collapsed_text`, a

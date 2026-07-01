@@ -29,7 +29,7 @@ import {
   type FileChange,
   type FileConflict,
   type FileProvider,
-} from "@brink/ink-editor";
+} from "@brink-lang/editor";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
 import {
   CommandRegistry,

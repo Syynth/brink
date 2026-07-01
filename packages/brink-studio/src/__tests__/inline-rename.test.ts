@@ -21,7 +21,7 @@ import {
   breakageCount,
   breakageEntries,
   RenameQueryCache,
-} from "@brink/ink-editor";
+} from "@brink-lang/editor";
 
 const safe = (): StructuralResult => ({
   ok: true,

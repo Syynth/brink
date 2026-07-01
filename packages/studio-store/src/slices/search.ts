@@ -28,7 +28,7 @@ import {
   type ReplacementEdit,
   type SearchMatch,
   type SearchQueryOptions,
-} from "@brink/ink-editor";
+} from "@brink-lang/editor";
 
 // ── Slice interface ─────────────────────────────────────────────────
 

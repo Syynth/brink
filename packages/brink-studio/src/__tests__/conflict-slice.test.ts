@@ -16,7 +16,7 @@ import {
   InMemoryFileProvider,
   ProjectSession as RealProjectSession,
   type FileConflict,
-} from "@brink/ink-editor";
+} from "@brink-lang/editor";
 import { initWasm } from "@brink-lang/web";
 import { EditorView } from "@codemirror/view";
 

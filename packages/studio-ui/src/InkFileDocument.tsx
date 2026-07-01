@@ -4,7 +4,7 @@
  * One CM6 EditorView per (document, group) instance, mounted by the shell's
  * EditorArea through the document-type registry. All the machinery — wasm
  * document handles, state caching, cross-view mirroring, focus tracking —
- * lives in DocumentSessions (@brink/ink-editor); this component only binds a
+ * lives in DocumentSessions (@brink-lang/editor); this component only binds a
  * view slot to a DOM node for its mount lifetime.
  *
  * Document ids reuse the old tab-id scheme: `"main.ink"` for files,

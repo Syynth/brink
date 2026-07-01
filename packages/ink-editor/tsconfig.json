@@ -11,7 +11,7 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "paths": {
-      "brink-web": ["../../crates/brink-web/www/pkg/brink_web.js"],
+      "brink-web": ["../../crates/brink-web/www/pkg"],
       "@brink/wasm-types": ["../wasm-types/src/index.ts"],
       "@brink-lang/web": ["../wasm/src/index.ts"],
       "@brink/ink-operations": ["../ink-operations/src/index.ts"]

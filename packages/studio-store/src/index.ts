@@ -160,7 +160,7 @@ export {
 
 // Project-wide search engine (Search tool window, issue #94) — pure,
 // unit-testable helpers, plus the result cap (unbounded-growth guard).
-// The model now lives in @brink/ink-editor (issue #322, framework-agnostic);
+// The model now lives in @brink-lang/editor (issue #322, framework-agnostic);
 // re-exported here so studio-store stays the single import surface.
 export {
   DEFAULT_SEARCH_OPTIONS,
@@ -186,10 +186,10 @@ export {
   type SearchPatternResult,
   type SearchQueryOptions,
   type SearchResultsBufferOptions,
-} from "@brink/ink-editor";
+} from "@brink-lang/editor";
 
 // Document key/title helpers (shared with the shell's DocumentRefs).
-export { docKeyFor, docTitleFor } from "@brink/ink-editor";
+export { docKeyFor, docTitleFor } from "@brink-lang/editor";
 
 export type {
   ElementType,
