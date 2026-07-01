@@ -12,6 +12,7 @@
 import { Annotation, Facet } from "@codemirror/state";
 import type { EditorSessionHandle } from "@brink-lang/web";
 import type {
+  AutoImportResult,
   CodeAction,
   CompletionItem,
   ConvertTarget,
@@ -124,6 +125,15 @@ export class DocHandle {
 
   completions(offset: number): CompletionItem[] {
     return this.session.getCompletionsDoc(this.id, offset);
+  }
+
+  /**
+   * Auto-import (#312 F): ensure the file backing this handle `INCLUDE`s
+   * `target`. Returns whether it was already reachable and, when not, the
+   * whole-file UTF-16 `INCLUDE`-insertion edit. Idempotent.
+   */
+  autoImport(target: string): AutoImportResult {
+    return this.session.autoImportIncludeDoc(this.id, target);
   }
 
   hover(offset: number): HoverInfo | null {

@@ -101,6 +101,17 @@ export interface CompletionItem {
    * `name` (the default for ordinary symbol completions).
    */
   insert?: string | null;
+  /**
+   * `true` when the symbol is defined in a file NOT reachable from the current
+   * file's INCLUDE graph (#312 F). Such rows get a "from <file>" affordance and,
+   * on accept, auto-insert the `INCLUDE` alongside the symbol.
+   */
+  out_of_scope?: boolean;
+  /**
+   * Project-relative path of the file declaring this symbol — set only for
+   * out-of-scope completions (the auto-import target).
+   */
+  source_file?: string | null;
 }
 
 export interface HoverInfo {
@@ -438,6 +449,19 @@ export interface TextEdit {
   from: number;
   to: number;
   insert: string;
+}
+
+/**
+ * Result of an auto-import (#312 F): whether `target` was already reachable
+ * from the current file's INCLUDE graph and, when not, the `INCLUDE`-insertion
+ * `edit` (whole-file UTF-16 coords) to apply to the current file's source.
+ * Idempotent — `already_reachable` ⇒ no `edit`.
+ */
+export interface AutoImportResult {
+  ok: boolean;
+  already_reachable: boolean;
+  edit?: TextEdit | null;
+  error?: string | null;
 }
 
 // ── Include info types ──────────────────────────────────────────
