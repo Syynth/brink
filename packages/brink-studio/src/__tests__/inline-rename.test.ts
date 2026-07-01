@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import type { Location, SymbolRenameResult } from "@brink/wasm-types";
+import type { Location, StructuralResult } from "@brink/wasm-types";
 import {
   renameExtension,
   startInlineRename,
@@ -23,7 +23,7 @@ import {
   RenameQueryCache,
 } from "@brink/ink-editor";
 
-const safe = (): SymbolRenameResult => ({
+const safe = (): StructuralResult => ({
   ok: true,
   path: "main.ink",
   new_source: "=== greeting ===\n",
@@ -32,7 +32,7 @@ const safe = (): SymbolRenameResult => ({
   safe: true,
 });
 
-const unsafe = (n: number): SymbolRenameResult => ({
+const unsafe = (n: number): StructuralResult => ({
   ok: true,
   path: "main.ink",
   new_source: "=== greeting ===\n",
@@ -66,7 +66,7 @@ describe("inline-rename pure logic", () => {
   });
 
   it("breakageEntries falls back to sorted cross-file paths when no diagnostics", () => {
-    const result: SymbolRenameResult = {
+    const result: StructuralResult = {
       ...safe(),
       safe: false,
       cross_file_edits: [
@@ -98,7 +98,7 @@ const SYMBOL = "hello";
 
 /** A view wired with the inline rename extension; `renameSymbolAt` is stubbed
  *  so the test controls the verdict. */
-function mountRename(verdict: (newName: string) => SymbolRenameResult) {
+function mountRename(verdict: (newName: string) => StructuralResult) {
   const queries: Array<{ offset: number; newName: string }> = [];
   const commits: Array<{ newName: string; currentName: string }> = [];
   const prepareRename = (source: string, offset: number): Location | null => {

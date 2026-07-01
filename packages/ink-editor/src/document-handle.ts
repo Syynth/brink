@@ -26,7 +26,7 @@ import type {
   Location,
   SemanticToken,
   SignatureInfo,
-  SymbolRenameResult,
+  StructuralResult,
   TextEdit,
 } from "@brink/wasm-types";
 
@@ -191,7 +191,7 @@ export class DocHandle {
    * computes the new sources + breakage report without applying anything, so
    * the inline-rename badge can query it live on each keystroke (#324).
    */
-  renameSymbolAt(offset: number, newName: string): SymbolRenameResult {
+  renameSymbolAt(offset: number, newName: string): StructuralResult {
     return this.session.renameSymbolAt(this.path, offset, newName);
   }
 
