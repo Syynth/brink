@@ -4,6 +4,7 @@ pub mod code_actions;
 pub mod color;
 mod completion;
 pub mod document;
+pub mod extract;
 pub mod file_rename;
 pub mod folding;
 pub mod formatting;
