@@ -20,7 +20,7 @@ bevy-brink-derive = { workspace = true }
 brink-compiler = { workspace = true, optional = true }
 brink-syntax = { workspace = true, optional = true }
 
-bevy_app = { version = "0.18.1", default-features = false }
+bevy_app = { version = "0.19.0", default-features = false }
 bevy_asset = { version = "0.18.1", default-features = false }
 bevy_ecs = { version = "0.18.1", default-features = false }
 bevy_input = { version = "0.18.1", default-features = false, features = ["std", "keyboard"] }
