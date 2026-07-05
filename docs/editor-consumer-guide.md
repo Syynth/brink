@@ -82,6 +82,24 @@ gate them all the same way (show the breakage report when `!safe`, apply `cross_
 · `delete_symbol` (#316) · `rename_dir` (#314) · `extract_to_knot` / `extract_to_function` (#315) ·
 `resolve_code_action` (#321) · `find_references_at` / `references_to_symbol` (#317, document-agnostic).
 
+## Boundary helpers (#369)
+
+Small pure helpers every host needs at the editor ↔ host seam, published from
+`@brink-lang/editor` so you don't carry shim copies:
+
+- **`CompileResult` / `Diagnostic`** — re-exported from `@brink-lang/web`, so importing them
+  through the editor gives the *same module identity* as importing `@brink-lang/web` directly.
+  No structural `CompileResultLike` shims.
+- **`sortDiagnostics(diagnostics)`** — the canonical **positional** sort: file path, then start
+  offset, then errors before warnings (end offset and message as deterministic tiebreakers).
+  Non-mutating. Note: presentation ORDER is a **host choice** layered on this canonical
+  positional sort — re-group the sorted list however your UI wants (severity-first, per-file
+  sections, …); the helper is the shared baseline, not a rendering policy.
+- **`lineColAt(text, offset)`** — offset → 1-based `{ line, col }`, clamped to the text.
+  UTF-16 offsets, matching `Diagnostic.start`/`end` and `editor.reveal` source spans.
+
+(`docKeyFor` / `parseDocKey` are also published — see `document-sessions.ts`.)
+
 ## What is genuinely studio-only (you rebuild in your framework)
 
 - **React mount wrappers** for the class-based UIs (`ConflictView`, `SearchResultsBuffer`). Thin —
