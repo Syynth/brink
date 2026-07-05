@@ -148,7 +148,7 @@
   visibility: visible;
 }
 .brink-studio .brink-tab-close:hover {
-  background: color-mix(in srgb, var(--bs-error) 20%, transparent);
+  background: rgb(var(--bs-error-rgb) / 20%);
   color: var(--bs-error);
 }
 /* Tab drag (#142): insert indicator — a 2px accent line at the hovered gap.
