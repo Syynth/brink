@@ -34,6 +34,23 @@ the editor owns the resulting UX.
 | `prepareRename` + `renameSymbolAt` + `commitRename` (+ `onRenameBreakage`) | **inline rename** (#323) with the live **"⚠ breaks N"** badge (#324) and the inline breakage report | `prepare_rename` + `rename_symbol_at` → `StructuralResult` |
 | `getHover`, `gotoDefinition`, `findReferences`, `getSignatureHelp`, `getInlayHints`, `getArgumentWidgets` | the corresponding LSP-style features | `hover`, `goto_definition`, `find_references*`, … |
 | `onPlayFrom`, `onSymbolContextMenu`, `onNavigateToFile` | host hooks for your own chrome | — |
+| `getGutterMarkers` (+ `onGutterMarkerClick`) | **host gutter markers** (#343): your own per-line gutter affordances (breakpoints, annotations, run/flag icons) | — (host-supplied data) |
+
+Notes on the host gutter contract (#343):
+- `getGutterMarkers(source, fromLine, toLine) => HostGutterMarker[]` returns markers
+  (`{ line, className?, text?, title?, onClick? }`, `line` 1-based) for the inclusive line range.
+  It is currently queried for the whole document; the range parameters let the contract narrow to
+  the viewport later without an API change.
+- Markers render in a **dedicated gutter slotted after (to the right of) the built-in
+  play-from-here ▶ gutter**, so your affordances coordinate with the editor's own instead of
+  needing a raw CM6 `gutter()`. Ordering is deterministic: by line, your array order within a line.
+- Clicks fire the marker's own `onClick(line)` first, then the shared
+  `onGutterMarkerClick(marker, line)`.
+- The set recomputes on document changes. When it changes for *external* reasons (a breakpoint
+  toggled in another panel), call the exported `refreshGutterMarkers(view)` (or dispatch
+  `refreshGutterMarkersEffect`) to re-query.
+- Composing extensions directly instead of using `brinkStudio`? The same feature is exported
+  standalone as `hostGutterExtension(options)`.
 
 Notes on the rename contract (the one with the most moving parts):
 - `renameSymbolAt(offset, newName) => StructuralResult` is called **debounced on each keystroke** to
