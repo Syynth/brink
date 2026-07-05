@@ -5,6 +5,10 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     exclude: ["e2e/**", "node_modules/**"],
+    // Without this, vitest stubs every .css import to an empty module — even
+    // `?raw` imports — which would blind the Chromium-88 style scan in
+    // chromium88-color-mix.test.ts (#276).
+    css: true,
   },
   resolve: {
     alias: {

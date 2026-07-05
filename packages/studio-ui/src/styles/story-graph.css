@@ -23,7 +23,7 @@
 }
 
 .brink-studio .brink-story-graph .react-flow__background circle {
-  fill: color-mix(in srgb, var(--bs-fg-muted) 35%, transparent);
+  fill: rgb(var(--bs-fg-muted-rgb) / 35%);
 }
 
 /* Compile-bound placeholder (reuses the state-view empty typography). */
@@ -69,13 +69,13 @@
 
 /* Kinds */
 .brink-studio .brink-graph-node-knot {
-  border-color: color-mix(in srgb, var(--bs-symbol-knot) 55%, var(--bs-border));
+  border-color: var(--bs-graph-knot-border);
 }
 .brink-studio .brink-graph-node-knot > .brink-graph-node-header > .brink-graph-node-label {
   color: var(--bs-symbol-knot);
 }
 .brink-studio .brink-graph-node-stitch {
-  border-color: color-mix(in srgb, var(--bs-symbol-stitch) 45%, var(--bs-border));
+  border-color: var(--bs-graph-stitch-border);
   background: var(--bs-surface-bg);
 }
 .brink-studio .brink-graph-node-stitch .brink-graph-node-header {
@@ -110,7 +110,7 @@
   color: var(--bs-fg-muted);
 }
 .brink-studio .brink-graph-node-end {
-  border-color: color-mix(in srgb, var(--bs-error) 55%, var(--bs-border));
+  border-color: var(--bs-graph-end-border);
 }
 .brink-studio .brink-graph-node-end .brink-graph-node-label {
   color: var(--bs-error);
@@ -119,18 +119,18 @@
 /* Expanded knot: the node is the subflow container — header on top,
    stitch children positioned inside by react-flow. */
 .brink-studio .brink-graph-node.expanded {
-  background: color-mix(in srgb, var(--bs-panel-bg) 55%, var(--bs-editor-bg));
+  background: var(--bs-graph-expanded-bg);
 }
 
 /* Live-session current location (§7.6 overlay). Loud on purpose — this is
    the "you are here" marker and must read at a glance, not on inspection:
    accent-tinted fill, full-strength accent ring, accent label. */
 .brink-studio .brink-graph-node.current {
-  background: color-mix(in srgb, var(--bs-accent) 18%, var(--bs-panel-bg));
+  background: var(--bs-graph-current-bg);
   border-color: var(--bs-accent);
   box-shadow:
     0 0 0 2px var(--bs-accent),
-    0 0 12px 2px color-mix(in srgb, var(--bs-accent) 35%, transparent);
+    0 0 12px 2px rgb(var(--bs-accent-rgb) / 35%);
 }
 .brink-studio .brink-graph-node.current .brink-graph-node-label {
   color: var(--bs-accent);
@@ -256,7 +256,7 @@
   padding: 7px 10px;
   border: 1px solid var(--bs-border);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--bs-panel-bg) 88%, transparent);
+  background: rgb(var(--bs-panel-bg-rgb) / 88%);
   color: var(--bs-fg-muted);
   font-size: 10px;
   line-height: 1.4;

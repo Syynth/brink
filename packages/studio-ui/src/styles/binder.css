@@ -10,7 +10,7 @@
   font-size: 13px;
   --binder-indent: 18px;
   --binder-row-height: 26px;
-  --binder-guide-color: color-mix(in srgb, var(--bs-fg-muted) 20%, transparent);
+  --binder-guide-color: rgb(var(--bs-fg-muted-rgb) / 20%);
 }
 .brink-studio .brink-binder-row {
   display: flex;
@@ -26,7 +26,7 @@
   background: var(--bs-panel-bg);
 }
 .brink-studio .brink-binder-row.brink-binder-active {
-  background: color-mix(in srgb, var(--bs-accent) 15%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 15%);
 }
 /* Indent guides — spacing for each depth level */
 .brink-studio .brink-binder-guides {
@@ -120,14 +120,14 @@
   font-size: 12px;
   color: var(--bs-fg-muted);
   text-align: center;
-  border: 1px dashed color-mix(in srgb, var(--bs-fg-muted) 40%, transparent);
+  border: 1px dashed rgb(var(--bs-fg-muted-rgb) / 40%);
   border-radius: 4px;
   user-select: none;
 }
 .brink-studio .brink-binder-root-drop.active {
   color: var(--bs-fg);
   border-color: var(--bs-accent);
-  background: color-mix(in srgb, var(--bs-accent) 10%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 10%);
 }
 
 /* Inline rename field — replaces a row's label in place (F2 / context menu). */
@@ -146,12 +146,12 @@
 
 /* Binder: multi-select highlight */
 .brink-studio .brink-binder-row.brink-binder-selected {
-  background: color-mix(in srgb, var(--bs-accent) 15%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 15%);
   border-left: 2px solid var(--bs-accent);
 }
 /* Binder: keyboard focus indicator */
 .brink-studio .brink-binder-row.brink-binder-focused {
-  outline: 1px solid color-mix(in srgb, var(--bs-accent) 40%, transparent);
+  outline: 1px solid rgb(var(--bs-accent-rgb) / 40%);
   outline-offset: -1px;
 }
 /* Binder: drag source opacity */
@@ -160,7 +160,7 @@
 }
 /* Binder: drop target knot highlight */
 .brink-studio .brink-binder-row.brink-binder-drop-into {
-  background: color-mix(in srgb, var(--bs-accent) 10%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 10%);
   border: 1px dashed var(--bs-accent);
 }
 /* Binder: drop insertion line */
@@ -169,12 +169,12 @@
   background: var(--bs-accent);
   margin: 0 8px;
   border-radius: 1px;
-  box-shadow: 0 0 4px color-mix(in srgb, var(--bs-accent) 50%, transparent);
+  box-shadow: 0 0 4px rgb(var(--bs-accent-rgb) / 50%);
   pointer-events: none;
 }
 /* Binder: post-move flash animation */
 @keyframes brink-binder-flash {
-  0% { background: color-mix(in srgb, var(--bs-accent) 30%, transparent); }
+  0% { background: rgb(var(--bs-accent-rgb) / 30%); }
   100% { background: transparent; }
 }
 .brink-studio .brink-binder-flash {
@@ -219,7 +219,7 @@
   color: var(--bs-fg);
 }
 .brink-studio .brink-binder-confirm-cancel:hover {
-  background: var(--bs-row-hover-bg, color-mix(in srgb, var(--bs-fg) 8%, transparent));
+  background: var(--bs-row-hover-bg, rgb(var(--bs-fg-rgb) / 8%));
 }
 .brink-studio .brink-binder-confirm-delete {
   background: var(--bs-danger, #c0392b);

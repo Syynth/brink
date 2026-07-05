@@ -154,7 +154,7 @@
 /* Change-highlighting — what moved/changed this step */
 .brink-studio .sv-changed,
 .brink-studio .sv-changed-row td {
-  background: color-mix(in srgb, var(--bs-warning) 22%, transparent);
+  background: rgb(var(--bs-warning-rgb) / 22%);
   border-radius: 3px;
 }
 .brink-studio .sv-changed-row td:first-child { color: var(--bs-warning); }

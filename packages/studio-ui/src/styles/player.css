@@ -87,7 +87,7 @@
   font-family: monospace;
   font-size: 13px;
   padding: 8px;
-  background: color-mix(in srgb, var(--bs-error) 10%, transparent);
+  background: rgb(var(--bs-error-rgb) / 10%);
   border-radius: 4px;
   margin-top: 8px;
 }
