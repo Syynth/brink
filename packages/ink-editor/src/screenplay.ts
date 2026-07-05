@@ -149,6 +149,16 @@ function buildLineDecos(view: EditorView): DecorationSet {
       : elementClass(info.type);
     const attrs: Record<string, string> = { class: cls };
 
+    // Option identity (#364): choice lines and their body lines carry which
+    // option they belong to, so hosts can style per-branch rails without
+    // re-deriving the weave. `data-option-path` is the contract (full lineage
+    // through nested weaves, e.g. "0.2.1"); `data-option` is the convenience
+    // innermost index.
+    if (info.optionPath !== undefined && info.optionPath.length > 0) {
+      attrs["data-option-path"] = info.optionPath.join(".");
+      attrs["data-option"] = String(info.optionPath[info.optionPath.length - 1]);
+    }
+
     // Indent choices/gathers at depth > 1
     if (
       (info.type === ElementType.Choice || info.type === ElementType.Gather) &&

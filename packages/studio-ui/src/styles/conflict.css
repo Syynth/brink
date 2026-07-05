@@ -10,7 +10,7 @@
   display: flex;
   align-items: stretch;
   justify-content: stretch;
-  background: color-mix(in srgb, var(--bs-surface-bg) 70%, transparent);
+  background: rgb(var(--bs-surface-bg-rgb) / 70%);
   padding: 12px;
 }
 
@@ -24,7 +24,7 @@
   border-radius: 6px;
   overflow: hidden;
   background: var(--bs-panel-bg);
-  box-shadow: 0 8px 32px color-mix(in srgb, black 35%, transparent);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 35%);
 }
 
 /* ── Banner ───────────────────────────────────────────────────────── */
@@ -37,7 +37,7 @@
   padding: 8px 12px;
   border-bottom: 1px solid var(--bs-border);
   border-left: 3px solid var(--bs-warning);
-  background: color-mix(in srgb, var(--bs-warning) 12%, var(--bs-panel-bg));
+  background: var(--bs-conflict-banner-bg);
   font-size: 12px;
 }
 

@@ -17,7 +17,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  border-bottom: 1px solid color-mix(in srgb, var(--bs-border) 60%, transparent);
+  border-bottom: 1px solid rgb(var(--bs-border-rgb) / 60%);
 }
 
 .brink-studio .search-query-block {
@@ -113,7 +113,7 @@
   color: var(--bs-fg);
 }
 .brink-studio .search-option.active {
-  background: color-mix(in srgb, var(--bs-accent) 16%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 16%);
   color: var(--bs-accent);
 }
 
@@ -148,8 +148,8 @@
   align-items: center;
   gap: 6px;
   padding: 4px 6px;
-  background: color-mix(in srgb, var(--bs-warning) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--bs-warning) 40%, transparent);
+  background: rgb(var(--bs-warning-rgb) / 12%);
+  border: 1px solid rgb(var(--bs-warning-rgb) / 40%);
   border-radius: 4px;
 }
 .brink-studio .search-confirm-text {
@@ -286,7 +286,7 @@
 }
 
 .brink-studio .search-line-match {
-  background: color-mix(in srgb, var(--bs-accent) 25%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 25%);
   color: var(--bs-fg);
   border-radius: 2px;
 }

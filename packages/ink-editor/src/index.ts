@@ -49,7 +49,7 @@ export { liveArgRange } from "./argument-widgets.js";
 export { setHostWidgets } from "./widget-registry.js";
 
 // Types for line classification
-export { elementTypeField, ElementType } from "./element-type.js";
+export { elementTypeField, ElementType, assignOptionPaths } from "./element-type.js";
 export type { LineInfo } from "./element-type.js";
 
 // Code folding (#313 G): HIR-driven fold ranges, including the leading
@@ -149,6 +149,19 @@ export type {
   ResultsBufferModel,
   SearchResultsBufferOptions,
 } from "./search-results-buffer.js";
+
+// Extensible inline-markup rules (#367): host-registered patterns decorated
+// as `brink-markup-<name>` marks, scoped to the narrative content regions of
+// classified lines (never over ink syntax). Ships zero rules by default;
+// `rmmzAngleTagRule` is the optional angle-tag preset. `contentRegions` is the
+// pure, unit-testable scoping core.
+export { inlineMarkup, contentRegions, rmmzAngleTagRule } from "./inline-markup.js";
+export type {
+  InlineMarkupRule,
+  InlineMarkupPatternRule,
+  InlineMarkupPairRule,
+  MarkupRegion,
+} from "./inline-markup.js";
 
 // Find panel (#319 Track N): opt-in @codemirror/search factory. Not auto-enabled
 // in the studio editor — hosts opt in by adding the returned extension.
