@@ -64,13 +64,42 @@ describe("contentRegions (content-region scoping)", () => {
     expect(regionTexts("a<>b", ElementType.NarrativeText)).toEqual(["a", "b"]);
   });
 
-  it("splits at a mid-line thread token", () => {
-    expect(regionTexts("text <- more", ElementType.NarrativeText)).toEqual(["text ", " more"]);
+  it("truncates at a mid-line thread token — the target is path syntax", () => {
+    expect(regionTexts("text <- more", ElementType.NarrativeText)).toEqual(["text "]);
   });
 
   it("truncates at a divert arrow", () => {
     expect(regionTexts("He left. -> next", ElementType.NarrativeText)).toEqual(["He left. "]);
     expect(regionTexts("in -> tunnel ->", ElementType.NarrativeText)).toEqual(["in "]);
+  });
+
+  it("gather-with-divert exposes no content — the arrow is not a gather sigil", () => {
+    expect(contentRegions("- -> END", ElementType.Gather)).toEqual([]);
+    expect(contentRegions("- - -> deep.end", ElementType.Gather)).toEqual([]);
+    expect(regionTexts("- caught up -> next", ElementType.Gather)).toEqual(["caught up "]);
+  });
+
+  it("gather-threaded lines expose no content — the thread target is path syntax", () => {
+    expect(contentRegions("- <- side_knot", ElementType.Gather)).toEqual([]);
+  });
+
+  it("truncates at an unescaped tag marker", () => {
+    expect(regionTexts("She smiled. # mood: happy", ElementType.NarrativeText)).toEqual([
+      "She smiled. ",
+    ]);
+    expect(regionTexts("Rated 5\\# stuff", ElementType.NarrativeText)).toEqual([
+      "Rated 5\\# stuff",
+    ]);
+  });
+
+  it("excludes inline logic braces from content, nesting-aware", () => {
+    expect(regionTexts("You have {gold} coins.", ElementType.NarrativeText)).toEqual([
+      "You have ",
+      " coins.",
+    ]);
+    expect(regionTexts("a {x: {y|z}|w} b", ElementType.NarrativeText)).toEqual(["a ", " b"]);
+    // Unclosed brace: everything after it stays excluded.
+    expect(regionTexts("before {unclosed", ElementType.NarrativeText)).toEqual(["before "]);
   });
 
   it("excludes the choice sigil prefix and splits at brackets", () => {
@@ -195,6 +224,18 @@ describe("inlineMarkup extension", () => {
       "</i>",
       "<i>",
     ]);
+  });
+
+  it("pair form decorates an unpaired close token too — symmetric inert literal", () => {
+    const pair: InlineMarkupRule = { name: "em", open: /<i>/g, close: /<\/i>/g };
+    const v = mount("dangling</i> close and <i>styled</i>", inlineMarkup([pair]));
+
+    expect(marks(v, ".brink-markup-em").map((el) => el.textContent)).toEqual([
+      "</i>",
+      "<i>",
+      "</i>",
+    ]);
+    expect(marks(v, ".brink-markup-em-content").map((el) => el.textContent)).toEqual(["styled"]);
   });
 
   it("uses classes and data attributes only — no inline styles (#363)", () => {

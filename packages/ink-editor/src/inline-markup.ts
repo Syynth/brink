@@ -103,7 +103,9 @@ function sigilPrefixEnd(text: string, ws: number, validSigils: readonly string[]
   let pos = ws;
   let seen = false;
   while (pos < text.length) {
-    if (validSigils.includes(text[pos])) {
+    // A `-` that begins a divert arrow (`->`) or sits before a thread (`<-`)
+    // is not a gather sigil — `- -> END` is a gather followed by a divert.
+    if (validSigils.includes(text[pos]) && !text.startsWith("->", pos)) {
       seen = true;
       pos++;
       while (pos < text.length && text[pos] === " ") pos++;
@@ -156,16 +158,37 @@ export function contentRegions(text: string, type: ElementType): MarkupRegion[] 
   const divert = text.indexOf("->", start);
   if (divert >= 0 && divert < end) end = divert;
 
-  // Split at ink syntax tokens: glue `<>`, mid-line thread `<-`, and (on
-  // choice lines) the `[` / `]` bracket characters. A rule match can never
-  // span a split because each region is matched independently.
+  // Split at ink syntax tokens: glue `<>`, inline logic `{…}` (excluded
+  // wholesale, nesting-aware), and (on choice lines) the `[` / `]` bracket
+  // characters. A mid-line thread `<-` or an unescaped tag `#` ends the
+  // content entirely — everything after is target/tag syntax. A rule match
+  // can never span a split because each region is matched independently.
   const regions: MarkupRegion[] = [];
   let cur = start;
   let i = start;
+  let braceDepth = 0;
   while (i < end) {
+    if (braceDepth > 0) {
+      if (text[i] === "{") braceDepth++;
+      else if (text[i] === "}") {
+        braceDepth--;
+        if (braceDepth === 0) cur = i + 1;
+      }
+      i++;
+      continue;
+    }
+    if (text.startsWith("<-", i) || (text[i] === "#" && text[i - 1] !== "\\")) {
+      end = i;
+      break;
+    }
+    if (text[i] === "{") {
+      if (i > cur) regions.push({ from: cur, to: i });
+      braceDepth = 1;
+      i++;
+      continue;
+    }
     let tokenLen = 0;
     if (text.startsWith("<>", i)) tokenLen = 2;
-    else if (text.startsWith("<-", i)) tokenLen = 2;
     else if (isChoice && (text[i] === "[" || text[i] === "]")) tokenLen = 1;
 
     if (tokenLen > 0) {
@@ -176,7 +199,7 @@ export function contentRegions(text: string, type: ElementType): MarkupRegion[] 
       i++;
     }
   }
-  if (end > cur) regions.push({ from: cur, to: end });
+  if (end > cur && braceDepth === 0) regions.push({ from: cur, to: end });
 
   return regions;
 }
@@ -266,6 +289,9 @@ function matchPair(
   base: number,
   out: Range<Decoration>[],
 ): void {
+  // Token spans claimed by this rule (open, close, or unpaired-open), so the
+  // trailing unpaired-close sweep decorates only genuinely dangling closes.
+  const claimed: Array<{ from: number; to: number }> = [];
   rule.open.lastIndex = 0;
   let om: RegExpExecArray | null;
   while ((om = rule.open.exec(slice)) !== null) {
@@ -288,11 +314,29 @@ function matchPair(
         );
       }
       out.push(markFor(rule.className, cm).range(base + closeFrom, base + closeTo));
+      claimed.push({ from: openFrom, to: openTo }, { from: closeFrom, to: closeTo });
       rule.open.lastIndex = closeTo;
     } else {
       // Unpaired open token: still an inert literal — decorate it alone.
       out.push(markFor(rule.className, om).range(base + openFrom, base + openTo));
+      claimed.push({ from: openFrom, to: openTo });
       rule.open.lastIndex = openTo;
+    }
+  }
+
+  // Unpaired close tokens are inert literals too — decorate them alone,
+  // symmetric with the unpaired-open contract.
+  rule.close.lastIndex = 0;
+  let cm2: RegExpExecArray | null;
+  while ((cm2 = rule.close.exec(slice)) !== null) {
+    if (cm2[0].length === 0) {
+      rule.close.lastIndex++;
+      continue;
+    }
+    const from = cm2.index;
+    const to = cm2.index + cm2[0].length;
+    if (!claimed.some((c) => from < c.to && to > c.from)) {
+      out.push(markFor(rule.className, cm2).range(base + from, base + to));
     }
   }
 }
