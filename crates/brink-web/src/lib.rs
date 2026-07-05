@@ -1667,10 +1667,12 @@ impl EditorSession {
 
     /// Whole-project story graph (studio-shell spec §4.1): knot/stitch nodes
     /// plus `END`/`DONE` pseudo-nodes, and divert/choice/tunnel/thread edges.
-    /// Function knots and function-call edges are excluded. Node spans are
-    /// UTF-16 offsets in the node's own file. Deterministically ordered
-    /// (nodes by id, edges by from/to/kind). Returns JSON `StoryGraph`, or
-    /// `"null"` when no analysis is available.
+    /// Function knots and function-call edges are excluded. Node spans and
+    /// edge-occurrence spans are UTF-16 offsets in their own file; each edge
+    /// lists the divert sites that produced it (#371). Deterministically
+    /// ordered (nodes by id, edges by from/to/kind, occurrences by
+    /// file/span). Returns JSON `StoryGraph`, or `"null"` when no analysis
+    /// is available.
     pub fn story_graph(&self) -> String {
         let Some(analysis) = self.session.analysis() else {
             return "null".to_owned();
@@ -1715,6 +1717,19 @@ impl EditorSession {
                 from: e.from,
                 to: e.to,
                 kind: story_edge_kind_str(e.kind),
+                occurrences: e
+                    .occurrences
+                    .iter()
+                    .filter_map(|o| {
+                        let file = db.file_path(o.file)?.to_owned();
+                        let src = db.source(o.file).unwrap_or("");
+                        Some(StoryGraphEdgeOccurrenceJs {
+                            file,
+                            start: byte_to_utf16(src, o.range.start().into()),
+                            end: byte_to_utf16(src, o.range.end().into()),
+                        })
+                    })
+                    .collect(),
             })
             .collect();
 
@@ -3488,11 +3503,25 @@ struct StoryGraphNodeJs {
     parent: Option<String>,
 }
 
+/// A story-graph edge. `occurrences` lists the divert sites that produced
+/// it (aggregated edges keep one entry per site); omitted when empty.
 #[derive(Serialize)]
 struct StoryGraphEdgeJs {
     from: String,
     to: String,
     kind: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    occurrences: Vec<StoryGraphEdgeOccurrenceJs>,
+}
+
+/// A source site of a story-graph edge: the target path's span (or the
+/// whole divert statement for `-> DONE`/`-> END`), as UTF-16 offsets in
+/// `file` — the same convention as node spans.
+#[derive(Serialize)]
+struct StoryGraphEdgeOccurrenceJs {
+    file: String,
+    start: u32,
+    end: u32,
 }
 
 #[derive(Serialize)]
@@ -4336,6 +4365,42 @@ mod tests {
             12,
             "definition start must be UTF-16, not bytes"
         );
+    }
+
+    #[test]
+    fn story_graph_edges_carry_utf16_occurrences() {
+        // "é\n=== a ===\n-> b\n\n=== b ===\n-> DONE\n"
+        //  The é (2 bytes / 1 UTF-16 unit) shifts every later byte offset
+        //  1 past its UTF-16 offset. The divert target `b` on line 3 is at
+        //  byte 16 → UTF-16 15.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "é\n=== a ===\n-> b\n\n=== b ===\n-> DONE\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let json = s.story_graph();
+        assert_ne!(json, "null");
+        let graph: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let edges = graph["edges"].as_array().unwrap();
+
+        let edge = |from: &str, to: &str| {
+            edges
+                .iter()
+                .find(|e| e["from"] == from && e["to"] == to)
+                .expect("missing edge")
+        };
+
+        // a -> b: one occurrence anchored on the target path `b`.
+        let occ = &edge("a", "b")["occurrences"][0];
+        assert_eq!(occ["file"], "main.ink");
+        assert_eq!(occ["start"].as_u64().unwrap(), 15, "must be UTF-16");
+        assert_eq!(occ["end"].as_u64().unwrap(), 16);
+
+        // b -> DONE: occurrence spans the whole `-> DONE` statement.
+        // Bytes: `-> DONE` starts at byte 29 → UTF-16 28, 7 chars long.
+        let occ = &edge("b", "DONE")["occurrences"][0];
+        assert_eq!(occ["file"], "main.ink");
+        assert_eq!(occ["start"].as_u64().unwrap(), 28);
+        assert_eq!(occ["end"].as_u64().unwrap(), 35);
     }
 
     // ── Cross-file structural-move edits (#12) ──────────────────────

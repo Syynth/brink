@@ -18,8 +18,16 @@
 //! carries the HIR-synthesized first-stitch auto-enter divert — that edge is
 //! genuine control flow and is included.
 //!
+//! Every edge carries its source **occurrences** — the spans of the divert
+//! sites that produced it. Aggregated edges (e.g. two choices targeting the
+//! same knot) keep one occurrence per site. Path targets use the target
+//! path's span; `-> DONE`/`-> END` use the divert statement's span. The only
+//! edges without occurrences are HIR-synthesized `DONE`/`END` diverts that
+//! have no syntax pointer (none are currently synthesized).
+//!
 //! Ordering is deterministic: nodes sort by id, edges by `(from, to, kind)`,
-//! independent of input order (the HashMap-iteration rule).
+//! occurrences by `(file, range)` — independent of input order (the
+//! HashMap-iteration rule).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,6 +36,7 @@ use brink_ir::{
     Block, Conditional, Content, ContentPart, DivertPath, DivertTarget, FileId, HirFile, Sequence,
     Stmt, SymbolKind,
 };
+use brink_syntax::ast::SyntaxNodePtr;
 use rowan::TextRange;
 
 /// Node id of the `END` pseudo-node.
@@ -78,14 +87,27 @@ pub struct StoryGraphNode {
     pub parent: Option<String>,
 }
 
+/// A source site that produced an edge: the span of the divert's target
+/// path, or the whole divert statement for `-> DONE`/`-> END`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EdgeOccurrence {
+    /// The file containing the divert site.
+    pub file: FileId,
+    /// Byte span of the site within `file`.
+    pub range: TextRange,
+}
+
 /// A directed edge in the story graph.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoryGraphEdge {
     /// Source node id.
     pub from: String,
     /// Target node id.
     pub to: String,
     pub kind: StoryEdgeKind,
+    /// The divert sites that produced this edge, sorted by `(file, range)`
+    /// and deduplicated. An aggregated edge keeps one entry per site.
+    pub occurrences: Vec<EdgeOccurrence>,
 }
 
 /// The whole-project story graph. Nodes are sorted by id, edges by
@@ -102,7 +124,7 @@ pub fn story_graph(analysis: &AnalysisResult, files: &[(FileId, &HirFile)]) -> S
     let mut builder = Builder {
         analysis,
         nodes: BTreeMap::new(),
-        edges: BTreeSet::new(),
+        edges: BTreeMap::new(),
     };
     // Walk files in FileId order so duplicate-definition ties (already a
     // diagnostic) break deterministically.
@@ -114,12 +136,19 @@ pub fn story_graph(analysis: &AnalysisResult, files: &[(FileId, &HirFile)]) -> S
     builder.finish()
 }
 
+/// Edge identity: `(from, to, kind)`. `BTreeMap` keys keep edges sorted.
+type EdgeKey = (String, String, StoryEdgeKind);
+/// Occurrence as an orderable tuple: `(file, start, end)` — `TextRange`
+/// itself isn't `Ord`, so occurrences sort/dedupe in this form.
+type OccKey = (FileId, u32, u32);
+
 struct Builder<'a> {
     analysis: &'a AnalysisResult,
     /// Keyed by node id — `BTreeMap` so the final node list is sorted.
     nodes: BTreeMap<String, StoryGraphNode>,
-    /// `BTreeSet` dedupes aggregated edges and keeps them sorted.
-    edges: BTreeSet<StoryGraphEdge>,
+    /// Aggregated edges: the inner `BTreeSet` dedupes and sorts each edge's
+    /// source occurrences.
+    edges: BTreeMap<EdgeKey, BTreeSet<OccKey>>,
 }
 
 impl Builder<'_> {
@@ -131,7 +160,19 @@ impl Builder<'_> {
         let edges: Vec<StoryGraphEdge> = self
             .edges
             .into_iter()
-            .filter(|e| nodes_by_id.contains_key(&e.to))
+            .filter(|((_, to, _), _)| nodes_by_id.contains_key(to))
+            .map(|((from, to, kind), occs)| StoryGraphEdge {
+                from,
+                to,
+                kind,
+                occurrences: occs
+                    .into_iter()
+                    .map(|(file, start, end)| EdgeOccurrence {
+                        file,
+                        range: TextRange::new(start.into(), end.into()),
+                    })
+                    .collect(),
+            })
             .collect();
         StoryGraph {
             nodes: nodes_by_id.into_values().collect(),
@@ -186,15 +227,18 @@ impl Builder<'_> {
                     } else {
                         StoryEdgeKind::Divert
                     };
-                    self.add_edge(file, owner, &d.target, kind);
+                    let stmt_range = d.ptr.as_ref().map(SyntaxNodePtr::text_range);
+                    self.add_edge(file, owner, &d.target, kind, stmt_range);
                 }
                 Stmt::TunnelCall(tc) => {
+                    let stmt_range = Some(tc.ptr.text_range());
                     for target in &tc.targets {
-                        self.add_edge(file, owner, target, StoryEdgeKind::Tunnel);
+                        self.add_edge(file, owner, target, StoryEdgeKind::Tunnel, stmt_range);
                     }
                 }
                 Stmt::ThreadStart(ts) => {
-                    self.add_edge(file, owner, &ts.target, StoryEdgeKind::Thread);
+                    let stmt_range = Some(ts.ptr.text_range());
+                    self.add_edge(file, owner, &ts.target, StoryEdgeKind::Thread, stmt_range);
                 }
                 Stmt::ChoiceSet(cs) => {
                     for choice in &cs.choices {
@@ -255,28 +299,38 @@ impl Builder<'_> {
         }
     }
 
-    fn add_edge(&mut self, file: FileId, from: &str, target: &DivertTarget, kind: StoryEdgeKind) {
-        let to = match &target.path {
+    /// Record an edge and its source occurrence. Path targets anchor the
+    /// occurrence on the target path's span; `DONE`/`END` fall back to the
+    /// divert statement's span (`stmt_range`), which is absent only on
+    /// HIR-synthesized diverts.
+    fn add_edge(
+        &mut self,
+        file: FileId,
+        from: &str,
+        target: &DivertTarget,
+        kind: StoryEdgeKind,
+        stmt_range: Option<TextRange>,
+    ) {
+        let (to, span) = match &target.path {
             DivertPath::Done => {
                 self.ensure_pseudo(DONE_NODE_ID, StoryNodeKind::Done);
-                DONE_NODE_ID.to_owned()
+                (DONE_NODE_ID.to_owned(), stmt_range)
             }
             DivertPath::End => {
                 self.ensure_pseudo(END_NODE_ID, StoryNodeKind::End);
-                END_NODE_ID.to_owned()
+                (END_NODE_ID.to_owned(), stmt_range)
             }
             DivertPath::Path(path) => {
                 let Some(to) = self.resolve_target(file, path.range) else {
                     return;
                 };
-                to
+                (to, Some(path.range))
             }
         };
-        self.edges.insert(StoryGraphEdge {
-            from: from.to_owned(),
-            to,
-            kind,
-        });
+        let occurrences = self.edges.entry((from.to_owned(), to, kind)).or_default();
+        if let Some(range) = span {
+            occurrences.insert((file, range.start().into(), range.end().into()));
+        }
     }
 
     fn ensure_pseudo(&mut self, id: &str, kind: StoryNodeKind) {
@@ -533,6 +587,90 @@ VAR somewhere = -> alpha
             edge_triples(&graph),
             vec![("alpha", END_NODE_ID, StoryEdgeKind::Divert)]
         );
+    }
+
+    #[test]
+    fn edge_occurrences_point_at_divert_sites() {
+        let graph = graph_for(&[("main.ink", MAIN), ("east.ink", EAST)]);
+        let edge = |from: &str, to: &str, kind: StoryEdgeKind| {
+            graph
+                .edges
+                .iter()
+                .find(|e| e.from == from && e.to == to && e.kind == kind)
+                .expect("missing edge")
+        };
+        let occ_texts = |from, to, kind, src: &str| -> Vec<String> {
+            edge(from, to, kind)
+                .occurrences
+                .iter()
+                .map(|o| src[std::ops::Range::<usize>::from(o.range)].to_owned())
+                .collect()
+        };
+
+        // Path targets anchor on the target path's span — cross-file too.
+        assert_eq!(
+            occ_texts("east.gate", "hub", StoryEdgeKind::Divert, EAST),
+            vec!["hub.mark"]
+        );
+        assert_eq!(
+            occ_texts("start", "east.gate", StoryEdgeKind::Choice, MAIN),
+            vec!["east.gate"]
+        );
+        // Thread and tunnel sites.
+        assert_eq!(
+            occ_texts("hub", "ambient", StoryEdgeKind::Thread, MAIN),
+            vec!["ambient"]
+        );
+        assert_eq!(
+            occ_texts("hub", "trinket", StoryEdgeKind::Tunnel, MAIN),
+            vec!["trinket"]
+        );
+        // DONE/END edges fall back to the divert statement's span.
+        assert_eq!(
+            occ_texts("hub", END_NODE_ID, StoryEdgeKind::Divert, MAIN),
+            vec!["-> END"]
+        );
+
+        // Occurrences carry the file of the divert site, not the target.
+        let cross = edge("east.gate", "hub", StoryEdgeKind::Divert);
+        let east_file = graph
+            .nodes
+            .iter()
+            .find(|n| n.id == "east")
+            .and_then(|n| n.file)
+            .expect("east file");
+        assert_eq!(cross.occurrences[0].file, east_file);
+    }
+
+    #[test]
+    fn aggregated_edges_keep_one_occurrence_per_site() {
+        let src = "\
+=== top ===
+* [A] -> beta
+* [B] -> beta
+* [C] -> beta
+
+=== beta ===
+-> DONE
+";
+        let graph = graph_for(&[("w.ink", src)]);
+        let edge = graph
+            .edges
+            .iter()
+            .find(|e| e.from == "top" && e.to == "beta")
+            .expect("choice edge");
+        assert_eq!(edge.kind, StoryEdgeKind::Choice);
+        // One deduplicated edge, but all three sites preserved, in order.
+        let starts: Vec<u32> = edge
+            .occurrences
+            .iter()
+            .map(|o| o.range.start().into())
+            .collect();
+        assert_eq!(starts.len(), 3);
+        assert!(starts.windows(2).all(|w| w[0] < w[1]), "sorted: {starts:?}");
+        for o in &edge.occurrences {
+            assert_eq!(&src[std::ops::Range::<usize>::from(o.range)], "beta");
+        }
     }
 
     #[test]

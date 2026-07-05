@@ -421,9 +421,11 @@ export class EditorSessionHandle {
 
   /**
    * Whole-project story graph (studio-shell spec §4.1): knot/stitch nodes
-   * plus END/DONE pseudo-nodes, and divert/choice/tunnel/thread edges.
-   * Deterministically ordered; recomputed per call (call after a compile,
-   * like the outline). Returns null when no analysis is available.
+   * plus END/DONE pseudo-nodes, and divert/choice/tunnel/thread edges. Each
+   * edge lists the source occurrences (divert sites, UTF-16 spans) that
+   * produced it (#371). Deterministically ordered; recomputed per call
+   * (call after a compile, like the outline). Returns null when no analysis
+   * is available.
    */
   getStoryGraph(): StoryGraph | null {
     const json = this.session.story_graph();
