@@ -150,6 +150,19 @@ export type {
   SearchResultsBufferOptions,
 } from "./search-results-buffer.js";
 
+// Extensible inline-markup rules (#367): host-registered patterns decorated
+// as `brink-markup-<name>` marks, scoped to the narrative content regions of
+// classified lines (never over ink syntax). Ships zero rules by default;
+// `rmmzAngleTagRule` is the optional angle-tag preset. `contentRegions` is the
+// pure, unit-testable scoping core.
+export { inlineMarkup, contentRegions, rmmzAngleTagRule } from "./inline-markup.js";
+export type {
+  InlineMarkupRule,
+  InlineMarkupPatternRule,
+  InlineMarkupPairRule,
+  MarkupRegion,
+} from "./inline-markup.js";
+
 // Find panel (#319 Track N): opt-in @codemirror/search factory. Not auto-enabled
 // in the studio editor — hosts opt in by adding the returned extension.
 export { findPanel } from "./find-panel.js";
