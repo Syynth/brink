@@ -628,6 +628,43 @@ describe("DocumentSessions", () => {
       expect(view.state.selection.main.head).toBe(view.state.doc.length);
     });
 
+    it("clamps corrupted negative offsets instead of throwing on mount", () => {
+      harness.documents.restoreViewState("main.ink", {
+        anchor: -5,
+        head: -5,
+        scrollTop: -10,
+      });
+      const { view } = harness.mount("main.ink", "group-1"); // must not throw
+      expect(view.state.selection.main.head).toBe(0);
+      expect(view.scrollDOM.scrollTop).toBe(0);
+    });
+
+    it("restores a split view per pane when groupId is given", () => {
+      // Same doc open in two groups with different persisted states —
+      // restoreViewState must address slots the way viewState reads them.
+      harness.documents.restoreViewState("main.ink", { anchor: 2, head: 6, scrollTop: 10 }, "group-1");
+      harness.documents.restoreViewState("main.ink", { anchor: 9, head: 14, scrollTop: 30 }, "group-2");
+
+      const a = harness.mount("main.ink", "group-1");
+      const b = harness.mount("main.ink", "group-2");
+      expect(a.view.state.selection.main.anchor).toBe(2);
+      expect(a.view.state.selection.main.head).toBe(6);
+      expect(a.view.scrollDOM.scrollTop).toBe(10);
+      expect(b.view.state.selection.main.anchor).toBe(9);
+      expect(b.view.state.selection.main.head).toBe(14);
+      expect(b.view.scrollDOM.scrollTop).toBe(30);
+    });
+
+    it("prunes undelivered restores for closed tabs in retainSlots", () => {
+      // Queue a restore for a tab, then declare it closed before it mounts:
+      // the entry must not survive to fire on a much-later remount.
+      harness.documents.restoreViewState("main.ink", { anchor: 3, head: 9, scrollTop: 25 });
+      harness.documents.retainSlots(new Set(), new Set()); // main.ink no longer open
+
+      const { view } = harness.mount("main.ink", "group-1");
+      expect(view.state.selection.main.head).toBe(0); // stale restore did not fire
+    });
+
     it("keeps the scroll snapshot across an in-session remount", () => {
       const mounted = harness.mount("main.ink", "group-1");
       mounted.view.scrollDOM.scrollTop = 33;

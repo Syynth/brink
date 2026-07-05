@@ -73,6 +73,22 @@ Data-loss prevention lives in `ProjectSession` + `FileChangeHub`, not in any UI:
 `compileProject` · `dirtyPaths` / `markAllSaved` / `save` · the conflict methods above ·
 `refreshIncludes` · `initialize` / `destroy`.
 
+## `DocumentSessions` view-state persistence (#347)
+
+Per-tab cursor + scroll save/restore across app reloads:
+
+- `viewState(docKey, groupId?) → { anchor, head, scrollTop } | null` — snapshot seam. Works for
+  **every open tab**: mounted views read live; backgrounded tabs read their cached `EditorState`
+  (selection) plus the scroll snapshotted at unmount. `groupId` addresses one `(docKey, groupId)`
+  slot exactly (split views); without it, prefers focused → mounted → cached.
+- `restoreViewState(docKey, snapshot, groupId?)` — applied on next mount (or immediately when
+  mounted), no focus steal, offsets clamped so stale/corrupted snapshots degrade instead of
+  throwing. Pass `groupId` to restore each pane of a split view independently.
+- `revealAt(docKey, offset)` remains the "jump to a diagnostic" primitive (focus + center scroll).
+
+Persistence loop: on quit, `viewState` every open tab into your session blob; on boot, reopen the
+tab set, then `restoreViewState` each entry.
+
 ## `@brink-lang/web` structural ops (all return `StructuralResult`)
 
 After #316 every mutating structural op returns one shape —
