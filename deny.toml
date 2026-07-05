@@ -15,6 +15,12 @@ ignore = [
     # `ttf-parser` is unmaintained but has no known vulnerability; transitive via the
     # bevy / wgpu font stack. Re-evaluate on the next dep bump.
     "RUSTSEC-2026-0192",
+    # quick-xml < 0.41 quadratic run time on hostile XML (duplicate-attribute check /
+    # namespace resolution). We only parse local XLIFF translation files, never
+    # attacker-controlled input. Remove both when quick-xml is bumped to >= 0.41
+    # (tracked follow-up; the 0.39 -> 0.41 migration has API churn).
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]
 
 [licenses]

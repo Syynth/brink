@@ -371,7 +371,10 @@ windows: id, alignment, priority, component):
   `--bs-shadow-strong`), severity/status (`--bs-error`, `--bs-warning`, `--bs-success`,
   `--bs-info`), story symbols (`--bs-symbol-{file,knot,stitch,function}`), and syntax
   (`--bs-syn-*`, one per `tok-*` class). Alpha variants (hovers, selections, glows)
-  derive in component CSS via `color-mix()` over tokens — themes define base colors only.
+  derive in component CSS as `rgb(var(--bs-X-rgb) / N%)` over per-theme sRGB triplet
+  tokens — not `color-mix()`, which Chromium 88 (RMMZ/NW.js) lacks (#276); themes also
+  precompute the few opaque two-color mixes (`--bs-graph-*`, `--bs-conflict-banner-bg`,
+  `--bs-active-line-bg`).
 - **Theme mechanism:** themes are CSS files in
   [studio-shell/src/styles/themes/](../packages/studio-shell/src/styles/themes/) defining
   the tokens under a `[data-theme="<id>"]` scope on the `.brink-studio` root; Catppuccin

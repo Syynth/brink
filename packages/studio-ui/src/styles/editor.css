@@ -49,11 +49,15 @@
   background: var(--bs-surface-bg);
 }
 .brink-studio .editor .cm-editor .cm-activeLine {
-  background: color-mix(in srgb, var(--bs-surface-bg) 60%, transparent);
+  background: var(--bs-active-line-bg, var(--bs-surface-bg));
 }
+/* Behind-text layer: solid token + layer opacity, not color-mix() —
+   Chromium 88 (RMMZ/NW.js) drops color-mix(), leaving selection with no
+   fill at all (#276). Composites the same as a 25%-alpha accent fill. */
 .brink-studio .editor .cm-editor .cm-selectionBackground,
 .brink-studio .editor .cm-editor.cm-focused .cm-selectionBackground {
-  background: color-mix(in srgb, var(--bs-accent) 25%, transparent) !important;
+  background: var(--bs-accent) !important;
+  opacity: 0.25;
 }
 .brink-studio .editor .cm-editor .cm-cursor {
   border-left-color: var(--bs-accent);
@@ -86,7 +90,7 @@
   top: 0;
   left: calc(-1 * var(--editor-margin));
   right: calc(-1 * var(--editor-margin));
-  border-top: 1px solid color-mix(in srgb, var(--bs-border) 60%, transparent);
+  border-top: 1px solid rgb(var(--bs-border-rgb) / 60%);
   pointer-events: none;
 }
 .brink-studio .cm-line.brink-stitch-header {
@@ -161,7 +165,7 @@
 }
 /* Choice bracket styling */
 .brink-studio .brink-choice-bracket {
-  background: color-mix(in srgb, var(--bs-accent) 8%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 8%);
 }
 /* Semantic token classes */
 .brink-studio .tok-namespace { color: var(--bs-syn-namespace); }
@@ -198,7 +202,7 @@
   color: var(--bs-fg);
 }
 .brink-studio .cm-tooltip-lint .cm-diagnostic + .cm-diagnostic {
-  border-top: 1px solid color-mix(in srgb, var(--bs-border) 55%, transparent);
+  border-top: 1px solid rgb(var(--bs-border-rgb) / 55%);
 }
 .brink-studio .cm-tooltip-lint .cm-diagnostic-error {
   border-left-color: var(--bs-error);
@@ -254,22 +258,22 @@
   color: var(--bs-fg);
 }
 .brink-studio .cm-editor .cm-searchMatch {
-  background: color-mix(in srgb, var(--bs-accent) 25%, transparent);
-  outline: 1px solid color-mix(in srgb, var(--bs-accent) 50%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 25%);
+  outline: 1px solid rgb(var(--bs-accent-rgb) / 50%);
 }
 .brink-studio .cm-editor .cm-searchMatch.cm-searchMatch-selected {
-  background: color-mix(in srgb, var(--bs-warning) 40%, transparent);
+  background: rgb(var(--bs-warning-rgb) / 40%);
 }
 .brink-studio .cm-editor .cm-selectionMatch {
-  background: color-mix(in srgb, var(--bs-success) 20%, transparent);
+  background: rgb(var(--bs-success-rgb) / 20%);
 }
 .brink-studio .cm-editor .cm-matchingBracket,
 .brink-studio .cm-editor.cm-focused .cm-matchingBracket {
-  background: color-mix(in srgb, var(--bs-accent) 25%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 25%);
 }
 .brink-studio .cm-editor .cm-nonmatchingBracket,
 .brink-studio .cm-editor.cm-focused .cm-nonmatchingBracket {
-  background: color-mix(in srgb, var(--bs-error) 25%, transparent);
+  background: rgb(var(--bs-error-rgb) / 25%);
 }
 .brink-studio .cm-editor .cm-foldPlaceholder {
   background: var(--bs-panel-bg);
@@ -315,7 +319,7 @@
   line-height: 1.5;
   padding-bottom: 6px;
   margin-bottom: 1px;
-  border-bottom: 1px solid color-mix(in srgb, var(--bs-border) 55%, transparent);
+  border-bottom: 1px solid rgb(var(--bs-border-rgb) / 55%);
 }
 .brink-studio .brink-hover-tooltip code {
   background: var(--bs-surface-bg);
@@ -360,7 +364,7 @@
   color: var(--bs-fg-muted);
   font-size: 0.85em;
   font-style: italic;
-  background: color-mix(in srgb, var(--bs-fg-muted) 15%, transparent);
+  background: rgb(var(--bs-fg-muted-rgb) / 15%);
   border-radius: 2px;
   padding: 0 3px;
   margin-left: 2px;
@@ -370,7 +374,7 @@
 .brink-studio .brink-value-chip {
   font-size: 0.85em;
   color: var(--bs-fg-muted);
-  background: color-mix(in srgb, var(--bs-fg-muted) 15%, transparent);
+  background: rgb(var(--bs-fg-muted-rgb) / 15%);
   border: 1px solid transparent;
   border-radius: 3px;
   padding: 0 3px;
@@ -380,7 +384,7 @@
 .brink-studio .brink-value-chip:hover {
   color: var(--bs-fg);
   border-color: var(--bs-accent, var(--bs-border));
-  background: color-mix(in srgb, var(--bs-accent, var(--bs-fg-muted)) 18%, transparent);
+  background: rgb(var(--bs-accent-rgb, var(--bs-fg-muted-rgb)) / 18%);
 }
 /* Value-list dropdown picker (mounted in the studio-root popover). */
 .brink-value-picker {
@@ -457,7 +461,7 @@
   color: var(--bs-fg-muted);
   font-style: italic;
   opacity: 0.75;
-  background: color-mix(in srgb, var(--bs-fg-muted) 12%, transparent);
+  background: rgb(var(--bs-fg-muted-rgb) / 12%);
   border: 1px dashed var(--bs-border);
   border-radius: 3px;
   padding: 0 3px;
@@ -478,7 +482,7 @@
   padding: 0 5px;
   font-size: 0.85em;
   color: var(--bs-fg-muted);
-  background: color-mix(in srgb, var(--bs-accent, var(--bs-fg-muted)) 14%, transparent);
+  background: rgb(var(--bs-accent-rgb, var(--bs-fg-muted-rgb)) / 14%);
   border: 1px solid var(--bs-border);
   border-radius: 3px;
   cursor: pointer;
@@ -540,7 +544,7 @@
   cursor: pointer;
 }
 .host-example-map-cell:hover {
-  background: color-mix(in srgb, var(--bs-accent, var(--bs-fg-muted)) 30%, transparent);
+  background: rgb(var(--bs-accent-rgb, var(--bs-fg-muted-rgb)) / 30%);
 }
 .host-example-map-cell[aria-current="true"] {
   background: var(--bs-accent, var(--bs-fg-muted));
@@ -574,7 +578,7 @@
 .brink-studio .brink-form-glyph:hover {
   opacity: 1;
   color: var(--bs-accent, var(--bs-fg));
-  background: color-mix(in srgb, var(--bs-accent, var(--bs-fg-muted)) 16%, transparent);
+  background: rgb(var(--bs-accent-rgb, var(--bs-fg-muted-rgb)) / 16%);
 }
 /* Hover mode: the glyph reserves no space until the line is hovered, then it
    reveals (a brief reflow), rather than sitting as a permanent invisible gap. */
@@ -856,7 +860,7 @@
 }
 /* Reference highlights */
 .brink-studio .brink-reference-highlight {
-  background: color-mix(in srgb, var(--bs-accent) 20%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 20%);
   border-bottom: 1px solid var(--bs-accent);
 }
 /* Code actions menu */
