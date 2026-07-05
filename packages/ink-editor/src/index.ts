@@ -77,7 +77,12 @@ export {
   docTitleFor,
   parseDocKey,
 } from "./document-sessions.js";
-export type { DocTarget, DocumentCallbacks, KeyHint } from "./document-sessions.js";
+export type {
+  DocTarget,
+  DocumentCallbacks,
+  KeyHint,
+  ViewStateSnapshot,
+} from "./document-sessions.js";
 
 // Project session
 export { ProjectSession } from "./project-session.js";
