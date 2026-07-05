@@ -111,6 +111,45 @@ describe("assignOptionPaths (pure post-pass)", () => {
     expect(paths(infos)).toEqual([[0], [1], [2], [2, 0]]);
   });
 
+  it("skipped-depth siblings replace each other instead of nesting", () => {
+    // Valid ink can open at depth 2 with no depth-1 parent (`* *` directly):
+    // a sibling `* *` must pop the previous one, not nest under it.
+    const infos = [
+      li(ElementType.Choice, 2), // * * A   → [0]
+      li(ElementType.Choice, 2), // * * B   → [1]  (NOT [0, 1])
+      li(ElementType.ChoiceBody, 2), //      → [1]
+    ];
+    assignOptionPaths(infos);
+    expect(paths(infos)).toEqual([[0], [1], [1]]);
+  });
+
+  it("depth jumps keep lineage and depth separate", () => {
+    const infos = [
+      li(ElementType.Choice, 1), // * A         → [0]
+      li(ElementType.Choice, 3), // * * * a     → [0, 0]  (lineage skips depth 2)
+      li(ElementType.Choice, 3), // * * * b     → [0, 1]
+      li(ElementType.Gather, 2), // - -          (closes depth ≥ 2; A stays open)
+      li(ElementType.ChoiceBody, 1), //          → [0]
+      li(ElementType.Choice, 1), // * B         → [1]
+    ];
+    assignOptionPaths(infos);
+    expect(paths(infos)).toEqual([[0], [0, 0], [0, 1], undefined, [0], [1]]);
+  });
+
+  it("screenplay retypes inside an open option inherit its path", () => {
+    const infos = [
+      li(ElementType.Choice, 1), // * A                 → [0]
+      li(ElementType.Character, 1), //   @Bob:<>         → [0]
+      li(ElementType.Parenthetical, 1), //   (soft)<>    → [0]
+      li(ElementType.Dialogue, 1), //   Hello.           → [0]
+      li(ElementType.Gather, 1), // -                     (closes)
+      li(ElementType.Character), // @Ann:<> top-level    → no path
+      li(ElementType.Dialogue), // Hi.                   → no path
+    ];
+    assignOptionPaths(infos);
+    expect(paths(infos)).toEqual([[0], [0], [0], [0], undefined, undefined, undefined]);
+  });
+
   it("resets the weave at knot and stitch headers", () => {
     const infos = [
       li(ElementType.Choice, 1), // * A       → [0]

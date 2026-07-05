@@ -208,8 +208,12 @@ function classifyLine(text: string): LineInfo {
 
 /** Mutates `infos` in place, setting `optionPath` on Choice/ChoiceBody lines. */
 export function assignOptionPaths(infos: LineInfo[]): void {
-  // path[k] = index of the currently open option whose lineage position is k.
-  const path: number[] = [];
+  // Open options, outermost first. Each entry remembers its weave DEPTH
+  // (sigil count) separately from its lineage position: valid ink can skip
+  // depths (`*` straight to `* * *`), so lineage length and depth are not
+  // interchangeable — a sibling at depth d must pop every open option at
+  // depth >= d, however deep the lineage runs.
+  const open: Array<{ depth: number; index: number }> = [];
   // counters[d - 1] = next option index for the open group at weave depth d.
   const counters: number[] = [];
 
@@ -217,33 +221,39 @@ export function assignOptionPaths(infos: LineInfo[]): void {
     switch (info.type) {
       case ElementType.KnotHeader:
       case ElementType.StitchHeader:
-        path.length = 0;
+        open.length = 0;
         counters.length = 0;
         break;
 
       case ElementType.Choice: {
         const d = Math.max(1, info.depth);
-        // Close options deeper than this one; keep the depth-d group counting.
-        if (path.length >= d) path.length = d - 1;
+        // Close options at this depth or deeper; keep the depth-d group counting.
+        while (open.length > 0 && open[open.length - 1].depth >= d) open.pop();
         if (counters.length > d) counters.length = d;
         while (counters.length < d) counters.push(0);
         const index = counters[d - 1];
         counters[d - 1] = index + 1;
-        path.push(index);
-        info.optionPath = [...path];
+        open.push({ depth: d, index });
+        info.optionPath = open.map((o) => o.index);
         break;
       }
 
       case ElementType.Gather: {
         const d = Math.max(1, info.depth);
         // A gather at depth d closes its level's group and everything deeper.
-        if (path.length >= d) path.length = d - 1;
+        while (open.length > 0 && open[open.length - 1].depth >= d) open.pop();
         if (counters.length >= d) counters.length = d - 1;
         break;
       }
 
       case ElementType.ChoiceBody:
-        if (path.length > 0) info.optionPath = [...path];
+      // Screenplay retypes (cue/parenthetical/dialogue) inside an open option
+      // are still body lines — without a path they'd punch holes in the
+      // per-branch rail the feature exists to enable.
+      case ElementType.Character:
+      case ElementType.Parenthetical:
+      case ElementType.Dialogue:
+        if (open.length > 0) info.optionPath = open.map((o) => o.index);
         break;
 
       default:
