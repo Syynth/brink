@@ -42,7 +42,12 @@ function mount(
 }
 
 function markerEls(v: EditorView): HTMLElement[] {
-  return Array.from(v.dom.querySelectorAll<HTMLElement>(".brink-host-gutter-marker"));
+  // Exclude the column-reserving spacer — it's layout plumbing, not a marker.
+  return Array.from(
+    v.dom.querySelectorAll<HTMLElement>(
+      ".brink-host-gutter-marker:not(.brink-host-gutter-spacer)",
+    ),
+  );
 }
 
 describe("hostGutterExtension", () => {
@@ -103,8 +108,34 @@ describe("hostGutterExtension", () => {
     );
     const el = markerEls(v)[0];
     expect(el.tagName).toBe("BUTTON");
-    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(order).toEqual(["own:2", "shared:●:2"]);
+  });
+
+  it("ignores right/middle mousedown and activates via keyboard click", () => {
+    const order: string[] = [];
+    const v = mount("one", () => [{ line: 1, text: "●", onClick: (l) => order.push(`c:${l}`) }]);
+    const el = markerEls(v)[0];
+    // Right-button mousedown passes through: no activation, not consumed.
+    const rightDown = new MouseEvent("mousedown", { bubbles: true, button: 2, cancelable: true });
+    el.dispatchEvent(rightDown);
+    expect(rightDown.defaultPrevented).toBe(false);
+    expect(order).toEqual([]);
+    // Keyboard activation on a focused <button> dispatches a click event.
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(order).toEqual(["c:1"]);
+  });
+
+  it("reserves the gutter column with a hidden spacer", () => {
+    const v = mount("one", () => []);
+    expect(v.dom.querySelector(".brink-host-gutter-spacer")).not.toBeNull();
+  });
+
+  it("degrades a non-array host return to no markers instead of throwing", () => {
+    // A plain-JS host (no TS checking) can return undefined on some path.
+    const misbehaving = (() => undefined) as unknown as () => HostGutterMarker[];
+    const v = mount("one", misbehaving);
+    expect(markerEls(v)).toHaveLength(0);
   });
 
   it("renders a non-interactive span when no click handler is wired", () => {

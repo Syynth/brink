@@ -92,7 +92,7 @@ class HostMarker extends GutterMarker {
   override toDOM(): HTMLElement {
     const { marker } = this;
     const clickable = marker.onClick !== undefined || this.onGutterMarkerClick !== undefined;
-    const el = document.createElement(clickable ? "button" : "span");
+    const el: HTMLElement = document.createElement(clickable ? "button" : "span");
     el.className = marker.className
       ? `brink-host-gutter-marker ${marker.className}`
       : "brink-host-gutter-marker";
@@ -102,14 +102,42 @@ class HostMarker extends GutterMarker {
       el.setAttribute("aria-label", marker.title);
     }
     if (clickable) {
+      // Primary-button mousedown only keeps the editor from grabbing the
+      // event (selection/focus shift); activation happens on `click`, which
+      // also fires for keyboard Enter/Space on the <button>. Right/middle
+      // clicks pass through untouched (context menu, paste-scroll).
       el.addEventListener("mousedown", (event) => {
-        // Keep the editor from grabbing the event (selection/focus shift).
+        if (event.button !== 0) return;
         event.preventDefault();
         event.stopPropagation();
+      });
+      el.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        // Note: the delivered marker is field-equal to the host's latest
+        // array entry but not necessarily identity-equal (field-equal markers
+        // reuse their DOM across refreshes) — key handler state by `line` or
+        // marker fields, not object identity.
         marker.onClick?.(marker.line);
         this.onGutterMarkerClick?.(marker, marker.line);
       });
     }
+    return el;
+  }
+}
+
+/** Invisible spacer reserving the gutter column so the text doesn't shift
+ *  when the first marker appears / last marker disappears (same pattern as
+ *  the play-from-here gutter). */
+class HostGutterSpacer extends GutterMarker {
+  override eq(): boolean {
+    return true;
+  }
+
+  override toDOM(): HTMLElement {
+    const el = document.createElement("span");
+    el.className = "brink-host-gutter-marker brink-host-gutter-spacer";
+    el.textContent = "●";
     return el;
   }
 }
@@ -123,6 +151,9 @@ function buildMarkers(state: EditorState, options: HostGutterOptions): RangeSet<
   } catch {
     return RangeSet.empty;
   }
+  // A misbehaving plain-JS host returning a non-array must degrade to "no
+  // markers", not throw inside a StateField update and break the editor.
+  if (!Array.isArray(markers)) return RangeSet.empty;
   const valid = markers
     .filter((m) => Number.isInteger(m.line) && m.line >= 1 && m.line <= state.doc.lines)
     .map((marker, index) => ({ marker, index }))
@@ -149,6 +180,9 @@ export function hostGutterExtension(options: HostGutterOptions): Extension {
   const hostGutter = gutter({
     class: "brink-host-gutter",
     markers: (view) => view.state.field(markersField),
+    // Reserve the column so text doesn't shift when the first marker
+    // appears or the last one disappears.
+    initialSpacer: () => new HostGutterSpacer(),
   });
 
   return [markersField, hostGutter, hostGutterTheme];
@@ -168,5 +202,8 @@ const hostGutterTheme = EditorView.baseTheme({
   },
   "button.brink-host-gutter-marker": {
     cursor: "pointer",
+  },
+  ".brink-host-gutter-spacer": {
+    visibility: "hidden",
   },
 });
