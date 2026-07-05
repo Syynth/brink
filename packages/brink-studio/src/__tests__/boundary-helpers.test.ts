@@ -100,8 +100,12 @@ describe("studio packages reuse the canonical helpers", () => {
 
 describe("CompileResult module identity", () => {
   it("editor and web CompileResult/Diagnostic are mutually assignable", () => {
-    // Type-level assertion: assignment in both directions compiles only if
-    // the editor re-export is the same type as @brink-lang/web's.
+    // Type-level assertion. Note the honest limit: TypeScript's structural
+    // typing means a divergent-but-structurally-identical copy would also
+    // pass — this catches the shapes drifting apart, not a replaced
+    // re-export. True module identity is enforced by review: the editor's
+    // index.ts must re-export these types from @brink-lang/web, never
+    // redeclare them.
     const result: EditorCompileResult = { ok: true };
     const asWeb: WebCompileResult = result;
     const back: EditorCompileResult = asWeb;
