@@ -5,6 +5,8 @@
  * Pure DOM so it can mount inside the CodeMirror-anchored popover.
  */
 
+import { ensureStructuralStyles } from "./structural-styles.js";
+
 interface Rgb {
   r: number;
   g: number;
@@ -118,6 +120,7 @@ export function mountColorPicker(
   initialHex: string,
   onChange: (hex: string) => void,
 ): ColorPickerUi {
+  ensureStructuralStyles();
   let hsv = rgbToHsv(hexToRgb(initialHex) ?? { r: 0, g: 0, b: 0 });
 
   const root = document.createElement("div");
@@ -151,7 +154,7 @@ export function mountColorPicker(
     const sw = document.createElement("button");
     sw.type = "button";
     sw.className = "brink-cp-preset";
-    sw.style.background = p;
+    sw.style.setProperty("--brink-cp-color", p);
     sw.title = p;
     sw.addEventListener("click", () => {
       hsv = rgbToHsv(hexToRgb(p) ?? { r: 0, g: 0, b: 0 });
@@ -171,10 +174,12 @@ export function mountColorPicker(
   // empty until the user actually picks; Escape leaves the slot untouched).
   function syncFromHsv(editText: boolean, emit: boolean): void {
     const hex = currentHex();
-    sv.style.background = `linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, hsl(${hsv.h} 100% 50%)), #fff`;
-    svThumb.style.left = `${hsv.s * 100}%`;
-    svThumb.style.top = `${(1 - hsv.v) * 100}%`;
-    svThumb.style.background = hex;
+    // Model values ride on custom properties; the structural stylesheet's
+    // class rules render them (hosts can restyle everything else, #363).
+    sv.style.setProperty("--brink-cp-hue", String(hsv.h));
+    svThumb.style.setProperty("--brink-cp-x", `${hsv.s * 100}%`);
+    svThumb.style.setProperty("--brink-cp-y", `${(1 - hsv.v) * 100}%`);
+    svThumb.style.setProperty("--brink-cp-color", hex);
     hue.value = String(Math.round(hsv.h));
     if (editText) hexInput.value = hex;
     if (emit) onChange(hex);

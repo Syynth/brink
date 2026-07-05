@@ -9,6 +9,7 @@
 import { openPopover, type PopoverHandle } from "./widget-popover.js";
 import { mountColorPicker, hexToRgb, rgbToHex } from "./color-picker-ui.js";
 import { registerBuiltinWidget, type BuiltinWidget } from "./widget-registry.js";
+import { ensureStructuralStyles } from "./structural-styles.js";
 
 /** Normalize a stored value (`#fff`, `00ff00`, …) to a CSS `#RRGGBB`. */
 export function toDisplayHex(value: string): string {
@@ -23,9 +24,12 @@ export const colorWidget: BuiltinWidget = {
   kind: "color",
 
   renderInline(value: string): HTMLElement {
+    ensureStructuralStyles();
     const swatch = document.createElement("span");
     swatch.className = "brink-color-swatch";
-    swatch.style.background = toDisplayHex(value);
+    // The shown color is data, carried on a custom property — the class rule
+    // consumes it, and hosts can restyle the swatch itself freely (#363).
+    swatch.style.setProperty("--brink-swatch-color", toDisplayHex(value));
     swatch.setAttribute("role", "button");
     swatch.tabIndex = 0;
     swatch.title = `Edit color (${value})`;

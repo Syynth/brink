@@ -36,6 +36,7 @@ import { getBuiltinWidget, getHostWidget, type WidgetEditorHost } from "./widget
 import { openArgumentForm, type FormField, type FormGroup } from "./argument-form.js";
 import { openPopover } from "./widget-popover.js";
 import { openModal } from "./widget-modal.js";
+import { ensureStructuralStyles } from "./structural-styles.js";
 import "./color-widget.js"; // side-effect: registers the built-in "color" widget
 
 /**
@@ -185,14 +186,16 @@ function openFormAtCursor(
   });
   if (!site) return false;
 
+  ensureStructuralStyles();
   const coords = view.coordsAtPos(pos);
   const anchor = document.createElement("div");
-  anchor.style.position = "fixed";
+  // Invisible measurement scaffolding: `.brink-form-anchor`'s class rule pins
+  // it (position: fixed, 1px wide); the cursor rect rides on custom properties.
+  anchor.className = "brink-form-anchor";
   if (coords) {
-    anchor.style.left = `${coords.left}px`;
-    anchor.style.top = `${coords.top}px`;
-    anchor.style.width = "1px";
-    anchor.style.height = `${Math.max(1, coords.bottom - coords.top)}px`;
+    anchor.style.setProperty("--brink-popup-left", `${coords.left}px`);
+    anchor.style.setProperty("--brink-popup-top", `${coords.top}px`);
+    anchor.style.setProperty("--brink-anchor-height", `${Math.max(1, coords.bottom - coords.top)}px`);
   }
   document.body.appendChild(anchor);
   openCallForm(anchor, site, view);

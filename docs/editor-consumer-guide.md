@@ -34,6 +34,7 @@ the editor owns the resulting UX.
 | `prepareRename` + `renameSymbolAt` + `commitRename` (+ `onRenameBreakage`) | **inline rename** (#323) with the live **"⚠ breaks N"** badge (#324) and the inline breakage report | `prepare_rename` + `rename_symbol_at` → `StructuralResult` |
 | `getHover`, `gotoDefinition`, `findReferences`, `getSignatureHelp`, `getInlayHints`, `getArgumentWidgets` | the corresponding LSP-style features | `hover`, `goto_definition`, `find_references*`, … |
 | `onPlayFrom`, `onSymbolContextMenu`, `onNavigateToFile` | host hooks for your own chrome | — |
+| `theme` | the editor skin (#363): absent ⇒ the default `brinkTheme`; `false` ⇒ **headless** (you style the class taxonomy below); an `Extension` ⇒ your own CM theme | — |
 
 Notes on the rename contract (the one with the most moving parts):
 - `renameSymbolAt(offset, newName) => StructuralResult` is called **debounced on each keystroke** to
@@ -93,3 +94,91 @@ gate them all the same way (show the breakage report when `!safe`, apply `cross_
 
 Bottom line: you inherit every feature's substance from the editor + wasm packages and reimplement
 only thin mount glue + your own state/entry-points.
+
+## Styling a headless editor — theme opt-out + the class taxonomy (#363)
+
+The editor is **headless-ready**: every element it renders carries a stable class, and the skin is
+optional. There are three styling layers:
+
+1. **The structural stylesheet** — always on. A tiny stylesheet (`<style
+   id="brink-editor-structural-styles">`) injected once per document, on demand, by the surfaces
+   that need it (also exported as `ensureStructuralStyles(doc?)` for iframe mounts). It carries only
+   *load-bearing* rules — popup `position: fixed` + coordinate plumbing, data-driven widget colors —
+   and every selector is wrapped in `:where(...)` (zero specificity), so **any** host rule overrides
+   it without specificity games.
+2. **`brinkTheme`** — the opt-in skin. The default for `brinkStudio(...)`; references the studio's
+   semantic `--bs-*` tokens. Pass `theme: false` to omit it entirely (headless), or pass your own
+   `Extension` to substitute a CM theme. `DocumentSessions` forwards the same option
+   (`new DocumentSessions(project, callbacks, extraExtensions, { theme: ... })`); brink-studio opts
+   into `brinkTheme` explicitly.
+3. **Your host CSS** — styles the taxonomy below directly. This is the intended integration for
+   embedders (celeris screenplay lens, etc.): no CSS-variable contract, just classes.
+
+### Line element classes — an open scheme
+
+Every non-blank `.cm-line` gets an element class (applied by the screenplay decorations, so it is
+present with zero configuration). The scheme is **open and string-keyed**: classes follow the
+`brink-<kind>` naming scheme, and hosts/dialects may introduce additional kinds — a new kind
+appearing is *not* a breaking change. Style what you know; let unknown kinds fall through to your
+defaults.
+
+Core kinds (stable):
+
+| Class | Line kind |
+|---|---|
+| `brink-knot-header` / `brink-stitch-header` | `=== knot ===` / `= stitch` headers |
+| `brink-narrative` | plain prose |
+| `brink-choice` / `brink-choice-body` | `*`/`+` choice line / its indented body |
+| `brink-gather` | `-` gather |
+| `brink-divert` | `-> target` |
+| `brink-logic` / `brink-var-decl` | `~ ...` / `VAR`/`CONST`/`LIST` |
+| `brink-comment` | `//` and `/* ... */` |
+| `brink-include` / `brink-external` | `INCLUDE ...` / `EXTERNAL ...` |
+| `brink-tag` | `# tag` lines |
+| `brink-character` / `brink-parenthetical` / `brink-dialogue` | screenplay elements (`@Name:<>`, `(beat)<>`, dialogue prose) |
+
+Additive line classes: `brink-section-start` (the first line of a knot's comment+header block).
+
+Two pieces of *data-driven placement* still ride on the line as inline styles (they are computed
+per-line from weave depth / divert shape, not skin): `padding-left` on choices/gathers at depth > 1,
+and `text-align: right` on standalone diverts.
+
+### Structural decoration classes
+
+In-line decorations applied inside `.cm-line` content: `brink-hidden-sigil` (concealed syntax
+sigils), `brink-depth-sigil` (the depth widget replacing nested choice/gather sigils),
+`brink-choice-bracket` (the `[...]` choice-suffix bracket), `brink-fold-decl` /
+`brink-fold-decl-header` (fold affordances), `brink-fold-include` / `brink-fold-include-label` (the
+INCLUDE-block fold, #313).
+
+### Floating surfaces + widget classes
+
+All editor-owned popups/widgets are class-addressed; none carry presentational inline styles.
+Dynamic *values* (popup coordinates, swatch colors) ride on CSS custom properties consumed by the
+structural stylesheet — your CSS can re-consume or ignore them:
+
+| Surface | Classes | Custom properties |
+|---|---|---|
+| Code-actions menu | `brink-code-actions-menu`, `brink-code-action-item` | `--brink-popup-left/top` |
+| Inline element picker (Alt-Enter) | `brink-element-dropdown brink-inline-picker`, `brink-element-dropdown-item`, `brink-element-dropdown-key` | `--brink-popup-left/top` |
+| Widget popover / modal | `brink-widget-popover`, `brink-widget-modal`, `brink-widget-modal-backdrop` | `--brink-popup-left/top` |
+| Argument form | `brink-arg-form`, `brink-arg-form-{row,label,input,select,picker,edit,editor,host,title,buttons,btn,btn-primary}`, `brink-form-anchor` (invisible cursor-anchor scaffolding) | `--brink-popup-left/top`, `--brink-anchor-height` |
+| Inlay hints | `brink-inlay-hint`, `brink-inlay-hint-pad` (trailing gap requested by the hint) | — |
+| Color swatch + picker | `brink-color-swatch`; `brink-cp`, `brink-cp-{sv,sv-thumb,hue,row,hex,presets,preset}` | `--brink-swatch-color`; `--brink-cp-{hue,x,y,color}` |
+| Value-list chip + picker (#224) | `brink-value-chip`, `brink-value-{picker,filter,list,item,item-label,item-detail}` | — |
+| Fill ghost / host chip | `brink-fill-ghost`, `brink-host-chip` | — |
+| Inline rename (#323/#324) | `brink-inline-rename`, `brink-inline-rename-{row,input,badge,force,cancel,report,report-head,report-list,report-item,report-loc,report-msg,report-actions}` | — |
+| Hover / signature help | `brink-hover-tooltip`, `brink-hover-action`; `brink-signature-help`, `brink-sig-{label,active-param,doc}` | — |
+| References / play gutter | `brink-reference-highlight`; `brink-play-gutter`, `brink-play-gutter-icon` | — |
+| Conflict merge view (#320) | `brink-conflict-{banner,message,actions,btn,use-disk,keep-mine,merge,apply-merge,captions,caption,caption-disk,caption-yours}` | — |
+
+Semantic token classes on syntax highlights follow the `tok-<type>` scheme (`tok-function`,
+`tok-keyword`, ... — one per semantic token type name).
+
+### Stability
+
+This taxonomy is a **semi-stable contract**: hosts style these names directly, so *renaming or
+removing* a documented class, attribute, or custom property is a breaking change (major bump).
+*Additions* — new element kinds, new classes on new surfaces, new custom properties — are not
+breaking and can land in minor releases. The element-class scheme is explicitly open-ended (see
+above); do not treat the kind table as exhaustive.

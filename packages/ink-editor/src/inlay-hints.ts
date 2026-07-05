@@ -1,6 +1,7 @@
 import { type Extension, RangeSetBuilder } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView, WidgetType } from "@codemirror/view";
 import type { InlayHint } from "@brink/wasm-types";
+import { ensureStructuralStyles } from "./structural-styles.js";
 
 class InlayHintWidget extends WidgetType {
   constructor(
@@ -11,12 +12,12 @@ class InlayHintWidget extends WidgetType {
   }
 
   toDOM(): HTMLElement {
+    ensureStructuralStyles();
     const span = document.createElement("span");
-    span.className = "brink-inlay-hint";
+    // `-pad` carries the hint's requested trailing gap as a class (not an
+    // inline style) so hosts can restyle it (#363).
+    span.className = this.paddingRight ? "brink-inlay-hint brink-inlay-hint-pad" : "brink-inlay-hint";
     span.textContent = this.label;
-    if (this.paddingRight) {
-      span.style.marginRight = "4px";
-    }
     return span;
   }
 

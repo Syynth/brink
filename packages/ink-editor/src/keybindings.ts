@@ -5,6 +5,7 @@ import { documentHandleFacet } from "./document-handle.js";
 import { sigilBypass, characterName, CHAR_SUFFIX_LEN } from "./screenplay.js";
 import { findTransition, lineHasContent, executeAction, buildContext } from "./transitions.js";
 import { CONVERTIBLE_TYPES, convertLineToType } from "./convert.js";
+import { ensureStructuralStyles } from "./structural-styles.js";
 
 const HANDLED_KEYS = ["Enter", "Shift-Enter", "Tab", "Shift-Tab", "Backspace", "Delete"] as const;
 
@@ -222,12 +223,14 @@ function showInlineElementPicker(view: EditorView): boolean {
 
   const cursor = view.coordsAtPos(view.state.selection.main.head);
   if (!cursor) return true;
+  ensureStructuralStyles();
 
   const dropdown = document.createElement("div");
   dropdown.className = "brink-element-dropdown brink-inline-picker";
-  dropdown.style.position = "fixed";
-  dropdown.style.left = `${cursor.left}px`;
-  dropdown.style.top = `${cursor.bottom + 4}px`;
+  // Placement is data (custom properties); `.brink-inline-picker`'s class rule
+  // positions the dropdown — hosts restyle the classes directly (#363).
+  dropdown.style.setProperty("--brink-popup-left", `${cursor.left}px`);
+  dropdown.style.setProperty("--brink-popup-top", `${cursor.bottom + 4}px`);
 
   let selectedIndex = 0;
 
