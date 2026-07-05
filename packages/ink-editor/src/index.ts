@@ -49,7 +49,7 @@ export { liveArgRange } from "./argument-widgets.js";
 export { setHostWidgets } from "./widget-registry.js";
 
 // Types for line classification
-export { elementTypeField, ElementType } from "./element-type.js";
+export { elementTypeField, ElementType, assignOptionPaths } from "./element-type.js";
 export type { LineInfo } from "./element-type.js";
 
 // Code folding (#313 G): HIR-driven fold ranges, including the leading
