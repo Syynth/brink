@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9](https://github.com/Syynth/brink/compare/brink-ide-v0.0.7...brink-ide-v0.0.9) - 2026-07-06
+
+### Added
+
+- *(ide,editor,web)* fold kinds — structural/machinery/narrative + summary pills ([#365](https://github.com/Syynth/brink/pull/365)) ([#400](https://github.com/Syynth/brink/pull/400))
+- *(ir,ide,web)* dialogue-dialect schema + Rust classification ([#368](https://github.com/Syynth/brink/pull/368)) ([#386](https://github.com/Syynth/brink/pull/386))
+- *(ide,web)* story-graph edges carry source-span occurrences ([#371](https://github.com/Syynth/brink/pull/371)) ([#378](https://github.com/Syynth/brink/pull/378))
+- *(ide,web)* extract selection to knot/function ops (#315 H) ([#341](https://github.com/Syynth/brink/pull/341))
+- *(ide,web)* atomic reference-aware rename_dir ([#314](https://github.com/Syynth/brink/pull/314)) ([#342](https://github.com/Syynth/brink/pull/342))
+- *(ide,web)* unified StructuralResult + deleteSymbol + op-wide breakage gate ([#316](https://github.com/Syynth/brink/pull/316)) ([#336](https://github.com/Syynth/brink/pull/336))
+- *(brink-web)* wasm resolve_code_action op with self-describing action data ([#321](https://github.com/Syynth/brink/pull/321)) ([#328](https://github.com/Syynth/brink/pull/328))
+- *(studio)* knot/stitch Rename — safe-by-default + breakage report ([#305](https://github.com/Syynth/brink/pull/305)) ([#306](https://github.com/Syynth/brink/pull/306))
+
+### Fixed
+
+- *(release)* path-only dev-deps in brink-ide — unblock stuck 0.0.8 publish ([#419](https://github.com/Syynth/brink/pull/419))
+- *(ide,editor)* sigil-wins-chain + conditional scaffold classification ([#413](https://github.com/Syynth/brink/pull/413)) ([#425](https://github.com/Syynth/brink/pull/425))
+
+### Other
+
+- release v0.0.8 ([#307](https://github.com/Syynth/brink/pull/307))
+- #312 + #313 (Track N core): shared INCLUDE-block detector + fold/auto-import cores ([#331](https://github.com/Syynth/brink/pull/331))
+- *(brink-ide,brink-db)* regression coverage for shallower file-move outbound INCLUDE rewrite ([#325](https://github.com/Syynth/brink/pull/325))
+
 ## [0.0.8](https://github.com/Syynth/brink/compare/brink-ide-v0.0.7...brink-ide-v0.0.8) - 2026-07-01
 
 ### Added

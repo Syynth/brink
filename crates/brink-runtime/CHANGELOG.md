@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.7...brink-runtime-v0.0.9) - 2026-07-06
+
+### Added
+
+- *(web)* expose StorySession as WebSession/StorySessionHandle ([#387](https://github.com/Syynth/brink/pull/387)) ([#389](https://github.com/Syynth/brink/pull/389))
+- *(runtime)* Story Session core — journal, replay, snapshot/diff ([#385](https://github.com/Syynth/brink/pull/385))
+
+### Other
+
+- migrate LocalSessionProvider onto public StorySession ([#388](https://github.com/Syynth/brink/pull/388)) ([#401](https://github.com/Syynth/brink/pull/401))
+
 ## [0.0.7](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.6...brink-runtime-v0.0.7) - 2026-06-20
 
 ### Other
