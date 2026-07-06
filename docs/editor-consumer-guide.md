@@ -159,13 +159,16 @@ describing your project's dialogue-line conventions. See `docs/dialect-spec.md` 
 - **Default**: omit the option (or pass nothing) and you get `AT_CUE_DIALECT` — byte-identical to
   the pre-#368 hardcoded `@Name:<>` behavior. Nothing changes for existing hosts.
 - **Headless**: `brinkStudio({ dialect: null })` tears down the *entire* screenplay layer —
-  classification, decorations, transitions, and screenplay keybindings — for true headless
-  composition (pair with `theme: false`, #363). Structural classification (Choice/Gather/Divert/…)
-  keeps working; only the dialect-specific layer is gone.
+  classification, decorations (hidden sigils, atomic ranges, the edit guard), dialect transition
+  rows, and the dialect-specific keybinding behaviors — for true headless composition (pair with
+  `theme: false`, #363). Structural classification (Choice/Gather/Divert/…) AND the structural
+  keymap (Choice/Gather/ChoiceBody/Narrative Tab/Enter transitions, Home/End, arrows, the
+  Alt-Enter picker) keep working — structural rows are interpreter-owned per the dialect spec;
+  only the dialect-specific layer is gone.
 - **Custom**: pass your own `DialogueDialect` object. `extendDialect(AT_CUE_DIALECT, overrides)`
   adds a kind (or overrides transitions/templates) without forking the preset.
 - **Live reconfigure**: `setDialect(view, dialect)` swaps an already-mounted editor's dialect —
-  decorations/keybindings, the wasm-side classification (when a document handle is present), and a
+  decorations, the wasm-side classification (when a document handle is present), and a
   forced reclassification, all in one call. Pass `null` to tear down the layer live.
 
 Classification is authoritative in Rust (`brink_ir::dialect` + `line_contexts_with_dialect`) when a

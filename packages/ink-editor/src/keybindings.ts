@@ -34,8 +34,19 @@ function handleKey(key: string, view: EditorView): boolean {
     return key === "Tab" || key === "Shift-Tab";
   }
 
-  // Tab on double-blank: insert @:<> character template
-  if (key === "Tab" && info.type === ElementType.Blank && line.text.trim() === "") {
+  // Tab on double-blank: insert @:<> character template. This is a
+  // dialect-provided behavior (the at-cue preset's blank-tab template), NOT
+  // a structural row — with the keymap now always mounted (#368: only the
+  // screenplay decorations are dialect-gated, the structural weave table is
+  // interpreter-owned), it must self-guard on an active dialect, unlike the
+  // Character-kind branches below (whose kinds simply never appear when no
+  // dialect is active).
+  if (
+    key === "Tab" &&
+    info.type === ElementType.Blank &&
+    line.text.trim() === "" &&
+    state.facet(dialectFacet) !== null
+  ) {
     const prevBlank = lineIndex > 0 && infos[lineIndex - 1].type === ElementType.Blank;
     if (prevBlank) {
       view.dispatch({

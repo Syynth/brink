@@ -100,6 +100,30 @@ test.describe("character lines", () => {
     expect(visible).not.toContain(":<>");
   });
 
+  // ── 3. Astral-plane names (byte→UTF-16 span conversion, #368) ───
+
+  test("astral-plane speaker name (emoji): hidden sigils land on correct UTF-16 offsets", async ({
+    page,
+  }) => {
+    // The REAL wasm classifier reports dialect geometry in UTF-8 BYTE
+    // offsets; the editor converts them to UTF-16. "@😀A:<>" is 9 bytes but
+    // 7 UTF-16 code units (😀 = 4 bytes / 2 units), so any code-unit-vs-
+    // code-point confusion in the conversion shifts every span after the
+    // emoji and the sigil decorations land mid-name.
+    await setEditorContent(page, "@😀A:<>\nHello.");
+
+    // Visible text: just the name — both sigils concealed at the right spans.
+    const visible = await getVisibleLineText(page, "brink-character");
+    expect(visible?.replace(/​/g, "")).toBe("😀A");
+
+    // Cursor clamps derive from the same spans: End inside the name stops
+    // at the name end (before the hidden ':<>'), i.e. UTF-16 offset 4
+    // (after "😀A": @=0..1, 😀=1..3, A=3..4).
+    await setCursor(page, 1);
+    await page.keyboard.press("End");
+    expect(await getCursorPos(page)).toBe(4);
+  });
+
   // ── 4. Arrow right escapes to next line ─────────────────────────
 
   test("arrow right through name skips hidden sigils and reaches next line", async ({

@@ -12,7 +12,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, runScopeHandlers } from "@codemirror/view";
 import {
   brinkStudio,
   setDialect,
@@ -21,6 +21,7 @@ import {
   extendDialect,
   AT_CUE_DIALECT,
   type DialogueDialect,
+  type DocHandle,
 } from "@brink-lang/editor";
 
 const minimal = {
@@ -83,6 +84,63 @@ describe("dialect: null — headless teardown", () => {
     expect(view.state.field(elementTypeField)[0].type).toBe(ElementType.Character);
     view.destroy();
   });
+
+  // Regression (#368 review): the STRUCTURAL weave keymap must survive
+  // `dialect: null` — structural transition rows are interpreter-owned per
+  // the dialect spec; only the dialect-specific layer is torn down. An
+  // earlier draft gated the whole `brinkKeymap()` inside the screenplay
+  // compartment, killing Choice/Gather/Narrative Tab/Enter handling in
+  // headless mode.
+  it("dialect: null keeps the structural keymap: Enter on a choice inserts a new sibling", () => {
+    const view = mount("* Option A", { dialect: null });
+    view.dispatch({ selection: { anchor: view.state.doc.line(1).to } });
+    const handled = runScopeHandlers(
+      view,
+      new KeyboardEvent("keydown", { key: "Enter" }),
+      "editor",
+    );
+    expect(handled).toBe(true);
+    expect(view.state.doc.toString()).toBe("* Option A\n* ");
+    view.destroy();
+  });
+
+  it("dialect: null keeps the structural keymap: Tab on a choice still routes to convertElement", () => {
+    // Tab on a Choice line = the `convertToIndentedNarrative` transition,
+    // which converts via the document handle's `convertElement`. A minimal
+    // fake handle proves the routing still happens under dialect: null.
+    const doc = "* Option A";
+    const convertCalls: Array<{ offset: number; target: string }> = [];
+    const fakeHandle = {
+      pushSource: () => {},
+      lineContexts: () => [],
+      setDialect: () => {},
+      clearDialect: () => {},
+      convertElement: (offset: number, target: string) => {
+        convertCalls.push({ offset, target });
+        return { from: 0, to: doc.length, insert: "  Option A" };
+      },
+    } as unknown as DocHandle;
+
+    const view = mount(doc, { dialect: null, handleSlot: { handle: fakeHandle } });
+    view.dispatch({ selection: { anchor: view.state.doc.line(1).to } });
+    const handled = runScopeHandlers(
+      view,
+      new KeyboardEvent("keydown", { key: "Tab" }),
+      "editor",
+    );
+    expect(handled).toBe(true);
+    expect(convertCalls).toEqual([{ offset: doc.length, target: "choice_body" }]);
+    expect(view.state.doc.toString()).toBe("  Option A");
+    view.destroy();
+  });
+
+  it("dialect: null disables the blank-tab template insert (a dialect behavior, not a structural row)", () => {
+    const view = mount("\n\n", { dialect: null });
+    view.dispatch({ selection: { anchor: view.state.doc.line(2).from } });
+    runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab" }), "editor");
+    expect(view.state.doc.toString()).not.toContain("@:<>");
+    view.destroy();
+  });
 });
 
 describe("custom dialect via extendDialect", () => {
@@ -131,6 +189,68 @@ describe("custom dialect via extendDialect", () => {
     expect(view.state.field(elementTypeField)[0].type).not.toBe("channel");
     setDialect(view, CHANNEL_DIALECT);
     expect(view.state.field(elementTypeField)[0].type).toBe("channel");
+    view.destroy();
+  });
+});
+
+describe("wasm-handle path: byte → UTF-16 span conversion (astral characters)", () => {
+  // The Rust classifier reports dialect geometry in UTF-8 BYTE offsets;
+  // `element-type.ts`'s `toGeometry`/`makeByteToUtf16` convert them to the
+  // UTF-16 offsets CodeMirror uses. An astral-plane speaker name (😀 =
+  // U+1F600: 4 UTF-8 bytes but 2 UTF-16 code units) exercises the
+  // code-point-iteration fix — an implementation that walked UTF-16 code
+  // units would split the surrogate pair and corrupt the span table. The
+  // byte spans below are exactly what Rust's `ResolvedDialect::classify`
+  // emits for "@😀:<>": lead (0,1), speaker (1,5), tail (5,8). This suite
+  // runs against the wasm MOCK (vitest aliases brink-web), so the wasm-
+  // handle branch is fed via a fake handle returning the Rust-shaped JSON;
+  // the REAL wasm end-to-end path is covered by the Playwright suite
+  // (e2e/character.spec.ts's astral case).
+  it("converts Rust byte spans to correct UTF-16 spans for an emoji speaker", () => {
+    const doc = "@😀:<>"; // 8 UTF-8 bytes, 6 UTF-16 code units
+    const fakeHandle = {
+      pushSource: () => {},
+      setDialect: () => {},
+      clearDialect: () => {},
+      lineContexts: () => [
+        {
+          element: "narrative",
+          weave: { depth: 0, element: "top_level" },
+          has_tags: false,
+          block_comment: false,
+          dialect: {
+            kind: "character",
+            attrs: [["speaker", "😀"]],
+            hidden_spans: [
+              [0, 1], // '@' — 1 byte
+              [5, 8], // ':<>' — after the 4-byte emoji
+            ],
+            content_span: [1, 5], // the emoji, 4 bytes
+          },
+        },
+      ],
+    } as unknown as DocHandle;
+
+    const view = mount(doc, { handleSlot: { handle: fakeHandle } });
+    const info = view.state.field(elementTypeField)[0];
+    expect(info.type).toBe(ElementType.Character);
+    // UTF-16: '@' (0,1); ':<>' starts AFTER the 2-code-unit emoji → (3,6);
+    // content is the emoji itself → (1,3). If the byte→UTF-16 table were
+    // corrupted (lone-surrogate encodes) or the lookup fell through to its
+    // `?? text.length` fallback, the interior offsets 1/3/5 would come back
+    // as 6 instead.
+    expect(info.dialect?.hiddenSpans).toEqual([
+      [0, 1],
+      [3, 6],
+    ]);
+    expect(info.dialect?.contentSpan).toEqual([1, 3]);
+
+    // And the rendered hidden-sigil decorations land on those spans: both
+    // sigils concealed, only the emoji visibly remains (plus the widgets'
+    // zero-width anchors).
+    expect(view.dom.querySelectorAll(".brink-hidden-sigil")).toHaveLength(2);
+    const lineEl = view.dom.querySelector(".cm-line");
+    expect(lineEl?.textContent?.replace(/​/g, "")).toBe("😀");
     view.destroy();
   });
 });

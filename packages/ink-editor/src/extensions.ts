@@ -55,12 +55,17 @@ export interface BrinkStudioOptions {
    * decorations, transitions, and conversions. Defaults to `AT_CUE_DIALECT`
    * (byte-identical to the pre-#368 hardcoded `@Name:<>` behavior). Pass
    * `null` to tear down the ENTIRE screenplay layer — classification,
-   * decorations, transitions, and screenplay keybindings — for true
-   * headless composition (pair with `theme: false`, #363). When a
-   * `handleSlot` is present, the dialect is also pushed to the wasm session
-   * (`EditorSession.set_dialect`) so Rust-side `line_contexts` classifies
-   * with it; use `setDialect(view, d)` to live-reconfigure an already-
-   * mounted editor.
+   * decorations (hidden sigils, atomic ranges, the edit guard), the dialect
+   * transition rows, and the dialect-specific keybinding behaviors — for
+   * true headless composition (pair with `theme: false`, #363). The
+   * STRUCTURAL keymap (Choice/Gather/ChoiceBody/Narrative Tab/Enter
+   * transitions, Home/End, arrows, the Alt-Enter picker) stays active
+   * regardless: structural rows are interpreter-owned per the dialect spec,
+   * and its dialect branches self-guard on kinds that never appear when no
+   * dialect is active. When a `handleSlot` is present, the dialect is also
+   * pushed to the wasm session (`EditorSession.set_dialect`) so Rust-side
+   * `line_contexts` classifies with it; use `setDialect(view, d)` to
+   * live-reconfigure an already-mounted editor.
    */
   dialect?: DialogueDialect | null;
 
@@ -182,20 +187,25 @@ function resolveDialectOption(
 
 /**
  * Live-reconfigure an already-mounted editor's dialect (#368): swaps the
- * screenplay compartment (decorations/keybindings on or off) AND the
- * `dialectFacet` value (its own compartment, reconfigured independently —
- * see the comment on `dialectCompartment`), re-runs the wasm
- * `set_dialect`/`clear_dialect` on the view's current handle, and dispatches
- * `reclassifyEffect` so `elementTypeField` recomputes even though the
- * document text itself didn't change. Pass `null` to tear down the
- * screenplay layer entirely (mirrors `brinkStudio({ dialect: null })`) —
- * `dialectFacet` still resolves to `null` in that case (not just an absent
- * screenplay bundle), since `elementTypeField` reads it unconditionally.
+ * screenplay compartment (decorations on or off) AND the `dialectFacet`
+ * value (its own compartment, reconfigured independently — see the comment
+ * on `dialectCompartment`), re-runs the wasm `set_dialect`/`clear_dialect`
+ * on the view's current handle, and dispatches `reclassifyEffect` so
+ * `elementTypeField` recomputes even though the document text itself didn't
+ * change. Pass `null` to tear down the screenplay layer (mirrors
+ * `brinkStudio({ dialect: null })`) — `dialectFacet` still resolves to
+ * `null` in that case (not just an absent screenplay bundle), since
+ * `elementTypeField` reads it unconditionally. `brinkKeymap()` is NOT part
+ * of this compartment: the keymap owns the STRUCTURAL weave table
+ * (Choice/Gather/ChoiceBody/Narrative Tab/Enter transitions, Home/End,
+ * arrows, the Alt-Enter picker), which stays interpreter-owned per the
+ * dialect spec — its dialect-specific branches self-guard on element kinds
+ * that simply never appear when no dialect is active.
  */
 export function setDialect(view: EditorView, dialect: DialogueDialect | null): void {
   const handleSlot = view.state.facet(documentHandleFacet);
   const resolved = resolveDialectOption(dialect, handleSlot ?? undefined);
-  const screenplayLayer: Extension = dialect === null ? [] : [screenplayDecorations(), brinkKeymap()];
+  const screenplayLayer: Extension = dialect === null ? [] : screenplayDecorations();
   view.dispatch({
     effects: [
       dialectCompartment.reconfigure(dialectFacet.of(resolved)),
@@ -326,13 +336,17 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   // never clobber each other. Also pushed to the wasm session when a handle
   // is present, so Rust-side `line_contexts` classifies with it.
   // `elementTypeField` (structural classification: Choice/Gather/Divert/…
-  // depth, StatusBar, folding, transitions) is NOT part of the screenplay
-  // gate — it always runs, dialect or not, reading `dialectFacet` directly;
-  // only the screenplay decorations/atomic-ranges/edit-guard/keymap are
-  // gated by `screenplayCompartment`.
+  // depth, StatusBar, folding, transitions) and `brinkKeymap()` (the
+  // STRUCTURAL weave table: Choice/Gather/ChoiceBody/Narrative Tab/Enter
+  // transitions, Home/End, arrows, the Alt-Enter picker — interpreter-owned
+  // per the dialect spec) are NOT part of the screenplay gate — both always
+  // run, dialect or not; the keymap's dialect-specific branches self-guard
+  // on element kinds that never appear when no dialect is active. Only the
+  // screenplay decorations/atomic-ranges/edit-guard are gated by
+  // `screenplayCompartment`.
   const resolvedDialect = resolveDialectOption(options.dialect, options.handleSlot);
   const screenplayLayer: Extension =
-    options.dialect === null ? [] : [screenplayDecorations(), brinkKeymap()];
+    options.dialect === null ? [] : screenplayDecorations();
 
   return [
     // The per-view document-handle slot, readable by every extension and the
@@ -351,6 +365,7 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       onCompile: options.onCompile,
       getActiveFile: options.getActiveFile,
     }),
+    brinkKeymap(),
     ideCompartment.of(ideExtensions),
   ];
 }
