@@ -11,21 +11,12 @@ import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
 import type { Diagnostic, FileOutline, StoryGraph } from "@brink/wasm-types";
 import { programChecksum } from "@brink-lang/web";
+import { sortDiagnostics } from "@brink-lang/editor";
 
-/**
- * Canonical Problems ordering (deterministic): file path, then start offset,
- * then errors before warnings, then end offset and message as tiebreakers.
- */
-export function sortDiagnostics(diagnostics: readonly Diagnostic[]): Diagnostic[] {
-  return [...diagnostics].sort((a, b) => {
-    if (a.file !== b.file) return a.file < b.file ? -1 : 1;
-    if (a.start !== b.start) return a.start - b.start;
-    if (a.severity !== b.severity) return a.severity === "Error" ? -1 : 1;
-    if (a.end !== b.end) return a.end - b.end;
-    if (a.message !== b.message) return a.message < b.message ? -1 : 1;
-    return 0;
-  });
-}
+// Canonical Problems ordering — the published boundary helper (#369):
+// file path, then start offset, then errors before warnings. Re-exported
+// here for existing @brink/studio-store consumers.
+export { sortDiagnostics };
 
 /**
  * The one real diagnostic severity knob (Settings document, #93): whether
