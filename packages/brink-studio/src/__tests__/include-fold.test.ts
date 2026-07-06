@@ -45,13 +45,14 @@ function fakeRanges(source: string): FoldRange[] {
       start_line: leading[0],
       end_line: leading[leading.length - 1],
       collapsed_text: `INCLUDE … (${leading.length} files)`,
+      kind: "structural",
     });
   }
 
   // A knot header + one body line → a whole-declaration fold.
   const knot = lines.findIndex((l) => l.startsWith("=="));
   if (knot >= 0 && knot + 1 < lines.length) {
-    ranges.push({ start_line: knot, end_line: knot + 1, from_line_start: true });
+    ranges.push({ start_line: knot, end_line: knot + 1, from_line_start: true, kind: "structural" });
   }
 
   // Multi-line conditional/sequence: a line whose trimmed text starts with `{`
@@ -66,6 +67,7 @@ function fakeRanges(source: string): FoldRange[] {
         start_line: openIdx,
         end_line: closeIdx,
         collapsed_text: "{...}",
+        kind: "structural",
       });
     }
   }

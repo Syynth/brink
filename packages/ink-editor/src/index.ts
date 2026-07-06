@@ -95,8 +95,18 @@ export type { LineInfo, DialectGeometry } from "./element-type.js";
 
 // Code folding (#313 G): HIR-driven fold ranges, including the leading
 // INCLUDE-block fold whose Rust `collapsed_text` renders as its placeholder.
-export { foldingExtension } from "./folding.js";
-export type { FoldingOptions, FoldPlaceholder } from "./folding.js";
+// Fold kinds (#365): structural/machinery/narrative, a live-reconfigurable
+// active-kinds set, and bulk fold/unfold-by-kind commands for a host's
+// mode-entry auto-collapse (never forced by the extension itself).
+export {
+  foldingExtension,
+  foldAllOfKind,
+  unfoldAllOfKind,
+  setActiveFoldKinds,
+  activeFoldKindsFacet,
+  activeFoldKindsCompartment,
+} from "./folding.js";
+export type { FoldingOptions, FoldPlaceholder, FoldKind, DeclKind } from "./folding.js";
 
 // "Play from here" (#186): hover ▶ gutter + right-click menu on knot/stitch
 // declarations. `qualifiedInkPath`/`headerName` are the pure path core.

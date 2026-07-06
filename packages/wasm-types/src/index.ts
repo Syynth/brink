@@ -437,6 +437,14 @@ export interface SignatureInfo {
   active_parameter: number;
 }
 
+/** A fold's kind (#365): `"structural"` is everything the editor emitted
+ *  before #365 (decls, doc comments, conditionals, sequences, choice sets) —
+ *  user-invoked in every mode, never auto-collapsed. `"machinery"` and
+ *  `"narrative"` are run-based folds (>=2 consecutive same-nature lines)
+ *  computed from the line classification (base, or a registered dialect's
+ *  declared `nature`). */
+export type FoldKind = "structural" | "machinery" | "narrative";
+
 export interface FoldRange {
   start_line: number;
   end_line: number;
@@ -444,6 +452,8 @@ export interface FoldRange {
   /** Whole-line declaration fold (docs + header + body): fold from the start
    *  of start_line and render the hidden header as the placeholder. */
   from_line_start?: boolean;
+  /** The fold's kind (#365). */
+  kind: FoldKind;
 }
 
 export interface DocumentSymbol {

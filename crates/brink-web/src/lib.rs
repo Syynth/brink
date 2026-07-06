@@ -3728,7 +3728,24 @@ impl EditorSession {
             return "[]".to_owned();
         };
 
-        let ranges = brink_ide::folding::folding_ranges(hir, source);
+        // Structural folds (#313 G et al.) — never auto-collapsed by a host.
+        let mut ranges = brink_ide::folding::folding_ranges(hir, source);
+
+        // Machinery/narrative fold runs (#365): computed from the same
+        // per-line classification `line_contexts_impl` exposes, so a
+        // registered dialect's declared `nature` (#368) flows into the fold
+        // computation exactly as it flows into `line_contexts`.
+        if let Some(root) = self.session.syntax_root(file_id) {
+            let ctx = match self.session.dialect() {
+                Some(dialect) => {
+                    brink_ide::line_context::line_contexts_with_dialect(hir, source, &root, dialect)
+                }
+                None => brink_ide::line_context::line_contexts(hir, source, &root),
+            };
+            ranges.extend(brink_ide::folding::machinery_and_narrative_folds(
+                hir, source, &ctx,
+            ));
+        }
 
         let items: Vec<FoldRangeJs> = ranges
             .iter()
@@ -3740,6 +3757,7 @@ impl EditorSession {
                     end_line,
                     collapsed_text: r.collapsed_text.clone(),
                     from_line_start: r.from_line_start,
+                    kind: fold_kind_str(r.kind),
                 })
             })
             .collect();
@@ -4372,6 +4390,19 @@ struct FoldRangeJs {
     /// from the start of `start_line` and renders a header placeholder.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     from_line_start: bool,
+    /// The fold's kind (#365): `"structural"` (everything folding.rs emitted
+    /// before #365 — never auto-collapsed), `"machinery"`, or `"narrative"`
+    /// (run-based folds over the line classification).
+    kind: &'static str,
+}
+
+/// `FoldKind` → the wire string the editor's `foldingExtension` switches on.
+fn fold_kind_str(kind: brink_ide::folding::FoldKind) -> &'static str {
+    match kind {
+        brink_ide::folding::FoldKind::Structural => "structural",
+        brink_ide::folding::FoldKind::Machinery => "machinery",
+        brink_ide::folding::FoldKind::Narrative => "narrative",
+    }
 }
 
 #[derive(Serialize)]
@@ -6147,6 +6178,62 @@ mod tests {
         let after = json(&s.line_contexts());
         assert_eq!(after[1]["dialect"]["kind"], "character", "{after}");
         assert_eq!(after[2]["dialect"]["kind"], "dialogue", "{after}");
+    }
+
+    #[test]
+    fn folding_ranges_include_machinery_and_narrative_runs() {
+        // #365: `folding_ranges()` returns structural folds (from the
+        // pre-existing pass) plus machinery/narrative fold runs computed
+        // from the same `line_contexts` classification the editor already
+        // consumes — a real user path (folding gutter), not a separate
+        // code path only a unit test reaches.
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "=== start ===\n~ temp x = 1\n~ temp y = 2\nHello there.\nHow are you?\n",
+        );
+        assert!(s.set_active_file("main.ink"));
+
+        let ranges = json(&s.folding_ranges());
+        let kinds: Vec<&str> = ranges
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|r| r["kind"].as_str().expect("kind is a string"))
+            .collect();
+        assert!(kinds.contains(&"machinery"), "{ranges}");
+        assert!(kinds.contains(&"narrative"), "{ranges}");
+
+        let machinery = ranges
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|r| r["kind"] == "machinery")
+            .expect("machinery fold present");
+        assert_eq!(machinery["start_line"], 1);
+        assert_eq!(machinery["end_line"], 2);
+    }
+
+    #[test]
+    fn folding_ranges_respect_registered_dialect_nature() {
+        // A dialect-classified cue+dialogue pair is Narrative-natured (the
+        // at-cue preset) — the fold run must follow the registered dialect,
+        // not a hardcoded kind list.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== start ===\n@Alice:<>\nHello there.\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let preset = serde_json::to_string(&brink_ir::DialogueDialect::default())
+            .expect("preset serializes");
+        s.set_dialect(&preset).expect("preset validates");
+
+        let ranges = json(&s.folding_ranges());
+        let has_narrative_run = ranges
+            .as_array()
+            .expect("array")
+            .iter()
+            .any(|r| r["kind"] == "narrative" && r["start_line"] == 1 && r["end_line"] == 2);
+        assert!(has_narrative_run, "{ranges}");
     }
 
     #[test]

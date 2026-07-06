@@ -107,6 +107,11 @@ pub struct DialectLineInfo {
     /// chain-only kinds, where the pattern-less-kind contract applies:
     /// content is the whole trimmed line.
     pub content_span: Option<(u32, u32)>,
+    /// The dialect's declared [`brink_ir::ElementNature`] for this kind,
+    /// looked up once here (never re-derived downstream) — consumed by
+    /// `brink-ide::folding`'s machinery/narrative fold-run computation
+    /// (#365).
+    pub nature: brink_ir::ElementNature,
 }
 
 impl Default for LineContext {
@@ -263,11 +268,15 @@ fn apply_dialect(source: &str, dialect: &ResolvedDialect, ctx: &mut [LineContext
         let leading_ws = leading_ws_len(line);
         let trimmed = &line[leading_ws as usize..];
         if let Some(m) = dialect.classify(trimmed, leading_ws) {
+            let nature = dialect
+                .nature_of(&m.kind)
+                .unwrap_or(brink_ir::ElementNature::Narrative);
             ctx[i].dialect = Some(DialectLineInfo {
                 kind: m.kind,
                 attrs: m.attrs,
                 hidden_spans: m.hidden_spans,
                 content_span: m.content_span,
+                nature,
             });
         }
     }
@@ -309,11 +318,15 @@ fn apply_dialect(source: &str, dialect: &ResolvedDialect, ctx: &mut [LineContext
                 .iter()
                 .filter_map(|name| run_carry.iter().find(|(k, _)| k == name).cloned())
                 .collect();
+            let nature = dialect
+                .nature_of(&rule.becomes)
+                .unwrap_or(brink_ir::ElementNature::Narrative);
             ctx[i].dialect = Some(DialectLineInfo {
                 kind: rule.becomes.clone(),
                 attrs: carried,
                 hidden_spans: Vec::new(),
                 content_span: None,
+                nature,
             });
         }
 
