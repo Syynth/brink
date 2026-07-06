@@ -335,8 +335,58 @@ the same conformance corpus as the Rust side so both paths agree on every case.
 
 The dialect is an **authoring-time/tooling artifact only** — it is never embedded in compiled
 `.inkb` output and never instructs the runtime. A game wanting the same cue-parsing logic at
-runtime imports the (future) `DialectParser` as an ordinary library and passes it the same JSON —
-that's your wiring, not something the editor or compiler does for you.
+runtime imports `DialectParser` (below) as an ordinary library and passes it the same JSON — that's
+your wiring, not something the editor or compiler does for you.
+
+### `DialectParser` + `detectCast` (#366) — a pure-TS parser, no editor required
+
+`DialectParser` (from `@brink-lang/editor`) is a standalone class over a `DialogueDialect` — no
+CodeMirror, no wasm session. Construct once per dialect (patterns compile once), then:
+
+- **`parseSource(text)`** classifies plain `.ink`-style source text line-by-line, mirroring the
+  editor's own classify + chain passes exactly. Returns one `SourceLine` per input line: `{ index,
+  text, kind, attrs }`, where `kind` is `null` for a line that didn't classify. A blank line always
+  breaks the chain. This is a source-side parse — it never interprets ink's own structural syntax
+  (`->`, `<-`, `#`, `{}`); a source line that happens to look like a divert/thread/tag/logic line
+  is just narrative text to the dialect layer.
+- **`parseEmitted(text)`** walks *runtime-emitted* text (the post-glue output of
+  `continue_line()`) into `EmittedSegment[]` per the pinned **composite-segment iteration
+  protocol**: a cue + parenthetical + trailing text emitting as ONE line is the normal case (three
+  segments: `character`, `parenthetical`, then a plain-text remainder). A non-reserved-prefix
+  shape (e.g. a parenthetical) never opens a composite line — it only peels as a *continuation*
+  immediately after a reserved-prefix (cue) segment, never from arbitrary prose.
+- **`detectCast(lines, dialect)`** is the #366 answer to cast detection: given `parseSource`
+  output, it collects the distinct values of whichever attr a dialect's `chain` rules `carry`
+  forward (in the at-cue preset, `speaker`), in first-appearance order. Dialect-agnostic — it does
+  not hardcode `speaker` or the `character` kind name. `characterName()` (the old internal
+  content-region helper in `screenplay.ts`) is **not** exported publicly; `detectCast` is the
+  replacement.
+
+Pair `detectCast` with `StoryRunnerHandle.linesTable()` (`@brink-lang/web`, below) for a
+runtime/compiled-output view of the same cast, or with `parseSource` over live editor buffers for
+an authoring-time view.
+
+## The compiled lines table (#366) — `StoryRunnerHandle.linesTable()`
+
+`StoryRunnerHandle.linesTable()` (`@brink-lang/web`) returns the compiler's own line table: one
+entry per compiled scope (root, knot, or stitch), **project-wide** — `INCLUDE`s are already
+resolved by the compile, so a multi-file project's lines all appear in one table. Each line
+carries:
+
+- `content` — the line's text: a plain string, or `{ template: [...] }` for a line with
+  interpolation slots/plural selects (literal parts, `{ slot }` references, and `{ select }`
+  branches — the same shape `export-xliff` produces for translators).
+- `hash` — a stable source-identity hash for the line's content.
+- `source` — `{ file, range_start, range_end }` when known: which source file the line came from
+  and its byte range in that file.
+- `slots` / `audio` — interpolation-slot names and an optional audio reference, when present.
+
+This is static for the loaded program — it does not require a running `Story`, just a compiled
+`StoryRunnerHandle`. It's the same `LinesJson` shape the `export-xliff` CLI path already produces
+(`brink_intl::export_lines`), exposed to web hosts instead of reinvented. First consumer: cast
+detection (pair with `detectCast` above) feeding a speaker-color settings surface; the same
+exposure serves per-speaker word counts and the #362 line-fit metrics epic — any host-side analysis
+that needs to walk emitted lines project-wide.
 
 ## Fold kinds (#365) — structural/machinery/narrative
 
