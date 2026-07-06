@@ -1,17 +1,76 @@
 /**
- * Local session provider — the default `SessionProvider` backed by the studio's
- * own wasm `StoryRunner` (docs/live-inspector-spec.md §6.1).
+ * Local session provider — the default `SessionProvider` backed by the
+ * public `StorySessionHandle` (`@brink-lang/web`, docs/story-session-spec.md
+ * deliverable 3, #388).
  *
- * Owns the runner lifecycle, the persisted choice log, the silent
- * choice-replay-on-recompile (with divergence truncation), and the pull-based
- * stepping. Every drive operation ends by recomputing the {@link
- * SessionSnapshot} and notifying subscribers; the store mirrors those snapshots
- * into its reactive fields. Behavior is byte-for-byte what the studio did when
- * this logic lived in the session slice — the seam is the only change.
+ * Owns the session lifecycle, the persisted journal, silent replay-on-recompile
+ * (via `reload()` → typed `ReplayOutcome`), and the pull-based stepping. Every
+ * drive operation ends by recomputing the {@link SessionSnapshot} and notifying
+ * subscribers; the store mirrors those snapshots into its reactive fields.
+ * The `SessionProvider` contract toward the store is unchanged from the
+ * `StoryRunnerHandle`-backed predecessor — the seam is provider-internal.
+ *
+ * ## Migration from the pre-#388 provider
+ *
+ * The old provider drove a `StoryRunnerHandle` directly and persisted a bare
+ * `{choiceLog: number[]}` blob, silently re-walking it choice-by-choice on
+ * load (`replayWalk`). This provider drives the Rust-canonical session journal
+ * instead: persistence is `StorySessionHandle.exportJournal()` (pushed via the
+ * `onJournalDirty` hook, never polled or bespoke-timed), and replay-on-load is
+ * `StorySessionHandle.restore()`; replay-on-recompile is `session.reload()`.
+ * Both return a typed `ReplayOutcome` — divergence is data, not a thrown
+ * exception, and truncation happens journal-side (Rust), not in a hand-rolled
+ * JS re-walk.
+ *
+ * **`{choiceLog}` migration (one-time, not a reset):** a legacy blob has no
+ * externals/set-vars, only choice indices, so it converts to a journal with
+ * `Choice` events by literally replaying it — construct a fresh session on
+ * the just-loaded bytes and drive it through the log via `continueToPause`/
+ * `choose`, using the exact same truncate-on-divergence contract the old
+ * `replayWalk` used (unreachable choice / early end / early DONE / runtime
+ * error). This produces a genuine journal (not a synthesized one), which is
+ * then exported and persisted in the new format; the old key is removed. A
+ * story with recorded externals technically can't reproduce their *results*
+ * this way (the migration re-invokes externals live, same as an ordinary
+ * fresh replay) — for the studio's ink sandbox (no external bindings) this is
+ * moot, and if the choices no longer apply the same divergence + truncation
+ * UX fires as it always has.
+ *
+ * **Post-restore/reload transcript:** the typed `ReplayOutcome` reports
+ * divergence/failure structurally (`at_event`, `expected`, `found`) but not
+ * accumulated line text — unlike the old `replayWalk`, which re-displayed
+ * every replayed line. This provider does not attempt to reconstruct that
+ * text: after a restore/reload the transcript starts fresh ("you're just
+ * here again", matching a real save/load), and `debugSnapshot()` supplies the
+ * live status/choices/position. Pending choices come from
+ * `debugSnapshot().pending_choices`, mapped straight across — `DebugChoice`
+ * carries its own `index`, which is the *pre-filter* `flow.pending_choices`
+ * position (`story.rs`'s `resolved_choices_for`/`build_debug_snapshot` both
+ * derive it from the same `.enumerate().filter(!is_invisible_default)` pass
+ * as the live `Choice` builder), i.e. exactly the raw index `choose()`
+ * expects. It is *not* the post-filter enumeration position — do not
+ * re-derive it from array position when a mix of visible and
+ * invisible-default choices is possible. `tags` isn't tracked per
+ * `DebugChoice` and comes back empty — unused by the player UI today.
+ *
+ * **`deferred` / `continueToPause()` interaction (#388 checklist):** the
+ * studio defines no external bindings and never passes `deferred` names to
+ * `StorySessionHandle`'s constructor, so the "`continueToPause`/
+ * `continueSingle` silently ignore `deferred`" hazard flagged in the #389
+ * review never materializes here — this is the documented consumer-side
+ * discipline the checklist asks for, not a runtime guard. A future consumer
+ * that *does* want always-deferred externals must drive via `advance()`
+ * instead, never `continueToPause()`.
+ *
+ * **Shared flows (#200)** continue to work: `StorySessionHandle` gained
+ * `spawnFlow`/`continueFlow`/`chooseFlow`/`destroyFlow`/`flowDebugSnapshot`
+ * (mirroring `StoryRunnerHandle`'s) so a flow spawned here shares *this*
+ * session's globals/visits/rng — the same VM instance the session itself
+ * drives, not a second one.
  */
 
-import { StoryRunnerHandle, type ExternalValue } from "@brink-lang/web";
-import type { Choice } from "@brink/wasm-types";
+import { StorySessionHandle, type ExternalValue } from "@brink-lang/web";
+import type { Choice, ReplayOutcome, SessionJournal, SessionLine } from "@brink/wasm-types";
 
 import { FlowSessionProvider } from "./flow-provider.js";
 
@@ -28,12 +87,26 @@ import {
 
 const SAVE_KEY = "brink-player-save";
 
-interface SaveData {
+/** Current persisted format: the exported session journal. */
+interface JournalSaveData {
+  version: 2;
+  journal: SessionJournal;
+}
+
+/** The pre-#388 persisted format: a bare recorded choice-index log. */
+interface LegacySaveData {
   choiceLog: number[];
 }
 
-function saveToStorage(data: SaveData): void {
+type SaveData = JournalSaveData | LegacySaveData;
+
+function isJournalSave(data: SaveData): data is JournalSaveData {
+  return (data as JournalSaveData).version === 2;
+}
+
+function saveJournal(journal: SessionJournal): void {
   try {
+    const data: JournalSaveData = { version: 2, journal };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
   } catch {
     // localStorage may be unavailable
@@ -78,13 +151,31 @@ const NOOP_CALLBACKS: ProviderCallbacks = {
   },
 };
 
+/** Map `debugSnapshot().pending_choices` into `Choice[]` — see the
+ * "Post-restore/reload transcript" doc comment above for why `c.index` (the
+ * raw pre-filter `pending_choices` position `DebugChoice` carries) is used
+ * directly rather than the array position, which would be wrong whenever an
+ * invisible-default choice is mixed in at the same pause point. */
+function choicesFromDebugState(
+  debugState: SessionSnapshot["debugState"],
+): Choice[] {
+  if (!debugState) return [];
+  return debugState.pending_choices.map((c) => ({
+    index: c.index,
+    text: c.text,
+    tags: [],
+  }));
+}
+
 export class LocalSessionProvider implements SessionProvider {
   readonly kind = "local" as const;
   readonly capabilities: ReadonlySet<SessionCapability> = ALL_CAPABILITIES;
 
-  private runner: StoryRunnerHandle | null;
+  private session: StorySessionHandle | null;
   private callbacks: ProviderCallbacks;
   private readonly listeners = new Set<(s: SessionSnapshot) => void>();
+  /** Unsubscribe from the bound session's `onJournalDirty` hook. */
+  private journalUnsub: (() => void) | null = null;
 
   // Mirrored snapshot fields.
   private status: SessionStatus = "none";
@@ -95,16 +186,14 @@ export class LocalSessionProvider implements SessionProvider {
   private programInkt: string | null = null;
   private programChecksum: string | null = null;
 
-  /** Recorded choice history — persisted for restore + recompile replay. */
-  private choiceLog: number[] = [];
   /** Program bytes this session is running — kept so `restart` can re-create. */
   private bytes: Uint8Array | null = null;
 
   /**
-   * Whether to persist + restore the choice log via localStorage. The primary
-   * session persists (restore on reload); secondary local sessions (#182) do
-   * not — they're transient, isolated playthroughs that must not clobber the
-   * primary's save.
+   * Whether to persist + restore the session journal via localStorage. The
+   * primary session persists (restore on reload); secondary local sessions
+   * (#182) do not — they're transient, isolated playthroughs that must not
+   * clobber the primary's save.
    */
   private persist = true;
   /**
@@ -114,31 +203,44 @@ export class LocalSessionProvider implements SessionProvider {
    */
   private startPath: { path: string; args: ExternalValue[] } | null = null;
 
+  /**
+   * Constructs a fresh session on load — the real `StorySessionHandle`
+   * constructor by default. Overridable purely as a test seam (so a test can
+   * exercise `start()`'s fresh-load path, including legacy-log migration,
+   * against a scriptable fake instead of a real wasm session).
+   */
+  private readonly sessionFactory: (bytes: Uint8Array) => StorySessionHandle;
+
   constructor(opts?: {
     callbacks?: ProviderCallbacks;
-    /** Adopt an already-live runner (the studio wraps an existing handle; tests). */
-    runner?: StoryRunnerHandle;
-    /** Status of an adopted runner (default "running"). */
+    /** Adopt an already-live session (the studio wraps an existing handle; tests). */
+    session?: StorySessionHandle;
+    /** Status of an adopted session (default "running"). */
     status?: SessionStatus;
-    /** Transcript of an adopted runner (default empty). */
+    /** Transcript of an adopted session (default empty). */
     transcript?: string[];
-    /** Pending choices of an adopted runner (default empty). */
+    /** Pending choices of an adopted session (default empty). */
     choices?: Choice[];
-    /** Persist + restore the choice log (default true; false for secondary sessions). */
+    /** Persist + restore the session journal (default true; false for secondary sessions). */
     persist?: boolean;
     /** Navigate to this entry point after load instead of the root (#182). */
     startPath?: { path: string; args?: ExternalValue[] };
+    /** Test seam: override how a fresh session is constructed in `start()`. */
+    sessionFactory?: (bytes: Uint8Array) => StorySessionHandle;
   }) {
     this.callbacks = opts?.callbacks ?? NOOP_CALLBACKS;
-    this.runner = opts?.runner ?? null;
+    this.session = opts?.session ?? null;
     this.persist = opts?.persist ?? true;
+    this.sessionFactory =
+      opts?.sessionFactory ?? ((bytes) => new StorySessionHandle(bytes));
     this.startPath = opts?.startPath
       ? { path: opts.startPath.path, args: opts.startPath.args ?? [] }
       : null;
-    if (opts?.runner) {
+    if (opts?.session) {
       this.status = opts.status ?? "running";
       this.transcript = opts.transcript ?? [];
       this.choices = opts.choices ?? [];
+      this.watchJournal(opts.session);
     }
   }
 
@@ -147,30 +249,21 @@ export class LocalSessionProvider implements SessionProvider {
     this.callbacks = callbacks;
   }
 
-  /** Whether a live runner exists (drives restart-vs-fresh-start; see slice). */
+  /** Whether a live session exists (drives restart-vs-fresh-start; see slice). */
   hasLiveRunner(): boolean {
-    return this.runner !== null;
+    return this.session !== null;
   }
 
   /**
-   * Spawn a shared-context flow on this session's runner (#200): a concurrent
+   * Spawn a shared-context flow on this session's VM (#200): a concurrent
    * flow of the *same* story that shares globals / visits / rng. Returns a
    * {@link FlowSessionProvider} that drives it, or `null` if there's no live
-   * runner. The flow shares this provider's wired callbacks.
+   * session. The flow shares this provider's wired callbacks.
    */
   spawnFlow(name: string, path?: string): FlowSessionProvider | null {
-    if (!this.runner) return null;
-    this.runner.spawnFlow(name, path);
-    return new FlowSessionProvider(this.runner, name, this.callbacks);
-  }
-
-  /**
-   * The recorded choice history (replay state, spec §6.1). Provider-internal —
-   * not part of the cross-provider snapshot; exposed read-only for inspection
-   * and tests.
-   */
-  get recordedChoices(): readonly number[] {
-    return this.choiceLog;
+    if (!this.session) return null;
+    this.session.spawnFlow(name, path);
+    return new FlowSessionProvider(this.session, name, this.callbacks);
   }
 
   // ── SessionProvider ───────────────────────────────────────────────
@@ -198,60 +291,80 @@ export class LocalSessionProvider implements SessionProvider {
     if (!bytes) return; // local provider requires program bytes (spec §3)
 
     try {
-      // Reuse the live runner via in-place hot-reload when one exists: this
-      // preserves the replay recording, so the saved choice log replays with
-      // faithful externals (query-gated branches reproduce; effect bindings
-      // don't re-fire). Fall back to a fresh runner when there's none, or if
-      // reload fails (decode/link).
-      const prev = this.runner;
-      let runner: StoryRunnerHandle;
+      const prev = this.session;
+      let session: StorySessionHandle;
+      let outcome: ReplayOutcome | null = null;
+
       if (prev) {
+        // In-place hot-reload: replays this session's own journal against the
+        // recompiled program (spec's replay-on-recompile path).
         try {
-          prev.reload(bytes);
-          runner = prev;
+          outcome = prev.reload(bytes);
+          session = prev;
         } catch {
+          // `reload()` throws on decode/link failure of the recompiled bytes
+          // (rather than returning a `ReplayOutcome`) — `prev` is left
+          // untouched by the wasm side in that case, but it's still the old
+          // program's session and can't be reused. Free it and fall back to
+          // a fresh session on the new bytes (dropping the journal), matching
+          // the pre-migration provider's recovery path — don't let this leak
+          // the old wasm handle or dead-end the player in an error state.
           prev.free();
-          runner = new StoryRunnerHandle(bytes);
+          // Clear the field immediately: `this.session` still points at the
+          // now-freed `prev` until `bindSession` reassigns it below, and if
+          // `sessionFactory` itself throws next, the outer catch must not
+          // free this same handle a second time.
+          this.session = null;
+          session = this.sessionFactory(bytes);
         }
       } else {
-        runner = new StoryRunnerHandle(bytes);
+        session = this.sessionFactory(bytes);
       }
-      this.runner = runner;
+      this.bindSession(session);
       this.bytes = bytes;
 
       // The program inspection is static for the program — capture once on load.
-      this.programModel = this.captureProgramModel(runner);
-      this.programInkt = this.captureProgramInkt(runner);
+      this.programModel = this.capture(() => session.programModel());
+      this.programInkt = this.capture(() => session.programInkt());
       this.programChecksum = this.programModel?.checksum ?? null;
 
-      this.status = "running";
-      this.transcript = [];
-      this.choices = [];
-      this.choiceLog = [];
-
       // A secondary "play from here" session jumps to its entry point before
-      // revealing — no replay (it doesn't persist).
+      // revealing — no persisted restore (it doesn't persist).
       if (this.startPath) {
-        runner.goToPath(this.startPath.path, ...this.startPath.args);
+        session.goToPath(this.startPath.path, ...this.startPath.args);
         this.reveal();
         return;
       }
 
-      // Check for saved state and replay; otherwise reveal the first line.
+      if (outcome) {
+        // A hot-reload just ran on the live session's own journal.
+        this.applyReplayOutcome(outcome);
+        return;
+      }
+
+      // Fresh session: check for persisted data.
       const saved = this.persist ? loadFromStorage() : null;
-      if (saved && saved.choiceLog.length > 0) {
-        this.replay(saved.choiceLog);
+      if (saved && isJournalSave(saved)) {
+        this.restoreFromJournal(bytes, saved.journal);
+      } else if (saved && "choiceLog" in saved && saved.choiceLog.length > 0) {
+        this.migrateLegacyChoiceLog(saved.choiceLog);
       } else {
         this.reveal();
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      this.runner = null;
+      // Don't leak a live wasm handle: whatever session is currently bound
+      // (including one just bound earlier in this same `start()` call) must
+      // be freed before we drop the reference.
+      if (this.session) {
+        this.unwatchJournal();
+        this.session.free();
+      }
+      this.session = null;
       this.bytes = null;
       this.status = "error";
       this.transcript = [`Load error: ${msg}`];
       this.choices = [];
-      this.choiceLog = [];
       this.programModel = null;
       this.programInkt = null;
       this.programChecksum = null;
@@ -262,30 +375,29 @@ export class LocalSessionProvider implements SessionProvider {
   }
 
   restart(): void {
-    if (!this.runner) {
-      // No live runner (e.g. a prior load error or a stop) — restart means a
+    if (!this.session) {
+      // No live session (e.g. a prior load error or a stop) — restart means a
       // fresh start on the bytes this session last ran.
       if (this.bytes) this.start(this.bytes);
       return;
     }
-    this.runner.reset();
+    this.session.restart();
     if (this.persist) clearStorage();
     this.status = "running";
     this.transcript = [];
     this.choices = [];
-    this.choiceLog = [];
     // Re-navigate a "play from here" session to its entry on restart.
-    if (this.startPath) this.runner.goToPath(this.startPath.path, ...this.startPath.args);
+    if (this.startPath) this.session.goToPath(this.startPath.path, ...this.startPath.args);
     this.reveal();
   }
 
   stop(): void {
-    if (this.runner) this.runner.free();
-    this.runner = null;
+    this.unwatchJournal();
+    if (this.session) this.session.free();
+    this.session = null;
     // Stopping ends the session *intent* — a later `start` is a fresh run, so
-    // the persisted choice log goes too.
+    // the persisted journal goes too.
     if (this.persist) clearStorage();
-    this.choiceLog = [];
     this.status = "none";
     this.transcript = [];
     this.choices = [];
@@ -297,13 +409,13 @@ export class LocalSessionProvider implements SessionProvider {
   }
 
   choose(index: number): void {
-    const runner = this.runner;
-    if (!runner) return;
+    const session = this.session;
+    if (!session) return;
 
     const choiceText = this.choices.find((c) => c.index === index)?.text;
 
     try {
-      runner.choose(index);
+      session.choose(index);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.status = "error";
@@ -314,15 +426,12 @@ export class LocalSessionProvider implements SessionProvider {
       return;
     }
 
-    // Record choice and save (secondary sessions don't persist — §182).
-    this.choiceLog = [...this.choiceLog, index];
-    if (this.persist) saveToStorage({ choiceLog: this.choiceLog });
-
     // Append the chosen text as a marker, clear choices.
     if (choiceText) this.transcript = [...this.transcript, `> ${choiceText}`];
     this.choices = [];
 
-    // Reveal first line of the next section (emits).
+    // Reveal the next section (emits). The journal-dirty hook handles
+    // persistence — no bespoke save call here.
     this.reveal();
   }
 
@@ -339,8 +448,9 @@ export class LocalSessionProvider implements SessionProvider {
   }
 
   dispose(): void {
-    if (this.runner) this.runner.free();
-    this.runner = null;
+    this.unwatchJournal();
+    if (this.session) this.session.free();
+    this.session = null;
     this.bytes = null;
     this.listeners.clear();
     this.status = "none";
@@ -350,41 +460,56 @@ export class LocalSessionProvider implements SessionProvider {
     this.programModel = null;
     this.programInkt = null;
     this.programChecksum = null;
-    this.choiceLog = [];
   }
 
   // ── Internals ─────────────────────────────────────────────────────
 
-  private captureProgramModel(runner: StoryRunnerHandle): SessionSnapshot["programModel"] {
+  private capture<T>(fn: () => T): T | null {
     try {
-      return runner.programModel();
+      return fn();
     } catch {
       return null;
     }
   }
 
-  private captureProgramInkt(runner: StoryRunnerHandle): string | null {
-    try {
-      return runner.programInkt();
-    } catch {
-      return null;
-    }
+  /** Wire the persistence push signal (`onJournalDirty`) on a freshly bound
+   * session, tearing down any previous subscription first. */
+  private bindSession(session: StorySessionHandle): void {
+    this.unwatchJournal();
+    this.session = session;
+    this.watchJournal(session);
+  }
+
+  private watchJournal(session: StorySessionHandle): void {
+    if (!this.persist) return;
+    this.journalUnsub = session.onJournalDirty(() => {
+      try {
+        saveJournal(session.exportJournal());
+      } catch {
+        // localStorage may be unavailable; persistence is best-effort.
+      }
+    });
+  }
+
+  private unwatchJournal(): void {
+    this.journalUnsub?.();
+    this.journalUnsub = null;
   }
 
   /** Reveal the next line from the runtime (or surface choices/end). Emits. */
   private reveal(): void {
-    const runner = this.runner;
-    if (!runner) {
+    const session = this.session;
+    if (!session) {
       this.emit();
       return;
     }
 
     try {
-      const line = runner.continueSingle();
-      const text = line.text.replace(/\n$/, "");
-      if (text) this.transcript = [...this.transcript, text];
-      this.choices = line.type === "choices" ? (line.choices ?? []) : [];
-      this.status = statusOfLine(line.type);
+      const lines = session.continueToPause();
+      this.appendLines(lines);
+      const last = lines.at(-1);
+      this.status = last ? statusOfLine(last.type) : this.status;
+      this.choices = last?.type === "choices" ? (last.choices ?? []) : [];
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.status = "error";
@@ -397,16 +522,23 @@ export class LocalSessionProvider implements SessionProvider {
     this.emit();
   }
 
+  private appendLines(lines: SessionLine[]): void {
+    for (const line of lines) {
+      const text = line.text.replace(/\n$/, "");
+      if (text) this.transcript = [...this.transcript, text];
+    }
+  }
+
   private refreshDebug(): void {
-    const runner = this.runner;
-    if (!runner) {
+    const session = this.session;
+    if (!session) {
       this.debugState = null;
       return;
     }
     try {
-      this.debugState = runner.debugSnapshot();
+      this.debugState = session.debugSnapshot();
     } catch {
-      // The runner can be mid-teardown or in an error state — never let the
+      // The session can be mid-teardown or in an error state — never let the
       // debug snapshot throw into the UI.
       this.debugState = null;
     }
@@ -426,161 +558,175 @@ export class LocalSessionProvider implements SessionProvider {
   }
 
   /**
-   * Replay a recorded choice log silently — run through the story collecting
-   * all text and applying choices, then leave the session at the final state.
-   *
-   * Recompile-while-running (spec §7.6): if the program changed and a recorded
-   * choice can no longer be applied — its index is no longer offered, the story
-   * ends or dead-ends (`-> DONE`) before reaching it, or the runtime errors —
-   * the replay *truncates the history at the divergence point*, keeps the
-   * session at the position it reached, and raises a divergence notification.
-   *
-   * When the runner holds a recording (the player played before a hot-reload),
-   * externals are served from it during the silent re-walk *and* the
-   * current-page reveal, so query-gated branches reproduce and effect bindings
-   * don't re-fire. On a fresh load the recording is empty, so replay runs live.
+   * Apply a `ReplayOutcome` from `reload()`/`restore()`: mirror wherever the
+   * session landed into the snapshot fields. No accumulated transcript text
+   * is reconstructed (see the class doc comment) — a fresh session doesn't
+   * add anything ("you're just here"); a hot-reload keeps whatever transcript
+   * was already showing and only updates status/choices/position.
    */
-  private replay(choiceLog: number[]): void {
-    const runner = this.runner;
-    if (!runner) return;
+  private applyReplayOutcome(outcome: ReplayOutcome): void {
+    this.refreshDebug();
+    this.choices = choicesFromDebugState(this.debugState);
+    this.status = this.debugState
+      ? statusOfSnapshotStatus(this.debugState.status)
+      : "error";
 
-    const useRecording = runner.hasRecording();
-    if (useRecording) runner.beginReplay();
-    try {
-      this.replayWalk(runner, choiceLog);
-    } finally {
-      if (useRecording) runner.endReplay();
+    switch (outcome.type) {
+      case "replayed":
+        // Clean replay (possibly with soft label-drift warnings) — no
+        // divergence notification.
+        break;
+      case "diverged":
+        this.notifyDiverged();
+        break;
+      case "failed":
+        if (outcome.reason.type === "runtime_error") {
+          this.status = "error";
+          this.transcript = [
+            ...this.transcript,
+            `Runtime error: ${outcome.reason.message}`,
+          ];
+          this.callbacks.appendOutput(
+            "story",
+            `Runtime error: ${outcome.reason.message}`,
+          );
+        }
+        this.notifyDiverged();
+        break;
     }
+    this.emit();
   }
 
-  private replayWalk(runner: StoryRunnerHandle, choiceLog: number[]): void {
+  /** Restore a persisted session journal (the new format). */
+  private restoreFromJournal(bytes: Uint8Array, journal: SessionJournal): void {
+    const { session, outcome } = StorySessionHandle.restore(bytes, journal);
+    this.bindSession(session);
+    this.applyReplayOutcome(outcome);
+  }
+
+  /**
+   * One-time migration of the pre-#388 `{choiceLog}` blob: replay it against
+   * the freshly constructed session exactly like the old provider's
+   * `replayWalk` did, but building a *real* journal along the way (choices go
+   * through `session.choose()`, so they're journaled as they're applied).
+   * Once the walk settles (clean finish, or truncated at a divergence point,
+   * matching the old UX byte-for-byte), the resulting journal is exported and
+   * persisted in the new format, and the legacy key is dropped.
+   */
+  private migrateLegacyChoiceLog(choiceLog: number[]): void {
+    const session = this.session;
+    if (!session) return;
+
     const allText: string[] = [];
     let choiceIdx = 0;
 
-    // Truncate the recorded history at the divergence point: keep the prefix
-    // that was consumed, persist it, and notify (spec §7.5 warning).
-    const truncateLog = (): void => {
-      const kept = choiceLog.slice(0, choiceIdx);
-      if (kept.length > 0) {
-        saveToStorage({ choiceLog: kept });
-      } else {
-        clearStorage();
-      }
-      this.choiceLog = kept;
-      this.notifyDiverged();
+    const finishAndPersist = (): void => {
+      this.transcript = allText;
+      this.refreshDebug();
+      this.emit();
+      if (this.persist) saveJournal(session.exportJournal());
     };
 
-    // Hard backstop only: something is pathological enough that the VM position
-    // can't be trusted — reset to a fresh run.
-    const bailToFresh = (): void => {
-      clearStorage();
-      runner.reset();
-      this.choiceLog = [];
+    const diverge = (): void => {
       this.notifyDiverged();
-      this.reveal();
+      finishAndPersist();
     };
 
-    // Each pass must consume exactly one saved choice. Cap iterations at the
-    // number of saved choices (+1 margin) so a story that dead-ends on DONE
-    // before reaching the next saved choice can't spin forever (it would lock
-    // the UI thread). The `consumedChoice` check below is the precise guard;
-    // this cap is a hard backstop.
+    // Cap iterations at the number of saved choices (+1 margin) so a story
+    // that dead-ends on DONE before reaching the next saved choice can't spin
+    // forever (unbounded-growth guard, mirroring the old provider's).
     let budget = choiceLog.length + 1;
     while (choiceIdx < choiceLog.length) {
       if (budget-- <= 0) {
-        bailToFresh();
+        clearStorage();
+        this.notifyDiverged();
+        this.reveal();
         return;
       }
 
-      let lines;
+      let lines: SessionLine[];
       try {
-        lines = runner.continueStory();
+        lines = session.continueToPause();
       } catch (e) {
-        // The program errored before reaching the next recorded choice.
         const msg = e instanceof Error ? e.message : String(e);
-        truncateLog();
-        this.transcript = [...allText, `Runtime error: ${msg}`];
-        this.choices = [];
         this.status = "error";
+        this.choices = [];
         this.callbacks.appendOutput("story", `Runtime error: ${msg}`);
-        this.refreshDebug();
-        this.emit();
+        allText.push(`Runtime error: ${msg}`);
+        diverge();
         return;
       }
 
-      let consumedChoice = false;
-      let lastType = "done";
       for (const line of lines) {
         const text = line.text.replace(/\n$/, "");
         if (text) allText.push(text);
-        lastType = line.type;
+      }
 
-        if (line.type === "choices") {
-          const savedChoice = choiceLog[choiceIdx];
-          const offered = line.choices ?? [];
-          let chose = false;
-          if (
-            savedChoice !== undefined &&
-            offered.some((c) => c.index === savedChoice)
-          ) {
-            try {
-              runner.choose(savedChoice);
-              chose = true;
-            } catch {
-              chose = false;
-            }
+      const last = lines.at(-1);
+      if (last?.type === "choices") {
+        const savedChoice = choiceLog[choiceIdx];
+        const offered = last.choices ?? [];
+        let chose = false;
+        if (savedChoice !== undefined && offered.some((c) => c.index === savedChoice)) {
+          try {
+            session.choose(savedChoice);
+            chose = true;
+          } catch {
+            chose = false;
           }
-
-          if (!chose) {
-            // The recorded index is no longer valid — divergence. Stay at this
-            // choice point and let the user pick from what is offered now.
-            truncateLog();
-            this.transcript = allText;
-            this.choices = offered;
-            this.status = "awaiting-choice";
-            this.refreshDebug();
-            this.emit();
-            return;
-          }
-
-          const choiceText = offered.find((c) => c.index === savedChoice)?.text;
-          if (choiceText) allText.push(`> ${choiceText}`);
-          choiceIdx++;
-          consumedChoice = true;
-          break;
         }
 
-        if (line.type === "end") {
-          // The story now ends before consuming the full history — divergence
-          // (the remaining recorded choices are unreachable). Truncate and show.
-          truncateLog();
+        if (!chose) {
+          // The recorded index is no longer valid — divergence. Stay at this
+          // choice point and let the user pick from what is offered now.
           this.transcript = allText;
-          this.choices = [];
-          this.status = "ended";
-          this.refreshDebug();
-          this.emit();
+          this.choices = offered;
+          this.status = "awaiting-choice";
+          diverge();
           return;
         }
+
+        const choiceText = offered.find((c) => c.index === savedChoice)?.text;
+        if (choiceText) allText.push(`> ${choiceText}`);
+        choiceIdx += 1;
+        continue;
       }
 
-      // The pass produced no choice to consume and didn't end (it reached a
-      // `-> DONE` dead-end). The next recorded choice is unreachable —
-      // divergence. Truncate and stay at the turn boundary rather than calling
-      // continueStory() forever.
-      if (!consumedChoice) {
-        truncateLog();
+      if (last?.type === "end") {
         this.transcript = allText;
         this.choices = [];
-        this.status = statusOfLine(lastType);
-        this.refreshDebug();
-        this.emit();
+        this.status = "ended";
+        diverge();
         return;
       }
+
+      // The pass produced no choice to consume and didn't end (a `-> DONE`
+      // dead-end) — the next recorded choice is unreachable. Divergence.
+      this.transcript = allText;
+      this.choices = [];
+      this.status = last ? statusOfLine(last.type) : "done";
+      diverge();
+      return;
     }
 
-    // All choices replayed — show accumulated text and reveal the next line.
+    // All choices replayed — show accumulated text and reveal the next line,
+    // then persist the fresh journal (no divergence, nothing to notify).
     this.transcript = allText;
-    this.choiceLog = choiceLog;
     this.reveal();
+    if (this.persist) saveJournal(session.exportJournal());
+  }
+}
+
+/** Map a `StateSnapshot`/`DebugState`-style status string to `SessionStatus`. */
+function statusOfSnapshotStatus(status: string): SessionStatus {
+  switch (status) {
+    case "waiting_for_choice":
+      return "awaiting-choice";
+    case "ended":
+      return "ended";
+    case "done":
+      return "done";
+    default:
+      return "running";
   }
 }

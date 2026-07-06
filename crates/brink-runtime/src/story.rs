@@ -2481,6 +2481,10 @@ impl<'p, R: StoryRng> Story<'p, R> {
                     .get(i)
                     .and_then(|id| resolver.def_path(*id))
                     .map(str::to_owned),
+                // `ch.index` is the pre-filter `flow.pending_choices` position
+                // (see `resolved_choices_for`) — the same index `choose()`
+                // expects, not the post-filter enumeration position `i`.
+                index: ch.index,
             })
             .collect();
 
@@ -2788,6 +2792,23 @@ mod tests {
         }
     }
 
+    /// Step a story, accumulating text, until it stops (choices, done, or
+    /// end) — returns the accumulated text for content assertions.
+    fn step_until_choices_or_end(story: &mut Story) -> String {
+        let mut text = String::new();
+        loop {
+            match story.continue_single().unwrap() {
+                Line::Choices { text: t, .. }
+                | Line::Done { text: t, .. }
+                | Line::End { text: t, .. } => {
+                    text.push_str(&t);
+                    return text;
+                }
+                Line::Text { text: t, .. } => text.push_str(&t),
+            }
+        }
+    }
+
     /// After selecting a once-only choice, the visit count for its target
     /// container must be > 0. Without this, the once-only filter in
     /// `handle_begin_choice` can never fire.
@@ -2822,6 +2843,82 @@ mod tests {
             "visit count for choice target should increment after selection: \
              before={visit_before}, after={visit_after}"
         );
+    }
+
+    /// Build a linked `Story` directly from `.ink` source (no fixture file),
+    /// for cases that need a specific choice shape not already in `tests/`.
+    fn story_from_source(src: &str) -> Story<'static> {
+        let out = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned())).expect("compiles");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        let data = brink_format::read_inkb(&bytes).expect("decode");
+        let (prog, tables) = link(&data).expect("link");
+        // Leak: test-only, keeps `Story`'s `&'static Program` borrow simple.
+        let prog: &'static Program = Box::leak(Box::new(prog));
+        Story::new(prog, tables)
+    }
+
+    /// `Choice.index` (the live, visible choice list) must be the *raw*
+    /// `pending_choices` position, not the post-filter enumeration position —
+    /// an invisible-default fallback choice (`* ->`) mixed in with visible
+    /// choices occupies a `pending_choices` slot but never appears in the
+    /// visible list, so the visible indices can skip values. This is exactly
+    /// what `select_choice`/`choose` expects (it indexes `pending_choices`
+    /// directly) — a caller must never re-derive the index from array
+    /// position over the visible list alone.
+    #[test]
+    fn choice_index_is_raw_pending_choices_position_with_invisible_default_mixed_in() {
+        let src = "-(start)\n\
+             * [First] -> a\n\
+             * -> b\n\
+             * [Third] -> c\n\
+             -(a) Went A.\n-> DONE\n\
+             -(b) Went B.\n-> DONE\n\
+             -(c) Went C.\n-> DONE\n";
+        let mut story = story_from_source(src);
+        let choices = step_until_choices(&mut story);
+
+        // The invisible-default fallback (raw index 1) is filtered out of the
+        // visible list, so the visible choices' indices skip it: 0, then 2.
+        assert_eq!(
+            choices.iter().map(|c| c.index).collect::<Vec<_>>(),
+            vec![0, 2],
+            "visible choice indices must be the raw pending_choices positions, not 0,1,..: {choices:?}"
+        );
+        assert_eq!(story.default.flow.pending_choices.len(), 3);
+
+        // Choosing the raw index of the second visible entry must select
+        // the "Third" branch, not the invisible-default fallback.
+        story.choose(choices[1].index).expect("choose by raw index");
+        let text = step_until_choices_or_end(&mut story);
+        assert!(text.contains("Went C"), "expected the Third branch: {text}");
+    }
+
+    /// `DebugSnapshot.pending_choices[].index` must agree with the live
+    /// `Choice.index` — both derive from the same pre-filter pass over
+    /// `pending_choices` (`resolved_choices_for`). A studio consumer restoring
+    /// a Choice[] from a `DebugSnapshot` (rather than a live `Choice` list)
+    /// depends on this to dispatch `choose()` correctly.
+    #[test]
+    fn debug_snapshot_choice_index_matches_live_choice_index() {
+        let src = "-(start)\n\
+             * [First] -> a\n\
+             * -> b\n\
+             * [Third] -> c\n\
+             -(a) Went A.\n-> DONE\n\
+             -(b) Went B.\n-> DONE\n\
+             -(c) Went C.\n-> DONE\n";
+        let mut story = story_from_source(src);
+        let live_choices = step_until_choices(&mut story);
+        let snap = story.debug_snapshot();
+
+        assert_eq!(snap.pending_choices.len(), live_choices.len());
+        for (live, dbg) in live_choices.iter().zip(snap.pending_choices.iter()) {
+            assert_eq!(
+                dbg.index, live.index,
+                "DebugChoice.index must match the live Choice.index"
+            );
+        }
     }
 
     /// On the second pass through a choice set with once-only choices,

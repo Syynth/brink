@@ -3,17 +3,34 @@
  * (#200, docs/multi-session-spec.md §7).
  *
  * A "+ New flow" session drives a named `FlowInstance` spawned in the **primary
- * session's** wasm `Story`, so it **shares** that story's globals / visit counts
- * / rng (true ink concurrent-flow semantics) while keeping its own call stack +
- * output. It does **not** own the runner (the primary `LocalSessionProvider`
- * does); disposing it destroys just the flow.
+ * session's** VM, so it **shares** that story's globals / visit counts / rng
+ * (true ink concurrent-flow semantics) while keeping its own call stack +
+ * output. It does **not** own the underlying handle (the primary
+ * `LocalSessionProvider` does); disposing it destroys just the flow.
  *
- * Contrast with {@link LocalSessionProvider}, which is an *independent* runner
+ * Contrast with {@link LocalSessionProvider}, which is an *independent* session
  * (isolated globals) — the "+ New session" case.
+ *
+ * Accepts either handle that exposes the shared-flow surface —
+ * `StoryRunnerHandle` (used by nothing here anymore, kept structurally
+ * compatible) or `StorySessionHandle` (#388: the primary is now
+ * session-backed). Duck-typed rather than importing a union so a future
+ * third handle only needs to match this shape, not be added to a type union
+ * here.
  */
 
-import type { StoryRunnerHandle } from "@brink-lang/web";
 import type { Choice } from "@brink/wasm-types";
+
+/** The shared-flow surface `FlowSessionProvider` needs from its host handle —
+ * satisfied by both `StoryRunnerHandle` and `StorySessionHandle`. */
+export interface FlowHost {
+  programModel(): unknown;
+  programInkt(): string;
+  continueFlow(name: string): { type: string; text: string; tags: string[]; choices?: Choice[] };
+  chooseFlow(name: string, index: number): void;
+  destroyFlow(name: string): void;
+  flowDebugSnapshot(name: string): unknown;
+}
 
 import {
   statusOfLine,
@@ -40,7 +57,7 @@ export class FlowSessionProvider implements SessionProvider {
   readonly kind = "local" as const;
   readonly capabilities = FLOW_CAPABILITIES;
 
-  private readonly runner: StoryRunnerHandle;
+  private readonly runner: FlowHost;
   private readonly flowName: string;
   private callbacks: ProviderCallbacks;
   private readonly listeners = new Set<(s: SessionSnapshot) => void>();
@@ -49,21 +66,23 @@ export class FlowSessionProvider implements SessionProvider {
   private transcript: string[] = [];
   private choices: Choice[] = [];
   private debugState: SessionSnapshot["debugState"] = null;
-  // Program identity is the shared runner's — same program as the primary.
+  // Program identity is the shared host's — same program as the primary.
   private readonly programModel: SessionSnapshot["programModel"];
   private readonly programInkt: string | null;
   private readonly programChecksum: string | null;
   private disposed = false;
 
   constructor(
-    runner: StoryRunnerHandle,
+    runner: FlowHost,
     flowName: string,
     callbacks: ProviderCallbacks = NOOP_CALLBACKS,
   ) {
     this.runner = runner;
     this.flowName = flowName;
     this.callbacks = callbacks;
-    this.programModel = this.capture(() => runner.programModel());
+    this.programModel = this.capture(
+      () => runner.programModel() as SessionSnapshot["programModel"],
+    );
     this.programInkt = this.capture(() => runner.programInkt());
     this.programChecksum = this.programModel?.checksum ?? null;
   }
@@ -145,7 +164,9 @@ export class FlowSessionProvider implements SessionProvider {
 
   private refreshDebug(): void {
     try {
-      this.debugState = this.runner.flowDebugSnapshot(this.flowName);
+      this.debugState = this.runner.flowDebugSnapshot(
+        this.flowName,
+      ) as SessionSnapshot["debugState"];
     } catch {
       this.debugState = null;
     }

@@ -60,6 +60,12 @@ pub struct DebugVisit {
 pub struct DebugChoice {
     pub text: String,
     pub target: Option<String>,
+    /// The raw `flow.pending_choices` index — the same pre-filter position
+    /// the visible [`Choice`](crate::story::Choice)'s `index` carries and
+    /// that `select_choice`/`choose` expects. Not a post-filter enumeration
+    /// position: invisible-default choices are filtered out of what's shown
+    /// but still occupy a slot in `pending_choices`, so this can skip values.
+    pub index: usize,
 }
 
 /// Story RNG state.

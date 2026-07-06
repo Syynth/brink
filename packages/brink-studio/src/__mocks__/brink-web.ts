@@ -724,8 +724,57 @@ export function diffSnapshots(_a: string, _b: string): string {
 export class WebSession {
   private events = 0;
   private turn = 0;
+  private flows = new Set<string>();
 
   constructor(_storyBytes: Uint8Array, _seed?: number, _deferred?: string[]) { /* no-op */ }
+
+  // ── Program inspection (#388) ──────────────────────────────────
+  debug_snapshot(): string {
+    return JSON.stringify({
+      status: this.turn === 0 ? "active" : "ended",
+      current_location: null,
+      turn_index: this.turn,
+      globals: [],
+      call_stack: [],
+      visit_counts: [],
+      pending_choices: [],
+      rng: { seed: 0, previous: 0 },
+    });
+  }
+  program_inkt(): string {
+    return "";
+  }
+  program_model(): string {
+    return JSON.stringify({
+      checksum: "0xmock0000",
+      globals: [],
+      lists: [],
+      externals: [],
+      knots: [],
+    });
+  }
+
+  // ── Shared flows (#388 mirror of StoryRunner's) ─────────────────
+  spawn_flow(name: string, _path?: string): void {
+    this.flows.add(name);
+  }
+  continue_flow(_name: string): string {
+    return JSON.stringify({ type: "end", text: "", tags: [] });
+  }
+  choose_flow(_name: string, _index: number): void { /* no-op */ }
+  destroy_flow(name: string): void {
+    this.flows.delete(name);
+  }
+  flow_names(): string {
+    return JSON.stringify([...this.flows].sort());
+  }
+  flow_debug_snapshot(_name: string): string {
+    return JSON.stringify({
+      status: "ended", current_location: null, turn_index: 0,
+      globals: [], call_stack: [], visit_counts: [], pending_choices: [],
+      rng: { seed: 0, previous: 0 },
+    });
+  }
 
   private bumpAndLine(): string {
     this.events += 1;

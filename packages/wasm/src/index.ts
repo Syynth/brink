@@ -1230,6 +1230,65 @@ export class StorySessionHandle {
     return JSON.parse(json) as StateDiff;
   }
 
+  // ── Program inspection (Program Explorer / State View) ────────
+
+  /** A typed, name-resolved runtime snapshot (current location, globals,
+   * call stack, visit counts, pending choices, RNG state) for the studio's
+   * State View. Live position — reflects wherever the session currently is,
+   * unlike `programModel`/`programInkt` below (compile-bound, captured once). */
+  debugSnapshot(): DebugState {
+    return JSON.parse(this.session.debug_snapshot()) as DebugState;
+  }
+
+  /** The compiled program as `.inkt` text (Program Explorer's Compiled
+   * Output document). Static for the loaded program. */
+  programInkt(): string {
+    return this.session.program_inkt();
+  }
+
+  /** Structured model of the compiled program (Program Explorer). Static
+   * for the loaded program. */
+  programModel(): ProgramModel {
+    return JSON.parse(this.session.program_model()) as ProgramModel;
+  }
+
+  // ── Shared flows (#200) ────────────────────────────────────────
+  // Concurrent flows of this session's story that SHARE its globals / visit
+  // counts / rng (true ink flow semantics), each with its own call stack.
+  // Drives the studio's "+ new flow". Flow stepping bypasses the journal by
+  // design (docs/story-session-spec.md's "shared flows keep working; their
+  // externals never journal").
+
+  /** Spawn a shared-context flow at the program root (or `path`). */
+  spawnFlow(name: string, path?: string): void {
+    this.session.spawn_flow(name, path);
+  }
+
+  /** Advance a shared flow by one line. */
+  continueFlow(name: string): Line {
+    return JSON.parse(this.session.continue_flow(name)) as Line;
+  }
+
+  /** Select a choice in a shared flow. */
+  chooseFlow(name: string, index: number): void {
+    this.session.choose_flow(name, index);
+  }
+
+  /** Destroy a shared flow. */
+  destroyFlow(name: string): void {
+    this.session.destroy_flow(name);
+  }
+
+  /** Active flow names (sorted). */
+  flowNames(): string[] {
+    return JSON.parse(this.session.flow_names()) as string[];
+  }
+
+  /** Per-flow debug snapshot (State View) for a named flow. */
+  flowDebugSnapshot(name: string): DebugState {
+    return JSON.parse(this.session.flow_debug_snapshot(name)) as DebugState;
+  }
+
   /** Export the session journal — the durable save artifact (embeds a
    * fast-restore checkpoint). Persist this; `StorySessionHandle.restore`
    * rebuilds a session from it. */

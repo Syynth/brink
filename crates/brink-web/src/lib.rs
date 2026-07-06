@@ -982,6 +982,7 @@ struct DebugChoiceJs {
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     target: Option<String>,
+    index: usize,
 }
 
 #[derive(Serialize)]
@@ -1026,6 +1027,7 @@ fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStateJs {
             .map(|c| DebugChoiceJs {
                 text: c.text,
                 target: c.target,
+                index: c.index,
             })
             .collect(),
         rng: DebugRngJs {
@@ -1133,6 +1135,12 @@ pub struct WebSession {
     // is dropped first (struct field order), and wasm is single-threaded.
     program: Box<brink_runtime::Program>,
     base_line_tables: Vec<Vec<brink_format::LineEntry>>,
+    /// The decoded `StoryData` this session is running — kept (mirroring
+    /// `StoryRunner::data`) so the Program Explorer facts (`program_model`,
+    /// `program_inkt`) can be derived without re-decoding `story_bytes`.
+    /// Compile-bound, not session-bound: swapped on `reload`, untouched by
+    /// `restart` (same program, fresh session).
+    data: brink_format::StoryData,
     session: RefCell<Option<brink_runtime::StorySession<'static, FastRng>>>,
     /// Explicit RNG seed, if the host set one. Re-applied on `restart`/
     /// `reload` so re-runs stay deterministic.
@@ -1186,12 +1194,156 @@ impl WebSession {
         Ok(WebSession {
             program,
             base_line_tables: line_tables,
+            data,
             session: RefCell::new(Some(session)),
             seed: Cell::new(seed),
             always_deferred: deferred.unwrap_or_default().into_iter().collect(),
             busy: Cell::new(false),
             last_replay_outcome: RefCell::new(None),
         })
+    }
+
+    // ── Program inspection (Program Explorer / State View) ──────────
+
+    /// A typed, name-resolved runtime snapshot (current location, globals,
+    /// call stack, visit counts, pending choices, RNG state) for the studio's
+    /// State View. Mirrors `StoryRunner::debug_snapshot` — live position, not
+    /// compile-bound, so it reflects wherever the session currently is (unlike
+    /// `program_model`/`program_inkt` below). Reached through the documented
+    /// `StorySession::story()` escape hatch (read-only; bypasses the journal
+    /// since nothing is mutated).
+    pub fn debug_snapshot(&self) -> Result<String, JsError> {
+        let borrow = self.session.borrow();
+        let session = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let js = debug_snapshot_to_js(session.story().debug_snapshot());
+        serde_json::to_string(&js).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// The compiled program rendered as `.inkt` text for the Program Explorer:
+    /// checksum, name table, globals, lists, externals, address paths, and
+    /// containers with bytecode disassembly. Static for the loaded program —
+    /// mirrors `StoryRunner::program_inkt`.
+    pub fn program_inkt(&self) -> Result<String, JsError> {
+        let mut out = String::new();
+        brink_format::write_inkt(&self.data, &mut out)
+            .map_err(|e| JsError::new(&format!("inkt error: {e}")))?;
+        Ok(out)
+    }
+
+    /// Structured model of the compiled program for the Program Explorer:
+    /// globals / lists / externals tables plus a knot/stitch tree with
+    /// per-knot, name-resolved bytecode disassembly. Static for the loaded
+    /// program — mirrors `StoryRunner::program_model`. Returns JSON.
+    pub fn program_model(&self) -> Result<String, JsError> {
+        let model = program_model::build(&self.data);
+        serde_json::to_string(&model).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    // ── Shared flows (#200) ───────────────────────────────────────
+    // Mirrors `StoryRunner`'s shared-flow surface exactly, delegating through
+    // the documented `story()`/`story_mut()` escape hatch: a flow spawned here
+    // SHARES this session's `Story` (globals / visit counts / rng), so it
+    // stays coherent with whatever the session itself is driving. Flow
+    // stepping bypasses the journal by design — the journal spec explicitly
+    // reserves this as "shared flows keep working; their externals never
+    // journal".
+
+    /// Spawn a shared-context flow, started at the program root (or `path`).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "wasm-bindgen passes an optional JS string as an owned value across the boundary"
+    )]
+    pub fn spawn_flow(&self, name: &str, path: Option<String>) -> Result<(), JsError> {
+        let _guard = BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("spawn_flow"))?;
+        let container_idx = match path.as_deref() {
+            None => None,
+            Some(p) => Some(
+                self.program
+                    .find_address(p)
+                    .map(|(idx, _)| idx)
+                    .ok_or_else(|| JsError::new(&format!("unknown path: {p}")))?,
+            ),
+        };
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        session
+            .story_mut()
+            .spawn_flow_shared(name, container_idx)
+            .map_err(|e| JsError::new(&format!("spawn_flow error: {e}")))
+    }
+
+    /// Advance a shared flow by one line. Returns one `Line` JSON. Externals
+    /// resolve via the ink fallback body only (no JS-binding registry, same
+    /// as the default flow) and are never journaled.
+    pub fn continue_flow(&self, name: &str) -> Result<String, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("continue_flow"))?;
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let line = session
+            .story_mut()
+            .continue_flow_single_with(name, &brink_runtime::FallbackHandler)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        serde_json::to_string(&line_to_js(line))
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Select a choice in a shared flow.
+    pub fn choose_flow(&self, name: &str, index: usize) -> Result<(), JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("choose_flow"))?;
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        session
+            .story_mut()
+            .choose_flow_shared(name, index)
+            .map_err(|e| JsError::new(&format!("choose_flow error: {e}")))
+    }
+
+    /// Destroy a shared flow.
+    pub fn destroy_flow(&self, name: &str) -> Result<(), JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("destroy_flow"))?;
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        session
+            .story_mut()
+            .destroy_flow(name)
+            .map_err(|e| JsError::new(&format!("destroy_flow error: {e}")))
+    }
+
+    /// JSON array of active flow names (sorted, deterministic).
+    pub fn flow_names(&self) -> Result<String, JsError> {
+        let borrow = self.session.borrow();
+        let session = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        serde_json::to_string(&session.story().flow_names())
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Per-flow debug snapshot (State View) for a named flow.
+    pub fn flow_debug_snapshot(&self, name: &str) -> Result<String, JsError> {
+        let borrow = self.session.borrow();
+        let session = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let snap = session
+            .story()
+            .debug_snapshot_flow(name)
+            .map_err(|e| JsError::new(&format!("flow error: {e}")))?;
+        serde_json::to_string(&debug_snapshot_to_js(snap))
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
     // ── Stepping ──────────────────────────────────────────────────
@@ -1462,6 +1614,7 @@ impl WebSession {
         *self.session.borrow_mut() = None;
         *self.program = prog;
         self.base_line_tables.clone_from(&line_tables);
+        self.data = data;
 
         let program_ptr: *const brink_runtime::Program = &raw const *self.program;
         // SAFETY: same invariants as `new` — the Box is pinned and outlives
@@ -1551,6 +1704,7 @@ impl WebSession {
             WebSession {
                 program,
                 base_line_tables: line_tables,
+                data,
                 session: RefCell::new(Some(session)),
                 seed: Cell::new(seed),
                 always_deferred: std::collections::BTreeSet::new(),
@@ -6956,5 +7110,87 @@ mod websession_wasm_tests {
         // The visible story is untouched: it hasn't even started yet.
         let text = s.continue_to_pause().expect("drains");
         assert!(text.contains("HP 10."), "{text}");
+    }
+
+    #[wasm_bindgen_test]
+    fn debug_snapshot_reflects_live_position() {
+        // Unlike `program_model`/`program_inkt` (compile-bound, captured once),
+        // `debug_snapshot` must track wherever the session currently is — the
+        // studio's live-inspector needs a fresh position after every advance.
+        let s = new_session("VAR hp = 10\nHP {hp}.\n-> more\n=== more ===\nMore.\n-> END\n");
+        let before = s.debug_snapshot().expect("debug_snapshot serializes");
+        s.continue_single().expect("advance past the first line");
+        let after = s.debug_snapshot().expect("debug_snapshot serializes again");
+        assert_ne!(before, after, "position must move: {before} == {after}");
+    }
+
+    #[wasm_bindgen_test]
+    fn program_model_and_inkt_are_static_for_the_loaded_program() {
+        let s = new_session("VAR hp = 10\nHP {hp}.\n-> END\n");
+        let model = s.program_model().expect("program_model serializes");
+        let mv: serde_json::Value = serde_json::from_str(&model).unwrap();
+        assert!(
+            mv["globals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|g| g["name"] == "hp"),
+            "{model}"
+        );
+        let inkt = s.program_inkt().expect("program_inkt renders");
+        assert!(inkt.contains("hp"), "{inkt}");
+    }
+
+    #[wasm_bindgen_test]
+    fn shared_flow_writes_are_visible_to_the_driving_session() {
+        // The session's own flow shares globals with whatever `advance`/
+        // `continue_single` drives — same story instance, reached through the
+        // documented `story()`/`story_mut()` escape hatch.
+        let s = new_session("VAR x = 0\n{x}\n-> END\n=== bump ===\n~ x = 9\nbumped.\n-> END\n");
+        s.spawn_flow("f", Some("bump".to_owned())).expect("spawn");
+        let flow_line = s.continue_flow("f").expect("continue flow");
+        assert!(flow_line.contains("bumped"), "{flow_line}");
+
+        assert!(
+            s.flow_names().expect("flow_names").contains("\"f\""),
+            "flow should be listed before destroy"
+        );
+
+        let default_line = s.continue_single().expect("default flow line");
+        assert!(
+            default_line.contains('9'),
+            "default flow sees the shared flow's write; got {default_line}"
+        );
+
+        s.destroy_flow("f").expect("destroy");
+        assert!(
+            !s.flow_names()
+                .expect("flow_names after destroy")
+                .contains("\"f\"")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn flow_debug_snapshot_and_choose_flow() {
+        let s = new_session(
+            "Root.\n-> END\n\
+             === start ===\n\
+             * choice one\n    One.\n-> END\n\
+             * choice two\n    Two.\n-> END\n",
+        );
+        s.spawn_flow("f", Some("start".to_owned())).expect("spawn");
+        let line = s.continue_flow("f").expect("continue flow");
+        assert!(line.contains("\"type\":\"choices\""), "{line}");
+        s.choose_flow("f", 0).expect("choose in flow");
+        // Selecting the choice first echoes its own label text, then the
+        // content beneath it — same two-line shape `continue_single` produces
+        // for the default flow at a visible-text choice.
+        let echoed = s.continue_flow("f").expect("continue after choice");
+        assert!(echoed.contains("choice one"), "{echoed}");
+        let after = s.continue_flow("f").expect("continue to choice body");
+        assert!(after.contains("One."), "{after}");
+
+        let snap = s.flow_debug_snapshot("f").expect("flow_debug_snapshot");
+        assert!(snap.contains("\"status\""), "{snap}");
     }
 }
