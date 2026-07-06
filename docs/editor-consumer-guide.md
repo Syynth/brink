@@ -327,11 +327,14 @@ describing your project's dialogue-line conventions. See `docs/dialect-spec.md` 
   decorations, the wasm-side classification (when a document handle is present), and a
   forced reclassification, all in one call. Pass `null` to tear down the layer live.
 
-Classification is authoritative in Rust (`brink_ir::dialect` + `line_contexts_with_dialect`) when a
-wasm document handle is present — `set_dialect`/`clear_dialect` on `EditorSessionHandle` register
-it. Without a handle (e.g. a bare CodeMirror state in a test), the editor falls back to a **thin TS
-interpreter over the identical JSON** (`ResolvedDialect` in `@brink-lang/editor`), pinned against
-the same conformance corpus as the Rust side so both paths agree on every case.
+When a wasm document handle is present, the Rust compiler (`brink_ir::dialect` +
+`line_contexts_with_dialect`) is authoritative for dialect classification — `set_dialect`/
+`clear_dialect` on `EditorSessionHandle` register it. Without a handle (e.g. a bare CodeMirror
+state in a test), the editor falls back to a **thin TS interpreter** (`ResolvedDialect` in
+`@brink-lang/editor`), implementing the same specification as the Rust side. Both are pinned
+against the same conformance corpus (`tests/dialect_fixtures/at_cue.json` for the default dialect)
+so both paths produce identical results for that corpus; custom dialects are validated once and
+used by both compiler and editor without re-implementation.
 
 The dialect is an **authoring-time/tooling artifact only** — it is never embedded in compiled
 `.inkb` output and never instructs the runtime. A game wanting the same cue-parsing logic at
@@ -343,12 +346,18 @@ your wiring, not something the editor or compiler does for you.
 `DialectParser` (from `@brink-lang/editor`) is a standalone class over a `DialogueDialect` — no
 CodeMirror, no wasm session. Construct once per dialect (patterns compile once), then:
 
-- **`parseSource(text)`** classifies plain `.ink`-style source text line-by-line, mirroring the
-  editor's own classify + chain passes exactly. Returns one `SourceLine` per input line: `{ index,
-  text, kind, attrs }`, where `kind` is `null` for a line that didn't classify. A blank line always
-  breaks the chain. This is a source-side parse — it never interprets ink's own structural syntax
-  (`->`, `<-`, `#`, `{}`); a source line that happens to look like a divert/thread/tag/logic line
-  is just narrative text to the dialect layer.
+- **`parseSource(text)`** classifies plain `.ink`-style source text line-by-line using the dialect's
+  patterns. Returns one `SourceLine` per input line: `{ index, text, kind, attrs }`, where `kind`
+  is `null` for a line that didn't classify. A blank line always breaks the chain. This is a
+  source-side parse — it never interprets ink's own structural syntax (`->`, `<-`, `#`, `{}`);
+  a source line that happens to look like a divert/thread/tag/logic line is just narrative text
+  to the dialect layer. **`parseSource` mirrors the editor's own fallback classify + chain
+  passes**, which run in the editor only when no wasm document handle is present (when a handle
+  is present, the editor instead uses Rust's `line_contexts_with_dialect`). Both implement the
+  same dialect spec / conformance contract, pinned against the same conformance corpus
+  (`tests/dialect_fixtures/at_cue.json` for the default dialect). Custom dialects are always
+  verified against the Rust compiler's line table — that is the authoritative source for
+  compiled output.
 - **`parseEmitted(text)`** walks *runtime-emitted* text (the post-glue output of
   `continue_line()`) into `EmittedSegment[]` per the pinned **composite-segment iteration
   protocol**: a cue + parenthetical + trailing text emitting as ONE line is the normal case (three

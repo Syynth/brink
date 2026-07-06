@@ -206,12 +206,27 @@ function isIncludeBlockFold(fr: FoldRange): boolean {
   return typeof fr.collapsed_text === "string" && fr.collapsed_text.startsWith("INCLUDE");
 }
 
+/** Precedence among `FoldRange.kind`s that share an exact resolved span
+ *  (#405). This is rare — it takes a structural fold (e.g. a knot/stitch
+ *  header) and a machinery/narrative run to resolve to the identical
+ *  `{from, to}` — but when it happens the choice must be deliberate, not an
+ *  accident of which range `getFoldingRanges` happened to push first
+ *  (`folding_ranges_impl` pushes structural before machinery/narrative, so
+ *  a first-match loop silently favored structural). Lower index wins.
+ *  Structural is kept first: it is the status quo behavior and there's no
+ *  evidence a machinery/narrative pill should ever pre-empt a decl header at
+ *  an identical span. */
+const EXACT_SPAN_TIE_BREAK_ORDER: readonly FoldKind[] = ["structural", "machinery", "narrative"];
+
 /** Build the `codeFolding` placeholder config. `preparePlaceholder` first
  *  looks for a `FoldRange` whose resolved fold matches this fold and carries a
  *  Rust-supplied `collapsed_text` (the INCLUDE-block fold) and renders that
  *  verbatim. Otherwise it dispatches on the matching `FoldRange`'s `kind`
  *  (#365): `machinery`/`narrative` get a JetBrains-style summary pill;
- *  everything else (structural) falls back to the whole-declaration header. */
+ *  everything else (structural) falls back to the whole-declaration header.
+ *  When more than one `FoldRange` resolves to the exact same span (#405),
+ *  precedence is decided explicitly by `EXACT_SPAN_TIE_BREAK_ORDER`, not by
+ *  push order. */
 export function placeholderConfig(rangesFor: (state: EditorState) => FoldRange[]) {
   return {
     preparePlaceholder(state: EditorState, range: { from: number; to: number }): FoldPlaceholder {
@@ -222,7 +237,11 @@ export function placeholderConfig(rangesFor: (state: EditorState) => FoldRange[]
       // `{...}` sentinel), so gate on the INCLUDE-block discriminator, not mere
       // presence of `collapsed_text`, or those folds get mislabeled as INCLUDE
       // blocks.
-      let matched: FoldRange | null = null;
+      //
+      // Collect every FoldRange resolving to this exact span (not just the
+      // first) so a same-span tie between kinds is broken deliberately
+      // (`EXACT_SPAN_TIE_BREAK_ORDER`) rather than by push order.
+      const candidates: FoldRange[] = [];
       for (const fr of rangesFor(state)) {
         const resolved = resolveFold(state, fr);
         if (resolved && resolved.from === range.from && resolved.to === range.to) {
@@ -230,7 +249,15 @@ export function placeholderConfig(rangesFor: (state: EditorState) => FoldRange[]
             // Non-null: isIncludeBlockFold guarantees a string collapsed_text.
             return { kind: "collapsed", text: fr.collapsed_text as string };
           }
-          matched = fr;
+          candidates.push(fr);
+        }
+      }
+
+      let matched: FoldRange | null = null;
+      for (const kind of EXACT_SPAN_TIE_BREAK_ORDER) {
+        const found = candidates.find((fr) => fr.kind === kind);
+        if (found) {
+          matched = found;
           break;
         }
       }
