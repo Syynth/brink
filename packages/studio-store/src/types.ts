@@ -5,36 +5,13 @@
  * as forward-compatible stubs until that package is created.
  */
 
-// ── Element types (mirrors brink-studio/editor/element-type.ts) ──────
-
-export enum ElementType {
-  KnotHeader,
-  StitchHeader,
-  NarrativeText,
-  Choice,
-  ChoiceBody,
-  Gather,
-  Divert,
-  Logic,
-  VarDecl,
-  Comment,
-  Include,
-  External,
-  Tag,
-  Blank,
-  Character,
-  Parenthetical,
-  Dialogue,
-}
-
-export interface LineInfo {
-  type: ElementType;
-  depth: number;
-  /** Whether the choice/gather uses sticky (+) sigils. */
-  sticky: boolean;
-  /** Whether a divert is standalone (just "-> target", not a tunnel). */
-  standalone: boolean;
-}
+// ── Element types ──────────────────────────────────────────────────────
+//
+// `ElementType`/`LineInfo` used to be duplicated here (a forward-compatible
+// stub predating @brink-lang/editor). #368 deletes the duplicate — both are
+// now re-exported from the real module (element-type.ts) via index.ts, which
+// re-exports `ElementType` as `ElementTypeEnum` for historical reasons (kept
+// for call-site compatibility).
 
 // ── Key hints ────────────────────────────────────────────────────────
 

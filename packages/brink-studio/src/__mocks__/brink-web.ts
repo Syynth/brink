@@ -445,6 +445,12 @@ export class EditorSession {
   set_host_values(_json: string): void { /* no-op */ }
   clear_host_values(): void { /* no-op */ }
 
+  // Dialogue dialect (#368) — no-ops in the mock; `line_contexts_doc`/
+  // `line_contexts` always return "[]" here, so there is no dialect facet
+  // to populate either way. Mirrors the host-manifest no-op pattern above.
+  set_dialect(_json: string): void { /* no-op */ }
+  clear_dialect(): void { /* no-op */ }
+
   project_outline(): string {
     const outline = [];
     for (const [path, source] of this.files) {

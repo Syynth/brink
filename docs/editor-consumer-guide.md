@@ -36,6 +36,7 @@ the editor owns the resulting UX.
 | `onPlayFrom`, `onSymbolContextMenu`, `onNavigateToFile` | host hooks for your own chrome | — |
 | `theme` | the editor skin (#363): absent ⇒ the default `brinkTheme`; `false` ⇒ **headless** (you style the class taxonomy below); an `Extension` ⇒ your own CM theme | — |
 | `getGutterMarkers` (+ `onGutterMarkerClick`) | **host gutter markers** (#343): your own per-line gutter affordances (breakpoints, annotations, run/flag icons) | — (host-supplied data) |
+| `dialect` | the **dialogue dialect** (#368): absent ⇒ the `AT_CUE_DIALECT` preset (`@Name:<>` cues); `null` ⇒ tears down the whole screenplay layer; a `DialogueDialect` object ⇒ your own convention | `set_dialect` / `clear_dialect` (tooling-only; never affects the runtime) |
 
 Notes on the host gutter contract (#343):
 - `getGutterMarkers(source, fromLine, toLine) => HostGutterMarker[]` returns markers
@@ -304,6 +305,39 @@ app quit).
 Bottom line: you inherit every feature's substance from the editor + wasm packages and reimplement
 only thin mount glue + your own state/entry-points.
 
+## The dialogue dialect (#368) — cue/parenthetical/dialogue conventions
+
+The editor's "screenplay" behavior — recognizing `@Name:<>` character cues, `(beat)<>`
+parentheticals, and the dialogue chain that follows a cue — is not hardcoded. It is driven by a
+**dialect**: a versioned, pure-JSON schema (`DialogueDialect`, exported from `@brink-lang/editor`)
+describing your project's dialogue-line conventions. See `docs/dialect-spec.md` for the full schema.
+
+- **Default**: omit the option (or pass nothing) and you get `AT_CUE_DIALECT` — byte-identical to
+  the pre-#368 hardcoded `@Name:<>` behavior. Nothing changes for existing hosts.
+- **Headless**: `brinkStudio({ dialect: null })` tears down the *entire* screenplay layer —
+  classification, decorations (hidden sigils, atomic ranges, the edit guard), dialect transition
+  rows, and the dialect-specific keybinding behaviors — for true headless composition (pair with
+  `theme: false`, #363). Structural classification (Choice/Gather/Divert/…) AND the structural
+  keymap (Choice/Gather/ChoiceBody/Narrative Tab/Enter transitions, Home/End, arrows, the
+  Alt-Enter picker) keep working — structural rows are interpreter-owned per the dialect spec;
+  only the dialect-specific layer is gone.
+- **Custom**: pass your own `DialogueDialect` object. `extendDialect(AT_CUE_DIALECT, overrides)`
+  adds a kind (or overrides transitions/templates) without forking the preset.
+- **Live reconfigure**: `setDialect(view, dialect)` swaps an already-mounted editor's dialect —
+  decorations, the wasm-side classification (when a document handle is present), and a
+  forced reclassification, all in one call. Pass `null` to tear down the layer live.
+
+Classification is authoritative in Rust (`brink_ir::dialect` + `line_contexts_with_dialect`) when a
+wasm document handle is present — `set_dialect`/`clear_dialect` on `EditorSessionHandle` register
+it. Without a handle (e.g. a bare CodeMirror state in a test), the editor falls back to a **thin TS
+interpreter over the identical JSON** (`ResolvedDialect` in `@brink-lang/editor`), pinned against
+the same conformance corpus as the Rust side so both paths agree on every case.
+
+The dialect is an **authoring-time/tooling artifact only** — it is never embedded in compiled
+`.inkb` output and never instructs the runtime. A game wanting the same cue-parsing logic at
+runtime imports the (future) `DialectParser` as an ordinary library and passes it the same JSON —
+that's your wiring, not something the editor or compiler does for you.
+
 ## Styling a headless editor — theme opt-out + the class taxonomy (#363)
 
 The editor is **headless-ready**: every element it renders carries a stable class, and the skin is
@@ -351,6 +385,48 @@ Additive line classes: `brink-section-start` (the first line of a knot's comment
 Two pieces of *data-driven placement* still ride on the line as inline styles (they are computed
 per-line from weave depth / divert shape, not skin): `padding-left` on choices/gathers at depth > 1,
 and `text-align: right` on standalone diverts.
+
+### `ElementType` is now a string (BREAKING CHANGE, 0.8.0, #368, ruled 2026-07-05)
+
+`ElementType` used to be a numeric TS `enum`. It is now a `const` object of the same kebab-case
+kind strings the CSS classes above already used — `ElementType.Character` still works as a
+call-site value (mechanical migration), but the *type* is now `string` (`LineInfo.type: string`),
+matching the open scheme: a registered dialect's declared kinds flow through as plain strings that
+just aren't named on the `ElementType` object.
+
+This surfaced two places where the wire values were the PascalCase **enum member names**, not the
+kebab-case kind — both are now the kebab-case kind, same as the CSS class taxonomy:
+
+| PascalCase (old) | kebab-case (new) | CSS class |
+|---|---|---|
+| `KnotHeader` | `knot-header` | `brink-knot-header` |
+| `StitchHeader` | `stitch-header` | `brink-stitch-header` |
+| `NarrativeText` | `narrative` | `brink-narrative` |
+| `Choice` | `choice` | `brink-choice` |
+| `ChoiceBody` | `choice-body` | `brink-choice-body` |
+| `Gather` | `gather` | `brink-gather` |
+| `Divert` | `divert` | `brink-divert` |
+| `Logic` | `logic` | `brink-logic` |
+| `VarDecl` | `var-decl` | `brink-var-decl` |
+| `Comment` | `comment` | `brink-comment` |
+| `Include` | `include` | `brink-include` |
+| `External` | `external` | `brink-external` |
+| `Tag` | `tag` | `brink-tag` |
+| `Blank` | `blank` | `brink-blank` |
+| `Character` | `character` | `brink-character` |
+| `Parenthetical` | `parenthetical` | `brink-parenthetical` |
+| `Dialogue` | `dialogue` | `brink-dialogue` |
+
+Affected surfaces:
+- **`@brink-lang/studio`'s published `StudioApi`** — `StudioPublicState.element.type` (read via
+  `studioApi.select((s) => s.element)`) used to be the PascalCase name (e.g. `"KnotHeader"`); it is
+  now the kebab-case kind (e.g. `"knot-header"`).
+- **`@brink/studio-store`** — the duplicate `ElementType` enum that used to live in `studio-store`
+  is deleted; it now imports the real one from `@brink-lang/editor` (re-exported as
+  `ElementTypeEnum` for call-site compatibility).
+
+No compat shim — this is a 0.x hard cut (both packages are pre-1.0). New/custom kinds (from a
+registered dialect) are additive, not breaking, per the open-scheme contract above.
 
 ### Structural decoration classes
 

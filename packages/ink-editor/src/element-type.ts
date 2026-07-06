@@ -1,28 +1,51 @@
-import { StateField, type EditorState, type Transaction } from "@codemirror/state";
+import { Facet, StateEffect, StateField, type EditorState, type Transaction } from "@codemirror/state";
 import type { LineContext, WeaveElement } from "@brink/wasm-types";
 import { documentHandleFacet } from "./document-handle.js";
+import { AT_CUE_DIALECT, ResolvedDialect } from "./dialect.js";
 
 export { type LineContext } from "@brink/wasm-types";
 
-export enum ElementType {
-  KnotHeader,
-  StitchHeader,
-  NarrativeText,
-  Choice,
-  ChoiceBody,
-  Gather,
-  Divert,
-  Logic,
-  VarDecl,
-  Comment,
-  Include,
-  External,
-  Tag,
-  Blank,
-  Character,
-  Parenthetical,
-  Dialogue,
-}
+// ── Element kind — open string taxonomy (#368) ──────────────────────
+//
+// `ElementType` used to be a numeric TS `enum`. It is now a `const` object of
+// kebab-case string kinds (CSS classes derive as `brink-<kind>`, so the
+// scheme and the class taxonomy are the same string), with a derived union
+// type. This keeps `ElementType.Character`-style call sites working
+// mechanically (the const's values still compare equal to themselves and to
+// `LineInfo.type`), while making the *type* an open string union — kinds a
+// registered dialect declares (beyond the built-in reserved-structural set)
+// flow through as plain strings that just aren't named on this object.
+//
+// BREAKING CHANGE (0.8.0, ruled 2026-07-05): the wire values changed from
+// PascalCase enum member names (e.g. `"Character"`, `"NarrativeText"`) to
+// kebab-case kind strings (e.g. `"character"`, `"narrative"`). See the
+// PascalCase→kebab mapping table in docs/editor-consumer-guide.md and the
+// changeset body.
+export const ElementType = {
+  KnotHeader: "knot-header",
+  StitchHeader: "stitch-header",
+  NarrativeText: "narrative",
+  Choice: "choice",
+  ChoiceBody: "choice-body",
+  Gather: "gather",
+  Divert: "divert",
+  Logic: "logic",
+  VarDecl: "var-decl",
+  Comment: "comment",
+  Include: "include",
+  External: "external",
+  Tag: "tag",
+  Blank: "blank",
+  Character: "character",
+  Parenthetical: "parenthetical",
+  Dialogue: "dialogue",
+} as const;
+
+/** The built-in kind strings. Open union: a dialect may classify a line as a
+ *  kind not named here (its declared `kind`, e.g. a custom dialect's
+ *  `"channel"`) — `LineInfo.type` is typed as plain `string` so those flow
+ *  through without a cast. */
+export type ElementType = string;
 
 export interface LineInfo {
   type: ElementType;
@@ -39,9 +62,26 @@ export interface LineInfo {
    * the same depth starts a new group at index 0. Absent on all other lines.
    */
   optionPath?: readonly number[];
+  /**
+   * Dialect-classification geometry (#368), present only on dialect-matched
+   * lines. Computed ONCE here (from the wasm `dialect` facet, or the TS
+   * interpreter fallback) and cached — `screenplay.ts`'s decorations/atomic-
+   * ranges/edit-guard and `keybindings.ts`'s name-surgery handlers read this
+   * directly and never re-match a pattern in a per-keystroke hot path.
+   */
+  dialect?: DialectGeometry;
 }
 
-const ELEMENT_CLASSES: Record<ElementType, string> = {
+/** Cached per-line dialect match: attrs + geometry, byte spans already
+ *  resolved to UTF-16 code-unit offsets relative to the line start. */
+export interface DialectGeometry {
+  kind: string;
+  attrs: readonly (readonly [string, string])[];
+  hiddenSpans: readonly (readonly [number, number])[];
+  contentSpan: readonly [number, number] | null;
+}
+
+const BASE_CLASSES: Record<string, string> = {
   [ElementType.KnotHeader]: "brink-knot-header",
   [ElementType.StitchHeader]: "brink-stitch-header",
   [ElementType.NarrativeText]: "brink-narrative",
@@ -61,8 +101,12 @@ const ELEMENT_CLASSES: Record<ElementType, string> = {
   [ElementType.Dialogue]: "brink-dialogue",
 };
 
+/** CSS class for an element kind: `brink-<kind>` — the open scheme (#368).
+ *  Kinds not in the built-in table (a dialect-declared kind) still derive
+ *  mechanically, so a custom dialect's kinds are stylable with zero editor
+ *  changes. */
 export function elementClass(type: ElementType): string {
-  return ELEMENT_CLASSES[type];
+  return BASE_CLASSES[type] ?? `brink-${type}`;
 }
 
 // ── LineContext → LineInfo conversion ────────────────────────────────
@@ -90,6 +134,58 @@ function isSticky(weaveElement: WeaveElement): boolean {
     return weaveElement.choice_line.sticky;
   }
   return false;
+}
+
+/** Convert a Rust `DialectLineInfo` (byte spans) into `DialectGeometry`
+ *  (UTF-16 spans, line-relative). Source lines here are always plain ASCII
+ *  sigils/prefixes-and-suffixes-wise for the spans that matter (hidden
+ *  affixes), but content may be arbitrary text — byte and UTF-16 offsets can
+ *  diverge inside multi-byte content. The dialect's hidden/content spans are
+ *  always anchored on the literal affix text (ASCII in every known
+ *  convention), so re-deriving via `indexOf`-free byte counting up front
+ *  keeps this correct without a full UTF-16↔byte index. */
+function toGeometry(
+  d: NonNullable<LineContext["dialect"]>,
+  lineText: string,
+): DialectGeometry {
+  const byteToUtf16 = makeByteToUtf16(lineText);
+  return {
+    kind: d.kind,
+    attrs: d.attrs,
+    hiddenSpans: d.hidden_spans.map(([s, e]) => [byteToUtf16(s), byteToUtf16(e)] as const),
+    contentSpan: d.content_span
+      ? [byteToUtf16(d.content_span[0]), byteToUtf16(d.content_span[1])]
+      : null,
+  };
+}
+
+/** Build a byte-offset → UTF-16-offset mapping function for one line. Cheap
+ *  for the common (all-ASCII) case; correct for any content, including
+ *  astral-plane characters (emoji, etc.) — iterates Unicode CODE POINTS
+ *  (`for...of`), not UTF-16 code units, so a surrogate pair is measured as
+ *  one 4-byte-UTF-8 unit advancing the UTF-16 offset by 2, never split into
+ *  two lone-surrogate encodes (which `TextEncoder` would replace with U+FFFD
+ *  and silently corrupt the table). The reverse map is a direct `Map` lookup
+ *  (O(1)), not a linear `indexOf` scan, since spans are only ever queried at
+ *  a handful of fixed byte offsets (hidden/content span endpoints) per line. */
+function makeByteToUtf16(text: string): (byteOffset: number) => number {
+  // Fast path: pure ASCII text (the overwhelming common case for dialect
+  // sigil lines) — byte offset === UTF-16 offset.
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x00-\x7F]*$/.test(text)) {
+    return (b) => b;
+  }
+  const encoder = new TextEncoder();
+  const byteToUtf16 = new Map<number, number>();
+  let byte = 0;
+  let utf16 = 0;
+  byteToUtf16.set(0, 0);
+  for (const ch of text) {
+    byte += encoder.encode(ch).length;
+    utf16 += ch.length; // 1 for BMP, 2 for a surrogate-pair code point
+    byteToUtf16.set(byte, utf16);
+  }
+  return (b) => byteToUtf16.get(b) ?? text.length;
 }
 
 function lineContextToLineInfo(ctx: LineContext, lineText: string): LineInfo {
@@ -181,14 +277,6 @@ function classifyLine(text: string): LineInfo {
     return { type: ElementType.Tag, depth: 0, sticky: false, standalone: false };
   }
 
-  if (/^@[^:]*:<>$/.test(trimmed)) {
-    return { type: ElementType.Character, depth: 0, sticky: false, standalone: false };
-  }
-
-  if (/^\([^)]*\)<>$/.test(trimmed)) {
-    return { type: ElementType.Parenthetical, depth: 0, sticky: false, standalone: false };
-  }
-
   return { type: ElementType.NarrativeText, depth: 0, sticky: false, standalone: false };
 }
 
@@ -264,6 +352,111 @@ export function assignOptionPaths(infos: LineInfo[]): void {
   }
 }
 
+// ── Dialect post-pass (#368) ─────────────────────────────────────────
+//
+// Two sources, one contract: when a wasm document handle is present, the
+// dialect facet already lives on `LineContext.dialect` (Rust classified it —
+// `line_contexts_with_dialect`). When there's no handle (regex-fallback
+// path), the TS interpreter in `dialect.ts` runs the SAME dialect JSON
+// against the plain-narrative/choice-body lines the regex classifier
+// produced. Either way, the result lands in the same place: `LineInfo.type`
+// retyped to the dialect kind, plus cached `LineInfo.dialect` geometry.
+
+/**
+ * The active dialect, as a CM6 Facet — NOT a module-level variable. Each
+ * `EditorState` carries its own value (set from `BrinkStudioOptions.dialect`
+ * via `extensions.ts`'s `dialectFacet.of(...)` in the extension array), so
+ * two views mounted with different dialects (or one `DocumentSessions`
+ * instance managing several sessions) never clobber each other — a module
+ * global here would let mounting/reconfiguring one view's dialect silently
+ * change classification for every other live view. Defaults to the at-cue
+ * preset (byte-identical to the pre-#368 hardcoded behavior) when no
+ * extension in a state's config provides one (e.g. a bare `EditorState`
+ * built without `brinkStudio(...)`, as some unit tests do). `null` (the
+ * `dialect: null` mount option, #368 deliverable 5) disables the whole
+ * screenplay layer — the post-pass below becomes a no-op and callers never
+ * see dialect kinds.
+ */
+export const dialectFacet = Facet.define<ResolvedDialect | null, ResolvedDialect | null>({
+  combine: (values) => (values.length > 0 ? values[0] : ResolvedDialect.compile(AT_CUE_DIALECT)),
+});
+
+/**
+ * Dialect post-pass over already-computed `infos` (regex-fallback path
+ * only): classify + chain using `dialect`'s TS interpreter, mirroring the
+ * Rust classify/chain split exactly (`line_context.rs`'s `apply_dialect`) —
+ * classify runs on narrative AND choice-body base lines (depth preserved);
+ * chaining runs on plain top-level narrative only.
+ */
+function applyDialectFallback(
+  dialect: ResolvedDialect | null,
+  infos: LineInfo[],
+  lineTexts: string[],
+): void {
+  if (dialect === null) return;
+
+  // ── Classify pass ──
+  for (let i = 0; i < infos.length; i++) {
+    const info = infos[i];
+    if (info.type !== ElementType.NarrativeText && info.type !== ElementType.ChoiceBody) continue;
+    const text = lineTexts[i];
+    const trimmed = text.trimStart();
+    if (trimmed === "") continue;
+    const leadingWs = text.length - trimmed.length;
+    const match = dialect.classify(trimmed, leadingWs);
+    if (match) {
+      infos[i] = {
+        ...info,
+        type: match.kind,
+        dialect: { kind: match.kind, attrs: match.attrs, hiddenSpans: match.hiddenSpans, contentSpan: match.contentSpan },
+      };
+    }
+  }
+
+  // ── Chain pass (top-level narrative only, blank always breaks) ──
+  // `runCarry` mirrors the Rust `run_carry: Vec<(String, String)>` — a `Map`
+  // preserves insertion order identically and gives O(1) update-in-place
+  // (`.set`) instead of rebuilding the whole array per attr per line.
+  let runCarry = new Map<string, string>();
+  for (let i = 0; i < infos.length; i++) {
+    const text = lineTexts[i];
+    const isBlank = text.trim() === "";
+    if (isBlank) {
+      runCarry = new Map();
+      continue;
+    }
+    const info = infos[i];
+    if (
+      i > 0 &&
+      info.type === ElementType.NarrativeText &&
+      !info.dialect &&
+      infos[i - 1].dialect
+    ) {
+      const prevKind = infos[i - 1].dialect!.kind;
+      const rule = dialect.chainRuleAfter(prevKind);
+      if (rule) {
+        const carried: Array<[string, string]> = [];
+        for (const name of rule.carry ?? []) {
+          const value = runCarry.get(name);
+          if (value !== undefined) carried.push([name, value]);
+        }
+        infos[i] = {
+          ...info,
+          type: rule.becomes,
+          dialect: { kind: rule.becomes, attrs: carried, hiddenSpans: [], contentSpan: null },
+        };
+      }
+    }
+    if (infos[i].dialect) {
+      for (const [k, v] of infos[i].dialect!.attrs) {
+        runCarry.set(k, v);
+      }
+    } else {
+      runCarry = new Map();
+    }
+  }
+}
+
 // ── StateField ──────────────────────────────────────────────────────
 
 function computeLineInfos(state: EditorState): LineInfo[] {
@@ -278,7 +471,14 @@ function computeLineInfos(state: EditorState): LineInfo[] {
     const infos: LineInfo[] = [];
     for (let i = 0; i < contexts.length && i < state.doc.lines; i++) {
       const line = state.doc.line(i + 1);
-      infos.push(lineContextToLineInfo(contexts[i], line.text));
+      const ctx = contexts[i];
+      const info = lineContextToLineInfo(ctx, line.text);
+      if (ctx.dialect) {
+        const geometry = toGeometry(ctx.dialect, line.text);
+        info.type = ctx.dialect.kind;
+        info.dialect = geometry;
+      }
+      infos.push(info);
     }
     // Fill remaining lines with regex fallback (shouldn't happen normally)
     for (let i = infos.length; i < state.doc.lines; i++) {
@@ -298,49 +498,37 @@ function computeLineInfos(state: EditorState): LineInfo[] {
       }
     }
 
-    // Screenplay post-pass: recognize @Name:<>, (text)<>, and dialogue
-    for (let i = 0; i < infos.length; i++) {
-      const lt = state.doc.line(i + 1).text;
-      const trimmed = lt.trimStart();
-      // Preserve the line's weave depth (screenplay elements inside a choice
-      // body keep their indentation, so Tab/Shift-Tab weave math stays correct).
-      if (/^@[^:]*:<>$/.test(trimmed)) {
-        infos[i] = { type: ElementType.Character, depth: infos[i].depth, sticky: false, standalone: false };
-      } else if (/^\([^)]*\)<>$/.test(trimmed)) {
-        infos[i] = { type: ElementType.Parenthetical, depth: infos[i].depth, sticky: false, standalone: false };
-      }
-    }
-    // Narrative after character/parenthetical/dialogue → dialogue
-    for (let i = 1; i < infos.length; i++) {
-      const prev = infos[i - 1];
-      if (
-        (prev.type === ElementType.Character || prev.type === ElementType.Parenthetical || prev.type === ElementType.Dialogue) &&
-        infos[i].type === ElementType.NarrativeText
-      ) {
-        infos[i] = { type: ElementType.Dialogue, depth: infos[i].depth, sticky: false, standalone: false };
-      }
-    }
-
     assignOptionPaths(infos);
     return infos;
   }
 
-  // Fallback: no session yet, use regex classifier
+  // Fallback: no session yet, use regex classifier + TS dialect interpreter
   const infos: LineInfo[] = [];
+  const lineTexts: string[] = [];
   for (let i = 1; i <= state.doc.lines; i++) {
     const line = state.doc.line(i);
+    lineTexts.push(line.text);
     infos.push(classifyLine(line.text));
   }
+  applyDialectFallback(state.facet(dialectFacet), infos, lineTexts);
   assignOptionPaths(infos);
   return infos;
 }
+
+/**
+ * Force reclassification without a doc change (#368): `setDialect(view, d)`
+ * dispatches this alongside swapping the screenplay compartment and re-
+ * running the wasm `set_dialect`, so `elementTypeField` recomputes even
+ * though the document text itself didn't change.
+ */
+export const reclassifyEffect = StateEffect.define<void>();
 
 export const elementTypeField = StateField.define<LineInfo[]>({
   create(state) {
     return computeLineInfos(state);
   },
   update(value, tr: Transaction) {
-    if (!tr.docChanged) return value;
+    if (!tr.docChanged && !tr.effects.some((e) => e.is(reclassifyEffect))) return value;
     return computeLineInfos(tr.state);
   },
 });

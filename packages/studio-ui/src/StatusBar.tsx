@@ -16,29 +16,44 @@ import type { LineInfo } from "@brink/studio-store";
 import { ElementTypeEnum, sessionDegraded, DEFAULT_SESSION_ID } from "@brink/studio-store";
 
 // ── Element labels ─────────────────────────────────────────────────
+//
+// Keyed by the kebab-case kind string (#368: ElementType is an open string
+// union, not a numeric enum). A dialect-declared kind not in this table
+// (e.g. a custom dialect's "channel") falls back to a title-cased rendering
+// of the kind string, so new kinds are labeled sensibly with zero changes
+// here — the open-scheme contract (docs/editor-consumer-guide.md).
 
-const ELEMENT_LABELS: Record<number, string> = {
-  0: "Knot Header",
-  1: "Stitch Header",
-  2: "Narrative",
-  3: "Choice",
-  4: "Choice Body",
-  5: "Gather",
-  6: "Divert",
-  7: "Logic",
-  8: "Variable",
-  9: "Comment",
-  10: "Include",
-  11: "External",
-  12: "Tag",
-  13: "Blank",
-  14: "Character",
-  15: "Parenthetical",
-  16: "Dialogue",
+const ELEMENT_LABELS: Record<string, string> = {
+  [ElementTypeEnum.KnotHeader]: "Knot Header",
+  [ElementTypeEnum.StitchHeader]: "Stitch Header",
+  [ElementTypeEnum.NarrativeText]: "Narrative",
+  [ElementTypeEnum.Choice]: "Choice",
+  [ElementTypeEnum.ChoiceBody]: "Choice Body",
+  [ElementTypeEnum.Gather]: "Gather",
+  [ElementTypeEnum.Divert]: "Divert",
+  [ElementTypeEnum.Logic]: "Logic",
+  [ElementTypeEnum.VarDecl]: "Variable",
+  [ElementTypeEnum.Comment]: "Comment",
+  [ElementTypeEnum.Include]: "Include",
+  [ElementTypeEnum.External]: "External",
+  [ElementTypeEnum.Tag]: "Tag",
+  [ElementTypeEnum.Blank]: "Blank",
+  [ElementTypeEnum.Character]: "Character",
+  [ElementTypeEnum.Parenthetical]: "Parenthetical",
+  [ElementTypeEnum.Dialogue]: "Dialogue",
 };
 
+/** Title-case a kebab-case kind string as a fallback label for a kind not in
+ *  {@link ELEMENT_LABELS} (a dialect-declared kind, e.g. "channel"). */
+function titleCaseKind(kind: string): string {
+  return kind
+    .split("-")
+    .map((word) => (word.length > 0 ? word[0].toUpperCase() + word.slice(1) : word))
+    .join(" ");
+}
+
 function elementLabel(info: LineInfo): string {
-  let label = ELEMENT_LABELS[info.type] ?? "Unknown";
+  let label = ELEMENT_LABELS[info.type] ?? titleCaseKind(info.type);
   if (
     (info.type === ElementTypeEnum.Choice || info.type === ElementTypeEnum.Gather) &&
     info.depth > 1

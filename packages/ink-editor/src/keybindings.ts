@@ -1,9 +1,9 @@
 import { type Extension, Prec } from "@codemirror/state";
 import { keymap, type EditorView } from "@codemirror/view";
-import { elementTypeField, ElementType } from "./element-type.js";
+import { elementTypeField, ElementType, dialectFacet } from "./element-type.js";
 import { documentHandleFacet } from "./document-handle.js";
-import { sigilBypass, characterName, CHAR_SUFFIX_LEN } from "./screenplay.js";
-import { findTransition, lineHasContent, executeAction, buildContext } from "./transitions.js";
+import { sigilBypass, characterName } from "./screenplay.js";
+import { findTransition, lineHasContent, executeAction, buildContext, tryDialectTransition } from "./transitions.js";
 import { CONVERTIBLE_TYPES, convertLineToType } from "./convert.js";
 import { ensureStructuralStyles } from "./structural-styles.js";
 
@@ -34,8 +34,19 @@ function handleKey(key: string, view: EditorView): boolean {
     return key === "Tab" || key === "Shift-Tab";
   }
 
-  // Tab on double-blank: insert @:<> character template
-  if (key === "Tab" && info.type === ElementType.Blank && line.text.trim() === "") {
+  // Tab on double-blank: insert @:<> character template. This is a
+  // dialect-provided behavior (the at-cue preset's blank-tab template), NOT
+  // a structural row — with the keymap now always mounted (#368: only the
+  // screenplay decorations are dialect-gated, the structural weave table is
+  // interpreter-owned), it must self-guard on an active dialect, unlike the
+  // Character-kind branches below (whose kinds simply never appear when no
+  // dialect is active).
+  if (
+    key === "Tab" &&
+    info.type === ElementType.Blank &&
+    line.text.trim() === "" &&
+    state.facet(dialectFacet) !== null
+  ) {
     const prevBlank = lineIndex > 0 && infos[lineIndex - 1].type === ElementType.Blank;
     if (prevBlank) {
       view.dispatch({
@@ -50,7 +61,7 @@ function handleKey(key: string, view: EditorView): boolean {
   // Character line special handlers
   if (info.type === ElementType.Character) {
     const trimmed = line.text.trimStart();
-    const { ws, nameStart, nameEnd, name } = characterName(line);
+    const { ws, nameStart, nameEnd, name } = characterName(line, info);
     const head = state.selection.main.head;
 
     // Backspace on empty (@:<>): clear entire line
@@ -94,12 +105,17 @@ function handleKey(key: string, view: EditorView): boolean {
     // Enter: split at cursor — @Left:<> stays, Right goes to next line
     // Skip when name is empty — fall through to clearScreenplaySigils transition
     if (key === "Enter" && nameStart < nameEnd) {
-      const leftName = line.text.slice(ws + 1, head - line.from);
-      const rightName = line.text.slice(head - line.from, line.text.length - CHAR_SUFFIX_LEN);
+      const suffixLen = line.to - nameEnd; // width of the trailing hidden ':<>' (3 for at-cue)
+      // Name-start offset relative to line.text — derived from `nameStart`
+      // (the dialect's actual content-span start), not a hardcoded "prefix
+      // is exactly 1 char" assumption.
+      const nameStartInLine = nameStart - line.from;
+      const leftName = line.text.slice(nameStartInLine, head - line.from);
+      const rightName = line.text.slice(head - line.from, line.text.length - suffixLen);
       const prefix = line.text.slice(0, ws);
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: prefix + "@" + leftName + ":<>\n" + rightName },
-        selection: { anchor: line.from + prefix.length + 1 + leftName.length + CHAR_SUFFIX_LEN + 1 },
+        selection: { anchor: line.from + prefix.length + 1 + leftName.length + suffixLen + 1 },
         annotations: sigilBypass.of(true),
       });
       return true;
@@ -114,7 +130,7 @@ function handleKey(key: string, view: EditorView): boolean {
     const prevInfo = infos[lineIndex - 1];
     if (prevInfo?.type === ElementType.Character && isFoldableIntoName(info.type)) {
       const prevLine = state.doc.line(line.number - 1);
-      const { name: prevName } = characterName(prevLine);
+      const { name: prevName } = characterName(prevLine, prevInfo);
       const content = line.text;
       view.dispatch({
         changes: { from: prevLine.from, to: line.to, insert: "@" + prevName + content + ":<>" },
@@ -126,6 +142,17 @@ function handleKey(key: string, view: EditorView): boolean {
   }
 
   const hasContent = lineHasContent(line.text, info);
+
+  // Dialect transition overlay (#368 deliverable 4): rows for a dialect-
+  // declared kind resolve BEFORE the built-in structural weave table. The
+  // at-cue preset ships no rows, so this is inert for the default preset.
+  // Read from `state.facet(dialectFacet)` (per-view, #368 fix) — NOT a
+  // module global — so this view's transition overlay always matches its
+  // own mounted dialect, even when another view has a different one.
+  if (tryDialectTransition(state.facet(dialectFacet), view, info, key, hasContent)) {
+    return true;
+  }
+
   const lineCtx = buildContext(infos, lineIndex);
   const transition = findTransition(info, key, hasContent, lineCtx);
 
@@ -150,7 +177,7 @@ function characterNameRange(view: EditorView): { start: number; end: number } | 
   if (!info || info.type !== ElementType.Character) return null;
 
   // Name is between @ and :<>
-  const { nameStart, nameEnd } = characterName(line);
+  const { nameStart, nameEnd } = characterName(line, info);
   return { start: nameStart, end: nameEnd };
 }
 
@@ -207,7 +234,7 @@ function handleArrowLeft(view: EditorView): boolean {
     const prevInfo = infos[prevLine.number - 1];
     if (prevInfo?.type === ElementType.Character) {
       // Jump to end of name on previous character line (before :<>)
-      const { nameEnd } = characterName(prevLine);
+      const { nameEnd } = characterName(prevLine, prevInfo);
       view.dispatch({ selection: { anchor: nameEnd } });
       return true;
     }

@@ -33,6 +33,7 @@ import { defaultKeymap } from "@codemirror/commands";
 import type {
   CodeAction,
   CompileResult,
+  DialogueDialect,
   DocumentChangeSpec,
   DocumentSymbol,
   Location,
@@ -84,6 +85,12 @@ export interface DocumentSessionsOptions {
    *  `brinkTheme`; `false` ⇒ headless (the host styles the class taxonomy);
    *  an `Extension` ⇒ a custom CM theme. */
   theme?: Extension | false;
+  /** The dialogue dialect (#368), forwarded to `brinkStudio`: absent ⇒
+   *  `AT_CUE_DIALECT` (byte-identical default); `null` ⇒ headless (tears
+   *  down the whole screenplay layer); a `DialogueDialect` ⇒ your own
+   *  convention. Applied per mounted view — use the exported `setDialect`
+   *  directly on a specific view for live reconfigure. */
+  dialect?: DialogueDialect | null;
 }
 
 export interface DocumentCallbacks {
@@ -797,6 +804,7 @@ export class DocumentSessions {
     const project = this.project;
     return {
       theme: this.options.theme,
+      dialect: this.options.dialect,
       compile: (source) => {
         slot.handle?.pushSource(source);
         project.notifyFileChanged(slot.path);

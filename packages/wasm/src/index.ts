@@ -52,6 +52,7 @@ import type {
   LoadReport,
   HostManifest,
   ValueItem,
+  DialogueDialect,
   StepOutcome,
   SessionJournal,
   SessionLine,
@@ -178,6 +179,27 @@ export class EditorSessionHandle {
   clearHostManifest(): void {
     this.bump();
     this.session.clear_host_manifest();
+  }
+
+  /**
+   * Register (or replace) the dialogue dialect (#368). Describes the
+   * project's dialogue-line conventions (cues, parentheticals, dialogue
+   * chains) so `getLineContextsDoc`/`line_contexts` classify lines without
+   * hardcoding any one convention. Tooling-only — never affects the runtime
+   * or analysis; consumed at query time. Throws on an invalid dialect
+   * (schema violation, non-portable pattern, undeclared chain/transition
+   * kind, …).
+   */
+  setDialect(dialect: DialogueDialect): void {
+    this.bump();
+    this.session.set_dialect(JSON.stringify(dialect));
+  }
+
+  /** Clear the registered dialect. Line classification reverts to plain
+   *  structural kinds. */
+  clearDialect(): void {
+    this.bump();
+    this.session.clear_dialect();
   }
 
   /**

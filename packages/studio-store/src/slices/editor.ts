@@ -5,9 +5,9 @@
  */
 
 import type { StateCreator } from "zustand";
-import type { FormGlyphMode } from "@brink-lang/editor";
+import type { FormGlyphMode, LineInfo } from "@brink-lang/editor";
 import type { StudioState } from "../index.js";
-import type { LineInfo, KeyHint } from "../types.js";
+import type { KeyHint } from "../types.js";
 
 export interface EditorSlice {
   cursor: { line: number; col: number };

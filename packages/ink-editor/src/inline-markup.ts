@@ -47,7 +47,18 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { elementTypeField, ElementType } from "./element-type.js";
-import { CHAR_SUFFIX_LEN, GLUE_LEN, leadingWsLen } from "./screenplay.js";
+import { leadingWsLen } from "./screenplay.js";
+
+// `contentRegions` is a pure function of `(text, type)` — no `LineInfo`, so
+// no cached dialect geometry to read. #368's parity contract lists this
+// file's dialect wiring as out of scope for this deliverable (the dialect
+// spec's "what the dialect replaces" list covers `element-type.ts`,
+// `screenplay.ts`, transitions/keybindings, and `convert.ts` — not inline
+// markup's content-region scoping). These constants reproduce the at-cue
+// preset's sigil widths locally; a future pass can thread dialect geometry
+// through if inline markup needs to scope to a custom dialect's regions.
+const AT_CUE_CHAR_SUFFIX_LEN = 3; // hidden ':<>' on a character line
+const AT_CUE_GLUE_LEN = 2; // hidden '<>' on a parenthetical line
 
 // ── Public rule shapes ─────────────────────────────────────────────
 
@@ -138,11 +149,11 @@ export function contentRegions(text: string, type: ElementType): MarkupRegion[] 
     case ElementType.Character:
       // `@Name:<>` — content is the name between the hidden @ and :<> sigils.
       start = ws + 1;
-      end = Math.max(start, text.length - CHAR_SUFFIX_LEN);
+      end = Math.max(start, text.length - AT_CUE_CHAR_SUFFIX_LEN);
       break;
     case ElementType.Parenthetical:
       // `(text)<>` — exclude the hidden trailing glue.
-      end = Math.max(start, text.length - GLUE_LEN);
+      end = Math.max(start, text.length - AT_CUE_GLUE_LEN);
       break;
     case ElementType.Choice:
       start = sigilPrefixEnd(text, ws, ["*", "+"]);

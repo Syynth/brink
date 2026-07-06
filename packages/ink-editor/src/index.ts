@@ -1,6 +1,36 @@
 // Editor extension bundle (per-view options; see document-sessions.ts)
-export { brinkStudio } from "./extensions.js";
+export { brinkStudio, setDialect } from "./extensions.js";
 export type { BrinkStudioOptions } from "./extensions.js";
+
+// Dialogue dialect (#368): the pure-JSON schema, the at-cue preset, and
+// `extendDialect` for adding a kind without forking the preset. Classifier
+// internals (`ResolvedDialect`, `validateDialect`, `compileAffix`, …) are
+// exported for advanced hosts/tests but the day-to-day surface is the
+// `dialect` mount option (`BrinkStudioOptions.dialect`) + `setDialect`.
+export {
+  AT_CUE_DIALECT,
+  extendDialect,
+  ResolvedDialect,
+  validateDialect,
+  compileAffix,
+  resolveSourceShape,
+  reservedStructuralKinds,
+} from "./dialect.js";
+export type {
+  DialogueDialect,
+  DialectElement,
+  ChainRule,
+  SourceShape,
+  PatternShape,
+  AffixShape,
+  TransitionRow,
+  TransitionAction,
+  TemplateEntry,
+  Templates,
+  ElementNature,
+  DialectMatch,
+  DialectValidationError,
+} from "./dialect.js";
 
 // Tier-1 boundary helpers (#369): the canonical positional diagnostic sort
 // (file → offset → errors-first) and offset → 1-based line:col. Presentation
@@ -61,7 +91,7 @@ export { setHostWidgets } from "./widget-registry.js";
 
 // Types for line classification
 export { elementTypeField, ElementType, assignOptionPaths } from "./element-type.js";
-export type { LineInfo } from "./element-type.js";
+export type { LineInfo, DialectGeometry } from "./element-type.js";
 
 // Code folding (#313 G): HIR-driven fold ranges, including the leading
 // INCLUDE-block fold whose Rust `collapsed_text` renders as its placeholder.

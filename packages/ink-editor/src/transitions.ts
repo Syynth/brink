@@ -1,8 +1,9 @@
 import { EditorView } from "@codemirror/view";
 import { ElementType, type LineInfo } from "./element-type.js";
-import type { ConvertTarget, TextEdit } from "@brink/wasm-types";
-import { sigilBypass } from "./screenplay.js";
+import type { ConvertTarget, TextEdit, TransitionRow } from "@brink/wasm-types";
+import { sigilBypass, leadingWsLen } from "./screenplay.js";
 import { extractLineContent } from "@brink/ink-operations";
+import { renderTemplate, type ResolvedDialect } from "./dialect.js";
 
 /**
  * The slice of the wasm session the transition actions need: element
@@ -255,6 +256,112 @@ function formatKey(key: string): string {
     case "Shift-Tab": return "Shift+Tab";
     default: return key;
   }
+}
+
+// ── Dialect transition overlay (#368 deliverable 4) ─────────────────
+//
+// A dialect contributes transition rows only for kinds it declares; rows
+// resolve BEFORE the built-in structural weave table (`TRANSITIONS` above).
+// Structural rows (Choice/Gather/NarrativeText transitions) stay
+// interpreter-owned — a dialect can only add rows for kinds it declares.
+// The at-cue preset ships `transitions: []`, so this path is inert for the
+// default (byte-identical acceptance gate); it activates only for a custom
+// dialect that declares overlay rows.
+
+/** Find a dialect-contributed transition row matching `(info.type, key,
+ *  hasContent)`, or `null` if the dialect has no row for this line (falls
+ *  through to the built-in table). */
+function findDialectRow(
+  dialect: ResolvedDialect | null,
+  info: LineInfo,
+  key: string,
+  hasContent: boolean,
+): TransitionRow | null {
+  if (!dialect) return null;
+  return (
+    dialect
+      .transitionRows()
+      .find(
+        (row) =>
+          row.on === info.type &&
+          row.key === key &&
+          (row.has_content === undefined || row.has_content === null || row.has_content === hasContent),
+      ) ?? null
+  );
+}
+
+/**
+ * Execute a dialect transition row's action. `convert` composes the target
+ * kind's template from the current line's extracted content (indentation
+ * preserved — the ws prefix is sliced off and re-prepended verbatim, never
+ * touched by template rendering); `newline`/`strip`/`clear`/`trap` mirror
+ * the built-in `newDialogueLine`/`stripToNarrative`/`clearScreenplaySigils`/
+ * `trap` actions generically over any dialect kind.
+ */
+function executeDialectRow(
+  row: TransitionRow,
+  dialect: ResolvedDialect,
+  view: EditorView,
+  info: LineInfo,
+): boolean {
+  const { state } = view;
+  const cursorPos = state.selection.main.head;
+  const line = state.doc.lineAt(cursorPos);
+  const ws = leadingWsLen(line.text);
+  const prefix = line.text.slice(0, ws);
+
+  switch (row.action.action) {
+    case "convert": {
+      const targetKind = row.action.kind;
+      const template = dialect.templateFor(targetKind);
+      const role = dialect.contentGroupFor(targetKind);
+      const content = extractLineContent(line.text);
+      const rendered = template && role ? renderTemplate(template, role, content) : content;
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: prefix + rendered },
+        selection: { anchor: line.from + prefix.length + rendered.length },
+        annotations: sigilBypass.of(true),
+      });
+      return true;
+    }
+    case "newline":
+      view.dispatch({
+        changes: { from: cursorPos, insert: "\n" },
+        selection: { anchor: cursorPos + 1 },
+      });
+      return true;
+    case "strip":
+    case "clear": {
+      const content = row.action.action === "strip" ? extractLineContent(line.text) : "";
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: prefix + content },
+        selection: { anchor: line.from + prefix.length + content.length },
+        annotations: sigilBypass.of(true),
+      });
+      return true;
+    }
+    case "trap":
+      return true;
+  }
+}
+
+/**
+ * Try the active dialect's transition-row overlay for `(info.type, key,
+ * hasContent)` before the built-in structural table (#368 deliverable 4:
+ * "dialect rows resolve before built-in weave rows"). Returns `true` if a
+ * dialect row matched and was executed (the key is handled); `false` if the
+ * caller should fall through to `findTransition`/`executeAction`.
+ */
+export function tryDialectTransition(
+  dialect: ResolvedDialect | null,
+  view: EditorView,
+  info: LineInfo,
+  key: string,
+  hasContent: boolean,
+): boolean {
+  const row = findDialectRow(dialect, info, key, hasContent);
+  if (!row || !dialect) return false;
+  return executeDialectRow(row, dialect, view, info);
 }
 
 // ── Action execution ───────────────────────────────────────────────
