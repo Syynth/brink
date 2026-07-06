@@ -229,3 +229,42 @@ describe("decl pill — data-decl-kind + icon slot (#365 deliverable)", () => {
     expect(el?.getAttribute("data-decl-kind")).toBe("function");
   });
 });
+
+describe("exact-span tie-break — structural vs machinery/narrative (#405)", () => {
+  // A structural fold and a machinery fold that resolve to the IDENTICAL
+  // `{from, to}` span is a rare edge case, but `preparePlaceholder` must
+  // pick a kind deliberately, not by accident of which FoldRange the host's
+  // getFoldingRanges() happened to push first. Status quo (and the pinned
+  // precedence) is: structural wins.
+  const SRC = "== hub ==\n~ temp x = 1\n";
+
+  it("structural wins over machinery when both resolve to the same span", () => {
+    const v = mountFolding(SRC, () => [
+      // Machinery pushed FIRST here — the opposite of production push order
+      // (`folding_ranges_impl` always pushes structural before machinery/
+      // narrative) — to prove the tie-break is order-independent, not an
+      // accident of iteration order. `from_line_start: true` on both is what
+      // makes the resolved spans genuinely identical (resolveFold uses it to
+      // pick `line.from` vs `line.to`) — this is the tie the issue describes.
+      { start_line: 0, end_line: 1, from_line_start: true, kind: "machinery" },
+      { start_line: 0, end_line: 1, from_line_start: true, kind: "structural" },
+    ]);
+    foldLine(v, 0);
+    const decl = v.dom.querySelector(".brink-fold-decl");
+    expect(decl).not.toBeNull();
+    expect(decl?.getAttribute("data-decl-kind")).toBe("knot");
+    expect(v.dom.querySelector(".brink-fold-pill-machinery")).toBeNull();
+  });
+
+  it("structural still wins when pushed first (matches production push order)", () => {
+    const v = mountFolding(SRC, () => [
+      { start_line: 0, end_line: 1, from_line_start: true, kind: "structural" },
+      { start_line: 0, end_line: 1, from_line_start: true, kind: "machinery" },
+    ]);
+    foldLine(v, 0);
+    const decl = v.dom.querySelector(".brink-fold-decl");
+    expect(decl).not.toBeNull();
+    expect(decl?.getAttribute("data-decl-kind")).toBe("knot");
+    expect(v.dom.querySelector(".brink-fold-pill-machinery")).toBeNull();
+  });
+});
