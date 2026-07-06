@@ -514,6 +514,167 @@ describe("DocumentSessions", () => {
     });
   });
 
+  describe("view state (#347)", () => {
+    it("reads cursor + scroll from the live view when mounted", () => {
+      const { view } = harness.mount("main.ink", "group-1");
+      view.dispatch({ selection: { anchor: 5, head: 12 } });
+      view.scrollDOM.scrollTop = 40;
+      expect(harness.documents.viewState("main.ink", "group-1")).toEqual({
+        anchor: 5,
+        head: 12,
+        scrollTop: 40,
+      });
+    });
+
+    it("reads from the cached slot after unmount", () => {
+      const mounted = harness.mount("main.ink", "group-1");
+      mounted.view.dispatch({ selection: { anchor: 5, head: 12 } });
+      mounted.view.scrollDOM.scrollTop = 40;
+      mounted.dispose(); // backgrounded: EditorState + scroll snapshot only
+
+      expect(harness.documents.viewState("main.ink", "group-1")).toEqual({
+        anchor: 5,
+        head: 12,
+        scrollTop: 40,
+      });
+    });
+
+    it("snapshots every open tab, not just the focused view", () => {
+      // Two docKeys in two groups, neither ever focused.
+      const a = harness.mount("main.ink", "group-1");
+      const b = harness.mount("main.ink::story", "group-2");
+      a.view.dispatch({ selection: { anchor: 2, head: 7 } });
+      b.view.dispatch({ selection: { anchor: 1, head: 4 } });
+      b.dispose(); // one live, one cached
+
+      expect(harness.documents.viewState("main.ink", "group-1")).toMatchObject({
+        anchor: 2,
+        head: 7,
+      });
+      expect(harness.documents.viewState("main.ink::story", "group-2")).toMatchObject({
+        anchor: 1,
+        head: 4,
+      });
+    });
+
+    it("prefers a mounted slot when groupId is omitted", () => {
+      const a = harness.mount("main.ink", "group-1");
+      const b = harness.mount("main.ink", "group-2");
+      a.view.dispatch({ selection: { anchor: 3 } });
+      b.view.dispatch({ selection: { anchor: 9 } });
+      b.dispose();
+
+      expect(harness.documents.viewState("main.ink")).toMatchObject({ anchor: 3 });
+    });
+
+    it("returns null for an unknown docKey", () => {
+      expect(harness.documents.viewState("nope.ink")).toBeNull();
+      expect(harness.documents.viewState("main.ink", "group-1")).toBeNull();
+    });
+
+    it("restores selection + scroll on the next mount", () => {
+      harness.documents.restoreViewState("main.ink", {
+        anchor: 3,
+        head: 9,
+        scrollTop: 25,
+      });
+      const { view } = harness.mount("main.ink", "group-1");
+      expect(view.state.selection.main.anchor).toBe(3);
+      expect(view.state.selection.main.head).toBe(9);
+      expect(view.scrollDOM.scrollTop).toBe(25);
+    });
+
+    it("applies immediately to an already-mounted view", () => {
+      const { view } = harness.mount("main.ink", "group-1");
+      harness.documents.restoreViewState("main.ink", {
+        anchor: 4,
+        head: 11,
+        scrollTop: 15,
+      });
+      expect(view.state.selection.main.anchor).toBe(4);
+      expect(view.state.selection.main.head).toBe(11);
+      expect(view.scrollDOM.scrollTop).toBe(15);
+    });
+
+    it("restores every open tab independently (queued per docKey)", () => {
+      harness.documents.restoreViewState("main.ink", {
+        anchor: 2,
+        head: 8,
+        scrollTop: 10,
+      });
+      harness.documents.restoreViewState("main.ink::story", {
+        anchor: 1,
+        head: 5,
+        scrollTop: 6,
+      });
+
+      const a = harness.mount("main.ink", "group-1");
+      const b = harness.mount("main.ink::story", "group-2");
+      expect(a.view.state.selection.main.anchor).toBe(2);
+      expect(a.view.state.selection.main.head).toBe(8);
+      expect(a.view.scrollDOM.scrollTop).toBe(10);
+      expect(b.view.state.selection.main.anchor).toBe(1);
+      expect(b.view.state.selection.main.head).toBe(5);
+      expect(b.view.scrollDOM.scrollTop).toBe(6);
+    });
+
+    it("clamps a stale selection to the document length", () => {
+      harness.documents.restoreViewState("main.ink", {
+        anchor: 100_000,
+        head: 100_000,
+        scrollTop: 0,
+      });
+      const { view } = harness.mount("main.ink", "group-1");
+      expect(view.state.selection.main.head).toBe(view.state.doc.length);
+    });
+
+    it("clamps corrupted negative offsets instead of throwing on mount", () => {
+      harness.documents.restoreViewState("main.ink", {
+        anchor: -5,
+        head: -5,
+        scrollTop: -10,
+      });
+      const { view } = harness.mount("main.ink", "group-1"); // must not throw
+      expect(view.state.selection.main.head).toBe(0);
+      expect(view.scrollDOM.scrollTop).toBe(0);
+    });
+
+    it("restores a split view per pane when groupId is given", () => {
+      // Same doc open in two groups with different persisted states —
+      // restoreViewState must address slots the way viewState reads them.
+      harness.documents.restoreViewState("main.ink", { anchor: 2, head: 6, scrollTop: 10 }, "group-1");
+      harness.documents.restoreViewState("main.ink", { anchor: 9, head: 14, scrollTop: 30 }, "group-2");
+
+      const a = harness.mount("main.ink", "group-1");
+      const b = harness.mount("main.ink", "group-2");
+      expect(a.view.state.selection.main.anchor).toBe(2);
+      expect(a.view.state.selection.main.head).toBe(6);
+      expect(a.view.scrollDOM.scrollTop).toBe(10);
+      expect(b.view.state.selection.main.anchor).toBe(9);
+      expect(b.view.state.selection.main.head).toBe(14);
+      expect(b.view.scrollDOM.scrollTop).toBe(30);
+    });
+
+    it("prunes undelivered restores for closed tabs in retainSlots", () => {
+      // Queue a restore for a tab, then declare it closed before it mounts:
+      // the entry must not survive to fire on a much-later remount.
+      harness.documents.restoreViewState("main.ink", { anchor: 3, head: 9, scrollTop: 25 });
+      harness.documents.retainSlots(new Set(), new Set()); // main.ink no longer open
+
+      const { view } = harness.mount("main.ink", "group-1");
+      expect(view.state.selection.main.head).toBe(0); // stale restore did not fire
+    });
+
+    it("keeps the scroll snapshot across an in-session remount", () => {
+      const mounted = harness.mount("main.ink", "group-1");
+      mounted.view.scrollDOM.scrollTop = 33;
+      mounted.dispose();
+
+      const again = harness.mount("main.ink", "group-1");
+      expect(again.view.scrollDOM.scrollTop).toBe(33);
+    });
+  });
+
   describe("slot pruning", () => {
     it("drops cached states for closed tabs but keeps mounted ones", () => {
       const a = harness.mount("main.ink", "group-1");
