@@ -83,6 +83,36 @@ describe("DialectParser.parseSource", () => {
     const lines = parser.parseSource("-> knot\n<- thread\n# a tag\n{ true }");
     expect(lines.every((l) => l.kind === null)).toBe(true);
   });
+
+  it("a structural line immediately after a cue breaks the chain instead of becoming dialogue", () => {
+    // Regression for the reviewer finding: a divert right after a classified
+    // cue must stay `kind: null`, not get swept into the chain rule merely
+    // because the previous line had a `kind`.
+    const lines = parser.parseSource("@Alice:<>\n-> some_knot\n# a tag");
+    expect(lines.map((l) => l.kind)).toEqual(["character", null, null]);
+    expect(lines[1].attrs).toEqual([]);
+    expect(lines[2].attrs).toEqual([]);
+  });
+
+  it("a gather followed by a divert: the divert stays structural, not chained", () => {
+    const lines = parser.parseSource("- gather text\n-> some_knot");
+    expect(lines.map((l) => l.kind)).toEqual([null, null]);
+  });
+
+  it("a gather followed by a thread: the thread stays structural, not chained", () => {
+    const lines = parser.parseSource("- gather text\n<- some_thread");
+    expect(lines.map((l) => l.kind)).toEqual([null, null]);
+  });
+
+  it("a cue followed by a thread breaks the chain", () => {
+    const lines = parser.parseSource("@Alice:<>\n<- some_thread");
+    expect(lines.map((l) => l.kind)).toEqual(["character", null]);
+  });
+
+  it("a divert after a chained dialogue run does not extend the run", () => {
+    const lines = parser.parseSource("@Alice:<>\nHello there.\n-> knot");
+    expect(lines.map((l) => l.kind)).toEqual(["character", "dialogue", null]);
+  });
 });
 
 describe("DialectParser.parseEmitted — composite-segment iteration protocol", () => {

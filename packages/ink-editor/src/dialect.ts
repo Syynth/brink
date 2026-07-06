@@ -609,6 +609,23 @@ export interface EmittedSegment {
   content: string | null;
 }
 
+// A trimmed line beginning with one of these is ink STRUCTURAL syntax
+// (divert, thread, tag, logic, choice/gather, knot/stitch header, comment,
+// INCLUDE/EXTERNAL/VAR/CONST/LIST decl) — never dialect content. Mirrors
+// `element-type.ts`'s `classifyLine` prefix set (house rule: content/geometry
+// code must never treat ink syntax as content). Checked BEFORE the chain rule
+// so a structural line occurring right after a classified cue does not get
+// swept into the chain merely because the previous line had a `kind`.
+const STRUCTURAL_LINE_PATTERN =
+  /^(->|<-|#|~|\*|\+|-(?!>)|=|\/\/|\/\*|\{|INCLUDE |EXTERNAL |VAR|CONST|LIST )/;
+
+/** Whether a (already-trimmed) source line begins with ink structural
+ *  syntax — a divert/thread/tag/logic/choice/gather/header/comment/decl —
+ *  and must therefore never chain into dialect content. */
+function isStructuralLine(trimmed: string): boolean {
+  return STRUCTURAL_LINE_PATTERN.test(trimmed);
+}
+
 /**
  * Pure-TS parser over a `DialogueDialect` — no CM6, no wasm session. Public
  * (#366 deliverable 3): construct once per dialect (patterns compiled once,
@@ -629,11 +646,13 @@ export class DialectParser {
    * (trimmed) line in declaration order (first match wins); a narrative line
    * immediately following a classified line chains per the dialect's `chain`
    * rules (carrying forward the declared `carry` attrs), and a blank line
-   * always breaks the chain. This is a source-side (authoring-time) parse —
-   * it does NOT interpret structural ink syntax (`->`, `<-`, `#`, `{}`) at
-   * all; a source line that happens to look like a divert/thread/tag/logic
-   * line is simply narrative text to this parser (dialect kinds are declared
-   * independently of ink's structural grammar).
+   * always breaks the chain. This parser does not classify structural ink
+   * syntax (`->`, `<-`, `#`, `{}`, choices/gathers, headers, decls) into any
+   * dialect `kind` — such a line is always `kind: null`, matching
+   * `element-type.ts`'s `NarrativeText`-only chain promotion (house rule:
+   * content/geometry code must never treat ink syntax as content). This
+   * applies even immediately after a classified cue: a structural line
+   * breaks the chain rather than being swept into it.
    */
   parseSource(source: string): SourceLine[] {
     const rawLines = source.split("\n");
@@ -658,7 +677,7 @@ export class DialectParser {
       }
 
       const prev = out[i - 1];
-      if (prev?.kind) {
+      if (prev?.kind && !isStructuralLine(trimmed)) {
         const rule = this.resolved.chainRuleAfter(prev.kind);
         if (rule) {
           const carried: Array<[string, string]> = [];
