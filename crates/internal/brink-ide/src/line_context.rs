@@ -9,11 +9,16 @@
 //! dialect classify+chain post-pass exactly mirroring today's TS screenplay
 //! post-pass (`element-type.ts`) — classification runs on narrative AND
 //! choice-body base lines (preserving depth), but chaining (narrative →
-//! dialect-chained kind) runs on narrative only, so cues inside choice
-//! bodies classify but never chain. Blank lines always break a chain.
+//! dialect-chained kind) runs on top-level AND conditional/sequence-branch
+//! narrative only (#413), so cues inside choice bodies classify but never
+//! chain, while cues inside conditional/sequence arms both classify AND
+//! chain. Blank lines always break a chain. A `~`-sigil logic line always
+//! wins over any chain/blank-fill promotion (#413) — see
+//! `detect_sigil_logic_lines`.
 
 use brink_ir::{Block, ChoiceSetContext, Content, ContentPart, HirFile, ResolvedDialect, Stmt};
 use brink_syntax::SyntaxNode;
+use rowan::TextRange;
 use serde::Serialize;
 
 use crate::LineIndex;
@@ -176,8 +181,19 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
         element: WeaveElement::TopLevel,
     };
 
+    // Conditional/sequence block ranges collected during the walk below —
+    // consumed by pass 4b (scaffold + arm-descent) after all statement
+    // pointers have had their chance to claim a line.
+    let mut cond_ranges: Vec<(TextRange, WeaveElement)> = Vec::new();
+
     // Root content block
-    walk_block(&hir.root_content, &idx, &mut ctx, top_level);
+    walk_block(
+        &hir.root_content,
+        &idx,
+        &mut ctx,
+        top_level,
+        &mut cond_ranges,
+    );
 
     // Knots and stitches
     for knot in &hir.knots {
@@ -186,7 +202,7 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
             ctx[knot_line].element = LineElement::KnotHeader;
         }
 
-        walk_block(&knot.body, &idx, &mut ctx, top_level);
+        walk_block(&knot.body, &idx, &mut ctx, top_level, &mut cond_ranges);
 
         for stitch in &knot.stitches {
             let stitch_line = idx.line_col(stitch.ptr.text_range().start()).0 as usize;
@@ -194,7 +210,7 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
                 ctx[stitch_line].element = LineElement::StitchHeader;
             }
 
-            walk_block(&stitch.body, &idx, &mut ctx, top_level);
+            walk_block(&stitch.body, &idx, &mut ctx, top_level, &mut cond_ranges);
         }
     }
 
@@ -202,6 +218,23 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
     // The HIR only marks gathers via labeled blocks, but a bare `- text`
     // (no parenthesized label) still needs to show as Gather in the editor.
     detect_gathers(source, &mut ctx);
+
+    // ── Pass 4b: conditional/sequence scaffold + arm-descent (#413) ──
+    // Branch bodies accumulate their content via raw token buffering (no
+    // per-line `ptr`), so lines inside a conditional/sequence arm that the
+    // HIR left `Blank` need a text-based pass over the block's own range —
+    // the same "HIR under-covers this, patch from source text" idiom as
+    // `detect_gathers`/`detect_comments` above.
+    apply_conditional_scaffold(source, &idx, &cond_ranges, &mut ctx);
+
+    // ── Pass 5: sigil logic lines win over any earlier promotion (#413) ──
+    // A `~`-prefixed logic line (`Stmt::ExprStmt`, `TempDecl`, `Assignment`)
+    // is walked by `walk_stmt`, but `ExprStmt` carries no `ptr` at all — it
+    // never claims its own line, so it can be swept into a neighboring
+    // `Content` node's blank-fill or a conditional-arm promotion. Sigil
+    // classification always wins: force `Logic` from source text last, so
+    // no earlier pass's structural guess can outrank the literal `~`.
+    detect_sigil_logic_lines(source, &mut ctx);
 
     ctx
 }
@@ -218,20 +251,25 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
 ///    declaration order. A match records `dialect` on that line without
 ///    touching `element`/`weave` (those stay the interpreter's structural
 ///    truth; `dialect` is an additional facet).
-/// 2. **Chain pass** — runs ONLY over lines whose base `element` is
-///    `Narrative` at `WeaveElement::TopLevel` (i.e. plain top-level
-///    narrative, not choice-body narrative): if the immediately preceding
-///    line's dialect kind matches a chain rule's `after` list, this line's
-///    dialect is set to the chained kind, carrying forward the rule's
-///    `carry` attrs from the run's originating match. Blank lines always
-///    break the chain (a `Blank` line has no dialect, so the next line's
-///    "previous dialect kind" lookup sees `None` and the chain resets).
+/// 2. **Chain pass** — runs over lines whose base `element` is `Narrative`
+///    at `WeaveElement::TopLevel`, `ConditionalBranch`, or `SequenceBranch`
+///    (see [`chain_eligible_weave`]) — i.e. plain top-level narrative or
+///    narrative inside a conditional/sequence arm, but NOT choice-body
+///    narrative: if the immediately preceding line's dialect kind matches a
+///    chain rule's `after` list, this line's dialect is set to the chained
+///    kind, carrying forward the rule's `carry` attrs from the run's
+///    originating match. Blank lines always break the chain (a `Blank`
+///    line has no dialect, so the next line's "previous dialect kind"
+///    lookup sees `None` and the chain resets).
 ///
 /// This split reproduces today's TS behavior exactly: a cue written inside
 /// a choice body classifies (and keeps its depth) but never chains to
 /// dialogue, because the TS chain gate checks `type === NarrativeText`,
 /// which choice-body narrative never is (it was already retyped to
-/// `ChoiceBody` before the screenplay post-pass runs).
+/// `ChoiceBody` before the screenplay post-pass runs). A cue inside a
+/// conditional/sequence arm, by contrast, both classifies and chains (#413)
+/// — conditional-arm narrative is still plain `Narrative` at the interpreter
+/// level (unlike `ChoiceBody`, it never gets a separate retyped kind).
 pub fn line_contexts_with_dialect(
     hir: &HirFile,
     source: &str,
@@ -308,7 +346,7 @@ fn apply_dialect(source: &str, dialect: &ResolvedDialect, ctx: &mut [LineContext
         // the previously-carried speaker untouched).
         if i > 0
             && ctx[i].element == LineElement::Narrative
-            && ctx[i].weave.element == WeaveElement::TopLevel
+            && chain_eligible_weave(ctx[i].weave.element)
             && ctx[i].dialect.is_none()
             && let Some(prev_kind) = ctx[i - 1].dialect.as_ref().map(|d| d.kind.clone())
             && let Some(rule) = dialect.chain_rule_after(&prev_kind)
@@ -347,6 +385,21 @@ fn apply_dialect(source: &str, dialect: &ResolvedDialect, ctx: &mut [LineContext
     }
 }
 
+/// Whether the chain pass may run for a line at this weave position.
+/// Top-level narrative and conditional/sequence-branch narrative both
+/// chain (#413 — dialogue written inside a conditional arm reads the same
+/// as top-level dialogue); choice-body narrative does not (spec-mandated:
+/// a cue written inside a choice body classifies, keeping its depth, but
+/// the following choice-body narrative never chains to dialogue — the TS
+/// chain gate checks `type === NarrativeText`, which choice-body narrative
+/// never is, since it's already retyped to `ChoiceBody`).
+fn chain_eligible_weave(element: WeaveElement) -> bool {
+    matches!(
+        element,
+        WeaveElement::TopLevel | WeaveElement::ConditionalBranch | WeaveElement::SequenceBranch
+    )
+}
+
 /// Byte length of a line's leading whitespace (spaces only — ink
 /// indentation is space-based).
 #[expect(clippy::cast_possible_truncation)]
@@ -356,16 +409,35 @@ fn leading_ws_len(line: &str) -> u32 {
 
 // ── HIR walking ─────────────────────────────────────────────────────
 
-fn walk_block(block: &Block, idx: &LineIndex, ctx: &mut [LineContext], weave: WeavePosition) {
+fn walk_block(
+    block: &Block,
+    idx: &LineIndex,
+    ctx: &mut [LineContext],
+    weave: WeavePosition,
+    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
+) {
     for stmt in &block.stmts {
-        walk_stmt(stmt, idx, ctx, weave);
+        walk_stmt(stmt, idx, ctx, weave, cond_ranges);
     }
 }
 
-fn walk_stmt(stmt: &Stmt, idx: &LineIndex, ctx: &mut [LineContext], weave: WeavePosition) {
+fn walk_stmt(
+    stmt: &Stmt,
+    idx: &LineIndex,
+    ctx: &mut [LineContext],
+    weave: WeavePosition,
+    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
+) {
     match stmt {
         Stmt::Content(content) => {
-            set_content_lines(content, idx, ctx, LineElement::Narrative, weave);
+            set_content_lines(
+                content,
+                idx,
+                ctx,
+                LineElement::Narrative,
+                weave,
+                cond_ranges,
+            );
         }
         Stmt::Divert(divert) => {
             if let Some(ptr) = &divert.ptr {
@@ -425,35 +497,60 @@ fn walk_stmt(stmt: &Stmt, idx: &LineIndex, ctx: &mut [LineContext], weave: Weave
                 );
             }
         }
-        Stmt::ChoiceSet(cs) => walk_choice_set(cs, idx, ctx, weave),
-        Stmt::LabeledBlock(block) => walk_labeled_block(block, idx, ctx, weave),
-        Stmt::Conditional(cond) => {
-            for branch in &cond.branches {
-                walk_block(
-                    &branch.body,
-                    idx,
-                    ctx,
-                    WeavePosition {
-                        depth: weave.depth,
-                        element: WeaveElement::ConditionalBranch,
-                    },
-                );
-            }
-        }
-        Stmt::Sequence(seq) => {
-            for branch in &seq.branches {
-                walk_block(
-                    branch,
-                    idx,
-                    ctx,
-                    WeavePosition {
-                        depth: weave.depth,
-                        element: WeaveElement::SequenceBranch,
-                    },
-                );
-            }
-        }
+        Stmt::ChoiceSet(cs) => walk_choice_set(cs, idx, ctx, weave, cond_ranges),
+        Stmt::LabeledBlock(block) => walk_labeled_block(block, idx, ctx, weave, cond_ranges),
+        Stmt::Conditional(cond) => walk_conditional(cond, idx, ctx, weave, cond_ranges),
+        Stmt::Sequence(seq) => walk_sequence(seq, idx, ctx, weave, cond_ranges),
         Stmt::ExprStmt(_) | Stmt::EndOfLine => {}
+    }
+}
+
+/// Walk a multiline `Conditional`'s branches, recording its own range in
+/// `cond_ranges` (#413 — consumed by `apply_conditional_scaffold` after the
+/// main walk, since branch-body content has no per-line `ptr` of its own).
+fn walk_conditional(
+    cond: &brink_ir::Conditional,
+    idx: &LineIndex,
+    ctx: &mut [LineContext],
+    weave: WeavePosition,
+    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
+) {
+    cond_ranges.push((cond.ptr.text_range(), WeaveElement::ConditionalBranch));
+    for branch in &cond.branches {
+        walk_block(
+            &branch.body,
+            idx,
+            ctx,
+            WeavePosition {
+                depth: weave.depth,
+                element: WeaveElement::ConditionalBranch,
+            },
+            cond_ranges,
+        );
+    }
+}
+
+/// Walk a multiline `Sequence`'s branches, recording its own range in
+/// `cond_ranges` (#413), mirroring [`walk_conditional`].
+fn walk_sequence(
+    seq: &brink_ir::Sequence,
+    idx: &LineIndex,
+    ctx: &mut [LineContext],
+    weave: WeavePosition,
+    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
+) {
+    cond_ranges.push((seq.ptr.text_range(), WeaveElement::SequenceBranch));
+    for branch in &seq.branches {
+        walk_block(
+            branch,
+            idx,
+            ctx,
+            WeavePosition {
+                depth: weave.depth,
+                element: WeaveElement::SequenceBranch,
+            },
+            cond_ranges,
+        );
     }
 }
 
@@ -462,6 +559,7 @@ fn walk_choice_set(
     idx: &LineIndex,
     ctx: &mut [LineContext],
     weave: WeavePosition,
+    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
 ) {
     let depth = if cs.context == ChoiceSetContext::Inline {
         weave.depth
@@ -490,6 +588,7 @@ fn walk_choice_set(
                 depth,
                 element: WeaveElement::ChoiceBody,
             },
+            cond_ranges,
         );
     }
 
@@ -503,6 +602,7 @@ fn walk_choice_set(
                 depth,
                 element: WeaveElement::GatherContinuation,
             },
+            cond_ranges,
         );
 
         if let Some(label) = &cs.continuation.label {
@@ -523,6 +623,7 @@ fn walk_labeled_block(
     idx: &LineIndex,
     ctx: &mut [LineContext],
     weave: WeavePosition,
+    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
 ) {
     if let Some(label) = &block.label {
         let line = idx.line_col(label.range.start()).0 as usize;
@@ -531,7 +632,7 @@ fn walk_labeled_block(
             ctx[line].weave = weave;
         }
     }
-    walk_block(block, idx, ctx, weave);
+    walk_block(block, idx, ctx, weave, cond_ranges);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -568,10 +669,26 @@ fn set_content_lines(
     ctx: &mut [LineContext],
     element: LineElement,
     weave: WeavePosition,
+    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
 ) {
     if let Some(ptr) = &content.ptr {
-        let start_line = idx.line_col(ptr.text_range().start()).0 as usize;
-        let end_line = idx.line_col(ptr.text_range().end()).0 as usize;
+        let range = ptr.text_range();
+        let start_line = idx.line_col(range.start()).0 as usize;
+        let (end_line_raw, end_col) = idx.line_col(range.end());
+        // A `CONTENT_LINE` node's range commonly includes its trailing
+        // newline, so the exclusive end offset lands exactly at column 0 of
+        // the FOLLOWING physical line. Without this correction, that next
+        // line — which may be a completely different statement (e.g. a `~`
+        // logic line with no `ptr` of its own) — gets swept into this
+        // content's blank-fill promotion below. Only back off when the
+        // range actually spans past the start line (end_col == 0 on the
+        // start line itself would mean an empty range, which can't happen
+        // for a real content node).
+        let end_line = if end_col == 0 && end_line_raw as usize > start_line {
+            end_line_raw as usize - 1
+        } else {
+            end_line_raw as usize
+        };
         for line in start_line..=end_line {
             if line < ctx.len() && ctx[line].element == LineElement::Blank {
                 ctx[line].element = element;
@@ -587,6 +704,7 @@ fn set_content_lines(
     for part in &content.parts {
         match part {
             ContentPart::InlineConditional(cond) => {
+                cond_ranges.push((cond.ptr.text_range(), WeaveElement::ConditionalBranch));
                 for branch in &cond.branches {
                     walk_block(
                         &branch.body,
@@ -596,10 +714,12 @@ fn set_content_lines(
                             depth: weave.depth,
                             element: WeaveElement::ConditionalBranch,
                         },
+                        cond_ranges,
                     );
                 }
             }
             ContentPart::InlineSequence(seq) => {
+                cond_ranges.push((seq.ptr.text_range(), WeaveElement::SequenceBranch));
                 for branch in &seq.branches {
                     walk_block(
                         branch,
@@ -609,6 +729,7 @@ fn set_content_lines(
                             depth: weave.depth,
                             element: WeaveElement::SequenceBranch,
                         },
+                        cond_ranges,
                     );
                 }
             }
@@ -652,6 +773,120 @@ fn detect_gathers(source: &str, ctx: &mut [LineContext]) {
                     element: WeaveElement::GatherContinuation,
                 };
             }
+        }
+    }
+}
+
+/// Conditional/sequence scaffold + arm-descent post-pass (#413).
+///
+/// `walk_stmt`'s `Stmt::Conditional`/`Stmt::Sequence`/inline-part handling
+/// walks each branch's body, but branch-body `Content` is accumulated via
+/// raw token buffering (`ContentAccumulator::flush`), which never stamps a
+/// `ptr` — so `set_content_lines` has no range to promote arm content with.
+/// The block's OWN range (`Conditional.ptr`/`Sequence.ptr`, collected during
+/// the walk as `cond_ranges`) is the only source-located anchor available,
+/// so this pass re-scans the block's line range from source text and:
+///
+/// - classifies scaffold lines (the opening `{`/`{cond:` line, a bare `}`
+///   closing line, and `- cond:`/`- else:` branch headers) as `Logic` —
+///   they are conditional routing, not gathers (a `detect_gathers` bare-`-`
+///   line under a still-open conditional range gets corrected back here);
+/// - promotes any still-`Blank` line inside the range to `Narrative` with
+///   the block's weave element, so the dialect classify/chain pass (which
+///   only looks at `Narrative` lines) can see cues/dialogue written inside
+///   conditional arms.
+///
+/// Lines the HIR (or an earlier pass) already classified — divert arms,
+/// nested choices, etc. — are left untouched; this only fills gaps.
+fn apply_conditional_scaffold(
+    source: &str,
+    idx: &LineIndex,
+    cond_ranges: &[(TextRange, WeaveElement)],
+    ctx: &mut [LineContext],
+) {
+    let lines: Vec<&str> = source.split('\n').collect();
+
+    for (range, weave_element) in cond_ranges {
+        let start_line = idx.line_col(range.start()).0 as usize;
+        let (end_line_raw, end_col) = idx.line_col(range.end());
+        let end_line = if end_col == 0 && end_line_raw as usize > start_line {
+            end_line_raw as usize - 1
+        } else {
+            end_line_raw as usize
+        };
+
+        for i in start_line..=end_line {
+            if i >= ctx.len() || i >= lines.len() {
+                break;
+            }
+            let trimmed = lines[i].trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if is_conditional_scaffold_line(trimmed) {
+                ctx[i].element = LineElement::Logic;
+                ctx[i].weave = WeavePosition {
+                    depth: 0,
+                    element: WeaveElement::TopLevel,
+                };
+                continue;
+            }
+
+            // Arm content: only fill the gap — never override a line the
+            // HIR (or an earlier statement) already placed with confidence.
+            if ctx[i].element == LineElement::Blank {
+                ctx[i].element = LineElement::Narrative;
+                ctx[i].weave = WeavePosition {
+                    depth: 0,
+                    element: *weave_element,
+                };
+            }
+        }
+    }
+}
+
+/// Whether a trimmed, non-empty line is conditional/sequence routing
+/// scaffold rather than branch content: an opening brace (`{`, possibly
+/// followed by the switch expression and `:`), a bare closing brace (`}`,
+/// possibly with trailing scaffold after it on the same physical line is
+/// still scaffold), or a multiline branch header (`- cond:` / `- else:`,
+/// ink's `-` bullet followed eventually by a bare trailing `:`).
+fn is_conditional_scaffold_line(trimmed: &str) -> bool {
+    if trimmed.starts_with('{') || trimmed == "}" || trimmed.ends_with('}') {
+        return true;
+    }
+    // A multiline branch header is a `-`-bulleted (not `->`) line whose
+    // last non-whitespace character is `:` — e.g. `- get_variable(16) == 2:`
+    // or `- else:`. This deliberately does NOT match `- else: -> busy`
+    // (inline-divert branch shorthand): that line ends in a divert target,
+    // not `:`, and the divert itself already classifies via `Stmt::Divert`'s
+    // `ptr` — this scaffold check only needs to catch the header itself when
+    // it's the JSON pinned repro shape (bare `- cond:` / `- else:` opening a
+    // multiline body), and it must not clobber a divert-terminated line that
+    // `walk_stmt` already placed correctly.
+    if trimmed.starts_with('-') && !trimmed.starts_with("->") && trimmed.ends_with(':') {
+        return true;
+    }
+    false
+}
+
+/// Detect `~`-sigil logic lines from source text and force `Logic`,
+/// overriding any earlier pass (#413). `Stmt::ExprStmt` (`~ <call-expr>`)
+/// carries no `ptr` at all, so `walk_stmt` can never claim its own line —
+/// it can inherit a neighboring `Content` node's blank-fill promotion (now
+/// fixed for the exact-boundary case) or a conditional arm-descent
+/// promotion above. Sigil classification must always win: this pass runs
+/// last, after every structural/dialect-adjacent pass, so a literal `~`
+/// prefix can never be re-swallowed into a dialogue chain or a conditional
+/// arm's narrative classification.
+fn detect_sigil_logic_lines(source: &str, ctx: &mut [LineContext]) {
+    for (i, line) in source.lines().enumerate() {
+        if i >= ctx.len() {
+            break;
+        }
+        if line.trim_start().starts_with('~') {
+            ctx[i].element = LineElement::Logic;
         }
     }
 }
@@ -941,5 +1176,99 @@ mod dialect_tests {
         let (hir, _, _) = hir::lower(file_id, &ast);
         let ctx = line_contexts(&hir, source, &parse.syntax());
         assert!(ctx[1].dialect.is_none());
+    }
+
+    // ── #413 regression tests ──────────────────────────────────────────
+    // Two classification gaps that broke screenplay mode (celeris repro,
+    // reproduced against published 0.8.0): a `~`-sigil line after dialogue
+    // got swallowed into the cue→dialogue chain, and lines in/around
+    // conditional blocks got NO classes at all.
+
+    #[test]
+    fn sigil_logic_line_after_dialogue_is_not_swallowed_into_chain() {
+        // The exact issue-#413 shape: a `~` line immediately follows a
+        // chained dialogue line. Sigil classification must win — the line
+        // must be `Logic`, never `Narrative`/`dialogue`.
+        let source = "=== leave ===\n@Solstice:<>\nAwwww... I have to get going now, Minnie. Sorry!\n~ change_party_member(2, false)\n-> END\n";
+        let ctx = make_dialect_contexts(source);
+        assert_eq!(ctx[1].dialect.as_ref().expect("cue").kind, "character");
+        assert_eq!(
+            ctx[2].dialect.as_ref().expect("chained dialogue").kind,
+            "dialogue"
+        );
+        assert_eq!(
+            ctx[3].element,
+            LineElement::Logic,
+            "sigil line must classify as Logic, not be swallowed into the dialogue chain"
+        );
+        assert!(
+            ctx[3].dialect.is_none(),
+            "a Logic line must never carry a dialect classification"
+        );
+    }
+
+    #[test]
+    fn if_else_conditional_scaffold_classifies_as_logic() {
+        // `{ - cond: -> a  - else: -> b }` — the routing-block braces
+        // aren't a divert/content statement themselves; before #413 they
+        // were left `Blank`.
+        let source =
+            "=== start ===\n{\n    - get_variable(16) == 2: -> leave\n    - else: -> busy\n}\n";
+        let ctx = make_dialect_contexts(source);
+        assert_eq!(ctx[1].element, LineElement::Logic, "opening brace");
+        assert_eq!(ctx[2].element, LineElement::Divert, "if-arm divert");
+        assert_eq!(ctx[3].element, LineElement::Divert, "else-arm divert");
+        assert_eq!(ctx[4].element, LineElement::Logic, "closing brace");
+    }
+
+    #[test]
+    fn conditional_arm_dialogue_classifies_and_chains() {
+        // The issue's `busy` stitch shape: a branchless `{ cond: ... -
+        // else: ... }` block whose arms contain cue/dialogue lines. Before
+        // #413 every line here was `Blank` with no dialect at all.
+        let source = "=== start ===\n{ get_variable(17) >= 1:\n    @Solstice:<>\n    Hello, this is Sols.\n    @Minnie:<>\n    Uhhhh... I have no idea.\n- else:\n    @Solstice:<>\n    Hello?\n}\n-> END\n";
+        let ctx = make_dialect_contexts(source);
+
+        assert_eq!(ctx[1].element, LineElement::Logic, "opening scaffold line");
+
+        assert_eq!(ctx[2].weave.element, WeaveElement::ConditionalBranch);
+        assert_eq!(ctx[2].dialect.as_ref().expect("cue").kind, "character");
+        assert_eq!(
+            ctx[3].dialect.as_ref().expect("chained dialogue").kind,
+            "dialogue"
+        );
+        assert_eq!(ctx[4].dialect.as_ref().expect("cue").kind, "character");
+        assert_eq!(
+            ctx[5].dialect.as_ref().expect("chained dialogue").kind,
+            "dialogue"
+        );
+
+        assert_eq!(
+            ctx[6].element,
+            LineElement::Logic,
+            "`- else:` is conditional scaffold, not a weave gather"
+        );
+
+        assert_eq!(ctx[7].weave.element, WeaveElement::ConditionalBranch);
+        assert_eq!(ctx[7].dialect.as_ref().expect("cue").kind, "character");
+        assert_eq!(
+            ctx[8].dialect.as_ref().expect("chained dialogue").kind,
+            "dialogue"
+        );
+
+        assert_eq!(ctx[9].element, LineElement::Logic, "closing brace");
+        assert_eq!(ctx[10].element, LineElement::Divert);
+    }
+
+    #[test]
+    fn choice_body_cue_still_does_not_chain_inside_conditional_gate_change() {
+        // Regression guard: widening the chain gate to conditional/sequence
+        // branches (#413) must not accidentally re-enable chaining for
+        // choice-body narrative — that stays off per the pre-existing
+        // spec-mandated split (see `cue_inside_choice_body_classifies_but_does_not_chain`).
+        let source = "=== start ===\n* Choice\n  @Alice:<>\n  Hello there.\n";
+        let ctx = make_dialect_contexts(source);
+        assert_eq!(ctx[2].dialect.as_ref().expect("cue").kind, "character");
+        assert!(ctx[3].dialect.is_none(), "choice-body chain stays off");
     }
 }

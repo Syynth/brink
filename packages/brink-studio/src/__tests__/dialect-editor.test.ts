@@ -315,3 +315,68 @@ describe("per-view dialect isolation (regression: no shared module-global state)
     b.destroy();
   });
 });
+
+// ── #413 regression tests (regex-fallback path) ──────────────────────
+// Two classification gaps broke screenplay mode (celeris repro, reproduced
+// against published 0.8.0): a `~`-sigil line after dialogue got swallowed
+// into the cue→dialogue chain, and lines in/around conditional blocks got
+// NO classes at all. These pin the TS regex-fallback mirror
+// (`applyConditionalScaffoldFallback` in `element-type.ts`) of the Rust fix
+// in `line_context.rs`.
+describe("dialect option — #413 conditional scaffold + sigil-wins-chain (fallback)", () => {
+  it("a '~' sigil line after chained dialogue classifies as logic, not dialogue", () => {
+    const view = mount(
+      "@Solstice:<>\nAwwww... I have to get going now, Minnie. Sorry!\n~ change_party_member(2, false)\n-> END\n",
+    );
+    const infos = view.state.field(elementTypeField);
+    expect(infos[0].type).toBe(ElementType.Character);
+    expect(infos[1].type).toBe(ElementType.Dialogue);
+    expect(infos[2].type).toBe(ElementType.Logic);
+    expect(infos[2].dialect).toBeUndefined();
+    view.destroy();
+  });
+
+  it("renders brink-logic (not brink-dialogue) on the sigil line's .cm-line", () => {
+    const view = mount(
+      "@Solstice:<>\nAwwww... I have to get going now, Minnie. Sorry!\n~ change_party_member(2, false)\n-> END\n",
+    );
+    const lines = [...view.dom.querySelectorAll(".cm-line")];
+    const sigilLine = lines.find((l) => (l.textContent ?? "").includes("change_party_member"));
+    expect(sigilLine?.className).toContain("brink-logic");
+    expect(sigilLine?.className).not.toContain("brink-dialogue");
+    view.destroy();
+  });
+
+  it("conditional routing-block braces and if/else headers classify as logic", () => {
+    const view = mount("{\n    - get_variable(16) == 2: -> leave\n    - else: -> busy\n}\n");
+    const infos = view.state.field(elementTypeField);
+    expect(infos[0].type).toBe(ElementType.Logic); // {
+    expect(infos[3].type).toBe(ElementType.Logic); // }
+    view.destroy();
+  });
+
+  it("cue/dialogue lines inside a conditional arm classify and chain", () => {
+    const view = mount(
+      "{ get_variable(17) >= 1:\n    @Solstice:<>\n    Hello, this is Sols.\n- else:\n    @Solstice:<>\n    Hello?\n}\n-> END\n",
+    );
+    const infos = view.state.field(elementTypeField);
+    expect(infos[0].type).toBe(ElementType.Logic); // { get_variable(17) >= 1:
+    expect(infos[1].type).toBe(ElementType.Character); //     @Solstice:<>
+    expect(infos[2].type).toBe(ElementType.Dialogue); //     Hello, this is Sols.
+    expect(infos[3].type).toBe(ElementType.Logic); // - else:
+    expect(infos[4].type).toBe(ElementType.Character); //     @Solstice:<>
+    expect(infos[5].type).toBe(ElementType.Dialogue); //     Hello?
+    expect(infos[6].type).toBe(ElementType.Logic); // }
+    view.destroy();
+  });
+
+  it("renders brink-character/brink-dialogue classes for cues inside a conditional arm", () => {
+    const view = mount("{ get_variable(17) >= 1:\n    @Solstice:<>\n    Hello there.\n}\n");
+    const lines = [...view.dom.querySelectorAll(".cm-line")];
+    const cue = lines.find((l) => (l.textContent ?? "").includes("Solstice"));
+    const dialogue = lines.find((l) => (l.textContent ?? "").includes("Hello there"));
+    expect(cue?.className).toContain("brink-character");
+    expect(dialogue?.className).toContain("brink-dialogue");
+    view.destroy();
+  });
+});
