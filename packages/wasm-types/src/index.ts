@@ -89,6 +89,163 @@ export interface LoadReport {
   unknown_globals: string[];
 }
 
+// ── Story Session (#370/#387) ────────────────────────────────────
+//
+// `WebSession`'s wire shapes. Distinct from `Line`/`LineType` above (the
+// legacy `StoryRunner` union, which smuggles `awaiting_external` into the
+// `Line` type tag) — `StepOutcome` here splits that out into its own tagged
+// union, per the story-session-spec wire-format fix. Tagged `type` +
+// snake_case discriminants throughout, matching `Line`.
+
+/** A tagged ink value, as the journal/save layer serializes it (never the
+ * lossy `List`/`Divert` → null mapping the `ExternalValue` boundary uses).
+ * e.g. `{ Int: 10 }`, `{ Float: 1.5 }`, `{ Bool: true }`, `{ String: "x" }`,
+ * `"Null"`. Treat as opaque unless inspecting in dev. */
+export type JournalValue = unknown;
+
+/** One line of session output (mirrors `Line` above; kept as a separate type
+ * because `StepOutcome` below never carries the `awaiting_external` variant —
+ * that lives on `StepOutcome` itself). */
+export interface SessionLine {
+  type: "text" | "done" | "choices" | "end";
+  text: string;
+  tags: string[];
+  choices?: Choice[];
+}
+
+/**
+ * Outcome of one `WebSession.advance()` step — the wire-format fix (#387):
+ * `awaiting_external` is its own variant, not smuggled into the `Line` union.
+ * The two park states stay distinct: this type is always the **deferred**,
+ * out-of-band kind (`deferred: true`) that the host resolves via
+ * `resolveExternal` — a promise-in-flight park (the session awaiting
+ * internally) is never surfaced as `StepOutcome` at all.
+ */
+export type StepOutcome =
+  | { type: "line"; line: SessionLine }
+  | { type: "awaiting_external"; deferred: true; name?: string };
+
+/** One input recorded in the session journal (mirrors Rust `EventKind`). */
+export type JournalEventKind =
+  | { type: "start"; path?: string; args?: JournalValue[] }
+  | { type: "choice"; index: number; label?: string }
+  | { type: "external"; name: string; args?: JournalValue[]; result: JournalValue }
+  | { type: "set_var"; name: string; value: JournalValue }
+  | { type: "go_to_path"; path: string; args?: JournalValue[] }
+  | { type: "load_state"; state: SaveState }
+  | { type: "call"; name: string; args?: JournalValue[] };
+
+/** One journal entry: the event plus reserved (serialized, uninterpreted in
+ * v1) anchor/flow dimensions — see `docs/story-session-spec.md`. */
+export interface JournalEvent {
+  kind: JournalEventKind;
+  anchor?: number;
+  flow?: string;
+}
+
+/** The durable session journal — every input that entered the VM, plus a
+ * fast-restore checkpoint. Serialize as-is for a save slot; feed back into
+ * `WebSession.restore`. */
+export interface SessionJournal {
+  version: number;
+  program_checksum: number;
+  seed?: number;
+  events: JournalEvent[];
+  truncated: boolean;
+  checkpoint?: SaveState;
+}
+
+/** Lightweight dirty signal delivered by `StorySessionHandle.onJournalDirty`
+ * (#390). Carries just enough for a host to decide whether/when to persist —
+ * pull the actual journal via `exportJournal()`. `eventCount` is the journal
+ * length at the time the debounced notification fired (a monotonically
+ * increasing counter across a session's lifetime, reset only by `restart`). */
+export interface JournalDirtySignal {
+  eventCount: number;
+}
+
+/** A soft, non-fatal replay observation. */
+export type ReplayWarning = {
+  type: "choice_label_drift";
+  at_event: number;
+  index: number;
+  recorded: string;
+  found: string;
+};
+
+/** What replay found at a divergence point instead of the recorded event. */
+export type DivergenceFound =
+  | { type: "choice_index_out_of_range"; index: number; available: number }
+  | { type: "not_waiting_for_choice" }
+  | { type: "unknown_path"; path: string }
+  | { type: "unexpected_event" };
+
+/** Why replay stopped without diverging. */
+export type FailReason =
+  | { type: "runtime_error"; message: string }
+  | { type: "budget" }
+  | { type: "awaiting_external"; name: string };
+
+/** Outcome of replaying a journal (prefix) against a program — from
+ * `WebSession.restore`/`reload`/`continueReplay`. Typed, never silent. */
+export type ReplayOutcome =
+  | { type: "replayed"; warnings: ReplayWarning[] }
+  | {
+      type: "diverged";
+      at_event: number;
+      expected: JournalEvent;
+      found: DivergenceFound;
+    }
+  | { type: "failed"; at_event: number; reason: FailReason };
+
+/** Resolved membership of a `List`-valued global in a `StateSnapshot`. */
+export interface SnapshotList {
+  items: string[];
+}
+
+/** One summarized call frame in a `StateSnapshot`. */
+export interface SnapshotFrame {
+  /** root | function | tunnel | thread | external | eval */
+  kind: string;
+  location?: string;
+  temps: number;
+}
+
+/** active | waiting_for_choice | done | ended */
+export type SnapshotStatus = "active" | "waiting_for_choice" | "done" | "ended";
+
+/** A typed, name-resolved snapshot of a session's game state — distinct from
+ * the string-valued `DebugState` (that one is for the studio's read-only
+ * State View; this one is a first-class, diffable session artifact). */
+export interface StateSnapshot {
+  globals: Record<string, JournalValue>;
+  lists: Record<string, SnapshotList>;
+  turn_index: number;
+  visit_counts: Record<string, number>;
+  turn_counts: Record<string, number>;
+  call_stack: SnapshotFrame[];
+  status: SnapshotStatus;
+}
+
+/** Membership delta for one list-valued global (part of a `StateDiff`). */
+export interface ListDelta {
+  added: string[];
+  removed: string[];
+}
+
+/** A pure diff between two `StateSnapshot`s (`WebSession.diff`/`diffSnapshots`). */
+export interface StateDiff {
+  added_globals: Record<string, JournalValue>;
+  removed_globals: Record<string, JournalValue>;
+  /** `[before, after]` per changed global. */
+  changed_globals: Record<string, [JournalValue, JournalValue]>;
+  list_deltas: Record<string, ListDelta>;
+  /** `[before, after]`, present only when `turn_index` changed. */
+  turn_index?: [number, number];
+  pushed_frames: SnapshotFrame[];
+  popped_frames: SnapshotFrame[];
+}
+
 // ── IDE types ───────────────────────────────────────────────────
 
 export interface CompletionItem {

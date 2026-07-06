@@ -15,6 +15,8 @@ import init, {
   token_modifier_names,
   EditorSession as WasmEditorSession,
   StoryRunner,
+  WebSession,
+  diffSnapshots as wasmDiffSnapshots,
 } from "brink-web";
 
 import type {
@@ -51,6 +53,13 @@ import type {
   HostManifest,
   ValueItem,
   DialogueDialect,
+  StepOutcome,
+  SessionJournal,
+  SessionLine,
+  StateSnapshot,
+  StateDiff,
+  ReplayOutcome,
+  JournalDirtySignal,
 } from "@brink/wasm-types";
 
 // Public surface: every interface the wasm boundary speaks is available
@@ -1018,5 +1027,286 @@ export class StoryRunnerHandle {
 
   free(): void {
     this.runner.free();
+  }
+}
+
+// ── Story Session (#370/#387) ───────────────────────────────────
+//
+// `StorySessionHandle` wraps the Rust-canonical `StorySession` journal +
+// replay layer (`docs/story-session-spec.md`) over the wasm `WebSession`
+// binding. Distinct from `StoryRunnerHandle` above: no JS-binding registry of
+// its own (every external not resolved inline via the ink fallback body
+// parks as a deferred `StepOutcome`, resolved out-of-band via
+// `resolveExternal`), and every input that reaches the VM through it is
+// journaled for replay/persistence.
+
+/** Pure diff of two `StateSnapshot`s captured from any `StorySessionHandle`
+ * (or persisted separately) — doesn't require a live session. */
+export function diffSnapshots(a: StateSnapshot, b: StateSnapshot): StateDiff {
+  const json = wasmDiffSnapshots(JSON.stringify(a), JSON.stringify(b));
+  return JSON.parse(json) as StateDiff;
+}
+
+/** A host-registered listener for `StorySessionHandle.onJournalDirty`. */
+export type JournalDirtyListener = (signal: JournalDirtySignal) => void;
+
+/**
+ * Debounce window (ms) for the journal-dirty notification (#390). A burst of
+ * `choose`/`advance`/etc. calls within this window coalesces into a single
+ * notification carrying the latest event count, fired on a macrotask so it
+ * never lands synchronously inside — or re-entrantly stacked under — a wasm
+ * call. 0 still defers (via `setTimeout(0)`), it just doesn't coalesce
+ * across separate synchronous bursts.
+ */
+const JOURNAL_DIRTY_DEBOUNCE_MS = 50;
+
+export class StorySessionHandle {
+  private session: WebSession;
+  /** Registered `onJournalDirty` listeners. */
+  private journalListeners: Set<JournalDirtyListener> = new Set();
+  /** Journal event count as of the last dispatched (or scheduled) notification —
+   * used both to detect growth and as the debounce dedupe key. */
+  private lastNotifiedEventCount = 0;
+  /** Pending debounce timer handle, if a notification is scheduled. */
+  private dirtyTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * Register a listener for the deferred+debounced journal-append
+   * notification (#390, `docs/story-session-spec.md`). Fires **after** the
+   * call stack that grew the journal has fully unwound — never synchronously
+   * inside a `StorySessionHandle` method, and never while another such method
+   * is still on the stack — and coalesces bursts (e.g. rapid `choose`/
+   * `advance` sequences) into a single call carrying the latest event count.
+   * The signal is intentionally minimal: pull the journal itself via
+   * `exportJournal()` when persisting. Returns an unsubscribe function.
+   */
+  onJournalDirty(listener: JournalDirtyListener): () => void {
+    this.journalListeners.add(listener);
+    return () => {
+      this.journalListeners.delete(listener);
+    };
+  }
+
+  /** Check whether the journal grew since the last notification and, if so,
+   * (re)schedule a debounced dispatch. Safe to call liberally after any
+   * method that might append a journal event — cheap when nothing changed. */
+  private noteJournalActivity(): void {
+    if (this.journalListeners.size === 0) {
+      return;
+    }
+    const count = this.session.journal_event_count();
+    if (count === this.lastNotifiedEventCount && this.dirtyTimer === undefined) {
+      return;
+    }
+    if (this.dirtyTimer !== undefined) {
+      clearTimeout(this.dirtyTimer);
+    }
+    this.dirtyTimer = setTimeout(() => {
+      this.dirtyTimer = undefined;
+      // Re-read at fire time (not schedule time): further activity may have
+      // landed during the debounce window, and this dispatch should report
+      // the latest count rather than a stale snapshot.
+      const latest = this.session.journal_event_count();
+      this.lastNotifiedEventCount = latest;
+      const signal: JournalDirtySignal = { eventCount: latest };
+      for (const listener of this.journalListeners) {
+        listener(signal);
+      }
+    }, JOURNAL_DIRTY_DEBOUNCE_MS);
+  }
+
+  /**
+   * Create a session from compiled story bytes. `seed`, if given, seeds the
+   * RNG immediately and is re-applied across `restart()`/`reload()`.
+   * `deferred` names externals that must always park as `awaiting_external`
+   * (out-of-band) even when the story defines a fallback body for them — a
+   * host uses this to route specific calls through `resolveExternal`
+   * unconditionally, distinct from a promise-in-flight park (which this
+   * binding never surfaces, having no JS-binding registry of its own).
+   */
+  constructor(storyBytes: Uint8Array, seed?: number, deferred?: string[]) {
+    this.session = new WebSession(storyBytes, seed ?? undefined, deferred);
+  }
+
+  /** Advance one step. The result is either a `Line` or a deferred
+   * `awaiting_external` pause — resolve it with `resolveExternal` before
+   * stepping again. */
+  advance(): StepOutcome {
+    const result = JSON.parse(this.session.advance()) as StepOutcome;
+    this.noteJournalActivity();
+    return result;
+  }
+
+  /** Advance until one line of content or a yield point. Never parks —
+   * externals resolve inline or via the ink fallback body. Use `advance`
+   * when the story may have deferred externals. */
+  continueSingle(): SessionLine {
+    const result = JSON.parse(this.session.continue_single()) as SessionLine;
+    this.noteJournalActivity();
+    return result;
+  }
+
+  /** Advance to the next pause. The last element is always terminal
+   * (`done` / `choices` / `end`). */
+  continueToPause(): SessionLine[] {
+    const result = JSON.parse(this.session.continue_to_pause()) as SessionLine[];
+    this.noteJournalActivity();
+    return result;
+  }
+
+  /** Select a choice by index, journaling the `choice` event. */
+  choose(index: number): void {
+    this.session.choose(index);
+    this.noteJournalActivity();
+  }
+
+  /** Resolve the external the session is parked on (a deferred
+   * `awaiting_external` from `advance`). No-op if not awaiting. */
+  resolveExternal(value: ExternalValue): void {
+    this.session.resolve_external(value);
+    this.noteJournalActivity();
+  }
+
+  /** Whether the session is parked on a deferred external. */
+  hasPendingExternal(): boolean {
+    return this.session.has_pending_external();
+  }
+
+  /** Set a global variable. Turn-boundary only: throws mid-turn (drain the
+   * current turn to `done`/`choices`/`end` first). Returns `false` if no such
+   * global is declared (no-op, not journaled). */
+  setVar(name: string, value: ExternalValue): boolean {
+    const applied = this.session.set_var(name, value);
+    this.noteJournalActivity();
+    return applied;
+  }
+
+  /** Move the play head to a path (turn-boundary only, journaled). */
+  goToPath(path: string, ...args: ExternalValue[]): void {
+    this.session.go_to_path(path, args);
+    this.noteJournalActivity();
+  }
+
+  /** Capture durable game state (does not journal). */
+  saveState(): SaveState {
+    return JSON.parse(this.session.save_state()) as SaveState;
+  }
+
+  /** Load durable game state (turn-boundary only, journaled). */
+  loadState(state: SaveState): void {
+    this.session.load_state(JSON.stringify(state));
+    this.noteJournalActivity();
+  }
+
+  /** Evaluate an ink function from the host, journaling a `call` event. The
+   * visible story is untouched; the function's own externals resolve through
+   * an isolated (non-journaling) handler. */
+  callFunction(name: string, ...args: ExternalValue[]): ExternalValue {
+    const result = this.session.call_function(name, args) as ExternalValue;
+    this.noteJournalActivity();
+    return result;
+  }
+
+  /** A typed snapshot of the current game state (globals + list membership,
+   * turn counts, callstack summary). */
+  snapshot(): StateSnapshot {
+    return JSON.parse(this.session.snapshot()) as StateSnapshot;
+  }
+
+  /** Pure diff of two snapshots captured from this session. */
+  diff(a: StateSnapshot, b: StateSnapshot): StateDiff {
+    const json = this.session.diff(JSON.stringify(a), JSON.stringify(b));
+    return JSON.parse(json) as StateDiff;
+  }
+
+  /** Export the session journal — the durable save artifact (embeds a
+   * fast-restore checkpoint). Persist this; `StorySessionHandle.restore`
+   * rebuilds a session from it. */
+  exportJournal(): SessionJournal {
+    return JSON.parse(this.session.export_journal()) as SessionJournal;
+  }
+
+  /**
+   * Rebuild a session from compiled story bytes + an exported journal.
+   * Fast-restores from the journal's embedded checkpoint when the program
+   * checksum matches; otherwise replays. Returns the session and the
+   * `ReplayOutcome` from that restore/replay together (a wasm constructor can
+   * only return the instance, so the outcome is read back via the
+   * `WebSession`'s own bookkeeping).
+   */
+  static restore(
+    storyBytes: Uint8Array,
+    journal: SessionJournal,
+    seed?: number,
+    deferred?: string[],
+  ): { session: StorySessionHandle; outcome: ReplayOutcome } {
+    const inner = WebSession.restore(
+      storyBytes,
+      JSON.stringify(journal),
+      seed ?? undefined,
+      deferred,
+    );
+    const outcomeJson = inner.last_replay_outcome();
+    // `Object.create` bypasses the constructor, so field initializers (the
+    // journal-dirty listener set/debounce state) never ran — set them up
+    // explicitly rather than leaving `handle` half-constructed.
+    const handle = Object.create(StorySessionHandle.prototype) as StorySessionHandle;
+    handle.session = inner;
+    handle.journalListeners = new Set();
+    handle.lastNotifiedEventCount = 0;
+    handle.dirtyTimer = undefined;
+    const outcome = outcomeJson === undefined
+      ? { type: "failed" as const, at_event: 0, reason: { type: "budget" as const } }
+      : (JSON.parse(outcomeJson) as ReplayOutcome);
+    return { session: handle, outcome };
+  }
+
+  /**
+   * Hot-reload: recompile-in-place against `storyBytes`, replaying the
+   * current journal against the new program. The session's own state
+   * (globals, call position) reflects wherever the replay landed, even on
+   * divergence or failure (parked at the reached position).
+   */
+  reload(storyBytes: Uint8Array): ReplayOutcome {
+    const json = this.session.reload(storyBytes);
+    this.noteJournalActivity();
+    return JSON.parse(json) as ReplayOutcome;
+  }
+
+  /**
+   * Resume a replay parked on a deferred external (live-mode replay only —
+   * recorded-mode replay never parks). Resolve the pending external first via
+   * `resolveExternal`, then call this. With no parked replay tail, steps the
+   * live story to its next pause instead.
+   */
+  continueReplay(): ReplayOutcome {
+    const json = this.session.continue_replay();
+    this.noteJournalActivity();
+    return JSON.parse(json) as ReplayOutcome;
+  }
+
+  /** Restart: create a fresh session from the same program (new empty
+   * journal), re-applying the host-set seed if any. Cancels any pending
+   * debounced notification and resets the dirty baseline to 0 — the fresh
+   * journal starts empty, so nothing is reported as dirty until new activity
+   * grows it again. */
+  restart(): void {
+    this.session.restart();
+    if (this.dirtyTimer !== undefined) {
+      clearTimeout(this.dirtyTimer);
+      this.dirtyTimer = undefined;
+    }
+    this.lastNotifiedEventCount = 0;
+  }
+
+  /** Releases the underlying wasm session and cancels any pending debounced
+   * journal-dirty notification (a fired-but-unsubscribed timer would
+   * otherwise touch a freed session on its next tick). */
+  free(): void {
+    if (this.dirtyTimer !== undefined) {
+      clearTimeout(this.dirtyTimer);
+      this.dirtyTimer = undefined;
+    }
+    this.session.free();
   }
 }

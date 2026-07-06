@@ -14,12 +14,14 @@ all-features = true
 
 [dependencies]
 brink-format = { workspace = true }
+serde = { workspace = true }
 thiserror.workspace = true
 
 [features]
 testing = []
 
 [dev-dependencies]
+brink-compiler = { path = "../brink-compiler" }
 brink-converter = { path = "../internal/brink-converter" }
 brink-json = { path = "../internal/brink-json" }
 serde_json.workspace = true
