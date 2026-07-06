@@ -32,6 +32,7 @@ mod program;
 mod replay;
 pub mod rng;
 mod save;
+mod session;
 mod state;
 mod story;
 pub mod transcript;
@@ -49,6 +50,12 @@ pub use replay::{
     RECORDING_CAP, RecordedExternal, RecordingHandler, ReplayHandler, ReplayMode, ReplayRecorder,
 };
 pub use rng::{DotNetRng, FastRng, StoryRng};
+pub use session::{
+    DivergenceFound, EventKind, ExternalReplayMode, FailReason, JournalEvent, ListDelta,
+    ReplayOutcome, ReplayWarning, SESSION_JOURNAL_CAP, SESSION_JOURNAL_VERSION, SessionError,
+    SessionJournal, SnapshotFrame, SnapshotList, SnapshotStatus, StateDiff, StateSnapshot,
+    StorySession, diff,
+};
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
 pub use story::{
     Choice, Context, ExternalFnHandler, ExternalResult, FallbackHandler, FlowInstance,
