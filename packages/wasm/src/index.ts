@@ -15,6 +15,8 @@ import init, {
   token_modifier_names,
   EditorSession as WasmEditorSession,
   StoryRunner,
+  WebSession,
+  diffSnapshots as wasmDiffSnapshots,
 } from "brink-web";
 
 import type {
@@ -50,6 +52,12 @@ import type {
   LoadReport,
   HostManifest,
   ValueItem,
+  StepOutcome,
+  SessionJournal,
+  SessionLine,
+  StateSnapshot,
+  StateDiff,
+  ReplayOutcome,
 } from "@brink/wasm-types";
 
 // Public surface: every interface the wasm boundary speaks is available
@@ -996,5 +1004,184 @@ export class StoryRunnerHandle {
 
   free(): void {
     this.runner.free();
+  }
+}
+
+// ── Story Session (#370/#387) ───────────────────────────────────
+//
+// `StorySessionHandle` wraps the Rust-canonical `StorySession` journal +
+// replay layer (`docs/story-session-spec.md`) over the wasm `WebSession`
+// binding. Distinct from `StoryRunnerHandle` above: no JS-binding registry of
+// its own (every external not resolved inline via the ink fallback body
+// parks as a deferred `StepOutcome`, resolved out-of-band via
+// `resolveExternal`), and every input that reaches the VM through it is
+// journaled for replay/persistence.
+
+/** Pure diff of two `StateSnapshot`s captured from any `StorySessionHandle`
+ * (or persisted separately) — doesn't require a live session. */
+export function diffSnapshots(a: StateSnapshot, b: StateSnapshot): StateDiff {
+  const json = wasmDiffSnapshots(JSON.stringify(a), JSON.stringify(b));
+  return JSON.parse(json) as StateDiff;
+}
+
+export class StorySessionHandle {
+  private session: WebSession;
+
+  /**
+   * Create a session from compiled story bytes. `seed`, if given, seeds the
+   * RNG immediately and is re-applied across `restart()`/`reload()`.
+   * `deferred` names externals that must always park as `awaiting_external`
+   * (out-of-band) even when the story defines a fallback body for them — a
+   * host uses this to route specific calls through `resolveExternal`
+   * unconditionally, distinct from a promise-in-flight park (which this
+   * binding never surfaces, having no JS-binding registry of its own).
+   */
+  constructor(storyBytes: Uint8Array, seed?: number, deferred?: string[]) {
+    this.session = new WebSession(storyBytes, seed ?? undefined, deferred);
+  }
+
+  /** Advance one step. The result is either a `Line` or a deferred
+   * `awaiting_external` pause — resolve it with `resolveExternal` before
+   * stepping again. */
+  advance(): StepOutcome {
+    return JSON.parse(this.session.advance()) as StepOutcome;
+  }
+
+  /** Advance until one line of content or a yield point. Never parks —
+   * externals resolve inline or via the ink fallback body. Use `advance`
+   * when the story may have deferred externals. */
+  continueSingle(): SessionLine {
+    return JSON.parse(this.session.continue_single()) as SessionLine;
+  }
+
+  /** Advance to the next pause. The last element is always terminal
+   * (`done` / `choices` / `end`). */
+  continueToPause(): SessionLine[] {
+    return JSON.parse(this.session.continue_to_pause()) as SessionLine[];
+  }
+
+  /** Select a choice by index, journaling the `choice` event. */
+  choose(index: number): void {
+    this.session.choose(index);
+  }
+
+  /** Resolve the external the session is parked on (a deferred
+   * `awaiting_external` from `advance`). No-op if not awaiting. */
+  resolveExternal(value: ExternalValue): void {
+    this.session.resolve_external(value);
+  }
+
+  /** Whether the session is parked on a deferred external. */
+  hasPendingExternal(): boolean {
+    return this.session.has_pending_external();
+  }
+
+  /** Set a global variable. Turn-boundary only: throws mid-turn (drain the
+   * current turn to `done`/`choices`/`end` first). Returns `false` if no such
+   * global is declared (no-op, not journaled). */
+  setVar(name: string, value: ExternalValue): boolean {
+    return this.session.set_var(name, value);
+  }
+
+  /** Move the play head to a path (turn-boundary only, journaled). */
+  goToPath(path: string, ...args: ExternalValue[]): void {
+    this.session.go_to_path(path, args);
+  }
+
+  /** Capture durable game state (does not journal). */
+  saveState(): SaveState {
+    return JSON.parse(this.session.save_state()) as SaveState;
+  }
+
+  /** Load durable game state (turn-boundary only, journaled). */
+  loadState(state: SaveState): void {
+    this.session.load_state(JSON.stringify(state));
+  }
+
+  /** Evaluate an ink function from the host, journaling a `call` event. The
+   * visible story is untouched; the function's own externals resolve through
+   * an isolated (non-journaling) handler. */
+  callFunction(name: string, ...args: ExternalValue[]): ExternalValue {
+    return this.session.call_function(name, args) as ExternalValue;
+  }
+
+  /** A typed snapshot of the current game state (globals + list membership,
+   * turn counts, callstack summary). */
+  snapshot(): StateSnapshot {
+    return JSON.parse(this.session.snapshot()) as StateSnapshot;
+  }
+
+  /** Pure diff of two snapshots captured from this session. */
+  diff(a: StateSnapshot, b: StateSnapshot): StateDiff {
+    const json = this.session.diff(JSON.stringify(a), JSON.stringify(b));
+    return JSON.parse(json) as StateDiff;
+  }
+
+  /** Export the session journal — the durable save artifact (embeds a
+   * fast-restore checkpoint). Persist this; `StorySessionHandle.restore`
+   * rebuilds a session from it. */
+  exportJournal(): SessionJournal {
+    return JSON.parse(this.session.export_journal()) as SessionJournal;
+  }
+
+  /**
+   * Rebuild a session from compiled story bytes + an exported journal.
+   * Fast-restores from the journal's embedded checkpoint when the program
+   * checksum matches; otherwise replays. Returns the session and the
+   * `ReplayOutcome` from that restore/replay together (a wasm constructor can
+   * only return the instance, so the outcome is read back via the
+   * `WebSession`'s own bookkeeping).
+   */
+  static restore(
+    storyBytes: Uint8Array,
+    journal: SessionJournal,
+    seed?: number,
+    deferred?: string[],
+  ): { session: StorySessionHandle; outcome: ReplayOutcome } {
+    const inner = WebSession.restore(
+      storyBytes,
+      JSON.stringify(journal),
+      seed ?? undefined,
+      deferred,
+    );
+    const outcomeJson = inner.last_replay_outcome();
+    const handle = Object.create(StorySessionHandle.prototype) as StorySessionHandle;
+    handle.session = inner;
+    const outcome = outcomeJson === undefined
+      ? { type: "failed" as const, at_event: 0, reason: { type: "budget" as const } }
+      : (JSON.parse(outcomeJson) as ReplayOutcome);
+    return { session: handle, outcome };
+  }
+
+  /**
+   * Hot-reload: recompile-in-place against `storyBytes`, replaying the
+   * current journal against the new program. The session's own state
+   * (globals, call position) reflects wherever the replay landed, even on
+   * divergence or failure (parked at the reached position).
+   */
+  reload(storyBytes: Uint8Array): ReplayOutcome {
+    const json = this.session.reload(storyBytes);
+    return JSON.parse(json) as ReplayOutcome;
+  }
+
+  /**
+   * Resume a replay parked on a deferred external (live-mode replay only —
+   * recorded-mode replay never parks). Resolve the pending external first via
+   * `resolveExternal`, then call this. With no parked replay tail, steps the
+   * live story to its next pause instead.
+   */
+  continueReplay(): ReplayOutcome {
+    const json = this.session.continue_replay();
+    return JSON.parse(json) as ReplayOutcome;
+  }
+
+  /** Restart: create a fresh session from the same program (new empty
+   * journal), re-applying the host-set seed if any. */
+  restart(): void {
+    this.session.restart();
+  }
+
+  free(): void {
+    this.session.free();
   }
 }

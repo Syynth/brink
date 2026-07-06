@@ -224,8 +224,12 @@ pub enum ExternalReplayMode {
 
 /// Outcome of replaying a journal prefix against a program.
 ///
-/// Typed, never silent, never panicking.
-#[derive(Debug, Clone, PartialEq)]
+/// Typed, never silent, never panicking. `Serialize`/`Deserialize` (tagged
+/// `type`, `snake_case`) so wasm/other bindings can mirror this shape verbatim
+/// instead of hand-rolling a parallel JS type — matches the `EventKind`/
+/// `JournalEvent` convention above.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReplayOutcome {
     /// The prefix replayed successfully. `warnings` collects soft issues (e.g.
     /// choice label drift at a matching index).
@@ -243,7 +247,8 @@ pub enum ReplayOutcome {
 }
 
 /// A non-fatal replay observation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReplayWarning {
     /// A choice replayed by index, but its recorded label differs from the
     /// label now presented at that index (a soft signal the story text drifted
@@ -257,7 +262,8 @@ pub enum ReplayWarning {
 }
 
 /// What was found at a divergence point instead of the recorded event.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum DivergenceFound {
     /// A choice index the current program does not present (out of range).
     ChoiceIndexOutOfRange { index: u32, available: usize },
@@ -271,10 +277,16 @@ pub enum DivergenceFound {
 }
 
 /// Why replay stopped without diverging.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `RuntimeError` is a struct variant (`{ message: String }`), not a newtype
+/// (`RuntimeError(String)`) — serde's internally-tagged representation
+/// (`#[serde(tag = "type")]`) cannot serialize a newtype variant wrapping a
+/// non-map payload like a bare `String`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum FailReason {
     /// A runtime error surfaced during stepping.
-    RuntimeError(String),
+    RuntimeError { message: String },
     /// A step/line budget was exceeded (the caller can restart fresh).
     Budget,
     /// Live replay hit a deferred external and parked. Resolve it and call
@@ -1354,6 +1366,8 @@ fn runtime_fail(e: RuntimeError) -> FailReason {
         RuntimeError::StepLimitExceeded(_) | RuntimeError::LineLimitExceeded(_) => {
             FailReason::Budget
         }
-        other => FailReason::RuntimeError(other.to_string()),
+        other => FailReason::RuntimeError {
+            message: other.to_string(),
+        },
     }
 }
