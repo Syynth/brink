@@ -1198,6 +1198,29 @@ impl EditorSession {
         self.session.clear_host_manifest();
     }
 
+    /// Register (or replace) the dialogue dialect (#368) from a JSON string.
+    /// The dialect describes the project's dialogue-line conventions (cues,
+    /// parentheticals, dialogue chains) so `line_contexts` can classify
+    /// lines without hardcoding any one convention. Tooling-only — never
+    /// affects the runtime or analysis; consumed at query time by
+    /// `line_contexts`/`line_contexts_doc`. Mirrors `set_host_manifest`.
+    pub fn set_dialect(&mut self, json: &str) -> Result<(), JsError> {
+        let dialect: brink_ir::DialogueDialect = serde_json::from_str(json)
+            .map_err(|e| JsError::new(&format!("invalid dialect: {e}")))?;
+        brink_ir::dialect::validate(&dialect)
+            .map_err(|errs| JsError::new(&format!("invalid dialect: {errs:?}")))?;
+        let resolved = brink_ir::ResolvedDialect::compile(&dialect)
+            .map_err(|e| JsError::new(&format!("invalid dialect: {e}")))?;
+        self.session.set_dialect(resolved);
+        Ok(())
+    }
+
+    /// Clear the registered dialect. `line_contexts` reverts to plain
+    /// structural classification.
+    pub fn clear_dialect(&mut self) {
+        self.session.clear_dialect();
+    }
+
     /// Push the host's current values for `host`-source semantic types (Tier 3,
     /// #174) from a JSON object `{ "<type>": [{ "value", "label", "detail"? }] }`
     /// — a full snapshot that **replaces** the cache. The attached host (e.g.
@@ -2538,7 +2561,12 @@ impl EditorSession {
             return "[]".to_owned();
         };
 
-        let contexts = brink_ide::line_context::line_contexts(hir, source, &root);
+        let contexts = match self.session.dialect() {
+            Some(dialect) => {
+                brink_ide::line_context::line_contexts_with_dialect(hir, source, &root, dialect)
+            }
+            None => brink_ide::line_context::line_contexts(hir, source, &root),
+        };
         if let Some(v) = view {
             let start = v.start_line as usize;
             let end_line = self
@@ -5562,6 +5590,51 @@ mod tests {
             "an error message is present"
         );
     }
+
+    // ── Dialogue dialect (#368) ──────────────────────────────────────
+
+    #[test]
+    fn set_dialect_then_line_contexts_reports_character_kind() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== start ===\n@Alice:<>\nHello there.\n");
+        assert!(s.set_active_file("main.ink"));
+
+        // No dialect registered yet: no `dialect` facet on any line.
+        let before = json(&s.line_contexts());
+        assert!(before[1].get("dialect").is_none(), "{before}");
+
+        let preset = serde_json::to_string(&brink_ir::DialogueDialect::default())
+            .expect("preset serializes");
+        s.set_dialect(&preset).expect("preset validates");
+
+        let after = json(&s.line_contexts());
+        assert_eq!(after[1]["dialect"]["kind"], "character", "{after}");
+        assert_eq!(after[2]["dialect"]["kind"], "dialogue", "{after}");
+    }
+
+    #[test]
+    fn clear_dialect_reverts_to_plain_classification() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== start ===\n@Alice:<>\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let preset = serde_json::to_string(&brink_ir::DialogueDialect::default())
+            .expect("preset serializes");
+        s.set_dialect(&preset).expect("preset validates");
+        assert_eq!(json(&s.line_contexts())[1]["dialect"]["kind"], "character");
+
+        s.clear_dialect();
+        let after = json(&s.line_contexts());
+        assert!(after[1].get("dialect").is_none(), "{after}");
+    }
+
+    // `set_dialect`'s error path constructs a `JsError`, which panics when
+    // called on a non-wasm target ("cannot call wasm-bindgen imported
+    // functions on non-wasm targets") — same constraint as every other
+    // `Result<_, JsError>`-returning method in this file (see
+    // `StoryRunner::new`, `continue_story`, etc., whose error paths are only
+    // exercised under `binding_wasm_tests` below). The rejection tests live
+    // there; validated JSON acceptance is what's tested natively above.
 }
 
 // ── External-binding wasm tests ──────────────────────────────────────
@@ -5904,5 +5977,38 @@ mod binding_wasm_tests {
             line.contains('9'),
             "default sees the flow's write; got {line}"
         );
+    }
+}
+
+// ── Dialect (#368) wasm-only error-path tests ─────────────────────────
+//
+// `set_dialect`'s rejection path constructs a `JsError`, which panics on a
+// non-wasm target (`wasm-bindgen`'s "cannot call wasm-bindgen imported
+// functions on non-wasm targets") — the same constraint every other
+// `Result<_, JsError>` method in this file has. Acceptance-path coverage
+// lives in the native `mod tests` above; rejection coverage lives here.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod dialect_wasm_tests {
+    use super::EditorSession;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn set_dialect_rejects_invalid_json() {
+        let mut s = EditorSession::new();
+        assert!(s.set_dialect("{ not valid }").is_err());
+    }
+
+    #[wasm_bindgen_test]
+    fn set_dialect_rejects_undeclared_chain_kind() {
+        let mut s = EditorSession::new();
+        // Corrupt the preset: reference a kind nothing declares.
+        let json_str =
+            serde_json::to_string(&brink_ir::DialogueDialect::default()).expect("serializes");
+        let mut value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        value["chain"][0]["after"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::Value::String("nonexistent".to_owned()));
+        assert!(s.set_dialect(&value.to_string()).is_err());
     }
 }

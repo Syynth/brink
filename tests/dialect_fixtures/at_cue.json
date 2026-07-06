@@ -1,0 +1,123 @@
+{
+  "dialect": "at-cue",
+  "description": "Conformance corpus for the default @Name:<> at-cue dialect preset (#368). Each case is a single already-trimmed source line classified in isolation (no chain context) unless `chain_after` is given, in which case `line` is classified as the line immediately following a line whose dialect kind is `chain_after`. `expect: null` means the line must NOT classify as any dialect kind (a negative fixture). This corpus is interpreter-agnostic: both the Rust classifier (`brink-ir::dialect`) and a future TS interpreter must produce identical results for every case.",
+  "cases": [
+    {
+      "id": "cue-basic",
+      "description": "A simple character cue classifies with the name as content.",
+      "line": "@Alice:<>",
+      "expect": { "kind": "character", "attrs": { "speaker": "Alice" } }
+    },
+    {
+      "id": "cue-empty-name",
+      "description": "An empty-name cue template still classifies (zero-width content).",
+      "line": "@:<>",
+      "expect": { "kind": "character", "attrs": { "speaker": "" } }
+    },
+    {
+      "id": "cue-name-with-spaces",
+      "description": "A speaker name may contain spaces.",
+      "line": "@Lady Macbeth:<>",
+      "expect": { "kind": "character", "attrs": { "speaker": "Lady Macbeth" } }
+    },
+    {
+      "id": "cue-name-with-digits-and-punct",
+      "description": "A speaker name may contain digits and punctuation other than ':'.",
+      "line": "@Agent #7 (voice):<>",
+      "expect": { "kind": "character", "attrs": { "speaker": "Agent #7 (voice)" } }
+    },
+    {
+      "id": "parenthetical-basic",
+      "description": "A parenthetical classifies with the parens included in content.",
+      "line": "(warmly)<>",
+      "expect": { "kind": "parenthetical", "attrs": { "content": "(warmly)" } }
+    },
+    {
+      "id": "parenthetical-empty",
+      "description": "An empty parenthetical still classifies.",
+      "line": "()<>",
+      "expect": { "kind": "parenthetical", "attrs": { "content": "()" } }
+    },
+    {
+      "id": "parenthetical-with-punctuation",
+      "description": "Parenthetical content may contain punctuation other than ')'.",
+      "line": "(under his breath, laughing)<>",
+      "expect": {
+        "kind": "parenthetical",
+        "attrs": { "content": "(under his breath, laughing)" }
+      }
+    },
+    {
+      "id": "narrative-after-cue-chains-to-dialogue",
+      "description": "Narrative immediately after a cue becomes dialogue, carrying the speaker.",
+      "line": "Hello there.",
+      "chain_after": "character",
+      "chain_after_attrs": { "speaker": "Alice" },
+      "expect": { "kind": "dialogue", "attrs": { "speaker": "Alice" } }
+    },
+    {
+      "id": "narrative-after-parenthetical-chains-to-dialogue",
+      "description": "Narrative immediately after a parenthetical also chains to dialogue.",
+      "line": "Hello there.",
+      "chain_after": "parenthetical",
+      "chain_after_attrs": {},
+      "expect": { "kind": "dialogue", "attrs": {} }
+    },
+    {
+      "id": "narrative-after-dialogue-chains-to-dialogue",
+      "description": "A dialogue run continues chaining across multiple narrative lines.",
+      "line": "And more.",
+      "chain_after": "dialogue",
+      "chain_after_attrs": { "speaker": "Alice" },
+      "expect": { "kind": "dialogue", "attrs": { "speaker": "Alice" } }
+    },
+    {
+      "id": "plain-prose-no-cue-context",
+      "description": "Plain narrative with no preceding cue stays narrative (no dialect match).",
+      "line": "Just some narrative text.",
+      "expect": null
+    },
+    {
+      "id": "negative-channel-prose-not-a-cue",
+      "description": "'@channel: hello' prose must NOT classify as a character cue — no ':<>' terminator, and the ':' is followed by prose, not the glue.",
+      "line": "@channel: hello",
+      "expect": null
+    },
+    {
+      "id": "negative-at-sign-mid-sentence",
+      "description": "An '@' that doesn't anchor the line start is not a cue.",
+      "line": "Email me @alice for details.",
+      "expect": null
+    },
+    {
+      "id": "negative-cue-missing-glue",
+      "description": "'@Alice:' without the '<>' glue is not a complete cue match.",
+      "line": "@Alice:",
+      "expect": null
+    },
+    {
+      "id": "negative-parenthetical-prose-not-terminated",
+      "description": "'(aside) unterminated' prose must NOT classify as a parenthetical — no '<>' terminator.",
+      "line": "(aside) unterminated",
+      "expect": null
+    },
+    {
+      "id": "negative-parenthetical-missing-glue",
+      "description": "'(warmly)' without the '<>' glue is not a complete parenthetical match.",
+      "line": "(warmly)",
+      "expect": null
+    },
+    {
+      "id": "negative-empty-line-no-match",
+      "description": "An empty line never classifies.",
+      "line": "",
+      "expect": null
+    },
+    {
+      "id": "negative-cue-with-nested-colon-in-name-fails",
+      "description": "A cue whose 'name' region itself contains a colon fails to match at the first colon (content_group is `[^:]*`, greedy up to the first ':') — this line does not end in ':<>' as a whole, so no match.",
+      "line": "@Alice: Bob:<>",
+      "expect": null
+    }
+  ]
+}
