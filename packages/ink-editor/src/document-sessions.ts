@@ -79,6 +79,13 @@ export interface ViewStateSnapshot {
   scrollTop: number;
 }
 
+export interface DocumentSessionsOptions {
+  /** The editor skin, forwarded to `brinkStudio` (#363): absent ⇒ the default
+   *  `brinkTheme`; `false` ⇒ headless (the host styles the class taxonomy);
+   *  an `Extension` ⇒ a custom CM theme. */
+  theme?: Extension | false;
+}
+
 export interface DocumentCallbacks {
   /** Cursor moved in the focused view (or the focused view changed). */
   onCursorChange?(line: number, col: number): void;
@@ -221,6 +228,7 @@ export class DocumentSessions {
   private readonly project: ProjectSession;
   private readonly callbacks: DocumentCallbacks;
   private readonly extraExtensions: Extension[];
+  private readonly options: DocumentSessionsOptions;
   private readonly slots = new Map<string, ViewSlot>();
   /** Fallback fragment ranges remembered from open requests (binder rows). */
   private readonly symbolHints = new Map<string, { start: number; end: number }>();
@@ -236,10 +244,12 @@ export class DocumentSessions {
     project: ProjectSession,
     callbacks: DocumentCallbacks = {},
     extraExtensions: Extension[] = [],
+    options: DocumentSessionsOptions = {},
   ) {
     this.project = project;
     this.callbacks = callbacks;
     this.extraExtensions = extraExtensions;
+    this.options = options;
   }
 
   getProject(): ProjectSession {
@@ -786,6 +796,7 @@ export class DocumentSessions {
   private slotOptions(slot: ViewSlot): BrinkStudioOptions {
     const project = this.project;
     return {
+      theme: this.options.theme,
       compile: (source) => {
         slot.handle?.pushSource(source);
         project.notifyFileChanged(slot.path);

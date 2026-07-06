@@ -33,6 +33,14 @@ export interface BrinkStudioOptions {
   getTokenTypeNames: () => string[];
   onCompile?: (result: CompileResult) => void;
 
+  /** The editor's skin (#363 headless-ready). Defaults to `brinkTheme` (the
+   *  `--bs-*`-token CM theme brink-studio uses). Pass `false` for a headless
+   *  editor — no theme at all; the host styles the documented class taxonomy
+   *  directly (docs/editor-consumer-guide.md). Pass your own `Extension` to
+   *  substitute a different CM theme. Structural styles (popup positioning,
+   *  data-driven widget colors) are independent of this and always active. */
+  theme?: Extension | false;
+
   /** The view's wasm document-handle slot (per-view DocId, swapped across
    *  mount/unmount). If provided, the editor uses HIR-backed line
    *  classification (`line_contexts_doc`) instead of the regex classifier,
@@ -228,11 +236,15 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     );
   }
 
+  // Theme opt-out (#363): `false` ⇒ headless (host CSS owns the skin);
+  // an Extension ⇒ the host's own theme; absent ⇒ the studio brinkTheme.
+  const theme: Extension = options.theme === false ? [] : (options.theme ?? brinkTheme);
+
   return [
     // The per-view document-handle slot, readable by every extension and the
     // elementTypeField via state.facet(documentHandleFacet).
     documentHandleFacet.of(options.handleSlot ?? null),
-    brinkTheme,
+    theme,
     screenplayCompartment.of(screenplayDecorations()),
     highlightExtension({
       getSemanticTokens: options.getSemanticTokens,

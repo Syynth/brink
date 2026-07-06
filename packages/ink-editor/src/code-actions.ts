@@ -1,6 +1,7 @@
 import { type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
 import type { CodeAction } from "@brink/wasm-types";
+import { ensureStructuralStyles } from "./structural-styles.js";
 
 export interface CodeActionsOptions {
   /** Actions available at `offset` (cursor). Resolved + applied via `onSelect`. */
@@ -40,6 +41,7 @@ class CodeActionsMenu {
 
   open(actions: CodeAction[], pos: number): void {
     this.close();
+    ensureStructuralStyles();
 
     const menu = document.createElement("div");
     menu.className = "brink-code-actions-menu";
@@ -54,10 +56,11 @@ class CodeActionsMenu {
     } catch {
       coords = null;
     }
+    // Placement is data (custom properties), not inline styles — the class
+    // rule positions the menu; hosts restyle `.brink-code-actions-menu` (#363).
     if (coords) {
-      menu.style.position = "fixed";
-      menu.style.left = `${coords.left}px`;
-      menu.style.top = `${coords.bottom + 4}px`;
+      menu.style.setProperty("--brink-popup-left", `${coords.left}px`);
+      menu.style.setProperty("--brink-popup-top", `${coords.bottom + 4}px`);
     }
 
     const items: HTMLButtonElement[] = [];

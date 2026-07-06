@@ -11,6 +11,8 @@
  * it is studio code with consistent styling.
  */
 
+import { ensureStructuralStyles } from "./structural-styles.js";
+
 export interface PopoverHandle {
   close(): void;
 }
@@ -30,6 +32,7 @@ export function openPopover(
   // rect so the popover stays put instead of jumping to (0, 0).
   let anchorRect = anchor.getBoundingClientRect();
 
+  ensureStructuralStyles();
   const panel = document.createElement("div");
   panel.className = "brink-widget-popover";
   panel.setAttribute("role", "dialog");
@@ -71,9 +74,11 @@ export function openPopover(
     if (left + p.width > window.innerWidth - margin) {
       left = Math.max(margin, window.innerWidth - margin - p.width);
     }
-    // Fixed positioning is viewport-relative — no scroll offset.
-    panel.style.top = `${Math.round(top)}px`;
-    panel.style.left = `${Math.round(left)}px`;
+    // Fixed positioning is viewport-relative — no scroll offset. Placement is
+    // data (custom properties consumed by the `.brink-widget-popover` class
+    // rule), keeping the panel free of inline styles for host restyling (#363).
+    panel.style.setProperty("--brink-popup-top", `${Math.round(top)}px`);
+    panel.style.setProperty("--brink-popup-left", `${Math.round(left)}px`);
   };
 
   const onKeyDown = (e: KeyboardEvent): void => {

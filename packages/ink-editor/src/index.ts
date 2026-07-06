@@ -102,6 +102,7 @@ export {
 export type {
   DocTarget,
   DocumentCallbacks,
+  DocumentSessionsOptions,
   KeyHint,
   ViewStateSnapshot,
 } from "./document-sessions.js";
@@ -123,8 +124,11 @@ export type {
 export { InMemoryFileProvider } from "./provider.js";
 export type { FileProvider } from "./provider.js";
 
-// Theme
+// Theme (opt-in — pass `theme: false` to brinkStudio for a headless editor, #363)
 export { brinkTheme } from "./theme.js";
+// Structural (non-skin) stylesheet — always-on, zero-specificity, injected on
+// demand; exported for hosts mounting editor popups into another document.
+export { ensureStructuralStyles } from "./structural-styles.js";
 
 // Convert (CM6 dispatch version)
 export { convertLineToType, CONVERTIBLE_TYPES, extractLineContent, getLineSigilRange } from "./convert.js";

@@ -26,6 +26,7 @@ import {
   ProjectSession,
   InMemoryFileProvider,
   setHostWidgets,
+  brinkTheme,
   type FileChange,
   type FileConflict,
   type FileProvider,
@@ -526,7 +527,10 @@ export async function mountStudio(
         req.result.path ? [req.result.path] : [],
       );
     },
-  });
+    // The studio skin, opted into EXPLICITLY (#363): the editor package is
+    // headless-ready and hosts may pass `theme: false`; studio pins the
+    // `--bs-*`-token theme so its look never depends on the package default.
+  }, [], { theme: brinkTheme });
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush
   // editor text to the session and deliver pending host change
