@@ -10,7 +10,8 @@ import {
 import { foldService, codeFolding, foldEffect, unfoldEffect } from "@codemirror/language";
 import type { EditorView, Command } from "@codemirror/view";
 import type { FoldKind, FoldRange } from "@brink/wasm-types";
-import { elementTypeField, type LineInfo } from "./element-type.js";
+import { elementTypeField, dialectFacet, type LineInfo } from "./element-type.js";
+import { detectCast, type SourceLine } from "./dialect.js";
 
 export type { FoldKind } from "@brink/wasm-types";
 
@@ -422,18 +423,20 @@ function machineryLineSummary(trimmed: string): string | null {
   return null;
 }
 
-/** Scene summary for a narrative fold: first-line snippet + cast (via the
- *  dialect's carried `speaker` attr, from `elementTypeField`'s cached
- *  `LineInfo.dialect` — never a re-hardcoded `characterName()`) + line
- *  count.
+/** Scene summary for a narrative fold: first-line snippet + cast (via
+ *  `detectCast`, the #366/#403 public extractor over the resolved dialect —
+ *  never a raw read of `LineInfo.dialect.attrs`, so a custom dialect's
+ *  speaker-carrying attr name flows through to the pill same as the at-cue
+ *  preset's `speaker`) + line count.
  *
  *  Walks the fold's full line range (`start_line`..`end_line`), NOT the
  *  resolved CM6 fold's hidden `{from, to}` — see `buildMachinerySummary` for
  *  why the anchor line must be included. */
 function buildNarrativeSummary(state: EditorState, range: FoldRange): PillSummary {
   const infos = state.field(elementTypeField, false);
+  const dialect = state.facet(dialectFacet);
 
-  const cast = new Set<string>();
+  const sourceLines: SourceLine[] = [];
   let firstLine: string | null = null;
   let lineCount = 0;
 
@@ -443,14 +446,18 @@ function buildNarrativeSummary(state: EditorState, range: FoldRange): PillSummar
     if (trimmed === "") continue;
     lineCount++;
     const info: LineInfo | undefined = infos?.[n - 1];
-    if (info?.dialect) {
-      const speaker = info.dialect.attrs.find(([k]) => k === "speaker")?.[1];
-      if (speaker) cast.add(speaker);
-    }
+    sourceLines.push({
+      index: n - 1,
+      text: line.text,
+      kind: info?.dialect?.kind ?? null,
+      attrs: info?.dialect ? [...info.dialect.attrs] : [],
+    });
     if (firstLine === null) firstLine = trimmed;
   }
 
-  return { items: [], moreCount: 0, lineCount, cast: [...cast], firstLine };
+  const cast = dialect ? detectCast(sourceLines, dialect.raw()) : [];
+
+  return { items: [], moreCount: 0, lineCount, cast, firstLine };
 }
 
 function pillDOM(

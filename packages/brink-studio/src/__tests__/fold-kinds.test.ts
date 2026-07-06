@@ -18,6 +18,7 @@ import {
   activeFoldKindsFacet,
   brinkStudio,
   elementTypeField,
+  type DialogueDialect,
 } from "@brink-lang/editor";
 
 let view: EditorView | undefined;
@@ -197,6 +198,63 @@ describe("narrative pill cast — via dialect speaker attr, not characterName()"
     foldLine(view, 1);
     const summary = view.dom.querySelector(".brink-fold-pill-summary")?.textContent ?? "";
     expect(summary).toContain("Alice");
+  });
+
+  // #403: the fold-pill code must route cast naming through `detectCast`
+  // (the one public extractor, #399/#366), not read `LineInfo.dialect.attrs`
+  // directly keyed on the at-cue preset's hardcoded `"speaker"` name — a
+  // custom dialect that carries a differently-named attr must still surface
+  // in the pill.
+  it("cast follows a custom dialect's own carried attr name (not hardcoded 'speaker')", () => {
+    const narratorDialect: DialogueDialect = {
+      version: 1,
+      name: "narrator-cue",
+      elements: [
+        {
+          kind: "channel",
+          nature: "narrative",
+          source: {
+            pattern: "^(?<lead>>>)(?<narrator>[^:]*)(?<tail>:<>)$",
+            content_group: "narrator",
+            hidden: ["lead", "tail"],
+            template: ">>${narrator}:<>",
+          },
+        },
+        { kind: "dialogue", nature: "narrative" },
+      ],
+      chain: [
+        {
+          after: ["channel", "dialogue"],
+          is: ["narrative"],
+          becomes: "dialogue",
+          carry: ["narrator"],
+        },
+      ],
+      transitions: [],
+      templates: { entries: [] },
+    };
+
+    const doc = ">>Radio:<>\nStatic crackles.\nA voice cuts through.\n";
+    const ranges: FoldRange[] = [{ start_line: 1, end_line: 2, kind: "narrative" }];
+    view = new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [
+          brinkStudio({ ...minimal, dialect: narratorDialect, getFoldingRanges: () => ranges }),
+        ],
+      }),
+      parent: document.body,
+    });
+
+    // Sanity: classification carried the custom `narrator` attr, not `speaker`.
+    const infos = view.state.field(elementTypeField);
+    expect(
+      infos[1].dialect?.attrs.some(([k, val]) => k === "narrator" && val === "Radio"),
+    ).toBe(true);
+
+    foldLine(view, 1);
+    const summary = view.dom.querySelector(".brink-fold-pill-summary")?.textContent ?? "";
+    expect(summary).toContain("Radio");
   });
 });
 
