@@ -828,6 +828,76 @@ export interface ProgramModel {
   knots: KnotNode[];
 }
 
+// ── Lines table (#366, host-side analysis) ───────────────────────
+//
+// Mirrors `brink_intl::json_model` (the `export-xliff` `lines.json` shape,
+// reused verbatim — see `StoryRunner.lines_table`/`docs/dialect-spec.md`).
+// Project-wide: one entry per compiled scope (root/knot/stitch), INCLUDEs
+// already resolved by the compile. Each line carries its text (plain or a
+// slot/select template) and, when known, its source span (file + byte
+// range in that file). The compiler's answer for host-side analyses that
+// need to walk emitted lines project-wide — cast detection (#366), per-
+// speaker word counts, the #362 line-fit metrics epic.
+
+/** A single named-group slot in a template line. */
+export interface LineSlot {
+  index: number;
+  name: string;
+}
+
+/** Where a line came from in the original `.ink` project. */
+export interface LineSource {
+  file: string;
+  range_start: number;
+  range_end: number;
+}
+
+/** One part of a template line's content. */
+export type LinePart =
+  | { slot: number }
+  | { select: LineSelect }
+  | string;
+
+/** A plural/keyword select over a slot value. Each `variants` entry is a
+ *  one-key object (`{ "cardinal:One": "..." }`, `{ "=0": "..." }`, etc.) —
+ *  mirrors the Rust `format_select_key` tagging exactly. */
+export interface LineSelect {
+  slot: number;
+  variants: Record<string, string>[];
+  default: string;
+}
+
+/** A line's content — a plain string, or a template (literal/slot/select parts). */
+export type LineContent = string | { template: LinePart[] };
+
+/** One compiled line entry. */
+export interface LinesTableLine {
+  index: number;
+  content?: LineContent;
+  /** 16-hex-digit source-identity hash of this line's content. */
+  hash: string;
+  audio?: string | null;
+  slots?: LineSlot[];
+  source?: LineSource | null;
+}
+
+/** One scope (root, knot, or stitch) in the lines table. */
+export interface LinesTableScope {
+  /** The scope's qualified name (e.g. a knot or stitch name), when known. */
+  name?: string | null;
+  /** The scope's `DefinitionId`, formatted `0x{16 hex digits}`. */
+  id: string;
+  lines: LinesTableLine[];
+}
+
+/** The compiler's lines table (`StoryRunner.linesTable()`, #366):
+ *  project-wide, `INCLUDE`s already resolved by the compile. */
+export interface LinesTable {
+  version: number;
+  source_checksum: string;
+  scopes: LinesTableScope[];
+}
+
 // ── Host capability manifest (tooling / author-time) ────────────
 //
 // Mirrors `brink_ir::host_manifest`. Authored by the host and passed as JSON

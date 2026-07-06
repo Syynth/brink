@@ -48,6 +48,7 @@ import type {
   DirMoveResult,
   DebugState,
   ProgramModel,
+  LinesTable,
   SaveState,
   LoadReport,
   HostManifest,
@@ -987,6 +988,16 @@ export class StoryRunnerHandle {
   /** Structured model of the compiled program (Program Explorer). */
   programModel(): ProgramModel {
     return JSON.parse(this.runner.program_model()) as ProgramModel;
+  }
+
+  /** The compiler's line table for host-side analysis (#366): text + source
+   * span (file/line), project-wide (`INCLUDE`s already resolved by the
+   * compile). First consumer: cast detection (pair with `detectCast` from
+   * `@brink-lang/editor`) feeding a speaker-color settings surface; the same
+   * exposure serves per-speaker word counts and the #362 line-fit metrics
+   * epic. Static for the loaded program (no running `Story` required). */
+  linesTable(): LinesTable {
+    return JSON.parse(this.runner.lines_table()) as LinesTable;
   }
 
   // ── Shared flows (#200) ──────────────────────────────────────────

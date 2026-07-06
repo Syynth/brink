@@ -15,6 +15,8 @@ export {
   compileAffix,
   resolveSourceShape,
   reservedStructuralKinds,
+  DialectParser,
+  detectCast,
 } from "./dialect.js";
 export type {
   DialogueDialect,
@@ -30,6 +32,8 @@ export type {
   ElementNature,
   DialectMatch,
   DialectValidationError,
+  SourceLine,
+  EmittedSegment,
 } from "./dialect.js";
 
 // Tier-1 boundary helpers (#369): the canonical positional diagnostic sort
