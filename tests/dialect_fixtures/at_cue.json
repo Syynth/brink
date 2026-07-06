@@ -118,6 +118,12 @@
       "description": "A cue whose 'name' region itself contains a colon fails to match at the first colon (content_group is `[^:]*`, greedy up to the first ':') — this line does not end in ':<>' as a whole, so no match.",
       "line": "@Alice: Bob:<>",
       "expect": null
+    },
+    {
+      "id": "negative-sigil-logic-line-not-a-dialect-kind",
+      "description": "A '~'-sigil logic line never classifies as any dialect element pattern (#413 repro context: this is the shared classify-level fact that, combined with the line-level gate — a Logic line's base element is never Narrative — makes sigil classification win over chain continuation in both interpreters' `apply_dialect`/`applyDialectFallback` chain pass).",
+      "line": "~ change_party_member(2, false)",
+      "expect": null
     }
   ]
 }

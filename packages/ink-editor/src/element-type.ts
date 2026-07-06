@@ -382,11 +382,124 @@ export const dialectFacet = Facet.define<ResolvedDialect | null, ResolvedDialect
 });
 
 /**
+ * Whether a trimmed, non-empty line is a multiline branch header
+ * (`- cond:` / `- else:` — a `-`-bulleted, non-`->` line whose last
+ * non-whitespace character is `:`) — mirrors Rust
+ * `is_conditional_branch_header_line` in `line_context.rs` exactly (#413).
+ * Deliberately does NOT match `- else: -> busy` (inline-divert branch
+ * shorthand): that line's own divert/gather classification from
+ * `classifyLine` is left untouched.
+ *
+ * Unlike the brace check (see `applyConditionalScaffoldFallback`), this
+ * may override a line `classifyLine` already swept to `Gather` (its bare
+ * `-` heuristic can't tell a branch header apart from a weave gather) in
+ * addition to a still-`Blank` line.
+ */
+function isConditionalBranchHeaderLine(trimmed: string): boolean {
+  return trimmed.startsWith("-") && !trimmed.startsWith("->") && trimmed.endsWith(":");
+}
+
+/**
+ * Whether a trimmed, non-empty line is a conditional/sequence opening
+ * brace (bare `{`, or `{` followed by a switch expression whose own last
+ * non-whitespace character is `:`, e.g. `{ get_variable(17) >= 1:`) or a
+ * bare closing brace (exactly `}`, nothing else on the line) — mirrors
+ * Rust `is_conditional_brace_scaffold_line` in `line_context.rs` exactly
+ * (#413).
+ *
+ * Deliberately narrower than "starts with `{`" / "ends with `}`": a
+ * narrative line can itself start or end with a brace due to ink's
+ * inline-logic syntax without being the block's own routing scaffold —
+ * e.g. a standalone inline conditional used as narrative content,
+ * `{visited: You were here before.}` (starts with `{` but does NOT end
+ * with `:` — it ends with prose closed by `}` on the same line), or
+ * narrative ending in a value interpolation, `You have {gold}` (ends
+ * with `}` but does not start with `{`). Neither shape is a genuine
+ * scaffold brace, so neither is matched. The predicate is precise enough
+ * that `applyConditionalScaffoldFallback` applies it unconditionally
+ * (not gated to a prior `Blank`/`Gather` classification like the
+ * branch-header check) — see that function's comment for why.
+ */
+function isConditionalBraceScaffoldLine(trimmed: string): boolean {
+  if (trimmed === "{" || trimmed === "}") return true;
+  return trimmed.startsWith("{") && trimmed.endsWith(":");
+}
+
+/**
+ * Conditional/sequence scaffold + arm-descent pass (#413), text-only
+ * mirror of Rust `apply_conditional_scaffold`. The regex fallback has no
+ * HIR, so brace nesting is tracked directly from source text: any line
+ * whose net open-brace depth (counting `{`/`}` on that line) is greater
+ * than zero before the line starts, OR which itself opens a brace, is
+ * "inside" a conditional/sequence block. Within such a region:
+ *
+ * - a branch-header line (see `isConditionalBranchHeaderLine`) becomes
+ *   `Logic`, overriding `Blank` or `Gather` — this corrects `- else:`
+ *   away from the `classifyLine` bare-`-` Gather heuristic, which doesn't
+ *   know about conditional nesting;
+ * - a brace-scaffold line (see `isConditionalBraceScaffoldLine`) becomes
+ *   `Logic`, but ONLY when still `Blank` — never overriding `NarrativeText`,
+ *   so ordinary narrative containing inline logic that starts/ends with a
+ *   brace keeps its narrative classification instead of being swept into
+ *   scaffold;
+ * - a line the base classifier left as `Blank` or `Gather` (and isn't
+ *   itself scaffold) is promoted to `NarrativeText` so the dialect
+ *   classify pass (which only looks at `NarrativeText`/`ChoiceBody`) can
+ *   see cues/dialogue written inside the arm. Lines the base classifier
+ *   already placed with confidence (a nested `Choice`, a `Divert` from an
+ *   inline `- cond: -> target` shorthand, etc.) are left untouched — this
+ *   only fills gaps.
+ *
+ * Runs BEFORE `applyDialectFallback`'s classify pass so promoted arm lines
+ * are visible to it.
+ */
+function applyConditionalScaffoldFallback(infos: LineInfo[], lineTexts: string[]): void {
+  let depth = 0;
+  for (let i = 0; i < infos.length; i++) {
+    const text = lineTexts[i];
+    const trimmed = text.trim();
+    const enteringDepth = depth;
+    for (const ch of trimmed) {
+      if (ch === "{") depth++;
+      else if (ch === "}") depth = Math.max(0, depth - 1);
+    }
+    const insideConditional = enteringDepth > 0 || trimmed.startsWith("{") || trimmed.endsWith("}");
+    if (!insideConditional || trimmed === "") continue;
+
+    const isGap = infos[i].type === ElementType.Blank || infos[i].type === ElementType.Gather;
+
+    if (isGap && isConditionalBranchHeaderLine(trimmed)) {
+      infos[i] = { type: ElementType.Logic, depth: 0, sticky: false, standalone: false };
+      continue;
+    }
+
+    // The brace-scaffold predicate is syntactically precise (bare `{`/`}`,
+    // or `{`-opener-with-trailing-`:`) — it structurally cannot match
+    // ordinary narrative containing inline logic, so unlike the header
+    // check above it doesn't need to be gated to `isGap`: a bare `{`/`}`
+    // scaffold line is classified as `NarrativeText` by `classifyLine`
+    // (which has no notion of conditional scaffold), not `Blank`, so
+    // restricting this to `isGap` would leave real scaffold braces
+    // unclassified in the regex-fallback path (no HIR to leave a true
+    // gap the way the Rust pass does).
+    if (isConditionalBraceScaffoldLine(trimmed)) {
+      infos[i] = { type: ElementType.Logic, depth: 0, sticky: false, standalone: false };
+      continue;
+    }
+
+    if (isGap) {
+      infos[i] = { type: ElementType.NarrativeText, depth: 0, sticky: false, standalone: false };
+    }
+  }
+}
+
+/**
  * Dialect post-pass over already-computed `infos` (regex-fallback path
  * only): classify + chain using `dialect`'s TS interpreter, mirroring the
  * Rust classify/chain split exactly (`line_context.rs`'s `apply_dialect`) —
  * classify runs on narrative AND choice-body base lines (depth preserved);
- * chaining runs on plain top-level narrative only.
+ * chaining runs on plain top-level narrative and conditional/sequence-arm
+ * narrative (#413), never choice-body narrative.
  */
 function applyDialectFallback(
   dialect: ResolvedDialect | null,
@@ -394,6 +507,8 @@ function applyDialectFallback(
   lineTexts: string[],
 ): void {
   if (dialect === null) return;
+
+  applyConditionalScaffoldFallback(infos, lineTexts);
 
   // ── Classify pass ──
   for (let i = 0; i < infos.length; i++) {
@@ -413,7 +528,8 @@ function applyDialectFallback(
     }
   }
 
-  // ── Chain pass (top-level narrative only, blank always breaks) ──
+  // ── Chain pass (top-level or conditional/sequence-arm narrative only;
+  //    blank always breaks) ──
   // `runCarry` mirrors the Rust `run_carry: Vec<(String, String)>` — a `Map`
   // preserves insertion order identically and gives O(1) update-in-place
   // (`.set`) instead of rebuilding the whole array per attr per line.
