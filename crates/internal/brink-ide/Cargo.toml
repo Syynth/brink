@@ -20,8 +20,8 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-brink-compiler = { workspace = true }
-brink-runtime = { workspace = true }
+brink-compiler = { path = "../../brink-compiler" }
+brink-runtime = { path = "../../brink-runtime" }
 serde_json.workspace = true
 
 [lints]
