@@ -1120,3 +1120,27 @@
 - **SCOPE:** architectural
 - **WHAT:** The dialect declaration is an authoring-time/tooling artifact: no `.inkb` embedding, no project file in v1 (mount-time config only), and the host-capability-manifest charter (tooling-only, never runtime-consumed) stands unamended. The `emitted` facet stays in the v1 schema because the *editor* needs it (studio Player cue display; future #362 line-fit) — it models what the runtime will do, it does not instruct the runtime. Brink ships the reference `DialectParser` as an ordinary opt-in library; a consumer wanting editor/game single-truth imports it and passes the same JSON in their own game code. Supporting rulings: portable-regex core (JS ∩ Rust subset, CI-enforced) with affix sugar compiling to it; classification implemented in Rust `line_contexts()` in v1 with TS as a thin interpreter; enum→string `ElementType` migration is a hard cut in 0.8.0 with a documented PascalCase→kebab mapping; `nature` is three-valued (narrative/machinery/structural); blank lines always break the dialogue chain in v1; `dialect: null` tears down the whole screenplay layer; intl×affix interaction filed as a follow-up rather than blocking v1.
 - **WHY:** The game developer writes their own parser — it is the ground truth of their game; the editor's job is to model that truth for authoring, not to make game parsing config-driven (a problem no consumer has). Dropping runtime delivery removes the whole delivery-channel question (project file / .inkb metadata / manifest charter amendment) from v1 scope.
+
+## Round-2 pump: legitimate discovered work rolls into the round autonomously
+- **WHEN:** 2026-07-05
+- **PROJECT:** brink
+- **SYSTEM:** cross-system (editor round 2 / pump process)
+- **SCOPE:** minor/local (this round's pump waves)
+- **WHAT:** When a pump wave's scope-reconciliation (or a build's scopeNotes / review's scopeGaps) surfaces a **legitimate new item** — small, clearly within the round's themes (editor/web embedder surface, dialect/session follow-through) — the agent files the issue and rolls it into a subsequent pump wave without stopping for approval. Anything architectural, design-flavored, or outside the round's themes still surfaces at a checkpoint for a human ruling, per the pump's default contract.
+- **WHY:** The user is delegating the round end-to-end ("just pump through all the work remaining"); pausing the train for every small discovered gap defeats the delegation, while the legitimate/architectural boundary keeps design authority with the user.
+
+## #411 scratch-eval: proper deep-layer build (fragment codegen + program overlay), Rust-canonical, ships as 0.9.0
+- **WHEN:** 2026-07-06
+- **PROJECT:** brink
+- **SYSTEM:** cross-system (compiler + runtime + web)
+- **SCOPE:** architectural
+- **WHAT:** The scratch-flow evaluation API (#411) is built "properly" in the deep layers, rejecting the pragmatic recompile+state-migration shortcut: a true fragment-compilation entrypoint in the compiler (expressions/content lowered against the project's existing symbol index) plus program-overlay linking so the fragment executes in the live program's address space and can call real ink functions. The scratch runner (cloned-Context flow: spawn/run/collect/discard, step-capped) is Rust-canonical in brink-runtime; @brink-lang/web's evaluateScratch is a thin wrapper. Released as 0.9.0 (minor — new API surface), not 0.8.1.
+- **WHY:** "the more we move into the deeper layers, the more we get proper fixes we don't need to recreate later" — same rationale as the Story Session Rust-canonical ruling; bevy's live inspector is a first-class future consumer and shouldn't require re-implementing eval machinery.
+
+## #411 scratch-eval externals policy: harness-built handler; presentation = effect; async pending supported in v1
+- **WHEN:** 2026-07-06
+- **PROJECT:** brink
+- **SYSTEM:** runtime + web
+- **SCOPE:** moderate
+- **WHAT:** The @kind tiering for scratch evals is enforced by a policy handler the eval harness constructs from the analyzer's external_meta — the VM stays manifest-blind (preserves the "runtime never sees the manifest" invariant). Presentation-kind externals are treated as effects for scratch purposes (blocked in watch context; armable in eval context like other effects). Pending/async query externals are supported properly in v1: the isolated scratch flow awaits via the existing Pending/resolve_external machinery; evaluateScratch is async, with cancellation of stale in-flight evals (destroy the frozen scratch flow) and a cap on concurrent scratch evals.
+- **WHY:** Presentation is by definition an effect — the manifest kind exists for client/server authority routing, not purity, so it gains nothing in scratch context. Async is cheap runtime-side (Pending already freezes/resumes flows); the real work is lifecycle (cancel + cap), worth doing once properly rather than shipping a sync-only v1.
