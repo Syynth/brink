@@ -22,6 +22,7 @@ import type {
   AffixShape,
   TransitionRow,
 } from "@brink/wasm-types";
+import type { ConvertibleShape } from "@brink/ink-operations";
 
 export type {
   DialogueDialect,
@@ -388,6 +389,24 @@ export class ResolvedDialect {
    *  and other editor-overlay reads that don't need compiled patterns). */
   raw(): DialogueDialect {
     return this.source;
+  }
+
+  /**
+   * Every declared kind's source pattern + content group, reduced to
+   * `@brink/ink-operations`'s `ConvertibleShape` (#395). Used by a `convert`
+   * transition action to extract a line's content generically: the source
+   * line may be classified as ANY declared wrapping kind (not just the
+   * built-in `character`/`parenthetical`), so extraction tries every declared
+   * shape rather than one hardcoded pair of regexes. Pattern-less (chain-only)
+   * kinds have no shape and are omitted.
+   */
+  convertibleShapes(): ConvertibleShape[] {
+    const shapes: ConvertibleShape[] = [];
+    for (const el of this.elements) {
+      if (!el.shape) continue;
+      shapes.push({ pattern: el.shape.pattern, contentGroup: el.shape.content_group ?? null });
+    }
+    return shapes;
   }
 }
 

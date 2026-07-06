@@ -315,7 +315,12 @@ function executeDialectRow(
       const targetKind = row.action.kind;
       const template = dialect.templateFor(targetKind);
       const role = dialect.contentGroupFor(targetKind);
-      const content = extractLineContent(line.text);
+      // Extract via the resolved dialect's OWN declared shapes (#395) — the
+      // source line may be classified as any wrapping kind the dialect
+      // declares, not just the built-in at-cue `character`/`parenthetical`,
+      // so a custom dialect's convert row extracts correctly instead of
+      // silently falling through to the hardcoded at-cue regexes.
+      const content = extractLineContent(line.text, dialect.convertibleShapes());
       const rendered = template && role ? renderTemplate(template, role, content) : content;
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: prefix + rendered },
@@ -332,7 +337,13 @@ function executeDialectRow(
       return true;
     case "strip":
     case "clear": {
-      const content = row.action.action === "strip" ? extractLineContent(line.text) : "";
+      // `strip` extracts via the resolved dialect's OWN declared shapes
+      // (#395), same as `convert` above — a custom dialect's non-at-cue
+      // wrapping kind (e.g. `<<radio>>`) must strip to its bare content
+      // identically, not silently fall through to the hardcoded at-cue
+      // regexes (which would extract nothing and leave an empty line).
+      const content =
+        row.action.action === "strip" ? extractLineContent(line.text, dialect.convertibleShapes()) : "";
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: prefix + content },
         selection: { anchor: line.from + prefix.length + content.length },
