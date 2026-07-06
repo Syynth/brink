@@ -2518,6 +2518,12 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// flow's game state — a NEW typed serialization path (globals with list
     /// membership, turn counts, callstack summary), distinct from the
     /// string-valued [`DebugSnapshot`](crate::DebugSnapshot).
+    ///
+    /// Known projection limit (deliberate, not a silent bug): visit/turn-count
+    /// entries whose scope has no resolvable author path (anonymous counted
+    /// containers — gathers, choice points — keyed only by hash id) are
+    /// **omitted** from the snapshot's path-keyed maps. The full id-keyed
+    /// counts remain available via [`Story::save_state`].
     pub(crate) fn state_snapshot(&self) -> crate::session::StateSnapshot {
         use std::collections::BTreeMap;
 

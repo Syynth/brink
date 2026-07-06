@@ -2128,6 +2128,7 @@ dependencies = [
 name = "brink-runtime"
 version = "0.0.8"
 dependencies = [
+ "brink-compiler",
  "brink-converter",
  "brink-format",
  "brink-json",

@@ -578,7 +578,7 @@ fn live_replay_parks_on_pending_external() {
     let defer = DeferOnce {
         deferred: std::cell::Cell::new(false),
     };
-    let (_replayed, outcome) = StorySession::<DotNetRng>::replay(
+    let (mut replayed, outcome) = StorySession::<DotNetRng>::replay(
         Story::new(&program, tables),
         &journal,
         ExternalReplayMode::Live,
@@ -593,5 +593,165 @@ fn live_replay_parks_on_pending_external() {
             }
         ),
         "live replay must park on a deferred external, got {outcome:?}",
+    );
+
+    // The parked session retains the replay tail: resolve the external and
+    // resume — the replay completes.
+    assert!(
+        replayed.has_pending_replay(),
+        "park retains the replay tail"
+    );
+    assert!(replayed.has_pending_external());
+    replayed.resolve_external(Value::Int(5));
+    let outcome = replayed.continue_replay(Some(&defer));
+    assert!(
+        matches!(outcome, ReplayOutcome::Replayed { .. }),
+        "resumed replay completes, got {outcome:?}",
+    );
+    assert!(!replayed.has_pending_replay());
+}
+
+// ── Deferred external BETWEEN two recorded choices: resume replays the tail ──
+
+/// Compile ink source with the brink compiler and link it. Used where no
+/// converter fixture has the needed shape (choices + an external in between).
+fn compile_source(source: &str) -> (Program, Vec<Vec<brink_format::LineEntry>>) {
+    let out = brink_compiler::compile("main.ink", |_| Ok(source.to_owned())).unwrap();
+    brink_runtime::link(&out.data).unwrap()
+}
+
+/// Story where an external fires between two choice points.
+const BETWEEN_CHOICES_INK: &str = r"
+EXTERNAL probe(x)
+-> top
+== top ==
+First question.
+* one
+    Value is {probe(1)}.
+    -> second
+* two
+    -> second
+== second ==
+Second question.
+* alpha
+    Done.
+    -> END
+* beta
+    Also done.
+    -> END
+
+=== function probe(x) ===
+~ return 0
+";
+
+/// Defers (`Pending`) the first `probe` call, resolves later ones inline.
+struct DeferProbe {
+    deferred: std::cell::Cell<bool>,
+}
+
+impl ExternalFnHandler for DeferProbe {
+    fn call(&self, name: &str, _args: &[Value]) -> ExternalResult {
+        if name == "probe" && !self.deferred.get() {
+            self.deferred.set(true);
+            ExternalResult::Pending
+        } else {
+            ExternalResult::Resolved(Value::Int(42))
+        }
+    }
+}
+
+#[test]
+fn live_replay_resumes_tail_after_external_between_choices() {
+    let (program, tables) = compile_source(BETWEEN_CHOICES_INK);
+
+    // Record: choice 1 → external resolves inline → choice 2 → END.
+    let record = DeferProbe {
+        deferred: std::cell::Cell::new(true), // never defers while recording
+    };
+    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables.clone()), None);
+    let lines = session.continue_to_pause().unwrap();
+    assert!(
+        matches!(lines.last(), Some(Line::Choices { .. })),
+        "expected first choice set, got {lines:?}",
+    );
+    session.choose(0).unwrap(); // "one" → probe(1) fires next turn
+    let mut steps = 0;
+    loop {
+        steps += 1;
+        assert!(steps < 1000, "step budget");
+        match session.advance_with(&record).unwrap() {
+            StepOutcome::Line(l) if l.is_terminal() => break,
+            StepOutcome::Line(_) => {}
+            StepOutcome::AwaitingExternal => panic!("recording handler resolves inline"),
+        }
+    }
+    session.choose(0).unwrap(); // "alpha" → END
+    let _ = session.continue_to_pause().unwrap();
+    let journal = session.journal().clone();
+    // Sanity: the journal holds two choices with an external between them.
+    let kinds: Vec<&EventKind> = journal.events.iter().map(|e| &e.kind).collect();
+    assert!(
+        matches!(
+            kinds.as_slice(),
+            [
+                EventKind::Start { .. },
+                EventKind::Choice { .. },
+                EventKind::External { .. },
+                EventKind::Choice { .. },
+            ]
+        ),
+        "unexpected journal shape: {kinds:?}",
+    );
+
+    // Live replay: the external defers → park BETWEEN the two choices.
+    let defer = DeferProbe {
+        deferred: std::cell::Cell::new(false),
+    };
+    let (mut replayed, outcome) = StorySession::<DotNetRng>::replay(
+        Story::new(&program, tables),
+        &journal,
+        ExternalReplayMode::Live,
+        Some(&defer),
+    );
+    assert!(
+        matches!(
+            outcome,
+            ReplayOutcome::Failed {
+                reason: FailReason::AwaitingExternal { .. },
+                ..
+            }
+        ),
+        "expected park on the deferred external, got {outcome:?}",
+    );
+    assert!(replayed.has_pending_replay(), "tail must be retained");
+    // Only the first choice replayed so far.
+    let choices_so_far = replayed
+        .journal()
+        .events
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::Choice { .. }))
+        .count();
+    assert_eq!(choices_so_far, 1);
+
+    // Resolve the external and resume: the SECOND recorded choice replays and
+    // the outcome is Replayed.
+    replayed.resolve_external(Value::Int(42));
+    let outcome = replayed.continue_replay(Some(&defer));
+    assert!(
+        matches!(outcome, ReplayOutcome::Replayed { ref warnings } if warnings.is_empty()),
+        "resumed replay must complete cleanly, got {outcome:?}",
+    );
+    assert!(!replayed.has_pending_replay());
+    let final_choices = replayed
+        .journal()
+        .events
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::Choice { .. }))
+        .count();
+    assert_eq!(final_choices, 2, "both recorded choices replayed");
+    // The story reached END ("alpha" → Done. → END).
+    assert_eq!(
+        replayed.snapshot().status,
+        brink_runtime::SnapshotStatus::Ended
     );
 }

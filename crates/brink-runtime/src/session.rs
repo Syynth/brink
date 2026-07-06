@@ -301,8 +301,16 @@ pub struct StateSnapshot {
     /// Global turn index.
     pub turn_index: u32,
     /// Per-knot/stitch visit counts, keyed by resolved path, sorted.
+    ///
+    /// Path-keyed projection: counts for scopes with no resolvable author
+    /// path (anonymous counted containers — gathers, choice points — keyed
+    /// only by hash id) are **omitted** here. This is the known projection
+    /// limit of the typed snapshot; the full id-keyed counts remain available
+    /// via [`StorySession::save_state`].
     pub visit_counts: BTreeMap<String, u32>,
     /// Per-knot/stitch turn-since counts, keyed by resolved path, sorted.
+    /// Same path-keyed projection limit as
+    /// [`visit_counts`](Self::visit_counts).
     pub turn_counts: BTreeMap<String, u32>,
     /// Callstack summary of the default flow, innermost frame first.
     pub call_stack: Vec<SnapshotFrame>,
@@ -561,6 +569,37 @@ pub struct StorySession<'p, R: StoryRng = FastRng> {
     story: Story<'p, R>,
     journal: SessionJournal,
     started: bool,
+    /// The un-replayed tail of an in-progress replay that parked on a deferred
+    /// external ([`FailReason::AwaitingExternal`]). `Some` only between the
+    /// park and the [`continue_replay`](Self::continue_replay) that resumes
+    /// it — resuming consumes the tail from this cursor instead of dropping
+    /// the remaining recorded inputs.
+    pending_replay: Option<PendingReplay>,
+}
+
+/// Cursor state for a parked, resumable replay: the remaining source events
+/// (with their original indices, for `at_event` reporting), the
+/// recorded-externals queue, the external mode, warnings accumulated so far,
+/// and the source journal's checkpoint to carry over on completion.
+struct PendingReplay {
+    /// `(original_source_index, event)` pairs not yet applied.
+    remaining: std::collections::VecDeque<(usize, JournalEvent)>,
+    /// Recorded externals still unserved (`ExternalReplayMode::Recorded`).
+    ext_queue: std::collections::VecDeque<(String, Vec<Value>, Value)>,
+    mode: ExternalReplayMode,
+    warnings: Vec<ReplayWarning>,
+    /// The source journal's terminal checkpoint, applied to the rebuilt
+    /// journal when the replay completes.
+    source_checkpoint: Option<SaveState>,
+    /// Total events in the source journal (for final-step `at_event`).
+    total_events: usize,
+}
+
+/// Internal outcome of a replay stepping burst: parked on a deferred external
+/// (resumable) or failed terminally.
+enum StepPark {
+    Awaiting { name: String },
+    Fail(FailReason),
 }
 
 impl<'p, R: StoryRng> StorySession<'p, R> {
@@ -574,6 +613,7 @@ impl<'p, R: StoryRng> StorySession<'p, R> {
             journal: SessionJournal::new(checksum, seed),
             story,
             started: false,
+            pending_replay: None,
         }
     }
 
@@ -868,6 +908,7 @@ impl<'p, R: StoryRng> StorySession<'p, R> {
                     story,
                     journal,
                     started: true,
+                    pending_replay: None,
                 };
                 session.story.load_state(&checkpoint);
                 return Ok((
@@ -896,10 +937,22 @@ impl<'p, R: StoryRng> StorySession<'p, R> {
     /// prefix event-by-event; on divergence, truncates the journal at that point
     /// and parks at the reached position.
     ///
-    /// `mode` selects recorded (journal-served) vs live externals. In
-    /// [`ExternalReplayMode::Live`], `live_handler` is used; hitting a deferred
-    /// external parks with [`FailReason::AwaitingExternal`] (resume via
-    /// [`continue_replay`](Self::continue_replay)).
+    /// The session **re-records** as it replays, rebuilding its own journal. In
+    /// [`ExternalReplayMode::Recorded`], the rebuilt prefix is the **source**
+    /// prefix: source `External` events are re-pushed verbatim, including any
+    /// the re-run did not actually consume (a recorded-mode mismatch falls back
+    /// to the ink fallback body rather than diverging) — the truncated prefix
+    /// is the source's record, not a re-observed trace. In
+    /// [`ExternalReplayMode::Live`] the rebuilt journal *is* a re-observed
+    /// trace: live results are journaled as they resolve and source `External`
+    /// events are not copied.
+    ///
+    /// `mode` selects recorded (journal-served) vs live externals. Live replay
+    /// hitting a deferred external parks with [`FailReason::AwaitingExternal`],
+    /// **retaining the un-replayed tail**: resolve the external
+    /// ([`resolve_external`](Self::resolve_external)) and resume with
+    /// [`continue_replay`](Self::continue_replay), which picks up the remaining
+    /// recorded inputs from the park point.
     #[must_use]
     pub fn replay(
         story: Story<'p, R>,
@@ -911,159 +964,283 @@ impl<'p, R: StoryRng> StorySession<'p, R> {
             story,
             journal: SessionJournal::new(0, None),
             started: false,
+            pending_replay: None,
         };
         // Rebuild an empty journal to re-record faithfully as we replay.
         session.journal =
             SessionJournal::new(session.story.program().source_checksum(), journal.seed);
-        let outcome = session.replay_events(journal, mode, live_handler);
+        // Queue of recorded externals for the recorded-mode handler.
+        let ext_queue = journal
+            .events
+            .iter()
+            .filter_map(|ev| match &ev.kind {
+                EventKind::External { name, args, result } => {
+                    Some((name.clone(), args.clone(), result.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let state = PendingReplay {
+            remaining: journal.events.iter().cloned().enumerate().collect(),
+            ext_queue,
+            mode,
+            warnings: Vec::new(),
+            source_checkpoint: journal.checkpoint.clone(),
+            total_events: journal.events.len(),
+        };
+        let outcome = session.drive_replay(state, live_handler);
         (session, outcome)
     }
 
-    /// Drive the replay of `source`'s events into this session.
-    fn replay_events(
-        &mut self,
-        source: &SessionJournal,
-        mode: ExternalReplayMode,
-        live_handler: Option<&dyn ExternalFnHandler>,
-    ) -> ReplayOutcome {
-        let mut warnings = Vec::new();
-        // Queue of recorded externals for the recorded-mode handler.
-        let mut ext_queue: std::collections::VecDeque<(String, Vec<Value>, Value)> =
-            std::collections::VecDeque::new();
-        for ev in &source.events {
-            if let EventKind::External { name, args, result } = &ev.kind {
-                ext_queue.push_back((name.clone(), args.clone(), result.clone()));
-            }
-        }
-
-        for (i, ev) in source.events.iter().enumerate() {
-            match &ev.kind {
-                EventKind::Start { path, args } => {
-                    if self.started {
-                        return self.diverge_at(source, i, DivergenceFound::UnexpectedEvent);
-                    }
-                    self.started = true;
-                    self.journal.push(JournalEvent::new(EventKind::Start {
-                        path: path.clone(),
-                        args: args.clone(),
-                    }));
-                    if let Some(p) = path {
-                        let jump = if args.is_empty() {
-                            self.story.choose_path_string(p)
-                        } else {
-                            self.story.choose_path_string_with_args(p, args)
-                        };
-                        if jump.is_err() {
-                            return self.diverge_at(
-                                source,
-                                i,
-                                DivergenceFound::UnknownPath { path: p.clone() },
-                            );
-                        }
-                    }
-                }
-                EventKind::External { .. } => {
-                    // Externals are served by the handler while stepping other
-                    // events; a standalone External here means it was an
-                    // out-of-band resolve. In recorded mode we simply re-journal
-                    // it; the queue drives handler service. Nothing to step.
-                    self.journal.push(ev.clone());
-                }
-                EventKind::Choice { index, label } => {
-                    if let Err(outcome) = self.replay_choice(
-                        source,
-                        i,
-                        *index,
-                        label.as_ref(),
-                        ev,
-                        mode,
-                        live_handler,
-                        &mut ext_queue,
-                        &mut warnings,
-                    ) {
-                        return outcome;
-                    }
-                }
-                EventKind::SetVar { name, value } => {
-                    self.story.set_variable(name, value.clone());
-                    self.journal.push(ev.clone());
-                }
-                EventKind::GoToPath { path, args } => {
-                    let jump = if args.is_empty() {
-                        self.story.choose_path_string(path)
-                    } else {
-                        self.story.choose_path_string_with_args(path, args)
-                    };
-                    if jump.is_err() {
-                        return self.diverge_at(
-                            source,
-                            i,
-                            DivergenceFound::UnknownPath { path: path.clone() },
-                        );
-                    }
-                    self.journal.push(ev.clone());
-                }
-                EventKind::LoadState { state } => {
-                    self.story.load_state(state);
-                    self.journal.push(ev.clone());
-                }
-                EventKind::Call { name, args } => {
-                    // Journaled but isolated: re-invoke through the fallback
-                    // handler (recorded externals for a Call aren't separately
-                    // journaled; a live handler would be host-supplied). We use
-                    // the fallback so replay never blocks.
-                    let _ = self.story.call_function(name, args, &FallbackHandler);
-                    self.journal.push(ev.clone());
-                }
-            }
-        }
-        // Final step: drive the story to its terminal pause after the last
-        // recorded input (a story with no choices, or content after the last
-        // choice, only advances here). In Live mode this is where externals are
-        // re-invoked. Only step if we actually started.
-        if self.started
-            && let Err(outcome) = self.replay_step_to_pause(
-                source,
-                source.events.len().saturating_sub(1),
-                mode,
-                live_handler,
-                &mut ext_queue,
-            )
-        {
-            return outcome;
-        }
-        // Carry over the terminal checkpoint if the source had one.
-        self.journal.checkpoint.clone_from(&source.checkpoint);
-        ReplayOutcome::Replayed { warnings }
+    /// Whether a parked replay tail is pending (a live replay hit a deferred
+    /// external). Resolve it and call [`continue_replay`](Self::continue_replay).
+    #[must_use]
+    pub fn has_pending_replay(&self) -> bool {
+        self.pending_replay.is_some()
     }
 
-    /// Replay one `Choice` event: step to the choice pause, range-check the
-    /// recorded index against what the current program presents, emit a soft
-    /// label-drift warning, then select. Returns `Err(outcome)` on
-    /// divergence/failure.
-    #[expect(clippy::too_many_arguments, reason = "internal replay helper")]
+    /// Resume a replay parked on a deferred external
+    /// ([`FailReason::AwaitingExternal`]). Resolve the pending external first
+    /// (via [`resolve_external`](Self::resolve_external)), then call this: the
+    /// session resumes consuming the retained journal tail from the park
+    /// point — it can complete ([`ReplayOutcome::Replayed`] with all warnings
+    /// accumulated across parks), park again, diverge later, or fail.
+    ///
+    /// With **no pending replay tail** this keeps the advance-only behavior:
+    /// it steps the live story to its next pause with `live_handler`
+    /// (journaling externals as in normal play) and returns `Replayed` on
+    /// reaching the pause, or `Failed` if it parks or errors (`at_event` is
+    /// then the rebuilt journal's current length, where the next event would
+    /// land).
+    pub fn continue_replay(
+        &mut self,
+        live_handler: Option<&dyn ExternalFnHandler>,
+    ) -> ReplayOutcome {
+        if let Some(state) = self.pending_replay.take() {
+            return self.drive_replay(state, live_handler);
+        }
+        // Advance-only: no recorded inputs left to consume.
+        let handler = live_handler.unwrap_or(&FallbackHandler);
+        let mut steps = 0usize;
+        loop {
+            if steps >= Self::REPLAY_STEP_BUDGET {
+                self.journal.truncated = true;
+                return ReplayOutcome::Failed {
+                    at_event: self.journal.len(),
+                    reason: FailReason::Budget,
+                };
+            }
+            steps += 1;
+            match self.advance_with(handler) {
+                Ok(StepOutcome::Line(line)) if line.is_terminal() => {
+                    return ReplayOutcome::Replayed {
+                        warnings: Vec::new(),
+                    };
+                }
+                Ok(StepOutcome::Line(_)) => {}
+                Ok(StepOutcome::AwaitingExternal) => {
+                    let name = self
+                        .story
+                        .pending_external_name()
+                        .map(str::to_owned)
+                        .unwrap_or_default();
+                    return ReplayOutcome::Failed {
+                        at_event: self.journal.len(),
+                        reason: FailReason::AwaitingExternal { name },
+                    };
+                }
+                Err(e) => {
+                    self.journal.truncated = true;
+                    return ReplayOutcome::Failed {
+                        at_event: self.journal.len(),
+                        reason: runtime_fail(e),
+                    };
+                }
+            }
+        }
+    }
+
+    /// Maximum `advance` calls per replay stepping burst (unbounded-growth /
+    /// no-hang guard).
+    const REPLAY_STEP_BUDGET: usize = 100_000;
+
+    /// Drive (or resume) a replay from its cursor `state`. On a resumable park
+    /// ([`FailReason::AwaitingExternal`]) the state is retained in
+    /// [`pending_replay`](Self::pending_replay); on divergence or terminal
+    /// failure it is dropped (the journal is truncated at that point).
+    fn drive_replay(
+        &mut self,
+        mut state: PendingReplay,
+        live_handler: Option<&dyn ExternalFnHandler>,
+    ) -> ReplayOutcome {
+        loop {
+            // All recorded inputs consumed: final trailing step (a story with
+            // no choices, or content after the last input, only advances
+            // here), then complete.
+            let Some((at, _)) = state.remaining.front().cloned() else {
+                if self.started {
+                    let at = state.total_events.saturating_sub(1);
+                    if let Err(park) =
+                        self.replay_step_to_pause(state.mode, live_handler, &mut state.ext_queue)
+                    {
+                        return self.park_or_fail(state, at, park);
+                    }
+                }
+                // Carry over the terminal checkpoint if the source had one.
+                self.journal.checkpoint.clone_from(&state.source_checkpoint);
+                return ReplayOutcome::Replayed {
+                    warnings: state.warnings,
+                };
+            };
+
+            // A Choice consumes a pause: step to it first (this is also where
+            // a resumed drive picks up after its external was resolved).
+            let next_is_choice = matches!(
+                state.remaining.front().map(|(_, ev)| &ev.kind),
+                Some(EventKind::Choice { .. })
+            );
+            if next_is_choice
+                && let Err(park) =
+                    self.replay_step_to_pause(state.mode, live_handler, &mut state.ext_queue)
+            {
+                return self.park_or_fail(state, at, park);
+            }
+
+            let Some((i, ev)) = state.remaining.pop_front() else {
+                // Unreachable: `front` was `Some` above.
+                continue;
+            };
+            match self.replay_apply(i, &ev, state.mode, &mut state.warnings) {
+                Ok(()) => {}
+                Err(outcome) => return outcome,
+            }
+        }
+    }
+
+    /// Park (retaining `state` for [`continue_replay`](Self::continue_replay))
+    /// or fail terminally (truncating the rebuilt journal).
+    fn park_or_fail(&mut self, state: PendingReplay, at: usize, park: StepPark) -> ReplayOutcome {
+        match park {
+            StepPark::Awaiting { name } => {
+                self.pending_replay = Some(state);
+                ReplayOutcome::Failed {
+                    at_event: at,
+                    reason: FailReason::AwaitingExternal { name },
+                }
+            }
+            StepPark::Fail(reason) => {
+                self.journal.truncated = true;
+                ReplayOutcome::Failed {
+                    at_event: at,
+                    reason,
+                }
+            }
+        }
+    }
+
+    /// Apply one recorded input during replay. `Err` is the terminal
+    /// [`ReplayOutcome`] (divergence or failure).
+    fn replay_apply(
+        &mut self,
+        i: usize,
+        ev: &JournalEvent,
+        mode: ExternalReplayMode,
+        warnings: &mut Vec<ReplayWarning>,
+    ) -> Result<(), ReplayOutcome> {
+        match &ev.kind {
+            EventKind::Start { path, args } => {
+                if self.started {
+                    return Err(self.diverge_at(i, ev, DivergenceFound::UnexpectedEvent));
+                }
+                self.started = true;
+                self.journal.push(JournalEvent::new(EventKind::Start {
+                    path: path.clone(),
+                    args: args.clone(),
+                }));
+                if let Some(p) = path {
+                    let jump = if args.is_empty() {
+                        self.story.choose_path_string(p)
+                    } else {
+                        self.story.choose_path_string_with_args(p, args)
+                    };
+                    if jump.is_err() {
+                        return Err(self.diverge_at(
+                            i,
+                            ev,
+                            DivergenceFound::UnknownPath { path: p.clone() },
+                        ));
+                    }
+                }
+            }
+            EventKind::External { .. } => {
+                // Recorded mode: re-push the source event verbatim — the
+                // rebuilt prefix is the SOURCE prefix, not a re-observed trace
+                // (a mismatched entry falls back rather than diverging, so the
+                // re-run may not have consumed it). Live mode journals actual
+                // results during stepping instead, so nothing to copy here.
+                if mode == ExternalReplayMode::Recorded {
+                    self.journal.push(ev.clone());
+                }
+            }
+            EventKind::Choice { index, label } => {
+                self.replay_choice(i, *index, label.as_ref(), ev, warnings)?;
+            }
+            EventKind::SetVar { name, value } => {
+                self.story.set_variable(name, value.clone());
+                self.journal.push(ev.clone());
+            }
+            EventKind::GoToPath { path, args } => {
+                let jump = if args.is_empty() {
+                    self.story.choose_path_string(path)
+                } else {
+                    self.story.choose_path_string_with_args(path, args)
+                };
+                if jump.is_err() {
+                    return Err(self.diverge_at(
+                        i,
+                        ev,
+                        DivergenceFound::UnknownPath { path: path.clone() },
+                    ));
+                }
+                self.journal.push(ev.clone());
+            }
+            EventKind::LoadState { state } => {
+                self.story.load_state(state);
+                self.journal.push(ev.clone());
+            }
+            EventKind::Call { name, args } => {
+                // Journaled but isolated: re-invoke through the fallback
+                // handler (recorded externals for a Call aren't separately
+                // journaled; a live handler would be host-supplied). We use
+                // the fallback so replay never blocks.
+                let _ = self.story.call_function(name, args, &FallbackHandler);
+                self.journal.push(ev.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Replay one `Choice` event (the driver has already stepped to the choice
+    /// pause): range-check the recorded index against what the current program
+    /// presents, emit a soft label-drift warning, then select. Returns
+    /// `Err(outcome)` on divergence/failure.
     fn replay_choice(
         &mut self,
-        source: &SessionJournal,
         at: usize,
         index: u32,
         label: Option<&String>,
         ev: &JournalEvent,
-        mode: ExternalReplayMode,
-        live_handler: Option<&dyn ExternalFnHandler>,
-        ext_queue: &mut std::collections::VecDeque<(String, Vec<Value>, Value)>,
         warnings: &mut Vec<ReplayWarning>,
     ) -> Result<(), ReplayOutcome> {
-        self.replay_step_to_pause(source, at, mode, live_handler, ext_queue)?;
         if !self.story.status_is_waiting_for_choice() {
-            return Err(self.diverge_at(source, at, DivergenceFound::NotWaitingForChoice));
+            return Err(self.diverge_at(at, ev, DivergenceFound::NotWaitingForChoice));
         }
         let presented = self.story.pending_choices();
         let available = presented.len();
         let Some(current) = presented.iter().find(|c| c.index == index as usize) else {
             return Err(self.diverge_at(
-                source,
                 at,
+                ev,
                 DivergenceFound::ChoiceIndexOutOfRange { index, available },
             ));
         };
@@ -1079,27 +1256,30 @@ impl<'p, R: StoryRng> StorySession<'p, R> {
             });
         }
         if let Err(e) = self.story.choose(index as usize) {
-            return Err(self.fail_at(source, at, runtime_fail(e)));
+            self.journal.truncated = true;
+            return Err(ReplayOutcome::Failed {
+                at_event: at,
+                reason: runtime_fail(e),
+            });
         }
         self.journal.push(ev.clone());
         Ok(())
     }
 
-    /// Step to the next pause during replay, serving externals per `mode`.
-    /// Returns `Err(outcome)` if stepping failed/parked.
+    /// Step to the next pause during replay, serving externals per `mode`. In
+    /// Live mode, inline-resolved results are journaled as they happen (the
+    /// rebuilt journal is a re-observed trace). Returns `Err(park)` when a
+    /// deferred external pauses the flow (resumable) or on a terminal failure.
     fn replay_step_to_pause(
         &mut self,
-        source: &SessionJournal,
-        at: usize,
         mode: ExternalReplayMode,
         live_handler: Option<&dyn ExternalFnHandler>,
         ext_queue: &mut std::collections::VecDeque<(String, Vec<Value>, Value)>,
-    ) -> Result<(), ReplayOutcome> {
-        const STEP_BUDGET: usize = 100_000;
+    ) -> Result<(), StepPark> {
         let mut steps = 0usize;
         loop {
-            if steps >= STEP_BUDGET {
-                return Err(self.fail_at(source, at, FailReason::Budget));
+            if steps >= Self::REPLAY_STEP_BUDGET {
+                return Err(StepPark::Fail(FailReason::Budget));
             }
             steps += 1;
             let outcome = match mode {
@@ -1110,8 +1290,22 @@ impl<'p, R: StoryRng> StorySession<'p, R> {
                     self.story.advance_with(&h)
                 }
                 ExternalReplayMode::Live => {
-                    let h = live_handler.unwrap_or(&FallbackHandler);
-                    self.story.advance_with(h)
+                    // Journal live results where the VM receives them, so the
+                    // rebuilt journal reflects what actually fed this run.
+                    let mut sink: Vec<(String, Vec<Value>, Value)> = Vec::new();
+                    let outcome = {
+                        let h = live_handler.unwrap_or(&FallbackHandler);
+                        let jh = JournalingHandler::new(h, &mut sink);
+                        self.story.advance_with(&jh)
+                    };
+                    for (name, args, result) in sink {
+                        self.journal.push(JournalEvent::new(EventKind::External {
+                            name,
+                            args,
+                            result,
+                        }));
+                    }
+                    outcome
                 }
             };
             match outcome {
@@ -1126,56 +1320,31 @@ impl<'p, R: StoryRng> StorySession<'p, R> {
                         .pending_external_name()
                         .map(str::to_owned)
                         .unwrap_or_default();
-                    return Err(self.fail_at(source, at, FailReason::AwaitingExternal { name }));
+                    return Err(StepPark::Awaiting { name });
                 }
-                Err(e) => return Err(self.fail_at(source, at, runtime_fail(e))),
+                Err(e) => return Err(StepPark::Fail(runtime_fail(e))),
             }
         }
     }
 
-    /// Resume a live replay parked on a deferred external. Resolve the pending
-    /// external first (via [`resolve_external`](Self::resolve_external)), then
-    /// call this to continue stepping to the next pause. Returns whether the
-    /// story reached a terminal line.
-    ///
-    /// # Errors
-    /// Wrapped [`RuntimeError`]s.
-    pub fn continue_replay(
-        &mut self,
-        live_handler: Option<&dyn ExternalFnHandler>,
-    ) -> Result<StepOutcome, RuntimeError> {
-        let h = live_handler.unwrap_or(&FallbackHandler);
-        self.advance_with(h)
-    }
-
-    /// Truncate the source journal at `at`, park at the reached position, and
-    /// build a `Diverged` outcome.
+    /// Truncate the rebuilt journal at the divergence point and build a
+    /// `Diverged` outcome. The rebuilt journal keeps the **source prefix** as
+    /// re-pushed so far (in recorded mode this includes source `External`
+    /// events verbatim, even ones the re-run fell back on instead of
+    /// consuming — see [`replay`](Self::replay)); the checkpoint is cleared
+    /// because it described the source's terminal state, not this park point.
     fn diverge_at(
         &mut self,
-        source: &SessionJournal,
         at: usize,
+        expected: &JournalEvent,
         found: DivergenceFound,
     ) -> ReplayOutcome {
         self.journal.truncated = true;
         self.journal.checkpoint = None;
         ReplayOutcome::Diverged {
             at_event: at,
-            expected: Box::new(source.events[at].clone()),
+            expected: Box::new(expected.clone()),
             found,
-        }
-    }
-
-    /// Truncate + build a `Failed` outcome.
-    fn fail_at(
-        &mut self,
-        _source: &SessionJournal,
-        at: usize,
-        reason: FailReason,
-    ) -> ReplayOutcome {
-        self.journal.truncated = true;
-        ReplayOutcome::Failed {
-            at_event: at,
-            reason,
         }
     }
 }
