@@ -20,7 +20,7 @@
 import { createRoot } from "react-dom/client";
 import { useEffect } from "react";
 import { initWasm } from "@brink-lang/web";
-import type { CompileResult, FileOutline, HostManifest } from "@brink/wasm-types";
+import type { CompileResult, FileOutline, HostManifest, DialogueDialect } from "@brink/wasm-types";
 import {
   DocumentSessions,
   ProjectSession,
@@ -123,6 +123,19 @@ export interface MountStudioOptions {
    * session itself stays unexposed (spec §8.2).
    */
   hostManifest?: HostManifest;
+  /**
+   * The dialogue dialect (#368, docs/dialect-spec.md): the project's
+   * dialogue-line conventions (cues, parentheticals, dialogue chains),
+   * registered once at mount — before the first `line_contexts` query — so
+   * screenplay classification/decorations/transitions/conversions are live
+   * from the start. Absent ⇒ `AT_CUE_DIALECT` (byte-identical to the
+   * pre-#368 hardcoded `@Name:<>` behavior); `null` ⇒ headless (the entire
+   * screenplay layer is torn down). Mount-time only — like `hostManifest`,
+   * there is no live-reconfigure handle exposed here; a host needing that
+   * calls `setDialect(view, dialect)` directly against a specific editor
+   * view (see `@brink-lang/editor`).
+   */
+  dialect?: DialogueDialect | null;
   /**
    * File-content egress (issue #154): called with batched change
    * notifications whenever project files change in the session — CM6 edits,
@@ -530,7 +543,12 @@ export async function mountStudio(
     // The studio skin, opted into EXPLICITLY (#363): the editor package is
     // headless-ready and hosts may pass `theme: false`; studio pins the
     // `--bs-*`-token theme so its look never depends on the package default.
-  }, [], { theme: brinkTheme });
+    //
+    // Dialect (#368): forwarded straight through to `brinkStudio` per mounted
+    // view (`slotOptions`). Absent ⇒ AT_CUE_DIALECT there already, so leaving
+    // this undefined when the host doesn't pass one preserves the
+    // byte-identical default with no extra wiring needed here.
+  }, [], { theme: brinkTheme, dialect: options.dialect });
 
   // File save commands (#154): file.save (Mod-S) / file.saveAll flush
   // editor text to the session and deliver pending host change

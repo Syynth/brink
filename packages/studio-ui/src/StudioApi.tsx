@@ -24,7 +24,6 @@ import type {
   NotificationInput,
 } from "@brink/studio-shell";
 import {
-  ElementTypeEnum,
   type SessionStatus,
   type StudioState,
   type StudioStore,
@@ -32,9 +31,20 @@ import {
 
 // ── StudioPublicState (spec §8.2) ────────────────────────────────────
 
-/** Cursor-line element info, by stable element-type name. */
+/**
+ * Cursor-line element info, by stable element-kind string.
+ *
+ * BREAKING CHANGE (0.8.0, #368, ruled 2026-07-05): `type` used to be the
+ * PascalCase name of a numeric `ElementType` enum member (e.g.
+ * `"KnotHeader"`, `"NarrativeText"`, `"Choice"`). `ElementType` is now an
+ * open kebab-case string union (`"knot-header"`, `"narrative"`, `"choice"`,
+ * …) — CSS classes derive as `brink-<kind>`, the same string. See the
+ * PascalCase→kebab mapping table in docs/editor-consumer-guide.md.
+ */
 export interface PublicElementInfo {
-  /** Element-type name, e.g. "KnotHeader", "NarrativeText", "Choice". */
+  /** Element kind, e.g. "knot-header", "narrative", "choice". Open string
+   *  union — a registered dialect's declared kinds (e.g. "character") flow
+   *  through unchanged; new kinds are additive, not breaking. */
   type: string;
   /** Nesting depth (choices/gathers); 1 for top-level. */
   depth: number;
@@ -115,7 +125,10 @@ export function derivePublicState(s: StudioState): StudioPublicState {
     version: 1,
     activeFile,
     cursor: s.cursor,
-    element: info === null ? null : { type: ElementTypeEnum[info.type], depth: info.depth },
+    // `info.type` is already the stable kebab-case kind string (#368) — no
+    // enum-name lookup needed (the old PascalCase reverse-mapping this
+    // replaced only worked because `ElementType` used to be a numeric enum).
+    element: info === null ? null : { type: info.type, depth: info.depth },
     diagnostics: s.diagnostics,
     compileStatus: s.diagnostics.errors > 0 ? "errors" : "ok",
     sessionStatus: s.sessionStatus,

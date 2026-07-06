@@ -192,8 +192,6 @@ export {
 export { docKeyFor, docTitleFor } from "@brink-lang/editor";
 
 export type {
-  ElementType,
-  LineInfo,
   KeyHint,
   TabTarget,
   DocumentSessions,
@@ -201,7 +199,12 @@ export type {
   FileConflict,
 } from "./types.js";
 
-export { ElementType as ElementTypeEnum } from "./types.js";
+// ElementType/LineInfo (#368): the duplicate enum that used to live in
+// types.ts is deleted — both now come from the real @brink-lang/editor
+// module. `ElementType` is re-exported as `ElementTypeEnum` for call-site
+// compatibility (existing consumers import the value under that name).
+export type { LineInfo, DialectGeometry } from "@brink-lang/editor";
+export { ElementType as ElementTypeEnum } from "@brink-lang/editor";
 
 // External-conflict merge state (#320, Track V): the conflict slice plus the
 // deterministic sorted-paths helper for badging conflicted files.

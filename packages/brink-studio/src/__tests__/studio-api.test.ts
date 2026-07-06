@@ -76,7 +76,7 @@ describe("StudioPublicState (select)", () => {
       version: 1,
       activeFile: "main.ink", // doc key "main.ink::start" → file path
       cursor: { line: 7, col: 3 },
-      element: { type: "KnotHeader", depth: 1 },
+      element: { type: "knot-header", depth: 1 },
       diagnostics: { errors: 2, warnings: 1 },
       compileStatus: "errors",
       sessionStatus: "none",
@@ -136,6 +136,6 @@ describe("derivePublicState", () => {
       );
     const s = derivePublicState(store.getState());
     expect(s.activeFile).toBe("toppled-temple.ink");
-    expect(s.element).toEqual({ type: "Choice", depth: 2 });
+    expect(s.element).toEqual({ type: "choice", depth: 2 });
   });
 });

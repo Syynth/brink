@@ -558,6 +558,26 @@ export interface LineContext {
   weave: WeavePosition;
   has_tags: boolean;
   block_comment: boolean;
+  /** Dialect classification for this line (#368), present only when a
+   *  dialect is registered (`EditorSession.set_dialect`) and this line
+   *  matched one of its declared kinds (directly or via a chain rule). */
+  dialect?: DialectLineInfo | null;
+}
+
+/** Dialect-classification result for one line (#368) — computed once at
+ *  classification time on the Rust side; the editor never re-derives it. */
+export interface DialectLineInfo {
+  /** The dialect kind (e.g. `"character"`, `"parenthetical"`, `"dialogue"`). */
+  kind: string;
+  /** Captured named-group attributes, sorted by name. For chained lines,
+   *  carries the `chain.carry` groups forward from the run's originating
+   *  match (whole-run `data-speaker`, etc). */
+  attrs: [string, string][];
+  /** Hidden geometry byte spans (full-line-relative, UTF-8 byte offsets). */
+  hidden_spans: [number, number][];
+  /** The editable content byte span (full-line-relative). `null`/absent for
+   *  chain-only (pattern-less) kinds — content is the whole trimmed line. */
+  content_span?: [number, number] | null;
 }
 
 // ── Debug snapshot (State View) ──────────────────────────────────
@@ -746,4 +766,152 @@ export interface ManifestExternal {
 export interface HostManifest {
   externals?: ManifestExternal[];
   types?: SemanticTypeDef[];
+}
+
+// ── Dialogue dialect (#368, tooling / author-time) ──────────────
+//
+// Mirrors `brink_ir::dialect`. A versioned, pure-JSON schema describing a
+// project's dialogue-line conventions (cues, parentheticals, dialogue
+// chains) so the editor can classify and decorate lines without hardcoding
+// any one convention. Authoring-time/tooling artifact only — never
+// runtime-delivered (see docs/dialect-spec.md). Passed as JSON to
+// `EditorSession.setDialect`.
+
+/** The 3-way element nature (ruling: 3-way, not 2-way). */
+export type ElementNature = "narrative" | "machinery" | "structural";
+
+/** The general portable-regex pattern representation every interpreter
+ *  (Rust, TS) executes directly.
+ *
+ *  Field names are **snake_case** on the wire — this type is serialized
+ *  verbatim to/from the Rust `serde` struct (no `rename_all = "camelCase"`
+ *  on the Rust side), and the same JSON file is consumed by both
+ *  interpreters (the conformance corpus + `EditorSession.setDialect`). */
+export interface PatternShape {
+  /** Portable-regex pattern (JS `RegExp` ∩ Rust `regex` subset: named groups
+   *  yes, lookaround/backreferences no), anchored `^...$` against the
+   *  trimmed line. */
+  pattern: string;
+  /** Which named group is the editable content. */
+  content_group?: string | null;
+  /** Named groups whose matched span is hidden geometry. */
+  hidden?: string[];
+  /** Template string for insertion/conversion/format (e.g. `"@${speaker}:<>"`). */
+  template: string;
+}
+
+/** Affix sugar: a content slot wrapped in literal prefix/suffix text —
+ *  compiles mechanically to the pattern form (see `compileAffix` in the TS
+ *  interpreter, mirroring `compile_affix` in Rust). Wire field names are
+ *  snake_case (see {@link PatternShape}). */
+export interface AffixShape {
+  /** Literal prefix before the content (e.g. `"@"`). Hidden by construction. */
+  prefix?: string | null;
+  /** Literal suffix after the content (e.g. `":"`, or `":<>"` when glued). */
+  suffix?: string | null;
+  /** Whether the suffix's glue (`<>`) is appended and always hidden. */
+  glued?: boolean;
+  /** The semantic role of the content slot. Defaults to `"content"`. */
+  content_role?: string;
+}
+
+/** How an element is recognized/produced in source text: either the general
+ *  `pattern` form, or `affix` sugar (compiled to `pattern` before use). */
+export type SourceShape = PatternShape | AffixShape;
+
+/** The post-glue shape the runtime sees out of `continue_line()` output.
+ *  Positionally constrained — non-reserved-prefix shapes (e.g. a
+ *  parenthetical) peel only after a reserved-prefix segment (e.g. a cue).
+ *  Wire field names are snake_case (see {@link PatternShape}). */
+export interface EmittedShape {
+  pattern: string;
+  content_group?: string | null;
+  reserved_prefix?: boolean;
+}
+
+/** A near-miss diagnostic: a pattern that almost matches a kind but doesn't
+ *  quite, paired with a message and severity. */
+export interface MalformedRule {
+  pattern: string;
+  message: string;
+  severity?: string;
+}
+
+/** One declared element kind. */
+export interface DialectElement {
+  /** Open string taxonomy kind (e.g. `"character"`). CSS class derives as
+   *  `brink-<kind>`. */
+  kind: string;
+  nature: ElementNature;
+  /** Absent for chain-only kinds (e.g. `"dialogue"`, produced only by a
+   *  chain rule). When absent, content is the whole trimmed line. */
+  source?: SourceShape | null;
+  emitted?: EmittedShape | null;
+  malformed?: MalformedRule[];
+}
+
+/** "Narrative immediately after one of `after` becomes `becomes`." Blank
+ *  lines always break the chain (not configurable in v1). */
+export interface ChainRule {
+  after: string[];
+  /** Predecessor kinds must produce a line of this kind. Defaults to
+   *  `["narrative"]`. */
+  is?: string[];
+  becomes: string;
+  /** Named groups carried forward onto the whole chained run as `data-*`
+   *  attributes (e.g. `["speaker"]` → `data-speaker`). */
+  carry?: string[];
+}
+
+/** A transition action. Tagged so shapes are unambiguous. */
+export type TransitionAction =
+  | { action: "convert"; kind: string }
+  | { action: "newline" }
+  | { action: "strip" }
+  | { action: "clear" }
+  | { action: "trap" };
+
+/** One Tab/Enter/Shift-Tab transition row, contributed by the dialect for a
+ *  kind it declares — an overlay resolved before the built-in weave table.
+ *  Wire field names are snake_case (see {@link PatternShape}). */
+export interface TransitionRow {
+  /** The kind this row applies to (must be declared, or reserved-structural). */
+  on: string;
+  key: string;
+  has_content?: boolean | null;
+  action: TransitionAction;
+  /** Editor-facing hint text (status bar, etc). */
+  hint?: string | null;
+}
+
+/** One picker/template entry for a declared kind. Wire field names are
+ *  snake_case (see {@link PatternShape}). */
+export interface TemplateEntry {
+  kind: string;
+  label: string;
+  picker_key?: string | null;
+  blank_tab?: boolean;
+}
+
+/** Editor-overlay template metadata (picker labels, blank-tab behavior). */
+export interface Templates {
+  entries?: TemplateEntry[];
+}
+
+/** A versioned, pure-JSON dialogue dialect. No functions, no `RegExp`
+ *  objects — patterns are strings in the portable-regex subset. See
+ *  docs/dialect-spec.md. */
+export interface DialogueDialect {
+  /** Schema version. Only `1` is defined. */
+  version: number;
+  /** Human-readable dialect name (e.g. `"at-cue"`). */
+  name?: string;
+  /** Element declarations, in classification precedence order. */
+  elements?: DialectElement[];
+  /** Chain rules: "narrative immediately after X becomes Y". */
+  chain?: ChainRule[];
+  /** Editor-overlay transition rows — never travels beyond tooling. */
+  transitions?: TransitionRow[];
+  /** Editor-overlay templates (picker key, blank-tab behavior, labels). */
+  templates?: Templates;
 }

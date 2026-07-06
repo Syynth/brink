@@ -1,8 +1,11 @@
 import { Compartment, type Extension } from "@codemirror/state";
-import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult, AutoImportResult } from "@brink/wasm-types";
+import type { EditorView } from "@codemirror/view";
+import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult, AutoImportResult, DialogueDialect } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
+import { AT_CUE_DIALECT, ResolvedDialect } from "./dialect.js";
+import { dialectFacet, reclassifyEffect, elementTypeField } from "./element-type.js";
 import { highlightExtension } from "./highlight.js";
 import { diagnosticsExtension } from "./diagnostics.js";
 import { brinkKeymap } from "./keybindings.js";
@@ -46,6 +49,20 @@ export interface BrinkStudioOptions {
    *  classification (`line_contexts_doc`) instead of the regex classifier,
    *  and transition actions can convert elements. */
   handleSlot?: DocumentHandleSlot;
+
+  /**
+   * The dialogue dialect (#368) driving screenplay classification,
+   * decorations, transitions, and conversions. Defaults to `AT_CUE_DIALECT`
+   * (byte-identical to the pre-#368 hardcoded `@Name:<>` behavior). Pass
+   * `null` to tear down the ENTIRE screenplay layer — classification,
+   * decorations, transitions, and screenplay keybindings — for true
+   * headless composition (pair with `theme: false`, #363). When a
+   * `handleSlot` is present, the dialect is also pushed to the wasm session
+   * (`EditorSession.set_dialect`) so Rust-side `line_contexts` classifies
+   * with it; use `setDialect(view, d)` to live-reconfigure an already-
+   * mounted editor.
+   */
+  dialect?: DialogueDialect | null;
 
   // IDE features (all optional — features are enabled when provided)
   getCompletions?: (source: string, offset: number) => CompletionItem[];
@@ -127,6 +144,66 @@ export interface BrinkStudioOptions {
 // Compartments for runtime toggling
 export const screenplayCompartment = new Compartment();
 export const ideCompartment = new Compartment();
+// `dialectFacet`'s value lives in its OWN compartment, separate from
+// `screenplayCompartment` — it must be reconfigurable independent of
+// whether the screenplay layer itself is present (dialect: null still needs
+// `dialectFacet` to resolve to `null`, not just an absent screenplay
+// bundle), and a value must be provided from EXACTLY ONE place at a time:
+// mixing "provided once at mount, outside any compartment" with "provided
+// again inside a compartment on reconfigure" would leave two providers
+// alive after `setDialect`, and Facet.combine's `values[0]` pick is not
+// guaranteed to prefer the reconfigured one.
+const dialectCompartment = new Compartment();
+
+/**
+ * Resolve a `dialect` option (absent ⇒ preset, `null` ⇒ disabled, explicit ⇒
+ * that dialect) to a compiled `ResolvedDialect | null` for `dialectFacet`,
+ * pushing the same dialect to the wasm session (when a handle is present) as
+ * a side effect. Shared by `brinkStudio(...)` (mount time) and
+ * `setDialect(view, d)` (live reconfigure). Returning the resolved value
+ * (rather than mutating shared state) is what makes this per-state/per-view:
+ * `dialectFacet.of(...)` in the returned extension array scopes it to
+ * exactly the `EditorState` it was built for — two views with different
+ * dialects (or several `DocumentSessions` instances) never clobber each
+ * other, unlike a module-level "current dialect" variable would.
+ */
+function resolveDialectOption(
+  dialect: DialogueDialect | null | undefined,
+  handleSlot: DocumentHandleSlot | undefined,
+): ResolvedDialect | null {
+  if (dialect === null) {
+    handleSlot?.handle?.clearDialect();
+    return null;
+  }
+  const resolved = dialect ?? AT_CUE_DIALECT;
+  handleSlot?.handle?.setDialect(resolved);
+  return ResolvedDialect.compile(resolved);
+}
+
+/**
+ * Live-reconfigure an already-mounted editor's dialect (#368): swaps the
+ * screenplay compartment (decorations/keybindings on or off) AND the
+ * `dialectFacet` value (its own compartment, reconfigured independently —
+ * see the comment on `dialectCompartment`), re-runs the wasm
+ * `set_dialect`/`clear_dialect` on the view's current handle, and dispatches
+ * `reclassifyEffect` so `elementTypeField` recomputes even though the
+ * document text itself didn't change. Pass `null` to tear down the
+ * screenplay layer entirely (mirrors `brinkStudio({ dialect: null })`) —
+ * `dialectFacet` still resolves to `null` in that case (not just an absent
+ * screenplay bundle), since `elementTypeField` reads it unconditionally.
+ */
+export function setDialect(view: EditorView, dialect: DialogueDialect | null): void {
+  const handleSlot = view.state.facet(documentHandleFacet);
+  const resolved = resolveDialectOption(dialect, handleSlot ?? undefined);
+  const screenplayLayer: Extension = dialect === null ? [] : [screenplayDecorations(), brinkKeymap()];
+  view.dispatch({
+    effects: [
+      dialectCompartment.reconfigure(dialectFacet.of(resolved)),
+      screenplayCompartment.reconfigure(screenplayLayer),
+      reclassifyEffect.of(undefined),
+    ],
+  });
+}
 
 export function brinkStudio(options: BrinkStudioOptions): Extension {
   const ideExtensions: Extension[] = [];
@@ -240,12 +317,31 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
   // an Extension ⇒ the host's own theme; absent ⇒ the studio brinkTheme.
   const theme: Extension = options.theme === false ? [] : (options.theme ?? brinkTheme);
 
+  // Dialect (#368): `dialect: null` tears down the screenplay-specific layer
+  // (decorations/keybindings); absent ⇒ the at-cue preset (byte-identical
+  // default); an explicit dialect ⇒ that dialect. Resolved once here and
+  // provided via `dialectFacet` (its own compartment, so `setDialect` can
+  // reconfigure it independent of the screenplay bundle) — scoped to THIS
+  // state/view, not a module global, so two views with different dialects
+  // never clobber each other. Also pushed to the wasm session when a handle
+  // is present, so Rust-side `line_contexts` classifies with it.
+  // `elementTypeField` (structural classification: Choice/Gather/Divert/…
+  // depth, StatusBar, folding, transitions) is NOT part of the screenplay
+  // gate — it always runs, dialect or not, reading `dialectFacet` directly;
+  // only the screenplay decorations/atomic-ranges/edit-guard/keymap are
+  // gated by `screenplayCompartment`.
+  const resolvedDialect = resolveDialectOption(options.dialect, options.handleSlot);
+  const screenplayLayer: Extension =
+    options.dialect === null ? [] : [screenplayDecorations(), brinkKeymap()];
+
   return [
     // The per-view document-handle slot, readable by every extension and the
     // elementTypeField via state.facet(documentHandleFacet).
     documentHandleFacet.of(options.handleSlot ?? null),
+    dialectCompartment.of(dialectFacet.of(resolvedDialect)),
+    elementTypeField,
     theme,
-    screenplayCompartment.of(screenplayDecorations()),
+    screenplayCompartment.of(screenplayLayer),
     highlightExtension({
       getSemanticTokens: options.getSemanticTokens,
       getTokenTypeNames: options.getTokenTypeNames,
@@ -255,7 +351,6 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       onCompile: options.onCompile,
       getActiveFile: options.getActiveFile,
     }),
-    brinkKeymap(),
     ideCompartment.of(ideExtensions),
   ];
 }

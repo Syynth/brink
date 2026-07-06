@@ -17,6 +17,7 @@ import type {
   CodeActionData,
   CompletionItem,
   ConvertTarget,
+  DialogueDialect,
   DocumentChangeSpec,
   DocumentId,
   FoldRange,
@@ -248,6 +249,23 @@ export class DocHandle {
 
   convertElement(offset: number, target: ConvertTarget): TextEdit | null {
     return this.session.convertElementDoc(this.id, offset, target);
+  }
+
+  /**
+   * Register (or replace) the dialogue dialect (#368) on this handle's
+   * shared wasm session. The session — not the handle — owns the
+   * registration (mirrors `setHostManifest`): every document handle sharing
+   * this session sees the same dialect facet on its next `lineContexts()`
+   * call. Throws on an invalid dialect.
+   */
+  setDialect(dialect: DialogueDialect): void {
+    this.session.setDialect(dialect);
+  }
+
+  /** Clear the registered dialect — `lineContexts()` reverts to plain
+   *  structural classification. */
+  clearDialect(): void {
+    this.session.clearDialect();
   }
 }
 
