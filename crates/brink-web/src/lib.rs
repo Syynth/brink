@@ -208,6 +208,21 @@ impl StoryRunner {
         serde_json::to_string(&model).map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// The compiler's line table, project-wide (`INCLUDE`s already resolved
+    /// by the compile), for host-side analysis (#366) — cast detection,
+    /// per-speaker word counts, the #362 line-fit metrics epic. Every entry
+    /// carries its text (plain or a slot/select template) and, when known,
+    /// its source span (`file` + byte `range_start`/`range_end` in that
+    /// file). Reuses the exact `LinesJson` shape the `export-xliff` CLI path
+    /// produces — same project-wide, includes-resolved compiled-line table,
+    /// already built for translator consumption; this just exposes it to
+    /// hosts. Returns JSON (`brink_intl::LinesJson`). Static for the loaded
+    /// program (does not require a running `Story`).
+    pub fn lines_table(&self) -> Result<String, JsError> {
+        let lines = brink_intl::export_lines(&self.data, self.data.source_checksum);
+        serde_json::to_string(&lines).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     /// Register a synchronous external-function binding: when the story calls
     /// `EXTERNAL <name>(...)`, `f` is invoked with the call arguments and its
     /// return value is fed back to the story. Arguments arrive as native JS
@@ -6329,6 +6344,88 @@ mod tests {
     // its methods take `&JsValue`/`Vec<JsValue>` args, and constructing a
     // `JsValue` (e.g. `JsValue::from_f64`) itself panics off wasm32 (not just
     // the error paths), unlike `StoryRunner`'s native-testable subset.
+
+    // ── Lines table (#366) ────────────────────────────────────────────
+    // `StoryRunner::lines_table`'s happy path never constructs a `JsError`
+    // (only the `serde_json` error branch would, and that can't fail for a
+    // `LinesJson` value), so — like `set_dialect`'s acceptance path above —
+    // it's exercised natively here rather than under `binding_wasm_tests`.
+
+    fn compiled(src: &str) -> super::StoryRunner {
+        let out = brink_compiler::compile("main.ink", |_path| Ok(src.to_owned()))
+            .expect("test source compiles");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        super::StoryRunner::new(&bytes).expect("runner constructs")
+    }
+
+    #[test]
+    fn lines_table_reports_text_and_source_span() {
+        let runner = compiled("=== start ===\nHello, world!\n-> END\n");
+        let table = runner.lines_table().expect("lines_table succeeds");
+        let v: serde_json::Value = serde_json::from_str(&table).expect("valid json");
+
+        assert_eq!(v["version"], 1);
+        let scopes = v["scopes"].as_array().expect("scopes array");
+        let scope = scopes
+            .iter()
+            .find(|s| s["name"] == "start")
+            .expect("start scope present");
+        let line = scope["lines"]
+            .as_array()
+            .expect("lines array")
+            .iter()
+            .find(|l| l["content"] == "Hello, world!")
+            .expect("the line's plain text content is present");
+        let source = &line["source"];
+        assert_eq!(source["file"], "main.ink", "{table}");
+        assert!(
+            source["range_start"].as_u64().is_some() && source["range_end"].as_u64().is_some(),
+            "source span present: {table}"
+        );
+    }
+
+    #[test]
+    fn lines_table_resolves_includes_project_wide() {
+        let out = brink_compiler::compile("main.ink", |path| match path {
+            "main.ink" => Ok(
+                "INCLUDE included.ink\n=== start ===\n-> other.other_stitch\n-> END\n".to_owned(),
+            ),
+            "included.ink" => {
+                Ok("=== other ===\n= other_stitch\nFrom the included file.\n-> END\n".to_owned())
+            }
+            _ => Err(std::io::Error::other(format!("unknown file {path}"))),
+        })
+        .expect("multi-file project compiles");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        let runner = super::StoryRunner::new(&bytes).expect("runner constructs");
+
+        let table = runner.lines_table().expect("lines_table succeeds");
+        let v: serde_json::Value = serde_json::from_str(&table).expect("valid json");
+        let scopes = v["scopes"].as_array().expect("scopes array");
+        let has_included_line = scopes.iter().any(|scope| {
+            scope["lines"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|l| l["content"] == "From the included file.")
+        });
+        assert!(
+            has_included_line,
+            "the lines table covers the whole project, INCLUDEs resolved: {table}"
+        );
+        let included_source_file = scopes
+            .iter()
+            .flat_map(|scope| scope["lines"].as_array().into_iter().flatten())
+            .find(|l| l["content"] == "From the included file.")
+            .and_then(|l| l["source"]["file"].as_str().map(str::to_owned));
+        assert_eq!(
+            included_source_file.as_deref(),
+            Some("included.ink"),
+            "source span attributes the line to its own included file: {table}"
+        );
+    }
 }
 
 // ── External-binding wasm tests ──────────────────────────────────────

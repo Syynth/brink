@@ -2177,6 +2177,7 @@ dependencies = [
  "brink-db",
  "brink-format",
  "brink-ide",
+ "brink-intl",
  "brink-ir",
  "brink-runtime",
  "brink-syntax",

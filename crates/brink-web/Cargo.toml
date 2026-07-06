@@ -21,6 +21,12 @@ brink-ir = { workspace = true }
 # `inkt-write` exposes the dependency-free `.inkt` writer for the Program
 # Explorer (`StoryRunner::program_inkt`) — no `pest` reader pulled into the wasm.
 brink-format = { workspace = true, features = ["inkt-write"] }
+# The compiled lines-table export (`StoryRunner::lines_table`, #366) reuses
+# the same `LinesJson` shape the `export-xliff` CLI path produces — one
+# project-wide, INCLUDEs-resolved table of text + source span, already
+# built for translator consumption. No filesystem use in this crate (pure
+# `StoryData` → JSON transform), so it's wasm-safe.
+brink-intl = { workspace = true }
 rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true
