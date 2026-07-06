@@ -337,7 +337,13 @@ function executeDialectRow(
       return true;
     case "strip":
     case "clear": {
-      const content = row.action.action === "strip" ? extractLineContent(line.text) : "";
+      // `strip` extracts via the resolved dialect's OWN declared shapes
+      // (#395), same as `convert` above — a custom dialect's non-at-cue
+      // wrapping kind (e.g. `<<radio>>`) must strip to its bare content
+      // identically, not silently fall through to the hardcoded at-cue
+      // regexes (which would extract nothing and leave an empty line).
+      const content =
+        row.action.action === "strip" ? extractLineContent(line.text, dialect.convertibleShapes()) : "";
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: prefix + content },
         selection: { anchor: line.from + prefix.length + content.length },

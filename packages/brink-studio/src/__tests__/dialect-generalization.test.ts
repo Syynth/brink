@@ -147,6 +147,47 @@ describe("dialect convert-row generalization: executeDialectRow (#395)", () => {
     expect(view.state.doc.toString()).toBe("(Alice)<>\n");
     view.destroy();
   });
+
+  // `strip` is the SAME switch as `convert` in `executeDialectRow` — before
+  // this fix it still called the bare `extractLineContent(line.text)` (no
+  // shapes), so a custom non-at-cue dialect's `strip` row would fail to
+  // extract content identically to the pre-#395 `convert` bug: no
+  // `@...:<>`/`(...)<>` match and no recognized prefix sigil, so the line
+  // would strip to empty instead of its actual content.
+  it("strips a custom dialect's channel line to its bare content via Shift-Tab, extracting the non-at-cue content correctly", () => {
+    const STRIP_DIALECT: DialogueDialect = extendDialect(AT_CUE_DIALECT, {
+      elements: [
+        {
+          kind: "channel",
+          nature: "narrative",
+          source: {
+            pattern: "^(?<lead><<)(?<name>[^>]*)(?<tail>>>)$",
+            content_group: "name",
+            hidden: ["lead", "tail"],
+            template: "<<${name}>>",
+          },
+        },
+      ],
+      transitions: [{ on: "channel", key: "Shift-Tab", action: { action: "strip" } }],
+    });
+    const view = mount("<<radio>>\n", { dialect: STRIP_DIALECT });
+    expect(view.state.field(elementTypeField)[0].type).toBe("channel");
+
+    view.dispatch({ selection: { anchor: view.state.doc.line(1).to } });
+    const handled = runScopeHandlers(
+      view,
+      new KeyboardEvent("keydown", { key: "Tab", shiftKey: true }),
+      "editor",
+    );
+
+    expect(handled).toBe(true);
+    // The bug: extraction via the hardcoded at-cue regexes would produce ""
+    // (no @...:<> / (...)<> match, no recognized prefix sigil) — the fix
+    // threads the dialect's own `channel` shape through so "radio" survives
+    // the strip.
+    expect(view.state.doc.toString()).toBe("radio\n");
+    view.destroy();
+  });
 });
 
 // ── Site 2: inline-markup.ts content-region widths ──────────────────
