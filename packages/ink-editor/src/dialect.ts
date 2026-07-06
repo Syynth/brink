@@ -376,13 +376,17 @@ export class ResolvedDialect {
     return el.shape.template;
   }
 
-  /** The `content_group` name for a declared kind (e.g. `"speaker"` for
-   *  `character`) — the named placeholder in that kind's `template` a
-   *  `convert` transition action's extracted content fills. `null` for a
-   *  pattern-less (chain-only) or unknown kind. */
+  /** The template-fill placeholder name for a declared kind (e.g.
+   *  `"speaker"` for `character`) — the named placeholder in that kind's
+   *  `template` a `convert` transition action's extracted content fills.
+   *  This is `template_group` when the kind declares one (#406 — e.g.
+   *  `parenthetical`'s `content_group` is wrap-inclusive for `content_span`
+   *  geometry, but the template's placeholder is the bare inner group),
+   *  falling back to `content_group` for every kind that doesn't need the
+   *  distinction. `null` for a pattern-less (chain-only) or unknown kind. */
   contentGroupFor(kind: string): string | null {
     const el = this.elements.find((e) => e.decl.kind === kind);
-    return el?.shape?.content_group ?? null;
+    return el?.shape?.template_group ?? el?.shape?.content_group ?? null;
   }
 
   /** The underlying dialect JSON (for `templates.entries` picker metadata
@@ -399,12 +403,23 @@ export class ResolvedDialect {
    * built-in `character`/`parenthetical`), so extraction tries every declared
    * shape rather than one hardcoded pair of regexes. Pattern-less (chain-only)
    * kinds have no shape and are omitted.
+   *
+   * Uses `template_group` (falling back to `content_group`) for the
+   * extracted group (#406): a kind's `content_group` may be wrap-inclusive
+   * for `content_span` geometry purposes (e.g. `parenthetical`), but a
+   * convert/strip round-trip needs the bare value `template` itself wraps —
+   * matching `DEFAULT_CONVERTIBLE_SHAPES`'s and the built-in
+   * `convertToParenthetical`/`stripToNarrative` actions' "Parenthetical
+   * content is the bare text between the parens" convention.
    */
   convertibleShapes(): ConvertibleShape[] {
     const shapes: ConvertibleShape[] = [];
     for (const el of this.elements) {
       if (!el.shape) continue;
-      shapes.push({ pattern: el.shape.pattern, contentGroup: el.shape.content_group ?? null });
+      shapes.push({
+        pattern: el.shape.pattern,
+        contentGroup: el.shape.template_group ?? el.shape.content_group ?? null,
+      });
     }
     return shapes;
   }
@@ -436,13 +451,21 @@ function buildMatch(
   const attrs: Array<[string, string]> = [];
   const hiddenSpans: Array<[number, number]> = [];
   let contentSpan: [number, number] | null = null;
+  // `template_group` (#406), when it names a DIFFERENT group than
+  // `content_group`, is a template-fill-only helper group — it must not leak
+  // into `attrs`/`data-*` (byte-identical-attrs contract) or `hiddenSpans`
+  // (it's not a hiding instruction; a kind that wants it hidden puts it in
+  // `hidden` too). It stays visible on the line, simply excluded from both
+  // derived outputs.
+  const templateOnlyGroup =
+    shape.template_group && shape.template_group !== shape.content_group ? shape.template_group : null;
 
   for (const name of Object.keys(groups)) {
     const span = groupIndices[name];
     if (!span) continue;
     const [s, e] = span;
-    if (hidden.has(name)) {
-      hiddenSpans.push([leadingWs + s, leadingWs + e]);
+    if (hidden.has(name) || name === templateOnlyGroup) {
+      if (hidden.has(name)) hiddenSpans.push([leadingWs + s, leadingWs + e]);
       continue;
     }
     const value = groups[name];
@@ -491,10 +514,22 @@ export const AT_CUE_DIALECT: DialogueDialect = {
       kind: "parenthetical",
       nature: "narrative",
       source: {
-        pattern: "^(?<content>\\([^)]*\\))(?<tail><>)$",
+        // `content` (outer, parens-inclusive) drives `content_span` — the
+        // parens stay visible/editable/markup-scoped content (see
+        // `screenplay.ts`: "Parenthetical's leading paren is content, not
+        // hidden"). `content_inner` (nested, bare) is `template_group` — the
+        // group whose value fills the template placeholder, so a
+        // convert/strip row targeting `parenthetical` from a bare-content
+        // source round-trips correctly (#406): the literal parens live in
+        // `template` itself, matching every other convert/strip consumer's
+        // "Parenthetical content is the bare text between the parens"
+        // convention (`@brink/ink-operations`'s `DEFAULT_CONVERTIBLE_SHAPES`,
+        // the built-in `convertToParenthetical`/`stripToNarrative` actions).
+        pattern: "^(?<content>\\((?<content_inner>[^)]*)\\))(?<tail><>)$",
         content_group: "content",
+        template_group: "content_inner",
         hidden: ["tail"],
-        template: "${content}<>",
+        template: "(${content_inner})<>",
       },
       emitted: {
         pattern: "^(?<content>\\([^)]*\\))\\s*",

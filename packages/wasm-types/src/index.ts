@@ -1037,8 +1037,23 @@ export interface PatternShape {
    *  yes, lookaround/backreferences no), anchored `^...$` against the
    *  trimmed line. */
   pattern: string;
-  /** Which named group is the editable content. */
+  /** Which named group is the editable content. Drives `content_span`
+   *  geometry (markup/inline-decoration scoping) and classification
+   *  `data-*` attrs — for a kind like `parenthetical` this legitimately
+   *  includes wrapping punctuation that stays visible on the line. */
   content_group?: string | null;
+  /** Which named group's captured value fills `template`'s placeholder for
+   *  convert/strip round-trips. Defaults to `content_group` when absent —
+   *  additive, byte-identical for every dialect that doesn't set it (#406).
+   *  Exists because a kind can need a different answer to "what region is
+   *  content" (`content_group`) than to "what value round-trips through
+   *  `template`" (`template_group`) — e.g. `parenthetical`'s `content_group`
+   *  is wrap-inclusive (parens stay part of the editable/markup-scoped
+   *  region) while `template_group` names a nested bare-text group so the
+   *  literal parens live in `template` itself, matching how every other
+   *  convert/strip consumer treats "Parenthetical content" as bare text.
+   *  Never emitted as a `data-*` attr and never hidden. */
+  template_group?: string | null;
   /** Named groups whose matched span is hidden geometry. */
   hidden?: string[];
   /** Template string for insertion/conversion/format (e.g. `"@${speaker}:<>"`). */
