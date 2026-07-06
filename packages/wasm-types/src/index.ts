@@ -760,6 +760,14 @@ export interface DebugVisit {
 export interface DebugChoice {
   text: string;
   target?: string;
+  /**
+   * The raw `pending_choices` index — the same pre-filter position the
+   * live `Choice.index` carries and that `choose()` expects. Not a
+   * post-filter enumeration position: invisible-default choices are
+   * filtered out of what's shown but still occupy a slot, so this can
+   * skip values (e.g. 0, 2, 3 if index 1 was an invisible default).
+   */
+  index: number;
 }
 
 export interface DebugRng {

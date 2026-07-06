@@ -982,6 +982,7 @@ struct DebugChoiceJs {
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     target: Option<String>,
+    index: usize,
 }
 
 #[derive(Serialize)]
@@ -1026,6 +1027,7 @@ fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStateJs {
             .map(|c| DebugChoiceJs {
                 text: c.text,
                 target: c.target,
+                index: c.index,
             })
             .collect(),
         rng: DebugRngJs {

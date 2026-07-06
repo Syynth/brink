@@ -43,12 +43,14 @@
  * text: after a restore/reload the transcript starts fresh ("you're just
  * here again", matching a real save/load), and `debugSnapshot()` supplies the
  * live status/choices/position. Pending choices come from
- * `debugSnapshot().pending_choices`, index-zipped in order — `DebugChoice`
- * carries text/target but not `index`; the Rust `Choice.index` is exactly the
- * post-filter enumeration position over the same list (`story.rs`'s
- * `pending_choices` builder and `debug_snapshot`'s builder apply the same
- * `!is_invisible_default` filter in the same order), so this is a safe,
- * documented reconstruction, not a guess. `tags` isn't tracked per
+ * `debugSnapshot().pending_choices`, mapped straight across — `DebugChoice`
+ * carries its own `index`, which is the *pre-filter* `flow.pending_choices`
+ * position (`story.rs`'s `resolved_choices_for`/`build_debug_snapshot` both
+ * derive it from the same `.enumerate().filter(!is_invisible_default)` pass
+ * as the live `Choice` builder), i.e. exactly the raw index `choose()`
+ * expects. It is *not* the post-filter enumeration position — do not
+ * re-derive it from array position when a mix of visible and
+ * invisible-default choices is possible. `tags` isn't tracked per
  * `DebugChoice` and comes back empty — unused by the player UI today.
  *
  * **`deferred` / `continueToPause()` interaction (#388 checklist):** the
@@ -149,15 +151,17 @@ const NOOP_CALLBACKS: ProviderCallbacks = {
   },
 };
 
-/** Zip `debugSnapshot().pending_choices` into `Choice[]` — see the
- * "Post-restore/reload transcript" doc comment above for why this is a safe
- * reconstruction rather than a guess. */
+/** Map `debugSnapshot().pending_choices` into `Choice[]` — see the
+ * "Post-restore/reload transcript" doc comment above for why `c.index` (the
+ * raw pre-filter `pending_choices` position `DebugChoice` carries) is used
+ * directly rather than the array position, which would be wrong whenever an
+ * invisible-default choice is mixed in at the same pause point. */
 function choicesFromDebugState(
   debugState: SessionSnapshot["debugState"],
 ): Choice[] {
   if (!debugState) return [];
-  return debugState.pending_choices.map((c, index) => ({
-    index,
+  return debugState.pending_choices.map((c) => ({
+    index: c.index,
     text: c.text,
     tags: [],
   }));
@@ -294,8 +298,25 @@ export class LocalSessionProvider implements SessionProvider {
       if (prev) {
         // In-place hot-reload: replays this session's own journal against the
         // recompiled program (spec's replay-on-recompile path).
-        outcome = prev.reload(bytes);
-        session = prev;
+        try {
+          outcome = prev.reload(bytes);
+          session = prev;
+        } catch {
+          // `reload()` throws on decode/link failure of the recompiled bytes
+          // (rather than returning a `ReplayOutcome`) — `prev` is left
+          // untouched by the wasm side in that case, but it's still the old
+          // program's session and can't be reused. Free it and fall back to
+          // a fresh session on the new bytes (dropping the journal), matching
+          // the pre-migration provider's recovery path — don't let this leak
+          // the old wasm handle or dead-end the player in an error state.
+          prev.free();
+          // Clear the field immediately: `this.session` still points at the
+          // now-freed `prev` until `bindSession` reassigns it below, and if
+          // `sessionFactory` itself throws next, the outer catch must not
+          // free this same handle a second time.
+          this.session = null;
+          session = this.sessionFactory(bytes);
+        }
       } else {
         session = this.sessionFactory(bytes);
       }
@@ -332,6 +353,13 @@ export class LocalSessionProvider implements SessionProvider {
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // Don't leak a live wasm handle: whatever session is currently bound
+      // (including one just bound earlier in this same `start()` call) must
+      // be freed before we drop the reference.
+      if (this.session) {
+        this.unwatchJournal();
+        this.session.free();
+      }
       this.session = null;
       this.bytes = null;
       this.status = "error";
