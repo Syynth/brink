@@ -1097,10 +1097,26 @@
 - **SCOPE:** moderate
 - **WHY:** A rename that rewrites a declaration but not its references is broken and dangerous — it leaves dangling references. Cross-file correctness and the safe-by-default guard must be uniform across every rename entry point, not split into a fast-but-unsafe F2 alongside a careful menu path. Unifying on one pipeline removes the divergent (buggy) code path and guarantees F2 gets the same breakage report the menu does.
 
-## Editor epic ships as one npm release
-- **WHEN:** 2026-06-30
+## Editor round 2 (celeris feedback): design-first, single 0.8.0 release
+- **WHEN:** 2026-07-05
 - **PROJECT:** brink
-- **SYSTEM:** brink-studio / @brink-lang/editor
+- **SYSTEM:** cross-system (editor-ui/web)
 - **SCOPE:** moderate
-- **WHAT:** The #311 @brink-lang/editor enhancement sweep (A–H + inline-rename badge + infra #314/#316/#317/#318) ships as a SINGLE npm release of @brink-lang/editor (+ @brink-lang/web), not incremental cuts. The phased build order (correctness → wasm blocks → editor UX → INCLUDE ergonomics → structural refactors) is internal sequencing only.
-- **WHY:** A single coherent quality lift reads better in a changelog and avoids piecemeal version churn; the tight dependency spine (#317→#316→#314/H) means a partial release would expose half-finished structural surfaces.
+- **WHAT:** The celeris-filed round (#363–#371 + #343/#347/#276) ships as one 0.8.0 release. Design epics #370 (Story Session) and #368 (dialect) run design fan-outs first; any build item their outcome could affect (#365, #366, #371-snapshots) is held until the relevant design is approved, while design-independent items build immediately in parallel. Snapshot/diff APIs are designed as Story Session methods. #363's class taxonomy ships as an open string-keyed scheme (documented core kinds, host-extensible). (#362 line-fit epic is parked out of this round: it depends on #366, manifest-trajectory answers from #368, and celeris-side metrics input.)
+- **WHY:** These are public contracts hosts consume directly (classes, attributes, APIs) — shipping shapes in 0.8.0 that a design round would immediately rename means breaking changes for celeris; one release delivers the whole coherent surface at once.
+
+## Story Session (#370): the journal is Rust-canonical; web and bevy are bindings
+- **WHEN:** 2026-07-05
+- **PROJECT:** brink
+- **SYSTEM:** runtime / brink-web / bevy-brink (Story Session primitive)
+- **SCOPE:** architectural
+- **WHAT:** The session journal (choices, set-var, goto, external results, seed, checkpoints) lives in Rust — the existing `ReplayRecorder` generalizes into it, wrapping `FlowInstance` as a composing session layer. `@brink-lang/web`'s `StorySession` is a thin wasm binding over it (journal serializes to JSON via serde for host save slots); bevy-brink consumes the same session layer first-class. There is no JS-side journal. Supporting rulings: v1 journal format embeds a terminal `SaveState` for fast-restore; mid-turn mutations are restricted to turn boundaries by contract with a reserved position-anchor field; the typed snapshot/diff Rust export ships in v1; live-replay externals park as `AwaitingExternal` + `continueReplay()`; `callFunction` is journaled; full `runner` escape hatch with documented journal bypass; flow-tag dimension reserved in the schema; label drift at a replayed choice index is a soft warning. Constraint: the journal layer is observation-only around the VM — episode behavior untouched, no oracle regeneration.
+- **WHY:** The session/replay facility is wanted in Bevy games, not just web hosts — a JS-side journal would strand bevy-brink and leave two recorders (Rust + JS) whose truncation can never stay coherent (the failure the design critiques found in all three proposals). One Rust journal is the single source of truth; every consumer binds to it.
+
+## Dialogue dialect (#368): authoring-time/tooling artifact only — never runtime-delivered
+- **WHEN:** 2026-07-05
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui / brink-ir (dialect system)
+- **SCOPE:** architectural
+- **WHAT:** The dialect declaration is an authoring-time/tooling artifact: no `.inkb` embedding, no project file in v1 (mount-time config only), and the host-capability-manifest charter (tooling-only, never runtime-consumed) stands unamended. The `emitted` facet stays in the v1 schema because the *editor* needs it (studio Player cue display; future #362 line-fit) — it models what the runtime will do, it does not instruct the runtime. Brink ships the reference `DialectParser` as an ordinary opt-in library; a consumer wanting editor/game single-truth imports it and passes the same JSON in their own game code. Supporting rulings: portable-regex core (JS ∩ Rust subset, CI-enforced) with affix sugar compiling to it; classification implemented in Rust `line_contexts()` in v1 with TS as a thin interpreter; enum→string `ElementType` migration is a hard cut in 0.8.0 with a documented PascalCase→kebab mapping; `nature` is three-valued (narrative/machinery/structural); blank lines always break the dialogue chain in v1; `dialect: null` tears down the whole screenplay layer; intl×affix interaction filed as a follow-up rather than blocking v1.
+- **WHY:** The game developer writes their own parser — it is the ground truth of their game; the editor's job is to model that truth for authoring, not to make game parsing config-driven (a problem no consumer has). Dropping runtime delivery removes the whole delivery-channel question (project file / .inkb metadata / manifest charter amendment) from v1 scope.
