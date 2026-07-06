@@ -85,7 +85,11 @@ default preset is the acceptance gate):
 
 - `element-type.ts` screenplay post-pass (cue/parenthetical/dialogue chain; the classify pass
   runs on narrative AND choice-body base lines preserving depth; **chaining runs on narrative
-  only** — cues inside choice bodies keep today's behavior),
+  only** — cues inside choice bodies keep today's behavior. Narrative inside a conditional or
+  sequence branch arm is still plain narrative at this level (unlike choice-body narrative,
+  which is retyped before the post-pass runs) and both classifies and chains normally — see
+  #413. Conditional/sequence scaffold lines (the `{`/`}` braces, `- cond:`/`- else:` branch
+  headers) classify as logic; a `~`-sigil logic line always wins over chain continuation),
 - `screenplay.ts` sigil geometry (`CHAR_SUFFIX_LEN`/`GLUE_LEN`/`characterName()` → all derived
   from hidden-group match indices),
 - Tab/Enter/Shift-Tab screenplay transition rows (`transitions.ts`) + the `keybindings.ts`
