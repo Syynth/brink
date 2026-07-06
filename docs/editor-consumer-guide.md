@@ -138,7 +138,10 @@ Small pure helpers every host needs at the editor ↔ host seam, published from
 
 ## Story Session — runtime session management (#370 #387 #389)
 
-Beyond the editor, `@brink-lang/web` exposes `WebSession` — a stateful runtime session that wraps
+Beyond the editor, `@brink-lang/web` exposes **`StorySessionHandle`** — the TypeScript class
+consumers import. (It wraps the raw wasm-bindgen `WebSession` class, which also appears in the
+package's exports; use the handle — it adds the journal-dirty notification and the ergonomic
+`restore` shape.) The handle is a stateful runtime session that wraps
 the story VM with journaling, replay, and snapshot/diff semantics. This is the surface for
 **persistence**, **rewind/replay**, and
 **save-game mechanics**. The runtime journal is the durable save artifact; the rest of the API
@@ -146,7 +149,7 @@ manages stepping, turn-boundary mutations, and divergence detection.
 
 ### The stepping + StepOutcome split
 
-At the stepping layer, `WebSession` distinguishes **two park states**:
+At the stepping layer, `StorySessionHandle` distinguishes **two park states**:
 
 - **`StepOutcome` — deferred external** (`{ type: "awaiting_external", deferred: true, name? }`):
   Host must call `resolveExternal(value)` to resume. This is the out-of-band park from `advance()`.
@@ -202,12 +205,12 @@ function calls. Checksum + seed embedded. Optionally includes a fast-restore che
 
 **To save:** call `exportJournal(): SessionJournal` (JSON). Persist the result in a save slot.
 
-**To load:** call `WebSession.restore(storyBytes, journalJson): WebSession`. The restored session
-fast-restores from the embedded checkpoint if the program checksum matches; otherwise replays the
-journal against the new program.
+**To load:** call `StorySessionHandle.restore(storyBytes, journal, seed?, deferred?)`, which
+returns **`{ session, outcome }`** — the restored session plus the `ReplayOutcome` from that
+restore/replay. The session fast-restores from the embedded checkpoint if the program checksum
+matches; otherwise it replays the journal against the new program.
 
-Both return a `ReplayOutcome` (asynchronously stashed on the instance — read via `lastReplayOutcome`
-after construction/reload):
+The `ReplayOutcome` shapes:
 
 - **`{ type: "replayed", warnings: ReplayWarning[] }`** — Journal played to completion. Warnings
   are soft (e.g. choice labels drifted but indices are stable).
@@ -257,25 +260,27 @@ and must be resumed via `continueReplay()` after resolving. **Recorded-mode repl
 The wrapped `FlowInstance` is reachable for advanced use cases (e.g., shared flows that never
 journal):
 
-- **`FlowInstance` methods are not exposed** on `WebSession`; the journal layer is observation-only.
+- **`FlowInstance` methods are not exposed** on the session; the journal layer is observation-only.
 - **Shared flows** (#200) keep working normally — their externals never journal, per the story
   spec.
 - The session never steps shared-flow branches; they're transparent to the journal.
 
-### Persistence loop pattern (with journal-append hook)
+### Persistence loop pattern (with the journal-dirty hook)
 
 The typical save-game flow with the session:
 
 ```typescript
-// On user "save game" action (or autosave):
-const journal = session.exportJournal();
-// If there's a journal-append notification (from issue #390, deferred + debounced),
-// it fires here — persist the journal to durable storage (e.g., IndexedDB, API).
+// Auto-persist: the push signal (shipped in #390 / PR #393). Fires deferred +
+// debounced — after the call stack that grew the journal has fully unwound,
+// coalescing bursts (rapid choose/advance) into one call. Returns unsubscribe.
+const unsubscribe = session.onJournalDirty(() => {
+  const journal = session.exportJournal();
+  // persist to durable storage (IndexedDB, API, save slot)
+});
 
 // On app restart / load game:
 const journal = /* fetch from storage */;
-const restoredSession = WebSession.restore(storyBytes, journal);
-const outcome = restoredSession.lastReplayOutcome();
+const { session: restored, outcome } = StorySessionHandle.restore(storyBytes, journal);
 if (outcome.type === "replayed") {
   // Good — resume from the journal.
 } else if (outcome.type === "diverged" || outcome.type === "failed") {
@@ -283,11 +288,9 @@ if (outcome.type === "replayed") {
 }
 ```
 
-The **journal-append hook** (shipping separately in issue #390) provides a **push signal**; it fires
-asynchronously and debounced each time the journal grows, so the host can auto-persist without
-blocking the stepping loop. Call `exportJournal()` in that hook to snapshot the current state.
-Without the hook, `exportJournal()` is the **pull signal** — call it on demand (user save, periodic
-autosave, app quit).
+`onJournalDirty` is the **push signal** — it never fires synchronously inside a session method.
+`exportJournal()` remains the **pull signal** — call it on demand (user save, periodic autosave,
+app quit).
 
 ## What is genuinely studio-only (you rebuild in your framework)
 
