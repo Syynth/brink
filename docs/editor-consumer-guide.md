@@ -138,9 +138,9 @@ Small pure helpers every host needs at the editor ↔ host seam, published from
 
 ## Story Session — runtime session management (#370 #387 #389)
 
-Beyond the editor, `@brink-lang/web` exposes `WebSession` (exported as `StorySessionHandle` in
-TypeScript) — a stateful runtime session that wraps the story VM with journaling, replay, and
-snapshot/diff semantics. This is the surface for **persistence**, **rewind/replay**, and
+Beyond the editor, `@brink-lang/web` exposes `WebSession` — a stateful runtime session that wraps
+the story VM with journaling, replay, and snapshot/diff semantics. This is the surface for
+**persistence**, **rewind/replay**, and
 **save-game mechanics**. The runtime journal is the durable save artifact; the rest of the API
 manages stepping, turn-boundary mutations, and divergence detection.
 
@@ -168,7 +168,7 @@ Methods:
   parked on `choices`. No validation — bad index errors on next step.
 - **`resolveExternal(value: unknown): void`** — resolve the parked external. No-op if not awaiting
   (safe to call spuriously). The value is recorded in the journal; `advance()` next step.
-- **`has_pending_external(): boolean`** — check if parked on a deferred external without stepping.
+- **`hasPendingExternal(): boolean`** — check if parked on a deferred external without stepping.
 
 The **constructor option `deferred: string[]`** forces named externals to always park as
 `awaiting_external`, even when the story defines a fallback body — useful for host-critical
@@ -219,9 +219,9 @@ after construction/reload):
   replay parked on a deferred external (`reason: { type: "awaiting_external", name }`). Session
   parked at the reached position.
 
-**The journal cap**: The journal grows unbounded per the VM's `step_limit`. Set `SESSION_JOURNAL_CAP`
-(same order as `RECORDING_CAP`) to cap persistent journals. Hitting the cap sets `journal.truncated
-= true` and degrades to fast-restore-only (no replay after recompile).
+**The journal cap**: The journal is capped at a fixed limit, `SESSION_JOURNAL_CAP` (65,536 events).
+Beyond that, appends are dropped. Hitting the cap sets `journal.truncated = true` and degrades to
+fast-restore-only (no replay after recompile).
 
 ### Snapshot + diff: typed state observation
 
