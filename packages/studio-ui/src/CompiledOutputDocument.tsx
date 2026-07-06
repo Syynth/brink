@@ -92,8 +92,10 @@ const compiledOutputTheme = EditorView.theme({
     color: "var(--bs-fg-muted)",
   },
   "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-    backgroundColor:
-      "color-mix(in srgb, var(--bs-accent) 30%, transparent) !important",
+    // Behind-text layer: solid token + layer opacity, not color-mix() —
+    // Chromium 88 (RMMZ/NW.js) drops color-mix() declarations (#276).
+    backgroundColor: "var(--bs-accent) !important",
+    opacity: "0.3",
   },
 });
 

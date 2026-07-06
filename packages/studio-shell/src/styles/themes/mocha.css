@@ -7,7 +7,10 @@
    The private palette (--ctp-*) lives only inside theme files; components
    reference the semantic --bs-* tokens exclusively. Alpha variants of
    semantic colors (hovers, selections, glows) are derived in component CSS
-   with color-mix() over the tokens, so themes only define base colors. */
+   as rgb(var(--bs-X-rgb) / N%) over the raw sRGB triplets below — NOT with
+   color-mix(), which Chromium 88 (RMMZ/NW.js) lacks entirely (#276). Two-
+   color mixes that can't be expressed as an alpha over one token are
+   precomputed per theme in the derived-colors section. */
 
 .brink-studio {
   /* ── Private palette (Catppuccin Mocha) ─────────────────────────── */
@@ -67,6 +70,34 @@
   --bs-syn-parameter: var(--ctp-flamingo);
   --bs-syn-decorator: var(--ctp-peach);
   --bs-syn-label: var(--ctp-pink);
+
+  /* ── Chromium-88-safe derived colors (#276) ─────────────────────────
+     Raw sRGB triplets for every token that component CSS mixes with an
+     alpha: rgb(var(--bs-X-rgb) / N%). Keep each triplet in sync with the
+     hex of its base token above. */
+  --bs-accent-rgb: 137 180 250; /* --ctp-blue */
+  --bs-surface-bg-rgb: 37 37 54; /* --ctp-surface-low */
+  --bs-panel-bg-rgb: 42 42 61; /* --ctp-surface-high */
+  --bs-fg-rgb: 205 214 244; /* --ctp-text */
+  --bs-fg-muted-rgb: 108 112 134; /* --ctp-overlay0 */
+  --bs-border-rgb: 69 71 90; /* --ctp-surface1 */
+  --bs-error-rgb: 243 139 168; /* --ctp-red */
+  --bs-warning-rgb: 249 226 175; /* --ctp-yellow */
+  --bs-success-rgb: 166 227 161; /* --ctp-green */
+
+  /* Editor active line: surface-bg at 60% alpha. Consumed by the editor
+     theme as var(--bs-active-line-bg, var(--bs-surface-bg)) so bare hosts
+     that define only base tokens degrade to the opaque surface. */
+  --bs-active-line-bg: rgb(var(--bs-surface-bg-rgb) / 60%);
+
+  /* Opaque two-color mixes, precomputed per theme (srgb interpolation of
+     the two base tokens at the given weight). */
+  --bs-graph-knot-border: #8f7bb0; /* symbol-knot 55% + border */
+  --bs-graph-stitch-border: #648a9b; /* symbol-stitch 45% + border */
+  --bs-graph-end-border: #a56c85; /* error 55% + border */
+  --bs-graph-expanded-bg: #252536; /* panel-bg 55% + editor-bg */
+  --bs-graph-current-bg: #3b435f; /* accent 18% + panel-bg */
+  --bs-conflict-banner-bg: #43404b; /* warning 12% + panel-bg */
 
   color-scheme: dark;
 }

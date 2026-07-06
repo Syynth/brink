@@ -2,6 +2,17 @@
 export { brinkStudio } from "./extensions.js";
 export type { BrinkStudioOptions } from "./extensions.js";
 
+// Tier-1 boundary helpers (#369): the canonical positional diagnostic sort
+// (file → offset → errors-first) and offset → 1-based line:col. Presentation
+// ORDER is a host choice layered on the canonical positional sort — hosts may
+// re-group (severity-first, per-file, …) on top.
+export { sortDiagnostics, lineColAt } from "./boundary.js";
+// Module-identity re-exports (#369): compile-result types re-exported from
+// @brink-lang/web so hosts consuming them through the editor get the same
+// module identity as code importing @brink-lang/web directly — no structural
+// "CompileResultLike" shims needed.
+export type { CompileResult, Diagnostic } from "@brink-lang/web";
+
 // Inline rename (#323/#324): the in-editor rename widget + its pure badge/report
 // logic (unit-tested via @brink-lang/studio).
 export {
@@ -49,7 +60,7 @@ export { liveArgRange } from "./argument-widgets.js";
 export { setHostWidgets } from "./widget-registry.js";
 
 // Types for line classification
-export { elementTypeField, ElementType } from "./element-type.js";
+export { elementTypeField, ElementType, assignOptionPaths } from "./element-type.js";
 export type { LineInfo } from "./element-type.js";
 
 // Code folding (#313 G): HIR-driven fold ranges, including the leading
@@ -61,6 +72,17 @@ export type { FoldingOptions, FoldPlaceholder } from "./folding.js";
 // declarations. `qualifiedInkPath`/`headerName` are the pure path core.
 export { playFromHereExtension, qualifiedInkPath, headerName } from "./play-from-here.js";
 export type { PlayFromHereOptions } from "./play-from-here.js";
+
+// Host gutter markers (#343): host-contributed gutter affordances
+// (breakpoints, annotations) in a slot coordinated with the built-in gutters.
+// Wired via `BrinkStudioOptions.getGutterMarkers` / `onGutterMarkerClick`;
+// standalone `hostGutterExtension` for hosts composing extensions directly.
+export {
+  hostGutterExtension,
+  refreshGutterMarkers,
+  refreshGutterMarkersEffect,
+} from "./host-gutter.js";
+export type { HostGutterMarker, HostGutterOptions } from "./host-gutter.js";
 
 // Per-view wasm document handles (issue #122 / #90)
 export {
@@ -77,7 +99,12 @@ export {
   docTitleFor,
   parseDocKey,
 } from "./document-sessions.js";
-export type { DocTarget, DocumentCallbacks, KeyHint } from "./document-sessions.js";
+export type {
+  DocTarget,
+  DocumentCallbacks,
+  KeyHint,
+  ViewStateSnapshot,
+} from "./document-sessions.js";
 
 // Project session
 export { ProjectSession } from "./project-session.js";
@@ -149,6 +176,19 @@ export type {
   ResultsBufferModel,
   SearchResultsBufferOptions,
 } from "./search-results-buffer.js";
+
+// Extensible inline-markup rules (#367): host-registered patterns decorated
+// as `brink-markup-<name>` marks, scoped to the narrative content regions of
+// classified lines (never over ink syntax). Ships zero rules by default;
+// `rmmzAngleTagRule` is the optional angle-tag preset. `contentRegions` is the
+// pure, unit-testable scoping core.
+export { inlineMarkup, contentRegions, rmmzAngleTagRule } from "./inline-markup.js";
+export type {
+  InlineMarkupRule,
+  InlineMarkupPatternRule,
+  InlineMarkupPairRule,
+  MarkupRegion,
+} from "./inline-markup.js";
 
 // Find panel (#319 Track N): opt-in @codemirror/search factory. Not auto-enabled
 // in the studio editor — hosts opt in by adding the returned extension.

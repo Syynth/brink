@@ -31,6 +31,14 @@ export interface LineInfo {
   sticky: boolean;
   /** Whether a divert is standalone (just "-> target", not a tunnel) */
   standalone: boolean;
+  /**
+   * Option identity: the full lineage of option indices through the weave for
+   * `Choice` and `ChoiceBody` lines (e.g. `[0, 2, 1]` — third option under the
+   * first option's sub-weave, second option of that group). Zero-based per
+   * weave level; gathers close their level's groups so a following option at
+   * the same depth starts a new group at index 0. Absent on all other lines.
+   */
+  optionPath?: readonly number[];
 }
 
 const ELEMENT_CLASSES: Record<ElementType, string> = {
@@ -184,6 +192,78 @@ function classifyLine(text: string): LineInfo {
   return { type: ElementType.NarrativeText, depth: 0, sticky: false, standalone: false };
 }
 
+// ── Option identity post-pass (#364) ────────────────────────────────
+// Assigns every Choice line and its ChoiceBody lines an option path — the
+// full lineage of zero-based option indices through the weave — so hosts can
+// tell consecutive options at the same depth apart (and know which parent a
+// nested option belongs to) without re-deriving the weave themselves.
+//
+// Rules:
+// - A Choice at depth d closes any open options deeper than d, takes the next
+//   index in the current depth-d group, and becomes the open option at d.
+// - A Gather at depth d closes the depth-d group (and everything deeper);
+//   the next Choice at depth d starts a new group at index 0.
+// - ChoiceBody lines inherit the innermost open option's path.
+// - Knot/stitch headers reset the weave entirely.
+
+/** Mutates `infos` in place, setting `optionPath` on Choice/ChoiceBody lines. */
+export function assignOptionPaths(infos: LineInfo[]): void {
+  // Open options, outermost first. Each entry remembers its weave DEPTH
+  // (sigil count) separately from its lineage position: valid ink can skip
+  // depths (`*` straight to `* * *`), so lineage length and depth are not
+  // interchangeable — a sibling at depth d must pop every open option at
+  // depth >= d, however deep the lineage runs.
+  const open: Array<{ depth: number; index: number }> = [];
+  // counters[d - 1] = next option index for the open group at weave depth d.
+  const counters: number[] = [];
+
+  for (const info of infos) {
+    switch (info.type) {
+      case ElementType.KnotHeader:
+      case ElementType.StitchHeader:
+        open.length = 0;
+        counters.length = 0;
+        break;
+
+      case ElementType.Choice: {
+        const d = Math.max(1, info.depth);
+        // Close options at this depth or deeper; keep the depth-d group counting.
+        while (open.length > 0 && open[open.length - 1].depth >= d) open.pop();
+        if (counters.length > d) counters.length = d;
+        while (counters.length < d) counters.push(0);
+        const index = counters[d - 1];
+        counters[d - 1] = index + 1;
+        open.push({ depth: d, index });
+        info.optionPath = open.map((o) => o.index);
+        break;
+      }
+
+      case ElementType.Gather: {
+        const d = Math.max(1, info.depth);
+        // A gather at depth d closes its level's group and everything deeper.
+        while (open.length > 0 && open[open.length - 1].depth >= d) open.pop();
+        if (counters.length >= d) counters.length = d - 1;
+        break;
+      }
+
+      case ElementType.ChoiceBody:
+      // Screenplay retypes (cue/parenthetical/dialogue) inside an open option
+      // are still body lines — without a path they'd punch holes in the
+      // per-branch rail the feature exists to enable.
+      case ElementType.Character:
+      case ElementType.Parenthetical:
+      case ElementType.Dialogue:
+        if (open.length > 0) info.optionPath = open.map((o) => o.index);
+        break;
+
+      default:
+        // Other lines (narrative, logic, diverts, blanks, …) neither open nor
+        // close option groups.
+        break;
+    }
+  }
+}
+
 // ── StateField ──────────────────────────────────────────────────────
 
 function computeLineInfos(state: EditorState): LineInfo[] {
@@ -241,6 +321,7 @@ function computeLineInfos(state: EditorState): LineInfo[] {
       }
     }
 
+    assignOptionPaths(infos);
     return infos;
   }
 
@@ -250,6 +331,7 @@ function computeLineInfos(state: EditorState): LineInfo[] {
     const line = state.doc.line(i);
     infos.push(classifyLine(line.text));
   }
+  assignOptionPaths(infos);
   return infos;
 }
 
