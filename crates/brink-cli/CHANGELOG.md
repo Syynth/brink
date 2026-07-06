@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9](https://github.com/Syynth/brink/compare/brink-cli-v0.0.7...brink-cli-v0.0.9) - 2026-07-06
+
+### Added
+
+- *(ide,web)* unified StructuralResult + deleteSymbol + op-wide breakage gate ([#316](https://github.com/Syynth/brink/pull/316)) ([#336](https://github.com/Syynth/brink/pull/336))
+
+### Other
+
+- release v0.0.8 ([#307](https://github.com/Syynth/brink/pull/307))
+
 ## [0.0.8](https://github.com/Syynth/brink/compare/brink-cli-v0.0.7...brink-cli-v0.0.8) - 2026-07-01
 
 ### Added

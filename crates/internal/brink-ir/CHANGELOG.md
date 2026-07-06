@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9](https://github.com/Syynth/brink/compare/brink-ir-v0.0.8...brink-ir-v0.0.9) - 2026-07-06
+
+### Added
+
+- *(ide,editor,web)* fold kinds — structural/machinery/narrative + summary pills ([#365](https://github.com/Syynth/brink/pull/365)) ([#400](https://github.com/Syynth/brink/pull/400))
+- *(ir,ide,web)* dialogue-dialect schema + Rust classification ([#368](https://github.com/Syynth/brink/pull/368)) ([#386](https://github.com/Syynth/brink/pull/386))
+
+### Fixed
+
+- *(ide,editor)* sigil-wins-chain + conditional scaffold classification ([#413](https://github.com/Syynth/brink/pull/413)) ([#425](https://github.com/Syynth/brink/pull/425))
+- *(ir,editor)* reconcile at-cue Parenthetical content_group vs template round-trip ([#406](https://github.com/Syynth/brink/pull/406)) ([#424](https://github.com/Syynth/brink/pull/424))
+
 ## [0.0.8](https://github.com/Syynth/brink/compare/brink-ir-v0.0.7...brink-ir-v0.0.8) - 2026-07-01
 
 ### Other
