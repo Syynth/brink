@@ -2132,6 +2132,7 @@ dependencies = [
  "brink-format",
  "brink-json",
  "divan",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
 ]

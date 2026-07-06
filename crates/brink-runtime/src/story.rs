@@ -2499,6 +2499,108 @@ impl<'p, R: StoryRng> Story<'p, R> {
         }
     }
 
+    // ── Session support (crate-internal) ────────────────────────────
+
+    /// Whether the default flow is in the `Active` status (mid-turn, more
+    /// content pending). Used by [`StorySession`](crate::StorySession) for the
+    /// turn-boundary mutation gate.
+    pub(crate) fn status_is_active(&self) -> bool {
+        self.default.status == StoryStatus::Active
+    }
+
+    /// Whether the default flow is waiting for a choice selection. Used by
+    /// [`StorySession`](crate::StorySession) replay.
+    pub(crate) fn status_is_waiting_for_choice(&self) -> bool {
+        self.default.status == StoryStatus::WaitingForChoice
+    }
+
+    /// Build a typed [`StateSnapshot`](crate::StateSnapshot) of the default
+    /// flow's game state — a NEW typed serialization path (globals with list
+    /// membership, turn counts, callstack summary), distinct from the
+    /// string-valued [`DebugSnapshot`](crate::DebugSnapshot).
+    pub(crate) fn state_snapshot(&self) -> crate::session::StateSnapshot {
+        use std::collections::BTreeMap;
+
+        use crate::debug::NameResolver;
+        use crate::session::{SnapshotFrame, SnapshotList, StateSnapshot};
+
+        let flow = &self.default.flow;
+        let ctx = &self.default_context;
+        let resolver = NameResolver::new(self.program);
+
+        // Typed globals + resolved list membership.
+        let mut globals: BTreeMap<String, Value> = BTreeMap::new();
+        let mut lists: BTreeMap<String, SnapshotList> = BTreeMap::new();
+        for (i, value) in ctx.globals.iter().enumerate() {
+            if let Some(name) = self.program.global_slot_name(i) {
+                if let Value::List(list) = value {
+                    let mut items: Vec<String> = list
+                        .items
+                        .iter()
+                        .filter_map(|id| self.program.list_item_name(*id).map(str::to_owned))
+                        .collect();
+                    items.sort_unstable();
+                    lists.insert(name.to_owned(), SnapshotList { items });
+                }
+                globals.insert(name.to_owned(), value.clone());
+            }
+        }
+
+        // Visit / turn counts by resolved path (deterministic BTreeMap).
+        let mut visit_counts: BTreeMap<String, u32> = BTreeMap::new();
+        for (id, &count) in &ctx.visit_counts {
+            if let Some(path) = resolver.def_path(*id) {
+                visit_counts.insert(path.to_owned(), count);
+            }
+        }
+        let mut turn_counts: BTreeMap<String, u32> = BTreeMap::new();
+        for (id, &count) in &ctx.turn_counts {
+            if let Some(path) = resolver.def_path(*id) {
+                turn_counts.insert(path.to_owned(), count);
+            }
+        }
+
+        // Callstack summary, innermost frame first.
+        let resolve_frame_location = |frame: &CallFrame| {
+            frame
+                .container_stack
+                .iter()
+                .rev()
+                .find_map(|cp| resolver.container_path(cp.container_idx))
+                .map(str::to_owned)
+        };
+        let thread = flow.current_thread();
+        let depth = thread.call_stack.len();
+        let mut call_stack = Vec::with_capacity(depth);
+        for i in (0..depth).rev() {
+            if let Some(frame) = thread.call_stack.get(i) {
+                let kind = match frame.frame_type {
+                    CallFrameType::Root => "root",
+                    CallFrameType::Function => "function",
+                    CallFrameType::Tunnel => "tunnel",
+                    CallFrameType::Thread => "thread",
+                    CallFrameType::External => "external",
+                    CallFrameType::FunctionEvalFromGame => "eval",
+                };
+                call_stack.push(SnapshotFrame {
+                    kind: kind.to_owned(),
+                    location: resolve_frame_location(frame),
+                    temps: frame.temps.len(),
+                });
+            }
+        }
+
+        StateSnapshot {
+            globals,
+            lists,
+            turn_index: ctx.turn_index,
+            visit_counts,
+            turn_counts,
+            call_stack,
+            status: self.default.status.into(),
+        }
+    }
+
     // ── Testing / instrumentation API ───────────────────────────────
 
     /// Dump the current execution state for debugging.
