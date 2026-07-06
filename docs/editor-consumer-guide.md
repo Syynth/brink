@@ -483,11 +483,21 @@ Core kinds (stable):
 | `brink-tag` | `# tag` lines |
 | `brink-character` / `brink-parenthetical` / `brink-dialogue` | screenplay elements (`@Name:<>`, `(beat)<>`, dialogue prose) |
 
-Additive line classes: `brink-section-start` (the first line of a knot's comment+header block).
+Additive line classes: `brink-section-start` (the first line of a knot's comment+header block),
+`brink-divert-standalone` (a `-> target` divert that is not a tunnel call — the "screenplay
+transition" look, right-aligned).
 
-Two pieces of *data-driven placement* still ride on the line as inline styles (they are computed
-per-line from weave depth / divert shape, not skin): `padding-left` on choices/gathers at depth > 1,
-and `text-align: right` on standalone diverts.
+Two pieces of *data-driven placement* (computed per-line from weave depth / divert shape, not skin)
+used to ship as inline `style` attributes; per #414 both are now taxonomy, not inline styles:
+
+- **Weave depth** — choices/gathers at depth > 1 carry `data-depth="N"` (the raw depth number).
+  `brinkTheme` maps this to the indent look (`padding-left`, scaled by depth) via attribute
+  selectors; headless hosts restyle `[data-depth="N"]` directly or ignore it.
+- **Standalone diverts** — carry the `brink-divert-standalone` class (above) instead of an inline
+  `text-align: right`.
+
+The line-decoration pass never emits a `style` attribute — every host restyles via the class/
+attribute taxonomy, per the headless contract (#363).
 
 ### `ElementType` is now a string (BREAKING CHANGE, 0.8.0, #368, ruled 2026-07-05)
 
