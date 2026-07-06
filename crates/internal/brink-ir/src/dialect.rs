@@ -146,9 +146,29 @@ pub struct PatternShape {
     /// groups yes, lookaround/backreferences no), anchored `^...$` against
     /// the trimmed line.
     pub pattern: String,
-    /// Which named group is the editable content.
+    /// Which named group is the editable content. Drives `content_span`
+    /// geometry (markup/inline-decoration scoping) and the `data-*` attrs
+    /// derived from classification — this is the "what region of the line is
+    /// content" answer, which for a kind like `parenthetical` legitimately
+    /// includes wrapping punctuation that stays visible on the line (#406).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_group: Option<String>,
+    /// Which named group's captured value fills `template`'s placeholder for
+    /// convert/strip round-trips (`ResolvedDialect::convertible_shapes`).
+    /// Defaults to `content_group` when absent — additive, byte-identical
+    /// for every dialect that doesn't set it (#406). Exists because a kind
+    /// can need a *different* answer to "what region is content"
+    /// (`content_group`, wrap-inclusive for `parenthetical` so the parens
+    /// stay part of the editable/markup-scoped region) than to "what value
+    /// round-trips through `template`" (`template_group`, wrap-EXCLUSIVE —
+    /// the literal `(`/`)` live in `template` itself, matching how every
+    /// other convert/strip consumer — `DEFAULT_CONVERTIBLE_SHAPES`, the
+    /// built-in `convertToParenthetical`/`stripToNarrative` actions —
+    /// already treats "Parenthetical content" as the bare text between the
+    /// parens). Never emitted as a `data-*` attr and never hidden — see
+    /// `build_match`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_group: Option<String>,
     /// Named groups whose matched span is hidden geometry — ALL editor
     /// decorations/atomic-ranges/edit-guards derive from these match
     /// indices, computed once at classification time.
@@ -244,6 +264,7 @@ pub fn compile_affix(affix: &AffixShape) -> PatternShape {
     PatternShape {
         pattern,
         content_group: Some(role.to_owned()),
+        template_group: None,
         hidden,
         template,
     }
@@ -606,10 +627,19 @@ fn roundtrips_with_probe(re: &regex::Regex, shape: &PatternShape, probe: &str) -
     for name in re.capture_names().flatten() {
         rendered = rendered.replace(&format!("${{{name}}}"), probe);
     }
+    // `template_group` (#406), when set, is the group whose captured value
+    // the template's placeholder actually round-trips (e.g. a
+    // wrap-inclusive `content_group` like `parenthetical`'s means the OUTER
+    // group would never equal the bare probe — `template_group` names the
+    // inner bare group the template literally wraps).
+    let checked_group = shape
+        .template_group
+        .as_deref()
+        .or(shape.content_group.as_deref());
     match re.captures(&rendered) {
         Some(caps) => {
-            if let Some(content_group) = &shape.content_group {
-                caps.name(content_group)
+            if let Some(checked_group) = checked_group {
+                caps.name(checked_group)
                     .is_some_and(|m| m.as_str() == probe)
             } else {
                 true
@@ -767,12 +797,24 @@ fn build_match(
         content_span = Some(span_of(&m, leading_ws));
     }
 
-    // Named groups beyond `contentGroup`/`hidden` emit as `data-*` line
-    // attributes (spec: "Named groups beyond contentGroup/hidden emit as
-    // data-* line attributes"). `contentGroup` itself is also captured as an
-    // attr so consumers get the extracted text alongside its span.
+    // `template_group` (#406), when it names a DIFFERENT group than
+    // `content_group`, is a template-fill-only helper group — it must not
+    // leak into `attrs`/`data-*` (byte-identical-attrs contract) or
+    // `hidden_spans` (it's not a hiding instruction; a kind that wants it
+    // hidden puts it in `hidden` too). It stays visible on the line, simply
+    // excluded from both derived outputs.
+    let template_only_group: Option<&str> = shape
+        .template_group
+        .as_deref()
+        .filter(|g| Some(*g) != shape.content_group.as_deref());
+
+    // Named groups beyond `contentGroup`/`hidden`/`template_group` emit as
+    // `data-*` line attributes (spec: "Named groups beyond
+    // contentGroup/hidden emit as data-* line attributes"). `contentGroup`
+    // itself is also captured as an attr so consumers get the extracted text
+    // alongside its span.
     for name in re.capture_names().flatten() {
-        if hidden.contains(name) {
+        if hidden.contains(name) || Some(name) == template_only_group {
             continue;
         }
         if let Some(m) = caps.name(name) {
@@ -811,6 +853,7 @@ pub fn at_cue_preset() -> DialogueDialect {
         source: Some(SourceShape::Pattern(PatternShape {
             pattern: r"^(?<lead>@)(?<speaker>[^:]*)(?<tail>:<>)$".to_owned(),
             content_group: Some("speaker".to_owned()),
+            template_group: None,
             hidden: vec!["lead".to_owned(), "tail".to_owned()],
             template: "@${speaker}:<>".to_owned(),
         })),
@@ -830,10 +873,23 @@ pub fn at_cue_preset() -> DialogueDialect {
         kind: "parenthetical".to_owned(),
         nature: ElementNature::Narrative,
         source: Some(SourceShape::Pattern(PatternShape {
-            pattern: r"^(?<content>\([^)]*\))(?<tail><>)$".to_owned(),
+            // `content` (outer, parens-inclusive) drives `content_span` —
+            // the parens stay visible/editable/markup-scoped content (see
+            // `screenplay.ts`: "Parenthetical's leading paren is content,
+            // not hidden"). `content_inner` (nested, bare) is `template_group`
+            // — the group whose value fills the template placeholder, so a
+            // convert/strip row targeting `parenthetical` from a bare-content
+            // source round-trips correctly (#406): the literal parens live in
+            // `template` itself, matching every other convert/strip
+            // consumer's "Parenthetical content is the bare text between the
+            // parens" convention (`@brink/ink-operations`'s
+            // `DEFAULT_CONVERTIBLE_SHAPES`, the built-in
+            // `convertToParenthetical`/`stripToNarrative` actions).
+            pattern: r"^(?<content>\((?<content_inner>[^)]*)\))(?<tail><>)$".to_owned(),
             content_group: Some("content".to_owned()),
+            template_group: Some("content_inner".to_owned()),
             hidden: vec!["tail".to_owned()],
-            template: "${content}<>".to_owned(),
+            template: "(${content_inner})<>".to_owned(),
         })),
         emitted: Some(EmittedShape {
             pattern: r"^(?<content>\([^)]*\))\s*".to_owned(),
@@ -926,6 +982,61 @@ mod tests {
         assert_eq!(m.hidden_spans, vec![(8, 10)]);
     }
 
+    /// #406 — `content_group` (drives `content_span`/markup geometry) stays
+    /// parens-inclusive (unchanged from the test above); `template_group`
+    /// (new, additive) names the separate inner bare-text group used for
+    /// convert/strip round-trips. The inner group must never leak into
+    /// `attrs`/`data-*` (byte-identical-attrs contract) even though it's a
+    /// real, visible (non-hidden) capture group.
+    #[test]
+    fn parenthetical_template_group_is_bare_and_excluded_from_attrs() {
+        let d = ResolvedDialect::compile(&at_cue_preset()).expect("compile");
+        let m = d.classify("(warmly)<>", 0).expect("match");
+        assert_eq!(m.kind, "parenthetical");
+        // Geometry unchanged: content_span still spans the parens-inclusive
+        // outer group.
+        assert_eq!(m.content_span, Some((0, 8)));
+        // No new attr for the inner `content_inner` group — only the outer
+        // `content` group (itself already an attr, per existing behavior).
+        assert_eq!(m.attrs, vec![("content".to_owned(), "(warmly)".to_owned())]);
+    }
+
+    /// #406 — the round-trip a `convert` transition row actually needs: a
+    /// dialect-declared kind converting INTO `parenthetical` from a
+    /// bare-content source must produce a correctly-wrapped result. This
+    /// mirrors what `executeDialectRow`'s `convert` action does:
+    /// `dialect.convertibleShapes()` (fed by `template_group ?? content_group`)
+    /// extracts the source's bare content, then `templateFor`/`renderTemplate`
+    /// (fed by the SAME `template_group` name as the template's placeholder)
+    /// fills the target's template.
+    #[test]
+    fn parenthetical_template_group_round_trips_bare_content_through_template() {
+        let dialect = at_cue_preset();
+        let el = dialect
+            .elements
+            .iter()
+            .find(|e| e.kind == "parenthetical")
+            .expect("parenthetical element");
+        let source = el
+            .source
+            .as_ref()
+            .expect("parenthetical has a source shape");
+        let SourceShape::Pattern(shape) = source else {
+            unreachable!("at_cue_preset's parenthetical is a raw Pattern shape, not Affix sugar");
+        };
+        // The group that should fill the template for a convert/strip round
+        // trip is `template_group`, not `content_group` — `content_group`'s
+        // own value ("(radio)") would double-wrap if substituted directly.
+        let role = shape.template_group.as_deref().expect("template_group set");
+        assert_eq!(role, "content_inner");
+        let rendered = shape.template.replace(&format!("${{{role}}}"), "radio");
+        assert_eq!(rendered, "(radio)<>");
+        // And the rendered line re-classifies back to the same bare content.
+        let re = regex::Regex::new(&shape.pattern).expect("pattern compiles");
+        let caps = re.captures(&rendered).expect("rendered line re-matches");
+        assert_eq!(caps.name(role).map(|m| m.as_str()), Some("radio"));
+    }
+
     #[test]
     fn plain_prose_does_not_classify() {
         let d = ResolvedDialect::compile(&at_cue_preset()).expect("compile");
@@ -969,6 +1080,7 @@ mod tests {
         d.elements[0].source = Some(SourceShape::Pattern(PatternShape {
             pattern: r"^(?=@)(?<speaker>[^:]*):<>$".to_owned(),
             content_group: Some("speaker".to_owned()),
+            template_group: None,
             hidden: Vec::new(),
             template: "@${speaker}:<>".to_owned(),
         }));

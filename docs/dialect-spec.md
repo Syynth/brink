@@ -57,10 +57,22 @@ plugins; they fork the single truth). Two sections with different owners
   pattern + template + hidden groups in ONE derivation site (never prose-spec'd per consumer).
 - **Structural transition rows stay interpreter-owned.** Dialects contribute rows only for
   kinds they declare; dialect rows resolve before built-in weave rows.
-- Named groups beyond `contentGroup`/`hidden` emit as `data-*` line attributes.
+- Named groups beyond `contentGroup`/`hidden`/`templateGroup` emit as `data-*` line attributes.
+- `templateGroup` (#406, additive, optional): which named group's captured value fills
+  `template`'s placeholder for convert/strip round-trips. Defaults to `contentGroup` when absent.
+  Exists because a kind can need a *different* answer to "what region is content" (`contentGroup`
+  — drives `content_span`/markup-scoping geometry and classification attrs) than to "what value
+  round-trips through `template`" (`templateGroup`). The at-cue preset's `parenthetical` is the
+  motivating case: `contentGroup` is wrap-inclusive (`"(text)"` — the parens stay part of the
+  visible/editable/markup-scoped content), while `templateGroup` names a nested bare-text group
+  so `template` (`"(${content_inner})<>"`) supplies the literal parens itself — matching how every
+  other convert/strip consumer (`DEFAULT_CONVERTIBLE_SHAPES`, the built-in
+  `convertToParenthetical`/`stripToNarrative` actions) already treats "Parenthetical content" as
+  the bare text between the parens. Never emitted as a `data-*` attr and never hidden.
 - Validation: "declared OR reserved-structural" kinds in chain/transitions; explicit contract
   for pattern-less kinds (content = whole trimmed line; convert-to resolves to strip);
-  template↔pattern round-trip check; **negative fixtures** alongside positive ones.
+  template↔pattern round-trip check (checked against `templateGroup` when set — see
+  `validate_template_roundtrip`); **negative fixtures** alongside positive ones.
 
 ## Classification home (ruling: Rust in v1)
 

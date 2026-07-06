@@ -28,6 +28,7 @@ import {
   extractLineContent,
   contentRegions,
   elementTypeField,
+  ResolvedDialect,
   type DialogueDialect,
   type ConvertibleShape,
 } from "@brink-lang/editor";
@@ -187,6 +188,85 @@ describe("dialect convert-row generalization: executeDialectRow (#395)", () => {
     // the strip.
     expect(view.state.doc.toString()).toBe("radio\n");
     view.destroy();
+  });
+
+  // #406 — the at-cue preset's `parenthetical` element has a wrap-inclusive
+  // `content_group` ("content" spans "(text)", parens included — needed so
+  // `content_span`/markup geometry keeps the parens as visible/editable
+  // content). Before this fix, `content_group` doubled as the convert/strip
+  // round-trip's fill group too, so a `convert` row targeting `parenthetical`
+  // from a bare-content source kind rendered `template` ("${content}<>")
+  // with the bare extracted text, producing "radio<>" — missing the opening
+  // paren entirely, since the literal "(" only ever appeared inside the
+  // (never-hit-for-this-direction) `content_group` capture, not in
+  // `template`. `template_group` (new, additive) names a separate bare-text
+  // group for exactly this fill purpose, so `convert` re-wraps correctly.
+  it("converts a custom dialect's channel line to the built-in parenthetical kind via Tab, correctly wrapping bare content in parens (round-trip)", () => {
+    const DIALECT: DialogueDialect = extendDialect(AT_CUE_DIALECT, {
+      elements: [
+        {
+          kind: "channel",
+          nature: "narrative",
+          source: {
+            pattern: "^(?<lead><<)(?<name>[^>]*)(?<tail>>>)$",
+            content_group: "name",
+            hidden: ["lead", "tail"],
+            template: "<<${name}>>",
+          },
+        },
+      ],
+      transitions: [{ on: "channel", key: "Tab", action: { action: "convert", kind: "parenthetical" } }],
+    });
+    const view = mount("<<radio>>\n", { dialect: DIALECT });
+    expect(view.state.field(elementTypeField)[0].type).toBe("channel");
+
+    view.dispatch({ selection: { anchor: view.state.doc.line(1).to } });
+    const handled = runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab" }), "editor");
+
+    expect(handled).toBe(true);
+    // The bug: rendering `${content}<>` with the bare "radio" would produce
+    // "radio<>" (no opening paren). The fix's `template_group` ("content_inner")
+    // is filled instead, against `template` "(${content_inner})<>" — correctly
+    // wrapped.
+    expect(view.state.doc.toString()).toBe("(radio)<>\n");
+    expect(view.state.field(elementTypeField)[0].type).toBe("parenthetical");
+    view.destroy();
+  });
+
+  // The reverse direction — stripping a real Parenthetical line — must stay
+  // byte-identical: bare content, no parens (matches the built-in
+  // `stripToNarrative`/`DEFAULT_CONVERTIBLE_SHAPES` convention this fix
+  // reconciles `parenthetical`'s round-trip semantics with).
+  it("strips a real Parenthetical line to its bare content via a dialect strip row (parens dropped, round-trip byte-identical)", () => {
+    const DIALECT: DialogueDialect = extendDialect(AT_CUE_DIALECT, {
+      transitions: [{ on: "parenthetical", key: "Shift-Tab", action: { action: "strip" } }],
+    });
+    const view = mount("(warmly)<>\n", { dialect: DIALECT });
+    expect(view.state.field(elementTypeField)[0].type).toBe("parenthetical");
+
+    view.dispatch({ selection: { anchor: view.state.doc.line(1).to } });
+    const handled = runScopeHandlers(
+      view,
+      new KeyboardEvent("keydown", { key: "Tab", shiftKey: true }),
+      "editor",
+    );
+
+    expect(handled).toBe(true);
+    expect(view.state.doc.toString()).toBe("warmly\n");
+    view.destroy();
+  });
+
+  // #406 — `template_group` is additive and must not disturb the OTHER thing
+  // `parenthetical`'s `content_group` drives: `content_span` geometry (markup
+  // scoping) and classification attrs. Byte-identical to before this fix.
+  it("parenthetical classification geometry/attrs stay byte-identical (content_group unchanged, template_group is additive)", () => {
+    const resolved = ResolvedDialect.compile(AT_CUE_DIALECT);
+    const match = resolved.classify("(warmly)<>", 0);
+    expect(match?.kind).toBe("parenthetical");
+    // contentSpan still spans the parens-inclusive outer group — unchanged.
+    expect(match?.contentSpan).toEqual([0, 8]);
+    // No new attr for the inner `content_inner` group.
+    expect(match?.attrs).toEqual([["content", "(warmly)"]]);
   });
 });
 

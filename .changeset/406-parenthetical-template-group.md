@@ -1,0 +1,5 @@
+---
+"@brink-lang/editor": patch
+---
+
+Fix #406: reconcile the at-cue preset's `parenthetical` shape's `content_group` (which spans the parens-inclusive `"(text)"`, needed so `content_span`/markup geometry keeps the parens as visible content) with a convert/strip round-trip's need for the bare text between the parens. Before this fix, a dialect declaring a `convert` transition row targeting `parenthetical` from a bare-content source kind rendered the target template (`"${content}<>"`) with the bare extracted text, dropping the opening paren entirely (`"radio<>"` instead of `"(radio)<>"`) — latent since the at-cue preset itself ships `transitions: []`, but it would have bitten the first dialect declaring such a row. Adds `PatternShape.template_group` (optional, additive — defaults to `content_group`, byte-identical for every dialect that doesn't set it): the group whose captured value fills `template`'s placeholder for convert/strip round-trips. No visible change for the default dialect's classification geometry or `data-*` attributes.
