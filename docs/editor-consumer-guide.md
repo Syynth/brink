@@ -136,6 +136,159 @@ Small pure helpers every host needs at the editor ↔ host seam, published from
 
 (`docKeyFor` / `parseDocKey` are also published — see `document-sessions.ts`.)
 
+## Story Session — runtime session management (#370 #387 #389)
+
+Beyond the editor, `@brink-lang/web` exposes `WebSession` — a stateful runtime session that wraps
+the story VM with journaling, replay, and snapshot/diff semantics. This is the surface for
+**persistence**, **rewind/replay**, and
+**save-game mechanics**. The runtime journal is the durable save artifact; the rest of the API
+manages stepping, turn-boundary mutations, and divergence detection.
+
+### The stepping + StepOutcome split
+
+At the stepping layer, `WebSession` distinguishes **two park states**:
+
+- **`StepOutcome` — deferred external** (`{ type: "awaiting_external", deferred: true, name? }`):
+  Host must call `resolveExternal(value)` to resume. This is the out-of-band park from `advance()`.
+  The session records the external's result in the journal; the next step proceeds normally.
+- **Promise-in-flight** (internal pause, never surfaced): The session awaits an async operation
+  internally. Use `continueSingle()` / `continueToPause()` for inline externals — they resolve
+  through the fallback body or a JS-bound handler without surfacing a park.
+
+Methods:
+
+- **`advance(): StepOutcome`** — one step (may park on deferred external). The returned
+  `StepOutcome` is a tagged union: `{ type: "line", line }` carries a `SessionLine` (narratives,
+  choices, end markers); `{ type: "awaiting_external", ... }` awaits resolution.
+- **`continueSingle(): SessionLine`** — advance until output or a yield point. **Never** surfaces a
+  deferred external; externals resolve inline or error. Returns a single `SessionLine`.
+- **`continueToPause(): SessionLine[]`** — run to the next pause (choices / done / end). Returns an
+  array of `SessionLine`; the last is always a terminal variant (`choices`, `done`, or `end`).
+- **`choose(index: number): void`** — select a choice by index (journaled). Must be called when
+  parked on `choices`. No validation — bad index errors on next step.
+- **`resolveExternal(value: unknown): void`** — resolve the parked external. No-op if not awaiting
+  (safe to call spuriously). The value is recorded in the journal; `advance()` next step.
+- **`hasPendingExternal(): boolean`** — check if parked on a deferred external without stepping.
+
+The **constructor option `deferred: string[]`** forces named externals to always park as
+`awaiting_external`, even when the story defines a fallback body — useful for host-critical
+externals (sound, dialogs, save prompts).
+
+### Turn-boundary mutations + journaled inputs
+
+These methods **queue until the next pause** (or error mid-turn):
+
+- **`setVar(name: string, value: unknown): boolean`** — set a global. Returns `false` if no such
+  global is declared (no journal entry written). Turn-boundary only.
+- **`goToPath(path: string, args?: unknown[]): void`** — jump to a knot/stitch. Turn-boundary only.
+- **`saveState(): SaveState`** — capture game state (globals, turn/visit counts, RNG). Does not
+  journal. Return value is opaque; use it with `loadState` or `exportJournal` for persistence.
+- **`loadState(saveState: SaveState): void`** — restore from a captured state (turn-boundary,
+  journaled). Fails if the save is incompatible (different story); tolerant of global schema drift.
+- **`callFunction(name: string, args?: unknown[]): unknown`** — evaluate an ink function from the
+  host (journaled as a `Call` event). The function's externals **do not journal** — they resolve
+  through an isolated handler, keeping the visible story untouched.
+
+Attempting these mid-turn (while the story is outputting or paused on choices) errors. Drain the
+turn first: `continueToPause()` until the story is at a pause (done / choices / end), then apply
+the mutation, then step again.
+
+### Journal + replay: the persistence loop
+
+The journal is the **durable save artifact** — a JSON record of every input: choice selections,
+mutations (`set_var`, `go_to_path`), externals and their results, `load_state` records, and
+function calls. Checksum + seed embedded. Optionally includes a fast-restore checkpoint (the latest
+`SaveState`).
+
+**To save:** call `exportJournal(): SessionJournal` (JSON). Persist the result in a save slot.
+
+**To load:** call `WebSession.restore(storyBytes, journalJson): WebSession`. The restored session
+fast-restores from the embedded checkpoint if the program checksum matches; otherwise replays the
+journal against the new program.
+
+Both return a `ReplayOutcome` (asynchronously stashed on the instance — read via `lastReplayOutcome`
+after construction/reload):
+
+- **`{ type: "replayed", warnings: ReplayWarning[] }`** — Journal played to completion. Warnings
+  are soft (e.g. choice labels drifted but indices are stable).
+- **`{ type: "diverged", at_event: number, expected, found }`** — The program changed in an
+  incompatible way. Journal truncated at the divergence; the session is parked at the reached
+  position. `found` describes what replay hit instead of the recorded event (unknown path,
+  out-of-range choice index, etc.).
+- **`{ type: "failed", at_event: number, reason }`** — Runtime error, budget exhausted, or the
+  replay parked on a deferred external (`reason: { type: "awaiting_external", name }`). Session
+  parked at the reached position.
+
+**The journal cap**: The journal is capped at a fixed limit, `SESSION_JOURNAL_CAP` (65,536 events).
+Beyond that, appends are dropped. Hitting the cap sets `journal.truncated = true` and degrades to
+fast-restore-only (no replay after recompile).
+
+### Snapshot + diff: typed state observation
+
+State snapshots are **first-class**, diffable artifacts (distinct from the legacy string-valued
+`DebugState`):
+
+- **`snapshot(): StateSnapshot`** — capture the current game state (globals, list membership,
+  turn/visit counts, callstack summary). Returns JSON; opaque unless inspecting in dev.
+- **`diff(a: StateSnapshot, b: StateSnapshot): StateDiff`** — pure diff of two snapshots. Shows
+  added/removed/changed globals, list membership deltas, frame push/pop, turn-index changes.
+  Standalone export: `diffSnapshots(aJson, bJson)`.
+
+Snapshots are **typed** (globals carry their ink type tags, e.g. `{ Int: 10 }`, `{ String: "x" }`).
+Diffs are deterministically ordered.
+
+### Deferred externals: the park protocol
+
+When the story hits an external with a fallback body and the external is in the `deferred` list
+(constructor option), or when `advance()` surfaces an unresolved external:
+
+1. Host receives `StepOutcome.awaiting_external` (with optional external name).
+2. Host calls `resolveExternal(value)` to supply the result.
+3. Host calls `advance()` again; the session resumes from the park with the resolved value.
+4. The result is recorded in the journal (`JournalEvent.external`).
+
+**Limitation — live-mode replay only**: When replaying a journal against a recompiled program
+(`reload()`), if the replay hits a deferred external, it parks (`AwaitingExternal` failure reason)
+and must be resumed via `continueReplay()` after resolving. **Recorded-mode replay** (the default
+— journal events served back) never parks on externals; they're replayed from the journal.
+
+### Escape hatch: journal bypass
+
+The wrapped `FlowInstance` is reachable for advanced use cases (e.g., shared flows that never
+journal):
+
+- **`FlowInstance` methods are not exposed** on `WebSession`; the journal layer is observation-only.
+- **Shared flows** (#200) keep working normally — their externals never journal, per the story
+  spec.
+- The session never steps shared-flow branches; they're transparent to the journal.
+
+### Persistence loop pattern (with journal-append hook)
+
+The typical save-game flow with the session:
+
+```typescript
+// On user "save game" action (or autosave):
+const journal = session.exportJournal();
+// If there's a journal-append notification (from issue #390, deferred + debounced),
+// it fires here — persist the journal to durable storage (e.g., IndexedDB, API).
+
+// On app restart / load game:
+const journal = /* fetch from storage */;
+const restoredSession = WebSession.restore(storyBytes, journal);
+const outcome = restoredSession.lastReplayOutcome();
+if (outcome.type === "replayed") {
+  // Good — resume from the journal.
+} else if (outcome.type === "diverged" || outcome.type === "failed") {
+  // Handle divergence: offer the user the reached position or a fresh start.
+}
+```
+
+The **journal-append hook** (shipping separately in issue #390) provides a **push signal**; it fires
+asynchronously and debounced each time the journal grows, so the host can auto-persist without
+blocking the stepping loop. Call `exportJournal()` in that hook to snapshot the current state.
+Without the hook, `exportJournal()` is the **pull signal** — call it on demand (user save, periodic
+autosave, app quit).
+
 ## What is genuinely studio-only (you rebuild in your framework)
 
 - **React mount wrappers** for the class-based UIs (`ConflictView`, `SearchResultsBuffer`). Thin —
