@@ -26,6 +26,21 @@ Versioning is driven by [changesets](https://github.com/changesets/changesets):
    (`pnpm run release`), and runs `changeset publish`, which publishes any
    version not yet on npm and pushes git tags.
 
+   ⚠ **Gotcha — the version PR shows no CI checks.** The changesets bot
+   updates its branch with the default `GITHUB_TOKEN`, and GitHub never
+   starts workflows for bot-token pushes — so the required checks stay
+   unreported and auto-merge waits forever. Kick CI by pushing a
+   human-credentialed empty commit to the branch:
+
+   ```sh
+   git fetch origin changeset-release/main
+   git checkout changeset-release/main
+   git commit --allow-empty -m "ci: trigger checks on the version PR"
+   git push origin changeset-release/main
+   ```
+
+   (Hit during the 0.8.0 release.)
+
 The workflow gates publishing behind typecheck + vitest unit tests (e2e
 runs in `ci.yml` on every PR, not in the release path).
 
