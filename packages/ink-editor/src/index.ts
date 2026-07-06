@@ -62,6 +62,17 @@ export type { FoldingOptions, FoldPlaceholder } from "./folding.js";
 export { playFromHereExtension, qualifiedInkPath, headerName } from "./play-from-here.js";
 export type { PlayFromHereOptions } from "./play-from-here.js";
 
+// Host gutter markers (#343): host-contributed gutter affordances
+// (breakpoints, annotations) in a slot coordinated with the built-in gutters.
+// Wired via `BrinkStudioOptions.getGutterMarkers` / `onGutterMarkerClick`;
+// standalone `hostGutterExtension` for hosts composing extensions directly.
+export {
+  hostGutterExtension,
+  refreshGutterMarkers,
+  refreshGutterMarkersEffect,
+} from "./host-gutter.js";
+export type { HostGutterMarker, HostGutterOptions } from "./host-gutter.js";
+
 // Per-view wasm document handles (issue #122 / #90)
 export {
   DocHandle,
