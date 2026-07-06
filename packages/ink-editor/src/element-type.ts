@@ -382,19 +382,47 @@ export const dialectFacet = Facet.define<ResolvedDialect | null, ResolvedDialect
 });
 
 /**
- * Whether a trimmed, non-empty line is conditional/sequence routing
- * scaffold rather than branch content — mirrors Rust
- * `is_conditional_scaffold_line` in `line_context.rs` exactly (#413): an
- * opening brace (`{`, possibly with a switch expression and `:`), a bare
- * closing brace (or a line ending in `}`), or a multiline branch header
+ * Whether a trimmed, non-empty line is a multiline branch header
  * (`- cond:` / `- else:` — a `-`-bulleted, non-`->` line whose last
- * non-whitespace character is `:`). Deliberately does NOT match `- else:
- * -> busy` (inline-divert branch shorthand): that line's own
- * divert/gather classification from `classifyLine` is left untouched.
+ * non-whitespace character is `:`) — mirrors Rust
+ * `is_conditional_branch_header_line` in `line_context.rs` exactly (#413).
+ * Deliberately does NOT match `- else: -> busy` (inline-divert branch
+ * shorthand): that line's own divert/gather classification from
+ * `classifyLine` is left untouched.
+ *
+ * Unlike the brace check (see `applyConditionalScaffoldFallback`), this
+ * may override a line `classifyLine` already swept to `Gather` (its bare
+ * `-` heuristic can't tell a branch header apart from a weave gather) in
+ * addition to a still-`Blank` line.
  */
-function isConditionalScaffoldLine(trimmed: string): boolean {
-  if (trimmed.startsWith("{") || trimmed === "}" || trimmed.endsWith("}")) return true;
+function isConditionalBranchHeaderLine(trimmed: string): boolean {
   return trimmed.startsWith("-") && !trimmed.startsWith("->") && trimmed.endsWith(":");
+}
+
+/**
+ * Whether a trimmed, non-empty line is a conditional/sequence opening
+ * brace (bare `{`, or `{` followed by a switch expression whose own last
+ * non-whitespace character is `:`, e.g. `{ get_variable(17) >= 1:`) or a
+ * bare closing brace (exactly `}`, nothing else on the line) — mirrors
+ * Rust `is_conditional_brace_scaffold_line` in `line_context.rs` exactly
+ * (#413).
+ *
+ * Deliberately narrower than "starts with `{`" / "ends with `}`": a
+ * narrative line can itself start or end with a brace due to ink's
+ * inline-logic syntax without being the block's own routing scaffold —
+ * e.g. a standalone inline conditional used as narrative content,
+ * `{visited: You were here before.}` (starts with `{` but does NOT end
+ * with `:` — it ends with prose closed by `}` on the same line), or
+ * narrative ending in a value interpolation, `You have {gold}` (ends
+ * with `}` but does not start with `{`). Neither shape is a genuine
+ * scaffold brace, so neither is matched. The predicate is precise enough
+ * that `applyConditionalScaffoldFallback` applies it unconditionally
+ * (not gated to a prior `Blank`/`Gather` classification like the
+ * branch-header check) — see that function's comment for why.
+ */
+function isConditionalBraceScaffoldLine(trimmed: string): boolean {
+  if (trimmed === "{" || trimmed === "}") return true;
+  return trimmed.startsWith("{") && trimmed.endsWith(":");
 }
 
 /**
@@ -405,15 +433,22 @@ function isConditionalScaffoldLine(trimmed: string): boolean {
  * than zero before the line starts, OR which itself opens a brace, is
  * "inside" a conditional/sequence block. Within such a region:
  *
- * - a scaffold line (see `isConditionalScaffoldLine`) becomes `Logic` —
- *   this also corrects `- else:` away from the `classifyLine` bare-`-`
- *   Gather heuristic, which doesn't know about conditional nesting;
- * - a line the base classifier left as `Blank` or `Gather` is promoted to
- *   `NarrativeText` so the dialect classify pass (which only looks at
- *   `NarrativeText`/`ChoiceBody`) can see cues/dialogue written inside the
- *   arm. Lines the base classifier already placed with confidence (a
- *   nested `Choice`, a `Divert` from an inline `- cond: -> target`
- *   shorthand, etc.) are left untouched — this only fills gaps.
+ * - a branch-header line (see `isConditionalBranchHeaderLine`) becomes
+ *   `Logic`, overriding `Blank` or `Gather` — this corrects `- else:`
+ *   away from the `classifyLine` bare-`-` Gather heuristic, which doesn't
+ *   know about conditional nesting;
+ * - a brace-scaffold line (see `isConditionalBraceScaffoldLine`) becomes
+ *   `Logic`, but ONLY when still `Blank` — never overriding `NarrativeText`,
+ *   so ordinary narrative containing inline logic that starts/ends with a
+ *   brace keeps its narrative classification instead of being swept into
+ *   scaffold;
+ * - a line the base classifier left as `Blank` or `Gather` (and isn't
+ *   itself scaffold) is promoted to `NarrativeText` so the dialect
+ *   classify pass (which only looks at `NarrativeText`/`ChoiceBody`) can
+ *   see cues/dialogue written inside the arm. Lines the base classifier
+ *   already placed with confidence (a nested `Choice`, a `Divert` from an
+ *   inline `- cond: -> target` shorthand, etc.) are left untouched — this
+ *   only fills gaps.
  *
  * Runs BEFORE `applyDialectFallback`'s classify pass so promoted arm lines
  * are visible to it.
@@ -431,12 +466,28 @@ function applyConditionalScaffoldFallback(infos: LineInfo[], lineTexts: string[]
     const insideConditional = enteringDepth > 0 || trimmed.startsWith("{") || trimmed.endsWith("}");
     if (!insideConditional || trimmed === "") continue;
 
-    if (isConditionalScaffoldLine(trimmed)) {
+    const isGap = infos[i].type === ElementType.Blank || infos[i].type === ElementType.Gather;
+
+    if (isGap && isConditionalBranchHeaderLine(trimmed)) {
       infos[i] = { type: ElementType.Logic, depth: 0, sticky: false, standalone: false };
       continue;
     }
 
-    if (infos[i].type === ElementType.Blank || infos[i].type === ElementType.Gather) {
+    // The brace-scaffold predicate is syntactically precise (bare `{`/`}`,
+    // or `{`-opener-with-trailing-`:`) — it structurally cannot match
+    // ordinary narrative containing inline logic, so unlike the header
+    // check above it doesn't need to be gated to `isGap`: a bare `{`/`}`
+    // scaffold line is classified as `NarrativeText` by `classifyLine`
+    // (which has no notion of conditional scaffold), not `Blank`, so
+    // restricting this to `isGap` would leave real scaffold braces
+    // unclassified in the regex-fallback path (no HIR to leave a true
+    // gap the way the Rust pass does).
+    if (isConditionalBraceScaffoldLine(trimmed)) {
+      infos[i] = { type: ElementType.Logic, depth: 0, sticky: false, standalone: false };
+      continue;
+    }
+
+    if (isGap) {
       infos[i] = { type: ElementType.NarrativeText, depth: 0, sticky: false, standalone: false };
     }
   }

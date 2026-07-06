@@ -379,4 +379,35 @@ describe("dialect option — #413 conditional scaffold + sigil-wins-chain (fallb
     expect(dialogue?.className).toContain("brink-dialogue");
     view.destroy();
   });
+
+  // Regression guard (conditional-scaffold pass follow-up): ordinary
+  // narrative containing inline logic that starts/ends with a brace must
+  // NOT be swept into conditional-scaffold `Logic` classification. Only a
+  // block's own recorded opening/closing brace is scaffold.
+  it("a standalone inline conditional used as narrative keeps NarrativeText, not Logic", () => {
+    const view = mount("{visited: You were here before.}\nNext.\n");
+    const infos = view.state.field(elementTypeField);
+    expect(infos[0].type).toBe(ElementType.NarrativeText);
+    expect(infos[1].type).toBe(ElementType.NarrativeText);
+    view.destroy();
+  });
+
+  it("narrative ending in a value interpolation keeps NarrativeText, not Logic", () => {
+    const view = mount("You have {gold}\nMore text.\n");
+    const infos = view.state.field(elementTypeField);
+    expect(infos[0].type).toBe(ElementType.NarrativeText);
+    view.destroy();
+  });
+
+  it("renders brink-narrative (not brink-logic) for narrative lines with inline logic", () => {
+    const view = mount("{visited: You were here before.}\nYou have {gold}\n");
+    const lines = [...view.dom.querySelectorAll(".cm-line")];
+    const inlineCondLine = lines.find((l) => (l.textContent ?? "").includes("were here before"));
+    const interpLine = lines.find((l) => (l.textContent ?? "").includes("You have"));
+    expect(inlineCondLine?.className).toContain("brink-narrative");
+    expect(inlineCondLine?.className).not.toContain("brink-logic");
+    expect(interpLine?.className).toContain("brink-narrative");
+    expect(interpLine?.className).not.toContain("brink-logic");
+    view.destroy();
+  });
 });

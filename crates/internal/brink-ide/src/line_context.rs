@@ -824,7 +824,14 @@ fn apply_conditional_scaffold(
                 continue;
             }
 
-            if is_conditional_scaffold_line(trimmed) {
+            // The `- cond:`/`- else:` branch-header check corrects
+            // `detect_gathers`' bare-`-` heuristic (Pass 4, which runs
+            // before this pass and has already swept a headerless-looking
+            // `- else:` line to `Gather`) — so it must be allowed to
+            // override `Gather` in addition to `Blank`.
+            if matches!(ctx[i].element, LineElement::Blank | LineElement::Gather)
+                && is_conditional_branch_header_line(trimmed)
+            {
                 ctx[i].element = LineElement::Logic;
                 ctx[i].weave = WeavePosition {
                     depth: 0,
@@ -833,29 +840,77 @@ fn apply_conditional_scaffold(
                 continue;
             }
 
-            // Arm content: only fill the gap — never override a line the
-            // HIR (or an earlier statement) already placed with confidence.
-            if ctx[i].element == LineElement::Blank {
-                ctx[i].element = LineElement::Narrative;
+            // Brace scaffold classification only ever fills a gap: a line
+            // the main HIR walk (or an earlier pass) already classified —
+            // e.g. a `Content` node whose own `ptr` range covers this exact
+            // physical line, including a single-line inline conditional
+            // used as ordinary narrative, `{visited: You were here
+            // before.}` — is never reconsidered here. Only a genuinely
+            // uncovered (`Blank`) line can be brace scaffold: that's
+            // precisely the gap this pass exists to fill (branch-body
+            // content is accumulated via raw token buffering with no
+            // per-line `ptr`, so the block's own opening/closing brace
+            // line has nothing else to claim it and is still `Blank` at
+            // this point).
+            if ctx[i].element != LineElement::Blank {
+                continue;
+            }
+
+            if is_conditional_brace_scaffold_line(trimmed) {
+                ctx[i].element = LineElement::Logic;
                 ctx[i].weave = WeavePosition {
                     depth: 0,
-                    element: *weave_element,
+                    element: WeaveElement::TopLevel,
                 };
+                continue;
             }
+
+            // Arm content: promote the remaining gap to Narrative so the
+            // dialect classify/chain pass (which only looks at Narrative
+            // lines) can see cues/dialogue written inside conditional arms.
+            ctx[i].element = LineElement::Narrative;
+            ctx[i].weave = WeavePosition {
+                depth: 0,
+                element: *weave_element,
+            };
         }
     }
 }
 
-/// Whether a trimmed, non-empty line is conditional/sequence routing
-/// scaffold rather than branch content: an opening brace (`{`, possibly
-/// followed by the switch expression and `:`), a bare closing brace (`}`,
-/// possibly with trailing scaffold after it on the same physical line is
-/// still scaffold), or a multiline branch header (`- cond:` / `- else:`,
-/// ink's `-` bullet followed eventually by a bare trailing `:`).
-fn is_conditional_scaffold_line(trimmed: &str) -> bool {
-    if trimmed.starts_with('{') || trimmed == "}" || trimmed.ends_with('}') {
+/// Whether a trimmed, non-empty line is a conditional/sequence opening
+/// brace (bare `{`, or `{` followed by a switch expression whose own last
+/// non-whitespace character is `:` — e.g. `{ get_variable(17) >= 1:`) or a
+/// bare closing brace (exactly `}`, nothing else on the line).
+///
+/// Deliberately narrower than "starts with `{`" / "ends with `}`": a
+/// narrative line can itself start or end with a brace due to ink's
+/// inline-logic syntax without being the block's own routing scaffold —
+/// e.g. a standalone inline conditional used as narrative content,
+/// `{visited: You were here before.}` (starts with `{` but does NOT end
+/// with `:` — it ends with prose closed by `}` on the same line), or
+/// narrative ending in a value interpolation, `You have {gold}` (ends
+/// with `}` but does not start with `{`). Neither shape is a genuine
+/// scaffold brace, so neither is matched.
+///
+/// Also gated (belt-and-suspenders, see `apply_conditional_scaffold`) to
+/// only ever fire on a line still `Blank` — a line the HIR content walk
+/// already classified is never reconsidered here.
+fn is_conditional_brace_scaffold_line(trimmed: &str) -> bool {
+    if trimmed == "{" || trimmed == "}" {
         return true;
     }
+    trimmed.starts_with('{') && trimmed.ends_with(':')
+}
+
+/// Whether a trimmed, non-empty line is a multiline branch header
+/// (`- cond:` / `- else:`, ink's `-` bullet followed eventually by a bare
+/// trailing `:`).
+///
+/// Unlike the brace check, this may override a line `detect_gathers`
+/// already swept to `Gather` (its bare-`-` heuristic can't tell a branch
+/// header apart from a weave gather) in addition to a still-`Blank` line —
+/// see the `Blank | Gather` match in `apply_conditional_scaffold`.
+fn is_conditional_branch_header_line(trimmed: &str) -> bool {
     // A multiline branch header is a `-`-bulleted (not `->`) line whose
     // last non-whitespace character is `:` — e.g. `- get_variable(16) == 2:`
     // or `- else:`. This deliberately does NOT match `- else: -> busy`
@@ -865,10 +920,7 @@ fn is_conditional_scaffold_line(trimmed: &str) -> bool {
     // it's the JSON pinned repro shape (bare `- cond:` / `- else:` opening a
     // multiline body), and it must not clobber a divert-terminated line that
     // `walk_stmt` already placed correctly.
-    if trimmed.starts_with('-') && !trimmed.starts_with("->") && trimmed.ends_with(':') {
-        return true;
-    }
-    false
+    trimmed.starts_with('-') && !trimmed.starts_with("->") && trimmed.ends_with(':')
 }
 
 /// Detect `~`-sigil logic lines from source text and force `Logic`,
@@ -1258,6 +1310,41 @@ mod dialect_tests {
 
         assert_eq!(ctx[9].element, LineElement::Logic, "closing brace");
         assert_eq!(ctx[10].element, LineElement::Divert);
+    }
+
+    #[test]
+    fn narrative_with_standalone_inline_conditional_keeps_narrative_class() {
+        // Regression guard for the conditional-scaffold pass (#413 follow-
+        // up): a whole physical line composed of a single-line inline
+        // conditional (`{cond: text}`) is ordinary narrative content, not
+        // the routing brace of a multi-arm `{ - cond: ... }` block. It must
+        // never be reclassified to `Logic` merely because it starts with
+        // `{` and ends with `}` — only a block's own recorded opening/
+        // closing brace line is scaffold.
+        let source = "=== start ===\n{visited: You were here before.}\nNext.\n";
+        let ctx = make_dialect_contexts(source);
+        assert_eq!(
+            ctx[1].element,
+            LineElement::Narrative,
+            "a standalone inline conditional used as narrative must not be swept to Logic"
+        );
+        assert_eq!(ctx[2].element, LineElement::Narrative);
+    }
+
+    #[test]
+    fn narrative_with_trailing_interpolation_keeps_narrative_class() {
+        // Same guard, different shape: ordinary narrative ending in a
+        // value interpolation, `You have {gold} coins.` — this doesn't
+        // even end with a bare `}` due to trailing punctuation, but a
+        // narrative line whose LAST character is `}` (`You have {gold}`)
+        // must also stay Narrative, not become conditional-brace scaffold.
+        let source = "=== start ===\nYou have {gold}\nMore text.\n";
+        let ctx = make_dialect_contexts(source);
+        assert_eq!(
+            ctx[1].element,
+            LineElement::Narrative,
+            "narrative ending in an interpolation must not be swept to Logic"
+        );
     }
 
     #[test]
