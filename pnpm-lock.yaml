@@ -205,6 +205,9 @@ importers:
 
   packages/studio-ui:
     dependencies:
+      '@brink-lang/editor':
+        specifier: workspace:*
+        version: link:../ink-editor
       '@brink/ink-operations':
         specifier: workspace:*
         version: link:../ink-operations

@@ -2,6 +2,17 @@
 export { brinkStudio } from "./extensions.js";
 export type { BrinkStudioOptions } from "./extensions.js";
 
+// Tier-1 boundary helpers (#369): the canonical positional diagnostic sort
+// (file → offset → errors-first) and offset → 1-based line:col. Presentation
+// ORDER is a host choice layered on the canonical positional sort — hosts may
+// re-group (severity-first, per-file, …) on top.
+export { sortDiagnostics, lineColAt } from "./boundary.js";
+// Module-identity re-exports (#369): compile-result types re-exported from
+// @brink-lang/web so hosts consuming them through the editor get the same
+// module identity as code importing @brink-lang/web directly — no structural
+// "CompileResultLike" shims needed.
+export type { CompileResult, Diagnostic } from "@brink-lang/web";
+
 // Inline rename (#323/#324): the in-editor rename widget + its pure badge/report
 // logic (unit-tested via @brink-lang/studio).
 export {
@@ -61,6 +72,17 @@ export type { FoldingOptions, FoldPlaceholder } from "./folding.js";
 // declarations. `qualifiedInkPath`/`headerName` are the pure path core.
 export { playFromHereExtension, qualifiedInkPath, headerName } from "./play-from-here.js";
 export type { PlayFromHereOptions } from "./play-from-here.js";
+
+// Host gutter markers (#343): host-contributed gutter affordances
+// (breakpoints, annotations) in a slot coordinated with the built-in gutters.
+// Wired via `BrinkStudioOptions.getGutterMarkers` / `onGutterMarkerClick`;
+// standalone `hostGutterExtension` for hosts composing extensions directly.
+export {
+  hostGutterExtension,
+  refreshGutterMarkers,
+  refreshGutterMarkersEffect,
+} from "./host-gutter.js";
+export type { HostGutterMarker, HostGutterOptions } from "./host-gutter.js";
 
 // Per-view wasm document handles (issue #122 / #90)
 export {

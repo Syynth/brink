@@ -25,6 +25,7 @@ import {
   type ExtractKind,
 } from "./extract-actions.js";
 import { playFromHereExtension } from "./play-from-here.js";
+import { hostGutterExtension, type HostGutterMarker } from "./host-gutter.js";
 
 export interface BrinkStudioOptions {
   compile: (source: string) => CompileResult;
@@ -109,6 +110,18 @@ export interface BrinkStudioOptions {
   onPlayFrom?: (inkPath: string, label?: string) => void;
   /** Right-click a knot/stitch declaration → the shared symbol context menu. */
   onSymbolContextMenu?: (info: { knot: string; stitch?: string }, x: number, y: number) => void;
+  /**
+   * Host gutter-marker contribution (#343): the host's markers (breakpoints,
+   * per-line annotations, run/flag icons) for the inclusive 1-based line range
+   * `[fromLine, toLine]`. When provided, they render in a dedicated gutter
+   * slotted after (to the right of) the built-in play-from-here gutter.
+   * Recomputed on document changes; dispatch `refreshGutterMarkersEffect` (or
+   * call `refreshGutterMarkers(view)`) when the marker set changes externally.
+   */
+  getGutterMarkers?: (source: string, fromLine: number, toLine: number) => HostGutterMarker[];
+  /** Shared click handler for host gutter markers — fires after the marker's
+   *  own `onClick`. Only consulted when `getGutterMarkers` is provided. */
+  onGutterMarkerClick?: (marker: HostGutterMarker, line: number) => void;
 }
 
 // Compartments for runtime toggling
@@ -209,6 +222,16 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       playFromHereExtension({
         onPlayFrom: options.onPlayFrom,
         onSymbolContextMenu: options.onSymbolContextMenu,
+      }),
+    );
+  }
+  // Host gutter (#343) — registered after the play-from-here gutter so its
+  // slot is defined: built-in play gutter first, host gutter beside the text.
+  if (options.getGutterMarkers) {
+    ideExtensions.push(
+      hostGutterExtension({
+        getGutterMarkers: options.getGutterMarkers,
+        onGutterMarkerClick: options.onGutterMarkerClick,
       }),
     );
   }

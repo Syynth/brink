@@ -10,24 +10,18 @@
 
 import { memo, useMemo } from "react";
 import { EDITOR_REVEAL_COMMAND_ID, useShell } from "@brink/studio-shell";
+import { lineColAt } from "@brink-lang/editor";
 import type { Diagnostic } from "@brink/wasm-types";
 import { useStudioStore } from "./StoreContext.js";
 
 // ── Pure helpers (unit-tested) ──────────────────────────────────────
 
-/** 1-based line:col for a byte offset into `text` (clamped to the text). */
-export function offsetToLineCol(text: string, offset: number): { line: number; col: number } {
-  const clamped = Math.max(0, Math.min(offset, text.length));
-  let line = 1;
-  let lineStart = 0;
-  for (let i = 0; i < clamped; i++) {
-    if (text.charCodeAt(i) === 10 /* \n */) {
-      line++;
-      lineStart = i + 1;
-    }
-  }
-  return { line, col: clamped - lineStart + 1 };
-}
+/**
+ * 1-based line:col for an offset into `text` (clamped to the text). The
+ * canonical implementation is the published boundary helper `lineColAt`
+ * (@brink-lang/editor, #369); the old name is kept for existing consumers.
+ */
+export const offsetToLineCol = lineColAt;
 
 export interface ProblemRow {
   diagnostic: Diagnostic;

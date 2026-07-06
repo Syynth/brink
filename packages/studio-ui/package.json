@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "dependencies": {
+    "@brink-lang/editor": "workspace:*",
     "@brink/ink-operations": "workspace:*",
     "@brink/studio-shell": "workspace:*",
     "@brink/studio-store": "workspace:*",
