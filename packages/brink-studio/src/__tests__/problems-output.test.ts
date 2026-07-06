@@ -171,16 +171,17 @@ describe("OutputSlice", () => {
 });
 
 describe("story errors feed the Output log", () => {
-  it("revealNext logs a runtime error entry on a throwing runner", () => {
+  it("revealNext logs a runtime error entry on a throwing session", () => {
     const store = createStudioStore();
-    const runner = {
-      continueSingle: vi.fn(() => {
+    const session = {
+      continueToPause: vi.fn(() => {
         throw new Error("divert target not found");
       }),
       free: vi.fn(),
+      onJournalDirty: () => () => {},
     };
     store.getState()._bindProvider(
-      new LocalSessionProvider({ runner: runner as never, status: "running" }),
+      new LocalSessionProvider({ session: session as never, status: "running" }),
     );
 
     store.getState().revealNext();
@@ -196,15 +197,16 @@ describe("story errors feed the Output log", () => {
 
   it("chooseOption logs a choose error entry", () => {
     const store = createStudioStore();
-    const runner = {
+    const session = {
       choose: vi.fn(() => {
         throw new Error("no such choice");
       }),
       free: vi.fn(),
+      onJournalDirty: () => () => {},
     };
     store.getState()._bindProvider(
       new LocalSessionProvider({
-        runner: runner as never,
+        session: session as never,
         status: "awaiting-choice",
         choices: [{ index: 0, text: "Go", tags: [] }],
       }),

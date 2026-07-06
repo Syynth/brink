@@ -21,7 +21,10 @@ function entry(id: string, label: string, status: "running" | "ended") {
     id,
     label,
     provider: new LocalSessionProvider({
-      runner: { continueSingle: () => ({ type: "end", text: "", tags: [] }) } as never,
+      session: {
+        continueToPause: () => [{ type: "end", text: "", tags: [] }],
+        onJournalDirty: () => () => {},
+      } as never,
       status: status as never,
       transcript: [],
     }),

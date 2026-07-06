@@ -12,14 +12,29 @@ type Line = {
   choices?: { index: number; text: string; tags: string[] }[];
 };
 
+/** A minimal `StorySessionHandle`-shaped fake — enough surface for
+ * `LocalSessionProvider` to drive `revealNext`/`chooseOption`. */
+function fakeSession(overrides: Record<string, unknown> = {}) {
+  return {
+    continueToPause: vi.fn((): Line[] => [{ type: "end", text: "", tags: [] }]),
+    choose: vi.fn(),
+    restart: vi.fn(),
+    free: vi.fn(),
+    goToPath: vi.fn(),
+    debugSnapshot: vi.fn(() => null),
+    onJournalDirty: vi.fn(() => () => {}),
+    ...overrides,
+  };
+}
+
 // revealNext drives the bound SessionProvider (#179): the store mirrors the
 // provider's snapshot into the reactive fields the views read. We bind a
-// LocalSessionProvider wrapping a minimal scripted runner and assert on the
-// mirrored store state — the runner is a provider implementation detail.
-function storeWithRunner(runner: Record<string, unknown>) {
+// LocalSessionProvider wrapping a minimal scripted session and assert on the
+// mirrored store state — the session is a provider implementation detail.
+function storeWithSession(session: Record<string, unknown>) {
   const store = createStudioStore();
   const provider = new LocalSessionProvider({
-    runner: runner as never,
+    session: session as never,
     status: "running",
   });
   store.getState()._bindProvider(provider);
@@ -27,7 +42,7 @@ function storeWithRunner(runner: Record<string, unknown>) {
 }
 
 function storeRevealing(line: Line) {
-  return storeWithRunner({ continueSingle: () => line, reset: vi.fn(), choose: vi.fn() });
+  return storeWithSession(fakeSession({ continueToPause: () => [line] }));
 }
 
 describe("session revealNext", () => {
@@ -73,11 +88,13 @@ describe("session revealNext", () => {
   });
 
   it("transitions to error when the runtime throws", () => {
-    const store = storeWithRunner({
-      continueSingle: () => {
-        throw new Error("boom");
-      },
-    });
+    const store = storeWithSession(
+      fakeSession({
+        continueToPause: () => {
+          throw new Error("boom");
+        },
+      }),
+    );
     store.getState().revealNext();
     const s = store.getState();
     expect(s.sessionStatus).toBe("error");

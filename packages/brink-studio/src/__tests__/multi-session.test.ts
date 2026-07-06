@@ -25,14 +25,17 @@ type Line = {
 
 const SAVE_KEY = "brink-player-save";
 
-/** A provider wrapping an adopted runner already at a known snapshot. */
+/** A provider wrapping an adopted session already at a known snapshot. */
 function provider(
   status: Line["type"] | "running" | "awaiting-choice" | "ended",
   transcript: string[],
   choices: Line["choices"] = [],
 ): LocalSessionProvider {
   return new LocalSessionProvider({
-    runner: { continueSingle: () => ({ type: "end", text: "", tags: [] }) } as never,
+    session: {
+      continueToPause: () => [{ type: "end", text: "", tags: [] }],
+      onJournalDirty: () => () => {},
+    } as never,
     status: status as never,
     transcript,
     choices: choices as never,
@@ -124,13 +127,15 @@ describe("opening + closing local sessions", () => {
 });
 
 describe("secondary sessions are isolated (no persistence)", () => {
-  it("a non-persistent session does not write the saved choice log", () => {
-    const runner = {
-      continueSingle: (): Line => ({ type: "end", text: "", tags: [] }),
+  it("a non-persistent session never subscribes to onJournalDirty", () => {
+    const onJournalDirty = vi.fn(() => () => {});
+    const session = {
+      continueToPause: (): Line[] => [{ type: "end", text: "", tags: [] }],
       choose: vi.fn(),
+      onJournalDirty,
     };
     const secondary = new LocalSessionProvider({
-      runner: runner as never,
+      session: session as never,
       status: "awaiting-choice",
       choices: [{ index: 0, text: "go", tags: [] }] as never,
       persist: false,
@@ -138,25 +143,42 @@ describe("secondary sessions are isolated (no persistence)", () => {
 
     secondary.choose(0);
 
-    expect(runner.choose).toHaveBeenCalledWith(0);
-    expect(secondary.recordedChoices).toEqual([0]); // tracked in-memory…
-    expect(localStorage.getItem(SAVE_KEY)).toBeNull(); // …but never persisted
+    expect(session.choose).toHaveBeenCalledWith(0);
+    // Non-persistent sessions never wire the persistence push signal — a
+    // secondary playthrough must not clobber the primary's save.
+    expect(onJournalDirty).not.toHaveBeenCalled();
+    expect(localStorage.getItem(SAVE_KEY)).toBeNull();
   });
 
-  it("the primary (persistent) session does write the saved log", () => {
-    const runner = {
-      continueSingle: (): Line => ({ type: "end", text: "", tags: [] }),
+  it("the primary (persistent) session subscribes to onJournalDirty and persists on fire", () => {
+    let dirtyListener: (() => void) | undefined;
+    const session = {
+      continueToPause: (): Line[] => [{ type: "end", text: "", tags: [] }],
       choose: vi.fn(),
+      onJournalDirty: vi.fn((listener: () => void) => {
+        dirtyListener = listener;
+        return () => {};
+      }),
+      exportJournal: vi.fn(() => ({
+        version: 1,
+        program_checksum: 7,
+        events: [{ kind: { type: "choice", index: 0 } }],
+        truncated: false,
+      })),
     };
     const primary = new LocalSessionProvider({
-      runner: runner as never,
+      session: session as never,
       status: "awaiting-choice",
       choices: [{ index: 0, text: "go", tags: [] }] as never,
     });
 
     primary.choose(0);
+    // Simulate the deferred+debounced hook firing (real `StorySessionHandle`
+    // does this after choose() grows the journal).
+    dirtyListener?.();
 
-    expect(JSON.parse(localStorage.getItem(SAVE_KEY)!)).toEqual({ choiceLog: [0] });
+    const persisted = JSON.parse(localStorage.getItem(SAVE_KEY)!);
+    expect(persisted).toEqual({ version: 2, journal: session.exportJournal() });
   });
 });
 
