@@ -457,11 +457,29 @@ export interface StoryGraphNode {
   parent?: string;
 }
 
+/**
+ * A source site that produced a story-graph edge: the divert target path's
+ * span, or the whole divert statement for `-> DONE`/`-> END`. `start`/`end`
+ * are UTF-16 offsets within `file` — the same convention as node spans.
+ */
+export interface StoryGraphEdgeOccurrence {
+  file: string;
+  start: number;
+  end: number;
+}
+
 /** A directed story-graph edge between node ids. Function calls are excluded. */
 export interface StoryGraphEdge {
   from: string;
   to: string;
   kind: StoryGraphEdgeKind;
+  /**
+   * The divert sites that produced this edge, sorted by (file, span). An
+   * aggregated edge (e.g. two choices targeting the same knot) keeps one
+   * entry per site. Absent when empty — only for HIR-synthesized diverts
+   * with no source anchor.
+   */
+  occurrences?: StoryGraphEdgeOccurrence[];
 }
 
 /**
