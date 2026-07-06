@@ -81,7 +81,15 @@ collapse to 0.7.0 → 0.8.0). Design fan-outs run concurrently with Wave A.
       transcripts and fixed inline; #377/#378 reviewed inline by hand
 - [x] Intl × dialect-affixes follow-up filed (#383); quick-xml 0.41 = Dependabot #356 (kicks
       #380 when green)
-- [ ] Wave A: last 3 PRs merge (watcher running)
-- [ ] Wave B (dialect, 4 PRs) + Wave C (session, 4 PRs) — **lean mode**: one sonnet-pinned
-      agent per deliverable, inline review, no fan-outs
-- [ ] Merge-train complete → changesets version PR (#382) → 0.8.0 publish
+- [x] Wave A complete (9/9 merged)
+- [x] Waves B & C complete via the autonomous-pump workflow (sonnet builds, opus adversarial
+      reviews, serialized train): #386 dialect core, #394 dialect editor + enum→string cut,
+      #385 session core, #389 StorySessionHandle, #393 onJournalDirty, #392+#396 session docs,
+      #398 custom-dialect completeness (#395), #399 lines table + DialectParser (#366),
+      #400 fold kinds (#365), #401 studio session migration (#388)
+- [x] Scope-reconciliation follow-ups filed: #390/#391 (rolled in + shipped), #395 (rolled in +
+      shipped), #383 intl, #397 scripting epic (parked), #402 CI wall-clock, #403–#409 cleanup
+- [x] **npm 0.8.0 published** (2026-07-06): @brink-lang/editor, @brink-lang/web,
+      @brink-lang/studio — via #382 (note the bot-push CI gotcha now in docs/publishing.md)
+- [ ] Crates release: blocked on a fresh `RELEASE_PLZ_TOKEN` (PAT expired 2026-07-01);
+      then release-plz refreshes #349 → audit → merge → crates.io publish
