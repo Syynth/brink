@@ -171,7 +171,7 @@
 }
 .brink-studio .shell-strip-dropzone.active {
   border-color: var(--bs-accent);
-  background: color-mix(in srgb, var(--bs-accent) 16%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 16%);
 }
 
 /* Drag ghost: icon + title chip following the cursor (positioned by the

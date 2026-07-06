@@ -64,7 +64,7 @@
   cursor: pointer;
 }
 .brink-studio .shell-notification-action:hover {
-  background: color-mix(in srgb, var(--bs-accent) 15%, transparent);
+  background: rgb(var(--bs-accent-rgb) / 15%);
 }
 .brink-studio .shell-notification-close {
   background: none;

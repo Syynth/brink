@@ -69,5 +69,28 @@
   --bs-syn-decorator: var(--ctp-peach);
   --bs-syn-label: var(--ctp-pink);
 
+  /* ── Chromium-88-safe derived colors (#276) ─────────────────────────
+     See mocha.css: raw sRGB triplets consumed by component CSS as
+     rgb(var(--bs-X-rgb) / N%), plus precomputed opaque two-color mixes.
+     Keep each value in sync with its base token above. */
+  --bs-accent-rgb: 30 102 245; /* --ctp-blue */
+  --bs-surface-bg-rgb: 230 233 239; /* --ctp-surface-low */
+  --bs-panel-bg-rgb: 220 224 232; /* --ctp-surface-high */
+  --bs-fg-rgb: 76 79 105; /* --ctp-text */
+  --bs-fg-muted-rgb: 108 111 133; /* --ctp-subtext0 */
+  --bs-border-rgb: 188 192 204; /* --ctp-surface1 */
+  --bs-error-rgb: 210 15 57; /* --ctp-red */
+  --bs-warning-rgb: 223 142 29; /* --ctp-yellow */
+  --bs-success-rgb: 64 160 43; /* --ctp-green */
+
+  --bs-active-line-bg: rgb(var(--bs-surface-bg-rgb) / 60%);
+
+  --bs-graph-knot-border: #9f76df; /* symbol-knot 55% + border */
+  --bs-graph-stitch-border: #72abb5; /* symbol-stitch 45% + border */
+  --bs-graph-end-border: #c85f7b; /* error 55% + border */
+  --bs-graph-expanded-bg: #e5e8ee; /* panel-bg 55% + editor-bg */
+  --bs-graph-current-bg: #bacaea; /* accent 18% + panel-bg */
+  --bs-conflict-banner-bg: #dcd6d0; /* warning 12% + panel-bg */
+
   color-scheme: light;
 }

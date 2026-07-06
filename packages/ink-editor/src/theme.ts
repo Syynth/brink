@@ -26,11 +26,17 @@ export const brinkTheme: Extension = [
       backgroundColor: "var(--bs-surface-bg)",
     },
     ".cm-activeLine": {
-      backgroundColor: "color-mix(in srgb, var(--bs-surface-bg) 60%, transparent)",
+      // color-mix() is unavailable on Chromium 88 (RMMZ/NW.js) — the theme
+      // provides the precomputed translucent token; hosts that define only
+      // base tokens degrade to the opaque surface (#276).
+      backgroundColor: "var(--bs-active-line-bg, var(--bs-surface-bg))",
     },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-      backgroundColor:
-        "color-mix(in srgb, var(--bs-accent) 30%, transparent) !important",
+      // The selection layer sits behind the text, so a solid token + layer
+      // opacity composites like a 30%-alpha fill without color-mix(), which
+      // Chromium 88 drops — making selection invisible (#276).
+      backgroundColor: "var(--bs-accent) !important",
+      opacity: "0.3",
     },
     ".cm-cursor": {
       borderLeftColor: "var(--bs-accent)",
