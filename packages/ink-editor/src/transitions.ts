@@ -315,7 +315,12 @@ function executeDialectRow(
       const targetKind = row.action.kind;
       const template = dialect.templateFor(targetKind);
       const role = dialect.contentGroupFor(targetKind);
-      const content = extractLineContent(line.text);
+      // Extract via the resolved dialect's OWN declared shapes (#395) — the
+      // source line may be classified as any wrapping kind the dialect
+      // declares, not just the built-in at-cue `character`/`parenthetical`,
+      // so a custom dialect's convert row extracts correctly instead of
+      // silently falling through to the hardcoded at-cue regexes.
+      const content = extractLineContent(line.text, dialect.convertibleShapes());
       const rendered = template && role ? renderTemplate(template, role, content) : content;
       view.dispatch({
         changes: { from: line.from, to: line.to, insert: prefix + rendered },

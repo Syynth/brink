@@ -46,17 +46,19 @@ import {
   ViewPlugin,
   type ViewUpdate,
 } from "@codemirror/view";
-import { elementTypeField, ElementType } from "./element-type.js";
+import { elementTypeField, ElementType, type DialectGeometry } from "./element-type.js";
 import { leadingWsLen } from "./screenplay.js";
 
-// `contentRegions` is a pure function of `(text, type)` — no `LineInfo`, so
-// no cached dialect geometry to read. #368's parity contract lists this
-// file's dialect wiring as out of scope for this deliverable (the dialect
-// spec's "what the dialect replaces" list covers `element-type.ts`,
-// `screenplay.ts`, transitions/keybindings, and `convert.ts` — not inline
-// markup's content-region scoping). These constants reproduce the at-cue
-// preset's sigil widths locally; a future pass can thread dialect geometry
-// through if inline markup needs to scope to a custom dialect's regions.
+// `contentRegions` is a pure function of `(text, type)`, plus an OPTIONAL
+// third `geometry` argument (#395). Character/Parenthetical content-region
+// widths used to be the hardcoded at-cue constants below (`':<>'` = 3,
+// `'<>'` = 2); they now derive from the resolved dialect's cached hidden-group
+// spans (`LineInfo.dialect`, itself sourced from the `dialectFacet`/wasm
+// classification — see `element-type.ts`), so a custom dialect with different
+// affix widths gets correct markup regions with zero changes here. The
+// constants remain as the fallback for callers that omit `geometry` (existing
+// public-API call sites/tests), reproducing the at-cue preset's shape exactly
+// — byte-identical to before for the default preset.
 const AT_CUE_CHAR_SUFFIX_LEN = 3; // hidden ':<>' on a character line
 const AT_CUE_GLUE_LEN = 2; // hidden '<>' on a parenthetical line
 
@@ -131,8 +133,22 @@ function sigilPrefixEnd(text: string, ws: number, validSigils: readonly string[]
  * Compute the narrative content regions of a line (line-relative offsets).
  * Returns `[]` for lines that carry no markupable content. Pure — exported as
  * the unit-testable core of the scoping invariant.
+ *
+ * `geometry` (#395) is the line's cached `LineInfo.dialect` (line-relative
+ * hidden-group/content spans, already derived from the resolved dialect at
+ * classification time — see `element-type.ts`). When present, a
+ * Character/Parenthetical line's content bounds derive from
+ * `geometry.contentSpan` instead of the hardcoded at-cue affix widths, so a
+ * custom dialect with different affix lengths scopes correctly. Omitting
+ * `geometry` falls back to the at-cue preset's widths (byte-identical to
+ * pre-#395 behavior) — existing callers that only pass `(text, type)` are
+ * unaffected.
  */
-export function contentRegions(text: string, type: ElementType): MarkupRegion[] {
+export function contentRegions(
+  text: string,
+  type: ElementType,
+  geometry?: DialectGeometry | null,
+): MarkupRegion[] {
   if (!NARRATIVE_TYPES.has(type)) return [];
 
   const ws = leadingWsLen(text);
@@ -148,12 +164,20 @@ export function contentRegions(text: string, type: ElementType): MarkupRegion[] 
   switch (type) {
     case ElementType.Character:
       // `@Name:<>` — content is the name between the hidden @ and :<> sigils.
-      start = ws + 1;
-      end = Math.max(start, text.length - AT_CUE_CHAR_SUFFIX_LEN);
+      if (geometry?.contentSpan) {
+        [start, end] = geometry.contentSpan;
+      } else {
+        start = ws + 1;
+        end = Math.max(start, text.length - AT_CUE_CHAR_SUFFIX_LEN);
+      }
       break;
     case ElementType.Parenthetical:
       // `(text)<>` — exclude the hidden trailing glue.
-      end = Math.max(start, text.length - AT_CUE_GLUE_LEN);
+      if (geometry?.contentSpan) {
+        [start, end] = geometry.contentSpan;
+      } else {
+        end = Math.max(start, text.length - AT_CUE_GLUE_LEN);
+      }
       break;
     case ElementType.Choice:
       start = sigilPrefixEnd(text, ws, ["*", "+"]);
@@ -360,7 +384,7 @@ function buildMarkupDecos(view: EditorView, rules: readonly CompiledRule[]): Dec
     const info = infos[i - 1];
     if (!info) continue;
     const line = view.state.doc.line(i);
-    const regions = contentRegions(line.text, info.type);
+    const regions = contentRegions(line.text, info.type, info.dialect);
     for (const region of regions) {
       const slice = line.text.slice(region.from, region.to);
       const base = line.from + region.from;

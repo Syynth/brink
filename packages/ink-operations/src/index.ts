@@ -24,15 +24,55 @@ export const CONVERTIBLE_TYPES: { label: string; sigil: string; key: string }[] 
 
 // ── Content extraction ───────────────────────────────────────────
 
-/** Extract the "meat" from a line, stripping any wrapping or prefix sigils. */
-export function extractLineContent(text: string): string {
+/**
+ * A convertible-kind's source shape, reduced to what `extractLineContent`
+ * needs: a compiled pattern and which named group is the editable content
+ * (mirrors `PatternShape` in `@brink/wasm-types`, e.g. produced from a
+ * resolved dialect's `templateFor`/pattern for a declared kind). Passed by a
+ * dialect-aware caller (`transitions.ts`'s `executeDialectRow` `convert`
+ * action) so extraction follows the resolved dialect's own shape instead of
+ * the hardcoded at-cue regexes below (#395).
+ */
+export interface ConvertibleShape {
+  /** Portable-regex pattern, anchored against the trimmed line. */
+  pattern: string;
+  /** Which named group is the editable content. */
+  contentGroup?: string | null;
+}
+
+/** The at-cue preset's built-in wrapping shapes — the pre-#395 hardcoded
+ *  behavior, kept as the fallback so a call with no `shapes` argument (or a
+ *  shape list that doesn't match) stays byte-identical to before. */
+const DEFAULT_CONVERTIBLE_SHAPES: ConvertibleShape[] = [
+  { pattern: "^@(?<content>[^:]*):<>$", contentGroup: "content" }, // Character: @Name:<> → Name
+  { pattern: "^\\((?<content>.*)\\)<>$", contentGroup: "content" }, // Parenthetical: (text)<> → text
+];
+
+/**
+ * Extract the "meat" from a line, stripping any wrapping or prefix sigils.
+ *
+ * `shapes` (#395), when given, is tried first, in order — each shape's
+ * `pattern` is matched against the trimmed line and, on a match, the named
+ * `contentGroup` group's text is returned. This lets a custom dialect's
+ * wrapping kinds (not just the built-in `@name:<>`/`(text)<>`) extract
+ * correctly. Falls through to the built-in at-cue shapes, then prefix-sigil
+ * stripping via `getLineSigilRange`, when `shapes` is omitted or none match —
+ * byte-identical to pre-#395 behavior for the default preset.
+ */
+export function extractLineContent(text: string, shapes?: readonly ConvertibleShape[]): string {
   const trimmed = text.trimStart();
-  // Character: @Name:<> → Name
-  const charMatch = trimmed.match(/^@([^:]*):<>$/);
-  if (charMatch) return charMatch[1];
-  // Parenthetical: (text)<> → text
-  const parenMatch = trimmed.match(/^\((.*)\)<>$/);
-  if (parenMatch) return parenMatch[1];
+  for (const shape of [...(shapes ?? []), ...DEFAULT_CONVERTIBLE_SHAPES]) {
+    if (!shape.contentGroup) continue;
+    let re: RegExp;
+    try {
+      re = new RegExp(shape.pattern);
+    } catch {
+      continue;
+    }
+    const m = trimmed.match(re);
+    const content = m?.groups?.[shape.contentGroup];
+    if (content !== undefined) return content;
+  }
   // Prefix sigils: strip via getLineSigilRange
   const { end } = getLineSigilRange(text);
   return text.slice(end);

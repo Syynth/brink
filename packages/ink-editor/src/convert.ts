@@ -11,6 +11,7 @@ import { extractLineContent } from "@brink/ink-operations";
 
 // Re-export pure functions from @brink/ink-operations
 export { CONVERTIBLE_TYPES, extractLineContent, getLineSigilRange } from "@brink/ink-operations";
+export type { ConvertibleShape } from "@brink/ink-operations";
 
 // ── Line conversion (CM6 dispatch) ──────────────────────────────
 
