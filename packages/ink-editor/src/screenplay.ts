@@ -82,8 +82,6 @@ export function characterName(line: SigilLine, info: LineInfo): {
   return { ws, nameStart: region.start, nameEnd: region.end, name: region.text };
 }
 
-const DEPTH_INDENT_EM = 2;
-
 // ── Superscript depth indicators ───────────────────────────────────
 
 const SUPERSCRIPT_DIGITS = ["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"];
@@ -207,17 +205,22 @@ function buildLineDecos(view: EditorView): DecorationSet {
       }
     }
 
-    // Indent choices/gathers at depth > 1
+    // Weave depth (#414): carried as `data-depth` for choices/gathers at
+    // depth > 1 — the indent itself (padding-left, scaled by depth) is a
+    // `brinkTheme` rule keyed off the attribute, not an inline style, so
+    // headless hosts can restyle or ignore it freely.
     if (
       (info.type === ElementType.Choice || info.type === ElementType.Gather) &&
       info.depth > 1
     ) {
-      attrs.style = `padding-left: ${(info.depth - 1) * DEPTH_INDENT_EM}em`;
+      attrs["data-depth"] = String(info.depth);
     }
 
-    // Right-align standalone diverts only
+    // Standalone diverts (#414): `brink-divert-standalone` class carries the
+    // "screenplay transition" look (right-align) via `brinkTheme`, not an
+    // inline style.
     if (info.type === ElementType.Divert && info.standalone) {
-      attrs.style = (attrs.style || "") + "; text-align: right";
+      attrs.class = `${attrs.class} brink-divert-standalone`;
     }
 
     builder.add(line.from, line.from, Decoration.line({ attributes: attrs }));
