@@ -22,6 +22,7 @@ thiserror.workspace = true
 [dev-dependencies]
 brink-compiler = { workspace = true }
 brink-runtime = { workspace = true }
+serde_json.workspace = true
 
 [lints]
 workspace = true

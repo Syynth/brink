@@ -3,8 +3,16 @@
 //! `line_contexts()` returns one `LineContext` per source line, giving the
 //! editor authoritative information about element type, weave position,
 //! and inline structure — replacing the regex-based `classifyLine` in TS.
+//!
+//! `line_contexts_with_dialect()` (#368) layers a registered
+//! [`brink_ir::ResolvedDialect`] on top: it runs the same base pass, then a
+//! dialect classify+chain post-pass exactly mirroring today's TS screenplay
+//! post-pass (`element-type.ts`) — classification runs on narrative AND
+//! choice-body base lines (preserving depth), but chaining (narrative →
+//! dialect-chained kind) runs on narrative only, so cues inside choice
+//! bodies classify but never chain. Blank lines always break a chain.
 
-use brink_ir::{Block, ChoiceSetContext, Content, ContentPart, HirFile, Stmt};
+use brink_ir::{Block, ChoiceSetContext, Content, ContentPart, HirFile, ResolvedDialect, Stmt};
 use brink_syntax::SyntaxNode;
 use serde::Serialize;
 
@@ -72,6 +80,33 @@ pub struct LineContext {
     pub has_tags: bool,
     /// Whether this line is inside a block comment.
     pub block_comment: bool,
+    /// Dialect classification for this line, if a dialect is registered and
+    /// this line matched one of its declared kinds (directly, or via a
+    /// chain rule). `None` when no dialect is active or the line is plain
+    /// structural content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialect: Option<DialectLineInfo>,
+}
+
+/// Dialect-classification result for one line, computed once at
+/// classification time (hidden geometry + content region are never
+/// re-derived by downstream hot paths).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DialectLineInfo {
+    /// The dialect kind (e.g. `"character"`, `"parenthetical"`, `"dialogue"`).
+    pub kind: String,
+    /// Captured named-group attributes (e.g. `speaker` → `"Alice"`), sorted
+    /// by name. For chained lines, this carries the `chain.carry` groups
+    /// forward from the run's originating cue (whole-run `data-speaker`).
+    pub attrs: Vec<(String, String)>,
+    /// Hidden geometry byte spans (full-line-relative), e.g. the `@` and
+    /// `:<>` sigils on a character cue. Empty for chain-only (pattern-less)
+    /// kinds like `dialogue`.
+    pub hidden_spans: Vec<(u32, u32)>,
+    /// The editable content byte span (full-line-relative). `None` for
+    /// chain-only kinds, where the pattern-less-kind contract applies:
+    /// content is the whole trimmed line.
+    pub content_span: Option<(u32, u32)>,
 }
 
 impl Default for LineContext {
@@ -84,6 +119,7 @@ impl Default for LineContext {
             },
             has_tags: false,
             block_comment: false,
+            dialect: None,
         }
     }
 }
@@ -163,6 +199,146 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
     detect_gathers(source, &mut ctx);
 
     ctx
+}
+
+/// Compute per-line context, then layer a registered dialect's
+/// classification on top (#368).
+///
+/// Mirrors the base [`line_contexts`] pass exactly, then runs a dialect
+/// post-pass over the result:
+///
+/// 1. **Classify pass** — every line whose base `element` is `Narrative`
+///    (top-level OR inside a choice body — weave depth and role are
+///    preserved) is matched against the dialect's declared elements, in
+///    declaration order. A match records `dialect` on that line without
+///    touching `element`/`weave` (those stay the interpreter's structural
+///    truth; `dialect` is an additional facet).
+/// 2. **Chain pass** — runs ONLY over lines whose base `element` is
+///    `Narrative` at `WeaveElement::TopLevel` (i.e. plain top-level
+///    narrative, not choice-body narrative): if the immediately preceding
+///    line's dialect kind matches a chain rule's `after` list, this line's
+///    dialect is set to the chained kind, carrying forward the rule's
+///    `carry` attrs from the run's originating match. Blank lines always
+///    break the chain (a `Blank` line has no dialect, so the next line's
+///    "previous dialect kind" lookup sees `None` and the chain resets).
+///
+/// This split reproduces today's TS behavior exactly: a cue written inside
+/// a choice body classifies (and keeps its depth) but never chains to
+/// dialogue, because the TS chain gate checks `type === NarrativeText`,
+/// which choice-body narrative never is (it was already retyped to
+/// `ChoiceBody` before the screenplay post-pass runs).
+pub fn line_contexts_with_dialect(
+    hir: &HirFile,
+    source: &str,
+    root: &SyntaxNode,
+    dialect: &ResolvedDialect,
+) -> Vec<LineContext> {
+    let mut ctx = line_contexts(hir, source, root);
+    apply_dialect(source, dialect, &mut ctx);
+    ctx
+}
+
+/// The dialect post-pass, split out so it can also be exercised directly
+/// against a hand-built `Vec<LineContext>` in tests.
+fn apply_dialect(source: &str, dialect: &ResolvedDialect, ctx: &mut [LineContext]) {
+    let lines: Vec<&str> = source.split('\n').collect();
+
+    // A line with no non-whitespace text is "truly blank" regardless of what
+    // the HIR classified it as — a multi-line `Content` node's range can
+    // span an interior blank line as `Narrative` (it's part of the same
+    // paragraph), but TS's `classifyLine`/screenplay post-pass treats an
+    // empty-trimmed line as `Blank` unconditionally. Blank always breaks a
+    // chain (spec decision 9), so both passes below must see this, not the
+    // HIR's `element`.
+    let is_blank = |i: usize| lines.get(i).is_some_and(|l| l.trim().is_empty());
+
+    // ── Classify pass: narrative AND choice-body base lines, depth preserved ──
+    for (i, line) in lines.iter().enumerate() {
+        if i >= ctx.len() {
+            break;
+        }
+        if ctx[i].element != LineElement::Narrative || is_blank(i) {
+            continue;
+        }
+        let leading_ws = leading_ws_len(line);
+        let trimmed = &line[leading_ws as usize..];
+        if let Some(m) = dialect.classify(trimmed, leading_ws) {
+            ctx[i].dialect = Some(DialectLineInfo {
+                kind: m.kind,
+                attrs: m.attrs,
+                hidden_spans: m.hidden_spans,
+                content_span: m.content_span,
+            });
+        }
+    }
+
+    // ── Chain pass: narrative-only (top-level), preserving carried attrs ──
+    // A choice-body narrative line's base `element` is still `Narrative` in
+    // `LineContext` (unlike the TS `LineInfo`, which retypes it to
+    // `ChoiceBody` before the screenplay pass runs) — the interpreter-owned
+    // distinction here is `weave.element`, so the chain gate checks that
+    // directly instead of relying on a separate derived type.
+    //
+    // `carry` groups (e.g. `speaker`) must survive the *whole run*, not just
+    // one hop back: a cue → parenthetical → dialogue chain has the speaker
+    // attr only on the cue line, since the parenthetical's own capture
+    // groups don't include it. `run_carry` tracks the most recent carried
+    // values seen anywhere in the current unbroken run and is reset the
+    // moment a blank line (or any non-dialect, non-chained line) appears.
+    let mut run_carry: Vec<(String, String)> = Vec::new();
+    for i in 0..ctx.len() {
+        if is_blank(i) {
+            run_carry.clear();
+            continue;
+        }
+        // Any dialect-classified line (whether matched directly by the
+        // classify pass, or by a chain rule below) can refresh the run's
+        // carried values — a rule's `carry` names are looked up against
+        // whatever attrs this line actually has; unmatched names simply
+        // don't update (so a parenthetical with no `speaker` attr leaves
+        // the previously-carried speaker untouched).
+        if i > 0
+            && ctx[i].element == LineElement::Narrative
+            && ctx[i].weave.element == WeaveElement::TopLevel
+            && ctx[i].dialect.is_none()
+            && let Some(prev_kind) = ctx[i - 1].dialect.as_ref().map(|d| d.kind.clone())
+            && let Some(rule) = dialect.chain_rule_after(&prev_kind)
+        {
+            let carried: Vec<(String, String)> = rule
+                .carry
+                .iter()
+                .filter_map(|name| run_carry.iter().find(|(k, _)| k == name).cloned())
+                .collect();
+            ctx[i].dialect = Some(DialectLineInfo {
+                kind: rule.becomes.clone(),
+                attrs: carried,
+                hidden_spans: Vec::new(),
+                content_span: None,
+            });
+        }
+
+        if let Some(d) = &ctx[i].dialect {
+            for (k, v) in &d.attrs {
+                if let Some(existing) = run_carry.iter_mut().find(|(ek, _)| ek == k) {
+                    existing.1.clone_from(v);
+                } else {
+                    run_carry.push((k.clone(), v.clone()));
+                }
+            }
+        } else {
+            // A non-dialect, non-blank line (plain narrative/structural)
+            // still breaks the run — only dialect-classified lines keep it
+            // alive.
+            run_carry.clear();
+        }
+    }
+}
+
+/// Byte length of a line's leading whitespace (spaces only — ink
+/// indentation is space-based).
+#[expect(clippy::cast_possible_truncation)]
+fn leading_ws_len(line: &str) -> u32 {
+    (line.len() - line.trim_start_matches(' ').len()) as u32
 }
 
 // ── HIR walking ─────────────────────────────────────────────────────
@@ -623,5 +799,134 @@ mod tests {
             ctx[1].weave.element,
             WeaveElement::ChoiceLine { sticky: true }
         ));
+    }
+}
+
+// ── Dialect integration tests (#368) ───────────────────────────────
+//
+// Byte-parity evidence: these pin the Rust `line_contexts_with_dialect`
+// classification for the at-cue preset against today's hardcoded TS
+// screenplay behavior (`element-type.ts`'s post-pass, `screenplay.ts`'s
+// `CHAR_SUFFIX_LEN`/`GLUE_LEN`/`characterName()`).
+#[cfg(test)]
+mod dialect_tests {
+    use super::*;
+    use brink_ir::{FileId, ResolvedDialect, hir};
+
+    fn make_dialect_contexts(source: &str) -> Vec<LineContext> {
+        let parse = brink_syntax::parse(source);
+        let file_id = FileId(0);
+        let ast = parse.tree();
+        let (hir, _, _) = hir::lower(file_id, &ast);
+        let dialect = ResolvedDialect::compile(&brink_ir::DialogueDialect::default())
+            .expect("at-cue preset compiles");
+        line_contexts_with_dialect(&hir, source, &parse.syntax(), &dialect)
+    }
+
+    #[test]
+    fn character_cue_classifies_with_hidden_geometry() {
+        let source = "=== start ===\n@Alice:<>\nHello there.\n";
+        let ctx = make_dialect_contexts(source);
+        let d = ctx[1].dialect.as_ref().expect("cue classified");
+        assert_eq!(d.kind, "character");
+        assert_eq!(d.attrs, vec![("speaker".to_owned(), "Alice".to_owned())]);
+        // '@' hidden at (0,1), ':<>' hidden at (6,9) — matches
+        // screenplay.ts's CHAR_SUFFIX_LEN = 3 exactly.
+        assert_eq!(d.hidden_spans, vec![(0, 1), (6, 9)]);
+        assert_eq!(d.content_span, Some((1, 6)));
+    }
+
+    #[test]
+    fn narrative_after_cue_chains_to_dialogue_and_carries_speaker() {
+        let source = "=== start ===\n@Alice:<>\nHello there.\n";
+        let ctx = make_dialect_contexts(source);
+        let d = ctx[2].dialect.as_ref().expect("chained to dialogue");
+        assert_eq!(d.kind, "dialogue");
+        assert_eq!(d.attrs, vec![("speaker".to_owned(), "Alice".to_owned())]);
+    }
+
+    #[test]
+    fn parenthetical_between_cue_and_dialogue_keeps_chain_alive() {
+        let source = "=== start ===\n@Alice:<>\n(warmly)<>\nHello there.\n";
+        let ctx = make_dialect_contexts(source);
+        assert_eq!(
+            ctx[2].dialect.as_ref().expect("parenthetical").kind,
+            "parenthetical"
+        );
+        let dialogue = ctx[3].dialect.as_ref().expect("chained");
+        assert_eq!(dialogue.kind, "dialogue");
+        // carried speaker traces back through the parenthetical link.
+        assert_eq!(
+            dialogue.attrs,
+            vec![("speaker".to_owned(), "Alice".to_owned())]
+        );
+    }
+
+    #[test]
+    fn blank_line_breaks_the_chain() {
+        let source = "=== start ===\n@Alice:<>\n\nHello there.\n";
+        let ctx = make_dialect_contexts(source);
+        // The blank line itself never gets a dialect classification.
+        assert!(ctx[2].dialect.is_none());
+        // Narrative after the blank does NOT chain to dialogue (spec
+        // decision 9: blank always breaks — this holds even though the HIR
+        // may still report the blank line's `element` as `Narrative` when
+        // it's part of the same multi-line `Content` node's span; the
+        // dialect pass treats an empty-trimmed line as blank regardless).
+        assert!(ctx[3].dialect.is_none());
+        assert_eq!(ctx[3].element, LineElement::Narrative);
+    }
+
+    #[test]
+    fn cue_inside_choice_body_classifies_but_does_not_chain() {
+        // A cue written inside a choice body classifies (depth preserved)
+        // but the following narrative — also inside the choice body — must
+        // NOT chain to dialogue. This is the P2-critique-mandated
+        // classify-vs-chain eligibility split (spec deliverable 3).
+        let source = "=== start ===\n* Choice\n  @Alice:<>\n  Hello there.\n";
+        let ctx = make_dialect_contexts(source);
+        let cue = ctx[2]
+            .dialect
+            .as_ref()
+            .expect("cue classified in choice body");
+        assert_eq!(cue.kind, "character");
+        assert_eq!(ctx[2].weave.element, WeaveElement::ChoiceBody);
+        assert_eq!(ctx[2].weave.depth, 1, "depth preserved inside choice body");
+
+        // The following line is still plain Narrative/ChoiceBody — no chain.
+        assert!(
+            ctx[3].dialect.is_none(),
+            "choice-body narrative must not chain to dialogue"
+        );
+        assert_eq!(ctx[3].weave.element, WeaveElement::ChoiceBody);
+    }
+
+    #[test]
+    fn plain_narrative_prose_does_not_classify() {
+        let source = "=== start ===\nJust some narrative text.\n";
+        let ctx = make_dialect_contexts(source);
+        assert!(ctx[1].dialect.is_none());
+    }
+
+    #[test]
+    fn negative_fixture_channel_prose_is_not_a_cue() {
+        // Spec negative fixture: '@channel: hello' prose must NOT classify
+        // as a character cue (no ':<>' terminator).
+        let source = "=== start ===\n@channel: hello\n";
+        let ctx = make_dialect_contexts(source);
+        assert!(ctx[1].dialect.is_none());
+    }
+
+    #[test]
+    fn no_dialect_registered_means_no_classification() {
+        // The base `line_contexts` path (no dialect) never populates
+        // `dialect` — it stays an opt-in facet.
+        let source = "=== start ===\n@Alice:<>\n";
+        let parse = brink_syntax::parse(source);
+        let file_id = FileId(0);
+        let ast = parse.tree();
+        let (hir, _, _) = hir::lower(file_id, &ast);
+        let ctx = line_contexts(&hir, source, &parse.syntax());
+        assert!(ctx[1].dialect.is_none());
     }
 }

@@ -70,6 +70,10 @@ icu_locale_core = "2.1"
 icu_plurals = "2.1"
 smallvec = "1"
 bon = "3"
+# Portable-regex core for the dialogue-dialect pattern subset (#368): the
+# `regex` crate has no lookaround/backreferences, which is exactly the JS
+# RegExp ∩ Rust `regex` subset the dialect schema requires.
+regex = "1"
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"

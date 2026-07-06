@@ -2058,6 +2058,7 @@ dependencies = [
  "brink-syntax",
  "rowan",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -2087,9 +2088,11 @@ dependencies = [
  "brink-format",
  "brink-syntax",
  "insta",
+ "regex",
  "rowan",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tracing",
 ]
 

@@ -6,7 +6,7 @@
 
 use brink_analyzer::{AnalysisOptions, AnalysisResult, ExternalCheckSeverity};
 use brink_db::ProjectDb;
-use brink_ir::{FileId, HirFile, HostManifest, SymbolManifest};
+use brink_ir::{FileId, HirFile, HostManifest, ResolvedDialect, SymbolManifest};
 
 /// A snapshot of analysis inputs, cloned out of the db for background analysis.
 pub struct IdeSnapshot {
@@ -43,6 +43,12 @@ pub struct IdeSession {
     host_values: crate::HostValues,
     /// Severity policy for manifest-driven external checks.
     external_check: ExternalCheckSeverity,
+    /// The registered dialogue dialect (#368), pre-compiled for
+    /// classification. Tooling-only, query-time state consumed by
+    /// `line_contexts` — never part of analysis, so registering one needs no
+    /// re-analyze. `None` means no dialect is mounted (plain structural
+    /// classification only).
+    dialect: Option<ResolvedDialect>,
 }
 
 impl IdeSession {
@@ -54,6 +60,7 @@ impl IdeSession {
             host_manifest: None,
             host_values: crate::HostValues::new(),
             external_check: ExternalCheckSeverity::default(),
+            dialect: None,
         }
     }
 
@@ -85,6 +92,26 @@ impl IdeSession {
     #[must_use]
     pub fn host_values(&self) -> &crate::HostValues {
         &self.host_values
+    }
+
+    /// Register (or replace) the dialogue dialect (#368). Compiles the
+    /// dialect's patterns once, up front, so `line_contexts` never
+    /// re-compiles on a hot path. Tooling-only — consumed at query time by
+    /// `line_contexts`, never by analysis, so no re-analyze.
+    pub fn set_dialect(&mut self, dialect: ResolvedDialect) {
+        self.dialect = Some(dialect);
+    }
+
+    /// Clear the registered dialect. `line_contexts` reverts to plain
+    /// structural classification (no `dialect` facet on any line).
+    pub fn clear_dialect(&mut self) {
+        self.dialect = None;
+    }
+
+    /// The registered dialect, if any.
+    #[must_use]
+    pub fn dialect(&self) -> Option<&ResolvedDialect> {
+        self.dialect.as_ref()
     }
 
     /// Set the severity policy for manifest-driven external checks, then
