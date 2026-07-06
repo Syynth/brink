@@ -2,6 +2,27 @@ use brink_ir::{Block, Content, ContentPart, HirFile, Stmt};
 use rowan::TextRange;
 
 use crate::LineIndex;
+use crate::line_context::LineContext;
+
+/// The fold's kind (#365 — Celeris §5.5): every fold the editor exposes is
+/// tagged so hosts can select which kinds auto-collapse per view mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldKind {
+    /// Everything this module emitted before #365 (decls, doc comments,
+    /// conditionals, sequences, choice sets). User-invoked in every mode;
+    /// NEVER auto-collapsed by a host's mode entry.
+    Structural,
+    /// A maximal run of >=2 consecutive machinery-natured lines (logic `~`,
+    /// VAR/CONST/LIST decls, standalone diverts, conditional/sequence
+    /// scaffold lines). Run-based over the line classification — never
+    /// HIR-block-based, so scaffold lines interleaved with narrative content
+    /// never form a run.
+    Machinery,
+    /// A maximal run of >=2 consecutive narrative-natured lines (character/
+    /// dialogue/parenthetical/prose) — the symmetric fold for logic-focused
+    /// viewing.
+    Narrative,
+}
 
 /// A foldable range in the document.
 pub struct FoldRange {
@@ -13,9 +34,17 @@ pub struct FoldRange {
     /// block and header; the editor renders the hidden header as the
     /// collapsed placeholder.
     pub from_line_start: bool,
+    /// The fold's kind (#365).
+    pub kind: FoldKind,
 }
 
 /// Compute folding ranges for a file from its HIR.
+///
+/// All ranges from this pass are [`FoldKind::Structural`] — the
+/// machinery/narrative run-based folds are computed separately by
+/// [`machinery_and_narrative_folds`], since they require the per-line
+/// `nature` facet (base classification, or a registered dialect's) rather
+/// than HIR structure.
 pub fn folding_ranges(hir: &HirFile, source: &str) -> Vec<FoldRange> {
     let idx = LineIndex::new(source);
     let mut ranges = Vec::new();
@@ -33,6 +62,7 @@ pub fn folding_ranges(hir: &HirFile, source: &str) -> Vec<FoldRange> {
             end_line: span.end_line,
             collapsed_text: Some(format!("INCLUDE … ({} files)", span.count)),
             from_line_start: false,
+            kind: FoldKind::Structural,
         });
     }
 
@@ -119,6 +149,7 @@ fn push_decl_fold(
             end_line,
             collapsed_text: None,
             from_line_start: true,
+            kind: FoldKind::Structural,
         });
     }
 }
@@ -151,6 +182,7 @@ fn collect_doc_comment_folds(source: &str, consumed_doc_lines: &[u32], out: &mut
                 end_line: end,
                 collapsed_text: None,
                 from_line_start: false,
+                kind: FoldKind::Structural,
             });
         }
     };
@@ -226,6 +258,7 @@ fn push_fold(
             end_line,
             collapsed_text: collapsed,
             from_line_start: false,
+            kind: FoldKind::Structural,
         });
     }
 }
@@ -323,6 +356,279 @@ fn collect_content_part_folds(
             _ => {}
         }
     }
+}
+
+// ── Machinery/narrative fold runs (#365) ───────────────────────────────
+//
+// Run-based over the per-line classification (`LineContext`/dialect
+// `nature`), never HIR-block-based: a conditional whose scaffold lines
+// (`{ cond:`, `}`) are machinery-natured but whose branch bodies are prose
+// must NOT fold as one machinery region just because it's one HIR node —
+// the narrative lines in between break the run, exactly as they would for
+// any other machinery/narrative sequence. This is what lets a mostly-
+// narrative conditional (key case: a multi-line conditional whose branches
+// are dialogue) stay unfolded while a pure-routing block (assignments/
+// diverts only) collapses.
+
+/// The 3-way nature of a line, for fold-run purposes. Mirrors
+/// `brink_ir::ElementNature` but is computed per-line here from the
+/// structural `LineElement` (when no dialect classified the line) or the
+/// registered dialect's declared `nature` (when it did) — so a line's fold
+/// nature always traces back to one authoritative source, never a
+/// re-hardcoded pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineNature {
+    Narrative,
+    Machinery,
+    /// Neither run type: blank lines, and structural lines that are not
+    /// machinery scaffold (headers, choices, gathers, comments, tags,
+    /// includes/externals).
+    Structural,
+}
+
+/// Compute each line's [`LineNature`] from its `LineContext` plus the
+/// literal source text (needed for two things `LineContext` doesn't itself
+/// disambiguate: a *standalone* divert vs. a tunnel/thread call, and
+/// conditional/sequence *scaffold* lines — the `{ cond:` / `}` lines the HIR
+/// walk leaves structurally unclassified).
+fn line_natures(source: &str, ctx: &[LineContext], scaffold_lines: &[bool]) -> Vec<LineNature> {
+    use crate::line_context::LineElement;
+
+    source
+        .split('\n')
+        .enumerate()
+        .map(|(i, line)| {
+            // A truly-blank line (no non-whitespace text) always breaks a
+            // run, regardless of what the HIR's `element` says — a
+            // multi-line `Content` node's span can cover an interior blank
+            // line as `Narrative` (it's part of the same paragraph node),
+            // but for fold-run purposes a blank line is never narrative.
+            // Mirrors `line_context.rs::apply_dialect`'s `is_blank` check.
+            if line.trim().is_empty() {
+                return LineNature::Structural;
+            }
+
+            let Some(c) = ctx.get(i) else {
+                return LineNature::Structural;
+            };
+
+            // A dialect classification, if present, is authoritative for
+            // this line's nature — never re-derived from `LineElement`.
+            if let Some(d) = &c.dialect {
+                return match d.nature {
+                    brink_ir::ElementNature::Narrative => LineNature::Narrative,
+                    brink_ir::ElementNature::Machinery => LineNature::Machinery,
+                    brink_ir::ElementNature::Structural => LineNature::Structural,
+                };
+            }
+
+            match c.element {
+                LineElement::Narrative => LineNature::Narrative,
+                LineElement::Logic | LineElement::VarDecl => LineNature::Machinery,
+                LineElement::Divert => {
+                    let trimmed = line.trim_start();
+                    let is_tunnel_or_thread = trimmed.starts_with("<-")
+                        || (trimmed.starts_with("->") && trimmed.matches("->").count() > 1);
+                    if is_tunnel_or_thread {
+                        LineNature::Structural
+                    } else {
+                        LineNature::Machinery
+                    }
+                }
+                _ => {
+                    if scaffold_lines.get(i).copied().unwrap_or(false) && !line.trim().is_empty() {
+                        LineNature::Machinery
+                    } else {
+                        LineNature::Structural
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+/// Mark the opening/closing scaffold lines of every conditional and
+/// sequence: the `{ cond:` / `{` header line and the closing `}` line,
+/// located from the same HIR `ptr.text_range()` + brace-extension the
+/// `{...}` fold uses (`push_fold`'s brace search), so the two never
+/// disagree about where a conditional's braces sit. Only these two lines
+/// per construct are scaffold — intermediate branch separators (`- else:`)
+/// are left at their existing (structural) classification, since the HIR
+/// gives no reliable per-branch source span to anchor them to.
+fn mark_conditional_scaffold(hir: &HirFile, source: &str, idx: &LineIndex, out: &mut Vec<bool>) {
+    collect_scaffold_in_block(&hir.root_content, source, idx, out);
+    for knot in &hir.knots {
+        collect_scaffold_in_block(&knot.body, source, idx, out);
+        for stitch in &knot.stitches {
+            collect_scaffold_in_block(&stitch.body, source, idx, out);
+        }
+    }
+}
+
+fn collect_scaffold_in_block(block: &Block, source: &str, idx: &LineIndex, out: &mut Vec<bool>) {
+    for stmt in &block.stmts {
+        collect_scaffold_in_stmt(stmt, source, idx, out);
+    }
+}
+
+fn collect_scaffold_in_stmt(stmt: &Stmt, source: &str, idx: &LineIndex, out: &mut Vec<bool>) {
+    match stmt {
+        Stmt::ChoiceSet(cs) => {
+            for choice in &cs.choices {
+                collect_scaffold_in_block(&choice.body, source, idx, out);
+            }
+            collect_scaffold_in_block(&cs.continuation, source, idx, out);
+        }
+        Stmt::LabeledBlock(block) => collect_scaffold_in_block(block, source, idx, out),
+        Stmt::Conditional(cond) => {
+            mark_brace_span_scaffold(cond.ptr.text_range(), source, idx, out);
+            for branch in &cond.branches {
+                collect_scaffold_in_block(&branch.body, source, idx, out);
+            }
+        }
+        Stmt::Sequence(seq) => {
+            mark_brace_span_scaffold(seq.ptr.text_range(), source, idx, out);
+            for branch in &seq.branches {
+                collect_scaffold_in_block(branch, source, idx, out);
+            }
+        }
+        Stmt::Content(content) => collect_scaffold_in_content(content, source, idx, out),
+        _ => {}
+    }
+}
+
+fn collect_scaffold_in_content(
+    content: &Content,
+    source: &str,
+    idx: &LineIndex,
+    out: &mut Vec<bool>,
+) {
+    for part in &content.parts {
+        match part {
+            ContentPart::InlineConditional(cond) => {
+                mark_brace_span_scaffold(cond.ptr.text_range(), source, idx, out);
+                for branch in &cond.branches {
+                    collect_scaffold_in_block(&branch.body, source, idx, out);
+                }
+            }
+            ContentPart::InlineSequence(seq) => {
+                mark_brace_span_scaffold(seq.ptr.text_range(), source, idx, out);
+                for branch in &seq.branches {
+                    collect_scaffold_in_block(branch, source, idx, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Mark the header and footer lines of one `{ ... }` construct as scaffold,
+/// extending the HIR's inner-node range to the enclosing braces exactly as
+/// `push_fold`'s `{...}` brace search does.
+fn mark_brace_span_scaffold(range: TextRange, source: &str, idx: &LineIndex, out: &mut Vec<bool>) {
+    let start_byte = usize::from(range.start());
+    let end_byte = usize::from(range.end()).min(source.len());
+    if start_byte > end_byte {
+        return;
+    }
+
+    let mut header_start = start_byte;
+    let before = &source.as_bytes()[..header_start];
+    let mut j = before.len();
+    while j > 0 && (before[j - 1] == b' ' || before[j - 1] == b'\t' || before[j - 1] == b'\n') {
+        j -= 1;
+    }
+    if j > 0 && before[j - 1] == b'{' {
+        header_start = j - 1;
+    }
+
+    let mut footer_end = end_byte;
+    let after = &source.as_bytes()[end_byte..];
+    let mut i = 0;
+    while i < after.len() && (after[i] == b' ' || after[i] == b'\t' || after[i] == b'\n') {
+        i += 1;
+    }
+    if i < after.len() && after[i] == b'}' {
+        footer_end = end_byte + i + 1;
+    }
+
+    let (header_line, _) = idx.line_col(rowan::TextSize::from(
+        u32::try_from(header_start).unwrap_or(u32::MAX),
+    ));
+    let (footer_line, _) = idx.line_col(rowan::TextSize::from(
+        u32::try_from(footer_end.saturating_sub(1)).unwrap_or(u32::MAX),
+    ));
+
+    mark_line(header_line, out);
+    mark_line(footer_line, out);
+}
+
+fn mark_line(line: u32, out: &mut Vec<bool>) {
+    let line = line as usize;
+    if line >= out.len() {
+        out.resize(line + 1, false);
+    }
+    out[line] = true;
+}
+
+/// Compute the machinery and narrative fold runs (#365): maximal runs of
+/// `>= 2` consecutive same-nature lines. `ctx` should be produced by
+/// [`crate::line_context::line_contexts`] or
+/// [`crate::line_context::line_contexts_with_dialect`] for the same `hir`/
+/// `source`, so dialect-classified lines (when a dialect is registered)
+/// carry their declared `nature` into the run computation.
+#[must_use]
+pub fn machinery_and_narrative_folds(
+    hir: &HirFile,
+    source: &str,
+    ctx: &[LineContext],
+) -> Vec<FoldRange> {
+    let idx = LineIndex::new(source);
+    let mut scaffold = vec![false; ctx.len()];
+    mark_conditional_scaffold(hir, source, &idx, &mut scaffold);
+    let natures = line_natures(source, ctx, &scaffold);
+
+    let mut ranges = Vec::new();
+    let mut run_start: Option<(u32, LineNature)> = None;
+
+    let mut flush = |run_start: &mut Option<(u32, LineNature)>, end_line: u32| {
+        if let Some((start, nature)) = run_start.take()
+            && end_line > start
+        {
+            let kind = match nature {
+                LineNature::Machinery => FoldKind::Machinery,
+                LineNature::Narrative => FoldKind::Narrative,
+                LineNature::Structural => return,
+            };
+            ranges.push(FoldRange {
+                start_line: start,
+                end_line,
+                collapsed_text: None,
+                from_line_start: false,
+                kind,
+            });
+        }
+    };
+
+    for (i, nature) in natures.iter().enumerate() {
+        let line_no = u32::try_from(i).unwrap_or(u32::MAX);
+        match (*nature, run_start) {
+            (LineNature::Structural, _) => {
+                flush(&mut run_start, line_no.saturating_sub(1));
+                run_start = None;
+            }
+            (n, Some((_, current))) if n == current => {}
+            (n, _) => {
+                flush(&mut run_start, line_no.saturating_sub(1));
+                run_start = Some((line_no, n));
+            }
+        }
+    }
+    if let Some(last) = natures.len().checked_sub(1) {
+        flush(&mut run_start, u32::try_from(last).unwrap_or(u32::MAX));
+    }
+
+    ranges
 }
 
 #[cfg(test)]
@@ -447,5 +753,196 @@ text
             ),
             "a single INCLUDE must not fold: {folds:?}"
         );
+    }
+
+    #[test]
+    fn structural_folds_are_tagged_structural() {
+        let src = "== hub ==\ntext\nmore\n";
+        let parsed = brink_syntax::parse(src);
+        let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
+        let ranges = super::folding_ranges(&hir, src);
+        assert!(!ranges.is_empty());
+        assert!(
+            ranges.iter().all(|r| r.kind == super::FoldKind::Structural),
+            "every fold from folding_ranges() is Structural"
+        );
+    }
+}
+
+// ── Machinery/narrative fold-run tests (#365) ──────────────────────────
+#[cfg(test)]
+mod fold_kind_tests {
+    use super::{FoldKind, machinery_and_narrative_folds};
+    use crate::line_context::line_contexts;
+
+    fn kinds_for(src: &str) -> Vec<(u32, u32, FoldKind)> {
+        let parsed = brink_syntax::parse(src);
+        let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
+        let ctx = line_contexts(&hir, src, &parsed.syntax());
+        machinery_and_narrative_folds(&hir, src, &ctx)
+            .into_iter()
+            .map(|r| (r.start_line, r.end_line, r.kind))
+            .collect()
+    }
+
+    #[test]
+    fn two_consecutive_logic_lines_fold_as_machinery() {
+        let src = "=== start ===\n~ temp x = 1\n~ temp y = 2\nHello\n";
+        let ranges = kinds_for(src);
+        assert!(ranges.contains(&(1, 2, FoldKind::Machinery)), "{ranges:?}");
+    }
+
+    #[test]
+    fn single_logic_line_does_not_fold() {
+        let src = "=== start ===\n~ temp x = 1\nHello\nmore text\n";
+        let ranges = kinds_for(src);
+        assert!(
+            !ranges
+                .iter()
+                .any(|&(s, _, k)| s == 1 && k == FoldKind::Machinery),
+            "a lone machinery line must not fold: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn two_consecutive_narrative_lines_fold_as_narrative() {
+        let src = "=== start ===\nHello there friend.\nHow are you today?\n~ temp x = 1\n";
+        let ranges = kinds_for(src);
+        assert!(ranges.contains(&(1, 2, FoldKind::Narrative)), "{ranges:?}");
+    }
+
+    #[test]
+    fn var_decl_and_logic_form_one_machinery_run() {
+        let src = "VAR x = 1\n~ temp y = 2\n== hub ==\ntext\n";
+        let ranges = kinds_for(src);
+        assert!(ranges.contains(&(0, 1, FoldKind::Machinery)), "{ranges:?}");
+    }
+
+    #[test]
+    fn standalone_divert_joins_a_machinery_run() {
+        let src = "=== start ===\n~ temp x = 1\n-> other\n=== other ===\ntext\n";
+        let ranges = kinds_for(src);
+        assert!(ranges.contains(&(1, 2, FoldKind::Machinery)), "{ranges:?}");
+    }
+
+    #[test]
+    fn lone_standalone_divert_does_not_fold() {
+        let src = "=== start ===\nHello.\n-> other\n=== other ===\ntext\n";
+        let ranges = kinds_for(src);
+        assert!(
+            !ranges
+                .iter()
+                .any(|&(s, _, k)| s == 2 && k == FoldKind::Machinery),
+            "{ranges:?}"
+        );
+    }
+
+    #[test]
+    fn tunnel_call_is_not_machinery() {
+        // A tunnel call `-> knot ->` is not a "standalone divert" per spec —
+        // it must not join a machinery run on its own.
+        let src = "=== start ===\n~ temp x = 1\n-> tunnel ->\nHello.\n";
+        let ranges = kinds_for(src);
+        assert!(
+            !ranges
+                .iter()
+                .any(|&(s, e, k)| s <= 2 && e >= 2 && k == FoldKind::Machinery),
+            "tunnel call line must not be swept into a machinery run: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn thread_start_is_not_machinery() {
+        // A thread start `<- knot` must not be treated as a standalone
+        // divert either (house rule: threads `<-` are not diverts `->`).
+        let src = "=== start ===\n~ temp x = 1\n<- thread_knot\nHello.\n";
+        let ranges = kinds_for(src);
+        assert!(
+            !ranges
+                .iter()
+                .any(|&(s, e, k)| s <= 2 && e >= 2 && k == FoldKind::Machinery),
+            "thread start line must not be swept into a machinery run: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn pure_routing_conditional_folds_as_machinery() {
+        // A conditional whose scaffold + branch bodies are all machinery
+        // (assignments only) folds as machinery runs.
+        let src = "=== start ===\n{ x > 5:\n~ y = 1\n- else:\n~ y = 2\n}\nHello.\n";
+        let ranges = kinds_for(src);
+        assert!(
+            ranges.iter().any(|&(_, _, k)| k == FoldKind::Machinery),
+            "pure-routing conditional must produce at least one machinery run: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn narrative_bearing_conditional_does_not_fold_as_machinery() {
+        // The solstice_busy key case (issue #365): a mostly-narrative
+        // multi-line conditional must NOT be treated as machinery, even
+        // though its scaffold lines (`{ cond:`, `}`) are machinery-natured.
+        // The narrative branch bodies break the run.
+        let src = "\
+=== start ===
+{ busy:
+Sorry, I'm quite busy today.
+- else:
+Come on in, take a seat.
+}
+";
+        let ranges = kinds_for(src);
+        assert!(
+            !ranges.iter().any(|&(_, _, k)| k == FoldKind::Machinery),
+            "a narrative-bearing conditional must not fold as machinery: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn gather_line_breaks_a_machinery_run() {
+        // Gather+divert form (house rule): a real gather line must not be
+        // swallowed into an adjacent machinery run.
+        let src = "=== start ===\n* [Go]\n~ temp x = 1\n- (g)\n~ temp y = 2\n-> END\n";
+        let ranges = kinds_for(src);
+        // The gather line itself (a real weave gather, not conditional
+        // scaffold) is Structural and must break any run spanning it.
+        assert!(
+            !ranges
+                .iter()
+                .any(|&(s, e, k)| k == FoldKind::Machinery && s <= 3 && e >= 3),
+            "a real gather line must break the machinery run: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn blank_line_breaks_a_narrative_run() {
+        let src = "=== start ===\nHello there.\n\nGoodbye now.\nSee you soon.\n";
+        let ranges = kinds_for(src);
+        assert!(
+            !ranges
+                .iter()
+                .any(|&(s, e, k)| k == FoldKind::Narrative && s <= 1 && e >= 3),
+            "blank line must break the narrative run: {ranges:?}"
+        );
+        assert!(ranges.contains(&(3, 4, FoldKind::Narrative)), "{ranges:?}");
+    }
+
+    #[test]
+    fn dialect_classified_cue_and_dialogue_form_a_narrative_run() {
+        // Dialect nature is authoritative: a character cue + chained
+        // dialogue line are both Narrative-natured (at-cue preset) and fold
+        // as one narrative run, exactly like plain prose would.
+        let src = "=== start ===\n@Alice:<>\nHello there.\n";
+        let parsed = brink_syntax::parse(src);
+        let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
+        let dialect = brink_ir::ResolvedDialect::compile(&brink_ir::DialogueDialect::default())
+            .expect("at-cue preset compiles");
+        let ctx =
+            crate::line_context::line_contexts_with_dialect(&hir, src, &parsed.syntax(), &dialect);
+        let ranges: Vec<(u32, u32, FoldKind)> = machinery_and_narrative_folds(&hir, src, &ctx)
+            .into_iter()
+            .map(|r| (r.start_line, r.end_line, r.kind))
+            .collect();
+        assert!(ranges.contains(&(1, 2, FoldKind::Narrative)), "{ranges:?}");
     }
 }

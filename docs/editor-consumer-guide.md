@@ -29,7 +29,7 @@ the editor owns the resulting UX.
 |---|---|---|
 | `compile`, `getSemanticTokens`, `getTokenTypeNames` | required base | `compile`, `semantic_tokens`, … |
 | `getCompletions` + `autoImport` | completions + **auto-import** (#312): out-of-scope completions tagged `from <file>`, accept inserts the `INCLUDE` | `completions_*`, `auto_import_include_doc` / `auto_import_apply_include_doc` → `AutoImportResult` |
-| `getFoldingRanges` | folding incl. the **INCLUDE-block fold** (#313, `INCLUDE … (N files)`) | `folding_ranges` → `FoldRange[]` |
+| `getFoldingRanges` | folding incl. the **INCLUDE-block fold** (#313, `INCLUDE … (N files)`) and **fold kinds** (#365: structural/machinery/narrative run-based folds + JetBrains-style summary pills) | `folding_ranges` → `FoldRange[]` |
 | `getCodeActions` | **code-actions** menu (#321); apply via the resolve op | `code_actions_*` + `resolve_code_action` |
 | `prepareRename` + `renameSymbolAt` + `commitRename` (+ `onRenameBreakage`) | **inline rename** (#323) with the live **"⚠ breaks N"** badge (#324) and the inline breakage report | `prepare_rename` + `rename_symbol_at` → `StructuralResult` |
 | `getHover`, `gotoDefinition`, `findReferences`, `getSignatureHelp`, `getInlayHints`, `getArgumentWidgets` | the corresponding LSP-style features | `hover`, `goto_definition`, `find_references*`, … |
@@ -67,7 +67,7 @@ Notes on the rename contract (the one with the most moving parts):
 |---|---|---|---|
 | Find panel (#319) | `findPanel(options?)` extension | just add it to your editor's extensions | — (studio doesn't use it) |
 | Inline markup (#367) | `inlineMarkup(rules)` extension + `rmmzAngleTagRule` preset; matches decorate as `brink-markup-<name>` + `data-*`, scoped to narrative content (never over ink syntax) | your `InlineMarkupRule[]` + host CSS for the classes | — (zero rules by default) |
-| Fold INCLUDE block (#313) | `foldingExtension` + `getFoldingRanges` callback | the wasm folding call | — |
+| Fold INCLUDE block (#313) + fold kinds (#365) | `foldingExtension` + `getFoldingRanges` callback; `foldAllOfKind`/`unfoldAllOfKind`/`setActiveFoldKinds` | the wasm folding call; your mode-entry auto-collapse invocation | — |
 | Auto-import (#312) | completion tag + accept-side insert (wired via `brinkStudio`) | `getCompletions` + `autoImport` callbacks | — |
 | Code-actions apply (#321) | menu + apply dispatch (via `getCodeActions`) | `getCodeActions` + the resolve op | — (not enabled in studio) |
 | Inline rename + breaks-N (#323/#324) | the whole in-editor UX in `rename.ts` (input, badge, inline report) | rename callbacks above | binder/graph menus + modal `SymbolRenamePrompt` (only if you have non-editor rename entry points) |
@@ -388,6 +388,59 @@ detection (pair with `detectCast` above) feeding a speaker-color settings surfac
 exposure serves per-speaker word counts and the #362 line-fit metrics epic — any host-side analysis
 that needs to walk emitted lines project-wide.
 
+## Fold kinds (#365) — structural/machinery/narrative
+
+`FoldRange` (from `getFoldingRanges`/`folding_ranges`) carries a `kind: "structural" | "machinery" |
+"narrative"`:
+
+- **`structural`** — everything the pre-#365 folding pass emitted (knot/stitch declarations, doc
+  comments, conditionals, sequences, choice sets, the INCLUDE-block fold). User-invoked in every
+  mode; **never auto-collapsed**.
+- **`machinery`** — a maximal run of `>= 2` consecutive machinery-natured lines (logic `~`, VAR/
+  CONST/LIST decls, standalone diverts, conditional/sequence scaffold lines). Run-based over the
+  per-line classification (base, or a registered dialect's declared `nature`) — a conditional whose
+  branch bodies are narrative prose does not become a machinery fold just because it's one
+  construct; the narrative lines break the run.
+- **`narrative`** — the symmetric run of `>= 2` consecutive narrative-natured lines (plain prose,
+  or dialect kinds like `character`/`parenthetical`/`dialogue`).
+
+### Active-kinds set + bulk fold/unfold
+
+`foldingExtension` takes a live-reconfigurable **active-kinds set** — which kinds the fold service
+will actually fold at all. `setActiveFoldKinds(view, kinds)` reconfigures it on an already-mounted
+view (mirrors `setDialect`'s own compartment pattern); it defaults to all three kinds active.
+Removing a kind from the set doesn't force-unfold anything already folded — it only stops the fold
+service from offering *new* folds of that kind.
+
+`foldAllOfKind(kind)` / `unfoldAllOfKind(kind)` are exported `Command`s (`(view) => boolean`, CM6
+convention) that bulk-fold/unfold every current range of one kind. **Mode auto-collapse is always
+host-invoked** — call `foldAllOfKind("machinery")(view)` on your own mode-entry hook; the extension
+itself never forces a collapse. Typical modes:
+
+- Narrative-lens view: active kinds = `structural` + `machinery`, then `foldAllOfKind("machinery")`
+  on entry — collapse the logic, read the prose.
+- Logic-focused view: active kinds = `structural` + `narrative`, then `foldAllOfKind("narrative")`.
+- Hybrid view: active kinds = `structural` only — nothing auto-collapses.
+
+### Summary pills — JetBrains-style fold placeholders
+
+Machinery/narrative folds render a placeholder pill instead of the generic `…` — the JetBrains
+principle of showing the pertinent content, not just a count. DOM: `brink-fold-pill` + a kind class
+(`brink-fold-pill-machinery` / `brink-fold-pill-narrative`) + `brink-fold-pill-icon` /
+`brink-fold-pill-summary` / `brink-fold-pill-count` child spans — class-addressable, **zero inline
+styles** (you style all of it).
+
+- **Machinery pill**: an effects summary — salient external calls / assignments / divert targets
+  from the run, capped at 2 items with a "+N more" remainder (e.g. `⚙ change_party_member(…) ⇒
+  leave · +1 more`).
+- **Narrative pill**: a scene summary — the run's first-line snippet, its cast (via the registered
+  dialect's carried `speaker` attribute on `LineInfo.dialect.attrs` — **not** a re-hardcoded
+  `characterName()`, which stays package-internal), and the line count (e.g. `❞ "Hello there,
+  friend." — Alice · 2 lines`).
+- **Decl pill** (the existing `=== name === …` declaration fold): now carries
+  `data-decl-kind="knot" | "stitch" | "function"` on `.brink-fold-decl` plus a
+  `.brink-fold-decl-icon` slot span, so hosts render the same glyphs their binder rows use.
+
 ## Styling a headless editor — theme opt-out + the class taxonomy (#363)
 
 The editor is **headless-ready**: every element it renders carries a stable class, and the skin is
@@ -483,8 +536,11 @@ registered dialect) are additive, not breaking, per the open-scheme contract abo
 In-line decorations applied inside `.cm-line` content: `brink-hidden-sigil` (concealed syntax
 sigils), `brink-depth-sigil` (the depth widget replacing nested choice/gather sigils),
 `brink-choice-bracket` (the `[...]` choice-suffix bracket), `brink-fold-decl` /
-`brink-fold-decl-header` (fold affordances), `brink-fold-include` / `brink-fold-include-label` (the
-INCLUDE-block fold, #313).
+`brink-fold-decl-header` / `brink-fold-decl-icon` (fold affordances; `brink-fold-decl` also carries
+`data-decl-kind`, #365), `brink-fold-include` / `brink-fold-include-label` (the INCLUDE-block fold,
+#313), and `brink-fold-pill` / `brink-fold-pill-machinery` / `brink-fold-pill-narrative` /
+`brink-fold-pill-icon` / `brink-fold-pill-summary` / `brink-fold-pill-count` (the machinery/
+narrative summary-pill fold placeholders, #365).
 
 ### Floating surfaces + widget classes
 

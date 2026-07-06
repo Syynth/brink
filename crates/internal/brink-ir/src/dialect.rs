@@ -708,6 +708,22 @@ impl ResolvedDialect {
         &self.chain
     }
 
+    /// The declared [`ElementNature`] for a dialect kind (e.g. `"character"`,
+    /// or a chain-produced kind like `"dialogue"`). `None` if `kind` isn't
+    /// declared by this dialect (e.g. a built-in structural kind) — callers
+    /// fall back to their own structural default in that case.
+    ///
+    /// Consumed by `brink-ide`'s fold-kind run computation (#365) so the
+    /// machinery/narrative fold-run pass never re-derives nature from a
+    /// hardcoded kind list — it asks the resolved dialect.
+    #[must_use]
+    pub fn nature_of(&self, kind: &str) -> Option<ElementNature> {
+        self.elements
+            .iter()
+            .find(|el| el.decl.kind == kind)
+            .map(|el| el.decl.nature)
+    }
+
     /// Find the chain rule (if any) that fires when a narrative line follows
     /// a line of dialect-kind `prev_kind`.
     #[must_use]
