@@ -1367,6 +1367,24 @@ impl WebSession {
 
     // ── Journal / persistence ─────────────────────────────────────
 
+    /// The number of events currently recorded in the session journal — a
+    /// cheap, synchronous dirty-signal source for the TS wrapper's
+    /// deferred+debounced persistence-notification hook (#390). This method
+    /// itself does no scheduling; it is polled by the JS side after each
+    /// journal-mutating call to detect growth. Returns `0` if the session is
+    /// not initialized.
+    #[must_use]
+    pub fn journal_event_count(&self) -> u32 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "journal is capped well under u32::MAX (SESSION_JOURNAL_CAP)"
+        )]
+        self.session
+            .borrow()
+            .as_ref()
+            .map_or(0, |session| session.journal().len() as u32)
+    }
+
     /// Export the session journal as JSON (the durable save artifact — embeds
     /// a fast-restore checkpoint). Persist this; `WebSession.restore` rebuilds
     /// a session from it.

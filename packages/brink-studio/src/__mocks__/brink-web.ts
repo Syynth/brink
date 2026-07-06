@@ -695,3 +695,94 @@ export class StoryRunner {
     });
   }
 }
+
+/** Pure-diff stand-in for the real `diffSnapshots` wasm export — the mock
+ * carries no snapshot state, so this exists only so `StorySessionHandle`'s
+ * import resolves; nothing in the studio test suite calls it against real
+ * snapshot data. */
+export function diffSnapshots(_a: string, _b: string): string {
+  return JSON.stringify({
+    added_globals: {}, removed_globals: {}, changed_globals: {},
+    list_deltas: {}, pushed_frames: [], popped_frames: [],
+  });
+}
+
+/**
+ * Minimal stand-in for the real `WebSession` (#390's `StorySessionHandle`
+ * over `crates/brink-web`). Every journal-mutating call bumps an in-memory
+ * event counter one-for-one — enough to exercise `StorySessionHandle`'s
+ * TS-side deferred+debounced `onJournalDirty` hook (the behavior under test)
+ * without reimplementing the Rust session/journal semantics. Story content is
+ * a fixed two-line-then-`done` script; it does not parse `_storyBytes`.
+ */
+export class WebSession {
+  private events = 0;
+  private turn = 0;
+
+  constructor(_storyBytes: Uint8Array, _seed?: number, _deferred?: string[]) { /* no-op */ }
+
+  private bumpAndLine(): string {
+    this.events += 1;
+    this.turn += 1;
+    if (this.turn === 1) {
+      return JSON.stringify({
+        type: "line",
+        line: { type: "text", text: "Hello, world!\n", tags: [] },
+      });
+    }
+    return JSON.stringify({
+      type: "line",
+      line: { type: "done", text: "", tags: [] },
+    });
+  }
+
+  advance(): string { return this.bumpAndLine(); }
+  continue_single(): string {
+    const outcome = JSON.parse(this.bumpAndLine()) as { line: unknown };
+    return JSON.stringify(outcome.line);
+  }
+  continue_to_pause(): string {
+    const outcome = JSON.parse(this.bumpAndLine()) as { line: unknown };
+    return JSON.stringify([outcome.line]);
+  }
+  choose(_index: number): void { this.events += 1; }
+  resolve_external(_value: unknown): void { this.events += 1; }
+  has_pending_external(): boolean { return false; }
+  set_var(_name: string, _value: unknown): boolean { this.events += 1; return true; }
+  go_to_path(_path: string, _args: unknown[]): void { this.events += 1; }
+  save_state(): string { return JSON.stringify({ globals: {}, visited: [], turn_index: this.turn }); }
+  load_state(_json: string): void { this.events += 1; }
+  call_function(_name: string, _args: unknown[]): unknown { this.events += 1; return null; }
+  snapshot(): string {
+    return JSON.stringify({
+      globals: {}, lists: {}, turn_index: this.turn, visit_counts: {},
+      turn_counts: {}, call_stack: [], status: "active",
+    });
+  }
+  diff(a: string, b: string): string { return diffSnapshots(a, b); }
+  journal_event_count(): number { return this.events; }
+  export_journal(): string {
+    return JSON.stringify({
+      version: 1, program_checksum: 0, events: [], truncated: false,
+    });
+  }
+  static restore(
+    _storyBytes: Uint8Array,
+    _journalJson: string,
+    _seed?: number,
+    _deferred?: string[],
+  ): WebSession {
+    return new WebSession(_storyBytes, _seed, _deferred);
+  }
+  last_replay_outcome(): string | undefined { return undefined; }
+  reload(_storyBytes: Uint8Array): string {
+    this.events += 1;
+    return JSON.stringify({ type: "replayed", warnings: [] });
+  }
+  continue_replay(): string {
+    this.events += 1;
+    return JSON.stringify({ type: "replayed", warnings: [] });
+  }
+  restart(): void { this.events = 0; this.turn = 0; }
+  free(): void { /* no-op */ }
+}

@@ -155,6 +155,15 @@ export interface SessionJournal {
   checkpoint?: SaveState;
 }
 
+/** Lightweight dirty signal delivered by `StorySessionHandle.onJournalDirty`
+ * (#390). Carries just enough for a host to decide whether/when to persist —
+ * pull the actual journal via `exportJournal()`. `eventCount` is the journal
+ * length at the time the debounced notification fired (a monotonically
+ * increasing counter across a session's lifetime, reset only by `restart`). */
+export interface JournalDirtySignal {
+  eventCount: number;
+}
+
 /** A soft, non-fatal replay observation. */
 export type ReplayWarning = {
   type: "choice_label_drift";
