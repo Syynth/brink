@@ -351,11 +351,13 @@ CodeMirror, no wasm session. Construct once per dialect (patterns compile once),
   is `null` for a line that didn't classify. A blank line always breaks the chain. This is a
   source-side parse — it never interprets ink's own structural syntax (`->`, `<-`, `#`, `{}`);
   a source line that happens to look like a divert/thread/tag/logic line is just narrative text
-  to the dialect layer. **Both the Rust compiler and the TS editor use the same `ResolvedDialect`
-  interpreter for dialect classification when a handle is present; the contract is pinned against
-  the conformance corpus** (`tests/dialect_fixtures/at_cue.json` for the default dialect). Custom
-  dialects are always verified against the Rust compiler's line table — that is the authoritative
-  source for compiled output.
+  to the dialect layer. **`parseSource` mirrors the editor's own fallback classify + chain
+  passes**, which run in the editor only when no wasm document handle is present (when a handle
+  is present, the editor instead uses Rust's `line_contexts_with_dialect`). Both implement the
+  same dialect spec / conformance contract, pinned against the same conformance corpus
+  (`tests/dialect_fixtures/at_cue.json` for the default dialect). Custom dialects are always
+  verified against the Rust compiler's line table — that is the authoritative source for
+  compiled output.
 - **`parseEmitted(text)`** walks *runtime-emitted* text (the post-glue output of
   `continue_line()`) into `EmittedSegment[]` per the pinned **composite-segment iteration
   protocol**: a cue + parenthetical + trailing text emitting as ONE line is the normal case (three
