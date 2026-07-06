@@ -562,3 +562,251 @@ export function extendDialect(
     templates: { entries },
   };
 }
+
+// ── DialectParser (#366): public, pure-TS parser over source/emitted text ──
+//
+// A standalone (no CodeMirror, no wasm) parser over a `DialogueDialect`.
+// `parseSource` mirrors `element-type.ts`'s `applyDialectFallback` classify +
+// chain passes exactly (same interpreter, `ResolvedDialect`), but walks plain
+// source text line-by-line instead of a CM6 `EditorState`. `parseEmitted`
+// walks *runtime-emitted* text (the post-glue output of `continue_line()`)
+// using each declared kind's `emitted` shape, per the pinned **composite-
+// segment iteration protocol**: a cue + parenthetical + text emitting as ONE
+// line is the normal case (see docs/dialect-spec.md "emitted hardening").
+//
+// `detectCast` is the #366 answer to cast detection — it walks `parseSource`
+// output and collects distinct `character`-kind speaker values. Per the
+// dialect-spec ruling, `characterName()` (screenplay.ts) stays package-
+// internal; this is the public replacement.
+
+/** One classified line from `DialectParser.parseSource` — a line's dialect
+ *  kind (or `null` when no element/chain rule matched) plus its captured
+ *  attrs (from the winning element's non-hidden named groups, or carried
+ *  forward by a chain rule) and its original 0-based line index. */
+export interface SourceLine {
+  index: number;
+  /** The full, untrimmed source line text. */
+  text: string;
+  /** The dialect kind of this line (e.g. `"character"`, `"dialogue"`), or
+   *  `null` if the line didn't classify (plain narrative/blank/no dialect
+   *  match). */
+  kind: string | null;
+  /** Captured named-group attrs (e.g. `[["speaker", "Alice"]]`), sorted by
+   *  attr name — empty when `kind` is `null`. */
+  attrs: Array<readonly [string, string]>;
+}
+
+/** One segment of a composite emitted line from `DialectParser.parseEmitted`.
+ *  `kind: null` marks a plain-text remainder segment (no declared `emitted`
+ *  shape matched at that position). */
+export interface EmittedSegment {
+  kind: string | null;
+  /** The segment's raw matched text (including any literal affixes/glue
+   *  consumed by the pattern) as it appeared in the emitted line. */
+  text: string;
+  /** The segment's extracted content-group value, or `null` for a plain-text
+   *  segment / a matched kind with no `content_group`. */
+  content: string | null;
+}
+
+// A trimmed line beginning with one of these is ink STRUCTURAL syntax
+// (divert, thread, tag, logic, choice/gather, knot/stitch header, comment,
+// INCLUDE/EXTERNAL/VAR/CONST/LIST decl) — never dialect content. Mirrors
+// `element-type.ts`'s `classifyLine` prefix set (house rule: content/geometry
+// code must never treat ink syntax as content). Checked BEFORE the chain rule
+// so a structural line occurring right after a classified cue does not get
+// swept into the chain merely because the previous line had a `kind`.
+const STRUCTURAL_LINE_PATTERN =
+  /^(->|<-|#|~|\*|\+|-(?!>)|=|\/\/|\/\*|\{|INCLUDE |EXTERNAL |VAR|CONST|LIST )/;
+
+/** Whether a (already-trimmed) source line begins with ink structural
+ *  syntax — a divert/thread/tag/logic/choice/gather/header/comment/decl —
+ *  and must therefore never chain into dialect content. */
+function isStructuralLine(trimmed: string): boolean {
+  return STRUCTURAL_LINE_PATTERN.test(trimmed);
+}
+
+/**
+ * Pure-TS parser over a `DialogueDialect` — no CM6, no wasm session. Public
+ * (#366 deliverable 3): construct once per dialect (patterns compiled once,
+ * mirroring `ResolvedDialect`'s compile-once discipline), reuse across many
+ * lines/emitted strings.
+ */
+export class DialectParser {
+  private readonly resolved: ResolvedDialect;
+
+  constructor(dialect: DialogueDialect) {
+    this.resolved = ResolvedDialect.compile(dialect);
+  }
+
+  /**
+   * Classify plain `.ink`-style source text into `SourceLine` records — one
+   * per input line, in order. Mirrors `element-type.ts`'s dialect classify +
+   * chain passes: an element's `source` pattern is tried against each
+   * (trimmed) line in declaration order (first match wins); a narrative line
+   * immediately following a classified line chains per the dialect's `chain`
+   * rules (carrying forward the declared `carry` attrs), and a blank line
+   * always breaks the chain. This parser does not classify structural ink
+   * syntax (`->`, `<-`, `#`, `{}`, choices/gathers, headers, decls) into any
+   * dialect `kind` — such a line is always `kind: null`, matching
+   * `element-type.ts`'s `NarrativeText`-only chain promotion (house rule:
+   * content/geometry code must never treat ink syntax as content). This
+   * applies even immediately after a classified cue: a structural line
+   * breaks the chain rather than being swept into it.
+   */
+  parseSource(source: string): SourceLine[] {
+    const rawLines = source.split("\n");
+    const out: SourceLine[] = [];
+    let runCarry = new Map<string, string>();
+
+    for (let i = 0; i < rawLines.length; i++) {
+      const text = rawLines[i];
+      const trimmed = text.trim();
+      if (trimmed === "") {
+        runCarry = new Map();
+        out.push({ index: i, text, kind: null, attrs: [] });
+        continue;
+      }
+
+      const leadingWs = text.length - text.trimStart().length;
+      const match = this.resolved.classify(text.trimStart(), leadingWs);
+      if (match) {
+        out.push({ index: i, text, kind: match.kind, attrs: match.attrs });
+        runCarry = new Map(match.attrs);
+        continue;
+      }
+
+      const prev = out[i - 1];
+      if (prev?.kind && !isStructuralLine(trimmed)) {
+        const rule = this.resolved.chainRuleAfter(prev.kind);
+        if (rule) {
+          const carried: Array<[string, string]> = [];
+          for (const name of rule.carry ?? []) {
+            const value = runCarry.get(name);
+            if (value !== undefined) carried.push([name, value]);
+          }
+          out.push({ index: i, text, kind: rule.becomes, attrs: carried });
+          for (const [k, v] of carried) runCarry.set(k, v);
+          continue;
+        }
+      }
+
+      runCarry = new Map();
+      out.push({ index: i, text, kind: null, attrs: [] });
+    }
+
+    return out;
+  }
+
+  /**
+   * Parse ONE runtime-emitted text line (the post-glue output of
+   * `continue_line()`) into its composite segments, per the pinned
+   * iteration protocol:
+   *
+   * 1. Walk left to right over the remaining text.
+   * 2. At each position, try every declared kind with an `emitted` shape, in
+   *    declaration order. At position 0 (the start of the line), only
+   *    `reserved_prefix: true` shapes are eligible — a non-reserved shape
+   *    (e.g. a parenthetical) never opens a composite line (this is what
+   *    makes `@channel: hello` and standalone `(aside)` prose fail to parse
+   *    as cue/parenthetical). At any later position, both reserved and
+   *    non-reserved shapes are eligible (they're always a *continuation*
+   *    after the opening reserved segment).
+   * 3. The first kind (in declaration order) whose `emitted` pattern matches
+   *    at the current position wins; its matched text is consumed and a
+   *    segment is emitted.
+   * 4. If no declared kind matches at the current position, the run of
+   *    remaining plain text up to (but not including) the next position at
+   *    which some kind's pattern matches — or the end of the line — becomes
+   *    one plain-text segment (`kind: null`).
+   *
+   * A cue + parenthetical + trailing text emitting as ONE `EmittedSegment[]`
+   * (three segments) is the normal case this protocol pins.
+   */
+  parseEmitted(text: string): EmittedSegment[] {
+    const segments: EmittedSegment[] = [];
+    let pos = 0;
+    let first = true;
+
+    while (pos < text.length) {
+      const rest = text.slice(pos);
+      const hit = this.matchEmittedAt(rest, first);
+      if (hit) {
+        segments.push(hit.segment);
+        pos += hit.length;
+        first = false;
+        continue;
+      }
+
+      // No declared kind matches here — grow a plain-text segment up to the
+      // next position where one does (or end of string).
+      let end = text.length;
+      for (let p = pos + 1; p < text.length; p++) {
+        if (this.matchEmittedAt(text.slice(p), false)) {
+          end = p;
+          break;
+        }
+      }
+      segments.push({ kind: null, text: text.slice(pos, end), content: null });
+      pos = end;
+      first = false;
+    }
+
+    return segments;
+  }
+
+  private matchEmittedAt(
+    rest: string,
+    atStart: boolean,
+  ): { segment: EmittedSegment; length: number } | null {
+    for (const decl of this.resolved.raw().elements ?? []) {
+      const emitted = decl.emitted;
+      if (!emitted) continue;
+      if (atStart && !emitted.reserved_prefix) continue;
+      const re = new RegExp(emitted.pattern);
+      const m = re.exec(rest);
+      if (!m || m.index !== 0) continue;
+      const content =
+        emitted.content_group && m.groups ? (m.groups[emitted.content_group] ?? null) : null;
+      return {
+        segment: { kind: decl.kind, text: m[0], content },
+        length: m[0].length,
+      };
+    }
+    return null;
+  }
+}
+
+/**
+ * Detect the distinct cast (speaker names) from already-classified source
+ * lines — the #366 answer to cast detection (`characterName()` stays
+ * package-internal; this is the public replacement).
+ *
+ * Dialect-agnostic: a "speaker" attr is whichever named group a chain rule
+ * `carry`s forward onto a chained run (in the shipped at-cue preset, that's
+ * `speaker`, carried from `character` onto `dialogue`). This covers both the
+ * cue line itself (which captures the attr directly via its content group)
+ * and any line whose kind was produced by chaining (which carries the attr
+ * without its own content group). Accepts `DialectParser.parseSource`'s
+ * output directly. Returns names in first-appearance order, deduplicated; an
+ * empty captured value (e.g. `@:<>`) is skipped (no speaker name to report).
+ */
+export function detectCast(lines: readonly SourceLine[], dialect: DialogueDialect): string[] {
+  const carriedAttrs = new Set<string>();
+  for (const rule of dialect.chain ?? []) {
+    for (const name of rule.carry ?? []) carriedAttrs.add(name);
+  }
+  if (carriedAttrs.size === 0) return [];
+
+  const seen = new Set<string>();
+  const cast: string[] = [];
+  for (const line of lines) {
+    if (!line.kind) continue;
+    for (const [attr, value] of line.attrs) {
+      if (!carriedAttrs.has(attr) || !value || seen.has(value)) continue;
+      seen.add(value);
+      cast.push(value);
+    }
+  }
+  return cast;
+}
