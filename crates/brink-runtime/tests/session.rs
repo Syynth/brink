@@ -93,6 +93,56 @@ fn journal_roundtrips_with_tagged_list_value() {
     }
 }
 
+/// `ReplayOutcome`/`FailReason` must actually be JSON-serializable (#387: the
+/// wasm binding round-trips them through `serde_json::to_string` verbatim).
+/// serde's internally-tagged representation can't serialize a newtype variant
+/// wrapping a non-map payload (a bare `String`) — this pins `FailReason::RuntimeError`
+/// as a struct variant (`{ message: String }`) so that regression can't return.
+#[test]
+fn replay_outcome_and_fail_reason_are_json_serializable() {
+    let replayed = ReplayOutcome::Replayed {
+        warnings: vec![ReplayWarning::ChoiceLabelDrift {
+            at_event: 0,
+            index: 1,
+            recorded: "old".to_owned(),
+            found: "new".to_owned(),
+        }],
+    };
+    let json = serde_json::to_string(&replayed).unwrap();
+    assert!(json.contains("\"type\":\"replayed\""), "{json}");
+    assert!(json.contains("\"type\":\"choice_label_drift\""), "{json}");
+
+    let budget = ReplayOutcome::Failed {
+        at_event: 3,
+        reason: FailReason::Budget,
+    };
+    let json = serde_json::to_string(&budget).unwrap();
+    assert!(json.contains("\"type\":\"failed\""), "{json}");
+    assert!(json.contains("\"type\":\"budget\""), "{json}");
+
+    let runtime_err = ReplayOutcome::Failed {
+        at_event: 5,
+        reason: FailReason::RuntimeError {
+            message: "boom".to_owned(),
+        },
+    };
+    let json = serde_json::to_string(&runtime_err).unwrap();
+    assert!(json.contains("\"type\":\"runtime_error\""), "{json}");
+    assert!(json.contains("\"message\":\"boom\""), "{json}");
+    let back: ReplayOutcome = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, runtime_err);
+
+    let awaiting = ReplayOutcome::Failed {
+        at_event: 2,
+        reason: FailReason::AwaitingExternal {
+            name: "ask".to_owned(),
+        },
+    };
+    let json = serde_json::to_string(&awaiting).unwrap();
+    assert!(json.contains("\"type\":\"awaiting_external\""), "{json}");
+    assert!(json.contains("\"name\":\"ask\""), "{json}");
+}
+
 // ── Record → replay identical run ────────────────────────────────────────────
 
 #[test]
