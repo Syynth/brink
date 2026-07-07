@@ -219,10 +219,10 @@ impl ContextAccess for ObservedContext<'_, '_> {
 
     #[inline]
     fn next_random<R: StoryRng>(&self, seed: i32) -> i32 {
-        Context::next_random::<R>(seed)
+        self.context.next_random::<R>(seed)
     }
 
     fn random_sequence<R: StoryRng>(&self, seed: i32, count: usize) -> Vec<i32> {
-        Context::random_sequence::<R>(seed, count)
+        self.context.random_sequence::<R>(seed, count)
     }
 }

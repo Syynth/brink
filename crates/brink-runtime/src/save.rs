@@ -14,6 +14,7 @@ use brink_format::{DefinitionId, LoadReport, SAVE_FORMAT_VERSION, SaveState, Vis
 
 use crate::StoryRng;
 use crate::debug::NameResolver;
+use crate::state::ContextAccess;
 use crate::story::Story;
 
 impl<R: StoryRng> Story<R> {
