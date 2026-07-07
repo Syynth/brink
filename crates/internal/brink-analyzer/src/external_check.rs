@@ -15,10 +15,7 @@
 use std::collections::BTreeMap;
 
 use brink_format::DefinitionId;
-use brink_ir::hir::{
-    Block, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertTarget, Expr, HirFile,
-    Path, Sequence, Stmt, StringPart,
-};
+use brink_ir::hir::{Expr, HirFile, HirVisitor, Path, StringPart};
 use brink_ir::{
     BaseType, Constraint, Diagnostic, DiagnosticCode, DocBlock, ExternalKind, FileId,
     SemanticTypeDef, SymbolIndex, SymbolInfo, SymbolKind, TypeRef,
@@ -492,141 +489,33 @@ pub fn check_call_sites(
         return diags;
     }
     for &(file_id, hir) in files {
-        let mut visit = |path: &Path, args: &[Expr]| {
-            check_call(file_id, path, args, name_to_meta, &mut diags);
+        let mut checker = CallSiteChecker {
+            file_id,
+            name_to_meta,
+            diags: &mut diags,
         };
-        walk_block(&hir.root_content, &mut visit);
-        for knot in &hir.knots {
-            walk_block(&knot.body, &mut visit);
-            for stitch in &knot.stitches {
-                walk_block(&stitch.body, &mut visit);
-            }
-        }
+        brink_ir::hir::visit::visit(hir, &mut checker);
     }
     diags
 }
 
-fn walk_block(block: &Block, visit: &mut dyn FnMut(&Path, &[Expr])) {
-    for stmt in &block.stmts {
-        walk_stmt(stmt, visit);
-    }
+/// Visits every call site in a file via the shared HIR visitor, checking each
+/// literal argument against the merged [`SymbolMeta`].
+struct CallSiteChecker<'a, 'm> {
+    file_id: FileId,
+    name_to_meta: &'m BTreeMap<&'m str, &'m SymbolMeta>,
+    diags: &'a mut Vec<Diagnostic>,
 }
 
-fn walk_stmt(stmt: &Stmt, visit: &mut dyn FnMut(&Path, &[Expr])) {
-    match stmt {
-        Stmt::Content(c) => walk_content(c, visit),
-        Stmt::Divert(d) => walk_target(&d.target, visit),
-        Stmt::TunnelCall(t) => {
-            for target in &t.targets {
-                walk_target(target, visit);
-            }
-        }
-        Stmt::ThreadStart(t) => walk_target(&t.target, visit),
-        Stmt::TempDecl(t) => {
-            if let Some(e) = &t.value {
-                walk_expr(e, visit);
-            }
-        }
-        Stmt::Assignment(a) => walk_expr(&a.value, visit),
-        Stmt::Return(r) => {
-            if let Some(e) = &r.value {
-                walk_expr(e, visit);
-            }
-            for e in &r.onwards_args {
-                walk_expr(e, visit);
-            }
-        }
-        Stmt::ChoiceSet(cs) => walk_choice_set(cs, visit),
-        Stmt::LabeledBlock(b) => walk_block(b, visit),
-        Stmt::Conditional(c) => walk_conditional(c, visit),
-        Stmt::Sequence(s) => walk_sequence(s, visit),
-        Stmt::ExprStmt(e) => walk_expr(e, visit),
-        Stmt::EndOfLine => {}
+impl HirVisitor for CallSiteChecker<'_, '_> {
+    fn visit_exprs(&self) -> bool {
+        true
     }
-}
 
-fn walk_target(target: &DivertTarget, visit: &mut dyn FnMut(&Path, &[Expr])) {
-    for e in &target.args {
-        walk_expr(e, visit);
-    }
-}
-
-fn walk_content(content: &Content, visit: &mut dyn FnMut(&Path, &[Expr])) {
-    for part in &content.parts {
-        match part {
-            ContentPart::Interpolation(e) => walk_expr(e, visit),
-            ContentPart::InlineConditional(c) => walk_conditional(c, visit),
-            ContentPart::InlineSequence(s) => walk_sequence(s, visit),
-            ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
+    fn enter_expr(&mut self, expr: &Expr) {
+        if let Expr::Call(path, args) = expr {
+            check_call(self.file_id, path, args, self.name_to_meta, self.diags);
         }
-    }
-}
-
-fn walk_conditional(cond: &Conditional, visit: &mut dyn FnMut(&Path, &[Expr])) {
-    if let CondKind::Switch(e) = &cond.kind {
-        walk_expr(e, visit);
-    }
-    for branch in &cond.branches {
-        if let Some(e) = &branch.condition {
-            walk_expr(e, visit);
-        }
-        walk_block(&branch.body, visit);
-    }
-}
-
-fn walk_sequence(seq: &Sequence, visit: &mut dyn FnMut(&Path, &[Expr])) {
-    for branch in &seq.branches {
-        walk_block(branch, visit);
-    }
-}
-
-fn walk_choice_set(cs: &ChoiceSet, visit: &mut dyn FnMut(&Path, &[Expr])) {
-    for choice in &cs.choices {
-        if let Some(e) = &choice.condition {
-            walk_expr(e, visit);
-        }
-        for content in [
-            &choice.start_content,
-            &choice.bracket_content,
-            &choice.inner_content,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            walk_content(content, visit);
-        }
-        walk_block(&choice.body, visit);
-    }
-    walk_block(&cs.continuation, visit);
-}
-
-fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Path, &[Expr])) {
-    match expr {
-        Expr::Call(path, args) => {
-            visit(path, args);
-            for arg in args {
-                walk_expr(arg, visit);
-            }
-        }
-        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => walk_expr(inner, visit),
-        Expr::Infix(lhs, _, rhs) => {
-            walk_expr(lhs, visit);
-            walk_expr(rhs, visit);
-        }
-        Expr::String(s) => {
-            for part in &s.parts {
-                if let StringPart::Interpolation(e) = part {
-                    walk_expr(e, visit);
-                }
-            }
-        }
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Null
-        | Expr::Path(_)
-        | Expr::DivertTarget(_)
-        | Expr::ListLiteral(_) => {}
     }
 }
 

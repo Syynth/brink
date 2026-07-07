@@ -4,17 +4,26 @@
 //! structurally invalid patterns that the parser accepts but the language
 //! semantics forbid.
 
-use brink_ir::hir::{Block, Choice, ChoiceSet, Stmt};
+use brink_ir::hir::{Block, Choice, ChoiceSet, HirVisitor, Knot, Stmt};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
 
 /// Run all structural validation passes on the given files.
 pub fn validate(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     for &(file_id, hir) in files {
+        // E029 is positional — it depends on the statements *after* a
+        // conditional/sequence in the enclosing block — so it keeps its own
+        // contextual walk. The remaining checks are node-local or per-block and
+        // share a single traversal via the shared HIR visitor.
         check_choices_in_inline_context(file_id, hir, &mut diagnostics);
-        check_return_outside_function(file_id, hir, &mut diagnostics);
-        check_unreachable_after_divert(file_id, hir, &mut diagnostics);
-        check_all_fallback_choice_sets(file_id, hir, &mut diagnostics);
+
+        let mut v = StructuralChecks::new(file_id);
+        brink_ir::hir::visit::visit(hir, &mut v);
+        // Append per-check buckets in the original pass order; each bucket is
+        // already in DFS order, so overall diagnostic ordering is unchanged.
+        diagnostics.extend(v.returns);
+        diagnostics.extend(v.unreachable);
+        diagnostics.extend(v.fallbacks);
     }
     diagnostics
 }
@@ -121,138 +130,122 @@ fn block_has_divert(block: &Block) -> bool {
     })
 }
 
-// ─── Return outside function (E032) ─────────────────────────────────
+// ─── Combined node-local / per-block checks (E032, E033, E034) ───────
+//
+// One shared-visitor traversal drives three checks that the old code ran as
+// three separate full walks:
+//   - E032: an explicit `~ return` outside a function knot.
+//   - E033: the first statement after a terminal (`Divert`/`Return`) in a block.
+//   - E034: a choice set consisting entirely of fallback choices.
+// Diagnostics are bucketed per check so `validate` can append them in the
+// original pass order.
 
-/// Flag explicit `~ return` statements in non-function knots.
-/// Tunnel returns (`ptr: None`) are not flagged — they're valid anywhere.
-fn check_return_outside_function(
+/// Per-block state for the E033 unreachable-after-terminal check. Pushed on
+/// `enter_block`, popped on `exit_block`, so nested blocks don't interfere.
+#[derive(Default)]
+struct UnreachableState {
+    saw_terminal: bool,
+    flagged: bool,
+}
+
+struct StructuralChecks {
     file_id: FileId,
-    hir: &HirFile,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    // Check root content (not inside any knot — definitely not a function).
-    walk_block_for_returns(&hir.root_content, file_id, diagnostics);
+    /// True while inside a function knot's body/stitches — suppresses E032.
+    in_function: bool,
+    /// Per-block E033 state, one frame per enclosing block.
+    unreachable_stack: Vec<UnreachableState>,
+    returns: Vec<Diagnostic>,
+    unreachable: Vec<Diagnostic>,
+    fallbacks: Vec<Diagnostic>,
+}
 
-    for knot in &hir.knots {
-        if knot.is_function {
-            continue;
-        }
-        walk_block_for_returns(&knot.body, file_id, diagnostics);
-        for stitch in &knot.stitches {
-            walk_block_for_returns(&stitch.body, file_id, diagnostics);
+impl StructuralChecks {
+    fn new(file_id: FileId) -> Self {
+        Self {
+            file_id,
+            in_function: false,
+            unreachable_stack: Vec::new(),
+            returns: Vec::new(),
+            unreachable: Vec::new(),
+            fallbacks: Vec::new(),
         }
     }
 }
 
-fn walk_block_for_returns(block: &Block, file_id: FileId, diagnostics: &mut Vec<Diagnostic>) {
-    for stmt in &block.stmts {
-        match stmt {
-            Stmt::Return(ret) if ret.ptr.is_some() => {
-                // SAFETY: just checked is_some()
-                let range = ret
-                    .ptr
-                    .map_or(rowan::TextRange::default(), |p| p.text_range());
-                diagnostics.push(Diagnostic {
-                    file: file_id,
-                    range,
-                    message: DiagnosticCode::E032.title().to_string(),
-                    code: DiagnosticCode::E032,
-                });
-            }
-            Stmt::ChoiceSet(cs) => {
-                for choice in &cs.choices {
-                    walk_block_for_returns(&choice.body, file_id, diagnostics);
-                }
-                walk_block_for_returns(&cs.continuation, file_id, diagnostics);
-            }
-            Stmt::Conditional(cond) => {
-                for branch in &cond.branches {
-                    walk_block_for_returns(&branch.body, file_id, diagnostics);
-                }
-            }
-            Stmt::Sequence(seq) => {
-                for branch in &seq.branches {
-                    walk_block_for_returns(branch, file_id, diagnostics);
-                }
-            }
-            Stmt::LabeledBlock(inner) => {
-                walk_block_for_returns(inner, file_id, diagnostics);
-            }
-            _ => {}
-        }
+impl HirVisitor for StructuralChecks {
+    fn enter_knot(&mut self, knot: &Knot) {
+        // E032 is suppressed inside function knots (bodies and stitches). Knots
+        // don't nest, so a single flag reset in exit_knot suffices.
+        self.in_function = knot.is_function;
     }
-}
 
-// ─── Unreachable code after divert (E033) ────────────────────────────
-
-/// Flag statements that follow a terminal statement (`Divert`, `Return`)
-/// in the same block. Only the first unreachable statement per block is
-/// flagged. `ThreadStart` is NOT terminal — threads fork execution, they
-/// don't end the current flow. `TunnelCall` is NOT terminal either — a
-/// tunnel call (`-> x ->`) returns control to the statement after the
-/// call (the tunnel ends in `->->`), so that statement is reachable.
-fn check_unreachable_after_divert(
-    file_id: FileId,
-    hir: &HirFile,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    walk_block_for_unreachable(&hir.root_content, file_id, diagnostics);
-    for knot in &hir.knots {
-        walk_block_for_unreachable(&knot.body, file_id, diagnostics);
-        for stitch in &knot.stitches {
-            walk_block_for_unreachable(&stitch.body, file_id, diagnostics);
-        }
+    fn exit_knot(&mut self, _knot: &Knot) {
+        self.in_function = false;
     }
-}
 
-fn walk_block_for_unreachable(block: &Block, file_id: FileId, diagnostics: &mut Vec<Diagnostic>) {
-    let mut saw_terminal = false;
-    let mut flagged = false;
+    fn enter_block(&mut self, _block: &Block) {
+        self.unreachable_stack.push(UnreachableState::default());
+    }
 
-    for stmt in &block.stmts {
-        if saw_terminal
-            && !flagged
-            && !matches!(stmt, Stmt::EndOfLine)
-            && let Some(range) = stmt_range(stmt)
-        {
-            diagnostics.push(Diagnostic {
-                file: file_id,
+    fn exit_block(&mut self, _block: &Block) {
+        self.unreachable_stack.pop();
+    }
+
+    fn enter_stmt(&mut self, stmt: &Stmt) {
+        // E033: the first non-EOL statement after a terminal, per block. Check
+        // against the current block's state before updating it, mirroring the
+        // old per-block walk order.
+        let flag_unreachable = self
+            .unreachable_stack
+            .last()
+            .is_some_and(|s| s.saw_terminal && !s.flagged)
+            && !matches!(stmt, Stmt::EndOfLine);
+        if flag_unreachable && let Some(range) = stmt_range(stmt) {
+            self.unreachable.push(Diagnostic {
+                file: self.file_id,
                 range,
                 message: DiagnosticCode::E033.title().to_string(),
                 code: DiagnosticCode::E033,
             });
-            flagged = true;
+            if let Some(s) = self.unreachable_stack.last_mut() {
+                s.flagged = true;
+            }
+        }
+        // `Divert`/`Return` are terminal; `TunnelCall`/`ThreadStart` are not.
+        if matches!(stmt, Stmt::Divert(_) | Stmt::Return(_))
+            && let Some(s) = self.unreachable_stack.last_mut()
+        {
+            s.saw_terminal = true;
         }
 
-        match stmt {
-            Stmt::Divert(_) | Stmt::Return(_) => {
-                saw_terminal = true;
-            }
-            _ => {}
+        // E032: explicit return (has a syntax ptr — tunnel returns are None)
+        // outside a function.
+        if let Stmt::Return(ret) = stmt
+            && ret.ptr.is_some()
+            && !self.in_function
+        {
+            let range = ret
+                .ptr
+                .map_or(rowan::TextRange::default(), |p| p.text_range());
+            self.returns.push(Diagnostic {
+                file: self.file_id,
+                range,
+                message: DiagnosticCode::E032.title().to_string(),
+                code: DiagnosticCode::E032,
+            });
         }
 
-        // Recurse into nested structures regardless.
-        match stmt {
-            Stmt::ChoiceSet(cs) => {
-                for choice in &cs.choices {
-                    walk_block_for_unreachable(&choice.body, file_id, diagnostics);
-                }
-                walk_block_for_unreachable(&cs.continuation, file_id, diagnostics);
-            }
-            Stmt::Conditional(cond) => {
-                for branch in &cond.branches {
-                    walk_block_for_unreachable(&branch.body, file_id, diagnostics);
-                }
-            }
-            Stmt::Sequence(seq) => {
-                for branch in &seq.branches {
-                    walk_block_for_unreachable(branch, file_id, diagnostics);
-                }
-            }
-            Stmt::LabeledBlock(inner) => {
-                walk_block_for_unreachable(inner, file_id, diagnostics);
-            }
-            _ => {}
+        // E034: a choice set that is entirely fallback choices.
+        if let Stmt::ChoiceSet(cs) = stmt
+            && !cs.choices.is_empty()
+            && cs.choices.iter().all(|c| c.is_fallback)
+        {
+            self.fallbacks.push(Diagnostic {
+                file: self.file_id,
+                range: cs.choices[0].ptr.text_range(),
+                message: DiagnosticCode::E034.title().to_string(),
+                code: DiagnosticCode::E034,
+            });
         }
     }
 }
@@ -281,58 +274,6 @@ fn stmt_range(stmt: &Stmt) -> Option<rowan::TextRange> {
     }
 }
 
-// ─── All-fallback choice set (E034) ─────────────────────────────────
-
-/// Warn when a choice set consists entirely of fallback choices.
-fn check_all_fallback_choice_sets(
-    file_id: FileId,
-    hir: &HirFile,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    walk_block_for_fallbacks(&hir.root_content, file_id, diagnostics);
-    for knot in &hir.knots {
-        walk_block_for_fallbacks(&knot.body, file_id, diagnostics);
-        for stitch in &knot.stitches {
-            walk_block_for_fallbacks(&stitch.body, file_id, diagnostics);
-        }
-    }
-}
-
-fn walk_block_for_fallbacks(block: &Block, file_id: FileId, diagnostics: &mut Vec<Diagnostic>) {
-    for stmt in &block.stmts {
-        match stmt {
-            Stmt::ChoiceSet(cs) => {
-                if !cs.choices.is_empty() && cs.choices.iter().all(|c| c.is_fallback) {
-                    diagnostics.push(Diagnostic {
-                        file: file_id,
-                        range: cs.choices[0].ptr.text_range(),
-                        message: DiagnosticCode::E034.title().to_string(),
-                        code: DiagnosticCode::E034,
-                    });
-                }
-                for choice in &cs.choices {
-                    walk_block_for_fallbacks(&choice.body, file_id, diagnostics);
-                }
-                walk_block_for_fallbacks(&cs.continuation, file_id, diagnostics);
-            }
-            Stmt::Conditional(cond) => {
-                for branch in &cond.branches {
-                    walk_block_for_fallbacks(&branch.body, file_id, diagnostics);
-                }
-            }
-            Stmt::Sequence(seq) => {
-                for branch in &seq.branches {
-                    walk_block_for_fallbacks(branch, file_id, diagnostics);
-                }
-            }
-            Stmt::LabeledBlock(inner) => {
-                walk_block_for_fallbacks(inner, file_id, diagnostics);
-            }
-            _ => {}
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use brink_ir::hir::*;
@@ -341,6 +282,44 @@ mod tests {
     use rowan::{TextRange, TextSize};
 
     use super::*;
+
+    /// Guards the combined `StructuralChecks` pass against the one real risk of
+    /// sharing a walker: the shared walk descends inline conditional/sequence
+    /// branches inside content (which the old per-check walks never did). By
+    /// grammar those branches can hold a divert (always last) but never a
+    /// return, a choice set, or a terminal-then-statement — so no new
+    /// `E032`/`E033`/`E034` may fire. (Verified: HIR lowering puts the divert
+    /// last, e.g. `{cond: -> a text}` lowers to `[Content, Divert]`.)
+    #[test]
+    fn inline_branch_diverts_produce_no_spurious_structural_diagnostics() {
+        let cases = [
+            "A {cond: -> away} B\n=== away ===\n-> END\n",
+            "{cond: -> a | -> b}\n=== a ===\n-> END\n=== b ===\n-> END\n",
+            "{shuffle: -> a | -> b}\n=== a ===\n-> END\n=== b ===\n-> END\n",
+            "{cond: -> a text after divert}\n=== a ===\n-> END\n",
+            "Line {cond: -> a} {other: -> b}\n=== a ===\n-> END\n=== b ===\n-> END\n",
+        ];
+        for src in cases {
+            let parsed = brink_syntax::parse(src);
+            let tree = parsed.tree();
+            let (hir, _, _) = brink_ir::hir::lower(FileId(0), &tree);
+            let diags = validate(&[(FileId(0), &hir)]);
+            let structural: Vec<_> = diags
+                .iter()
+                .map(|d| d.code)
+                .filter(|c| {
+                    matches!(
+                        c,
+                        DiagnosticCode::E032 | DiagnosticCode::E033 | DiagnosticCode::E034
+                    )
+                })
+                .collect();
+            assert!(
+                structural.is_empty(),
+                "inline-branch diverts must not produce structural diagnostics: {src:?} -> {structural:?}"
+            );
+        }
+    }
 
     fn empty_hir() -> HirFile {
         HirFile {
