@@ -6,7 +6,7 @@ use brink_format::Value;
 use brink_ide::session::IdeSession;
 use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng, ReplayRecorder};
 use rowan::{TextRange, TextSize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -735,6 +735,87 @@ impl StoryRunner {
         serde_json::to_string(&debug_snapshot_to_js(snap))
             .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
+
+    /// Fork a [`WebSpeculation`] — a sandboxed, side-effect-proof speculative
+    /// run over the current story state (F4.3). It exposes its own composable
+    /// verbs (`go_to_path`/`advance`/`choose`/`eval_function`/
+    /// `resume_function_eval`/…); nothing it does ever reaches this runner's
+    /// live story, and dropping it discards everything.
+    ///
+    /// `options_json` — a JSON object, all fields optional (`"{}"`/`""` for
+    /// every default):
+    ///
+    /// ```json
+    /// {
+    ///   "steps": 100000,        // VM step budget for one `advance` call
+    ///   "lines": 1000,          // total visible-line budget for this speculation
+    ///   "context": "watch",     // "watch" | "eval" — gates Effect-kind externals
+    ///   "liveEffects": false,   // arm Effect externals (only takes effect under "eval")
+    ///   "kinds": { "name": "query" | "effect" }  // per-external policy tiering
+    /// }
+    /// ```
+    ///
+    /// A name absent from `kinds` is conservatively treated as `"effect"` —
+    /// it never fires live under the default `"watch"` context. See
+    /// [`brink_runtime::KindTieredHandler`].
+    pub fn speculate(&self, options_json: &str) -> Result<WebSpeculation, JsError> {
+        let opts: SpeculateOptionsJs = if options_json.trim().is_empty() {
+            SpeculateOptionsJs::default()
+        } else {
+            serde_json::from_str(options_json)
+                .map_err(|e| JsError::new(&format!("speculate options error: {e}")))?
+        };
+
+        let default_budget = brink_runtime::Budget::default();
+        let budget = brink_runtime::Budget {
+            steps: opts.steps.unwrap_or(default_budget.steps),
+            lines: opts.lines.unwrap_or(default_budget.lines),
+        };
+        let context = match opts.context.as_deref() {
+            None | Some("watch") => brink_runtime::EvalContext::Watch,
+            Some("eval") => brink_runtime::EvalContext::Eval,
+            Some(other) => {
+                return Err(JsError::new(&format!(
+                    "speculate: unknown context '{other}' (expected 'watch' or 'eval')"
+                )));
+            }
+        };
+        let mut kinds = HashMap::new();
+        for (name, kind) in &opts.kinds {
+            let k = match kind.as_str() {
+                "query" => brink_runtime::PolicyKind::Query,
+                "effect" => brink_runtime::PolicyKind::Effect,
+                other => {
+                    return Err(JsError::new(&format!(
+                        "speculate: unknown kind '{other}' for external '{name}' \
+                         (expected 'query' or 'effect')"
+                    )));
+                }
+            };
+            kinds.insert(name.clone(), k);
+        }
+
+        let borrow = self.story.borrow();
+        let story = borrow
+            .as_ref()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let speculation = story.speculate();
+
+        Ok(WebSpeculation {
+            program: Arc::clone(&self.program),
+            speculation: RefCell::new(speculation),
+            budget,
+            bindings: RefCell::new(self.bindings.borrow().clone()),
+            lenient_unbound: self.lenient_unbound.get(),
+            kinds,
+            context,
+            live_effects: opts.live_effects,
+            pending_promise: RefCell::new(None),
+            busy: Cell::new(false),
+            externals_live: RefCell::new(Vec::new()),
+            externals_fallback: RefCell::new(Vec::new()),
+        })
+    }
 }
 
 // ── Save/load helper (not wasm-exported: takes a Rust SaveState) ─────
@@ -915,6 +996,358 @@ fn js_to_value(js: &JsValue) -> Value {
         return Value::String(Arc::from(s));
     }
     Value::Null
+}
+
+// ── Speculative evaluation (F4.3) ──────────────────────────────────────
+//
+// `WebSpeculation` wraps `brink_runtime::Speculation` — a sandboxed,
+// side-effect-proof fork of the runner's current story state (see
+// `StoryRunner::speculate`) — and exposes its verbs to JS. It is the
+// composable primary surface celeris (and any other consumer) drives
+// directly; `@brink-lang/web`'s `evaluate()` convenience composes these
+// verbs into a single call for the common cases (a knot path or a
+// literal-arg function call) rather than hiding them.
+//
+// Every VM-stepping verb (`advance`/`eval_function`/`resume_function_eval`)
+// builds a fresh `JsHandler` (the runner's bound externals, snapshotted at
+// `speculate()` time) wrapped in a `KindTieredHandler` (the caller-supplied
+// `name -> "query"|"effect"` policy) — the same "assemble the handler stack
+// per call" shape `StoryRunner`'s `continue_*` family already uses, since
+// `JsHandler` borrows its bindings map for the call's duration. The runtime
+// itself never sees the kind map; it is plain data threaded from JS through
+// this wasm boundary, same as `KindTieredHandler`'s own module docs describe.
+
+#[wasm_bindgen]
+pub struct WebSpeculation {
+    /// Kept alongside the `Speculation` (which owns its own `Arc` clone
+    /// internally but doesn't expose it) so `Value` marshaling can resolve
+    /// list-item and divert-target names for `eval_function`/
+    /// `resume_function_eval` results.
+    program: Arc<brink_runtime::Program>,
+    speculation: RefCell<brink_runtime::Speculation<FastRng>>,
+    budget: brink_runtime::Budget,
+    /// Snapshot of the runner's bound externals at `speculate()` time —
+    /// independent of any binding the host registers afterward, matching the
+    /// "forked, self-contained, discarded" contract of a `Speculation`.
+    bindings: RefCell<HashMap<String, js_sys::Function>>,
+    lenient_unbound: bool,
+    kinds: HashMap<String, brink_runtime::PolicyKind>,
+    context: brink_runtime::EvalContext,
+    live_effects: bool,
+    pending_promise: RefCell<Option<js_sys::Promise>>,
+    busy: Cell<bool>,
+    /// Accumulated `KindTieredHandler` diagnostics across every verb call
+    /// made on this speculation so far (each call builds its own handler,
+    /// which starts its report empty — see `merge_report`).
+    externals_live: RefCell<Vec<String>>,
+    externals_fallback: RefCell<Vec<String>>,
+}
+
+#[wasm_bindgen]
+impl WebSpeculation {
+    /// Move this speculation's play head to a named knot/stitch path — the
+    /// speculative equivalent of [`StoryRunner::go_to_path`]. Only this
+    /// speculation's own sandboxed position moves.
+    pub fn go_to_path(&self, path: &str) -> Result<(), JsError> {
+        self.speculation
+            .borrow_mut()
+            .go_to_path(path)
+            .map_err(|e| JsError::new(&format!("go_to_path error: {e}")))
+    }
+
+    /// Select a pending choice by index.
+    pub fn choose(&self, index: usize) -> Result<(), JsError> {
+        self.speculation
+            .borrow_mut()
+            .choose(index)
+            .map_err(|e| JsError::new(&format!("choose error: {e}")))
+    }
+
+    /// Advance this speculation by one visible line, honoring its budget.
+    /// Returns one `Line` JSON — possibly `{ "type": "awaiting_external",
+    /// "name": … }` if a bound external returned a `Promise`: take it with
+    /// [`take_pending_promise`](Self::take_pending_promise), await it,
+    /// [`resolve_external`](Self::resolve_external), and call `advance`
+    /// again. Mirrors [`StoryRunner::advance_one`].
+    pub fn advance(&self) -> Result<String, JsError> {
+        let _guard =
+            BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("speculation advance"))?;
+        let bindings = self.bindings.borrow();
+        let js_handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound,
+            pending: &self.pending_promise,
+        };
+        let tiered = brink_runtime::KindTieredHandler::new(
+            &js_handler,
+            self.kinds.clone(),
+            self.context,
+            self.live_effects,
+        );
+        let mut speculation = self.speculation.borrow_mut();
+        let outcome = speculation
+            .advance(self.budget, &tiered)
+            .map_err(|e| JsError::new(&format!("speculation advance error: {e}")))?;
+        self.merge_report(&tiered);
+
+        let resp = match outcome {
+            brink_runtime::SpeculationStep::Line(line) => line_to_js(line),
+            brink_runtime::SpeculationStep::AwaitingExternal => LineJs {
+                r#type: "awaiting_external",
+                text: String::new(),
+                tags: Vec::new(),
+                choices: None,
+                name: speculation.pending_external_name().map(str::to_owned),
+            },
+        };
+        serde_json::to_string(&resp).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Resolve the external this speculation is parked on with a native JS
+    /// value (the awaited result of an async binding's `Promise`). No-op if
+    /// not awaiting.
+    pub fn resolve_external(&self, value: &JsValue) {
+        if self.busy.get() {
+            web_sys::console::warn_1(&JsValue::from_str(
+                "brink: reentrant 'speculation resolve_external' ignored",
+            ));
+            return;
+        }
+        let v = js_to_value(value);
+        self.speculation.borrow_mut().resolve_external(v);
+    }
+
+    /// Take the `Promise` a suspended async binding returned, for the caller
+    /// to `await`. `undefined` if none is pending. After awaiting, feed the
+    /// result to [`resolve_external`](Self::resolve_external).
+    pub fn take_pending_promise(&self) -> JsValue {
+        if self.busy.get() {
+            web_sys::console::warn_1(&JsValue::from_str(
+                "brink: reentrant 'speculation take_pending_promise' ignored",
+            ));
+            return JsValue::UNDEFINED;
+        }
+        self.pending_promise
+            .borrow_mut()
+            .take()
+            .map_or(JsValue::UNDEFINED, JsValue::from)
+    }
+
+    /// The ink-declared name of the external this speculation is paused on,
+    /// if any.
+    pub fn pending_external_name(&self) -> Option<String> {
+        self.speculation
+            .borrow()
+            .pending_external_name()
+            .map(str::to_owned)
+    }
+
+    /// Evaluate an ink function on this speculation, out-of-band: output is
+    /// isolated and the transcript untouched (and, being on the sandboxed
+    /// fork, can never reach the live story either way). Returns a
+    /// `FunctionEval` JSON: `{ "type": "returned", "value": TypedValue }` or
+    /// `{ "type": "awaiting_external", "name": string | null }` — resolve
+    /// with [`resolve_external`](Self::resolve_external) and continue with
+    /// [`resume_function_eval`](Self::resume_function_eval).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "wasm-bindgen passes a JS array as an owned Vec across the boundary"
+    )]
+    pub fn eval_function(&self, name: &str, args: Vec<JsValue>) -> Result<String, JsError> {
+        let _guard = BusyGuard::acquire(&self.busy)
+            .ok_or_else(|| reentrant_error("speculation eval_function"))?;
+        let ink_args: Vec<Value> = args.iter().map(js_to_value).collect();
+        let bindings = self.bindings.borrow();
+        let js_handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound,
+            pending: &self.pending_promise,
+        };
+        let tiered = brink_runtime::KindTieredHandler::new(
+            &js_handler,
+            self.kinds.clone(),
+            self.context,
+            self.live_effects,
+        );
+        let mut speculation = self.speculation.borrow_mut();
+        let outcome = speculation
+            .eval_function(name, &ink_args, &tiered)
+            .map_err(|e| JsError::new(&format!("eval_function error: {e}")))?;
+        self.merge_report(&tiered);
+        let resp = self.function_eval_to_js(outcome, &speculation);
+        serde_json::to_string(&resp).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Resume a function evaluation that paused on `AwaitingExternal`, after
+    /// the pending external has been resolved via
+    /// [`resolve_external`](Self::resolve_external). Same return shape as
+    /// [`eval_function`](Self::eval_function).
+    pub fn resume_function_eval(&self) -> Result<String, JsError> {
+        let _guard = BusyGuard::acquire(&self.busy)
+            .ok_or_else(|| reentrant_error("speculation resume_function_eval"))?;
+        let bindings = self.bindings.borrow();
+        let js_handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound,
+            pending: &self.pending_promise,
+        };
+        let tiered = brink_runtime::KindTieredHandler::new(
+            &js_handler,
+            self.kinds.clone(),
+            self.context,
+            self.live_effects,
+        );
+        let mut speculation = self.speculation.borrow_mut();
+        let outcome = speculation
+            .resume_function_eval(&tiered)
+            .map_err(|e| JsError::new(&format!("resume_function_eval error: {e}")))?;
+        self.merge_report(&tiered);
+        let resp = self.function_eval_to_js(outcome, &speculation);
+        serde_json::to_string(&resp).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// This speculation's transcript so far, resolved against its own
+    /// program and line tables — JSON array of `{ text, tags }`.
+    pub fn transcript(&self) -> Result<String, JsError> {
+        let speculation = self.speculation.borrow();
+        let lines: Vec<TranscriptLineJs> = speculation
+            .rendered_transcript()
+            .into_iter()
+            .map(|(text, tags)| TranscriptLineJs { text, tags })
+            .collect();
+        serde_json::to_string(&lines).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
+    /// Which externals this speculation let through live versus fell back,
+    /// across every verb call made on it so far — `{ "live": [...],
+    /// "fallback": [...] }` (call order within each list, duplicates
+    /// included). Diagnostic only.
+    pub fn externals_report(&self) -> Result<String, JsError> {
+        let report = ExternalsReportJs {
+            live: self.externals_live.borrow().clone(),
+            fallback: self.externals_fallback.borrow().clone(),
+        };
+        serde_json::to_string(&report).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+}
+
+impl WebSpeculation {
+    /// Fold one call's `KindTieredHandler` diagnostics into this
+    /// speculation's running `externals_report()` totals. Each verb call
+    /// builds its own handler (it borrows the call-local `JsHandler`), so
+    /// the accumulation has to happen here rather than by living inside a
+    /// single handler for this speculation's whole lifetime.
+    fn merge_report(&self, tiered: &brink_runtime::KindTieredHandler<'_>) {
+        let report = tiered.report();
+        self.externals_live.borrow_mut().extend(report.live);
+        self.externals_fallback.borrow_mut().extend(report.fallback);
+    }
+
+    /// Map a `FunctionEval` outcome to its JSON mirror, resolving a returned
+    /// value's list/divert names against this speculation's program.
+    fn function_eval_to_js(
+        &self,
+        outcome: brink_runtime::FunctionEval,
+        speculation: &brink_runtime::Speculation<FastRng>,
+    ) -> FunctionEvalJs {
+        match outcome {
+            brink_runtime::FunctionEval::Returned(value) => FunctionEvalJs::Returned {
+                value: value_to_typed_js(&value, &self.program),
+            },
+            brink_runtime::FunctionEval::AwaitingExternal => FunctionEvalJs::AwaitingExternal {
+                name: speculation.pending_external_name().map(str::to_owned),
+            },
+        }
+    }
+}
+
+/// Parsed `options_json` argument to [`StoryRunner::speculate`]. All fields
+/// optional; see that method's doc for the JSON shape and defaults.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct SpeculateOptionsJs {
+    steps: Option<u64>,
+    lines: Option<usize>,
+    context: Option<String>,
+    live_effects: bool,
+    kinds: HashMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct TranscriptLineJs {
+    text: String,
+    tags: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ExternalsReportJs {
+    live: Vec<String>,
+    fallback: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum FunctionEvalJs {
+    Returned { value: TypedValueJs },
+    AwaitingExternal { name: Option<String> },
+}
+
+/// A richer, structured `Value` → JS marshaling than [`value_to_js`]'s
+/// scalar-only external-binding boundary: used for `WebSpeculation`'s
+/// `eval_function`/`resume_function_eval` results, where a list or divert
+/// target is useful information rather than a binding argument to discard.
+/// Tagged by `type`: `int`/`float`/`bool`/`string`/`null` carry a scalar
+/// `value`; `list` carries display-resolved `items` (origin list name, item
+/// name, ordinal); `divert` carries the resolved destination `path` (`null`
+/// if it doesn't name a knot/stitch). `VariablePointer`/`TempPointer`/
+/// `FragmentRef` are VM-internal and never expected here; they map to
+/// `null` rather than erroring.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TypedValueJs {
+    Int { value: i32 },
+    Float { value: f32 },
+    Bool { value: bool },
+    String { value: String },
+    Null,
+    List { items: Vec<ListMemberJs> },
+    Divert { path: Option<String> },
+}
+
+#[derive(Serialize)]
+struct ListMemberJs {
+    origin: String,
+    name: String,
+    ordinal: i32,
+}
+
+fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJs {
+    match v {
+        Value::Int(i) => TypedValueJs::Int { value: *i },
+        Value::Float(f) => TypedValueJs::Float { value: *f },
+        Value::Bool(b) => TypedValueJs::Bool { value: *b },
+        Value::String(s) => TypedValueJs::String {
+            value: s.to_string(),
+        },
+        Value::Null => TypedValueJs::Null,
+        Value::List(list) => TypedValueJs::List {
+            items: program
+                .list_members(list)
+                .into_iter()
+                .map(|m| ListMemberJs {
+                    origin: m.origin,
+                    name: m.name,
+                    ordinal: m.ordinal,
+                })
+                .collect(),
+        },
+        Value::DivertTarget(id) => TypedValueJs::Divert {
+            path: program.divert_target_path(*id),
+        },
+        Value::VariablePointer(_) | Value::TempPointer { .. } | Value::FragmentRef(_) => {
+            TypedValueJs::Null
+        }
+    }
 }
 
 // ── Debug snapshot JSON mirror ───────────────────────────────────────
@@ -6814,6 +7247,177 @@ mod binding_wasm_tests {
             line.contains('9'),
             "default sees the flow's write; got {line}"
         );
+    }
+}
+
+// ── Speculative evaluation wasm tests (F4.3) ──────────────────────────
+//
+// Exercise `StoryRunner::speculate`/`WebSpeculation` end-to-end through the
+// real exported API: the sandboxed fork produces correct output, never
+// mutates the runner it was forked from, marshals list/divert-target values
+// structurally, and gates externals by the caller-supplied kind map exactly
+// as `KindTieredHandler` documents. Gated to wasm32, like the sibling
+// `binding_wasm_tests` module above.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod speculation_wasm_tests {
+    use super::StoryRunner;
+    use js_sys::Function;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn bytes(src: &str) -> Vec<u8> {
+        let out = brink_compiler::compile("main.ink", |_path| Ok(src.to_owned()))
+            .expect("test source compiles");
+        let mut b = Vec::new();
+        brink_format::write_inkb(&out.data, &mut b);
+        b
+    }
+
+    fn runner(src: &str) -> StoryRunner {
+        StoryRunner::new(&bytes(src))
+            .ok()
+            .expect("runner constructs")
+    }
+
+    const SRC: &str = "LIST Weekday = Monday, Tuesday, Wednesday\n\
+VAR day = Weekday.Monday\n\
+\n\
+EXTERNAL get_query()\n\
+EXTERNAL do_effect()\n\
+\n\
+=== function make_list() ===\n\
+~ return day + Weekday.Tuesday\n\
+\n\
+=== function get_target() ===\n\
+~ return -> intro\n\
+\n\
+=== function call_query() ===\n\
+~ return get_query()\n\
+\n\
+=== function call_effect() ===\n\
+~ return do_effect()\n\
+\n\
+=== intro ===\n\
+Hello from intro.\n\
+-> END\n\
+\n\
+-> END\n";
+
+    #[wasm_bindgen_test]
+    fn advance_resolves_text_and_never_mutates_live_story() {
+        let r = runner(SRC);
+        let spec = r.speculate("{}").ok().expect("speculate");
+        spec.go_to_path("intro").ok().expect("go_to_path");
+        let line = spec.advance().ok().expect("advance");
+        assert!(
+            line.contains("Hello from intro"),
+            "speculation reaches intro's text; got {line}"
+        );
+        // The live story's own position is untouched: continuing it still
+        // starts from the top, not from `intro`.
+        let live = r.continue_story().ok().expect("live continue");
+        assert!(
+            !live.contains("Hello from intro"),
+            "the live story was not diverted by the speculation; got {live}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn eval_function_marshals_list_value() {
+        let r = runner(SRC);
+        let spec = r.speculate("{}").ok().expect("speculate");
+        let json = spec
+            .eval_function("make_list", Vec::new())
+            .ok()
+            .expect("eval_function");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(value["type"], "returned");
+        let typed = &value["value"];
+        assert_eq!(typed["type"], "list");
+        let items = typed["items"].as_array().expect("items array");
+        let names: Vec<&str> = items
+            .iter()
+            .map(|it| it["name"].as_str().expect("name"))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Monday", "Tuesday"],
+            "list members resolved by name, sorted by ordinal"
+        );
+        assert_eq!(items[0]["origin"], "Weekday");
+    }
+
+    #[wasm_bindgen_test]
+    fn eval_function_marshals_divert_target() {
+        let r = runner(SRC);
+        let spec = r.speculate("{}").ok().expect("speculate");
+        let json = spec
+            .eval_function("get_target", Vec::new())
+            .ok()
+            .expect("eval_function");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let typed = &value["value"];
+        assert_eq!(typed["type"], "divert");
+        assert_eq!(typed["path"], "intro");
+    }
+
+    #[wasm_bindgen_test]
+    fn query_kind_runs_live_effect_kind_falls_back() {
+        let r = runner(SRC);
+        r.bind_external("get_query", Function::new_no_args("return 99"));
+        r.bind_external("do_effect", Function::new_no_args("return 1"));
+
+        // "query" tiering: the live JS binding's value comes through.
+        let spec = r
+            .speculate(r#"{"kinds":{"get_query":"query"}}"#)
+            .ok()
+            .expect("speculate query");
+        let json = spec
+            .eval_function("call_query", Vec::new())
+            .ok()
+            .expect("eval_function query");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(value["value"]["type"], "int");
+        assert_eq!(value["value"]["value"], 99);
+
+        // Unclassified (default "effect") under the default "watch" context:
+        // gated to Fallback, and `do_effect` has no ink fallback body, so the
+        // call errors rather than running the bound JS function live.
+        let spec2 = r.speculate("{}").ok().expect("speculate default");
+        assert!(
+            spec2.eval_function("call_effect", Vec::new()).is_err(),
+            "an unclassified external under watch never runs live"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn transcript_and_externals_report_reflect_the_run() {
+        let r = runner(SRC);
+        r.bind_external("get_query", Function::new_no_args("return 1"));
+        let spec = r
+            .speculate(r#"{"kinds":{"get_query":"query"}}"#)
+            .ok()
+            .expect("speculate");
+        spec.go_to_path("intro").ok().expect("go_to_path");
+        let _ = spec.advance().ok().expect("advance");
+        let transcript_json = spec.transcript().ok().expect("transcript");
+        let transcript: serde_json::Value =
+            serde_json::from_str(&transcript_json).expect("valid json");
+        assert!(
+            transcript[0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Hello from intro"),
+            "transcript resolves the same text advance() produced; got {transcript_json}"
+        );
+
+        let _ = spec
+            .eval_function("call_query", Vec::new())
+            .ok()
+            .expect("eval");
+        let report_json = spec.externals_report().ok().expect("externals_report");
+        let report: serde_json::Value = serde_json::from_str(&report_json).expect("valid json");
+        assert_eq!(report["live"], serde_json::json!(["get_query"]));
+        assert!(report["fallback"].as_array().unwrap().is_empty());
     }
 }
 

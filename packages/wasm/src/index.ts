@@ -15,6 +15,7 @@ import init, {
   token_modifier_names,
   EditorSession as WasmEditorSession,
   StoryRunner,
+  WebSpeculation,
   WebSession,
   diffSnapshots as wasmDiffSnapshots,
 } from "brink-web";
@@ -44,6 +45,7 @@ import type {
   DocumentId,
   DocumentChangeSpec,
   Line,
+  Choice,
   StructuralResult,
   DirMoveResult,
   DebugState,
@@ -61,6 +63,14 @@ import type {
   StateDiff,
   ReplayOutcome,
   JournalDirtySignal,
+  SpeculationOptions,
+  SpeculationContext,
+  SpeculationKinds,
+  SpeculationFunctionEval,
+  SpeculationExternalsReport,
+  SpeculationLine,
+  SpeculationResult,
+  TypedValue,
 } from "@brink/wasm-types";
 
 // Public surface: every interface the wasm boundary speaks is available
@@ -1036,9 +1046,435 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.flow_debug_snapshot(name)) as DebugState;
   }
 
+  // ── Speculative evaluation (F4.3, docs/speculative-eval-spec.md) ─
+  // A `Speculation` is a sandboxed, side-effect-proof fork of the story's
+  // current state: driving it (via its own `goToPath`/`advance`/`choose`/
+  // `evalFunction`/…) never mutates this runner's live story, and nothing it
+  // does survives past `free()`. `speculate()` is the composable primary
+  // surface; `evaluate()` is thin sugar over it for the common cases.
+
+  /** Fork a `SpeculationHandle`. See the class docs for its verbs, and
+   * `evaluate()` below for a thin convenience over the common cases. */
+  speculate(options?: SpeculationOptions): SpeculationHandle {
+    return new SpeculationHandle(this.runner.speculate(JSON.stringify(options ?? {})));
+  }
+
+  /**
+   * Thin convenience over `speculate()`'s composable verbs: parse `source`,
+   * drive the speculation to a natural stop, and collect the result. Composes
+   * the verbs — it does not hide them; reach for `speculate()` directly for
+   * anything this doesn't cover (probing multiple branches, bailing out
+   * early, driving choices, etc).
+   *
+   * `source` is either:
+   * - a knot/stitch path (`"cellar.intro"`) — driven with `goToPath` +
+   *   advanced to a natural stop (a `done`/`end` line, or a `choices` line,
+   *   which is reported via `reachedChoices` rather than picked); or
+   * - a function call with **literal** arguments (`"check(1, 2)"` — numbers,
+   *   quoted strings, `true`/`false`/`null` only) — driven with `evalFunction`.
+   *
+   * Anything else (an arbitrary expression, a call with non-literal
+   * arguments) is the Tier-1/F5 boundary (`docs/speculative-eval-spec.md`):
+   * `diagnostics` comes back non-empty and nothing runs.
+   *
+   * Any async (`Promise`-returning) bound external hit along the way is
+   * awaited transparently, exactly like `continueStoryAsync`. Pass
+   * `opts.signal` to cancel an in-flight evaluation: the speculation is
+   * dropped and the promise rejects with an `AbortError`.
+   */
+  async evaluate(source: string, opts: EvaluateOptions = {}): Promise<SpeculationResult> {
+    const parsed = parseEvaluateSource(source);
+    if (parsed.kind === "invalid") {
+      return {
+        transcript: [],
+        stop: "completed",
+        externals: { live: [], fallback: [] },
+        diagnostics: [parsed.reason],
+      };
+    }
+
+    throwIfAborted(opts.signal);
+    const speculation = this.speculate({
+      steps: opts.budget?.steps,
+      lines: opts.budget?.lines,
+      context: opts.context,
+      liveEffects: opts.liveEffects,
+      kinds: opts.kinds,
+    });
+    try {
+      if (parsed.kind === "path") {
+        speculation.goToPath(parsed.path);
+        const { stop, choices } = await driveSpeculationToTerminal(speculation, opts.signal);
+        return {
+          transcript: speculation.transcript(),
+          reachedChoices: choices,
+          stop,
+          externals: speculation.externalsReport(),
+          diagnostics: [],
+        };
+      }
+
+      const { value, stop } = await driveSpeculationCall(
+        speculation,
+        parsed.name,
+        parsed.args,
+        opts.signal,
+      );
+      return {
+        value,
+        transcript: speculation.transcript(),
+        stop,
+        externals: speculation.externalsReport(),
+        diagnostics: [],
+      };
+    } finally {
+      speculation.free();
+    }
+  }
+
   free(): void {
     this.runner.free();
   }
+}
+
+/** A sandboxed, side-effect-proof fork of a story's current state
+ * (`StoryRunnerHandle.speculate()`), exposed as composable verbs — the
+ * speculative-eval equivalents of `StoryRunnerHandle`'s own playback verbs.
+ * Nothing driven through this handle ever reaches the runner it was forked
+ * from; call `free()` (or let it fall out of scope) to discard it. */
+export class SpeculationHandle {
+  constructor(private readonly spec: WebSpeculation) {}
+
+  /** Move this speculation's play head to a named knot/stitch path. Only
+   * this speculation's own sandboxed position moves. */
+  goToPath(path: string): void {
+    this.spec.go_to_path(path);
+  }
+
+  /** Select a pending choice by index. */
+  choose(index: number): void {
+    this.spec.choose(index);
+  }
+
+  /** Advance by one step; the line may be `{ type: "awaiting_external" }`. */
+  advance(): Line {
+    return JSON.parse(this.spec.advance()) as Line;
+  }
+
+  /** Advance by one step, transparently awaiting any async (`Promise`-
+   * returning) bound external hit along the way. Mirrors
+   * `StoryRunnerHandle.continueSingleAsync`. */
+  async advanceAsync(): Promise<Line> {
+    for (;;) {
+      const line = this.advance();
+      if (line.type !== "awaiting_external") {
+        return line;
+      }
+      await this.awaitPendingExternal();
+    }
+  }
+
+  /** Resolve the external this speculation is parked on. No-op if none is
+   * pending. */
+  resolveExternal(value: ExternalValue): void {
+    this.spec.resolve_external(value);
+  }
+
+  /** Take the suspended async binding's `Promise` to await; `undefined` if
+   * none is pending. */
+  takePendingPromise(): Promise<ExternalValue> | undefined {
+    const p = this.spec.take_pending_promise();
+    return p === undefined ? undefined : (p as Promise<ExternalValue>);
+  }
+
+  /** The ink-declared name of the external this speculation is paused on. */
+  pendingExternalName(): string | undefined {
+    return this.spec.pending_external_name();
+  }
+
+  /** Evaluate an ink function on this speculation, out-of-band: output is
+   * isolated and the transcript untouched. */
+  evalFunction(name: string, ...args: ExternalValue[]): SpeculationFunctionEval {
+    return JSON.parse(this.spec.eval_function(name, args)) as SpeculationFunctionEval;
+  }
+
+  /** `evalFunction`, transparently awaiting any async bound external hit
+   * along the way (including one hit again after `resumeFunctionEval`). */
+  async evalFunctionAsync(name: string, ...args: ExternalValue[]): Promise<SpeculationFunctionEval> {
+    return this.driveFunctionEval(this.evalFunction(name, ...args));
+  }
+
+  /** Resume a function evaluation paused on `awaiting_external`, after
+   * `resolveExternal`. Same return shape as `evalFunction`. */
+  resumeFunctionEval(): SpeculationFunctionEval {
+    return JSON.parse(this.spec.resume_function_eval()) as SpeculationFunctionEval;
+  }
+
+  /** `resumeFunctionEval`, transparently awaiting any further async bound
+   * external. */
+  async resumeFunctionEvalAsync(): Promise<SpeculationFunctionEval> {
+    return this.driveFunctionEval(this.resumeFunctionEval());
+  }
+
+  private async driveFunctionEval(
+    outcome: SpeculationFunctionEval,
+  ): Promise<SpeculationFunctionEval> {
+    let current = outcome;
+    while (current.type === "awaiting_external") {
+      await this.awaitPendingExternal();
+      current = this.resumeFunctionEval();
+    }
+    return current;
+  }
+
+  /** Take + await the parked binding's `Promise`, then `resolveExternal` with
+   * its settled value (or `null`, then rethrow, on rejection — unsticking the
+   * parked flow the same way `StoryRunnerHandle.continueStoryAsync` does). */
+  private async awaitPendingExternal(): Promise<void> {
+    const promise = this.spec.take_pending_promise() as Promise<ExternalValue> | undefined;
+    if (promise === undefined) {
+      return;
+    }
+    let value: ExternalValue;
+    try {
+      value = (await promise) ?? null;
+    } catch (err) {
+      this.spec.resolve_external(null);
+      throw err;
+    }
+    this.spec.resolve_external(value);
+  }
+
+  /** This speculation's transcript so far, resolved to `(text, tags)` lines. */
+  transcript(): SpeculationLine[] {
+    return JSON.parse(this.spec.transcript()) as SpeculationLine[];
+  }
+
+  /** Which externals this speculation let through live versus fell back,
+   * across every verb call made on it so far. Diagnostic only. */
+  externalsReport(): SpeculationExternalsReport {
+    return JSON.parse(this.spec.externals_report()) as SpeculationExternalsReport;
+  }
+
+  free(): void {
+    this.spec.free();
+  }
+}
+
+/** Options for `StoryRunnerHandle.evaluate()` — `speculate()`'s options plus
+ * cancellation (a DOM concept, so kept out of `@brink/wasm-types`, which has
+ * no DOM dependency). */
+export interface EvaluateOptions {
+  context?: SpeculationContext;
+  liveEffects?: boolean;
+  budget?: { steps?: number; lines?: number };
+  kinds?: SpeculationKinds;
+  /** Abort the in-flight evaluation: the speculation is dropped and the
+   * returned promise rejects with an `AbortError`. */
+  signal?: AbortSignal;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new DOMException("brink: evaluate() aborted", "AbortError");
+  }
+}
+
+type ParsedEvaluateSource =
+  | { kind: "path"; path: string }
+  | { kind: "call"; name: string; args: ExternalValue[] }
+  | { kind: "invalid"; reason: string };
+
+/** A bare dotted identifier path (`"cellar.intro"`) — no parens, no
+ * operators; the Tier-0 "invoke existing by path" case. */
+const EVALUATE_PATH_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+
+/** `name(args)` — captures the callee name and the raw argument text. */
+const EVALUATE_CALL_RE = /^([A-Za-z_][A-Za-z0-9_]*)\((.*)\)$/s;
+
+/** Parse `evaluate()`'s `source` into a knot/stitch path or a literal-arg
+ * function call — the two Tier-0 "invoke existing" cases (see
+ * `docs/scoped-flow-state-spec.md`'s watch/eval tiering). Anything else
+ * (an arbitrary expression, a call with a non-literal argument) needs the
+ * Tier-1 fragment compiler, not yet built — reported as a diagnostic rather
+ * than attempted. */
+function parseEvaluateSource(source: string): ParsedEvaluateSource {
+  const trimmed = source.trim();
+  if (EVALUATE_PATH_RE.test(trimmed)) {
+    return { kind: "path", path: trimmed };
+  }
+  const call = EVALUATE_CALL_RE.exec(trimmed);
+  if (call) {
+    const [, name, argsText] = call;
+    const args = parseLiteralArgList(argsText);
+    if (args === undefined) {
+      return {
+        kind: "invalid",
+        reason:
+          `evaluate: "${source}" looks like a function call, but its arguments aren't all ` +
+          "literals (numbers, quoted strings, true/false/null) — arbitrary expressions need " +
+          "the Tier-1 fragment compiler (not yet built; see docs/speculative-eval-spec.md)",
+      };
+    }
+    return { kind: "call", name, args };
+  }
+  return {
+    kind: "invalid",
+    reason:
+      `evaluate: "${source}" is neither a knot/stitch path (e.g. "cellar.intro") nor a ` +
+      "literal-argument function call (e.g. \"check(1, 2)\") — arbitrary expressions need " +
+      "the Tier-1 fragment compiler (not yet built; see docs/speculative-eval-spec.md)",
+  };
+}
+
+const UNPARSEABLE_LITERAL = Symbol("evaluate: unparseable literal argument");
+
+/** Parse a comma-separated literal argument list (`"1, \"x\", true"`).
+ * `undefined` if any argument isn't a recognized literal. */
+function parseLiteralArgList(argsText: string): ExternalValue[] | undefined {
+  const trimmed = argsText.trim();
+  if (trimmed === "") {
+    return [];
+  }
+  const values: ExternalValue[] = [];
+  for (const part of splitTopLevelArgs(trimmed)) {
+    const value = parseLiteralArg(part.trim());
+    if (value === UNPARSEABLE_LITERAL) {
+      return undefined;
+    }
+    values.push(value);
+  }
+  return values;
+}
+
+/** Split on top-level commas, respecting (only) quoted-string boundaries —
+ * literal arguments never nest parens or brackets. */
+function splitTopLevelArgs(text: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote && text[i - 1] !== "\\") {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === ",") {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim() !== "") {
+    parts.push(current);
+  }
+  return parts;
+}
+
+function parseLiteralArg(text: string): ExternalValue | typeof UNPARSEABLE_LITERAL {
+  if (text === "true") {
+    return true;
+  }
+  if (text === "false") {
+    return false;
+  }
+  if (text === "null") {
+    return null;
+  }
+  if (/^-?\d+$/.test(text)) {
+    return parseInt(text, 10);
+  }
+  if (/^-?\d+\.\d+$/.test(text)) {
+    return parseFloat(text);
+  }
+  const stringMatch = /^"((?:[^"\\]|\\.)*)"$|^'((?:[^'\\]|\\.)*)'$/.exec(text);
+  if (stringMatch) {
+    const raw = stringMatch[1] ?? stringMatch[2] ?? "";
+    return raw.replace(/\\(.)/g, "$1");
+  }
+  return UNPARSEABLE_LITERAL;
+}
+
+/** Drive a `goToPath`'d speculation to its next natural stop: a `done`/`end`
+ * line (`"completed"`), a `choices` line (`"choices"`, with the choices
+ * reported rather than picked), or a budget ceiling. */
+async function driveSpeculationToTerminal(
+  speculation: SpeculationHandle,
+  signal: AbortSignal | undefined,
+): Promise<{ stop: SpeculationResult["stop"]; choices?: Choice[] }> {
+  for (;;) {
+    throwIfAborted(signal);
+    let line: Line;
+    try {
+      line = await speculation.advanceAsync();
+    } catch (err) {
+      const budgetStop = budgetStopFromError(err);
+      if (budgetStop !== undefined) {
+        return { stop: budgetStop };
+      }
+      throw err;
+    }
+    if (line.type === "text") {
+      continue;
+    }
+    if (line.type === "choices") {
+      return { stop: "choices", choices: line.choices };
+    }
+    return { stop: "completed" }; // "done" | "end"
+  }
+}
+
+/** Drive a literal-arg `evalFunction` call to completion. Unlike
+ * `driveSpeculationToTerminal`'s `advance`, `Speculation::eval_function`
+ * doesn't yet honor the caller's step budget (F4.1/F4.2 upstream gap — it
+ * runs under the runtime's own internal ceiling instead), so a
+ * `"step-budget"` stop is currently unreachable from this path; the check
+ * is here for when that's closed. */
+async function driveSpeculationCall(
+  speculation: SpeculationHandle,
+  name: string,
+  args: ExternalValue[],
+  signal: AbortSignal | undefined,
+): Promise<{ value?: TypedValue; stop: SpeculationResult["stop"] }> {
+  throwIfAborted(signal);
+  let outcome: SpeculationFunctionEval;
+  try {
+    outcome = await speculation.evalFunctionAsync(name, ...args);
+  } catch (err) {
+    const budgetStop = budgetStopFromError(err);
+    if (budgetStop !== undefined) {
+      return { stop: budgetStop };
+    }
+    throw err;
+  }
+  return {
+    value: outcome.type === "returned" ? outcome.value : undefined,
+    stop: "completed",
+  };
+}
+
+/** Map a thrown budget-exceeded error (`RuntimeError::StepLimitExceeded`/
+ * `LineLimitExceeded`, surfaced as a `JsError` message) to its
+ * `SpeculationResult.stop` value. `undefined` for any other error, which the
+ * caller should rethrow rather than swallow. */
+function budgetStopFromError(err: unknown): "step-budget" | "line-budget" | undefined {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.includes("step limit exceeded")) {
+    return "step-budget";
+  }
+  if (message.includes("line limit exceeded")) {
+    return "line-budget";
+  }
+  return undefined;
 }
 
 // ── Story Session (#370/#387) ───────────────────────────────────

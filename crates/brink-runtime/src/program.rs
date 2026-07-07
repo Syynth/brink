@@ -263,6 +263,90 @@ impl Program {
     pub(crate) fn list_item_name(&self, id: DefinitionId) -> Option<&str> {
         self.list_item(id).map(|item| self.name(item.name))
     }
+
+    // ── Host-facing structured value display (F4.3 web binding) ─────────────
+    // `list_members`/`divert_target_path` give a host (e.g. brink-web's wasm
+    // marshaling) the same name resolution `value_ops::stringify_list` and
+    // `debug::NameResolver` already do internally, but structured rather than
+    // pre-joined into a display string — a host may want to render a list's
+    // members or a divert's destination as distinct fields rather than text.
+    // On-demand only (not on any hot path), like `debug::NameResolver`.
+
+    /// Resolve the active members of a list value for host-facing display:
+    /// each member's origin list name, unqualified item name, and ordinal.
+    /// Sorted the same way in-story list stringification orders them
+    /// (ordinal, then origin name) so the two presentations agree.
+    #[must_use]
+    pub fn list_members(&self, list: &ListValue) -> Vec<ListMember> {
+        let mut entries: Vec<ListMember> = list
+            .items
+            .iter()
+            .filter_map(|&id| {
+                self.list_item(id).map(|entry| {
+                    let origin = self
+                        .list_def(entry.origin)
+                        .map_or_else(String::new, |def| self.name(def.name).to_owned());
+                    let full_name = self.name(entry.name);
+                    let name = full_name
+                        .split_once('.')
+                        .map_or_else(|| full_name.to_owned(), |(_, item)| item.to_owned());
+                    ListMember {
+                        origin,
+                        name,
+                        ordinal: entry.ordinal,
+                    }
+                })
+            })
+            .collect();
+        entries.sort_by(|a, b| {
+            a.ordinal
+                .cmp(&b.ordinal)
+                .then_with(|| a.origin.cmp(&b.origin))
+        });
+        entries
+    }
+
+    /// The qualified knot/stitch path a `DefinitionId` names, if it resolves
+    /// to a named scope entry (offset-0 in `address_by_path`) — the
+    /// destination of a `Value::DivertTarget` for host-facing display.
+    /// Deterministic on collision: shortest path, then lexicographically
+    /// smallest, independent of the map's iteration order (mirrors
+    /// `debug::NameResolver`'s reverse lookup).
+    #[must_use]
+    pub fn divert_target_path(&self, id: DefinitionId) -> Option<String> {
+        let (container_idx, _) = self.resolve_target(id)?;
+        let mut best: Option<&str> = None;
+        for (path, target) in &self.address_by_path {
+            if target.byte_offset != 0 || target.container_idx != container_idx {
+                continue;
+            }
+            best = Some(match best {
+                None => path.as_str(),
+                Some(existing) => {
+                    if path.len() < existing.len()
+                        || (path.len() == existing.len() && path.as_str() < existing)
+                    {
+                        path.as_str()
+                    } else {
+                        existing
+                    }
+                }
+            });
+        }
+        best.map(ToOwned::to_owned)
+    }
+}
+
+/// One active member of a list value, resolved for host-facing display. See
+/// [`Program::list_members`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListMember {
+    /// The origin list's declared name (e.g. `"Weekday"`).
+    pub origin: String,
+    /// The item's unqualified display name (e.g. `"Monday"`).
+    pub name: String,
+    /// The item's ordinal within its origin list.
+    pub ordinal: i32,
 }
 
 #[cfg(test)]
