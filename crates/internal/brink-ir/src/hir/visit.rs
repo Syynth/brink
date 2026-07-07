@@ -25,8 +25,12 @@
 //!   directly by callers that need them;
 //! - knot / stitch names and params beyond exposing the `Knot` / `Stitch` node
 //!   to the hooks;
-//! - tag contents — [`HirVisitor::enter_content`] exposes the whole [`Content`]
-//!   (including its `tags`) so a visitor can process them itself.
+//! - **tag contents** — neither `Content.tags` nor `Choice.tags` are descended,
+//!   so inline expressions/conditionals inside a tag (`# {score(x)}`) are not
+//!   visited. `enter_content` exposes a `Content` node's own `tags` for a
+//!   visitor to inspect, but choice tags are reachable only via `enter_choice`.
+//!   This mirrors every pre-existing HIR walk (all skipped tags); it is a known
+//!   coverage gap, not a behavior change.
 //!
 //! Expression descent is opt-in ([`HirVisitor::visit_exprs`]): structural
 //! walkers that never look at expressions pay nothing for the expression tree.
@@ -124,19 +128,28 @@ pub fn visit(hir: &HirFile, v: &mut impl HirVisitor) {
 }
 
 /// Walk a single block and its statements. Exposed so a visitor can be driven
-/// over a sub-tree directly.
+/// over a sub-tree directly; content is reported with [`ContentContext::Body`].
 pub fn walk_block(block: &Block, v: &mut impl HirVisitor) {
+    walk_block_ctx(block, ContentContext::Body, v);
+}
+
+/// Walk a block, reporting its content (and any content nested inside inline
+/// conditionals/sequences) with `ctx`. `ctx` is a choice slot only when the
+/// block is (transitively) inside a choice's start/bracket/inner text; it is
+/// reset to [`ContentContext::Body`] at a choice's own body and the gather
+/// continuation, so the position is *transitive*, not just immediate.
+fn walk_block_ctx(block: &Block, ctx: ContentContext, v: &mut impl HirVisitor) {
     v.enter_block(block);
     for stmt in &block.stmts {
-        walk_stmt(stmt, v);
+        walk_stmt(stmt, ctx, v);
     }
     v.exit_block(block);
 }
 
-fn walk_stmt(stmt: &Stmt, v: &mut impl HirVisitor) {
+fn walk_stmt(stmt: &Stmt, ctx: ContentContext, v: &mut impl HirVisitor) {
     v.enter_stmt(stmt);
     match stmt {
-        Stmt::Content(c) => walk_content(c, ContentContext::Body, v),
+        Stmt::Content(c) => walk_content(c, ctx, v),
         Stmt::Divert(d) => walk_target(&d.target, v),
         Stmt::TunnelCall(t) => {
             for target in &t.targets {
@@ -162,9 +175,9 @@ fn walk_stmt(stmt: &Stmt, v: &mut impl HirVisitor) {
             }
         }
         Stmt::ChoiceSet(cs) => walk_choice_set(cs, v),
-        Stmt::LabeledBlock(b) => walk_block(b, v),
-        Stmt::Conditional(c) => walk_conditional(c, v),
-        Stmt::Sequence(s) => walk_sequence(s, v),
+        Stmt::LabeledBlock(b) => walk_block_ctx(b, ctx, v),
+        Stmt::Conditional(c) => walk_conditional(c, ctx, v),
+        Stmt::Sequence(s) => walk_sequence(s, ctx, v),
         Stmt::ExprStmt(e) => walk_expr(e, v),
         Stmt::EndOfLine => {}
     }
@@ -182,8 +195,10 @@ fn walk_content(content: &Content, ctx: ContentContext, v: &mut impl HirVisitor)
     for part in &content.parts {
         match part {
             ContentPart::Interpolation(e) => walk_expr(e, v),
-            ContentPart::InlineConditional(c) => walk_conditional(c, v),
-            ContentPart::InlineSequence(s) => walk_sequence(s, v),
+            // Content nested inside an inline conditional/sequence keeps the
+            // enclosing `ctx` — so a choice slot's position stays transitive.
+            ContentPart::InlineConditional(c) => walk_conditional(c, ctx, v),
+            ContentPart::InlineSequence(s) => walk_sequence(s, ctx, v),
             ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
         }
     }
@@ -204,13 +219,15 @@ fn walk_choice_set(cs: &ChoiceSet, v: &mut impl HirVisitor) {
         if let Some(c) = &choice.inner_content {
             walk_content(c, ContentContext::ChoiceInner, v);
         }
-        walk_block(&choice.body, v);
+        // A choice's body is the selected content — not inline choice text —
+        // so it (and its continuation below) resets to Body.
+        walk_block_ctx(&choice.body, ContentContext::Body, v);
         v.exit_choice(choice);
     }
-    walk_block(&cs.continuation, v);
+    walk_block_ctx(&cs.continuation, ContentContext::Body, v);
 }
 
-fn walk_conditional(cond: &Conditional, v: &mut impl HirVisitor) {
+fn walk_conditional(cond: &Conditional, ctx: ContentContext, v: &mut impl HirVisitor) {
     if let CondKind::Switch(e) = &cond.kind {
         walk_expr(e, v);
     }
@@ -218,13 +235,13 @@ fn walk_conditional(cond: &Conditional, v: &mut impl HirVisitor) {
         if let Some(e) = &branch.condition {
             walk_expr(e, v);
         }
-        walk_block(&branch.body, v);
+        walk_block_ctx(&branch.body, ctx, v);
     }
 }
 
-fn walk_sequence(seq: &Sequence, v: &mut impl HirVisitor) {
+fn walk_sequence(seq: &Sequence, ctx: ContentContext, v: &mut impl HirVisitor) {
     for branch in &seq.branches {
-        walk_block(branch, v);
+        walk_block_ctx(branch, ctx, v);
     }
 }
 
