@@ -732,7 +732,7 @@ fn advance_recording<M: Send + Sync + 'static>(
     flow: &mut FlowInstance,
     program: &Program,
     line_tables: &[Vec<brink_format::LineEntry>],
-    context: &mut brink_runtime::Context,
+    context: &mut brink_runtime::World,
     handler: &BrinkHandler<'_, M>,
     #[cfg(feature = "dev")] recorder: Option<&mut ReplayRecorder>,
 ) -> Result<StepOutcome, RuntimeError> {

@@ -1,7 +1,7 @@
 //! Story sessions: a journaling, replayable wrapper around [`Story`].
 //!
 //! [`StorySession`] *composes* a [`Story`] (which itself wraps a
-//! [`FlowInstance`](crate::FlowInstance) + [`Context`](crate::Context)) with a
+//! [`FlowInstance`](crate::FlowInstance) + [`World`](crate::World)) with a
 //! serializable [`SessionJournal`]. The VM never learns about journaling — the
 //! journal observes inputs at the session boundary (the same place the VM
 //! receives them), so instrumentation composes instead of threading an

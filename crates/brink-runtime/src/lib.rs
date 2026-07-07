@@ -38,6 +38,7 @@ mod story;
 pub mod transcript;
 mod value_ops;
 mod vm;
+mod world;
 
 pub use brink_format::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 pub use debug::{DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit};
@@ -58,6 +59,7 @@ pub use session::{
 };
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
 pub use story::{
-    Choice, Context, ExternalFnHandler, ExternalResult, FallbackHandler, FlowInstance,
-    FunctionEval, Line, Stats, StepOutcome, Story, StorySnapshot, StoryStatus,
+    Choice, ExternalFnHandler, ExternalResult, FallbackHandler, FlowInstance, FunctionEval, Line,
+    Stats, StepOutcome, Story, StorySnapshot, StoryStatus,
 };
+pub use world::{ContextView, FlowLocal, World};

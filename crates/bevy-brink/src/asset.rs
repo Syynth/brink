@@ -7,12 +7,12 @@ use bevy_ecs::bundle::Bundle;
 use bevy_ecs::component::Component;
 use bevy_reflect::TypePath;
 use brink_format::LineEntry;
-use brink_runtime::{Context, FlowInstance, Program, RuntimeError};
+use brink_runtime::{FlowInstance, Program, RuntimeError, World};
 
 use crate::line_tables::BrinkLocale;
 
 /// The immutable bytecode portion of a compiled story — what the VM
-/// actually executes — together with the fresh starting [`Context`]
+/// actually executes — together with the fresh starting [`World`](brink_runtime::World)
 /// (globals seeded from `VAR`/`CONST`/`LIST` defaults; zero visit and
 /// turn counts).
 ///
@@ -33,7 +33,7 @@ use crate::line_tables::BrinkLocale;
 #[derive(Asset, TypePath)]
 pub struct ProgramAsset {
     pub program: Program,
-    pub initial_context: Context,
+    pub initial_context: World,
 }
 
 /// The localized line-table portion of a compiled story — the swappable
@@ -70,7 +70,7 @@ pub struct BrinkStoryAsset {
 /// Asset loader for `.inkb` (compiled bytecode) files.
 ///
 /// Reads the bytes, decodes via [`brink_format::read_inkb`], links via
-/// [`brink_runtime::link`], computes the fresh starting [`Context`]
+/// [`brink_runtime::link`], computes the fresh starting [`World`](brink_runtime::World)
 /// from the program's declarations, and emits labeled subassets
 /// (`#program`, `#line_tables`) bundled in the returned
 /// [`BrinkStoryAsset`].
@@ -117,19 +117,19 @@ impl AssetLoader for InkbLoader {
     }
 }
 
-/// Compute the fresh starting [`Context`] for a program — globals seeded
+/// Compute the fresh starting [`World`](brink_runtime::World) for a program — globals seeded
 /// from `VAR`/`CONST`/`LIST` defaults, zero visit and turn counts. No
 /// execution; pure function of the linked program.
-pub(crate) fn fresh_context(program: &Program) -> Context {
+pub(crate) fn fresh_context(program: &Program) -> World {
     // FlowInstance::new_at_root constructs both a flow and a fresh
-    // Context; we only want the Context here.
+    // World; we only want the World here.
     let (_, context) = FlowInstance::new_at_root(program);
     context
 }
 
 /// Emit the two labeled subassets (`#program`, `#line_tables`) and
 /// return the bundle holding their handles. The fresh starting
-/// [`Context`] is computed and stored inline on `ProgramAsset`.
+/// [`World`](brink_runtime::World) is computed and stored inline on `ProgramAsset`.
 pub(crate) fn emit_story_assets(
     load_context: &mut LoadContext<'_>,
     program: Program,
@@ -205,7 +205,7 @@ mod fresh_context_tests {
     use crate::test_support::compile_test_story;
 
     /// `VAR` defaults are a link-time concern (`Program::global_defaults`),
-    /// not an init-pass concern. The fresh Context picks them up
+    /// not an init-pass concern. The fresh World picks them up
     /// without any execution.
     #[test]
     fn fresh_context_picks_up_var_defaults() {

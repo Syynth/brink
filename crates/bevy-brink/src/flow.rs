@@ -7,7 +7,7 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::system::Commands;
 use brink_format::LineEntry;
 use brink_runtime::{
-    Context, ExternalFnHandler, FastRng, FlowInstance, Line, Program, RuntimeError, StepOutcome,
+    ExternalFnHandler, FastRng, FlowInstance, Line, Program, RuntimeError, StepOutcome, World,
 };
 #[cfg(feature = "dev")]
 use brink_runtime::{RecordingHandler, ReplayRecorder};
@@ -60,8 +60,8 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         }
     }
 
-    /// Select a choice against the flow's `Context`.
-    pub fn choose(&mut self, context: &mut Context, index: usize) -> Result<(), RuntimeError> {
+    /// Select a choice against the flow's `World`.
+    pub fn choose(&mut self, context: &mut World, index: usize) -> Result<(), RuntimeError> {
         self.inner.choose(context, index)
     }
 
@@ -74,7 +74,7 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
     #[cfg(feature = "dev")]
     pub fn choose_recording(
         &mut self,
-        context: &mut Context,
+        context: &mut World,
         log: &mut crate::replay::BrinkReplayLog<M>,
         index: usize,
     ) -> Result<(), RuntimeError> {
@@ -98,7 +98,7 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         &mut self,
         program: &Program,
         line_tables: &[Vec<LineEntry>],
-        context: &mut Context,
+        context: &mut World,
         handler: &dyn ExternalFnHandler,
         entity: Entity,
         commands: &mut Commands,
@@ -127,7 +127,7 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         &mut self,
         program: &Program,
         line_tables: &[Vec<LineEntry>],
-        context: &mut Context,
+        context: &mut World,
         handler: &dyn ExternalFnHandler,
         entity: Entity,
         commands: &mut Commands,
@@ -162,7 +162,7 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         &mut self,
         program: &Program,
         line_tables: &[Vec<LineEntry>],
-        context: &mut Context,
+        context: &mut World,
         handler: &dyn ExternalFnHandler,
         recorder: &mut ReplayRecorder,
         entity: Entity,
@@ -192,7 +192,7 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         &mut self,
         program: &Program,
         line_tables: &[Vec<LineEntry>],
-        context: &mut Context,
+        context: &mut World,
         handler: &dyn ExternalFnHandler,
         recorder: &mut ReplayRecorder,
         entity: Entity,
