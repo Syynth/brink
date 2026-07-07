@@ -283,6 +283,44 @@ mod tests {
 
     use super::*;
 
+    /// Guards the combined `StructuralChecks` pass against the one real risk of
+    /// sharing a walker: the shared walk descends inline conditional/sequence
+    /// branches inside content (which the old per-check walks never did). By
+    /// grammar those branches can hold a divert (always last) but never a
+    /// return, a choice set, or a terminal-then-statement — so no new
+    /// `E032`/`E033`/`E034` may fire. (Verified: HIR lowering puts the divert
+    /// last, e.g. `{cond: -> a text}` lowers to `[Content, Divert]`.)
+    #[test]
+    fn inline_branch_diverts_produce_no_spurious_structural_diagnostics() {
+        let cases = [
+            "A {cond: -> away} B\n=== away ===\n-> END\n",
+            "{cond: -> a | -> b}\n=== a ===\n-> END\n=== b ===\n-> END\n",
+            "{shuffle: -> a | -> b}\n=== a ===\n-> END\n=== b ===\n-> END\n",
+            "{cond: -> a text after divert}\n=== a ===\n-> END\n",
+            "Line {cond: -> a} {other: -> b}\n=== a ===\n-> END\n=== b ===\n-> END\n",
+        ];
+        for src in cases {
+            let parsed = brink_syntax::parse(src);
+            let tree = parsed.tree();
+            let (hir, _, _) = brink_ir::hir::lower(FileId(0), &tree);
+            let diags = validate(&[(FileId(0), &hir)]);
+            let structural: Vec<_> = diags
+                .iter()
+                .map(|d| d.code)
+                .filter(|c| {
+                    matches!(
+                        c,
+                        DiagnosticCode::E032 | DiagnosticCode::E033 | DiagnosticCode::E034
+                    )
+                })
+                .collect();
+            assert!(
+                structural.is_empty(),
+                "inline-branch diverts must not produce structural diagnostics: {src:?} -> {structural:?}"
+            );
+        }
+    }
+
     fn empty_hir() -> HirFile {
         HirFile {
             root_content: Block::default(),
