@@ -11,14 +11,26 @@
 //! [`ResolvedPolicy`]) and their resolution against a [`Program`]'s symbol
 //! table.
 //!
-//! **F2.2 (this stage)** gives `FlowLocal` flat override storage (plain
-//! maps/options — no `CoW` chain yet, that's F3) and wires [`ContextView`]
-//! to route every [`ContextAccess`] op by consulting `World`'s
-//! [`ResolvedPolicy`] with **read-through** semantics: a `Local`-scoped unit
-//! reads its `FlowLocal` override if present, else falls back to `World`'s
-//! value; a `World`-scoped unit always goes straight to `World`. Writes to a
-//! `Local`-scoped unit land in `FlowLocal`; writes to a `World`-scoped unit
-//! land in `World`, immediately visible to every flow sharing it.
+//! F2.2 gave `FlowLocal` flat override storage (plain maps/options — no
+//! `CoW` chain) and wired [`ContextView`] to route every [`ContextAccess`]
+//! op by consulting `World`'s [`ResolvedPolicy`] with **read-through**
+//! semantics: a `Local`-scoped unit reads its `FlowLocal` override if
+//! present, else falls back to `World`'s value; a `World`-scoped unit
+//! always goes straight to `World`. Writes to a `Local`-scoped unit land in
+//! `FlowLocal`; writes to a `World`-scoped unit land in `World`,
+//! immediately visible to every flow sharing it.
+//!
+//! **F3.1 (this stage)** upgrades `FlowLocal`'s storage to a copy-on-write,
+//! frozen-base read-through **chain**: `FlowLocal` gains an optional
+//! [`Arc<FrozenLocal>`] base, an immutable snapshot of another `FlowLocal`'s
+//! overrides (captured via [`FlowLocal::freeze`]) that can itself chain to
+//! a further base. A read walks **own overrides → base (recursively) →
+//! [miss]**; a miss falls through to `World` exactly as before. Writes
+//! still land only in the flow's own top-layer overrides. This stage adds
+//! **no** fork/spawn/sandbox — every existing `FlowLocal` construction path
+//! produces `base: None`, so the chain never has anything to walk past the
+//! top layer and every read is exactly the F2.2 read-through. Fork (F3.2)
+//! is what actually populates `base` by freezing a parent.
 //!
 //! The all-`World` policy (the default, and the only policy the oracle
 //! corpus exercises) takes the `World` branch on every op, so `ContextView`
@@ -26,6 +38,7 @@
 //! single-flow construction path.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use brink_format::{DefinitionId, Value};
 
@@ -325,15 +338,99 @@ pub struct LocalRng {
     pub previous_random: i32,
 }
 
+/// An immutable snapshot of a [`FlowLocal`]'s override layer, frozen via
+/// [`FlowLocal::freeze`].
+///
+/// `FrozenLocal` chains: its own `base` is whatever the source `FlowLocal`'s
+/// base was at freeze time, so a chain of forks (F3.2) can walk arbitrarily
+/// far back through frozen ancestors. Cloning a `FrozenLocal` reference is
+/// cheap — callers hold it behind an [`Arc`].
+///
+/// Nothing constructs a chain longer than one link in this PR (F3.1): no
+/// fork exists yet, so `freeze` is unused in production code until F3.2's
+/// `World::fork` calls it to snapshot a parent `FlowLocal` as a child's
+/// base.
+#[derive(Debug, Clone, Default)]
+pub struct FrozenLocal {
+    /// Overridden values for globals `ResolvedPolicy` homes to `Local`,
+    /// keyed by slot index.
+    globals: BTreeMap<u32, Value>,
+    /// Overridden visit counts for knots/stitches homed to `Local`.
+    visit_counts: BTreeMap<DefinitionId, u32>,
+    /// Overridden turn counts for knots homed to `Local`.
+    turn_counts: BTreeMap<DefinitionId, u32>,
+    /// Overridden turn index, when `turn_index_scope() == Local`.
+    turn_index: Option<u32>,
+    /// Overridden RNG stream, when `rng_scope() == Local`.
+    rng: Option<LocalRng>,
+    /// The next link in the chain, if this snapshot's source `FlowLocal`
+    /// itself had a base at freeze time.
+    base: Option<Arc<FrozenLocal>>,
+}
+
+impl FrozenLocal {
+    /// Chain-lookup a global override: this snapshot's own overrides, else
+    /// recurse into `base`. Returns `None` on a miss all the way down the
+    /// chain — the caller falls through to `World`.
+    fn chain_get_global(&self, idx: u32) -> Option<&Value> {
+        self.globals
+            .get(&idx)
+            .or_else(|| self.base.as_deref().and_then(|b| b.chain_get_global(idx)))
+    }
+
+    /// Chain-lookup a visit-count override.
+    fn chain_get_visit_count(&self, id: DefinitionId) -> Option<u32> {
+        self.visit_counts.get(&id).copied().or_else(|| {
+            self.base
+                .as_deref()
+                .and_then(|b| b.chain_get_visit_count(id))
+        })
+    }
+
+    /// Chain-lookup a turn-count override.
+    fn chain_get_turn_count(&self, id: DefinitionId) -> Option<u32> {
+        self.turn_counts.get(&id).copied().or_else(|| {
+            self.base
+                .as_deref()
+                .and_then(|b| b.chain_get_turn_count(id))
+        })
+    }
+
+    /// Chain-lookup the overridden turn index.
+    fn chain_get_turn_index(&self) -> Option<u32> {
+        self.turn_index.or_else(|| {
+            self.base
+                .as_deref()
+                .and_then(FrozenLocal::chain_get_turn_index)
+        })
+    }
+
+    /// Chain-lookup the overridden RNG stream.
+    fn chain_get_rng(&self) -> Option<LocalRng> {
+        self.rng
+            .or_else(|| self.base.as_deref().and_then(FrozenLocal::chain_get_rng))
+    }
+}
+
 /// Per-flow override layer over the shared [`World`].
 ///
-/// **F2.2: flat override storage.** Each field is a plain map/option holding
-/// this flow's overrides for units [`ResolvedPolicy`] homes to
-/// [`Scope::Local`] — no copy-on-write chain yet (that's F3's spawn/parent/
-/// commit layering; see `docs/scoped-flow-state-spec.md`). A fresh
-/// `FlowLocal` (via `Default`/[`FlowLocal::new`]) overrides nothing, so it
-/// contributes no reads and every access falls through to `World` — this is
-/// what keeps the all-`World` policy byte-identical to the old passthrough.
+/// **F3.1: copy-on-write, frozen-base read-through chain.** Each field is a
+/// plain map/option holding this flow's own overrides for units
+/// [`ResolvedPolicy`] homes to [`Scope::Local`], plus an optional `base`: an
+/// immutable [`FrozenLocal`] snapshot (see [`FlowLocal::freeze`]) of another
+/// `FlowLocal`, captured at some earlier point. A read walks **own
+/// overrides → base (recursively) → [miss]**; [`ContextView`] treats a miss
+/// as "not in the local chain" and falls through to `World`, exactly as in
+/// F2.2. Writes always land in the flow's own top-layer overrides — never
+/// in `base`, which is immutable by construction.
+///
+/// A fresh `FlowLocal` (via `Default`/[`FlowLocal::new`]) has empty
+/// overrides and `base: None`, so it contributes no reads and every access
+/// falls through to `World` — this is what keeps the all-`World` policy
+/// (and every construction path in this PR, since nothing populates `base`
+/// yet) byte-identical to the F2.2 flat-storage behavior. F3.2's
+/// `World::fork` is what actually populates a child's `base` by freezing
+/// its parent.
 ///
 /// [`ContextView`] (below) is what actually consults these maps; see its
 /// docs for the read-through/copy-on-write-increment semantics.
@@ -341,23 +438,99 @@ pub struct LocalRng {
 pub struct FlowLocal {
     /// Overridden values for globals `ResolvedPolicy` homes to `Local`,
     /// keyed by slot index.
-    globals: HashMap<u32, Value>,
+    globals: BTreeMap<u32, Value>,
     /// Overridden visit counts for knots/stitches homed to `Local`.
-    visit_counts: HashMap<DefinitionId, u32>,
+    visit_counts: BTreeMap<DefinitionId, u32>,
     /// Overridden turn counts for knots homed to `Local`.
-    turn_counts: HashMap<DefinitionId, u32>,
+    turn_counts: BTreeMap<DefinitionId, u32>,
     /// Overridden turn index, when `turn_index_scope() == Local`.
     turn_index: Option<u32>,
     /// Overridden RNG stream, when `rng_scope() == Local`.
     rng: Option<LocalRng>,
+    /// Frozen snapshot of an earlier `FlowLocal`'s overrides, read *after*
+    /// this layer's own overrides on a miss. Always `None` in this PR — no
+    /// fork exists yet to populate it (F3.2).
+    base: Option<Arc<FrozenLocal>>,
 }
 
 impl FlowLocal {
-    /// Construct an empty flow-local layer — overrides nothing, so every
-    /// access routes through to `World`.
+    /// Construct an empty flow-local layer — overrides nothing and has no
+    /// base, so every access routes through to `World`.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Freeze this `FlowLocal`'s current state into an immutable
+    /// [`FrozenLocal`] snapshot, suitable for use as another `FlowLocal`'s
+    /// `base`.
+    ///
+    /// Captures the override maps (cloned — cheap, since only `Local`-scoped
+    /// units are ever present) and cheap-clones the current `base` `Arc` so
+    /// the new snapshot chains to the same ancestry this `FlowLocal` had.
+    ///
+    /// Nothing calls this yet in this PR — it exists as the foundation
+    /// F3.2's `World::fork` builds on to snapshot a parent into a child's
+    /// `base`.
+    #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "F3.2's World::fork calls this to snapshot a parent's FlowLocal into a child's base; F3.1's chain read-through test exercises it"
+        )
+    )]
+    fn freeze(&self) -> Arc<FrozenLocal> {
+        Arc::new(FrozenLocal {
+            globals: self.globals.clone(),
+            visit_counts: self.visit_counts.clone(),
+            turn_counts: self.turn_counts.clone(),
+            turn_index: self.turn_index,
+            rng: self.rng,
+            base: self.base.clone(),
+        })
+    }
+
+    /// Chain-lookup a global override: own overrides → `base` (recursively)
+    /// → `None` on a total miss, which [`ContextView`] treats as "fall
+    /// through to `World`".
+    fn chain_get_global(&self, idx: u32) -> Option<&Value> {
+        self.globals
+            .get(&idx)
+            .or_else(|| self.base.as_deref().and_then(|b| b.chain_get_global(idx)))
+    }
+
+    /// Chain-lookup a visit-count override.
+    fn chain_get_visit_count(&self, id: DefinitionId) -> Option<u32> {
+        self.visit_counts.get(&id).copied().or_else(|| {
+            self.base
+                .as_deref()
+                .and_then(|b| b.chain_get_visit_count(id))
+        })
+    }
+
+    /// Chain-lookup a turn-count override.
+    fn chain_get_turn_count(&self, id: DefinitionId) -> Option<u32> {
+        self.turn_counts.get(&id).copied().or_else(|| {
+            self.base
+                .as_deref()
+                .and_then(|b| b.chain_get_turn_count(id))
+        })
+    }
+
+    /// Chain-lookup the overridden turn index.
+    fn chain_get_turn_index(&self) -> Option<u32> {
+        self.turn_index.or_else(|| {
+            self.base
+                .as_deref()
+                .and_then(FrozenLocal::chain_get_turn_index)
+        })
+    }
+
+    /// Chain-lookup the overridden RNG stream.
+    fn chain_get_rng(&self) -> Option<LocalRng> {
+        self.rng
+            .or_else(|| self.base.as_deref().and_then(FrozenLocal::chain_get_rng))
     }
 }
 
@@ -370,17 +543,20 @@ impl FlowLocal {
 ///
 /// - **`World`-scoped**: always routes straight to `World` — reads and
 ///   writes are immediately visible to every flow sharing that `World`.
-/// - **`Local`-scoped, read**: **read-through** — the `FlowLocal` override
-///   if present, else `World`'s current value (so a flow that has never
-///   written a Local unit sees the shared default until its first local
-///   write).
-/// - **`Local`-scoped, write**: lands in `FlowLocal` only; `World` is
-///   untouched.
+/// - **`Local`-scoped, read**: **chain read-through** — walks the
+///   `FlowLocal`'s own overrides, then its frozen `base` (recursively, see
+///   [`FlowLocal::chain_get_global`] and friends), then falls back to
+///   `World`'s current value on a total miss (so a flow that has never
+///   written a Local unit, nor inherited one from a base, sees the shared
+///   default until its first local write).
+/// - **`Local`-scoped, write**: lands in the `FlowLocal`'s own top-layer
+///   overrides only; `World` (and any frozen `base`) is untouched.
 /// - **`Local`-scoped, increment** (`increment_visit`,
-///   `increment_turn_index`): copy-on-write from the *read-through* value —
-///   read the current value (local override or World fallback), add one,
-///   store the result as the new local override. This is what makes a
-///   flow's first local increment start from World's count rather than 0.
+///   `increment_turn_index`): copy-on-write from the *chain read-through*
+///   value — read the current value (own override, else base chain, else
+///   World fallback), add one, store the result as the new top-layer
+///   override. This is what makes a flow's first local increment start
+///   from the chain's (or World's) count rather than 0.
 ///
 /// Because the all-`World` policy (the only policy the oracle corpus
 /// exercises) takes the `World` branch on every op, this is byte-identical
@@ -478,8 +654,7 @@ impl ContextAccess for ContextView<'_> {
         match self.world.policy.scope_of_global(idx) {
             Scope::Local => self
                 .local
-                .globals
-                .get(&idx)
+                .chain_get_global(idx)
                 .unwrap_or_else(|| self.world.global(idx)),
             Scope::World => self.world.global(idx),
         }
@@ -500,9 +675,7 @@ impl ContextAccess for ContextView<'_> {
         match self.world.policy.scope_of_knot(id) {
             Scope::Local => self
                 .local
-                .visit_counts
-                .get(&id)
-                .copied()
+                .chain_get_visit_count(id)
                 .unwrap_or_else(|| self.world.visit_count(id)),
             Scope::World => self.world.visit_count(id),
         }
@@ -524,9 +697,7 @@ impl ContextAccess for ContextView<'_> {
         match self.world.policy.scope_of_knot(id) {
             Scope::Local => self
                 .local
-                .turn_counts
-                .get(&id)
-                .copied()
+                .chain_get_turn_count(id)
                 .or_else(|| self.world.turn_count(id)),
             Scope::World => self.world.turn_count(id),
         }
@@ -547,7 +718,7 @@ impl ContextAccess for ContextView<'_> {
         match self.world.policy.turn_index_scope() {
             Scope::Local => self
                 .local
-                .turn_index
+                .chain_get_turn_index()
                 .unwrap_or_else(|| self.world.turn_index()),
             Scope::World => self.world.turn_index(),
         }
@@ -569,7 +740,7 @@ impl ContextAccess for ContextView<'_> {
         match self.world.policy.rng_scope() {
             Scope::Local => self
                 .local
-                .rng
+                .chain_get_rng()
                 .map_or_else(|| self.world.rng_seed(), |rng| rng.seed),
             Scope::World => self.world.rng_seed(),
         }
@@ -579,10 +750,14 @@ impl ContextAccess for ContextView<'_> {
     fn set_rng_seed(&mut self, seed: i32) {
         match self.world.policy.rng_scope() {
             Scope::Local => {
-                let rng = self.local.rng.get_or_insert_with(|| LocalRng {
+                // CoW from the chain read-through value: seed a fresh local
+                // override from the base chain's RNG if present, else World.
+                // (base is always None in F3.1, so this reduces to World.)
+                let fallback = self.local.chain_get_rng().unwrap_or(LocalRng {
                     seed: self.world.rng_seed(),
                     previous_random: self.world.previous_random(),
                 });
+                let rng = self.local.rng.get_or_insert(fallback);
                 rng.seed = seed;
             }
             Scope::World => self.world.set_rng_seed(seed),
@@ -594,7 +769,7 @@ impl ContextAccess for ContextView<'_> {
         match self.world.policy.rng_scope() {
             Scope::Local => self
                 .local
-                .rng
+                .chain_get_rng()
                 .map_or_else(|| self.world.previous_random(), |rng| rng.previous_random),
             Scope::World => self.world.previous_random(),
         }
@@ -604,10 +779,12 @@ impl ContextAccess for ContextView<'_> {
     fn set_previous_random(&mut self, val: i32) {
         match self.world.policy.rng_scope() {
             Scope::Local => {
-                let rng = self.local.rng.get_or_insert_with(|| LocalRng {
+                // CoW from the chain read-through value (see `set_rng_seed`).
+                let fallback = self.local.chain_get_rng().unwrap_or(LocalRng {
                     seed: self.world.rng_seed(),
                     previous_random: self.world.previous_random(),
                 });
+                let rng = self.local.rng.get_or_insert(fallback);
                 rng.previous_random = val;
             }
             Scope::World => self.world.set_previous_random(val),
@@ -968,5 +1145,90 @@ mod routing_tests {
 
         // World's own count is untouched by the Local increment.
         assert_eq!(world.visit_count(shrine_id), 2);
+    }
+
+    /// F3.1 chain read-through: a `FlowLocal` with a frozen `base` reads a
+    /// value from the base when its own top layer has no override, and its
+    /// own top-layer override shadows the base. Values that appear in
+    /// neither layer still fall through to `World`.
+    ///
+    /// Built by hand (no fork exists yet — that's F3.2): freeze a parent
+    /// `FlowLocal` that has some overrides, then attach that snapshot as a
+    /// child's `base`.
+    #[test]
+    fn chain_read_through_reads_base_and_top_shadows() {
+        let program = sample_program();
+
+        // Home both globals, both knots, turn index, and RNG to Local so the
+        // chain (not World) is what's exercised on every read.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("gold".to_owned(), Scope::Local);
+        overrides.insert("mood".to_owned(), Scope::Local);
+        overrides.insert("shrine".to_owned(), Scope::Local);
+        overrides.insert("cellar".to_owned(), Scope::Local);
+        let policy = WorldPolicy {
+            default: Scope::World,
+            overrides,
+            turn_index: Scope::Local,
+            rng: Scope::Local,
+        };
+        let mut world = World::new(&program, &policy).expect("world builds");
+
+        let gold_slot = program.global_index("gold").expect("gold declared");
+        let mood_slot = program.global_index("mood").expect("mood declared");
+        let shrine_id = program.find_path_target("shrine").expect("shrine exists");
+        let cellar_id = program.find_path_target("cellar").expect("cellar exists");
+
+        // World defaults are distinct from anything we put in the chain, so a
+        // read hitting World rather than the chain would be visible.
+        world.set_global(gold_slot, Value::Int(1));
+        world.set_global(mood_slot, Value::Int(1));
+
+        // Build a parent FlowLocal with overrides, then freeze it.
+        let mut parent = FlowLocal::new();
+        {
+            let mut pv = ContextView::new(&mut world, &mut parent);
+            pv.set_global(gold_slot, Value::Int(100));
+            pv.set_global(mood_slot, Value::Int(200));
+            pv.increment_visit(shrine_id); // parent shrine visit = 1
+            pv.set_turn_count(cellar_id, 5);
+            pv.increment_turn_index(); // parent turn index = 1
+            pv.set_rng_seed(777);
+        }
+        let base = parent.freeze();
+
+        // Child inherits the frozen parent as its base, with its own empty
+        // top layer.
+        let mut child = FlowLocal {
+            base: Some(base),
+            ..FlowLocal::new()
+        };
+
+        // Reads with an empty top layer see the base's values (not World's).
+        {
+            let view = ContextView::new(&mut world, &mut child);
+            assert_eq!(view.global(gold_slot), &Value::Int(100));
+            assert_eq!(view.global(mood_slot), &Value::Int(200));
+            assert_eq!(view.visit_count(shrine_id), 1);
+            assert_eq!(view.turn_count(cellar_id), Some(5));
+            assert_eq!(view.turn_index(), 1);
+            assert_eq!(view.rng_seed(), 777);
+        }
+
+        // A top-layer override shadows the base for that one unit; other
+        // units keep reading through to the base.
+        {
+            let mut view = ContextView::new(&mut world, &mut child);
+            view.set_global(gold_slot, Value::Int(999));
+            assert_eq!(view.global(gold_slot), &Value::Int(999)); // shadowed
+            assert_eq!(view.global(mood_slot), &Value::Int(200)); // still base
+        }
+
+        // A knot with no override anywhere in the chain falls through to
+        // World (whose count for the Local-scoped `cellar` is untouched: 0).
+        {
+            let view = ContextView::new(&mut world, &mut child);
+            assert_eq!(view.visit_count(cellar_id), 0);
+        }
     }
 }
