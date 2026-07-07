@@ -10,6 +10,7 @@
 
 import init, {
   compile as wasmCompile,
+  compile_fragment as wasmCompileFragment,
   program_checksum as wasmProgramChecksum,
   token_type_names,
   token_modifier_names,
@@ -71,6 +72,7 @@ import type {
   SpeculationLine,
   SpeculationResult,
   TypedValue,
+  ProjectSource,
 } from "@brink/wasm-types";
 
 // Public surface: every interface the wasm boundary speaks is available
@@ -780,6 +782,14 @@ export type ExternalFn = (
 export class StoryRunnerHandle {
   private runner: StoryRunner;
 
+  /** Tier-1 `evaluate()` fragment-compile cache (F5.1): compile once per
+   * distinct fragment source per program version, then every re-eval is a
+   * cache hit. Keyed by `${checksum}\0${fragmentSource}` — see
+   * `compileFragment` below. Bounded (`FRAGMENT_CACHE_LIMIT`, FIFO eviction)
+   * so a long-lived runner fed many distinct one-off watches can't grow this
+   * without bound. */
+  private fragmentCache = new Map<string, FragmentCompileEntry>();
+
   constructor(storyBytes: Uint8Array) {
     this.runner = new StoryRunner(storyBytes);
   }
@@ -1010,6 +1020,15 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.lines_table()) as LinesTable;
   }
 
+  /** The source-identity checksum of the currently loaded program
+   * (`"0x{:08x}"`) — identical to {@link programChecksum}, but read off the
+   * already-linked program (survives `reload`). Used by `evaluate()`'s
+   * Tier-1 fragment cache to key a compiled fragment to the program version
+   * it was compiled against. */
+  checksum(): string {
+    return this.runner.checksum();
+  }
+
   // ── Shared flows (#200) ──────────────────────────────────────────
   // Concurrent flows of one story that SHARE this runner's globals / visit
   // counts / rng (true ink flow semantics), each with its own call stack.
@@ -1072,10 +1091,18 @@ export class StoryRunnerHandle {
    *   which is reported via `reachedChoices` rather than picked); or
    * - a function call with **literal** arguments (`"check(1, 2)"` — numbers,
    *   quoted strings, `true`/`false`/`null` only) — driven with `evalFunction`.
-   *
-   * Anything else (an arbitrary expression, a call with non-literal
-   * arguments) is the Tier-1/F5 boundary (`docs/speculative-eval-spec.md`):
-   * `diagnostics` comes back non-empty and nothing runs.
+   * - anything else (an arbitrary expression like `"has(sword) && gold > 2"`,
+   *   content like `"You have {gold}"`, a lone divert like `"-> cellar"`, a
+   *   call with non-literal arguments) — **Tier 1**: the fragment is wrapped
+   *   as a synthetic knot/function, recompiled against `opts.projectSource`
+   *   (cached per fragment per program version), and run the same way over a
+   *   fresh runner seeded from this one's current state (F5.1,
+   *   `docs/speculative-eval-spec.md`'s "mechanism B"). Requires
+   *   `opts.projectSource` — a `StoryRunner` holds no reference to the file
+   *   set it was compiled from, so the caller (which does) supplies it.
+   *   Without it, or if the fragment fails to compile as either an
+   *   expression or content, `diagnostics` comes back non-empty and nothing
+   *   runs.
    *
    * Any async (`Promise`-returning) bound external hit along the way is
    * awaited transparently, exactly like `continueStoryAsync`. Pass
@@ -1085,12 +1112,7 @@ export class StoryRunnerHandle {
   async evaluate(source: string, opts: EvaluateOptions = {}): Promise<SpeculationResult> {
     const parsed = parseEvaluateSource(source);
     if (parsed.kind === "invalid") {
-      return {
-        transcript: [],
-        stop: "completed",
-        externals: { live: [], fallback: [] },
-        diagnostics: [parsed.reason],
-      };
+      return this.evaluateFragment(source, opts);
     }
 
     throwIfAborted(opts.signal);
@@ -1130,6 +1152,179 @@ export class StoryRunnerHandle {
     } finally {
       speculation.free();
     }
+  }
+
+  /**
+   * Tier-1: `evaluate()`'s fallback for a `source` that isn't a bare knot
+   * path or a literal-arg call. Compiles the fragment (via `compileFragment`,
+   * cached) as a synthetic symbol appended to `opts.projectSource`, then runs
+   * it the same way `evaluate()`'s Tier-0 branches do — a fresh
+   * `StoryRunnerHandle` over the recompiled program, seeded with this
+   * runner's current state (`load(this.save())`, name-keyed — globals by
+   * name, visit/turn counts by content-hashed id, both stable across the
+   * recompile), then `speculate()` + drive to a natural stop. The fragment
+   * runner and its speculation are discarded when done; nothing it does
+   * touches this runner.
+   */
+  private async evaluateFragment(
+    source: string,
+    opts: EvaluateOptions,
+  ): Promise<SpeculationResult> {
+    if (!opts.projectSource) {
+      return {
+        transcript: [],
+        stop: "completed",
+        externals: { live: [], fallback: [] },
+        diagnostics: [
+          `evaluate: "${source}" is neither a knot/stitch path nor a literal-arg function ` +
+            "call, so it needs Tier-1 fragment compilation — pass opts.projectSource " +
+            "({ entry, files }) with the project's current sources.",
+        ],
+      };
+    }
+
+    throwIfAborted(opts.signal);
+    const compiled = this.compileFragment(source, opts.projectSource);
+    if (!compiled.ok) {
+      return {
+        transcript: [],
+        stop: "completed",
+        externals: { live: [], fallback: [] },
+        diagnostics: compiled.diagnostics,
+      };
+    }
+
+    const fragmentRunner = new StoryRunnerHandle(compiled.storyBytes);
+    try {
+      // A fresh `StoryRunner` starts with no external bindings — copy this
+      // runner's live bindings + lenient-unbound policy across first, so a
+      // query/effect external the fragment touches resolves the same way it
+      // would here (Tier-0's `speculate()` gets this for free by forking the
+      // same runner; Tier-1's scratch runner needs it done explicitly).
+      fragmentRunner.setLenientUnbound(this.runner.lenient_unbound());
+      for (const name of this.runner.binding_names()) {
+        const fn = this.runner.get_binding(name);
+        if (fn) {
+          fragmentRunner.runner.bind_external(name, fn);
+        }
+      }
+      fragmentRunner.load(this.save());
+      const speculation = fragmentRunner.speculate({
+        steps: opts.budget?.steps,
+        lines: opts.budget?.lines,
+        context: opts.context,
+        liveEffects: opts.liveEffects,
+        kinds: opts.kinds,
+      });
+      try {
+        if (compiled.kind === "expression") {
+          const { value, stop } = await driveSpeculationCall(
+            speculation,
+            compiled.symbolName,
+            [],
+            opts.signal,
+          );
+          return {
+            value,
+            transcript: speculation.transcript(),
+            stop,
+            externals: speculation.externalsReport(),
+            diagnostics: [],
+          };
+        }
+
+        speculation.goToPath(compiled.symbolName);
+        const { stop, choices } = await driveSpeculationToTerminal(speculation, opts.signal);
+        return {
+          transcript: speculation.transcript(),
+          reachedChoices: choices,
+          stop,
+          externals: speculation.externalsReport(),
+          diagnostics: [],
+        };
+      } finally {
+        speculation.free();
+      }
+    } finally {
+      fragmentRunner.free();
+    }
+  }
+
+  /**
+   * Classify + compile a Tier-1 fragment as a synthetic symbol, cached by
+   * `(this program's checksum, fragmentSource)` — a fragment compiles once
+   * per program version; every re-eval (e.g. a watch panel re-running on
+   * every step) is a cache hit. Robust classification: try the fragment as
+   * an expression (`=== function NAME() === \n ~ return (FRAG)`); if that
+   * fails to compile, fall back to content (`=== NAME === \n FRAG`); if
+   * neither compiles, the content attempt's diagnostics are returned (the
+   * more permissive grammar, so its failure is the more informative one).
+   */
+  private compileFragment(
+    fragmentSource: string,
+    project: ProjectSource,
+  ): FragmentCompileEntry {
+    const cacheKey = `${this.checksum()}\0${fragmentSource}`;
+    const cached = this.fragmentCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const symbolName = `__eval_${fragmentContentHash(fragmentSource)}`;
+    const sourcesJson = JSON.stringify(project.files);
+
+    const exprSynthetic = `=== function ${symbolName}() ===\n~ return (${fragmentSource})\n`;
+    const exprResult = JSON.parse(
+      wasmCompileFragment(project.entry, sourcesJson, exprSynthetic),
+    ) as CompileResult;
+    if (exprResult.ok && exprResult.story_bytes) {
+      return this.cacheFragment(cacheKey, {
+        ok: true,
+        kind: "expression",
+        symbolName,
+        storyBytes: new Uint8Array(exprResult.story_bytes),
+      });
+    }
+
+    const contentSynthetic = `=== ${symbolName} ===\n${fragmentSource}\n`;
+    const contentResult = JSON.parse(
+      wasmCompileFragment(project.entry, sourcesJson, contentSynthetic),
+    ) as CompileResult;
+    if (contentResult.ok && contentResult.story_bytes) {
+      return this.cacheFragment(cacheKey, {
+        ok: true,
+        kind: "content",
+        symbolName,
+        storyBytes: new Uint8Array(contentResult.story_bytes),
+      });
+    }
+
+    const diagnostics = [
+      ...(contentResult.warnings ?? []).map((d) => d.message),
+      ...(contentResult.error ? [contentResult.error] : []),
+    ];
+    return this.cacheFragment(cacheKey, {
+      ok: false,
+      diagnostics:
+        diagnostics.length > 0
+          ? diagnostics
+          : [`evaluate: "${fragmentSource}" doesn't compile as either an expression or content`],
+    });
+  }
+
+  /** Insert into `fragmentCache`, evicting the oldest entry first if this
+   * would exceed `FRAGMENT_CACHE_LIMIT` (`Map` iterates in insertion order,
+   * so `.next()` on its key iterator is the oldest entry — guards against
+   * unbounded growth across a long session of one-off watches). */
+  private cacheFragment(key: string, entry: FragmentCompileEntry): FragmentCompileEntry {
+    if (this.fragmentCache.size >= FRAGMENT_CACHE_LIMIT) {
+      const oldest = this.fragmentCache.keys().next().value;
+      if (oldest !== undefined) {
+        this.fragmentCache.delete(oldest);
+      }
+    }
+    this.fragmentCache.set(key, entry);
+    return entry;
   }
 
   free(): void {
@@ -1272,6 +1467,39 @@ export interface EvaluateOptions {
   /** Abort the in-flight evaluation: the speculation is dropped and the
    * returned promise rejects with an `AbortError`. */
   signal?: AbortSignal;
+  /** Required for a Tier-1 fragment (anything beyond a bare knot path or
+   * literal-arg call) — the project's current sources, so the fragment can
+   * be compiled against the live project's real symbols. Ignored for a
+   * Tier-0 `source`. */
+  projectSource?: ProjectSource;
+}
+
+/** `StoryRunnerHandle`'s Tier-1 fragment-compile cache entry — either a
+ * successfully classified + compiled synthetic symbol, or the diagnostics
+ * from failing to compile as both an expression and content. */
+type FragmentCompileEntry =
+  | { ok: true; kind: "expression" | "content"; symbolName: string; storyBytes: Uint8Array }
+  | { ok: false; diagnostics: string[] };
+
+/** Cap on `StoryRunnerHandle.fragmentCache`'s size (FIFO eviction past this)
+ * — a long-lived runner fed many distinct one-off watches must not grow the
+ * cache without bound. */
+const FRAGMENT_CACHE_LIMIT = 200;
+
+/** Deterministic FNV-1a 32-bit hash of `source`, as 8 lowercase hex digits —
+ * used to name a Tier-1 fragment's synthetic symbol (`__eval_<hash>`).
+ * Content-addressed and stable across calls/sessions; not cryptographic, and
+ * doesn't need to be — collisions only risk two distinct fragments briefly
+ * sharing a synthetic name within one compile, which resolves to whichever
+ * wrap actually compiles (an extremely unlikely, self-correcting case, not a
+ * correctness hazard). */
+function fragmentContentHash(source: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < source.length; i += 1) {
+    hash ^= source.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -1283,7 +1511,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 type ParsedEvaluateSource =
   | { kind: "path"; path: string }
   | { kind: "call"; name: string; args: ExternalValue[] }
-  | { kind: "invalid"; reason: string };
+  | { kind: "invalid" };
 
 /** A bare dotted identifier path (`"cellar.intro"`) — no parens, no
  * operators; the Tier-0 "invoke existing by path" case. */
@@ -1294,10 +1522,11 @@ const EVALUATE_CALL_RE = /^([A-Za-z_][A-Za-z0-9_]*)\((.*)\)$/s;
 
 /** Parse `evaluate()`'s `source` into a knot/stitch path or a literal-arg
  * function call — the two Tier-0 "invoke existing" cases (see
- * `docs/scoped-flow-state-spec.md`'s watch/eval tiering). Anything else
- * (an arbitrary expression, a call with a non-literal argument) needs the
- * Tier-1 fragment compiler, not yet built — reported as a diagnostic rather
- * than attempted. */
+ * `docs/scoped-flow-state-spec.md`'s watch/eval tiering) that run without
+ * compiling anything. Anything else (an arbitrary expression, content, a
+ * call with a non-literal argument) is `"invalid"` here — not an error, just
+ * not Tier-0-shaped — and `evaluate()` routes it to Tier-1 fragment
+ * compilation instead (`evaluateFragment`). */
 function parseEvaluateSource(source: string): ParsedEvaluateSource {
   const trimmed = source.trim();
   if (EVALUATE_PATH_RE.test(trimmed)) {
@@ -1308,23 +1537,11 @@ function parseEvaluateSource(source: string): ParsedEvaluateSource {
     const [, name, argsText] = call;
     const args = parseLiteralArgList(argsText);
     if (args === undefined) {
-      return {
-        kind: "invalid",
-        reason:
-          `evaluate: "${source}" looks like a function call, but its arguments aren't all ` +
-          "literals (numbers, quoted strings, true/false/null) — arbitrary expressions need " +
-          "the Tier-1 fragment compiler (not yet built; see docs/speculative-eval-spec.md)",
-      };
+      return { kind: "invalid" };
     }
     return { kind: "call", name, args };
   }
-  return {
-    kind: "invalid",
-    reason:
-      `evaluate: "${source}" is neither a knot/stitch path (e.g. "cellar.intro") nor a ` +
-      "literal-argument function call (e.g. \"check(1, 2)\") — arbitrary expressions need " +
-      "the Tier-1 fragment compiler (not yet built; see docs/speculative-eval-spec.md)",
-  };
+  return { kind: "invalid" };
 }
 
 const UNPARSEABLE_LITERAL = Symbol("evaluate: unparseable literal argument");

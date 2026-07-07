@@ -1269,9 +1269,29 @@ export interface SpeculationResult {
    * resolving with a stop value — there is no `"aborted"` variant here. */
   stop: "completed" | "choices" | "step-budget" | "line-budget";
   externals: SpeculationExternalsReport;
-  /** Non-empty only when `source` couldn't be parsed as a knot path or a
-   * literal-arg function call (the Tier-1/F5 boundary — see
-   * `docs/speculative-eval-spec.md`); `stop`/`transcript`/`value` are
-   * meaningless in that case. */
+  /** Non-empty only when `source` failed to compile as either an expression
+   * or content fragment (Tier-1, `docs/speculative-eval-spec.md`'s
+   * "mechanism B"), or when it needed Tier-1 but no `opts.projectSource` was
+   * supplied; `stop`/`transcript`/`value` are meaningless in that case. */
   diagnostics: string[];
+}
+
+/**
+ * A project's ink source, supplied by the caller for Tier-1 speculative
+ * evaluation (`StoryRunnerHandle.evaluate()`'s fragment path, F5.1): a
+ * `StoryRunner` only ever holds an already-linked program, not the file set
+ * it was compiled from, so evaluating an arbitrary author-typed fragment
+ * (anything beyond a bare knot path or literal-arg call — Tier 0) needs the
+ * consumer to hand back the same sources the running program was last
+ * compiled from, so the fragment resolves against the live project's real
+ * globals/knots/lists.
+ */
+export interface ProjectSource {
+  /** The entry file's path — must be a key of `files`. The fragment's
+   * synthetic knot/function is appended to this file's content before
+   * recompiling; every other file is served verbatim. */
+  entry: string;
+  /** Every source file in the project, keyed by path exactly as its
+   * `INCLUDE` directives name it. */
+  files: Record<string, string>;
 }
