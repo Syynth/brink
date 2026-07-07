@@ -12,7 +12,7 @@ use crate::program::Program;
 use crate::rng::{FastRng, StoryRng};
 use crate::state::{ContextAccess, WriteObserver};
 use crate::vm;
-use crate::world::{ContextView, FlowLocal, World};
+use crate::world::{ContextView, FlowLocal, ResolvedPolicy, World};
 
 /// The current execution status of a story.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -672,14 +672,12 @@ impl FlowInstance {
             stats: Stats::default(),
             eval: None,
         };
-        let world = World {
-            globals,
-            visit_counts: HashMap::new(),
-            turn_counts: HashMap::new(),
-            turn_index: 0,
-            rng_seed: 0,
-            previous_random: 0,
-        };
+        // All existing construction paths default to the all-`World`
+        // policy (see `docs/scoped-flow-state-spec.md` "The policy") — this
+        // is the fast path that needs no `Program` symbol lookups and
+        // can't fail, so `new_at`/`new_at_root` keep their infallible
+        // `(Self, World)` signature.
+        let world = World::from_globals(globals, ResolvedPolicy::all_world());
         (flow_instance, world)
     }
 

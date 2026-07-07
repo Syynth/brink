@@ -121,14 +121,7 @@ mod commit_tests {
         for (id, count) in visits {
             visit_counts.insert(DefinitionId::new(DefinitionTag::Address, *id), *count);
         }
-        World {
-            globals,
-            visit_counts,
-            turn_counts: HashMap::new(),
-            turn_index,
-            rng_seed: 0,
-            previous_random: 0,
-        }
+        World::new_for_testing(globals, visit_counts, HashMap::new(), turn_index, 0, 0)
     }
 
     #[test]
