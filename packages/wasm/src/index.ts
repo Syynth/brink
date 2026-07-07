@@ -75,6 +75,14 @@ import type {
   ProjectSource,
 } from "@brink/wasm-types";
 
+import {
+  parseEvaluateSource,
+  fragmentContentHash,
+  cacheFragmentInto,
+  FRAGMENT_CACHE_LIMIT,
+} from "./evaluate-dispatch";
+import type { FragmentCompileEntry, ExternalValue } from "./evaluate-dispatch";
+
 // Public surface: every interface the wasm boundary speaks is available
 // from this package alone (the private @brink/wasm-types workspace package
 // is rolled into the published declarations).
@@ -768,8 +776,9 @@ export class EditorSessionHandle {
 
 // ── Story runner ────────────────────────────────────────────────
 
-/** A value that can cross the ink↔JS external-binding boundary. */
-export type ExternalValue = number | boolean | string | null;
+/** A value that can cross the ink↔JS external-binding boundary. Re-exported
+ * from the wasm-free `evaluate-dispatch` module (single source of truth). */
+export type { ExternalValue } from "./evaluate-dispatch";
 
 /** An external-function binding: receives the call arguments as native JS
  * values and returns a value (or nothing) back to the story. May be async —
@@ -1312,19 +1321,10 @@ export class StoryRunnerHandle {
     });
   }
 
-  /** Insert into `fragmentCache`, evicting the oldest entry first if this
-   * would exceed `FRAGMENT_CACHE_LIMIT` (`Map` iterates in insertion order,
-   * so `.next()` on its key iterator is the oldest entry — guards against
-   * unbounded growth across a long session of one-off watches). */
+  /** Insert into `fragmentCache` with FIFO eviction at `FRAGMENT_CACHE_LIMIT`
+   * — see `cacheFragmentInto` (pure, unit-tested in `evaluate-dispatch`). */
   private cacheFragment(key: string, entry: FragmentCompileEntry): FragmentCompileEntry {
-    if (this.fragmentCache.size >= FRAGMENT_CACHE_LIMIT) {
-      const oldest = this.fragmentCache.keys().next().value;
-      if (oldest !== undefined) {
-        this.fragmentCache.delete(oldest);
-      }
-    }
-    this.fragmentCache.set(key, entry);
-    return entry;
+    return cacheFragmentInto(this.fragmentCache, key, entry, FRAGMENT_CACHE_LIMIT);
   }
 
   free(): void {
@@ -1474,151 +1474,10 @@ export interface EvaluateOptions {
   projectSource?: ProjectSource;
 }
 
-/** `StoryRunnerHandle`'s Tier-1 fragment-compile cache entry — either a
- * successfully classified + compiled synthetic symbol, or the diagnostics
- * from failing to compile as both an expression and content. */
-type FragmentCompileEntry =
-  | { ok: true; kind: "expression" | "content"; symbolName: string; storyBytes: Uint8Array }
-  | { ok: false; diagnostics: string[] };
-
-/** Cap on `StoryRunnerHandle.fragmentCache`'s size (FIFO eviction past this)
- * — a long-lived runner fed many distinct one-off watches must not grow the
- * cache without bound. */
-const FRAGMENT_CACHE_LIMIT = 200;
-
-/** Deterministic FNV-1a 32-bit hash of `source`, as 8 lowercase hex digits —
- * used to name a Tier-1 fragment's synthetic symbol (`__eval_<hash>`).
- * Content-addressed and stable across calls/sessions; not cryptographic, and
- * doesn't need to be — collisions only risk two distinct fragments briefly
- * sharing a synthetic name within one compile, which resolves to whichever
- * wrap actually compiles (an extremely unlikely, self-correcting case, not a
- * correctness hazard). */
-function fragmentContentHash(source: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < source.length; i += 1) {
-    hash ^= source.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw new DOMException("brink: evaluate() aborted", "AbortError");
   }
-}
-
-type ParsedEvaluateSource =
-  | { kind: "path"; path: string }
-  | { kind: "call"; name: string; args: ExternalValue[] }
-  | { kind: "invalid" };
-
-/** A bare dotted identifier path (`"cellar.intro"`) — no parens, no
- * operators; the Tier-0 "invoke existing by path" case. */
-const EVALUATE_PATH_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
-
-/** `name(args)` — captures the callee name and the raw argument text. */
-const EVALUATE_CALL_RE = /^([A-Za-z_][A-Za-z0-9_]*)\((.*)\)$/s;
-
-/** Parse `evaluate()`'s `source` into a knot/stitch path or a literal-arg
- * function call — the two Tier-0 "invoke existing" cases (see
- * `docs/scoped-flow-state-spec.md`'s watch/eval tiering) that run without
- * compiling anything. Anything else (an arbitrary expression, content, a
- * call with a non-literal argument) is `"invalid"` here — not an error, just
- * not Tier-0-shaped — and `evaluate()` routes it to Tier-1 fragment
- * compilation instead (`evaluateFragment`). */
-function parseEvaluateSource(source: string): ParsedEvaluateSource {
-  const trimmed = source.trim();
-  if (EVALUATE_PATH_RE.test(trimmed)) {
-    return { kind: "path", path: trimmed };
-  }
-  const call = EVALUATE_CALL_RE.exec(trimmed);
-  if (call) {
-    const [, name, argsText] = call;
-    const args = parseLiteralArgList(argsText);
-    if (args === undefined) {
-      return { kind: "invalid" };
-    }
-    return { kind: "call", name, args };
-  }
-  return { kind: "invalid" };
-}
-
-const UNPARSEABLE_LITERAL = Symbol("evaluate: unparseable literal argument");
-
-/** Parse a comma-separated literal argument list (`"1, \"x\", true"`).
- * `undefined` if any argument isn't a recognized literal. */
-function parseLiteralArgList(argsText: string): ExternalValue[] | undefined {
-  const trimmed = argsText.trim();
-  if (trimmed === "") {
-    return [];
-  }
-  const values: ExternalValue[] = [];
-  for (const part of splitTopLevelArgs(trimmed)) {
-    const value = parseLiteralArg(part.trim());
-    if (value === UNPARSEABLE_LITERAL) {
-      return undefined;
-    }
-    values.push(value);
-  }
-  return values;
-}
-
-/** Split on top-level commas, respecting (only) quoted-string boundaries —
- * literal arguments never nest parens or brackets. */
-function splitTopLevelArgs(text: string): string[] {
-  const parts: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (quote) {
-      current += ch;
-      if (ch === quote && text[i - 1] !== "\\") {
-        quote = null;
-      }
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      current += ch;
-      continue;
-    }
-    if (ch === ",") {
-      parts.push(current);
-      current = "";
-      continue;
-    }
-    current += ch;
-  }
-  if (current.trim() !== "") {
-    parts.push(current);
-  }
-  return parts;
-}
-
-function parseLiteralArg(text: string): ExternalValue | typeof UNPARSEABLE_LITERAL {
-  if (text === "true") {
-    return true;
-  }
-  if (text === "false") {
-    return false;
-  }
-  if (text === "null") {
-    return null;
-  }
-  if (/^-?\d+$/.test(text)) {
-    return parseInt(text, 10);
-  }
-  if (/^-?\d+\.\d+$/.test(text)) {
-    return parseFloat(text);
-  }
-  const stringMatch = /^"((?:[^"\\]|\\.)*)"$|^'((?:[^'\\]|\\.)*)'$/.exec(text);
-  if (stringMatch) {
-    const raw = stringMatch[1] ?? stringMatch[2] ?? "";
-    return raw.replace(/\\(.)/g, "$1");
-  }
-  return UNPARSEABLE_LITERAL;
 }
 
 /** Drive a `goToPath`'d speculation to its next natural stop: a `done`/`end`

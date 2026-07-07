@@ -101,6 +101,14 @@ pub fn program_checksum(story_bytes: &[u8]) -> Result<String, JsError> {
 /// error) surfaces here as ordinary diagnostics, never a panic — the caller
 /// tries the expression wrap first and falls back to the content wrap (or
 /// vice versa) by calling this twice with different `synthetic_source`s.
+///
+/// Unlike `compile_project`, this uses default `AnalysisOptions` — no
+/// registered host manifest — so a fragment compile is strictly *more*
+/// lenient than the editor's project compile (a manifest-driven external
+/// type/arity/domain diagnostic won't fire). This is benign: the manifest is
+/// tooling/author-time-only and never affects codegen or binding liveness, so
+/// the recompiled program runs identically; the fragment simply skips an
+/// author-time check that has no bearing on a side-effect-proof speculative run.
 #[wasm_bindgen]
 pub fn compile_fragment(entry: &str, sources_json: &str, synthetic_source: &str) -> String {
     let sources: HashMap<String, String> = match serde_json::from_str(sources_json) {
