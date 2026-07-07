@@ -20,22 +20,38 @@
 //! `FlowLocal`; writes to a `World`-scoped unit land in `World`,
 //! immediately visible to every flow sharing it.
 //!
-//! **F3.1 (this stage)** upgrades `FlowLocal`'s storage to a copy-on-write,
-//! frozen-base read-through **chain**: `FlowLocal` gains an optional
-//! [`Arc<FrozenLocal>`] base, an immutable snapshot of another `FlowLocal`'s
-//! overrides (captured via [`FlowLocal::freeze`]) that can itself chain to
-//! a further base. A read walks **own overrides → base (recursively) →
-//! [miss]**; a miss falls through to `World` exactly as before. Writes
-//! still land only in the flow's own top-layer overrides. This stage adds
-//! **no** fork/spawn/sandbox — every existing `FlowLocal` construction path
-//! produces `base: None`, so the chain never has anything to walk past the
-//! top layer and every read is exactly the F2.2 read-through. Fork (F3.2)
-//! is what actually populates `base` by freezing a parent.
+//! F3.1 upgraded `FlowLocal`'s storage to a copy-on-write, frozen-base
+//! read-through **chain**: `FlowLocal` gains an optional [`Arc<FrozenLocal>`]
+//! base, an immutable snapshot of another `FlowLocal`'s overrides (captured
+//! via [`FlowLocal::freeze`]) that can itself chain to a further base. A read
+//! walks **own overrides → base (recursively) → [miss]**; a miss falls
+//! through to `World` exactly as before. Writes still land only in the
+//! flow's own top-layer overrides.
 //!
-//! The all-`World` policy (the default, and the only policy the oracle
-//! corpus exercises) takes the `World` branch on every op, so `ContextView`
-//! stays byte-identical to the F1.3 passthrough for every existing
-//! single-flow construction path.
+//! **F3.2 (this stage)** adds **fork + sandbox mode + discard**: [`Mode`]
+//! (`Normal`/`Sandbox`), baked onto a `FlowLocal` at construction/fork time,
+//! and [`FlowLocal::fork`], which builds a child whose `base` is a frozen
+//! snapshot of the parent (via `freeze`) and whose own overrides start
+//! empty. `Normal` fork children route exactly like any other `FlowLocal` —
+//! by policy. `Sandbox` children are the side-effect-proof primitive
+//! watch/eval needs: `ContextView` treats **every** unit as `Local`
+//! regardless of policy, so the shared `World` is a read-only base — reads
+//! chain-read-through to `World`'s live value on a miss, but writes always
+//! land in the sandboxed flow's own overrides and never reach `World`.
+//! Discard is simply dropping the forked `FlowLocal`: since a `Sandbox`
+//! child's writes never touched `World` (and a `Normal` child's writes never
+//! touched its parent or `World` either — only its own top layer), there is
+//! nothing to unwind. A deferred `commit` seam (fold a fork's writes back
+//! into its parent) is documented but intentionally left unimplemented — see
+//! [`CommitError`] and [`commit`].
+//!
+//! No existing construction path calls `fork` or requests `Mode::Sandbox` —
+//! every flow the oracle corpus drives is `Mode::Normal` with `base: None`,
+//! so `ContextView` takes exactly the F3.1 branch on every op. The all-
+//! `World` policy (the default, and the only policy the oracle corpus
+//! exercises) takes the `World` branch on every op, so `ContextView` stays
+//! byte-identical to the F1.3 passthrough for every existing single-flow
+//! construction path.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -342,14 +358,9 @@ pub struct LocalRng {
 /// [`FlowLocal::freeze`].
 ///
 /// `FrozenLocal` chains: its own `base` is whatever the source `FlowLocal`'s
-/// base was at freeze time, so a chain of forks (F3.2) can walk arbitrarily
-/// far back through frozen ancestors. Cloning a `FrozenLocal` reference is
-/// cheap — callers hold it behind an [`Arc`].
-///
-/// Nothing constructs a chain longer than one link in this PR (F3.1): no
-/// fork exists yet, so `freeze` is unused in production code until F3.2's
-/// `World::fork` calls it to snapshot a parent `FlowLocal` as a child's
-/// base.
+/// base was at freeze time, so a chain of forks ([`FlowLocal::fork`]) can
+/// walk arbitrarily far back through frozen ancestors. Cloning a
+/// `FrozenLocal` reference is cheap — callers hold it behind an [`Arc`].
 #[derive(Debug, Clone, Default)]
 pub struct FrozenLocal {
     /// Overridden values for globals `ResolvedPolicy` homes to `Local`,
@@ -412,12 +423,40 @@ impl FrozenLocal {
     }
 }
 
+/// Execution mode of a [`FlowLocal`], baked in at construction/fork time and
+/// read by [`ContextView`] to decide how it routes every unit.
+///
+/// `Mode` is orthogonal to [`WorldPolicy`]/[`ResolvedPolicy`]: policy homes a
+/// *unit* (a global, a knot's visit count, …) to `World` or `Local`; `Mode`
+/// decides, for *this flow*, whether that homing is honored at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// Route every unit by policy, exactly as [`ContextView`]'s F2.2/F3.1
+    /// docs describe: `World`-scoped units go straight to `World`,
+    /// `Local`-scoped units chain-read-through/write to `FlowLocal`. Every
+    /// construction path before F3.2 produces `Mode::Normal` — this is what
+    /// keeps the oracle corpus byte-identical.
+    #[default]
+    Normal,
+    /// Treat **every** unit as `Local`, regardless of policy: the shared
+    /// `World` becomes a read-only base for this flow. Reads still
+    /// chain-read-through to `World`'s current value on a total miss (so a
+    /// sandboxed flow sees live world state), but writes always land in
+    /// this flow's own top-layer overrides — `World` (and any `Normal`
+    /// ancestor) is never mutated. Combined with [`FlowLocal::fork`]'s
+    /// frozen base, this is the side-effect-proof primitive watch/eval
+    /// needs: run a flow against current state, observe its output, then
+    /// discard it (drop) with the shared world untouched.
+    Sandbox,
+}
+
 /// Per-flow override layer over the shared [`World`].
 ///
 /// **F3.1: copy-on-write, frozen-base read-through chain.** Each field is a
 /// plain map/option holding this flow's own overrides for units
-/// [`ResolvedPolicy`] homes to [`Scope::Local`], plus an optional `base`: an
-/// immutable [`FrozenLocal`] snapshot (see [`FlowLocal::freeze`]) of another
+/// [`ResolvedPolicy`] homes to [`Scope::Local`] (or, in [`Mode::Sandbox`],
+/// *every* unit — see [`Mode`]), plus an optional `base`: an immutable
+/// [`FrozenLocal`] snapshot (see [`FlowLocal::freeze`]) of another
 /// `FlowLocal`, captured at some earlier point. A read walks **own
 /// overrides → base (recursively) → [miss]**; [`ContextView`] treats a miss
 /// as "not in the local chain" and falls through to `World`, exactly as in
@@ -425,15 +464,15 @@ impl FrozenLocal {
 /// in `base`, which is immutable by construction.
 ///
 /// A fresh `FlowLocal` (via `Default`/[`FlowLocal::new`]) has empty
-/// overrides and `base: None`, so it contributes no reads and every access
-/// falls through to `World` — this is what keeps the all-`World` policy
-/// (and every construction path in this PR, since nothing populates `base`
-/// yet) byte-identical to the F2.2 flat-storage behavior. F3.2's
-/// `World::fork` is what actually populates a child's `base` by freezing
-/// its parent.
+/// overrides, `base: None`, and `mode: Mode::Normal`, so it contributes no
+/// reads and every access falls through to `World` — this is what keeps the
+/// all-`World` policy (and every construction path that doesn't call
+/// [`fork`](Self::fork)) byte-identical to the F2.2 flat-storage behavior.
+/// [`FlowLocal::fork`] (F3.2) is what actually populates a child's `base` by
+/// freezing its parent, and what bakes in a non-`Normal` `mode`.
 ///
 /// [`ContextView`] (below) is what actually consults these maps; see its
-/// docs for the read-through/copy-on-write-increment semantics.
+/// docs for the read-through/copy-on-write-increment/mode semantics.
 #[derive(Debug, Clone, Default)]
 pub struct FlowLocal {
     /// Overridden values for globals `ResolvedPolicy` homes to `Local`,
@@ -448,9 +487,12 @@ pub struct FlowLocal {
     /// Overridden RNG stream, when `rng_scope() == Local`.
     rng: Option<LocalRng>,
     /// Frozen snapshot of an earlier `FlowLocal`'s overrides, read *after*
-    /// this layer's own overrides on a miss. Always `None` in this PR — no
-    /// fork exists yet to populate it (F3.2).
+    /// this layer's own overrides on a miss. Populated by [`FlowLocal::fork`];
+    /// `None` for every construction path that doesn't fork.
     base: Option<Arc<FrozenLocal>>,
+    /// This flow's execution mode — see [`Mode`]. Baked in at construction
+    /// (`Mode::Normal`, the `Default`) or at [`FlowLocal::fork`] time.
+    mode: Mode,
 }
 
 impl FlowLocal {
@@ -469,17 +511,9 @@ impl FlowLocal {
     /// units are ever present) and cheap-clones the current `base` `Arc` so
     /// the new snapshot chains to the same ancestry this `FlowLocal` had.
     ///
-    /// Nothing calls this yet in this PR — it exists as the foundation
-    /// F3.2's `World::fork` builds on to snapshot a parent into a child's
+    /// Called by [`FlowLocal::fork`] to snapshot a parent into a child's
     /// `base`.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "F3.2's World::fork calls this to snapshot a parent's FlowLocal into a child's base; F3.1's chain read-through test exercises it"
-        )
-    )]
     fn freeze(&self) -> Arc<FrozenLocal> {
         Arc::new(FrozenLocal {
             globals: self.globals.clone(),
@@ -489,6 +523,34 @@ impl FlowLocal {
             rng: self.rng,
             base: self.base.clone(),
         })
+    }
+
+    /// Fork a child `FlowLocal` from this one.
+    ///
+    /// The child's `base` is a frozen, point-in-time snapshot of `self` (via
+    /// [`freeze`](Self::freeze)) — an `O(1)`-ish operation that clones this
+    /// flow's own (small) override maps and `Arc`-bumps the rest of the
+    /// ancestry chain, never a full `World` copy. The child's own override
+    /// layer starts empty, and it runs in `mode` for its lifetime (`Mode` is
+    /// baked in here, not mutable afterward).
+    ///
+    /// Because the base is frozen, later mutations to `self` (the parent)
+    /// are **not** visible to the child — the child sees the parent exactly
+    /// as it was at fork time. Symmetrically, nothing the child does is ever
+    /// visible to `self` or `World`: writes land only in the child's own top
+    /// layer (see [`Mode`] for how `Sandbox` additionally diverts
+    /// `World`-scoped writes there too). That makes **discard** trivial —
+    /// dropping the returned `FlowLocal` is the entire discard operation, no
+    /// unwinding required. Folding a child's writes back into `self` instead
+    /// of discarding them is the deferred `commit` seam — see [`CommitError`]
+    /// and [`commit`].
+    #[must_use]
+    pub fn fork(&self, mode: Mode) -> FlowLocal {
+        FlowLocal {
+            base: Some(self.freeze()),
+            mode,
+            ..FlowLocal::new()
+        }
     }
 
     /// Chain-lookup a global override: own overrides → `base` (recursively)
@@ -534,12 +596,62 @@ impl FlowLocal {
     }
 }
 
+/// Errors from [`commit`].
+///
+/// A single variant today: `commit` is a documented, deferred seam (see
+/// `docs/scoped-flow-state-spec.md`, "Write-back is determined by scope, not
+/// a separate knob") — this release ships fork + discard only.
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+pub enum CommitError {
+    /// Folding a forked child's own-layer overrides back into its parent is
+    /// deferred past this release. Fork's only supported terminal operation
+    /// today is **discard** (drop the child); `commit` always returns this.
+    #[error(
+        "commit is not implemented in this release; fork's only supported terminal operation is discard (drop the child)"
+    )]
+    NotImplemented,
+}
+
+/// Fold a forked child's own-layer overrides back into its parent's,
+/// making the child's writes visible through `parent` (and, transitively,
+/// anything `parent` itself chains to or is later written through).
+///
+/// **This is a deferred seam, not implemented in this release.** It exists
+/// so the shape of the eventual write-back API is fixed and callers can
+/// write code against it now (always getting `CommitError::NotImplemented`
+/// back) rather than the API appearing later with no forward-compatible
+/// slot. Per the spec, only a **fork** ever commits — a root flow has no
+/// parent to fold into, and its `Local`-scoped writes already persist for
+/// its own lifetime; `World`-scoped writes already escape live, with no
+/// "make it back" step needed.
+///
+/// Intended semantics, when implemented: walk `child`'s own top-layer
+/// overrides (globals, visit counts, turn counts, turn index, RNG) and
+/// apply each onto `parent`'s own top layer, as if `child`'s writes had
+/// been made directly against `parent` — last-write-wins per unit, since a
+/// fork is single-writer for its whole lifetime (no concurrent-write
+/// conflict is possible, so no merge policy is needed). Commit never
+/// touches `World` directly: a folded `Local`-scoped write still only
+/// lands in `parent`'s overrides, reaching `World` only if `parent` is
+/// itself later written through a `World`-scoped op or committed further up
+/// the chain. `Sandbox`-mode writes are exactly what this would fold
+/// back — commit is what would turn a sandboxed probe into a real,
+/// persisted mutation, for a caller that chooses to call it instead of
+/// dropping the child.
+///
+/// # Errors
+///
+/// Always returns [`CommitError::NotImplemented`] in this release.
+pub fn commit(_child: FlowLocal, _parent: &mut FlowLocal) -> Result<(), CommitError> {
+    Err(CommitError::NotImplemented)
+}
+
 /// Routing view implementing [`ContextAccess`] over `(&mut World, &mut
 /// FlowLocal)`.
 ///
 /// This is what the VM's drive path receives as its `impl ContextAccess`.
-/// Every op consults `world.policy` (a [`ResolvedPolicy`]) to decide, per
-/// unit, whether it routes to the shared `World` or the private `FlowLocal`:
+/// Every op computes an **effective scope** for its unit — see
+/// [`ContextView::effective_scope`] — and then routes exactly as before:
 ///
 /// - **`World`-scoped**: always routes straight to `World` — reads and
 ///   writes are immediately visible to every flow sharing that `World`.
@@ -558,9 +670,22 @@ impl FlowLocal {
 ///   override. This is what makes a flow's first local increment start
 ///   from the chain's (or World's) count rather than 0.
 ///
+/// **The effective scope, not the raw policy scope, drives all of the
+/// above.** In [`Mode::Normal`] (every construction path before F3.2, and
+/// every non-forked flow today) the effective scope of a unit *is* its
+/// `ResolvedPolicy` scope — unchanged from F2.2/F3.1. In [`Mode::Sandbox`]
+/// the effective scope of **every** unit is `Local`, no matter what the
+/// policy says: a sandboxed flow's reads still chain-read-through to
+/// `World`'s live value on a miss (so it observes current shared state),
+/// but its writes — including to units the policy homes to `World` — land
+/// only in its own `FlowLocal` overrides. `World` is therefore a read-only
+/// base from a sandboxed flow's perspective: nothing it does can mutate the
+/// shared world.
+///
 /// Because the all-`World` policy (the only policy the oracle corpus
-/// exercises) takes the `World` branch on every op, this is byte-identical
-/// to the F1.3 all-`World` passthrough for every existing single-flow
+/// exercises) takes the `World` branch on every op *and* no existing
+/// construction path ever sets `Mode::Sandbox`, this is byte-identical to
+/// the F1.3 all-`World` passthrough for every existing single-flow
 /// construction path.
 pub struct ContextView<'a> {
     world: &'a mut World,
@@ -572,6 +697,17 @@ impl<'a> ContextView<'a> {
     /// duration of one step.
     pub fn new(world: &'a mut World, local: &'a mut FlowLocal) -> Self {
         Self { world, local }
+    }
+
+    /// The scope a unit actually routes by: `policy_scope` in
+    /// [`Mode::Normal`], or unconditionally [`Scope::Local`] in
+    /// [`Mode::Sandbox`] — see the type docs above.
+    #[inline]
+    fn effective_scope(&self, policy_scope: Scope) -> Scope {
+        match self.local.mode {
+            Mode::Normal => policy_scope,
+            Mode::Sandbox => Scope::Local,
+        }
     }
 }
 
@@ -651,7 +787,7 @@ impl ContextAccess for World {
 impl ContextAccess for ContextView<'_> {
     #[inline]
     fn global(&self, idx: u32) -> &Value {
-        match self.world.policy.scope_of_global(idx) {
+        match self.effective_scope(self.world.policy.scope_of_global(idx)) {
             Scope::Local => self
                 .local
                 .chain_get_global(idx)
@@ -662,7 +798,7 @@ impl ContextAccess for ContextView<'_> {
 
     #[inline]
     fn set_global(&mut self, idx: u32, value: Value) {
-        match self.world.policy.scope_of_global(idx) {
+        match self.effective_scope(self.world.policy.scope_of_global(idx)) {
             Scope::Local => {
                 self.local.globals.insert(idx, value);
             }
@@ -672,7 +808,7 @@ impl ContextAccess for ContextView<'_> {
 
     #[inline]
     fn visit_count(&self, id: DefinitionId) -> u32 {
-        match self.world.policy.scope_of_knot(id) {
+        match self.effective_scope(self.world.policy.scope_of_knot(id)) {
             Scope::Local => self
                 .local
                 .chain_get_visit_count(id)
@@ -683,7 +819,7 @@ impl ContextAccess for ContextView<'_> {
 
     #[inline]
     fn increment_visit(&mut self, id: DefinitionId) {
-        match self.world.policy.scope_of_knot(id) {
+        match self.effective_scope(self.world.policy.scope_of_knot(id)) {
             Scope::Local => {
                 let base = self.visit_count(id);
                 self.local.visit_counts.insert(id, base + 1);
@@ -694,7 +830,7 @@ impl ContextAccess for ContextView<'_> {
 
     #[inline]
     fn turn_count(&self, id: DefinitionId) -> Option<u32> {
-        match self.world.policy.scope_of_knot(id) {
+        match self.effective_scope(self.world.policy.scope_of_knot(id)) {
             Scope::Local => self
                 .local
                 .chain_get_turn_count(id)
@@ -705,7 +841,7 @@ impl ContextAccess for ContextView<'_> {
 
     #[inline]
     fn set_turn_count(&mut self, id: DefinitionId, turn: u32) {
-        match self.world.policy.scope_of_knot(id) {
+        match self.effective_scope(self.world.policy.scope_of_knot(id)) {
             Scope::Local => {
                 self.local.turn_counts.insert(id, turn);
             }
@@ -715,7 +851,7 @@ impl ContextAccess for ContextView<'_> {
 
     #[inline]
     fn turn_index(&self) -> u32 {
-        match self.world.policy.turn_index_scope() {
+        match self.effective_scope(self.world.policy.turn_index_scope()) {
             Scope::Local => self
                 .local
                 .chain_get_turn_index()
@@ -726,7 +862,7 @@ impl ContextAccess for ContextView<'_> {
 
     #[inline]
     fn increment_turn_index(&mut self) {
-        match self.world.policy.turn_index_scope() {
+        match self.effective_scope(self.world.policy.turn_index_scope()) {
             Scope::Local => {
                 let base = self.turn_index();
                 self.local.turn_index = Some(base + 1);
@@ -737,7 +873,7 @@ impl ContextAccess for ContextView<'_> {
 
     #[inline]
     fn rng_seed(&self) -> i32 {
-        match self.world.policy.rng_scope() {
+        match self.effective_scope(self.world.policy.rng_scope()) {
             Scope::Local => self
                 .local
                 .chain_get_rng()
@@ -748,7 +884,7 @@ impl ContextAccess for ContextView<'_> {
 
     #[inline]
     fn set_rng_seed(&mut self, seed: i32) {
-        match self.world.policy.rng_scope() {
+        match self.effective_scope(self.world.policy.rng_scope()) {
             Scope::Local => {
                 // CoW from the chain read-through value: seed a fresh local
                 // override from the base chain's RNG if present, else World.
@@ -766,7 +902,7 @@ impl ContextAccess for ContextView<'_> {
 
     #[inline]
     fn previous_random(&self) -> i32 {
-        match self.world.policy.rng_scope() {
+        match self.effective_scope(self.world.policy.rng_scope()) {
             Scope::Local => self
                 .local
                 .chain_get_rng()
@@ -777,7 +913,7 @@ impl ContextAccess for ContextView<'_> {
 
     #[inline]
     fn set_previous_random(&mut self, val: i32) {
-        match self.world.policy.rng_scope() {
+        match self.effective_scope(self.world.policy.rng_scope()) {
             Scope::Local => {
                 // CoW from the chain read-through value (see `set_rng_seed`).
                 let fallback = self.local.chain_get_rng().unwrap_or(LocalRng {
@@ -1230,5 +1366,142 @@ mod routing_tests {
             let view = ContextView::new(&mut world, &mut child);
             assert_eq!(view.visit_count(cellar_id), 0);
         }
+    }
+
+    /// F3.2 fork isolation (`Mode::Normal` child): forking a parent
+    /// `FlowLocal` gives the child a frozen view of the parent's overrides
+    /// at fork time. A write the child makes to a `Local`-scoped unit lands
+    /// only in the child's own top layer — the parent's `FlowLocal` and
+    /// `World` are both unaffected.
+    #[test]
+    fn fork_isolation_normal_child_write_does_not_leak_to_parent_or_world() {
+        let program = sample_program();
+        let policy = mixed_policy(); // mood: Local, gold: World (default)
+        let mut world = World::new(&program, &policy).expect("world builds");
+        let mood_slot = program.global_index("mood").expect("mood declared");
+
+        let mut parent = FlowLocal::new();
+        {
+            let mut view = ContextView::new(&mut world, &mut parent);
+            view.set_global(mood_slot, Value::Int(42));
+        }
+
+        // Fork a Normal child from the parent.
+        let mut child = parent.fork(Mode::Normal);
+
+        // The child reads the parent's frozen state via `base` — it never
+        // wrote `mood` itself.
+        {
+            let view = ContextView::new(&mut world, &mut child);
+            assert_eq!(view.global(mood_slot), &Value::Int(42));
+        }
+
+        // The child writes its own override for `mood`.
+        {
+            let mut view = ContextView::new(&mut world, &mut child);
+            view.set_global(mood_slot, Value::Int(100));
+            assert_eq!(view.global(mood_slot), &Value::Int(100));
+        }
+
+        // The parent's own `FlowLocal` still reads its original write — the
+        // child's write never reached it.
+        {
+            let view = ContextView::new(&mut world, &mut parent);
+            assert_eq!(view.global(mood_slot), &Value::Int(42));
+        }
+
+        // `World` was never touched — `mood` is Local-scoped, so it was
+        // never written there in the first place.
+        assert_eq!(world.global(mood_slot), &Value::Int(0));
+    }
+
+    /// F3.2 frozen snapshot: a fork's `base` is a point-in-time snapshot.
+    /// Mutating the parent *after* the fork must not be visible through the
+    /// child, which still reads the parent's state as of the fork.
+    #[test]
+    fn fork_base_is_a_frozen_snapshot_later_parent_writes_invisible_to_child() {
+        let program = sample_program();
+        let policy = mixed_policy(); // mood: Local
+        let mut world = World::new(&program, &policy).expect("world builds");
+        let mood_slot = program.global_index("mood").expect("mood declared");
+
+        let mut parent = FlowLocal::new();
+        {
+            let mut view = ContextView::new(&mut world, &mut parent);
+            view.set_global(mood_slot, Value::Int(1));
+        }
+
+        let mut child = parent.fork(Mode::Normal);
+
+        // Mutate the parent *after* the fork.
+        {
+            let mut view = ContextView::new(&mut world, &mut parent);
+            view.set_global(mood_slot, Value::Int(2));
+        }
+
+        // The child's frozen base still reflects the pre-fork value.
+        let view = ContextView::new(&mut world, &mut child);
+        assert_eq!(view.global(mood_slot), &Value::Int(1));
+    }
+
+    /// F3.2 sandbox side-effect-proof: in `Mode::Sandbox`, a `World`-scoped
+    /// unit is still readable through the live `World` value, but any write
+    /// — even to a unit the policy homes to `World` — lands only in the
+    /// sandboxed flow's own overrides. `World` itself is never mutated, and
+    /// dropping the sandboxed `FlowLocal` leaves no trace.
+    #[test]
+    fn sandbox_mode_writes_never_reach_world_reads_see_live_world() {
+        let program = sample_program();
+        let policy = mixed_policy(); // gold: World (default), mood: Local
+        let mut world = World::new(&program, &policy).expect("world builds");
+        let gold_slot = program.global_index("gold").expect("gold declared");
+        let shrine_id = program.find_path_target("shrine").expect("shrine exists");
+
+        // Simulate pre-existing shared state the sandboxed flow should see.
+        world.set_global(gold_slot, Value::Int(7));
+        world.increment_visit(shrine_id);
+        world.increment_visit(shrine_id);
+        world.increment_visit(shrine_id);
+        assert_eq!(world.visit_count(shrine_id), 3);
+
+        // Fork a sandboxed child from a "live" flow's (empty) FlowLocal.
+        let live = FlowLocal::new();
+        {
+            let mut sandboxed = live.fork(Mode::Sandbox);
+
+            // Reads see World's current, live value even though `gold` and
+            // `shrine` are World-scoped by policy.
+            {
+                let view = ContextView::new(&mut world, &mut sandboxed);
+                assert_eq!(view.global(gold_slot), &Value::Int(7));
+                assert_eq!(view.visit_count(shrine_id), 3);
+            }
+
+            // Writing the World-scoped `gold` in the sandbox diverts to the
+            // sandbox's own overrides — it does not touch `World`.
+            {
+                let mut view = ContextView::new(&mut world, &mut sandboxed);
+                view.set_global(gold_slot, Value::Int(555));
+                assert_eq!(view.global(gold_slot), &Value::Int(555)); // visible locally
+            }
+            assert_eq!(world.global(gold_slot), &Value::Int(7)); // World unchanged
+
+            // Incrementing a World-scoped visit count in the sandbox is
+            // copy-on-write from the live World count, but the increment
+            // itself stays local — World's count is untouched.
+            {
+                let mut view = ContextView::new(&mut world, &mut sandboxed);
+                view.increment_visit(shrine_id);
+                assert_eq!(view.visit_count(shrine_id), 4); // sandbox sees 4
+            }
+            assert_eq!(world.visit_count(shrine_id), 3); // World still 3
+
+            // Dropping `sandboxed` here (end of scope) is discard — nothing
+            // escaped to World, so there is nothing to unwind.
+        }
+
+        // World is still clean after the sandboxed child is gone.
+        assert_eq!(world.global(gold_slot), &Value::Int(7));
+        assert_eq!(world.visit_count(shrine_id), 3);
     }
 }

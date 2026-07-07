@@ -62,4 +62,7 @@ pub use story::{
     Choice, ExternalFnHandler, ExternalResult, FallbackHandler, FlowInstance, FunctionEval, Line,
     Stats, StepOutcome, Story, StorySnapshot, StoryStatus,
 };
-pub use world::{ContextView, FlowLocal, PolicyError, ResolvedPolicy, Scope, World, WorldPolicy};
+pub use world::{
+    CommitError, ContextView, FlowLocal, Mode, PolicyError, ResolvedPolicy, Scope, World,
+    WorldPolicy, commit,
+};
