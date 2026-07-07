@@ -1,4 +1,6 @@
-use brink_ir::{Block, Content, ContentPart, HirFile, Stmt};
+use brink_ir::{
+    Block, Content, ContentContext, ContentPart, HirFile, HirVisitor, Stmt, walk_block,
+};
 use rowan::TextRange;
 
 use crate::LineIndex;
@@ -264,96 +266,74 @@ fn push_fold(
 }
 
 fn collect_block_folds(block: &Block, source: &str, idx: &LineIndex, out: &mut Vec<FoldRange>) {
-    for stmt in &block.stmts {
-        collect_stmt_folds(stmt, source, idx, out);
-    }
+    let mut collector = FoldCollector { source, idx, out };
+    walk_block(block, &mut collector);
 }
 
-fn collect_stmt_folds(stmt: &Stmt, source: &str, idx: &LineIndex, out: &mut Vec<FoldRange>) {
-    match stmt {
-        Stmt::ChoiceSet(cs) => {
-            for choice in &cs.choices {
-                push_fold(choice.ptr.text_range(), None, source, idx, out);
-                collect_block_folds(&choice.body, source, idx, out);
+/// Emits a structural fold for every choice, conditional, and sequence via the
+/// shared HIR visitor. Inline conditionals/sequences fold only when they sit in
+/// body content — not in a choice's inline text — matching the pre-visitor
+/// walk, which never descended a choice's start/bracket/inner content.
+struct FoldCollector<'a> {
+    source: &'a str,
+    idx: &'a LineIndex,
+    out: &'a mut Vec<FoldRange>,
+}
+
+impl HirVisitor for FoldCollector<'_> {
+    fn enter_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::ChoiceSet(cs) => {
+                for choice in &cs.choices {
+                    push_fold(
+                        choice.ptr.text_range(),
+                        None,
+                        self.source,
+                        self.idx,
+                        self.out,
+                    );
+                }
             }
-            collect_block_folds(&cs.continuation, source, idx, out);
-        }
-        Stmt::LabeledBlock(block) => {
-            collect_block_folds(block, source, idx, out);
-        }
-        Stmt::Conditional(cond) => {
-            push_fold(
+            Stmt::Conditional(cond) => push_fold(
                 cond.ptr.text_range(),
                 Some("{...}".to_owned()),
-                source,
-                idx,
-                out,
-            );
-            for branch in &cond.branches {
-                collect_block_folds(&branch.body, source, idx, out);
-            }
-        }
-        Stmt::Sequence(seq) => {
-            push_fold(
+                self.source,
+                self.idx,
+                self.out,
+            ),
+            Stmt::Sequence(seq) => push_fold(
                 seq.ptr.text_range(),
                 Some("{...}".to_owned()),
-                source,
-                idx,
-                out,
-            );
-            for branch in &seq.branches {
-                collect_block_folds(branch, source, idx, out);
-            }
+                self.source,
+                self.idx,
+                self.out,
+            ),
+            _ => {}
         }
-        Stmt::Content(content) => {
-            collect_content_folds(content, source, idx, out);
-        }
-        _ => {}
     }
-}
 
-fn collect_content_folds(
-    content: &Content,
-    source: &str,
-    idx: &LineIndex,
-    out: &mut Vec<FoldRange>,
-) {
-    collect_content_part_folds(&content.parts, source, idx, out);
-}
-
-fn collect_content_part_folds(
-    parts: &[ContentPart],
-    source: &str,
-    idx: &LineIndex,
-    out: &mut Vec<FoldRange>,
-) {
-    for part in parts {
-        match part {
-            ContentPart::InlineConditional(cond) => {
-                push_fold(
+    fn enter_content(&mut self, content: &Content, ctx: ContentContext) {
+        if ctx != ContentContext::Body {
+            return;
+        }
+        for part in &content.parts {
+            match part {
+                ContentPart::InlineConditional(cond) => push_fold(
                     cond.ptr.text_range(),
                     Some("{...}".to_owned()),
-                    source,
-                    idx,
-                    out,
-                );
-                for branch in &cond.branches {
-                    collect_block_folds(&branch.body, source, idx, out);
-                }
-            }
-            ContentPart::InlineSequence(seq) => {
-                push_fold(
+                    self.source,
+                    self.idx,
+                    self.out,
+                ),
+                ContentPart::InlineSequence(seq) => push_fold(
                     seq.ptr.text_range(),
                     Some("{...}".to_owned()),
-                    source,
-                    idx,
-                    out,
-                );
-                for branch in &seq.branches {
-                    collect_block_folds(branch, source, idx, out);
-                }
+                    self.source,
+                    self.idx,
+                    self.out,
+                ),
+                _ => {}
             }
-            _ => {}
         }
     }
 }
@@ -456,68 +436,51 @@ fn line_natures(source: &str, ctx: &[LineContext], scaffold_lines: &[bool]) -> V
 /// are left at their existing (structural) classification, since the HIR
 /// gives no reliable per-branch source span to anchor them to.
 fn mark_conditional_scaffold(hir: &HirFile, source: &str, idx: &LineIndex, out: &mut Vec<bool>) {
-    collect_scaffold_in_block(&hir.root_content, source, idx, out);
-    for knot in &hir.knots {
-        collect_scaffold_in_block(&knot.body, source, idx, out);
-        for stitch in &knot.stitches {
-            collect_scaffold_in_block(&stitch.body, source, idx, out);
-        }
-    }
+    let mut marker = ScaffoldMarker { source, idx, out };
+    brink_ir::hir::visit::visit(hir, &mut marker);
 }
 
-fn collect_scaffold_in_block(block: &Block, source: &str, idx: &LineIndex, out: &mut Vec<bool>) {
-    for stmt in &block.stmts {
-        collect_scaffold_in_stmt(stmt, source, idx, out);
-    }
+/// Marks the opening/closing brace lines of every conditional and sequence via
+/// the shared HIR visitor. Inline conditionals/sequences are marked only in
+/// body content — not a choice's inline text — matching the pre-visitor walk.
+struct ScaffoldMarker<'a> {
+    source: &'a str,
+    idx: &'a LineIndex,
+    out: &'a mut Vec<bool>,
 }
 
-fn collect_scaffold_in_stmt(stmt: &Stmt, source: &str, idx: &LineIndex, out: &mut Vec<bool>) {
-    match stmt {
-        Stmt::ChoiceSet(cs) => {
-            for choice in &cs.choices {
-                collect_scaffold_in_block(&choice.body, source, idx, out);
+impl HirVisitor for ScaffoldMarker<'_> {
+    fn enter_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Conditional(cond) => {
+                mark_brace_span_scaffold(cond.ptr.text_range(), self.source, self.idx, self.out);
             }
-            collect_scaffold_in_block(&cs.continuation, source, idx, out);
-        }
-        Stmt::LabeledBlock(block) => collect_scaffold_in_block(block, source, idx, out),
-        Stmt::Conditional(cond) => {
-            mark_brace_span_scaffold(cond.ptr.text_range(), source, idx, out);
-            for branch in &cond.branches {
-                collect_scaffold_in_block(&branch.body, source, idx, out);
-            }
-        }
-        Stmt::Sequence(seq) => {
-            mark_brace_span_scaffold(seq.ptr.text_range(), source, idx, out);
-            for branch in &seq.branches {
-                collect_scaffold_in_block(branch, source, idx, out);
-            }
-        }
-        Stmt::Content(content) => collect_scaffold_in_content(content, source, idx, out),
-        _ => {}
-    }
-}
-
-fn collect_scaffold_in_content(
-    content: &Content,
-    source: &str,
-    idx: &LineIndex,
-    out: &mut Vec<bool>,
-) {
-    for part in &content.parts {
-        match part {
-            ContentPart::InlineConditional(cond) => {
-                mark_brace_span_scaffold(cond.ptr.text_range(), source, idx, out);
-                for branch in &cond.branches {
-                    collect_scaffold_in_block(&branch.body, source, idx, out);
-                }
-            }
-            ContentPart::InlineSequence(seq) => {
-                mark_brace_span_scaffold(seq.ptr.text_range(), source, idx, out);
-                for branch in &seq.branches {
-                    collect_scaffold_in_block(branch, source, idx, out);
-                }
+            Stmt::Sequence(seq) => {
+                mark_brace_span_scaffold(seq.ptr.text_range(), self.source, self.idx, self.out);
             }
             _ => {}
+        }
+    }
+
+    fn enter_content(&mut self, content: &Content, ctx: ContentContext) {
+        if ctx != ContentContext::Body {
+            return;
+        }
+        for part in &content.parts {
+            match part {
+                ContentPart::InlineConditional(cond) => {
+                    mark_brace_span_scaffold(
+                        cond.ptr.text_range(),
+                        self.source,
+                        self.idx,
+                        self.out,
+                    );
+                }
+                ContentPart::InlineSequence(seq) => {
+                    mark_brace_span_scaffold(seq.ptr.text_range(), self.source, self.idx, self.out);
+                }
+                _ => {}
+            }
         }
     }
 }
@@ -925,6 +888,28 @@ Come on in, take a seat.
             "blank line must break the narrative run: {ranges:?}"
         );
         assert!(ranges.contains(&(3, 4, FoldKind::Narrative)), "{ranges:?}");
+    }
+
+    #[test]
+    fn choice_with_inline_alternative_is_not_machinery() {
+        // A choice whose bracket text holds an inline alternative
+        // (`* [Take the {red|blue} pill]`) must NOT be scaffold-marked: the
+        // inline sequence sits in the choice's *inline text*, which folding
+        // never treats as conditional/sequence scaffold. Two such choices must
+        // therefore not collapse into a machinery run. Guards the
+        // ContentContext gate in ScaffoldMarker (the shared visitor descends
+        // choice inline content, which the old hand-rolled walk did not).
+        let src = "\
+=== start ===
+* [Take the {red|blue} pill]
+* [Take the {big|small} dose]
+-> END
+";
+        let ranges = kinds_for(src);
+        assert!(
+            !ranges.iter().any(|&(_, _, k)| k == FoldKind::Machinery),
+            "choice lines with inline alternatives must not fold as machinery: {ranges:?}"
+        );
     }
 
     #[test]
