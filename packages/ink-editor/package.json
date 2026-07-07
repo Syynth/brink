@@ -1,6 +1,6 @@
 {
   "name": "@brink-lang/editor",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "The brink ink-language CodeMirror 6 editor: syntax-aware extensions, inline rename, code actions, folding, completions, project search, and per-view document sessions for building an ink IDE in the browser.",
   "license": "MIT",
   "type": "module",

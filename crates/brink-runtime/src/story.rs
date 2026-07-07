@@ -722,7 +722,6 @@ impl FlowInstance {
     /// [`StepOutcome::AwaitingExternal`] instead of an error — so a
     /// world-access binding hit during normal playback can pause cleanly.
     /// Resolve the pending external and call `advance` again to continue.
-    #[expect(clippy::too_many_lines)]
     pub fn advance<R: StoryRng>(
         &mut self,
         program: &Program,
@@ -730,6 +729,36 @@ impl FlowInstance {
         context: &mut (impl ContextAccess + ?Sized),
         handler: &dyn ExternalFnHandler,
         resolver: Option<&dyn PluralResolver>,
+    ) -> Result<StepOutcome, RuntimeError> {
+        self.advance_with_limit::<R>(
+            program,
+            line_tables,
+            context,
+            handler,
+            resolver,
+            Self::STEP_LIMIT,
+        )
+    }
+
+    /// Like [`advance`](Self::advance), but the per-call VM step budget is
+    /// `step_limit` rather than the hardcoded [`Self::STEP_LIMIT`].
+    ///
+    /// This is what lets [`crate::Speculation::advance`] cap a single
+    /// visible-line drive at a small, caller-supplied budget instead of the
+    /// production 1,000,000-step ceiling, so a runaway speculative probe
+    /// errors quickly instead of burning a huge step budget before giving
+    /// up. `advance` itself is a thin wrapper over this with
+    /// `step_limit: Self::STEP_LIMIT` — every existing call site keeps its
+    /// exact prior behavior.
+    #[expect(clippy::too_many_lines)]
+    pub(crate) fn advance_with_limit<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        resolver: Option<&dyn PluralResolver>,
+        step_limit: u64,
     ) -> Result<StepOutcome, RuntimeError> {
         // 1. If buffer already has a completed line from a previous step,
         //    take it immediately (no VM stepping needed).
@@ -793,8 +822,8 @@ impl FlowInstance {
         loop {
             stats.steps += 1;
 
-            if stats.steps - step_start > Self::STEP_LIMIT {
-                return Err(RuntimeError::StepLimitExceeded(Self::STEP_LIMIT));
+            if stats.steps - step_start > step_limit {
+                return Err(RuntimeError::StepLimitExceeded(step_limit));
             }
 
             let stepped = vm::step::<R>(flow, program, line_tables, context, stats, resolver)?;
@@ -1882,6 +1911,27 @@ impl<R: StoryRng> Story<R> {
                 Err(RuntimeError::AsyncExternalInCall(name))
             }
         }
+    }
+
+    /// Fork a [`Speculation`](crate::Speculation) — a sandboxed,
+    /// side-effect-proof speculative run — from the default flow's
+    /// current state.
+    ///
+    /// The speculation owns an independent snapshot: driving it (via its
+    /// own `advance`/`choose`/`go_to_path`/`eval_function` verbs) never
+    /// mutates this `Story`. Dropping it discards everything it did. See
+    /// [`crate::Speculation`] for the full picture, and
+    /// [`crate::Speculation::fork_from`] for forking a non-default flow
+    /// (e.g. a named flow spawned via [`spawn_flow`](Self::spawn_flow)).
+    #[must_use]
+    pub fn speculate(&self) -> crate::Speculation<R> {
+        crate::Speculation::fork_from(
+            Arc::clone(&self.program),
+            &self.default_context,
+            &self.default_local,
+            &self.default,
+            &self.line_tables,
+        )
     }
 
     /// Detach story state from the program, consuming the story.

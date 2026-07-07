@@ -10,11 +10,13 @@
 
 import init, {
   compile as wasmCompile,
+  compile_fragment as wasmCompileFragment,
   program_checksum as wasmProgramChecksum,
   token_type_names,
   token_modifier_names,
   EditorSession as WasmEditorSession,
   StoryRunner,
+  WebSpeculation,
   WebSession,
   diffSnapshots as wasmDiffSnapshots,
 } from "brink-web";
@@ -44,6 +46,7 @@ import type {
   DocumentId,
   DocumentChangeSpec,
   Line,
+  Choice,
   StructuralResult,
   DirMoveResult,
   DebugState,
@@ -61,7 +64,24 @@ import type {
   StateDiff,
   ReplayOutcome,
   JournalDirtySignal,
+  SpeculationOptions,
+  SpeculationContext,
+  SpeculationKinds,
+  SpeculationFunctionEval,
+  SpeculationExternalsReport,
+  SpeculationLine,
+  SpeculationResult,
+  TypedValue,
+  ProjectSource,
 } from "@brink/wasm-types";
+
+import {
+  parseEvaluateSource,
+  fragmentContentHash,
+  cacheFragmentInto,
+  FRAGMENT_CACHE_LIMIT,
+} from "./evaluate-dispatch";
+import type { FragmentCompileEntry, ExternalValue } from "./evaluate-dispatch";
 
 // Public surface: every interface the wasm boundary speaks is available
 // from this package alone (the private @brink/wasm-types workspace package
@@ -756,8 +776,9 @@ export class EditorSessionHandle {
 
 // ── Story runner ────────────────────────────────────────────────
 
-/** A value that can cross the ink↔JS external-binding boundary. */
-export type ExternalValue = number | boolean | string | null;
+/** A value that can cross the ink↔JS external-binding boundary. Re-exported
+ * from the wasm-free `evaluate-dispatch` module (single source of truth). */
+export type { ExternalValue } from "./evaluate-dispatch";
 
 /** An external-function binding: receives the call arguments as native JS
  * values and returns a value (or nothing) back to the story. May be async —
@@ -769,6 +790,14 @@ export type ExternalFn = (
 
 export class StoryRunnerHandle {
   private runner: StoryRunner;
+
+  /** Tier-1 `evaluate()` fragment-compile cache (F5.1): compile once per
+   * distinct fragment source per program version, then every re-eval is a
+   * cache hit. Keyed by `${checksum}\0${fragmentSource}` — see
+   * `compileFragment` below. Bounded (`FRAGMENT_CACHE_LIMIT`, FIFO eviction)
+   * so a long-lived runner fed many distinct one-off watches can't grow this
+   * without bound. */
+  private fragmentCache = new Map<string, FragmentCompileEntry>();
 
   constructor(storyBytes: Uint8Array) {
     this.runner = new StoryRunner(storyBytes);
@@ -1000,6 +1029,15 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.lines_table()) as LinesTable;
   }
 
+  /** The source-identity checksum of the currently loaded program
+   * (`"0x{:08x}"`) — identical to {@link programChecksum}, but read off the
+   * already-linked program (survives `reload`). Used by `evaluate()`'s
+   * Tier-1 fragment cache to key a compiled fragment to the program version
+   * it was compiled against. */
+  checksum(): string {
+    return this.runner.checksum();
+  }
+
   // ── Shared flows (#200) ──────────────────────────────────────────
   // Concurrent flows of one story that SHARE this runner's globals / visit
   // counts / rng (true ink flow semantics), each with its own call stack.
@@ -1036,9 +1074,483 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.flow_debug_snapshot(name)) as DebugState;
   }
 
+  // ── Speculative evaluation (F4.3, docs/speculative-eval-spec.md) ─
+  // A `Speculation` is a sandboxed, side-effect-proof fork of the story's
+  // current state: driving it (via its own `goToPath`/`advance`/`choose`/
+  // `evalFunction`/…) never mutates this runner's live story, and nothing it
+  // does survives past `free()`. `speculate()` is the composable primary
+  // surface; `evaluate()` is thin sugar over it for the common cases.
+
+  /** Fork a `SpeculationHandle`. See the class docs for its verbs, and
+   * `evaluate()` below for a thin convenience over the common cases. */
+  speculate(options?: SpeculationOptions): SpeculationHandle {
+    return new SpeculationHandle(this.runner.speculate(JSON.stringify(options ?? {})));
+  }
+
+  /**
+   * Thin convenience over `speculate()`'s composable verbs: parse `source`,
+   * drive the speculation to a natural stop, and collect the result. Composes
+   * the verbs — it does not hide them; reach for `speculate()` directly for
+   * anything this doesn't cover (probing multiple branches, bailing out
+   * early, driving choices, etc).
+   *
+   * `source` is either:
+   * - a knot/stitch path (`"cellar.intro"`) — driven with `goToPath` +
+   *   advanced to a natural stop (a `done`/`end` line, or a `choices` line,
+   *   which is reported via `reachedChoices` rather than picked); or
+   * - a function call with **literal** arguments (`"check(1, 2)"` — numbers,
+   *   quoted strings, `true`/`false`/`null` only) — driven with `evalFunction`.
+   * - anything else (an arbitrary expression like `"has(sword) && gold > 2"`,
+   *   content like `"You have {gold}"`, a lone divert like `"-> cellar"`, a
+   *   call with non-literal arguments) — **Tier 1**: the fragment is wrapped
+   *   as a synthetic knot/function, recompiled against `opts.projectSource`
+   *   (cached per fragment per program version), and run the same way over a
+   *   fresh runner seeded from this one's current state (F5.1,
+   *   `docs/speculative-eval-spec.md`'s "mechanism B"). Requires
+   *   `opts.projectSource` — a `StoryRunner` holds no reference to the file
+   *   set it was compiled from, so the caller (which does) supplies it.
+   *   Without it, or if the fragment fails to compile as either an
+   *   expression or content, `diagnostics` comes back non-empty and nothing
+   *   runs.
+   *
+   * Any async (`Promise`-returning) bound external hit along the way is
+   * awaited transparently, exactly like `continueStoryAsync`. Pass
+   * `opts.signal` to cancel an in-flight evaluation: the speculation is
+   * dropped and the promise rejects with an `AbortError`.
+   */
+  async evaluate(source: string, opts: EvaluateOptions = {}): Promise<SpeculationResult> {
+    const parsed = parseEvaluateSource(source);
+    if (parsed.kind === "invalid") {
+      return this.evaluateFragment(source, opts);
+    }
+
+    throwIfAborted(opts.signal);
+    const speculation = this.speculate({
+      steps: opts.budget?.steps,
+      lines: opts.budget?.lines,
+      context: opts.context,
+      liveEffects: opts.liveEffects,
+      kinds: opts.kinds,
+    });
+    try {
+      if (parsed.kind === "path") {
+        speculation.goToPath(parsed.path);
+        const { stop, choices } = await driveSpeculationToTerminal(speculation, opts.signal);
+        return {
+          transcript: speculation.transcript(),
+          reachedChoices: choices,
+          stop,
+          externals: speculation.externalsReport(),
+          diagnostics: [],
+        };
+      }
+
+      const { value, stop } = await driveSpeculationCall(
+        speculation,
+        parsed.name,
+        parsed.args,
+        opts.signal,
+      );
+      return {
+        value,
+        transcript: speculation.transcript(),
+        stop,
+        externals: speculation.externalsReport(),
+        diagnostics: [],
+      };
+    } finally {
+      speculation.free();
+    }
+  }
+
+  /**
+   * Tier-1: `evaluate()`'s fallback for a `source` that isn't a bare knot
+   * path or a literal-arg call. Compiles the fragment (via `compileFragment`,
+   * cached) as a synthetic symbol appended to `opts.projectSource`, then runs
+   * it the same way `evaluate()`'s Tier-0 branches do — a fresh
+   * `StoryRunnerHandle` over the recompiled program, seeded with this
+   * runner's current state (`load(this.save())`, name-keyed — globals by
+   * name, visit/turn counts by content-hashed id, both stable across the
+   * recompile), then `speculate()` + drive to a natural stop. The fragment
+   * runner and its speculation are discarded when done; nothing it does
+   * touches this runner.
+   */
+  private async evaluateFragment(
+    source: string,
+    opts: EvaluateOptions,
+  ): Promise<SpeculationResult> {
+    if (!opts.projectSource) {
+      return {
+        transcript: [],
+        stop: "completed",
+        externals: { live: [], fallback: [] },
+        diagnostics: [
+          `evaluate: "${source}" is neither a knot/stitch path nor a literal-arg function ` +
+            "call, so it needs Tier-1 fragment compilation — pass opts.projectSource " +
+            "({ entry, files }) with the project's current sources.",
+        ],
+      };
+    }
+
+    throwIfAborted(opts.signal);
+    const compiled = this.compileFragment(source, opts.projectSource);
+    if (!compiled.ok) {
+      return {
+        transcript: [],
+        stop: "completed",
+        externals: { live: [], fallback: [] },
+        diagnostics: compiled.diagnostics,
+      };
+    }
+
+    const fragmentRunner = new StoryRunnerHandle(compiled.storyBytes);
+    try {
+      // A fresh `StoryRunner` starts with no external bindings — copy this
+      // runner's live bindings + lenient-unbound policy across first, so a
+      // query/effect external the fragment touches resolves the same way it
+      // would here (Tier-0's `speculate()` gets this for free by forking the
+      // same runner; Tier-1's scratch runner needs it done explicitly).
+      fragmentRunner.setLenientUnbound(this.runner.lenient_unbound());
+      for (const name of this.runner.binding_names()) {
+        const fn = this.runner.get_binding(name);
+        if (fn) {
+          fragmentRunner.runner.bind_external(name, fn);
+        }
+      }
+      fragmentRunner.load(this.save());
+      const speculation = fragmentRunner.speculate({
+        steps: opts.budget?.steps,
+        lines: opts.budget?.lines,
+        context: opts.context,
+        liveEffects: opts.liveEffects,
+        kinds: opts.kinds,
+      });
+      try {
+        if (compiled.kind === "expression") {
+          const { value, stop } = await driveSpeculationCall(
+            speculation,
+            compiled.symbolName,
+            [],
+            opts.signal,
+          );
+          return {
+            value,
+            transcript: speculation.transcript(),
+            stop,
+            externals: speculation.externalsReport(),
+            diagnostics: [],
+          };
+        }
+
+        speculation.goToPath(compiled.symbolName);
+        const { stop, choices } = await driveSpeculationToTerminal(speculation, opts.signal);
+        return {
+          transcript: speculation.transcript(),
+          reachedChoices: choices,
+          stop,
+          externals: speculation.externalsReport(),
+          diagnostics: [],
+        };
+      } finally {
+        speculation.free();
+      }
+    } finally {
+      fragmentRunner.free();
+    }
+  }
+
+  /**
+   * Classify + compile a Tier-1 fragment as a synthetic symbol, cached by
+   * `(this program's checksum, fragmentSource)` — a fragment compiles once
+   * per program version; every re-eval (e.g. a watch panel re-running on
+   * every step) is a cache hit. Robust classification: try the fragment as
+   * an expression (`=== function NAME() === \n ~ return (FRAG)`); if that
+   * fails to compile, fall back to content (`=== NAME === \n FRAG`); if
+   * neither compiles, the content attempt's diagnostics are returned (the
+   * more permissive grammar, so its failure is the more informative one).
+   */
+  private compileFragment(
+    fragmentSource: string,
+    project: ProjectSource,
+  ): FragmentCompileEntry {
+    const cacheKey = `${this.checksum()}\0${fragmentSource}`;
+    const cached = this.fragmentCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const symbolName = `__eval_${fragmentContentHash(fragmentSource)}`;
+    const sourcesJson = JSON.stringify(project.files);
+
+    const exprSynthetic = `=== function ${symbolName}() ===\n~ return (${fragmentSource})\n`;
+    const exprResult = JSON.parse(
+      wasmCompileFragment(project.entry, sourcesJson, exprSynthetic),
+    ) as CompileResult;
+    if (exprResult.ok && exprResult.story_bytes) {
+      return this.cacheFragment(cacheKey, {
+        ok: true,
+        kind: "expression",
+        symbolName,
+        storyBytes: new Uint8Array(exprResult.story_bytes),
+      });
+    }
+
+    const contentSynthetic = `=== ${symbolName} ===\n${fragmentSource}\n`;
+    const contentResult = JSON.parse(
+      wasmCompileFragment(project.entry, sourcesJson, contentSynthetic),
+    ) as CompileResult;
+    if (contentResult.ok && contentResult.story_bytes) {
+      return this.cacheFragment(cacheKey, {
+        ok: true,
+        kind: "content",
+        symbolName,
+        storyBytes: new Uint8Array(contentResult.story_bytes),
+      });
+    }
+
+    const diagnostics = [
+      ...(contentResult.warnings ?? []).map((d) => d.message),
+      ...(contentResult.error ? [contentResult.error] : []),
+    ];
+    return this.cacheFragment(cacheKey, {
+      ok: false,
+      diagnostics:
+        diagnostics.length > 0
+          ? diagnostics
+          : [`evaluate: "${fragmentSource}" doesn't compile as either an expression or content`],
+    });
+  }
+
+  /** Insert into `fragmentCache` with FIFO eviction at `FRAGMENT_CACHE_LIMIT`
+   * — see `cacheFragmentInto` (pure, unit-tested in `evaluate-dispatch`). */
+  private cacheFragment(key: string, entry: FragmentCompileEntry): FragmentCompileEntry {
+    return cacheFragmentInto(this.fragmentCache, key, entry, FRAGMENT_CACHE_LIMIT);
+  }
+
   free(): void {
     this.runner.free();
   }
+}
+
+/** A sandboxed, side-effect-proof fork of a story's current state
+ * (`StoryRunnerHandle.speculate()`), exposed as composable verbs — the
+ * speculative-eval equivalents of `StoryRunnerHandle`'s own playback verbs.
+ * Nothing driven through this handle ever reaches the runner it was forked
+ * from; call `free()` (or let it fall out of scope) to discard it. */
+export class SpeculationHandle {
+  constructor(private readonly spec: WebSpeculation) {}
+
+  /** Move this speculation's play head to a named knot/stitch path. Only
+   * this speculation's own sandboxed position moves. */
+  goToPath(path: string): void {
+    this.spec.go_to_path(path);
+  }
+
+  /** Select a pending choice by index. */
+  choose(index: number): void {
+    this.spec.choose(index);
+  }
+
+  /** Advance by one step; the line may be `{ type: "awaiting_external" }`. */
+  advance(): Line {
+    return JSON.parse(this.spec.advance()) as Line;
+  }
+
+  /** Advance by one step, transparently awaiting any async (`Promise`-
+   * returning) bound external hit along the way. Mirrors
+   * `StoryRunnerHandle.continueSingleAsync`. */
+  async advanceAsync(): Promise<Line> {
+    for (;;) {
+      const line = this.advance();
+      if (line.type !== "awaiting_external") {
+        return line;
+      }
+      await this.awaitPendingExternal();
+    }
+  }
+
+  /** Resolve the external this speculation is parked on. No-op if none is
+   * pending. */
+  resolveExternal(value: ExternalValue): void {
+    this.spec.resolve_external(value);
+  }
+
+  /** Take the suspended async binding's `Promise` to await; `undefined` if
+   * none is pending. */
+  takePendingPromise(): Promise<ExternalValue> | undefined {
+    const p = this.spec.take_pending_promise();
+    return p === undefined ? undefined : (p as Promise<ExternalValue>);
+  }
+
+  /** The ink-declared name of the external this speculation is paused on. */
+  pendingExternalName(): string | undefined {
+    return this.spec.pending_external_name();
+  }
+
+  /** Evaluate an ink function on this speculation, out-of-band: output is
+   * isolated and the transcript untouched. */
+  evalFunction(name: string, ...args: ExternalValue[]): SpeculationFunctionEval {
+    return JSON.parse(this.spec.eval_function(name, args)) as SpeculationFunctionEval;
+  }
+
+  /** `evalFunction`, transparently awaiting any async bound external hit
+   * along the way (including one hit again after `resumeFunctionEval`). */
+  async evalFunctionAsync(name: string, ...args: ExternalValue[]): Promise<SpeculationFunctionEval> {
+    return this.driveFunctionEval(this.evalFunction(name, ...args));
+  }
+
+  /** Resume a function evaluation paused on `awaiting_external`, after
+   * `resolveExternal`. Same return shape as `evalFunction`. */
+  resumeFunctionEval(): SpeculationFunctionEval {
+    return JSON.parse(this.spec.resume_function_eval()) as SpeculationFunctionEval;
+  }
+
+  /** `resumeFunctionEval`, transparently awaiting any further async bound
+   * external. */
+  async resumeFunctionEvalAsync(): Promise<SpeculationFunctionEval> {
+    return this.driveFunctionEval(this.resumeFunctionEval());
+  }
+
+  private async driveFunctionEval(
+    outcome: SpeculationFunctionEval,
+  ): Promise<SpeculationFunctionEval> {
+    let current = outcome;
+    while (current.type === "awaiting_external") {
+      await this.awaitPendingExternal();
+      current = this.resumeFunctionEval();
+    }
+    return current;
+  }
+
+  /** Take + await the parked binding's `Promise`, then `resolveExternal` with
+   * its settled value (or `null`, then rethrow, on rejection — unsticking the
+   * parked flow the same way `StoryRunnerHandle.continueStoryAsync` does). */
+  private async awaitPendingExternal(): Promise<void> {
+    const promise = this.spec.take_pending_promise() as Promise<ExternalValue> | undefined;
+    if (promise === undefined) {
+      return;
+    }
+    let value: ExternalValue;
+    try {
+      value = (await promise) ?? null;
+    } catch (err) {
+      this.spec.resolve_external(null);
+      throw err;
+    }
+    this.spec.resolve_external(value);
+  }
+
+  /** This speculation's transcript so far, resolved to `(text, tags)` lines. */
+  transcript(): SpeculationLine[] {
+    return JSON.parse(this.spec.transcript()) as SpeculationLine[];
+  }
+
+  /** Which externals this speculation let through live versus fell back,
+   * across every verb call made on it so far. Diagnostic only. */
+  externalsReport(): SpeculationExternalsReport {
+    return JSON.parse(this.spec.externals_report()) as SpeculationExternalsReport;
+  }
+
+  free(): void {
+    this.spec.free();
+  }
+}
+
+/** Options for `StoryRunnerHandle.evaluate()` — `speculate()`'s options plus
+ * cancellation (a DOM concept, so kept out of `@brink/wasm-types`, which has
+ * no DOM dependency). */
+export interface EvaluateOptions {
+  context?: SpeculationContext;
+  liveEffects?: boolean;
+  budget?: { steps?: number; lines?: number };
+  kinds?: SpeculationKinds;
+  /** Abort the in-flight evaluation: the speculation is dropped and the
+   * returned promise rejects with an `AbortError`. */
+  signal?: AbortSignal;
+  /** Required for a Tier-1 fragment (anything beyond a bare knot path or
+   * literal-arg call) — the project's current sources, so the fragment can
+   * be compiled against the live project's real symbols. Ignored for a
+   * Tier-0 `source`. */
+  projectSource?: ProjectSource;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new DOMException("brink: evaluate() aborted", "AbortError");
+  }
+}
+
+/** Drive a `goToPath`'d speculation to its next natural stop: a `done`/`end`
+ * line (`"completed"`), a `choices` line (`"choices"`, with the choices
+ * reported rather than picked), or a budget ceiling. */
+async function driveSpeculationToTerminal(
+  speculation: SpeculationHandle,
+  signal: AbortSignal | undefined,
+): Promise<{ stop: SpeculationResult["stop"]; choices?: Choice[] }> {
+  for (;;) {
+    throwIfAborted(signal);
+    let line: Line;
+    try {
+      line = await speculation.advanceAsync();
+    } catch (err) {
+      const budgetStop = budgetStopFromError(err);
+      if (budgetStop !== undefined) {
+        return { stop: budgetStop };
+      }
+      throw err;
+    }
+    if (line.type === "text") {
+      continue;
+    }
+    if (line.type === "choices") {
+      return { stop: "choices", choices: line.choices };
+    }
+    return { stop: "completed" }; // "done" | "end"
+  }
+}
+
+/** Drive a literal-arg `evalFunction` call to completion. Unlike
+ * `driveSpeculationToTerminal`'s `advance`, `Speculation::eval_function`
+ * doesn't yet honor the caller's step budget (F4.1/F4.2 upstream gap — it
+ * runs under the runtime's own internal ceiling instead), so a
+ * `"step-budget"` stop is currently unreachable from this path; the check
+ * is here for when that's closed. */
+async function driveSpeculationCall(
+  speculation: SpeculationHandle,
+  name: string,
+  args: ExternalValue[],
+  signal: AbortSignal | undefined,
+): Promise<{ value?: TypedValue; stop: SpeculationResult["stop"] }> {
+  throwIfAborted(signal);
+  let outcome: SpeculationFunctionEval;
+  try {
+    outcome = await speculation.evalFunctionAsync(name, ...args);
+  } catch (err) {
+    const budgetStop = budgetStopFromError(err);
+    if (budgetStop !== undefined) {
+      return { stop: budgetStop };
+    }
+    throw err;
+  }
+  return {
+    value: outcome.type === "returned" ? outcome.value : undefined,
+    stop: "completed",
+  };
+}
+
+/** Map a thrown budget-exceeded error (`RuntimeError::StepLimitExceeded`/
+ * `LineLimitExceeded`, surfaced as a `JsError` message) to its
+ * `SpeculationResult.stop` value. `undefined` for any other error, which the
+ * caller should rethrow rather than swallow. */
+function budgetStopFromError(err: unknown): "step-budget" | "line-budget" | undefined {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.includes("step limit exceeded")) {
+    return "step-budget";
+  }
+  if (message.includes("line limit exceeded")) {
+    return "line-budget";
+  }
+  return undefined;
 }
 
 // ── Story Session (#370/#387) ───────────────────────────────────

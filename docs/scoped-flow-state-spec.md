@@ -1,8 +1,8 @@
 # Scoped Flow State — runtime core restructuring spec
 
 **Status:** Design (0.9.0). Load-bearing foundation; **implementation does not
-begin until this spec is approved.** This supersedes the "scratch execution"
-framing of [scratch-eval-spec.md](scratch-eval-spec.md) (#411): watch/eval
+begin until this spec is approved.** This supersedes the "speculative execution"
+framing of [speculative-eval-spec.md](speculative-eval-spec.md) (#411): watch/eval
 becomes a *light feature* riding on the core defined here, not a standalone
 mechanism.
 
@@ -363,12 +363,12 @@ tiers by whether the target already exists in the program:
   today; the sandbox is the delta. Covers most real watches.
 - **Tier 1 — arbitrary expression/content (compiler + overlay).** For genuinely
   novel fragments, the fragment-compile + program-overlay work from
-  [scratch-eval-spec.md](scratch-eval-spec.md) §4–5, now running *on this core*
+  [speculative-eval-spec.md](speculative-eval-spec.md) §4–5, now running *on this core*
   (the sandbox flow is a `FlowLocal` in sandbox mode; the overlay is the program
   view). Everything in that spec still applies — it becomes the Tier-1 section.
 
 The **externals `@kind` policy** (query live; effect/presentation
-fallback-or-armed; async pending) from scratch-eval-spec §7 attaches here — it's
+fallback-or-armed; async pending) from speculative-eval-spec §7 attaches here — it's
 about how externals behave inside a sandboxed flow, orthogonal to what runs.
 
 ## Open questions (the sections we finish together)
@@ -418,7 +418,7 @@ Expected shape:
 - **F3** Upgrade `FlowLocal` flat storage → **copy-on-write** (frozen-base
   snapshot chain) + spawn/fork/discard (+ `commit` deferred seam).
 - **F4** Sandbox mode + Tier-0 watch (invoke-existing) + externals policy.
-- **F5** Tier-1 fragment compile + overlay (the current scratch-eval-spec body).
+- **F5** Tier-1 fragment compile + overlay (the current speculative-eval-spec body).
 - **F6** bevy-brink thinning onto the shared ops.
 
 F1 is the gate: nothing else starts until the decomposition is proven
@@ -433,6 +433,6 @@ behavior-identical.
 - Core-primitive layer beneath both `Story` and bevy; `Story` decomposed to a
   behavior-preserved facade; bevy thinned onto shared ops.
 - watch/eval demoted to a light feature (sandbox policy + entry points) on the
-  core; scratch-eval-spec becomes its Tier-1 section.
+  core; speculative-eval-spec becomes its Tier-1 section.
 - All of it ships in 0.9.0; behavior-preserving-refactor-first keeps the oracle
   pinned.
