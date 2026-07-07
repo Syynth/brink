@@ -32,8 +32,8 @@
 //! walkers that never look at expressions pay nothing for the expression tree.
 
 use super::types::{
-    Block, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertTarget, Expr, HirFile,
-    Knot, Sequence, Stitch, Stmt, StringPart,
+    Block, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertTarget, Expr,
+    HirFile, Knot, Sequence, Stitch, Stmt, StringPart,
 };
 
 /// Where a visited [`Content`] sits in the tree.
@@ -72,6 +72,14 @@ pub trait HirVisitor {
     fn enter_stitch(&mut self, _stitch: &Stitch) {}
     /// A stitch has been walked.
     fn exit_stitch(&mut self, _stitch: &Stitch) {}
+
+    /// A choice is about to be walked — its condition, inline content, and body
+    /// follow, before the enclosing choice set's gather continuation. Paired
+    /// with [`HirVisitor::exit_choice`]; consumers needing "am I inside a
+    /// choice" track a depth counter across the two.
+    fn enter_choice(&mut self, _choice: &Choice) {}
+    /// A choice and its body have been walked (before the continuation).
+    fn exit_choice(&mut self, _choice: &Choice) {}
 
     /// A block is about to be walked (its statements follow).
     fn enter_block(&mut self, _block: &Block) {}
@@ -183,6 +191,7 @@ fn walk_content(content: &Content, ctx: ContentContext, v: &mut impl HirVisitor)
 
 fn walk_choice_set(cs: &ChoiceSet, v: &mut impl HirVisitor) {
     for choice in &cs.choices {
+        v.enter_choice(choice);
         if let Some(e) = &choice.condition {
             walk_expr(e, v);
         }
@@ -196,6 +205,7 @@ fn walk_choice_set(cs: &ChoiceSet, v: &mut impl HirVisitor) {
             walk_content(c, ContentContext::ChoiceInner, v);
         }
         walk_block(&choice.body, v);
+        v.exit_choice(choice);
     }
     walk_block(&cs.continuation, v);
 }
