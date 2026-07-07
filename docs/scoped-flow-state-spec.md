@@ -391,11 +391,18 @@ The previously-filed #411 milestones (#429–#433) were the watch-first framing
 and will be **re-derived** from this foundation once the spec is approved.
 Expected shape:
 
-- **F1** Core-primitive extraction + `Story` decomposition — **pure refactor,
-  oracle green** (the stage-1 invariant above).
-- **F2** `WorldPolicy` + `ResolvedPolicy` + routing view (uniform scoping);
-  single-flow unchanged.
-- **F3** CoW layered `FlowLocal` + spawn/discard/`commit`.
+- **F1** ✅ **DONE** — core-primitive extraction + `Story` migration (3 PRs
+  #442/#444/#445, oracle byte-identical). `World`/`FlowLocal`/`ContextView`
+  exist; `Story` rides on them. (Planned F1.4 dissolved: the
+  `instances`/`shared_instances` collapse moved to F2, the Layer-2 drive-op
+  extraction to F6.)
+- **F2** `WorldPolicy` + `ResolvedPolicy` + policy-aware routing + **flat
+  `FlowLocal` storage** (boundary decision **A**, 2026-07-07: F2 owns a *flat*
+  per-flow override map so scoping is functional and testable on its own; F3
+  upgrades it to CoW). Single-flow (all-World default) stays byte-identical.
+  Includes the `instances`/`shared_instances` collapse into one flow collection.
+- **F3** Upgrade `FlowLocal` flat storage → **copy-on-write** (frozen-base
+  snapshot chain) + spawn/fork/discard (+ `commit` deferred seam).
 - **F4** Sandbox mode + Tier-0 watch (invoke-existing) + externals policy.
 - **F5** Tier-1 fragment compile + overlay (the current scratch-eval-spec body).
 - **F6** bevy-brink thinning onto the shared ops.
