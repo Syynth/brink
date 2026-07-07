@@ -33,6 +33,7 @@ mod replay;
 pub mod rng;
 mod save;
 mod session;
+mod speculation;
 mod state;
 mod story;
 pub mod transcript;
@@ -57,6 +58,7 @@ pub use session::{
     SessionJournal, SnapshotFrame, SnapshotList, SnapshotStatus, StateDiff, StateSnapshot,
     StorySession, diff,
 };
+pub use speculation::{Budget, Speculation, SpeculationStep};
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
 pub use story::{
     Choice, ExternalFnHandler, ExternalResult, FallbackHandler, FlowInstance, FunctionEval, Line,
