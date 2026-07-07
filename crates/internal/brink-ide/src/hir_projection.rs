@@ -10,6 +10,27 @@
 //! declarations get their real `DefinitionId`; references get their resolved
 //! target. Both `SymbolInfo.range` and `ResolvedRef.range` equal the HIR node's
 //! range verbatim, so the join needs no scope logic.
+//!
+//! ## Coverage & phase-1 decisions
+//!
+//! - **Containers:** knot, stitch, choice (full-branch extent), gather
+//!   continuation, and conditional/sequence branches — block-level per-branch,
+//!   inline as one span over the whole `{...}` (inline branch content is
+//!   ptr-less; that granularity is exactly what `line_context` marks per line).
+//! - **`ChoiceLine` vs `ChoiceBody`** (`line_context` `WeaveElement`) is
+//!   **derivable by the consumer**, not split here: a Choice container's first
+//!   line is the choice line, its remaining lines are the body. No producer
+//!   change needed.
+//! - **Threads / tunnels** are single statements with no HIR body (the threaded
+//!   content lives at the target knot), so they are **reference spans**, not
+//!   rail containers.
+//! - **Dropped for phase 1:** per-`ContentPart` glue/spring/text spans and the
+//!   interpolation `{expr}` region span — these have no own source range (like
+//!   bare expression leaves) and would need a CST walk; references *inside*
+//!   interpolations are already covered via `enter_expr`.
+//! - **Determinism:** the HIR is `Vec`-based and the identity maps are only
+//!   looked up (never iterated for emission), so span order is deterministic.
+//! - Byte ranges only; line/UTF-16 conversion is the phase-2 WASM bridge.
 
 use std::collections::HashMap;
 
@@ -17,7 +38,8 @@ use brink_analyzer::AnalysisResult;
 use brink_format::DefinitionId;
 use brink_ir::FileId;
 use brink_ir::hir::{
-    Block, Choice, Content, DivertPath, Expr, HirFile, HirVisitor, Knot, Stitch, Stmt,
+    Block, Choice, Conditional, Content, ContentPart, DivertPath, Expr, HirFile, HirVisitor, Knot,
+    Sequence, Stitch, Stmt,
 };
 use rowan::TextRange;
 
@@ -54,6 +76,7 @@ pub enum SpanKind {
     Content,
     Interpolation,
     Tag,
+    Include,
 }
 
 impl SpanKind {
@@ -161,6 +184,9 @@ pub fn project_hir(
     for ext in &hir.externals {
         v.push_decl(ext.name.range, SpanKind::External);
     }
+    for inc in &hir.includes {
+        v.push_inline(inc.ptr.text_range(), SpanKind::Include);
+    }
 
     brink_ir::hir::visit::visit(hir, &mut v);
 
@@ -238,9 +264,46 @@ impl ProjectionVisitor<'_> {
         }
     }
 
-    /// Project a content node's tags. References inside interpolations are
-    /// covered separately by `enter_expr` (the walker descends them).
-    fn project_tags(&mut self, content: &Content) {
+    /// A conditional's branch bodies as container spans (block-level or inline).
+    fn push_cond_branches(&mut self, cond: &Conditional) {
+        for branch in &cond.branches {
+            if let Some(ext) = block_extent(&branch.body) {
+                self.push_container(ext, SpanKind::ConditionalBranch, None);
+            }
+        }
+    }
+
+    /// A sequence's branch bodies as container spans (block-level or inline).
+    fn push_seq_branches(&mut self, seq: &Sequence) {
+        for branch in &seq.branches {
+            if let Some(ext) = block_extent(branch) {
+                self.push_container(ext, SpanKind::SequenceBranch, None);
+            }
+        }
+    }
+
+    /// Project a content node's inline conditionals/sequences and its tags.
+    ///
+    /// Inline `{...}` constructs are single-line and their branch content is
+    /// ptr-less (no per-branch source range), so each is emitted as **one**
+    /// container over the whole construct (`ptr`) rather than per-branch — which
+    /// is exactly the granularity `line_context` marks per line. References
+    /// inside interpolations are covered by `enter_expr` (the walker descends).
+    fn project_content_extras(&mut self, content: &Content) {
+        for part in &content.parts {
+            match part {
+                ContentPart::InlineConditional(cond) => {
+                    self.push_container(cond.ptr.text_range(), SpanKind::ConditionalBranch, None);
+                }
+                ContentPart::InlineSequence(seq) => {
+                    self.push_container(seq.ptr.text_range(), SpanKind::SequenceBranch, None);
+                }
+                ContentPart::Text(_)
+                | ContentPart::Glue
+                | ContentPart::Spring
+                | ContentPart::Interpolation(_) => {}
+            }
+        }
         for tag in &content.tags {
             self.push_inline(tag.ptr.text_range(), SpanKind::Tag);
         }
@@ -250,6 +313,13 @@ impl ProjectionVisitor<'_> {
 impl HirVisitor for ProjectionVisitor<'_> {
     fn visit_exprs(&self) -> bool {
         true
+    }
+
+    fn enter_block(&mut self, block: &Block) {
+        // Gather / labeled-block labels are `Block.label`, covered uniformly here.
+        if let Some(label) = &block.label {
+            self.push_decl(label.range, SpanKind::Label);
+        }
     }
 
     fn enter_knot(&mut self, knot: &Knot) {
@@ -313,20 +383,8 @@ impl HirVisitor for ProjectionVisitor<'_> {
                     self.push_container(gather, SpanKind::Gather, None);
                 }
             }
-            Stmt::Conditional(cond) => {
-                for branch in &cond.branches {
-                    if let Some(ext) = block_extent(&branch.body) {
-                        self.push_container(ext, SpanKind::ConditionalBranch, None);
-                    }
-                }
-            }
-            Stmt::Sequence(seq) => {
-                for branch in &seq.branches {
-                    if let Some(ext) = block_extent(branch) {
-                        self.push_container(ext, SpanKind::SequenceBranch, None);
-                    }
-                }
-            }
+            Stmt::Conditional(cond) => self.push_cond_branches(cond),
+            Stmt::Sequence(seq) => self.push_seq_branches(seq),
             _ => {}
         }
     }
@@ -335,7 +393,7 @@ impl HirVisitor for ProjectionVisitor<'_> {
         if let Some(ptr) = &content.ptr {
             self.push_inline(ptr.text_range(), SpanKind::Content);
         }
-        self.project_tags(content);
+        self.project_content_extras(content);
     }
 
     fn enter_expr(&mut self, expr: &Expr) {
@@ -481,6 +539,34 @@ VAR name = \"x\"
                 .iter()
                 .any(|s| s.kind == SpanKind::VarDecl && s.def_id.is_some()),
             "VAR decl span with def_id"
+        );
+    }
+
+    #[test]
+    fn inline_conditionals_sequences_and_includes_are_covered() {
+        let src = "\
+INCLUDE other.ink
+=== start ===
+Take the {red|blue} pill.
+{ready: Go now.}
+-> go
+=== go ===
+-> DONE
+";
+        let p = project(src);
+        assert!(
+            p.spans.iter().any(|s| s.kind == SpanKind::Include),
+            "INCLUDE span projected"
+        );
+        assert!(
+            p.spans.iter().any(|s| s.kind == SpanKind::SequenceBranch),
+            "inline sequence {{red|blue}} → SequenceBranch container"
+        );
+        assert!(
+            p.spans
+                .iter()
+                .any(|s| s.kind == SpanKind::ConditionalBranch),
+            "inline conditional {{ready: ...}} → ConditionalBranch container"
         );
     }
 
