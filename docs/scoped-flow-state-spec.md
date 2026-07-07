@@ -277,13 +277,14 @@ Design points:
   → `advance*` → `Line`s; `FlowStep::eval` → `Value`. This is the Tier-0
   "invoke existing" surface (a function/knot with **literal** args); a computed
   arg (`damage(gold + 1)`) falls to Tier-1 fragment compilation.
-- **A fork is a COMPLETE snapshot** — all flows and the resolver
-  (`Arc<dyn PluralResolver>`), nothing silently dropped. (Corrects a latent bug
-  in today's `Story::clone`, which silently drops `shared_instances` and the
-  resolver — harmless only because the sole cloner, the oracle DFS, uses neither.
-  In the new model `shared_instances` dissolves into empty-local-over-world
-  flows, so completeness is the contract, which is also what makes `Mode::Sandbox`
-  safe: a naive clone-to-fork would lose in-flight flows; a complete fork can't.)
+- **A fork is a COMPLETE snapshot** — all flows *and* the resolver, nothing
+  silently dropped. Today's `Story::clone` already copies all flows
+  (`default`/`instances`/`shared_instances` are all cloned) but drops the
+  **resolver** (`resolver: None`) — only because `Box<dyn PluralResolver>` isn't
+  `Clone`. The new-model fix is to carry it as `Arc<dyn PluralResolver>` so a
+  fork keeps localization. (In the new model `shared_instances` dissolves into
+  empty-local-over-world flows; completeness is the contract, which keeps
+  `Mode::Sandbox` sound.)
 
 Each consumer, same three operations:
 
