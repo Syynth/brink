@@ -32,14 +32,14 @@ impl Default for ExploreConfig {
 /// Requires `Story: Clone` — each branch point clones the story state
 /// and recurses. Returns one [`Episode`] per terminal path.
 pub fn explore(
-    program: &Program,
+    program: std::sync::Arc<Program>,
     line_tables: Vec<Vec<brink_format::LineEntry>>,
     config: &ExploreConfig,
 ) -> Vec<Episode> {
-    let story = Story::<DotNetRng>::new(program, line_tables);
     let initial_state = StateSnapshot {
         globals: program.global_defaults(),
     };
+    let story = Story::<DotNetRng>::new(program, line_tables);
     let mut episodes = Vec::new();
 
     explore_inner(
@@ -106,7 +106,7 @@ const STEP_LIMIT: usize = 10_000;
 
 #[expect(clippy::too_many_lines)]
 fn explore_inner(
-    mut story: Story<'_, DotNetRng>,
+    mut story: Story<DotNetRng>,
     config: &ExploreConfig,
     initial_state: &StateSnapshot,
     episodes: &mut Vec<Episode>,

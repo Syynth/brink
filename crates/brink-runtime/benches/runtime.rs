@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use brink_converter::convert;
 use brink_format::StoryData;
@@ -79,11 +80,11 @@ fn parse_and_convert(json: &str) -> StoryData {
 
 #[expect(clippy::unwrap_used)]
 fn run_to_completion(
-    program: &Program,
+    program: &Arc<Program>,
     line_tables: Vec<Vec<brink_format::LineEntry>>,
     inputs: &[usize],
 ) -> Stats {
-    let mut story = Story::<DotNetRng>::new(program, line_tables);
+    let mut story = Story::<DotNetRng>::new(Arc::clone(program), line_tables);
     let mut input_idx = 0;
 
     loop {
@@ -148,6 +149,7 @@ mod runtime_step {
         let data = parse_and_convert(scenario.json);
         #[expect(clippy::unwrap_used)]
         let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
         bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &scenario.inputs));
     }
 }
@@ -161,6 +163,7 @@ mod end_to_end {
             let data = parse_and_convert(scenario.json);
             #[expect(clippy::unwrap_used)]
             let (program, line_tables) = brink_runtime::link(&data).unwrap();
+            let program = std::sync::Arc::new(program);
             run_to_completion(&program, line_tables, &scenario.inputs);
         });
     }
@@ -171,6 +174,7 @@ mod end_to_end {
         let data = parse_and_convert(scenario.json);
         bencher.bench_local(|| {
             let (program, line_tables) = brink_runtime::link(&data).unwrap();
+            let program = std::sync::Arc::new(program);
             run_to_completion(&program, line_tables, &scenario.inputs);
         });
     }
@@ -180,6 +184,7 @@ mod end_to_end {
 fn print_hanoi_10_stats() {
     let data = parse_and_convert(HANOI_10_JSON);
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let program = std::sync::Arc::new(program);
     let inputs = parse_inputs(HANOI_10_INPUT);
     let stats = run_to_completion(&program, line_tables, &inputs);
 
@@ -205,6 +210,7 @@ fn print_hanoi_10_stats() {
 fn print_crucible_8_stats() {
     let data = parse_and_convert(CRUCIBLE_8_JSON);
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let program = std::sync::Arc::new(program);
     let inputs = parse_inputs(CRUCIBLE_8_INPUT);
     let stats = run_to_completion(&program, line_tables, &inputs);
 

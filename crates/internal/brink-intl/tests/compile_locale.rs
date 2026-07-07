@@ -206,7 +206,7 @@ fn end_to_end_localize_and_run() {
     .unwrap();
 
     // Run the story and verify the localized text appears
-    let mut story = Story::<DotNetRng>::new(&program, line_tables);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let lines = story.continue_maximally().unwrap();
     let text: String = lines.iter().map(Line::text).collect();
     assert!(

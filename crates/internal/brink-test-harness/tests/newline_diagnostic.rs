@@ -310,7 +310,10 @@ hello
 ";
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     let line = story.continue_single().expect("continue_single failed");
     let text = match &line {
@@ -342,7 +345,10 @@ hello
 ";
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     let line = story.continue_single().expect("continue_single failed");
     let text = match &line {
@@ -370,7 +376,10 @@ text1
 ";
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     let line1 = story.continue_single().expect("continue_single 1");
     let text1 = match &line1 {
@@ -398,7 +407,10 @@ fn runtime_i008_pattern_no_spurious_newline() {
     // There should be NO spurious newline — just "0\n" as a single line.
     let data = compile_to_story_data(I008_FIXTURE);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     let line = story.continue_single().expect("continue_single failed");
     let text = match &line {
@@ -436,7 +448,10 @@ VAR globalVal = 5
 ";
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     let line1 = story.continue_single().expect("continue_single 1");
     let text1 = match &line1 {
@@ -479,7 +494,10 @@ fn runtime_ran_out_of_content_produces_error() {
 ";
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     println!("=== I092 .inkt ===\n{}", dump_inkt(&data));
 
@@ -521,7 +539,10 @@ fn runtime_done_opcode_does_not_error() {
     let source = "hello\n-> DONE\n";
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     let line = story.continue_single().expect("continue_single");
     match &line {
@@ -536,7 +557,10 @@ fn runtime_end_opcode_does_not_error() {
     let source = "hello\n-> END\n";
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     let line = story.continue_single().expect("continue_single");
     match &line {
@@ -556,7 +580,10 @@ fn runtime_i037_function_output_separate_from_conditional_body() {
     // Brink bug: produces "Xx\n" (concatenated)
     let data = compile_to_story_data(I037_FIXTURE);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     let line1 = story.continue_single().expect("continue_single 1");
     let text1 = match &line1 {
@@ -613,7 +640,10 @@ fn runtime_glue_inside_conditional_after_gather() {
 "#;
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     // First continue should present choices.
     let line = story.continue_single().expect("continue_single");
@@ -664,7 +694,10 @@ fn runtime_intercept_glue_conditional_faithful() {
 "#;
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     // Choose "Take cup" (teacup = true)
     let line = story.continue_single().expect("step 1");
@@ -738,7 +771,10 @@ VAR drugged = false
 "#;
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     let mut steps = Vec::new();
     for i in 0..20 {
@@ -827,7 +863,10 @@ VAR drugged = false
 "#;
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     let mut steps = Vec::new();
     for i in 0..30 {
@@ -978,7 +1017,10 @@ VAR drugged = false
 "#;
     let data = compile_to_story_data(source);
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     let mut steps = Vec::new();
     for i in 0..30 {
@@ -1042,7 +1084,10 @@ fn runtime_intercept_step23_glue_not_dropped() {
     // jumps to the wrong part of the story.
     let data = compile_intercept();
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     // Run e0 path (always pick choice 0), dumping state at the critical steps
     let mut last_text = String::new();
@@ -1278,7 +1323,10 @@ fn intercept_step23_opcode_trace() {
     // and where execution goes in the gather container.
     let data = compile_intercept();
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(&program, line_tables);
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
 
     // Run to step 22 normally (the "\n" after the Agree choice)
     let mut step_count = 0;
@@ -1335,7 +1383,7 @@ fn intercept_step23_opcode_trace() {
                     "EnterContainer at byte {pos}: id={id:?} -> containers={container_indices:?}"
                 );
                 // Also check address_map
-                if let Some((ci, byte_off)) = program.resolve_address(id) {
+                if let Some((ci, byte_off)) = story.program().resolve_address(id) {
                     let target_id = data.containers[ci as usize].id;
                     println!(
                         "  linked: container_idx={ci}, offset={byte_off}, container_id={target_id:?}"

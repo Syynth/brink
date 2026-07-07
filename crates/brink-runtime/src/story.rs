@@ -1653,8 +1653,8 @@ fn make_yield_line(
 ///
 /// Generic over `R: StoryRng` — defaults to [`FastRng`]. Use
 /// [`DotNetRng`](crate::DotNetRng) for .NET-compatible deterministic output.
-pub struct Story<'p, R: StoryRng = FastRng> {
-    program: &'p Program,
+pub struct Story<R: StoryRng = FastRng> {
+    program: Arc<Program>,
     pub(crate) default: FlowInstance,
     pub(crate) default_context: Context,
     line_tables: Vec<Vec<brink_format::LineEntry>>,
@@ -1670,10 +1670,10 @@ pub struct Story<'p, R: StoryRng = FastRng> {
     _rng: PhantomData<R>,
 }
 
-impl<R: StoryRng> Clone for Story<'_, R> {
+impl<R: StoryRng> Clone for Story<R> {
     fn clone(&self) -> Self {
         Self {
-            program: self.program,
+            program: Arc::clone(&self.program),
             default: self.default.clone(),
             default_context: self.default_context.clone(),
             line_tables: self.line_tables.clone(),
@@ -1697,10 +1697,10 @@ pub struct StorySnapshot<R: StoryRng = FastRng> {
     _rng: PhantomData<R>,
 }
 
-impl<'p, R: StoryRng> Story<'p, R> {
+impl<R: StoryRng> Story<R> {
     /// Create a new story instance from a linked program and its line tables.
-    pub fn new(program: &'p Program, line_tables: Vec<Vec<brink_format::LineEntry>>) -> Self {
-        let (default, default_context) = FlowInstance::new_at_root(program);
+    pub fn new(program: Arc<Program>, line_tables: Vec<Vec<brink_format::LineEntry>>) -> Self {
+        let (default, default_context) = FlowInstance::new_at_root(&program);
         Self {
             program,
             default,
@@ -1756,7 +1756,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         let fragments = self.default.flow.output.fragments();
         crate::output::resolve_lines(
             slice,
-            self.program,
+            &self.program,
             &self.line_tables,
             self.resolver.as_deref(),
             fragments,
@@ -1783,7 +1783,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
                     ChoiceDisplay::Text(s) => s.clone(),
                     ChoiceDisplay::Fragment(idx) => flow.output.resolve_fragment(
                         *idx,
-                        self.program,
+                        &self.program,
                         &self.line_tables,
                         self.resolver.as_deref(),
                     ),
@@ -1804,7 +1804,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
     pub fn resolve_fragment(&self, idx: u32) -> String {
         self.default.flow.output.resolve_fragment(
             idx,
-            self.program,
+            &self.program,
             &self.line_tables,
             self.resolver.as_deref(),
         )
@@ -1829,7 +1829,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
 
     /// Read-only access to the program.
     pub fn program(&self) -> &Program {
-        self.program
+        &self.program
     }
 
     // ── Variable access (host-facing) ───────────────────────────────
@@ -1879,7 +1879,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
     ) -> Result<StepOutcome, RuntimeError> {
         let resolver = self.resolver.as_deref();
         self.default.advance::<R>(
-            self.program,
+            &self.program,
             &self.line_tables,
             &mut self.default_context,
             handler,
@@ -1890,7 +1890,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// Name of the external the default flow is paused on, if any.
     #[must_use]
     pub fn pending_external_name(&self) -> Option<&str> {
-        self.default.pending_external_name(self.program)
+        self.default.pending_external_name(&self.program)
     }
 
     /// Arguments of the external the default flow is paused on.
@@ -1935,7 +1935,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         }
         let resolver = self.resolver.as_deref();
         let outcome = self.default.begin_function_eval::<R>(
-            self.program,
+            &self.program,
             &self.line_tables,
             &mut self.default_context,
             handler,
@@ -1948,10 +1948,10 @@ impl<'p, R: StoryRng> Story<'p, R> {
             FunctionEval::AwaitingExternal => {
                 let name = self
                     .default
-                    .pending_external_name(self.program)
+                    .pending_external_name(&self.program)
                     .map_or_else(|| name.to_owned(), ToOwned::to_owned);
                 self.default
-                    .abort_eval(self.program, &self.line_tables, resolver);
+                    .abort_eval(&self.program, &self.line_tables, resolver);
                 Err(RuntimeError::AsyncExternalInCall(name))
             }
         }
@@ -1970,7 +1970,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
 
     /// Reattach a snapshot to a program with line tables.
     pub fn from_snapshot(
-        program: &'p Program,
+        program: Arc<Program>,
         snapshot: StorySnapshot<R>,
         line_tables: Vec<Vec<brink_format::LineEntry>>,
     ) -> Self {
@@ -2000,7 +2000,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
     pub fn continue_single(&mut self) -> Result<Line, RuntimeError> {
         let resolver = self.resolver.as_deref();
         self.default.step_single_line::<R>(
-            self.program,
+            &self.program,
             &self.line_tables,
             &mut self.default_context,
             &FallbackHandler,
@@ -2018,7 +2018,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         let mut obs_ctx = ObservedContext::new(&mut self.default_context, observer);
         let resolver = self.resolver.as_deref();
         self.default.step_single_line::<R>(
-            self.program,
+            &self.program,
             &self.line_tables,
             &mut obs_ctx,
             &FallbackHandler,
@@ -2034,7 +2034,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
     ) -> Result<Line, RuntimeError> {
         let resolver = self.resolver.as_deref();
         self.default.step_single_line::<R>(
-            self.program,
+            &self.program,
             &self.line_tables,
             &mut self.default_context,
             handler,
@@ -2072,7 +2072,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         loop {
             let resolver = self.resolver.as_deref();
             let line = self.default.step_single_line::<R>(
-                self.program,
+                &self.program,
                 &self.line_tables,
                 &mut self.default_context,
                 handler,
@@ -2101,7 +2101,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         loop {
             let resolver = self.resolver.as_deref();
             let line = self.default.step_single_line::<R>(
-                self.program,
+                &self.program,
                 &self.line_tables,
                 &mut obs_ctx,
                 &FallbackHandler,
@@ -2141,7 +2141,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
     /// if an engine→ink function evaluation is in progress.
     pub fn choose_path_string(&mut self, path: &str) -> Result<(), RuntimeError> {
         self.default
-            .choose_path_string(self.program, &mut self.default_context, path)
+            .choose_path_string(&self.program, &mut self.default_context, path)
     }
 
     /// Move the default flow's play head to a parameterized knot/stitch,
@@ -2160,7 +2160,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         args: &[Value],
     ) -> Result<(), RuntimeError> {
         self.default.choose_path_string_with_args(
-            self.program,
+            &self.program,
             &mut self.default_context,
             path,
             args,
@@ -2233,7 +2233,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
             .resolve_target(entry_point)
             .map(|(idx, _)| idx)
             .ok_or(RuntimeError::UnresolvedDefinition(entry_point))?;
-        let (flow, ctx) = FlowInstance::new_at(self.program, container_idx);
+        let (flow, ctx) = FlowInstance::new_at(&self.program, container_idx);
         self.instances.insert(name.to_owned(), (flow, ctx));
         Ok(())
     }
@@ -2257,7 +2257,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         loop {
             let resolver = self.resolver.as_deref();
             let line = instance.step_single_line::<R>(
-                self.program,
+                &self.program,
                 &self.line_tables,
                 ctx,
                 handler,
@@ -2322,8 +2322,8 @@ impl<'p, R: StoryRng> Story<'p, R> {
         // The fresh context the constructor returns is discarded — a shared
         // flow runs against `default_context`.
         let (flow, _ctx) = match container_idx {
-            Some(idx) => FlowInstance::new_at(self.program, idx),
-            None => FlowInstance::new_at_root(self.program),
+            Some(idx) => FlowInstance::new_at(&self.program, idx),
+            None => FlowInstance::new_at_root(&self.program),
         };
         self.shared_instances.insert(name.to_owned(), flow);
         Ok(())
@@ -2346,7 +2346,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
         instance.step_single_line::<R>(
-            self.program,
+            &self.program,
             &self.line_tables,
             &mut self.default_context,
             handler,
@@ -2394,7 +2394,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         };
 
         let flow = &instance.flow;
-        let resolver = NameResolver::new(self.program);
+        let resolver = NameResolver::new(&self.program);
 
         let status = match instance.status {
             StoryStatus::Active => "active",
@@ -2536,7 +2536,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
 
         let flow = &self.default.flow;
         let ctx = &self.default_context;
-        let resolver = NameResolver::new(self.program);
+        let resolver = NameResolver::new(&self.program);
 
         // Typed globals + resolved list membership.
         let mut globals: BTreeMap<String, Value> = BTreeMap::new();
@@ -2749,7 +2749,7 @@ impl<'p, R: StoryRng> Story<'p, R> {
         // Execute one step
         let _result = vm::step::<R>(
             &mut self.default.flow,
-            self.program,
+            &self.program,
             &self.line_tables,
             &mut self.default_context,
             &mut self.default.stats,
@@ -2815,7 +2815,7 @@ mod tests {
     #[test]
     fn select_choice_increments_visit_count_for_target() {
         let (program, line_tables) = load_i079_program();
-        let mut story = Story::new(&program, line_tables);
+        let mut story = Story::new(Arc::new(program), line_tables);
         let choices = step_until_choices(&mut story);
 
         assert!(!choices.is_empty(), "expected at least one choice");
@@ -2847,15 +2847,13 @@ mod tests {
 
     /// Build a linked `Story` directly from `.ink` source (no fixture file),
     /// for cases that need a specific choice shape not already in `tests/`.
-    fn story_from_source(src: &str) -> Story<'static> {
+    fn story_from_source(src: &str) -> Story {
         let out = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned())).expect("compiles");
         let mut bytes = Vec::new();
         brink_format::write_inkb(&out.data, &mut bytes);
         let data = brink_format::read_inkb(&bytes).expect("decode");
         let (prog, tables) = link(&data).expect("link");
-        // Leak: test-only, keeps `Story`'s `&'static Program` borrow simple.
-        let prog: &'static Program = Box::leak(Box::new(prog));
-        Story::new(prog, tables)
+        Story::new(Arc::new(prog), tables)
     }
 
     /// `Choice.index` (the live, visible choice list) must be the *raw*
@@ -2927,7 +2925,7 @@ mod tests {
     #[test]
     fn once_only_choice_excluded_on_second_pass() {
         let (program, line_tables) = load_i079_program();
-        let mut story = Story::new(&program, line_tables);
+        let mut story = Story::new(Arc::new(program), line_tables);
 
         let first_choices = step_until_choices(&mut story);
         assert!(
@@ -2968,7 +2966,7 @@ mod tests {
     #[test]
     fn pending_choice_captures_tunnel_call_stack() {
         let (program, line_tables) = load_i083_program();
-        let mut story = Story::new(&program, line_tables);
+        let mut story = Story::new(Arc::new(program), line_tables);
         let _choices = step_until_choices(&mut story);
 
         // At this point the tunnel has returned, so the live call_stack
@@ -2997,7 +2995,7 @@ mod tests {
     #[test]
     fn select_choice_restores_tunnel_frame_with_temps() {
         let (program, line_tables) = load_i083_program();
-        let mut story = Story::new(&program, line_tables);
+        let mut story = Story::new(Arc::new(program), line_tables);
         let _choices = step_until_choices(&mut story);
 
         // Before choosing: only root frame, no tunnel temps.
@@ -3049,7 +3047,7 @@ mod tests {
     #[test]
     fn line_exposes_tags() {
         let (program, line_tables) = load_tags_program();
-        let mut story = Story::<crate::FastRng>::new(&program, line_tables);
+        let mut story = Story::<crate::FastRng>::new(Arc::new(program), line_tables);
         let lines = story.continue_maximally().unwrap();
         // The first line should have both tags.
         let first = lines.first().expect("expected at least one line");
@@ -3063,7 +3061,7 @@ mod tests {
     #[test]
     fn choice_exposes_tags() {
         let (program, line_tables) = load_tags_in_choice_program();
-        let mut story = Story::new(&program, line_tables);
+        let mut story = Story::new(Arc::new(program), line_tables);
         let choices = step_until_choices(&mut story);
         assert!(!choices.is_empty());
         // The choice in tagsInChoice has tags "one" and "two"
@@ -3092,7 +3090,7 @@ mod tests {
     #[test]
     fn thread_call_returns_to_main_flow() {
         let (program, line_tables) = load_i091_program();
-        let mut story = Story::<crate::FastRng>::new(&program, line_tables);
+        let mut story = Story::<crate::FastRng>::new(Arc::new(program), line_tables);
 
         let lines = story.continue_maximally().unwrap();
         // I091 should output "2\n" (CHOICE_COUNT) then present 2 choices.

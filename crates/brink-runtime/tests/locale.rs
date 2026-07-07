@@ -99,7 +99,7 @@ fn overlay_replaces_scope() {
     let locale = build_locale_replacing_first_line(&data, "[ES] Hola mundo\n");
     let line_tables = apply_locale(&program, &locale, &base_tables, LocaleMode::Overlay).unwrap();
 
-    let mut story = Story::<DotNetRng>::new(&program, line_tables);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let lines = story.continue_maximally().unwrap();
     let text: String = lines.iter().map(Line::text).collect();
     assert!(

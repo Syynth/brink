@@ -100,7 +100,11 @@ pub fn explore_from_ink_json(
         serde_json::from_str(&json_str).map_err(|e| format!("json: {e}"))?;
     let data = brink_converter::convert(&ink).map_err(|e| format!("convert: {e}"))?;
     let (program, line_tables) = brink_runtime::link(&data).map_err(|e| format!("link: {e}"))?;
-    Ok(crate::explore(&program, line_tables, config))
+    Ok(crate::explore(
+        std::sync::Arc::new(program),
+        line_tables,
+        config,
+    ))
 }
 
 /// Convert a `.ink.json` file and return the [`StoryData`].
@@ -118,7 +122,11 @@ pub fn explore_from_ink(ink_path: &Path, config: &ExploreConfig) -> Result<Vec<E
     let output = brink_compiler::compile_path(ink_path).map_err(|e| format!("compile: {e}"))?;
     let (program, line_tables) =
         brink_runtime::link(&output.data).map_err(|e| format!("link: {e}"))?;
-    Ok(crate::explore(&program, line_tables, config))
+    Ok(crate::explore(
+        std::sync::Arc::new(program),
+        line_tables,
+        config,
+    ))
 }
 
 /// Compile a `.ink` file, link, explore, and also return the [`StoryData`].
@@ -131,7 +139,7 @@ pub fn compile_and_explore_from_ink(
     let output = brink_compiler::compile_path(ink_path).map_err(|e| format!("compile: {e}"))?;
     let (program, line_tables) =
         brink_runtime::link(&output.data).map_err(|e| format!("link: {e}"))?;
-    let episodes = crate::explore(&program, line_tables, config);
+    let episodes = crate::explore(std::sync::Arc::new(program), line_tables, config);
     Ok((output.data, episodes))
 }
 
@@ -173,7 +181,7 @@ pub fn compile_json_roundtrip_and_explore(
         brink_converter::convert(&roundtripped).map_err(|e| format!("convert: {e}"))?;
     let (program, line_tables) =
         brink_runtime::link(&story_data).map_err(|e| format!("link: {e}"))?;
-    let episodes = crate::explore(&program, line_tables, config);
+    let episodes = crate::explore(std::sync::Arc::new(program), line_tables, config);
 
     Ok(JsonRoundtripResult {
         json_output,

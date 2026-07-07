@@ -44,7 +44,7 @@ const FUNCTION_STORY: &str = "tests/tier2/function/func-none/story.ink.json";
 
 /// Bounded run of a session to its first choice set (or terminal). Returns the
 /// collected text.
-fn run_to_pause(session: &mut StorySession<'_, DotNetRng>) -> Vec<Line> {
+fn run_to_pause(session: &mut StorySession<DotNetRng>) -> Vec<Line> {
     session.continue_to_pause().unwrap()
 }
 
@@ -148,9 +148,13 @@ fn replay_outcome_and_fail_reason_are_json_serializable() {
 #[test]
 fn record_then_replay_identical_run() {
     let (program, tables) = link_fixture(CHOICE_STORY);
+    let program = std::sync::Arc::new(program);
 
     // Record: play, choose 0, play again.
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables.clone()), None);
+    let mut session = StorySession::<DotNetRng>::new(
+        Story::new(std::sync::Arc::clone(&program), tables.clone()),
+        None,
+    );
     let _ = run_to_pause(&mut session);
     session.choose(0).unwrap();
     let _ = run_to_pause(&mut session);
@@ -161,7 +165,7 @@ fn record_then_replay_identical_run() {
 
     // Replay against a fresh story.
     let (replayed, outcome) = StorySession::<DotNetRng>::replay(
-        Story::new(&program, tables),
+        Story::new(std::sync::Arc::clone(&program), tables),
         &journal,
         ExternalReplayMode::Recorded,
         None,
@@ -179,9 +183,13 @@ fn record_then_replay_identical_run() {
 #[test]
 fn divergence_choice_out_of_range_truncates_and_parks() {
     let (program, tables) = link_fixture(CHOICE_STORY);
+    let program = std::sync::Arc::new(program);
 
     // Record a run that selects choice index 1.
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables.clone()), None);
+    let mut session = StorySession::<DotNetRng>::new(
+        Story::new(std::sync::Arc::clone(&program), tables.clone()),
+        None,
+    );
     let _ = run_to_pause(&mut session);
     session.choose(1).unwrap();
     let mut journal = session.journal().clone();
@@ -195,7 +203,7 @@ fn divergence_choice_out_of_range_truncates_and_parks() {
     }
 
     let (replayed, outcome) = StorySession::<DotNetRng>::replay(
-        Story::new(&program, tables),
+        Story::new(std::sync::Arc::clone(&program), tables),
         &journal,
         ExternalReplayMode::Recorded,
         None,
@@ -239,13 +247,17 @@ impl ExternalFnHandler for CountingExternal {
 #[test]
 fn recorded_replay_does_not_reinvoke_live_does() {
     let (program, tables) = link_fixture(EXTERNAL_STORY);
+    let program = std::sync::Arc::new(program);
 
     // Record: play through, resolving the external live.
     let record_handler = CountingExternal {
         value: 77,
         calls: std::cell::Cell::new(0),
     };
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables.clone()), None);
+    let mut session = StorySession::<DotNetRng>::new(
+        Story::new(std::sync::Arc::clone(&program), tables.clone()),
+        None,
+    );
     let mut steps = 0;
     loop {
         steps += 1;
@@ -274,7 +286,7 @@ fn recorded_replay_does_not_reinvoke_live_does() {
         calls: std::cell::Cell::new(0),
     };
     let (_replayed, outcome) = StorySession::<DotNetRng>::replay(
-        Story::new(&program, tables.clone()),
+        Story::new(std::sync::Arc::clone(&program), tables.clone()),
         &journal,
         ExternalReplayMode::Recorded,
         Some(&replay_handler),
@@ -295,7 +307,7 @@ fn recorded_replay_does_not_reinvoke_live_does() {
         calls: std::cell::Cell::new(0),
     };
     let (_replayed, outcome) = StorySession::<DotNetRng>::replay(
-        Story::new(&program, tables),
+        Story::new(std::sync::Arc::clone(&program), tables),
         &journal,
         ExternalReplayMode::Live,
         Some(&live_handler),
@@ -316,8 +328,12 @@ fn recorded_replay_does_not_reinvoke_live_does() {
 #[test]
 fn label_drift_is_a_soft_warning_on_replayed() {
     let (program, tables) = link_fixture(CHOICE_STORY);
+    let program = std::sync::Arc::new(program);
 
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables.clone()), None);
+    let mut session = StorySession::<DotNetRng>::new(
+        Story::new(std::sync::Arc::clone(&program), tables.clone()),
+        None,
+    );
     let _ = run_to_pause(&mut session);
     session.choose(0).unwrap();
     let mut journal = session.journal().clone();
@@ -331,7 +347,7 @@ fn label_drift_is_a_soft_warning_on_replayed() {
     }
 
     let (_replayed, outcome) = StorySession::<DotNetRng>::replay(
-        Story::new(&program, tables),
+        Story::new(std::sync::Arc::clone(&program), tables),
         &journal,
         ExternalReplayMode::Recorded,
         None,
@@ -356,7 +372,9 @@ fn label_drift_is_a_soft_warning_on_replayed() {
 fn call_function_is_journaled_but_externals_are_isolated() {
     // func-none defines `function f()` returning 3.8.
     let (program, tables) = link_fixture(FUNCTION_STORY);
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables), None);
+    let program = std::sync::Arc::new(program);
+    let mut session =
+        StorySession::<DotNetRng>::new(Story::new(std::sync::Arc::clone(&program), tables), None);
 
     // Isolated handler: if its externals leaked into the journal we'd see them.
     struct Trap;
@@ -390,7 +408,11 @@ fn call_function_is_journaled_but_externals_are_isolated() {
 #[test]
 fn checkpoint_fast_restore_skips_replay() {
     let (program, tables) = link_fixture(CHOICE_STORY);
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables.clone()), None);
+    let program = std::sync::Arc::new(program);
+    let mut session = StorySession::<DotNetRng>::new(
+        Story::new(std::sync::Arc::clone(&program), tables.clone()),
+        None,
+    );
     let _ = run_to_pause(&mut session);
     session.choose(0).unwrap();
     let _ = run_to_pause(&mut session);
@@ -401,8 +423,11 @@ fn checkpoint_fast_restore_skips_replay() {
 
     // Restore against the same program: checksum matches → fast path, no replay
     // warnings and no stepping needed.
-    let (restored, outcome) =
-        StorySession::<DotNetRng>::restore(Story::new(&program, tables), journal).unwrap();
+    let (restored, outcome) = StorySession::<DotNetRng>::restore(
+        Story::new(std::sync::Arc::clone(&program), tables),
+        journal,
+    )
+    .unwrap();
     assert!(
         matches!(outcome, ReplayOutcome::Replayed { ref warnings } if warnings.is_empty()),
         "fast-restore returns clean Replayed, got {outcome:?}",
@@ -415,9 +440,13 @@ fn checkpoint_fast_restore_skips_replay() {
 #[test]
 fn restore_without_checkpoint_on_mismatch_errors() {
     let (program, tables) = link_fixture(CHOICE_STORY);
+    let program = std::sync::Arc::new(program);
     // Journal for a *different* program (bad checksum), no checkpoint.
     let journal = SessionJournal::new(program.source_checksum().wrapping_add(1), None);
-    match StorySession::<DotNetRng>::restore(Story::new(&program, tables), journal) {
+    match StorySession::<DotNetRng>::restore(
+        Story::new(std::sync::Arc::clone(&program), tables),
+        journal,
+    ) {
         Err(SessionError::ChecksumMismatch { .. }) => {}
         Err(other) => panic!("expected ChecksumMismatch, got {other:?}"),
         Ok(_) => panic!("expected ChecksumMismatch error"),
@@ -432,6 +461,7 @@ fn restore_without_checkpoint_on_mismatch_errors() {
 #[test]
 fn journal_push_honors_cap() {
     let (program, tables) = link_fixture(EXTERNAL_STORY);
+    let program = std::sync::Arc::new(program);
     let mut src = SessionJournal::new(program.source_checksum(), None);
     src.events
         .push(brink_runtime::JournalEvent::new(EventKind::Start {
@@ -446,7 +476,7 @@ fn journal_push_honors_cap() {
             }));
     }
     let (replayed, _outcome) = StorySession::<DotNetRng>::replay(
-        Story::new(&program, tables),
+        Story::new(std::sync::Arc::clone(&program), tables),
         &src,
         ExternalReplayMode::Recorded,
         None,
@@ -461,7 +491,9 @@ fn journal_push_honors_cap() {
 #[test]
 fn mutation_mid_turn_is_rejected() {
     let (program, tables) = link_fixture(CHOICE_STORY);
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables), None);
+    let program = std::sync::Arc::new(program);
+    let mut session =
+        StorySession::<DotNetRng>::new(Story::new(std::sync::Arc::clone(&program), tables), None);
     // Advance exactly one step: the story is now Active (mid-turn), not paused.
     match session.advance().unwrap() {
         StepOutcome::Line(l) => assert!(!l.is_terminal(), "expected non-terminal first line"),
@@ -497,7 +529,9 @@ fn mutation_mid_turn_is_rejected() {
 #[test]
 fn mutation_at_boundary_is_allowed_and_journaled() {
     let (program, tables) = link_fixture(CHOICE_STORY);
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables), None);
+    let program = std::sync::Arc::new(program);
+    let mut session =
+        StorySession::<DotNetRng>::new(Story::new(std::sync::Arc::clone(&program), tables), None);
     // Drain to a choice pause — a turn boundary.
     let _ = run_to_pause(&mut session);
     // go_to_path at a boundary is allowed and journaled.
@@ -517,7 +551,9 @@ fn mutation_at_boundary_is_allowed_and_journaled() {
 fn snapshot_and_diff_track_list_membership_and_turns() {
     // The list story: `t = l1 + l2` then in `elsewhere`, `t += z`. Globals `t`.
     let (program, tables) = link_fixture(LIST_STORY);
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables), None);
+    let program = std::sync::Arc::new(program);
+    let mut session =
+        StorySession::<DotNetRng>::new(Story::new(std::sync::Arc::clone(&program), tables), None);
 
     // Snapshot at start (before any content).
     let before = session.snapshot();
@@ -561,7 +597,9 @@ fn snapshot_and_diff_track_list_membership_and_turns() {
 #[test]
 fn diff_of_identical_snapshots_is_empty() {
     let (program, tables) = link_fixture(CHOICE_STORY);
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables), None);
+    let program = std::sync::Arc::new(program);
+    let mut session =
+        StorySession::<DotNetRng>::new(Story::new(std::sync::Arc::clone(&program), tables), None);
     let _ = run_to_pause(&mut session);
     let a = session.snapshot();
     let b = session.snapshot();
@@ -573,7 +611,9 @@ fn diff_of_identical_snapshots_is_empty() {
 #[test]
 fn escape_hatch_exposes_wrapped_story() {
     let (program, tables) = link_fixture(CHOICE_STORY);
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables), None);
+    let program = std::sync::Arc::new(program);
+    let mut session =
+        StorySession::<DotNetRng>::new(Story::new(std::sync::Arc::clone(&program), tables), None);
     // Reads through the escape hatch never journal.
     let before = session.journal().len();
     let _pending = session.story().has_pending_external();
@@ -606,12 +646,16 @@ impl ExternalFnHandler for DeferOnce {
 #[test]
 fn live_replay_parks_on_pending_external() {
     let (program, tables) = link_fixture(EXTERNAL_STORY);
+    let program = std::sync::Arc::new(program);
     // Record a normal run first.
     let rec = CountingExternal {
         value: 5,
         calls: std::cell::Cell::new(0),
     };
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables.clone()), None);
+    let mut session = StorySession::<DotNetRng>::new(
+        Story::new(std::sync::Arc::clone(&program), tables.clone()),
+        None,
+    );
     let mut steps = 0;
     loop {
         steps += 1;
@@ -629,7 +673,7 @@ fn live_replay_parks_on_pending_external() {
         deferred: std::cell::Cell::new(false),
     };
     let (mut replayed, outcome) = StorySession::<DotNetRng>::replay(
-        Story::new(&program, tables),
+        Story::new(std::sync::Arc::clone(&program), tables),
         &journal,
         ExternalReplayMode::Live,
         Some(&defer),
@@ -713,12 +757,16 @@ impl ExternalFnHandler for DeferProbe {
 #[test]
 fn live_replay_resumes_tail_after_external_between_choices() {
     let (program, tables) = compile_source(BETWEEN_CHOICES_INK);
+    let program = std::sync::Arc::new(program);
 
     // Record: choice 1 → external resolves inline → choice 2 → END.
     let record = DeferProbe {
         deferred: std::cell::Cell::new(true), // never defers while recording
     };
-    let mut session = StorySession::<DotNetRng>::new(Story::new(&program, tables.clone()), None);
+    let mut session = StorySession::<DotNetRng>::new(
+        Story::new(std::sync::Arc::clone(&program), tables.clone()),
+        None,
+    );
     let lines = session.continue_to_pause().unwrap();
     assert!(
         matches!(lines.last(), Some(Line::Choices { .. })),
@@ -758,7 +806,7 @@ fn live_replay_resumes_tail_after_external_between_choices() {
         deferred: std::cell::Cell::new(false),
     };
     let (mut replayed, outcome) = StorySession::<DotNetRng>::replay(
-        Story::new(&program, tables),
+        Story::new(std::sync::Arc::clone(&program), tables),
         &journal,
         ExternalReplayMode::Live,
         Some(&defer),

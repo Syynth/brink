@@ -16,7 +16,7 @@ use crate::StoryRng;
 use crate::debug::NameResolver;
 use crate::story::Story;
 
-impl<R: StoryRng> Story<'_, R> {
+impl<R: StoryRng> Story<R> {
     /// Capture the default flow's game state as a durable, name-keyed
     /// [`SaveState`]. Does not capture execution position.
     #[must_use]

@@ -37,7 +37,7 @@ fn compile(src: &str) -> (Program, LineTables) {
 }
 
 /// Drive the story to its next terminal yield, concatenating all text.
-fn run_to_yield(story: &mut Story<'_, FastRng>) -> String {
+fn run_to_yield(story: &mut Story<FastRng>) -> String {
     let lines = story.continue_maximally().expect("continue");
     lines
         .iter()
@@ -75,7 +75,8 @@ const HARBOR: &str = "-> intro\n\
 #[test]
 fn jump_to_knot_and_stitch() {
     let (program, tables) = compile(HARBOR);
-    let mut story = Story::<FastRng>::new(&program, tables);
+    let program = std::sync::Arc::new(program);
+    let mut story = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
 
     assert_eq!(run_to_yield(&mut story), "At the gate.\n");
 
@@ -94,7 +95,8 @@ fn jump_to_knot_and_stitch() {
 #[test]
 fn jump_counts_as_visit() {
     let (program, tables) = compile(HARBOR);
-    let mut story = Story::<FastRng>::new(&program, tables);
+    let program = std::sync::Arc::new(program);
+    let mut story = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
     assert_eq!(run_to_yield(&mut story), "At the gate.\n");
 
     for expected in 1..=3 {
@@ -120,7 +122,8 @@ fn variables_survive_jump() {
          Coins: {coins}.\n\
          -> DONE\n",
     );
-    let mut story = Story::<FastRng>::new(&program, tables);
+    let program = std::sync::Arc::new(program);
+    let mut story = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
     assert_eq!(run_to_yield(&mut story), "Start.\n");
 
     story.choose_path_string("vault").expect("jump");
@@ -136,7 +139,8 @@ fn variables_survive_jump() {
 #[test]
 fn unknown_path_errors_and_names_path() {
     let (program, tables) = compile(HARBOR);
-    let mut story = Story::<FastRng>::new(&program, tables);
+    let program = std::sync::Arc::new(program);
+    let mut story = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
 
     let err = story
         .choose_path_string("no.such.place")
@@ -162,7 +166,8 @@ fn jump_while_awaiting_external_errors() {
          Harbor.\n\
          -> DONE\n",
     );
-    let mut story = Story::<FastRng>::new(&program, tables);
+    let program = std::sync::Arc::new(program);
+    let mut story = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
 
     let outcome = story.advance_with(&PendingHandler).expect("advance");
     assert!(matches!(outcome, StepOutcome::AwaitingExternal));
@@ -198,7 +203,8 @@ fn jump_mid_flow_clears_choices_keeps_transcript() {
          Harbor.\n\
          -> DONE\n",
     );
-    let mut story = Story::<FastRng>::new(&program, tables);
+    let program = std::sync::Arc::new(program);
+    let mut story = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
 
     let lines = story.continue_maximally().expect("continue");
     assert!(
@@ -226,16 +232,17 @@ fn jump_mid_flow_clears_choices_keeps_transcript() {
 #[test]
 fn save_load_after_jump_preserves_visits() {
     let (program, tables) = compile(HARBOR);
+    let program = std::sync::Arc::new(program);
 
     let save = {
-        let mut story = Story::<FastRng>::new(&program, tables.clone());
+        let mut story = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables.clone());
         assert_eq!(run_to_yield(&mut story), "At the gate.\n");
         story.choose_path_string("harbor").expect("jump");
         assert_eq!(run_to_yield(&mut story), "Harbor, visit 1.\n");
         story.save_state()
     };
 
-    let mut restored = Story::<FastRng>::new(&program, tables);
+    let mut restored = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
     let report = restored.load_state(&save);
     assert!(report.unknown_globals.is_empty(), "clean load");
 
@@ -254,7 +261,8 @@ fn jump_after_end_reenters_story() {
          Epilogue.\n\
          -> DONE\n",
     );
-    let mut story = Story::<FastRng>::new(&program, tables);
+    let program = std::sync::Arc::new(program);
+    let mut story = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
     assert_eq!(run_to_yield(&mut story), "Finale.\n");
 
     story
@@ -286,7 +294,8 @@ fn jump_into_tunnel_target_completes_on_frameless_return() {
          Side content.\n\
          ->->\n",
     );
-    let mut story = Story::<FastRng>::new(&program, tables);
+    let program = std::sync::Arc::new(program);
+    let mut story = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
     // Normal play: the tunnel works.
     assert_eq!(run_to_yield(&mut story), "Side content.\nBack.\n");
 

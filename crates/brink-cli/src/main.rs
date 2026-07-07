@@ -458,10 +458,11 @@ fn run_play(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data = load_story_data(file)?;
     let (program, line_tables) = brink_runtime::link(&data)?;
+    let program = std::sync::Arc::new(program);
 
     if let Some(input_path) = input {
         // Batch mode: read choices from a file
-        let mut story = brink_runtime::Story::new(&program, line_tables);
+        let mut story = brink_runtime::Story::new(std::sync::Arc::clone(&program), line_tables);
         let file = std::fs::File::open(input_path)?;
         let reader = std::io::BufReader::new(file);
         batch::play_loop(&mut story, reader.lines(), false)?;
@@ -491,7 +492,7 @@ fn run_play(
         )?;
     } else {
         // Batch mode: stdin is piped
-        let mut story = brink_runtime::Story::new(&program, line_tables);
+        let mut story = brink_runtime::Story::new(std::sync::Arc::clone(&program), line_tables);
         let stdin = std::io::stdin();
         batch::play_loop(&mut story, stdin.lock().lines(), false)?;
         if let Some(path) = save_transcript {
