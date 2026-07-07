@@ -33,8 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use brink_analyzer::AnalysisResult;
 use brink_ir::{
-    Block, Conditional, Content, ContentPart, DivertPath, DivertTarget, FileId, HirFile, Sequence,
-    Stmt, SymbolKind,
+    Block, Choice, DivertPath, DivertTarget, FileId, HirFile, HirVisitor, Stmt, SymbolKind,
 };
 use brink_syntax::ast::SyntaxNodePtr;
 use rowan::TextRange;
@@ -194,7 +193,7 @@ impl Builder<'_> {
                 range: Some(knot.name.range),
                 parent: None,
             });
-            self.walk_block(file, &id, &knot.body, false);
+            self.walk_owner_body(file, &id, &knot.body);
             for stitch in &knot.stitches {
                 let sid = format!("{id}.{}", stitch.name.text);
                 self.add_node(StoryGraphNode {
@@ -205,7 +204,7 @@ impl Builder<'_> {
                     range: Some(stitch.name.range),
                     parent: Some(id.clone()),
                 });
-                self.walk_block(file, &sid, &stitch.body, false);
+                self.walk_owner_body(file, &sid, &stitch.body);
             }
         }
     }
@@ -214,89 +213,16 @@ impl Builder<'_> {
         self.nodes.entry(node.id.clone()).or_insert(node);
     }
 
-    /// Walk a block's statements, emitting edges owned by `owner`.
-    /// `in_choice` is true inside a choice's body — plain diverts there are
-    /// `choice` edges (weave aggregation).
-    fn walk_block(&mut self, file: FileId, owner: &str, block: &Block, in_choice: bool) {
-        for stmt in &block.stmts {
-            match stmt {
-                Stmt::Content(c) => self.walk_content(file, owner, c, in_choice),
-                Stmt::Divert(d) => {
-                    let kind = if in_choice {
-                        StoryEdgeKind::Choice
-                    } else {
-                        StoryEdgeKind::Divert
-                    };
-                    let stmt_range = d.ptr.as_ref().map(SyntaxNodePtr::text_range);
-                    self.add_edge(file, owner, &d.target, kind, stmt_range);
-                }
-                Stmt::TunnelCall(tc) => {
-                    let stmt_range = Some(tc.ptr.text_range());
-                    for target in &tc.targets {
-                        self.add_edge(file, owner, target, StoryEdgeKind::Tunnel, stmt_range);
-                    }
-                }
-                Stmt::ThreadStart(ts) => {
-                    let stmt_range = Some(ts.ptr.text_range());
-                    self.add_edge(file, owner, &ts.target, StoryEdgeKind::Thread, stmt_range);
-                }
-                Stmt::ChoiceSet(cs) => {
-                    for choice in &cs.choices {
-                        for content in [
-                            choice.start_content.as_ref(),
-                            choice.bracket_content.as_ref(),
-                            choice.inner_content.as_ref(),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        {
-                            self.walk_content(file, owner, content, true);
-                        }
-                        self.walk_block(file, owner, &choice.body, true);
-                    }
-                    // The gather continuation runs after the choices
-                    // converge — it keeps the enclosing context.
-                    self.walk_block(file, owner, &cs.continuation, in_choice);
-                }
-                Stmt::LabeledBlock(b) => self.walk_block(file, owner, b, in_choice),
-                Stmt::Conditional(c) => self.walk_conditional(file, owner, c, in_choice),
-                Stmt::Sequence(s) => self.walk_sequence(file, owner, s, in_choice),
-                // Expression-bearing statements: function calls are
-                // excluded from the graph by design.
-                Stmt::TempDecl(_)
-                | Stmt::Assignment(_)
-                | Stmt::Return(_)
-                | Stmt::ExprStmt(_)
-                | Stmt::EndOfLine => {}
-            }
-        }
-    }
-
-    fn walk_content(&mut self, file: FileId, owner: &str, content: &Content, in_choice: bool) {
-        for part in &content.parts {
-            match part {
-                ContentPart::InlineConditional(c) => {
-                    self.walk_conditional(file, owner, c, in_choice);
-                }
-                ContentPart::InlineSequence(s) => self.walk_sequence(file, owner, s, in_choice),
-                ContentPart::Text(_)
-                | ContentPart::Glue
-                | ContentPart::Spring
-                | ContentPart::Interpolation(_) => {}
-            }
-        }
-    }
-
-    fn walk_conditional(&mut self, file: FileId, owner: &str, cond: &Conditional, in_choice: bool) {
-        for branch in &cond.branches {
-            self.walk_block(file, owner, &branch.body, in_choice);
-        }
-    }
-
-    fn walk_sequence(&mut self, file: FileId, owner: &str, seq: &Sequence, in_choice: bool) {
-        for branch in &seq.branches {
-            self.walk_block(file, owner, branch, in_choice);
-        }
+    /// Walk one knot/stitch body via the shared HIR visitor, emitting the
+    /// diverts / tunnels / threads it contains as edges owned by `owner`.
+    fn walk_owner_body(&mut self, file: FileId, owner: &str, body: &Block) {
+        let mut visitor = EdgeVisitor {
+            builder: self,
+            file,
+            owner,
+            choice_depth: 0,
+        };
+        brink_ir::hir::walk_block(body, &mut visitor);
     }
 
     /// Record an edge and its source occurrence. Path targets anchor the
@@ -369,6 +295,67 @@ impl Builder<'_> {
                 .rsplit_once('.')
                 .map(|(owner, _)| owner.to_owned()),
             _ => None,
+        }
+    }
+}
+
+/// Emits story-graph edges for the diverts / tunnels / threads in one owner's
+/// body, driven by the shared HIR visitor. Weave nesting is tracked with a
+/// choice-depth counter (incremented per `enter_choice`, decremented per
+/// `exit_choice`): a plain divert at depth > 0 (inside any choice) becomes a
+/// `choice` edge — exactly the old `in_choice` bool. The gather continuation is
+/// walked after the choices' `exit_choice`, so it keeps its enclosing depth.
+struct EdgeVisitor<'w, 'ana> {
+    builder: &'w mut Builder<'ana>,
+    file: FileId,
+    owner: &'w str,
+    choice_depth: u32,
+}
+
+impl HirVisitor for EdgeVisitor<'_, '_> {
+    fn enter_choice(&mut self, _: &Choice) {
+        self.choice_depth += 1;
+    }
+
+    fn exit_choice(&mut self, _: &Choice) {
+        self.choice_depth = self.choice_depth.saturating_sub(1);
+    }
+
+    fn enter_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Divert(d) => {
+                let kind = if self.choice_depth > 0 {
+                    StoryEdgeKind::Choice
+                } else {
+                    StoryEdgeKind::Divert
+                };
+                let stmt_range = d.ptr.as_ref().map(SyntaxNodePtr::text_range);
+                self.builder
+                    .add_edge(self.file, self.owner, &d.target, kind, stmt_range);
+            }
+            Stmt::TunnelCall(tc) => {
+                let stmt_range = Some(tc.ptr.text_range());
+                for target in &tc.targets {
+                    self.builder.add_edge(
+                        self.file,
+                        self.owner,
+                        target,
+                        StoryEdgeKind::Tunnel,
+                        stmt_range,
+                    );
+                }
+            }
+            Stmt::ThreadStart(ts) => {
+                let stmt_range = Some(ts.ptr.text_range());
+                self.builder.add_edge(
+                    self.file,
+                    self.owner,
+                    &ts.target,
+                    StoryEdgeKind::Thread,
+                    stmt_range,
+                );
+            }
+            _ => {}
         }
     }
 }
