@@ -3,7 +3,7 @@
 //!
 //! Provides:
 //! - `compile_test_story`: compile a small ink source into the trio of
-//!   (`Program`, line tables, fresh `Context`) needed to set up asset
+//!   (`Program`, line tables, fresh `World`) needed to set up asset
 //!   state in a test.
 //! - `make_test_app` / `add_story_assets`: build a minimal Bevy `App`
 //!   wired with `BrinkPlugin`, plus directly insert pre-built story
@@ -14,16 +14,16 @@
 
 use bevy_app::App;
 use bevy_asset::{AssetPlugin, Assets, Handle};
-use brink_runtime::{Context, Program};
+use brink_runtime::{Program, World};
 
 use crate::asset::{BrinkStoryAsset, LineTablesAsset, ProgramAsset, fresh_context};
 
 /// Compile an inline ink source and return the (`Program`, line tables,
-/// fresh `Context`) tuple needed to build a `BrinkStoryAsset` in a test.
+/// fresh `World`) tuple needed to build a `BrinkStoryAsset` in a test.
 ///
 /// Panics on any failure — tests should provide valid ink sources.
 /// (`expect` is allowed in tests via `clippy.toml`'s `allow-expect-in-tests`.)
-pub fn compile_test_story(source: &str) -> (Program, Vec<Vec<brink_format::LineEntry>>, Context) {
+pub fn compile_test_story(source: &str) -> (Program, Vec<Vec<brink_format::LineEntry>>, World) {
     let output = brink_compiler::compile("test.ink", |path| {
         if path == "test.ink" {
             Ok(source.to_string())
@@ -58,7 +58,7 @@ pub fn add_story_assets(
     app: &mut App,
     program: Program,
     tables: Vec<Vec<brink_format::LineEntry>>,
-    initial_context: Context,
+    initial_context: World,
 ) -> Handle<BrinkStoryAsset> {
     let world = app.world_mut();
     let program_handle = world

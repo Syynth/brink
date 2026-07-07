@@ -1,9 +1,9 @@
-//! Story-wide and per-flow `Context` state.
+//! Story-wide and per-flow `World` state.
 //!
 //! - [`BrinkGlobals<M>`] is a `Resource` — the "save data" snapshot for
-//!   marker `M`. New flows seed their `Context` from this; consumers
-//!   commit a flow's `Context` back to it explicitly.
-//! - [`BrinkContext<M>`] is a `Component` — the in-flight `Context` of
+//!   marker `M`. New flows seed their `World` from this; consumers
+//!   commit a flow's `World` back to it explicitly.
+//! - [`BrinkContext<M>`] is a `Component` — the in-flight `World` of
 //!   a single flow on its entity. The flow advances against this; it
 //!   only touches `BrinkGlobals` when explicitly committed.
 
@@ -11,9 +11,9 @@ use std::marker::PhantomData;
 
 use bevy_ecs::component::Component;
 use bevy_ecs::resource::Resource;
-use brink_runtime::Context;
+use brink_runtime::World;
 
-/// The "save data" `Context` for a story identified by marker `M`.
+/// The "save data" `World` for a story identified by marker `M`.
 ///
 /// Holds globals, visit/turn counts, RNG seed — the canonical state
 /// new flows seed from. The plugin auto-inserts this on first
@@ -23,16 +23,16 @@ use brink_runtime::Context;
 /// the `commit_*` helpers.
 #[derive(Resource)]
 pub struct BrinkGlobals<M: Send + Sync + 'static = ()> {
-    pub inner: Context,
+    pub inner: World,
     _marker: PhantomData<fn() -> M>,
 }
 
 impl<M: Send + Sync + 'static> BrinkGlobals<M> {
-    /// Wrap a freshly-created [`Context`] (e.g. from
+    /// Wrap a freshly-created [`World`] (e.g. from
     /// [`FlowInstance::new_at_root`](brink_runtime::FlowInstance::new_at_root))
     /// in a Bevy `Resource`.
     #[must_use]
-    pub fn new(context: Context) -> Self {
+    pub fn new(context: World) -> Self {
         Self {
             inner: context,
             _marker: PhantomData,
@@ -47,11 +47,11 @@ impl<M: Send + Sync + 'static> BrinkGlobals<M> {
     ///
     /// Also the right verb for a "new game" reset:
     /// `globals.commit_from(&program.initial_context)`.
-    pub fn commit_from(&mut self, flow_ctx: &Context) {
+    pub fn commit_from(&mut self, flow_ctx: &World) {
         self.inner = flow_ctx.clone();
     }
 
-    /// Merge "progress" from the flow's `Context` into the save data:
+    /// Merge "progress" from the flow's `World` into the save data:
     /// globals are wholesale replaced; visit and turn counts take the
     /// elementwise max; the turn index takes the max; RNG state is
     /// pulled from the flow (most recent).
@@ -60,7 +60,7 @@ impl<M: Send + Sync + 'static> BrinkGlobals<M> {
     /// changes (variables, visit history, advancement) back to the
     /// shared save state without overwriting state the side
     /// conversation didn't touch.
-    pub fn commit_progress(&mut self, flow_ctx: &Context) {
+    pub fn commit_progress(&mut self, flow_ctx: &World) {
         self.inner.globals.clone_from(&flow_ctx.globals);
         for (id, count) in &flow_ctx.visit_counts {
             let entry = self.inner.visit_counts.entry(*id).or_insert(0);
@@ -80,28 +80,28 @@ impl<M: Send + Sync + 'static> BrinkGlobals<M> {
     ///
     /// Use this when a flow may have changed inventory or flag-style
     /// variables but didn't progress the main plot.
-    pub fn commit_globals_only(&mut self, flow_ctx: &Context) {
+    pub fn commit_globals_only(&mut self, flow_ctx: &World) {
         self.inner.globals.clone_from(&flow_ctx.globals);
     }
 }
 
-/// The in-flight `Context` of a single flow on its entity.
+/// The in-flight `World` of a single flow on its entity.
 ///
 /// Inserted by `fulfill_flow_requests` alongside [`BrinkFlow`](crate::BrinkFlow).
 /// The flow's `step_one`/`advance_until_terminal`/`choose` methods read
-/// and write this `Context` directly. Multiple concurrent flows each
+/// and write this `World` directly. Multiple concurrent flows each
 /// have their own — globals are NOT auto-shared. Use
 /// [`BrinkGlobals::commit_*`] to merge a flow's changes back into the
 /// shared "save data" resource.
 #[derive(Component)]
 pub struct BrinkContext<M: Send + Sync + 'static = ()> {
-    pub inner: Context,
+    pub inner: World,
     _marker: PhantomData<fn() -> M>,
 }
 
 impl<M: Send + Sync + 'static> BrinkContext<M> {
     #[must_use]
-    pub fn new(context: Context) -> Self {
+    pub fn new(context: World) -> Self {
         Self {
             inner: context,
             _marker: PhantomData,
@@ -113,15 +113,15 @@ impl<M: Send + Sync + 'static> BrinkContext<M> {
 mod commit_tests {
     use super::*;
     use brink_format::{DefinitionId, DefinitionTag, Value};
-    use brink_runtime::Context;
+    use brink_runtime::World;
     use std::collections::HashMap;
 
-    fn ctx_with(globals: Vec<Value>, visits: &[(u64, u32)], turn_index: u32) -> Context {
+    fn ctx_with(globals: Vec<Value>, visits: &[(u64, u32)], turn_index: u32) -> World {
         let mut visit_counts = HashMap::new();
         for (id, count) in visits {
             visit_counts.insert(DefinitionId::new(DefinitionTag::Address, *id), *count);
         }
-        Context {
+        World {
             globals,
             visit_counts,
             turn_counts: HashMap::new(),

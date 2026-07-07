@@ -21,9 +21,13 @@ use bevy_ecs::system::{Commands, Query, Res};
 use bevy_ecs::world::World;
 use bevy_log::{info, warn};
 use brink_format::LineEntry;
+// `brink_runtime::World` (the shared story-state layer) is aliased here to
+// avoid colliding with `bevy_ecs::world::World` (the ECS World), which this
+// file also uses extensively (`take_recorder`/`put_recorder`/`record_external`).
+use brink_runtime::World as BrinkWorld;
 use brink_runtime::{
-    Context, ExternalFnHandler, FastRng, FlowInstance, Line, ReplayHandler, ReplayMode,
-    ReplayRecorder, RuntimeError,
+    ExternalFnHandler, FastRng, FlowInstance, Line, ReplayHandler, ReplayMode, ReplayRecorder,
+    RuntimeError,
 };
 
 use crate::asset::{BrinkProgram, BrinkStoryAsset, LineTablesAsset, ProgramAsset};
@@ -49,7 +53,7 @@ pub struct ReplayQueryModeOverride(pub ReplayMode);
 /// Per-flow snapshot used to reconstruct the flow on hot-reload.
 ///
 /// Inserted alongside [`BrinkFlow<M>`] by the fulfillment system when
-/// the `dev` feature is enabled. Contains the per-flow `Context`
+/// the `dev` feature is enabled. Contains the per-flow `World`
 /// snapshot at the moment the flow was spawned, the start address, the
 /// story handle (so we can find the new program after reload), and the
 /// running list of choice selections.
@@ -57,7 +61,7 @@ pub struct ReplayQueryModeOverride(pub ReplayMode);
 pub struct BrinkReplayLog<M: Send + Sync + 'static = ()> {
     /// Snapshot of the flow's [`BrinkContext`](crate::BrinkContext)
     /// taken at fulfillment.
-    pub start_context: Context,
+    pub start_context: BrinkWorld,
     /// Where this flow began executing.
     pub start: FlowStart,
     /// The story this flow is bound to (for re-resolving the program
@@ -75,7 +79,7 @@ pub struct BrinkReplayLog<M: Send + Sync + 'static = ()> {
 
 impl<M: Send + Sync + 'static> BrinkReplayLog<M> {
     pub(crate) fn new(
-        start_context: Context,
+        start_context: BrinkWorld,
         start: FlowStart,
         story: Handle<BrinkStoryAsset>,
     ) -> Self {
@@ -180,7 +184,7 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
             continue;
         };
 
-        // Reset the per-flow Context to the captured snapshot.
+        // Reset the per-flow World to the captured snapshot.
         context.inner = log.start_context.clone();
 
         // Replace the in-place flow with the freshly-built one.
@@ -268,7 +272,7 @@ fn step_to_next_choices(
     flow: &mut FlowInstance,
     program: &brink_runtime::Program,
     line_tables: &[Vec<LineEntry>],
-    context: &mut Context,
+    context: &mut BrinkWorld,
     handler: &dyn ExternalFnHandler,
 ) -> Result<(), RuntimeError> {
     const STEP_LIMIT: usize = 10_000;

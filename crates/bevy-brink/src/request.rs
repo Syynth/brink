@@ -20,7 +20,7 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::query::Without;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_log::{error, warn};
-use brink_runtime::{Context, FlowInstance};
+use brink_runtime::{FlowInstance, World};
 
 use crate::asset::{BrinkStory, BrinkStoryAsset, ProgramAsset};
 use crate::flow::BrinkFlow;
@@ -52,9 +52,9 @@ pub enum ContextSeed {
     /// for speculative-fork flows that should run independently of the
     /// shared save state, or for testing.
     FromInitial,
-    /// Use a caller-supplied `Context`. For consumers that compute
+    /// Use a caller-supplied `World`. For consumers that compute
     /// custom seed state (e.g. mid-game branch from a snapshot).
-    Custom(Context),
+    Custom(World),
 }
 
 /// Marker component requesting that this entity become a flow once its
@@ -106,12 +106,12 @@ pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
 ///   isn't loaded yet — the request just waits.
 /// - On first fulfillment for marker `M`, inserts [`BrinkGlobals<M>`]
 ///   seeded from [`ProgramAsset::initial_context`](crate::ProgramAsset)
-///   (the fresh starting `Context` — globals from `VAR`/`CONST`/`LIST`
+///   (the fresh starting `World` — globals from `VAR`/`CONST`/`LIST`
 ///   defaults, zero visit/turn counts). Acts as the "save data" the
 ///   flow's per-entity [`BrinkContext`] is cloned from.
 /// - Inserts the per-flow [`BrinkContext<M>`] component, seeded by
 ///   cloning the current `BrinkGlobals<M>` resource. Each flow has its
-///   own `Context`; globals are not auto-shared.
+///   own `World`; globals are not auto-shared.
 /// - Inserts the [`BrinkStory<M>`] bundle (program + locale handles).
 /// - Errors and removes the request if `FlowStart::Address` references
 ///   a name that isn't in the program.
@@ -134,12 +134,12 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
     mut cache: ResMut<crate::locale::LocalizedTablesCache<M>>,
     mut commands: Commands,
 ) {
-    // Snapshot of the current "save data" Context. Used to seed flows
+    // Snapshot of the current "save data" World. Used to seed flows
     // whose request asks for ContextSeed::FromGlobals (the default).
     // We capture this once at the top of the system call so multiple
     // requests in the same batch see consistent state, even when the
     // first request's fulfillment also creates the resource.
-    let mut globals_snapshot: Option<Context> = globals.as_ref().map(|g| g.inner.clone());
+    let mut globals_snapshot: Option<World> = globals.as_ref().map(|g| g.inner.clone());
 
     for (entity, req) in &requests {
         let Some(bundle) = stories.get(&req.story) else {

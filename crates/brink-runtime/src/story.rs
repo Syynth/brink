@@ -12,6 +12,7 @@ use crate::program::Program;
 use crate::rng::{FastRng, StoryRng};
 use crate::state::{ContextAccess, WriteObserver};
 use crate::vm;
+use crate::world::{ContextView, FlowLocal, World};
 
 /// The current execution status of a story.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -375,27 +376,6 @@ pub(crate) struct Flow {
     pub did_unsafe_yield: bool,
 }
 
-/// Shared game state that lives above individual flows.
-///
-/// Holds globals, visit/turn tracking, and RNG state. This is the natural
-/// serialization boundary for save/load (deferred).
-///
-/// Multiple [`FlowInstance`]s can share a single `Context` (matching
-/// inklecate's semantics where flow writes are immediately visible to other
-/// flows), or each flow can hold its own cloned `Context` if the consumer
-/// wants fork/branch/rollback semantics. The runtime's step functions take
-/// `&mut Context` (or any `&mut impl ContextAccess`) without prescribing
-/// where it lives.
-#[derive(Debug, Clone)]
-pub struct Context {
-    pub globals: Vec<Value>,
-    pub visit_counts: HashMap<DefinitionId, u32>,
-    pub turn_counts: HashMap<DefinitionId, u32>,
-    pub turn_index: u32,
-    pub rng_seed: i32,
-    pub previous_random: i32,
-}
-
 impl Flow {
     /// Returns a reference to the current (topmost) thread.
     ///
@@ -649,18 +629,18 @@ pub(crate) struct EvalState {
 
 impl FlowInstance {
     /// Create a new flow instance starting at the program's root container,
-    /// along with a fresh [`Context`] initialized from the program's global
+    /// along with a fresh [`World`] initialized from the program's global
     /// defaults.
-    pub fn new_at_root(program: &Program) -> (Self, Context) {
+    pub fn new_at_root(program: &Program) -> (Self, World) {
         Self::new_at(program, program.root_idx())
     }
 
     /// Create a new flow instance starting at an arbitrary container index,
-    /// along with a fresh [`Context`]. Use this to spawn a named flow at a
+    /// along with a fresh [`World`]. Use this to spawn a named flow at a
     /// specific entry point. The caller is responsible for deciding whether
-    /// to share the returned `Context` with other flows or discard it and
+    /// to share the returned `World` with other flows or discard it and
     /// reuse an existing one.
-    pub fn new_at(program: &Program, container_idx: u32) -> (Self, Context) {
+    pub fn new_at(program: &Program, container_idx: u32) -> (Self, World) {
         let globals = program.global_defaults();
         let initial_frame = CallFrame {
             return_address: None,
@@ -692,7 +672,7 @@ impl FlowInstance {
             stats: Stats::default(),
             eval: None,
         };
-        let context = Context {
+        let world = World {
             globals,
             visit_counts: HashMap::new(),
             turn_counts: HashMap::new(),
@@ -700,7 +680,7 @@ impl FlowInstance {
             rng_seed: 0,
             previous_random: 0,
         };
-        (flow_instance, context)
+        (flow_instance, world)
     }
 
     /// Maximum VM steps per `continue_maximally` call before erroring.
@@ -1596,14 +1576,18 @@ fn make_yield_line(
 pub struct Story<R: StoryRng = FastRng> {
     program: Arc<Program>,
     pub(crate) default: FlowInstance,
-    pub(crate) default_context: Context,
+    pub(crate) default_context: World,
+    /// The default flow's per-flow override layer. Empty in F1.3 (F3 fills
+    /// it in) — the routing view built from `(default_context, default_local)`
+    /// is an all-`World` passthrough, so this contributes nothing yet.
+    default_local: FlowLocal,
     line_tables: Vec<Vec<brink_format::LineEntry>>,
-    instances: HashMap<String, (FlowInstance, Context)>,
+    instances: HashMap<String, (FlowInstance, World, FlowLocal)>,
     /// Named flows that **share** `default_context` (globals / visit counts /
     /// rng) — true ink concurrent-flow semantics, where one flow's writes are
     /// visible to the others. Each still has its own call stack + temps (those
     /// live in the [`FlowInstance`]). Distinct from `instances`, whose flows
-    /// each own an isolated `Context` (bevy-brink's per-entity model). Transient
+    /// each own an isolated `World` (bevy-brink's per-entity model). Transient
     /// studio/host state — not persisted in a [`StorySnapshot`].
     shared_instances: HashMap<String, FlowInstance>,
     resolver: Option<Box<dyn PluralResolver>>,
@@ -1616,6 +1600,7 @@ impl<R: StoryRng> Clone for Story<R> {
             program: Arc::clone(&self.program),
             default: self.default.clone(),
             default_context: self.default_context.clone(),
+            default_local: self.default_local.clone(),
             line_tables: self.line_tables.clone(),
             instances: self.instances.clone(),
             shared_instances: self.shared_instances.clone(),
@@ -1632,8 +1617,9 @@ impl<R: StoryRng> Clone for Story<R> {
 /// tables, then reattach.
 pub struct StorySnapshot<R: StoryRng = FastRng> {
     default: FlowInstance,
-    default_context: Context,
-    instances: HashMap<String, (FlowInstance, Context)>,
+    default_context: World,
+    default_local: FlowLocal,
+    instances: HashMap<String, (FlowInstance, World, FlowLocal)>,
     _rng: PhantomData<R>,
 }
 
@@ -1645,6 +1631,7 @@ impl<R: StoryRng> Story<R> {
             program,
             default,
             default_context,
+            default_local: FlowLocal::new(),
             line_tables,
             instances: HashMap::new(),
             shared_instances: HashMap::new(),
@@ -1818,10 +1805,11 @@ impl<R: StoryRng> Story<R> {
         handler: &dyn ExternalFnHandler,
     ) -> Result<StepOutcome, RuntimeError> {
         let resolver = self.resolver.as_deref();
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         self.default.advance::<R>(
             &self.program,
             &self.line_tables,
-            &mut self.default_context,
+            &mut view,
             handler,
             resolver,
         )
@@ -1874,10 +1862,11 @@ impl<R: StoryRng> Story<R> {
             });
         }
         let resolver = self.resolver.as_deref();
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         let outcome = self.default.begin_function_eval::<R>(
             &self.program,
             &self.line_tables,
-            &mut self.default_context,
+            &mut view,
             handler,
             container_idx,
             args,
@@ -1902,6 +1891,7 @@ impl<R: StoryRng> Story<R> {
         let snapshot = StorySnapshot {
             default: self.default,
             default_context: self.default_context,
+            default_local: self.default_local,
             instances: self.instances,
             _rng: PhantomData,
         };
@@ -1918,6 +1908,7 @@ impl<R: StoryRng> Story<R> {
             program,
             default: snapshot.default,
             default_context: snapshot.default_context,
+            default_local: snapshot.default_local,
             line_tables,
             instances: snapshot.instances,
             // Shared flows are transient (not persisted) — a reattached story
@@ -1939,10 +1930,11 @@ impl<R: StoryRng> Story<R> {
     /// - [`Line::End`] — the story has permanently ended.
     pub fn continue_single(&mut self) -> Result<Line, RuntimeError> {
         let resolver = self.resolver.as_deref();
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         self.default.step_single_line::<R>(
             &self.program,
             &self.line_tables,
-            &mut self.default_context,
+            &mut view,
             &FallbackHandler,
             resolver,
         )
@@ -1955,7 +1947,8 @@ impl<R: StoryRng> Story<R> {
         observer: &mut dyn WriteObserver,
     ) -> Result<Line, RuntimeError> {
         use crate::state::ObservedContext;
-        let mut obs_ctx = ObservedContext::new(&mut self.default_context, observer);
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+        let mut obs_ctx = ObservedContext::new(&mut view, observer);
         let resolver = self.resolver.as_deref();
         self.default.step_single_line::<R>(
             &self.program,
@@ -1973,10 +1966,11 @@ impl<R: StoryRng> Story<R> {
         handler: &dyn ExternalFnHandler,
     ) -> Result<Line, RuntimeError> {
         let resolver = self.resolver.as_deref();
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         self.default.step_single_line::<R>(
             &self.program,
             &self.line_tables,
-            &mut self.default_context,
+            &mut view,
             handler,
             resolver,
         )
@@ -2009,12 +2003,13 @@ impl<R: StoryRng> Story<R> {
         handler: &dyn ExternalFnHandler,
     ) -> Result<Vec<Line>, RuntimeError> {
         let mut lines = Vec::new();
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         loop {
             let resolver = self.resolver.as_deref();
             let line = self.default.step_single_line::<R>(
                 &self.program,
                 &self.line_tables,
-                &mut self.default_context,
+                &mut view,
                 handler,
                 resolver,
             )?;
@@ -2036,7 +2031,8 @@ impl<R: StoryRng> Story<R> {
         observer: &mut dyn WriteObserver,
     ) -> Result<Vec<Line>, RuntimeError> {
         use crate::state::ObservedContext;
-        let mut obs_ctx = ObservedContext::new(&mut self.default_context, observer);
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+        let mut obs_ctx = ObservedContext::new(&mut view, observer);
         let mut lines = Vec::new();
         loop {
             let resolver = self.resolver.as_deref();
@@ -2062,7 +2058,8 @@ impl<R: StoryRng> Story<R> {
     /// [`continue_single`](Self::continue_single) or
     /// [`continue_maximally`](Self::continue_maximally).
     pub fn choose(&mut self, index: usize) -> Result<(), RuntimeError> {
-        self.default.choose(&mut self.default_context, index)
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+        self.default.choose(&mut view, index)
     }
 
     /// Move the default flow's play head to a named knot/stitch path — ink's
@@ -2080,8 +2077,9 @@ impl<R: StoryRng> Story<R> {
     /// [`AlreadyEvaluatingFunction`](RuntimeError::AlreadyEvaluatingFunction)
     /// if an engine→ink function evaluation is in progress.
     pub fn choose_path_string(&mut self, path: &str) -> Result<(), RuntimeError> {
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         self.default
-            .choose_path_string(&self.program, &mut self.default_context, path)
+            .choose_path_string(&self.program, &mut view, path)
     }
 
     /// Move the default flow's play head to a parameterized knot/stitch,
@@ -2099,12 +2097,9 @@ impl<R: StoryRng> Story<R> {
         path: &str,
         args: &[Value],
     ) -> Result<(), RuntimeError> {
-        self.default.choose_path_string_with_args(
-            &self.program,
-            &mut self.default_context,
-            path,
-            args,
-        )
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+        self.default
+            .choose_path_string_with_args(&self.program, &mut view, path, args)
     }
 
     /// Read-only access to the default flow's VM statistics.
@@ -2174,7 +2169,8 @@ impl<R: StoryRng> Story<R> {
             .map(|(idx, _)| idx)
             .ok_or(RuntimeError::UnresolvedDefinition(entry_point))?;
         let (flow, ctx) = FlowInstance::new_at(&self.program, container_idx);
-        self.instances.insert(name.to_owned(), (flow, ctx));
+        self.instances
+            .insert(name.to_owned(), (flow, ctx, FlowLocal::new()));
         Ok(())
     }
 
@@ -2189,17 +2185,18 @@ impl<R: StoryRng> Story<R> {
         name: &str,
         handler: &dyn ExternalFnHandler,
     ) -> Result<Vec<Line>, RuntimeError> {
-        let (instance, ctx) = self
+        let (instance, ctx, local) = self
             .instances
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
+        let mut view = ContextView::new(ctx, local);
         let mut lines = Vec::new();
         loop {
             let resolver = self.resolver.as_deref();
             let line = instance.step_single_line::<R>(
                 &self.program,
                 &self.line_tables,
-                ctx,
+                &mut view,
                 handler,
                 resolver,
             )?;
@@ -2216,11 +2213,12 @@ impl<R: StoryRng> Story<R> {
 
     /// Select a choice in a named flow.
     pub fn choose_flow(&mut self, name: &str, index: usize) -> Result<(), RuntimeError> {
-        let (instance, ctx) = self
+        let (instance, ctx, local) = self
             .instances
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
-        instance.choose(ctx, index)
+        let mut view = ContextView::new(ctx, local);
+        instance.choose(&mut view, index)
     }
 
     /// Destroy a named flow instance — isolated or shared (#200).
@@ -2285,10 +2283,11 @@ impl<R: StoryRng> Story<R> {
             .shared_instances
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         instance.step_single_line::<R>(
             &self.program,
             &self.line_tables,
-            &mut self.default_context,
+            &mut view,
             handler,
             resolver,
         )
@@ -2300,7 +2299,8 @@ impl<R: StoryRng> Story<R> {
             .shared_instances
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
-        instance.choose(&mut self.default_context, index)
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+        instance.choose(&mut view, index)
     }
 
     /// A structured, name-resolved snapshot of the current runtime state for
@@ -2319,7 +2319,7 @@ impl<R: StoryRng> Story<R> {
     pub fn debug_snapshot_flow(&self, name: &str) -> Result<crate::DebugSnapshot, RuntimeError> {
         if let Some(instance) = self.shared_instances.get(name) {
             Ok(self.build_debug_snapshot(instance, &self.default_context))
-        } else if let Some((instance, ctx)) = self.instances.get(name) {
+        } else if let Some((instance, ctx, _local)) = self.instances.get(name) {
             Ok(self.build_debug_snapshot(instance, ctx))
         } else {
             Err(RuntimeError::UnknownFlow(name.to_owned()))
@@ -2328,7 +2328,7 @@ impl<R: StoryRng> Story<R> {
 
     /// Build a debug snapshot from a specific flow instance + context. Backs
     /// both [`debug_snapshot`](Self::debug_snapshot) and the per-flow variant.
-    fn build_debug_snapshot(&self, instance: &FlowInstance, ctx: &Context) -> crate::DebugSnapshot {
+    fn build_debug_snapshot(&self, instance: &FlowInstance, ctx: &World) -> crate::DebugSnapshot {
         use crate::debug::{
             DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit, NameResolver,
         };
