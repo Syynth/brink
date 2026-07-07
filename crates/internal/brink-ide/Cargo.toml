@@ -13,6 +13,7 @@ categories.workspace = true
 brink-syntax = { workspace = true }
 brink-ir = { workspace = true }
 brink-analyzer = { workspace = true }
+brink-format = { workspace = true }
 brink-db = { workspace = true }
 brink-fmt = { workspace = true }
 rowan.workspace = true

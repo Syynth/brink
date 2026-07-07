@@ -9,6 +9,7 @@ pub mod extract;
 pub mod file_rename;
 pub mod folding;
 pub mod formatting;
+pub mod hir_projection;
 pub mod hover;
 pub mod include_block;
 pub mod inlay_hints;
