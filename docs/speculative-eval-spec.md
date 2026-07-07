@@ -15,6 +15,26 @@ approved. Ships as **0.9.0** (new API surface across compiler + runtime + web).
 > are this **future** tier's own types, distinct from (and not yet reconciled
 > with) the already-shipped `Speculation`/`KindTieredHandler` — see #439/#440.
 
+> **MECHANISM AMENDMENT (2026-07-07 — supersedes §2 ruling #1 and §§3–6):** F5
+> ships the `evaluate`-accepts-fragments capability on the **simplest correct
+> mechanism (B)**: wrap the fragment in a synthetic symbol
+> (`function $eval_<h>()` for an expression, `=== $eval_<h> ===` for content),
+> **recompile the project** (cached by `(live checksum, fragment source, kind)`),
+> and run it via the shipped F4 `Speculation` over the recompiled `Program`,
+> seeded with the live state through the **name-keyed `save`/`load` path** (robust
+> because `DefinitionId`s are content-hashed). The bespoke fragment-compiler +
+> `OverlayProgram`/`ProgramLike` design in §§3–6 is **DROPPED**. Rationale: the
+> consumer API is **mechanism-agnostic** — celeris only ever calls
+> `evaluate(source)` — so we ship the simplest correct implementation and make
+> compilation fast (general **incremental codegen**, its own track) *only if
+> measurement shows recompile latency is a real problem*, because that investment
+> benefits the whole toolchain, not just speculation. Caching means a compile is
+> paid **once per distinct fragment per project version**, not per re-eval; the
+> per-eval run (seed state + sandbox-drive + discard) is cheap. §7 (`@kind`
+> externals policy) and §8 (web surface) still apply and largely landed as F4.
+> §§3–6 below are retained only as the design of the *deferred* overlay
+> optimization. See decision-log 2026-07-07.
+
 > Trust note: this feature never changes the semantics of compiled programs, the
 > `.inkb` format on disk, or the oracle. The fragment/overlay artifacts are
 > in-memory tooling constructs; the ratchet does not move.
