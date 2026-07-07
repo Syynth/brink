@@ -20,7 +20,36 @@ This is deliberately the substrate the future debugger (#452) builds on; where t
 (container identity ≡ runtime container identity) is called out as a #452 concern, not a
 Track A requirement.
 
-## 2. Consumers (the overlay is designed from these)
+## 1a. The projection is the canonical HIR structural model (not just an editor overlay)
+
+The editor overlay is the *first* consumer, but the projection is bigger than it: it is the
+**one canonical structural model** for the HIR, and per-line/per-span structural features across
+the IDE are **views over it**, with trivia and dialect layered on *separately* rather than fused
+into the walk. The architecture (decision log, 2026-07-07 "Layered HIR structural architecture"):
+
+```
+shared HIR visitor  (traversal primitive, #457)
+  ├─ reference/decl COLLECTION → SymbolManifest        ┐ upstream (feeds analysis; #458,
+  ├─ structural validation (validate: E029–E034)       ┘ a mis-placed visitor pass today)
+  └─ resolve → SymbolIndex + ResolutionMap
+        └─ PROJECTION (HIR + analysis → spans + per-line container/weave stack)   ← this spec
+              └─ views:  editor overlay/rails · line_context.element/weave · folding scaffold/nature
+
+  + trivia facet   (comments/block-comments — CST scan)   ┐ layered on the views,
+  + dialect facet  (regex over source)                    ┘ never fused into the projection
+```
+
+Why this matters here: `line_context.rs`'s `WeaveElement`
+(`ChoiceLine`/`ChoiceBody`/`GatherContinuation`/`ConditionalBranch`/`SequenceBranch`) *is*
+the projection's per-line container stack (R7), and `folding`'s scaffold/nature classification is
+another per-line structural view. Both today hand-roll partial, overlapping structural walks,
+conflated with trivia/dialect (line_context is ~1361 lines doing all three). They are **not**
+migrated onto the visitor as bespoke walks; they are **re-expressed as views over this
+projection** once it lands and is proven (follow-up; they are not rewritten now). Consequently the
+projection's per-line weave/element output (§8, R7) is a **first-class deliverable**, sized to
+serve `line_context` and `folding`, not a rails-only detail.
+
+## 2. Consumers (the projection is designed from these)
 
 | Consumer | Needs | Served by |
 |---|---|---|
@@ -28,6 +57,8 @@ Track A requirement.
 | Interactions (hover card, click-to-navigate, highlight-all-refs) | resolved symbol identity | `def_id` on decls, `target_id` on refs; queryable StateField |
 | Tooling / inspectability (tests, devtools, binder/story-graph overlays) | stable, queryable DOM markers | rendered `data-*` attributes |
 | Rails (concentric block bars in both margins) | per-line nested container stack | derived from container spans (kind + depth + handle) |
+| **`line_context` element/weave** (future view) | per-line structural element + `WeaveElement`-equivalent + depth | the per-line weave/element output (§8) — trivia (comments) + dialect layered on separately |
+| **`folding` scaffold/nature** (future view) | per-line container kind for machinery/narrative runs + scaffold | same per-line output; no bespoke scaffold walk |
 
 ## 3. Requirements
 
