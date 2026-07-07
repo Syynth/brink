@@ -1,5 +1,5 @@
 use brink_ir::{
-    Block, Content, ContentContext, ContentPart, HirFile, HirVisitor, Stmt, walk_block,
+    Block, Choice, Content, ContentContext, ContentPart, HirFile, HirVisitor, Stmt, walk_block,
 };
 use rowan::TextRange;
 
@@ -281,19 +281,21 @@ struct FoldCollector<'a> {
 }
 
 impl HirVisitor for FoldCollector<'_> {
+    fn enter_choice(&mut self, choice: &Choice) {
+        // Push each choice's fold as the choice is entered (before its body is
+        // walked), so header and body folds interleave exactly as the old
+        // per-choice walk did.
+        push_fold(
+            choice.ptr.text_range(),
+            None,
+            self.source,
+            self.idx,
+            self.out,
+        );
+    }
+
     fn enter_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::ChoiceSet(cs) => {
-                for choice in &cs.choices {
-                    push_fold(
-                        choice.ptr.text_range(),
-                        None,
-                        self.source,
-                        self.idx,
-                        self.out,
-                    );
-                }
-            }
             Stmt::Conditional(cond) => push_fold(
                 cond.ptr.text_range(),
                 Some("{...}".to_owned()),
@@ -909,6 +911,27 @@ Come on in, take a seat.
         assert!(
             !ranges.iter().any(|&(_, _, k)| k == FoldKind::Machinery),
             "choice lines with inline alternatives must not fold as machinery: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn choice_with_nested_inline_logic_is_not_machinery() {
+        // Transitive ContentContext: an inline sequence nested *inside* an
+        // inline conditional that is itself in a choice's bracket text
+        // (`* [take {a: {b|c}}]`) must still be treated as choice inline text,
+        // not scaffold — the gate is transitive, not just immediate. Two such
+        // choices must not collapse into a machinery run. Guards Findings 1/2
+        // from the adversarial review of the visitor migration.
+        let src = "\
+=== start ===
+* [take {a: {b|c}}]
+* [drop {d: {e|f}}]
+-> END
+";
+        let ranges = kinds_for(src);
+        assert!(
+            !ranges.iter().any(|&(_, _, k)| k == FoldKind::Machinery),
+            "nested inline logic in choice text must not fold as machinery: {ranges:?}"
         );
     }
 
