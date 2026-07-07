@@ -24,6 +24,7 @@
 
 mod debug;
 mod error;
+mod external_policy;
 mod linker;
 mod list_ops;
 mod locale;
@@ -44,6 +45,7 @@ mod world;
 pub use brink_format::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 pub use debug::{DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit};
 pub use error::RuntimeError;
+pub use external_policy::{EvalContext, ExternalsReport, KindTieredHandler, PolicyKind};
 pub use linker::link;
 pub use locale::{LocaleMode, apply_locale};
 pub use output::{Fragment, OutputPart};

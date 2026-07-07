@@ -14,11 +14,13 @@
 
 #![expect(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::cell::Cell;
 use std::sync::Arc;
 
 use brink_format::Value;
 use brink_runtime::{
-    Budget, FallbackHandler, FunctionEval, Line, Program, RuntimeError, SpeculationStep, Story,
+    Budget, ExternalFnHandler, ExternalResult, FallbackHandler, FunctionEval, Line, Program,
+    RuntimeError, SpeculationStep, Story,
 };
 
 /// A single program exercising everything these tests need: a mutated
@@ -261,4 +263,102 @@ fn speculation_go_to_path_jumps_and_runs() {
     let snapshot = story.debug_snapshot();
     assert_eq!(snapshot.status, "active");
     assert_eq!(snapshot.turn_index, 0);
+}
+
+// ── F4.2: `Speculation::resume_function_eval` closes the AwaitingExternal gap ──
+
+/// A program with a pure function (`add`) plus a `query` function that
+/// calls an `EXTERNAL` — the fixture for exercising
+/// `eval_function` -> `AwaitingExternal` -> `resolve_external` ->
+/// `resume_function_eval` -> `Returned`.
+const SOURCE_WITH_EXTERNAL: &str = "\
+EXTERNAL get_value(x)
+
+VAR gold = 0
+
+-> start
+
+=== start ===
+Hello.
+~ gold = gold + 5
+-> END
+
+=== function query(x) ===
+~ return get_value(x)
+";
+
+/// Defers (`Pending`) its first call, resolves inline thereafter — mirrors
+/// the `DeferProbe` pattern used for the flow-level resume gap in
+/// `crates/brink-runtime/tests/session.rs`.
+struct DeferOnce {
+    deferred: Cell<bool>,
+}
+
+impl ExternalFnHandler for DeferOnce {
+    fn call(&self, name: &str, args: &[Value]) -> ExternalResult {
+        if name == "get_value" && !self.deferred.get() {
+            self.deferred.set(true);
+            ExternalResult::Pending
+        } else {
+            let Some(Value::Int(x)) = args.first() else {
+                panic!("expected an int arg, got {args:?}");
+            };
+            ExternalResult::Resolved(Value::Int(x * 2))
+        }
+    }
+}
+
+/// A speculative `eval_function` of a function that calls a `Query`
+/// external returning `Pending` must pause as `AwaitingExternal`;
+/// `resolve_external` + `resume_function_eval` must then complete the
+/// evaluation with the correct return value, and the live story must be
+/// completely untouched throughout.
+#[test]
+fn speculation_resume_function_eval_completes_after_deferred_external() {
+    let (program, line_tables) = compile_and_link(SOURCE_WITH_EXTERNAL);
+    let story = Story::<brink_runtime::DotNetRng>::new(program, line_tables);
+    let gold_before = story.variable("gold").unwrap().clone();
+    let snapshot_before = story.debug_snapshot();
+
+    let mut spec = story.speculate();
+    let handler = DeferOnce {
+        deferred: Cell::new(false),
+    };
+
+    let outcome = spec
+        .eval_function("query", &[Value::Int(21)], &handler)
+        .unwrap();
+    assert!(
+        matches!(outcome, FunctionEval::AwaitingExternal),
+        "expected the deferred external to pause the eval, got {outcome:?}"
+    );
+
+    spec.resolve_external(Value::Int(42));
+    let outcome = spec.resume_function_eval(&handler).unwrap();
+    match outcome {
+        FunctionEval::Returned(value) => assert_eq!(value, Value::Int(42)),
+        FunctionEval::AwaitingExternal => panic!("only one external call in `query`"),
+    }
+
+    // The live story never advanced at all: unaffected by the speculative
+    // eval_function/resolve_external/resume_function_eval cycle.
+    assert_eq!(*story.variable("gold").unwrap(), gold_before);
+    let snapshot_after = story.debug_snapshot();
+    assert_eq!(snapshot_after.status, snapshot_before.status);
+    assert_eq!(snapshot_after.turn_index, snapshot_before.turn_index);
+}
+
+/// Calling `resume_function_eval` with no evaluation in progress is an
+/// error, not a silent no-op.
+#[test]
+fn speculation_resume_function_eval_errors_when_nothing_pending() {
+    let (program, line_tables) = compile_and_link(SOURCE_WITH_EXTERNAL);
+    let story = Story::<brink_runtime::DotNetRng>::new(program, line_tables);
+    let mut spec = story.speculate();
+
+    let err = spec.resume_function_eval(&FallbackHandler).unwrap_err();
+    assert!(
+        matches!(err, RuntimeError::NotEvaluatingFunction),
+        "expected NotEvaluatingFunction, got {err:?}"
+    );
 }
