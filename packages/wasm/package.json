@@ -41,12 +41,14 @@
   "scripts": {
     "build": "tsup && node scripts/copy-wasm.mjs",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "prepack": "pnpm run build"
   },
   "devDependencies": {
     "@brink/wasm-types": "workspace:*",
     "brink-web": "file:../../crates/brink-web/www/pkg",
     "tsup": "^8.5.1",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
   }
 }
