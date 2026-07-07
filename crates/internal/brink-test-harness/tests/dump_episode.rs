@@ -115,7 +115,7 @@ fn dump_explore_once_only() {
         max_depth: 5,
         max_episodes: 20,
     };
-    let episodes = explore(&program, line_tables, &config);
+    let episodes = explore(std::sync::Arc::new(program), line_tables, &config);
 
     eprintln!("\n══════════════════════════════════════════════════");
     eprintln!("Explore I079: {} episodes found", episodes.len());

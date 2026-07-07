@@ -4,6 +4,7 @@ mod typewriter;
 mod ui;
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use brink_format::{LineEntry, LocaleData};
@@ -24,7 +25,7 @@ pub struct LoadedLocale {
 
 /// Run the interactive TUI for playing a story.
 pub fn run(
-    program: &Program,
+    program: &Arc<Program>,
     base_line_tables: &[Vec<LineEntry>],
     locales: &[LoadedLocale],
     config: &TuiConfig,
@@ -37,7 +38,7 @@ pub fn run(
 
 fn run_inner(
     terminal: &mut ratatui::DefaultTerminal,
-    program: &Program,
+    program: &Arc<Program>,
     base_line_tables: &[Vec<LineEntry>],
     locales: &[LoadedLocale],
     config: &TuiConfig,
@@ -49,7 +50,7 @@ fn run_inner(
     locale_labels.extend(locales.iter().map(|l| l.label.clone()));
 
     let mut app = app::App::new(char_delay, locale_labels);
-    let mut story = Story::new(program, base_line_tables.to_vec());
+    let mut story = Story::new(Arc::clone(program), base_line_tables.to_vec());
     app.advance_story(&mut story)?;
 
     while !app.should_quit {
@@ -71,7 +72,7 @@ fn run_inner(
             } else {
                 base_line_tables.to_vec()
             };
-            story = Story::from_snapshot(program, snapshot, new_tables);
+            story = Story::from_snapshot(Arc::clone(program), snapshot, new_tables);
             // Re-render all past passages with the new locale's line tables.
             app.rerender_history(&story);
         }

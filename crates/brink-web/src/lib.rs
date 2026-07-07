@@ -102,17 +102,14 @@ struct DiagnosticJs {
 /// A running story instance. Owns Program + Story to avoid lifetime issues in wasm.
 #[wasm_bindgen]
 pub struct StoryRunner {
-    // We store Program in a Box to get a stable address, and the Story
-    // borrows from it. We use raw pointer + RefCell to work around the
-    // self-referential borrow.
-    program: Box<brink_runtime::Program>,
+    // Shared ownership: Story holds its own `Arc::clone`, so there is no
+    // self-referential borrow to work around (no pinning, no unsafe).
+    program: Arc<brink_runtime::Program>,
     base_line_tables: Vec<Vec<brink_format::LineEntry>>,
     /// The decoded `StoryData`, retained for `program_inkt` (Program Explorer).
     /// Independent owned value — `link` only borrows it.
     data: brink_format::StoryData,
-    // Safety: story borrows from program which is heap-pinned and never moved.
-    // We only access story through &mut self methods (single-threaded wasm).
-    story: RefCell<Option<brink_runtime::Story<'static, FastRng>>>,
+    story: RefCell<Option<brink_runtime::Story<FastRng>>>,
     /// Synchronous ink→engine external bindings: ink `EXTERNAL` name → JS
     /// callback `(args) => value`. Built into a [`JsHandler`] on each
     /// `continue_*` call. Single-threaded wasm, so a `RefCell` suffices.
@@ -158,22 +155,9 @@ impl StoryRunner {
             .map_err(|e| JsError::new(&format!("decode error: {e}")))?;
         let (prog, line_tables) =
             brink_runtime::link(&data).map_err(|e| JsError::new(&format!("link error: {e}")))?;
-        let program = Box::new(prog);
+        let program = Arc::new(prog);
 
-        // Safety: we pin the Program in a Box and keep it alive for the
-        // lifetime of StoryRunner. The Story borrows it, but we transmute
-        // the lifetime to 'static. This is safe because:
-        // 1. program is heap-allocated and never moved
-        // 2. story is dropped before program (struct drop order)
-        // 3. wasm is single-threaded
-        let program_ptr: *const brink_runtime::Program = &raw const *program;
-        // SAFETY: program is heap-allocated via Box and never moved. Story borrows
-        // it for 'static, but StoryRunner keeps the Box alive and drops story first
-        // (struct field drop order). wasm is single-threaded.
-        #[expect(unsafe_code)]
-        let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
-
-        let story = brink_runtime::Story::<FastRng>::new(program_ref, line_tables.clone());
+        let story = brink_runtime::Story::<FastRng>::new(Arc::clone(&program), line_tables.clone());
 
         Ok(StoryRunner {
             program,
@@ -561,13 +545,10 @@ impl StoryRunner {
 
     /// Reset: create a fresh story from the same program.
     pub fn reset(&self) {
-        let program_ptr: *const brink_runtime::Program = &raw const *self.program;
-        // SAFETY: same invariants as in `new` — Box is pinned and outlives the Story.
-        #[expect(unsafe_code)]
-        let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
-
-        let mut story =
-            brink_runtime::Story::<FastRng>::new(program_ref, self.base_line_tables.clone());
+        let mut story = brink_runtime::Story::<FastRng>::new(
+            Arc::clone(&self.program),
+            self.base_line_tables.clone(),
+        );
         // Re-apply the host-set seed so a reset replays deterministically.
         if let Some(seed) = self.seed.get() {
             story.set_rng_seed(seed);
@@ -594,21 +575,15 @@ impl StoryRunner {
         let (prog, line_tables) =
             brink_runtime::link(&data).map_err(|e| JsError::new(&format!("link error: {e}")))?;
 
-        // Drop the old story first — it borrows the program we're about to
-        // replace — then swap the heap-pinned program/data/tables and rebuild.
-        // Write into the existing Box (stable address) rather than reallocating.
+        // Drop the old story first, then swap in the new program/data/tables
+        // and rebuild.
         *self.story.borrow_mut() = None;
-        *self.program = prog;
+        self.program = Arc::new(prog);
         self.data = data;
         self.base_line_tables.clone_from(&line_tables);
 
-        let program_ptr: *const brink_runtime::Program = &raw const *self.program;
-        // SAFETY: same invariants as `new` — the Box is pinned and outlives the
-        // Story, and the old Story was dropped above before this new borrow.
-        // wasm is single-threaded.
-        #[expect(unsafe_code)]
-        let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
-        let mut story = brink_runtime::Story::<FastRng>::new(program_ref, line_tables);
+        let mut story =
+            brink_runtime::Story::<FastRng>::new(Arc::clone(&self.program), line_tables);
         if let Some(seed) = self.seed.get() {
             story.set_rng_seed(seed);
         }
@@ -1130,10 +1105,9 @@ struct ChoiceJs {
 // can route specific calls out-of-band unconditionally.
 #[wasm_bindgen]
 pub struct WebSession {
-    // Same self-referential Box-pinning as `StoryRunner`: `program` is
-    // heap-allocated and never moved; `session` borrows it as `'static` but
-    // is dropped first (struct field order), and wasm is single-threaded.
-    program: Box<brink_runtime::Program>,
+    // Shared ownership: `StorySession` holds an `Arc::clone`, so there is no
+    // self-referential borrow to work around (mirrors `StoryRunner`).
+    program: Arc<brink_runtime::Program>,
     base_line_tables: Vec<Vec<brink_format::LineEntry>>,
     /// The decoded `StoryData` this session is running — kept (mirroring
     /// `StoryRunner::data`) so the Program Explorer facts (`program_model`,
@@ -1141,7 +1115,7 @@ pub struct WebSession {
     /// Compile-bound, not session-bound: swapped on `reload`, untouched by
     /// `restart` (same program, fresh session).
     data: brink_format::StoryData,
-    session: RefCell<Option<brink_runtime::StorySession<'static, FastRng>>>,
+    session: RefCell<Option<brink_runtime::StorySession<FastRng>>>,
     /// Explicit RNG seed, if the host set one. Re-applied on `restart`/
     /// `reload` so re-runs stay deterministic.
     seed: Cell<Option<i32>>,
@@ -1175,17 +1149,10 @@ impl WebSession {
             .map_err(|e| JsError::new(&format!("decode error: {e}")))?;
         let (prog, line_tables) =
             brink_runtime::link(&data).map_err(|e| JsError::new(&format!("link error: {e}")))?;
-        let program = Box::new(prog);
+        let program = Arc::new(prog);
 
-        let program_ptr: *const brink_runtime::Program = &raw const *program;
-        // SAFETY: program is heap-allocated via Box and never moved. The
-        // session borrows it for 'static, but WebSession keeps the Box alive
-        // and drops `session` first (struct field drop order). wasm is
-        // single-threaded. Identical invariants to `StoryRunner::new`.
-        #[expect(unsafe_code)]
-        let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
-
-        let mut story = brink_runtime::Story::<FastRng>::new(program_ref, line_tables.clone());
+        let mut story =
+            brink_runtime::Story::<FastRng>::new(Arc::clone(&program), line_tables.clone());
         if let Some(s) = seed {
             story.set_rng_seed(s);
         }
@@ -1612,17 +1579,12 @@ impl WebSession {
         };
 
         *self.session.borrow_mut() = None;
-        *self.program = prog;
+        self.program = Arc::new(prog);
         self.base_line_tables.clone_from(&line_tables);
         self.data = data;
 
-        let program_ptr: *const brink_runtime::Program = &raw const *self.program;
-        // SAFETY: same invariants as `new` — the Box is pinned and outlives
-        // the session, and the old session was dropped above before this new
-        // borrow. wasm is single-threaded.
-        #[expect(unsafe_code)]
-        let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
-        let mut story = brink_runtime::Story::<FastRng>::new(program_ref, line_tables);
+        let mut story =
+            brink_runtime::Story::<FastRng>::new(Arc::clone(&self.program), line_tables);
         if let Some(s) = self.seed.get() {
             story.set_rng_seed(s);
         }
@@ -1658,12 +1620,10 @@ impl WebSession {
     /// Restart: create a fresh session from the same program (new empty
     /// journal), re-applying the host-set seed if any.
     pub fn restart(&mut self) {
-        let program_ptr: *const brink_runtime::Program = &raw const *self.program;
-        // SAFETY: same invariants as `new` — Box is pinned and outlives the session.
-        #[expect(unsafe_code)]
-        let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
-        let mut story =
-            brink_runtime::Story::<FastRng>::new(program_ref, self.base_line_tables.clone());
+        let mut story = brink_runtime::Story::<FastRng>::new(
+            Arc::clone(&self.program),
+            self.base_line_tables.clone(),
+        );
         if let Some(s) = self.seed.get() {
             story.set_rng_seed(s);
         }
@@ -1687,13 +1647,10 @@ impl WebSession {
             brink_runtime::link(&data).map_err(|e| JsError::new(&format!("link error: {e}")))?;
         let journal: brink_runtime::SessionJournal = serde_json::from_str(journal_json)
             .map_err(|e| JsError::new(&format!("journal decode error: {e}")))?;
-        let program = Box::new(prog);
+        let program = Arc::new(prog);
 
-        let program_ptr: *const brink_runtime::Program = &raw const *program;
-        // SAFETY: same invariants as `WebSession::new`.
-        #[expect(unsafe_code)]
-        let program_ref: &'static brink_runtime::Program = unsafe { &*program_ptr };
-        let mut story = brink_runtime::Story::<FastRng>::new(program_ref, line_tables.clone());
+        let mut story =
+            brink_runtime::Story::<FastRng>::new(Arc::clone(&program), line_tables.clone());
         if let Some(s) = seed {
             story.set_rng_seed(s);
         }
@@ -1772,7 +1729,7 @@ enum StepOutcomeJs {
 
 fn step_outcome_to_js<R: brink_runtime::StoryRng>(
     outcome: brink_runtime::StepOutcome,
-    session: &brink_runtime::StorySession<'_, R>,
+    session: &brink_runtime::StorySession<R>,
 ) -> StepOutcomeJs {
     match outcome {
         brink_runtime::StepOutcome::Line(line) => StepOutcomeJs::Line {

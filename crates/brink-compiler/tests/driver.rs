@@ -181,7 +181,7 @@ fn compile_and_run(source: &str, inputs: &[usize]) -> String {
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
     let data = compile_mem("main.ink", &files).unwrap();
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
-    let mut story = Story::<DotNetRng>::new(&program, line_tables);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let mut output = String::new();
     let mut input_idx = 0;
 
@@ -404,7 +404,7 @@ fn include_content_appears_before_main() {
     ]);
     let data = compile_mem("main.ink", &files).unwrap();
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
-    let mut story = Story::<DotNetRng>::new(&program, line_tables);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let lines = story.continue_maximally().unwrap();
     let result: String = lines.iter().map(Line::text).collect();
     assert_eq!(
@@ -1353,7 +1353,7 @@ fn compile_and_run_steps(source: &str, inputs: &[usize]) -> Vec<(String, Option<
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
     let data = compile_mem("main.ink", &files).unwrap();
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
-    let mut story = Story::<DotNetRng>::new(&program, line_tables);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let mut steps = Vec::new();
     let mut input_idx = 0;
     let mut guard = 0;
@@ -1877,7 +1877,7 @@ fn glue_in_choice_body_runtime_joins_text() {
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
     let data = compile_mem("main.ink", &files).unwrap();
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
-    let mut story = Story::<DotNetRng>::new(&program, line_tables);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
 
     // First continue: should get choices
     let line = story.continue_single().unwrap();

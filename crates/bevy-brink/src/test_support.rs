@@ -100,7 +100,7 @@ mod runtime_story_api {
     #[test]
     fn variable_get_set_by_name() {
         let (program, tables, _ctx) = compile_test_story("VAR mood = 1\nMood {mood}.\n-> END\n");
-        let mut story = Story::<FastRng>::new(&program, tables);
+        let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), tables);
         assert_eq!(story.variable("mood"), Some(&Value::Int(1)));
         assert!(story.set_variable("mood", Value::Int(5)));
         assert_eq!(story.variable("mood"), Some(&Value::Int(5)));
@@ -112,7 +112,7 @@ mod runtime_story_api {
     #[test]
     fn set_variable_reflected_in_output() {
         let (program, tables, _ctx) = compile_test_story("VAR mood = 1\nMood {mood}.\n-> END\n");
-        let mut story = Story::<FastRng>::new(&program, tables);
+        let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), tables);
         story.set_variable("mood", Value::Int(7));
         let text = render(story.continue_maximally().expect("continues"));
         assert!(text.contains("Mood 7."), "got {text:?}");
@@ -123,7 +123,7 @@ mod runtime_story_api {
         let src = "{RANDOM(1, 1000)}\n-> END\n";
         let run = |seed: i32| {
             let (program, tables, _ctx) = compile_test_story(src);
-            let mut story = Story::<FastRng>::new(&program, tables);
+            let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), tables);
             story.set_rng_seed(seed);
             render(story.continue_maximally().expect("continues"))
         };
@@ -145,7 +145,7 @@ mod runtime_story_api {
         }
         let (program, tables, _ctx) =
             compile_test_story("EXTERNAL double(x)\nResult: {double(21)}.\n-> END\n");
-        let mut story = Story::<FastRng>::new(&program, tables);
+        let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), tables);
         let text = render(story.continue_maximally_with(&Doubler).expect("continues"));
         assert!(text.contains("Result: 42"), "got {text:?}");
     }
@@ -154,12 +154,13 @@ mod runtime_story_api {
     fn save_load_round_trips_globals() {
         let src = "VAR mood = 1\nVAR who = \"a\"\nMood {mood} {who}.\n-> END\n";
         let (program, tables, _ctx) = compile_test_story(src);
-        let mut s1 = Story::<FastRng>::new(&program, tables.clone());
+        let program = std::sync::Arc::new(program);
+        let mut s1 = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables.clone());
         s1.set_variable("mood", Value::Int(9));
         s1.set_variable("who", Value::from("bob"));
         let save = s1.save_state();
 
-        let mut s2 = Story::<FastRng>::new(&program, tables);
+        let mut s2 = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
         let report = s2.load_state(&save);
         assert!(report.is_clean(), "clean load: {report:?}");
         assert_eq!(s2.variable("mood"), Some(&Value::Int(9)));
@@ -169,13 +170,13 @@ mod runtime_story_api {
     #[test]
     fn load_reports_globals_the_program_lacks() {
         let (pa, ta, _) = compile_test_story("VAR foo = 1\n-> END\n");
-        let mut sa = Story::<FastRng>::new(&pa, ta);
+        let mut sa = Story::<FastRng>::new(std::sync::Arc::new(pa), ta);
         sa.set_variable("foo", Value::Int(5));
         let save = sa.save_state();
 
         // A different story with no `foo`: the saved global is reported, not applied.
         let (pb, tb, _) = compile_test_story("VAR bar = 2\n-> END\n");
-        let mut sb = Story::<FastRng>::new(&pb, tb);
+        let mut sb = Story::<FastRng>::new(std::sync::Arc::new(pb), tb);
         let report = sb.load_state(&save);
         assert_eq!(report.unknown_globals, vec!["foo".to_string()]);
         assert!(!report.is_clean());
@@ -186,12 +187,13 @@ mod runtime_story_api {
         // Referencing {start} makes `start` a counted scope.
         let src = "-> start\n=== start ===\nVisits: {start}.\n-> END\n";
         let (program, tables, _) = compile_test_story(src);
-        let mut s1 = Story::<FastRng>::new(&program, tables.clone());
+        let program = std::sync::Arc::new(program);
+        let mut s1 = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables.clone());
         let _ = s1.continue_maximally().expect("continues");
         let save = s1.save_state();
         assert!(!save.visits.is_empty(), "a visit count should be recorded");
 
-        let mut s2 = Story::<FastRng>::new(&program, tables);
+        let mut s2 = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
         s2.load_state(&save);
         assert_eq!(
             s2.save_state().visits,
@@ -205,7 +207,7 @@ mod runtime_story_api {
         use brink_runtime::FallbackHandler;
         let src = "-> END\n=== function add(a, b) ===\n~ return a + b\n";
         let (program, tables, _) = compile_test_story(src);
-        let mut story = Story::<FastRng>::new(&program, tables);
+        let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), tables);
         let v = story
             .call_function("add", &[Value::Int(2), Value::Int(3)], &FallbackHandler)
             .expect("calls");
@@ -227,7 +229,7 @@ mod runtime_story_api {
         }
         let src = "EXTERNAL dbl(x)\n-> END\n=== function scaled(n) ===\n~ return dbl(n) + 1\n";
         let (program, tables, _) = compile_test_story(src);
-        let mut story = Story::<FastRng>::new(&program, tables);
+        let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), tables);
         let v = story
             .call_function("scaled", &[Value::Int(10)], &Doubler)
             .expect("calls");
@@ -238,7 +240,7 @@ mod runtime_story_api {
     fn call_function_unknown_errors() {
         use brink_runtime::{FallbackHandler, RuntimeError};
         let (program, tables, _) = compile_test_story("-> END\n");
-        let mut story = Story::<FastRng>::new(&program, tables);
+        let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), tables);
         let err = story
             .call_function("nope", &[], &FallbackHandler)
             .unwrap_err();
@@ -264,7 +266,7 @@ mod runtime_story_api {
             }
         }
         let (program, tables, _) = compile_test_story("EXTERNAL wait(x)\nGot {wait(5)}.\n-> END\n");
-        let mut story = Story::<FastRng>::new(&program, tables);
+        let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), tables);
 
         let mut text = String::new();
         let mut parked = false;
@@ -298,7 +300,7 @@ mod runtime_story_api {
     fn choose_path_string_with_args_binds_params() {
         let src = "-> END\n=== call(action, present) ===\nYou {action} the {present}.\n-> END\n";
         let (program, tables, _ctx) = compile_test_story(src);
-        let mut story = Story::<FastRng>::new(&program, tables);
+        let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), tables);
         story
             .choose_path_string_with_args("call", &[Value::from("open"), Value::from("box")])
             .expect("enters the parameterized knot");
@@ -317,7 +319,7 @@ mod runtime_story_api {
         use brink_runtime::RuntimeError;
         let src = "-> END\n=== call(action, present) ===\nYou {action} the {present}.\n-> END\n";
         let (program, tables, _ctx) = compile_test_story(src);
-        let mut story = Story::<FastRng>::new(&program, tables);
+        let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), tables);
 
         let too_few = story
             .choose_path_string_with_args("call", &[Value::from("open")])
@@ -355,7 +357,7 @@ mod runtime_story_api {
         use brink_runtime::{FallbackHandler, RuntimeError};
         let src = "-> END\n=== function add(a, b) ===\n~ return a + b\n";
         let (program, tables, _) = compile_test_story(src);
-        let mut story = Story::<FastRng>::new(&program, tables);
+        let mut story = Story::<FastRng>::new(std::sync::Arc::new(program), tables);
         let err = story
             .call_function("add", &[Value::Int(1)], &FallbackHandler)
             .unwrap_err();

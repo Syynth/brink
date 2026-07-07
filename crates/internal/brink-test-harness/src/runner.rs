@@ -83,11 +83,11 @@ fn snapshot_initial(story: &Story<DotNetRng>, program: &Program) -> StateSnapsho
 /// Each step corresponds to one `continue_single_observed` call.
 #[expect(clippy::too_many_lines)]
 pub fn record(
-    program: &Program,
+    program: &std::sync::Arc<Program>,
     line_tables: Vec<Vec<brink_format::LineEntry>>,
     config: &RunConfig,
 ) -> Episode {
-    let mut story = Story::<DotNetRng>::new(program, line_tables);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::clone(program), line_tables);
     let initial_state = snapshot_initial(&story, program);
     let mut recorder = EpisodeRecorder::new();
     let mut steps = Vec::new();
@@ -271,12 +271,12 @@ pub fn record_from_ink_json(json_str: &str, inputs: &[usize]) -> Episode {
         inputs: inputs.to_vec(),
         max_steps: 10_000,
     };
-    record(&program, line_tables, &config)
+    record(&std::sync::Arc::new(program), line_tables, &config)
 }
 
 /// Quick text-only output from a program with pre-supplied choice inputs.
 pub fn run_text(
-    program: &Program,
+    program: std::sync::Arc<Program>,
     line_tables: Vec<Vec<brink_format::LineEntry>>,
     inputs: &[usize],
 ) -> Result<String, String> {
@@ -321,5 +321,5 @@ pub fn run_text_from_ink_json(json_str: &str, inputs: &[usize]) -> Result<String
     let data = brink_converter::convert(&ink).map_err(|e| format!("convert error: {e}"))?;
     let (program, line_tables) =
         brink_runtime::link(&data).map_err(|e| format!("link error: {e}"))?;
-    run_text(&program, line_tables, inputs)
+    run_text(std::sync::Arc::new(program), line_tables, inputs)
 }

@@ -577,8 +577,8 @@ impl ExternalFnHandler for RecordedReplayHandler<'_> {
 /// session boundary. The wrapped story is reachable via [`story`](Self::story) /
 /// [`story_mut`](Self::story_mut) for the documented journal-bypass escape
 /// hatch.
-pub struct StorySession<'p, R: StoryRng = FastRng> {
-    story: Story<'p, R>,
+pub struct StorySession<R: StoryRng = FastRng> {
+    story: Story<R>,
     journal: SessionJournal,
     started: bool,
     /// The un-replayed tail of an in-progress replay that parked on a deferred
@@ -614,12 +614,12 @@ enum StepPark {
     Fail(FailReason),
 }
 
-impl<'p, R: StoryRng> StorySession<'p, R> {
+impl<R: StoryRng> StorySession<R> {
     /// Wrap `story` in a fresh session. `seed` is advisory metadata recorded in
     /// the journal (the host is responsible for actually seeding the story via
     /// [`Story::set_rng_seed`] before/at start).
     #[must_use]
-    pub fn new(story: Story<'p, R>, seed: Option<u64>) -> Self {
+    pub fn new(story: Story<R>, seed: Option<u64>) -> Self {
         let checksum = story.program().source_checksum();
         Self {
             journal: SessionJournal::new(checksum, seed),
@@ -649,14 +649,14 @@ impl<'p, R: StoryRng> StorySession<'p, R> {
     /// **Escape hatch**: the wrapped story. Reads through here never touch the
     /// journal (they can't mutate anyway).
     #[must_use]
-    pub fn story(&self) -> &Story<'p, R> {
+    pub fn story(&self) -> &Story<R> {
         &self.story
     }
 
     /// **Escape hatch**: mutable access to the wrapped story. Anything done
     /// here **bypasses the journal** — the documented journal-bypass contract.
     /// Use for foreign / shared flows (#200) whose externals never journal.
-    pub fn story_mut(&mut self) -> &mut Story<'p, R> {
+    pub fn story_mut(&mut self) -> &mut Story<R> {
         &mut self.story
     }
 
@@ -895,7 +895,7 @@ impl<'p, R: StoryRng> StorySession<'p, R> {
     }
 }
 
-impl<'p, R: StoryRng> StorySession<'p, R> {
+impl<R: StoryRng> StorySession<R> {
     // ── Replay / restore ─────────────────────────────────────────────
 
     /// Fast-restore: apply a journal's embedded [`checkpoint`](SessionJournal::checkpoint)
@@ -910,7 +910,7 @@ impl<'p, R: StoryRng> StorySession<'p, R> {
     /// [`SessionError::ChecksumMismatch`] only if the checksum differs *and* no
     /// checkpoint is present to restore from (nothing safe to do).
     pub fn restore(
-        story: Story<'p, R>,
+        story: Story<R>,
         journal: SessionJournal,
     ) -> Result<(Self, ReplayOutcome), SessionError> {
         let program_checksum = story.program().source_checksum();
@@ -967,7 +967,7 @@ impl<'p, R: StoryRng> StorySession<'p, R> {
     /// recorded inputs from the park point.
     #[must_use]
     pub fn replay(
-        story: Story<'p, R>,
+        story: Story<R>,
         journal: &SessionJournal,
         mode: ExternalReplayMode,
         live_handler: Option<&dyn ExternalFnHandler>,

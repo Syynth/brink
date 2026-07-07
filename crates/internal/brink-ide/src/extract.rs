@@ -681,7 +681,10 @@ mod tests {
         })
         .expect("compile");
         let (program, line_tables) = brink_runtime::link(&out.data).expect("link");
-        let mut story = brink_runtime::Story::<brink_runtime::FastRng>::new(&program, line_tables);
+        let mut story = brink_runtime::Story::<brink_runtime::FastRng>::new(
+            std::sync::Arc::new(program),
+            line_tables,
+        );
         let mut texts = Vec::new();
         for line in story.continue_maximally().expect("run") {
             let text = match line {

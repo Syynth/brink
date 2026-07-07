@@ -20,7 +20,7 @@ fn story_from(case: &str) -> (brink_runtime::Program, Vec<Vec<brink_format::Line
 }
 
 /// Run a shared flow to a terminal line.
-fn run_flow(story: &mut Story<'_, DotNetRng>, name: &str) {
+fn run_flow(story: &mut Story<DotNetRng>, name: &str) {
     for _ in 0..1000 {
         match story.continue_flow_single(name).unwrap() {
             Line::Text { .. } => {}
@@ -33,7 +33,7 @@ fn run_flow(story: &mut Story<'_, DotNetRng>, name: &str) {
 #[test]
 fn shared_flow_writes_are_visible_in_the_default_context() {
     let (program, line_tables) = story_from("knots/knot-stitch-gather-counts");
-    let mut story = Story::<DotNetRng>::new(&program, line_tables);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
 
     // Spawn a shared flow at the root and run it — WITHOUT advancing the
     // default flow at all.
@@ -64,7 +64,7 @@ fn shared_flow_writes_are_visible_in_the_default_context() {
 #[test]
 fn shared_flows_are_listed_and_destroyable() {
     let (program, line_tables) = story_from("knots/knot-stitch-gather-counts");
-    let mut story = Story::<DotNetRng>::new(&program, line_tables);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
 
     story.spawn_flow_shared("alpha", None).unwrap();
     story.spawn_flow_shared("beta", None).unwrap();
