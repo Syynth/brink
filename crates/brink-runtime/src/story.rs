@@ -396,66 +396,6 @@ pub struct Context {
     pub previous_random: i32,
 }
 
-impl Context {
-    pub fn global(&self, idx: u32) -> &Value {
-        &self.globals[idx as usize]
-    }
-
-    pub fn set_global(&mut self, idx: u32, value: Value) {
-        self.globals[idx as usize] = value;
-    }
-
-    pub fn visit_count(&self, id: DefinitionId) -> u32 {
-        self.visit_counts.get(&id).copied().unwrap_or(0)
-    }
-
-    pub fn increment_visit(&mut self, id: DefinitionId) {
-        *self.visit_counts.entry(id).or_insert(0) += 1;
-    }
-
-    pub fn turn_count(&self, id: DefinitionId) -> Option<u32> {
-        self.turn_counts.get(&id).copied()
-    }
-
-    pub fn set_turn_count(&mut self, id: DefinitionId, turn: u32) {
-        self.turn_counts.insert(id, turn);
-    }
-
-    pub fn turn_index(&self) -> u32 {
-        self.turn_index
-    }
-
-    pub fn increment_turn_index(&mut self) {
-        self.turn_index += 1;
-    }
-
-    pub fn rng_seed(&self) -> i32 {
-        self.rng_seed
-    }
-
-    pub fn set_rng_seed(&mut self, seed: i32) {
-        self.rng_seed = seed;
-    }
-
-    pub fn previous_random(&self) -> i32 {
-        self.previous_random
-    }
-
-    pub fn set_previous_random(&mut self, val: i32) {
-        self.previous_random = val;
-    }
-
-    pub fn next_random<R: StoryRng>(seed: i32) -> i32 {
-        let mut rng = R::from_seed(seed);
-        rng.next_int()
-    }
-
-    pub fn random_sequence<R: StoryRng>(seed: i32, count: usize) -> Vec<i32> {
-        let mut rng = R::from_seed(seed);
-        (0..count).map(|_| rng.next_int()).collect()
-    }
-}
-
 impl Flow {
     /// Returns a reference to the current (topmost) thread.
     ///
@@ -1838,7 +1778,7 @@ impl<R: StoryRng> Story<R> {
     /// with that name is declared. Reads the default flow's context.
     pub fn variable(&self, name: &str) -> Option<&Value> {
         let idx = self.program.global_index(name)?;
-        Some(self.default_context.global(idx))
+        Some(ContextAccess::global(&self.default_context, idx))
     }
 
     /// Set a global variable by name, returning `false` (no-op) if no global
@@ -1847,7 +1787,7 @@ impl<R: StoryRng> Story<R> {
     pub fn set_variable(&mut self, name: &str, value: Value) -> bool {
         match self.program.global_index(name) {
             Some(idx) => {
-                self.default_context.set_global(idx, value);
+                ContextAccess::set_global(&mut self.default_context, idx, value);
                 true
             }
             None => false,
@@ -1858,7 +1798,7 @@ impl<R: StoryRng> Story<R> {
     /// `RANDOM`/shuffle output reproducible — set it before running (or after
     /// a reset) so two runs of the same story on different machines match.
     pub fn set_rng_seed(&mut self, seed: i32) {
-        self.default_context.set_rng_seed(seed);
+        ContextAccess::set_rng_seed(&mut self.default_context, seed);
     }
 
     // ── Pausable stepping (async externals) ─────────────────────────
