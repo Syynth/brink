@@ -1,5 +1,59 @@
 # @brink-lang/editor
 
+## 0.8.1
+
+### Patch Changes
+
+- 33f49a7: Fix #403: the narrative fold pill's cast summary now routes through `detectCast` (the #366/#399 public dialect extractor) instead of reading the `speaker` attr raw off `LineInfo.dialect.attrs`. A custom dialect whose chain carries a differently-named attr (e.g. `narrator` instead of `speaker`) now surfaces correctly in the pill; the default at-cue dialect's pill output is unchanged (still shows the carried `speaker` value).
+- 81578e6: Fix #405: `preparePlaceholder` now breaks an exact-span tie between a structural fold and a machinery/narrative fold deliberately (structural wins), instead of relying on the accidental push order of `getFoldingRanges()`. No visible behavior change for the ordering hosts already ship (structural is pushed first in `folding_ranges_impl`), but the precedence is now pinned and covered by a test that constructs the tie with the ranges pushed in the opposite order.
+- d9e6ad0: Fix #406: reconcile the at-cue preset's `parenthetical` shape's `content_group` (which spans the parens-inclusive `"(text)"`, needed so `content_span`/markup geometry keeps the parens as visible content) with a convert/strip round-trip's need for the bare text between the parens. Before this fix, a dialect declaring a `convert` transition row targeting `parenthetical` from a bare-content source kind rendered the target template (`"${content}<>"`) with the bare extracted text, dropping the opening paren entirely (`"radio<>"` instead of `"(radio)<>"`) — latent since the at-cue preset itself ships `transitions: []`, but it would have bitten the first dialect declaring such a row. Adds `PatternShape.template_group` (optional, additive — defaults to `content_group`, byte-identical for every dialect that doesn't set it): the group whose captured value fills `template`'s placeholder for convert/strip round-trips. No visible change for the default dialect's classification geometry or `data-*` attributes.
+- d346261: Fix a false-positive in the conditional-scaffold classification pass added
+  by #413: ordinary narrative containing inline logic that happens to
+  start or end with a brace (a standalone inline conditional used as
+  narrative content, e.g. `{visited: You were here before.}`, or narrative
+  ending in a value interpolation, e.g. `You have {gold}`) was incorrectly
+  swept into `Logic` classification (`brink-logic`) merely because the line
+  started with `{` or ended with `}`. Only a conditional/sequence block's
+  own genuine opening/closing brace (bare `{`/`}`, or `{` followed by a
+  switch expression ending in `:`) is scaffold now — inline logic embedded
+  in narrative keeps its narrative/dialogue classification.
+- f35b20c: Fix a headless-contract leak (#414, follow-up to #363): the line-decoration
+  pass stamped two inline `style` attributes regardless of `theme: false` —
+  `padding-left` for weave-depth indent on choices/gathers, and
+  `text-align: right` on standalone diverts — which beat host stylesheets and
+  left headless embedders unable to restyle them.
+
+  Both are now taxonomy instead:
+
+  - Weave depth rides as `data-depth="N"` (choices/gathers at depth > 1).
+  - Standalone diverts carry the `brink-divert-standalone` class.
+
+  `brinkTheme` ships the previous look (indent scaled by depth, right-aligned
+  standalone diverts) via CSS attribute/class selectors, so `brink-studio`
+  renders unchanged. Headless hosts (`theme: false`) restyle
+  `[data-depth="N"]` / `.brink-divert-standalone` directly — the
+  line-decoration pass never emits a `style` attribute.
+
+- d346261: Fix two screenplay-mode classification gaps (#413): a `~`-sigil logic line
+  immediately after a chained dialogue line was swallowed into the
+  cue→dialogue chain (rendered `brink-dialogue` instead of `brink-logic`),
+  and lines in/around conditional blocks (`{`, `- cond:`, `- else:`, `}`, and
+  cue/dialogue lines inside conditional arms) got no classification at all.
+
+  Sigil classification now always wins over chain continuation. Conditional
+  scaffold lines classify as logic; cue/dialogue lines written inside a
+  conditional or sequence arm classify normally (Character/Parenthetical/
+  Dialogue) and participate in the dialogue chain, matching top-level
+  narrative. Choice-body narrative is unaffected — it still classifies but
+  never chains, per the existing spec-mandated split.
+
+  Emitted classes for lines that already classified correctly are
+  byte-identical; only the previously-broken lines gain classes.
+
+- Updated dependencies [5075db7]
+- Updated dependencies [cbc27aa]
+  - @brink-lang/web@0.9.0
+
 ## 0.8.0
 
 ### Minor Changes
