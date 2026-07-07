@@ -196,10 +196,12 @@ privileged; neither owns the state model.
 ## Ownership and lifetimes
 
 The current `Story<'p, R>` borrows `program: &'p Program`. That borrow is a
-primary source of the mess: web can't hold a borrowed program across the wasm
-boundary (self-referential, needs `ouroboros`/unsafe), and bevy's program is an
-`Arc`-shared *asset* referenced by flow *components* that can't carry `'p`. The
-Rc→Arc swap landed *inside* `Program`, but the top-level borrow remains.
+primary source of the mess: web already works around it with **three `unsafe`
+raw-pointer transmutes to `&'static Program`** over a pinned `Box` (brink-web
+`lib.rs` `new`/`reset`/`reload`), and bevy's program is a shared *asset*
+referenced by flow *components* that can't carry `'p`. `Program` is **not**
+`Arc` or `Clone` today (`Story::clone` works only because `&Program` is `Copy`);
+F1.1 wraps it in `Arc` and deletes both the `<'p>` parameter and web's unsafe.
 
 The rule: **immutable-and-shared → `Arc`; mutable → single-owner with a
 step-scoped `&mut`; structural sharing (`Arc`) quarantined inside the override
@@ -275,6 +277,13 @@ Design points:
   → `advance*` → `Line`s; `FlowStep::eval` → `Value`. This is the Tier-0
   "invoke existing" surface (a function/knot with **literal** args); a computed
   arg (`damage(gold + 1)`) falls to Tier-1 fragment compilation.
+- **A fork is a COMPLETE snapshot** — all flows and the resolver
+  (`Arc<dyn PluralResolver>`), nothing silently dropped. (Corrects a latent bug
+  in today's `Story::clone`, which silently drops `shared_instances` and the
+  resolver — harmless only because the sole cloner, the oracle DFS, uses neither.
+  In the new model `shared_instances` dissolves into empty-local-over-world
+  flows, so completeness is the contract, which is also what makes `Mode::Sandbox`
+  safe: a naive clone-to-fork would lose in-flight flows; a complete fork can't.)
 
 Each consumer, same three operations:
 
