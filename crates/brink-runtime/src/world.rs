@@ -3,19 +3,27 @@
 //!
 //! This is the F1.3 stage of the scoped-flow-state restructuring
 //! (`docs/scoped-flow-state-spec.md`): `World` replaces the old monolithic
-//! `Context` as the core mutable-state primitive. `FlowLocal` is currently
-//! an empty placeholder — F3 will give it `CoW` override storage. The
-//! [`ContextView`] routing view implements [`ContextAccess`] over
-//! `(&mut World, &mut FlowLocal)`; since `FlowLocal` contributes nothing
-//! yet, every read and write routes straight to `World` — byte-identical to
-//! today's single-`Context` behavior.
+//! `Context` as the core mutable-state primitive. The [`ContextView`]
+//! routing view implements [`ContextAccess`] over `(&mut World, &mut
+//! FlowLocal)`.
 //!
 //! F2.1 adds the **policy** types ([`Scope`], [`WorldPolicy`],
 //! [`ResolvedPolicy`]) and their resolution against a [`Program`]'s symbol
-//! table. This PR is pure addition: `ResolvedPolicy` is stored on `World`
-//! but not yet consulted by [`ContextView`] — routing still goes straight
-//! to `World` for everything. F2.2 wires the routing view to consult the
-//! policy.
+//! table.
+//!
+//! **F2.2 (this stage)** gives `FlowLocal` flat override storage (plain
+//! maps/options — no `CoW` chain yet, that's F3) and wires [`ContextView`]
+//! to route every [`ContextAccess`] op by consulting `World`'s
+//! [`ResolvedPolicy`] with **read-through** semantics: a `Local`-scoped unit
+//! reads its `FlowLocal` override if present, else falls back to `World`'s
+//! value; a `World`-scoped unit always goes straight to `World`. Writes to a
+//! `Local`-scoped unit land in `FlowLocal`; writes to a `World`-scoped unit
+//! land in `World`, immediately visible to every flow sharing it.
+//!
+//! The all-`World` policy (the default, and the only policy the oracle
+//! corpus exercises) takes the `World` branch on every op, so `ContextView`
+//! stays byte-identical to the F1.3 passthrough for every existing
+//! single-flow construction path.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -63,6 +71,13 @@ pub enum Scope {
 /// The all-`World` default (via [`WorldPolicy::default`]) is the
 /// degenerate, oracle-safety-anchoring policy: every unit homed to
 /// `World`, no overrides — identical to today's single-flow behavior.
+///
+/// **Name precedence:** a name in `overrides` is tried as a global variable
+/// first, then as a knot/stitch path (see [`ResolvedPolicy::resolve`]). If a
+/// name is (unusually) both a declared global VAR and a resolvable knot/
+/// stitch path, the override resolves against the **variable**, never the
+/// knot — the knot path is not consulted once a variable of the same name
+/// is found.
 #[derive(Debug, Clone, Default)]
 pub struct WorldPolicy {
     /// Scope for any variable or knot/stitch not named in `overrides`.
@@ -231,16 +246,12 @@ pub struct World {
     /// for consumers that never touch policy — `ResolvedPolicy` carries a
     /// per-slot `Vec` and a `HashMap` that dwarf `World`'s other fields.
     ///
-    /// **F2.1: stored but not yet consulted.** `ContextView` still routes
-    /// every read/write straight to `World` regardless of this field's
-    /// content — F2.2 wires that routing. Every construction path today
-    /// (`World::from_globals`, `FlowInstance::new_at*`, `Story::new`)
-    /// resolves [`WorldPolicy::default()`] (all-`World`), so this field is
-    /// inert until F2.2 lands.
-    #[expect(
-        dead_code,
-        reason = "F2.1 stores the resolved policy; F2.2 wires ContextView routing to consult it"
-    )]
+    /// **Consulted by [`ContextView`] (F2.2 on)** to route every
+    /// [`ContextAccess`] op between `World` and `FlowLocal`. Every
+    /// construction path that predates policy (`World::from_globals`,
+    /// `FlowInstance::new_at*`, `Story::new`) resolves
+    /// [`WorldPolicy::default()`] (all-`World`), so those paths route every
+    /// op straight to `World` — unchanged from F1.3.
     policy: Box<ResolvedPolicy>,
 }
 
@@ -305,26 +316,48 @@ impl World {
     }
 }
 
+/// A flow-local override of the shared RNG stream (`rng_seed` +
+/// `previous_random`), the two scalars [`WorldPolicy::rng`] scopes as a
+/// single unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LocalRng {
+    pub seed: i32,
+    pub previous_random: i32,
+}
+
 /// Per-flow override layer over the shared [`World`].
 ///
-/// **Placeholder for F1.3.** This stage introduces the shape only — it
-/// carries no overrides and contributes nothing to reads or writes.
-/// [`ContextView`] (below) routes every operation straight to `World`,
-/// which keeps single-flow behavior byte-identical to the old monolithic
-/// `Context`. F3 fills this in with copy-on-write override storage, spawn
-/// snapshots, and commit/discard semantics
-/// (see `docs/scoped-flow-state-spec.md`).
+/// **F2.2: flat override storage.** Each field is a plain map/option holding
+/// this flow's overrides for units [`ResolvedPolicy`] homes to
+/// [`Scope::Local`] — no copy-on-write chain yet (that's F3's spawn/parent/
+/// commit layering; see `docs/scoped-flow-state-spec.md`). A fresh
+/// `FlowLocal` (via `Default`/[`FlowLocal::new`]) overrides nothing, so it
+/// contributes no reads and every access falls through to `World` — this is
+/// what keeps the all-`World` policy byte-identical to the old passthrough.
+///
+/// [`ContextView`] (below) is what actually consults these maps; see its
+/// docs for the read-through/copy-on-write-increment semantics.
 #[derive(Debug, Clone, Default)]
 pub struct FlowLocal {
-    _private: (),
+    /// Overridden values for globals `ResolvedPolicy` homes to `Local`,
+    /// keyed by slot index.
+    globals: HashMap<u32, Value>,
+    /// Overridden visit counts for knots/stitches homed to `Local`.
+    visit_counts: HashMap<DefinitionId, u32>,
+    /// Overridden turn counts for knots homed to `Local`.
+    turn_counts: HashMap<DefinitionId, u32>,
+    /// Overridden turn index, when `turn_index_scope() == Local`.
+    turn_index: Option<u32>,
+    /// Overridden RNG stream, when `rng_scope() == Local`.
+    rng: Option<LocalRng>,
 }
 
 impl FlowLocal {
-    /// Construct an empty flow-local layer. In F1.3 this is the only way
-    /// to build one — there is nothing to configure yet.
+    /// Construct an empty flow-local layer — overrides nothing, so every
+    /// access routes through to `World`.
     #[must_use]
     pub fn new() -> Self {
-        Self { _private: () }
+        Self::default()
     }
 }
 
@@ -332,16 +365,29 @@ impl FlowLocal {
 /// FlowLocal)`.
 ///
 /// This is what the VM's drive path receives as its `impl ContextAccess`.
-/// In F1.3, `FlowLocal` is empty, so every read/write routes straight to
-/// `World` — an all-World passthrough, byte-for-byte the old `Context`
-/// behavior. F2 will consult a `ResolvedPolicy` here to decide whether a
-/// given unit routes to `World` or `FlowLocal`.
+/// Every op consults `world.policy` (a [`ResolvedPolicy`]) to decide, per
+/// unit, whether it routes to the shared `World` or the private `FlowLocal`:
+///
+/// - **`World`-scoped**: always routes straight to `World` — reads and
+///   writes are immediately visible to every flow sharing that `World`.
+/// - **`Local`-scoped, read**: **read-through** — the `FlowLocal` override
+///   if present, else `World`'s current value (so a flow that has never
+///   written a Local unit sees the shared default until its first local
+///   write).
+/// - **`Local`-scoped, write**: lands in `FlowLocal` only; `World` is
+///   untouched.
+/// - **`Local`-scoped, increment** (`increment_visit`,
+///   `increment_turn_index`): copy-on-write from the *read-through* value —
+///   read the current value (local override or World fallback), add one,
+///   store the result as the new local override. This is what makes a
+///   flow's first local increment start from World's count rather than 0.
+///
+/// Because the all-`World` policy (the only policy the oracle corpus
+/// exercises) takes the `World` branch on every op, this is byte-identical
+/// to the F1.3 all-`World` passthrough for every existing single-flow
+/// construction path.
 pub struct ContextView<'a> {
     world: &'a mut World,
-    #[expect(
-        dead_code,
-        reason = "F1.3 placeholder — FlowLocal is empty and unread until F2/F3 add routing"
-    )]
     local: &'a mut FlowLocal,
 }
 
@@ -429,66 +475,151 @@ impl ContextAccess for World {
 impl ContextAccess for ContextView<'_> {
     #[inline]
     fn global(&self, idx: u32) -> &Value {
-        self.world.global(idx)
+        match self.world.policy.scope_of_global(idx) {
+            Scope::Local => self
+                .local
+                .globals
+                .get(&idx)
+                .unwrap_or_else(|| self.world.global(idx)),
+            Scope::World => self.world.global(idx),
+        }
     }
 
     #[inline]
     fn set_global(&mut self, idx: u32, value: Value) {
-        self.world.set_global(idx, value);
+        match self.world.policy.scope_of_global(idx) {
+            Scope::Local => {
+                self.local.globals.insert(idx, value);
+            }
+            Scope::World => self.world.set_global(idx, value),
+        }
     }
 
     #[inline]
     fn visit_count(&self, id: DefinitionId) -> u32 {
-        self.world.visit_count(id)
+        match self.world.policy.scope_of_knot(id) {
+            Scope::Local => self
+                .local
+                .visit_counts
+                .get(&id)
+                .copied()
+                .unwrap_or_else(|| self.world.visit_count(id)),
+            Scope::World => self.world.visit_count(id),
+        }
     }
 
     #[inline]
     fn increment_visit(&mut self, id: DefinitionId) {
-        self.world.increment_visit(id);
+        match self.world.policy.scope_of_knot(id) {
+            Scope::Local => {
+                let base = self.visit_count(id);
+                self.local.visit_counts.insert(id, base + 1);
+            }
+            Scope::World => self.world.increment_visit(id),
+        }
     }
 
     #[inline]
     fn turn_count(&self, id: DefinitionId) -> Option<u32> {
-        self.world.turn_count(id)
+        match self.world.policy.scope_of_knot(id) {
+            Scope::Local => self
+                .local
+                .turn_counts
+                .get(&id)
+                .copied()
+                .or_else(|| self.world.turn_count(id)),
+            Scope::World => self.world.turn_count(id),
+        }
     }
 
     #[inline]
     fn set_turn_count(&mut self, id: DefinitionId, turn: u32) {
-        self.world.set_turn_count(id, turn);
+        match self.world.policy.scope_of_knot(id) {
+            Scope::Local => {
+                self.local.turn_counts.insert(id, turn);
+            }
+            Scope::World => self.world.set_turn_count(id, turn),
+        }
     }
 
     #[inline]
     fn turn_index(&self) -> u32 {
-        self.world.turn_index()
+        match self.world.policy.turn_index_scope() {
+            Scope::Local => self
+                .local
+                .turn_index
+                .unwrap_or_else(|| self.world.turn_index()),
+            Scope::World => self.world.turn_index(),
+        }
     }
 
     #[inline]
     fn increment_turn_index(&mut self) {
-        self.world.increment_turn_index();
+        match self.world.policy.turn_index_scope() {
+            Scope::Local => {
+                let base = self.turn_index();
+                self.local.turn_index = Some(base + 1);
+            }
+            Scope::World => self.world.increment_turn_index(),
+        }
     }
 
     #[inline]
     fn rng_seed(&self) -> i32 {
-        self.world.rng_seed()
+        match self.world.policy.rng_scope() {
+            Scope::Local => self
+                .local
+                .rng
+                .map_or_else(|| self.world.rng_seed(), |rng| rng.seed),
+            Scope::World => self.world.rng_seed(),
+        }
     }
 
     #[inline]
     fn set_rng_seed(&mut self, seed: i32) {
-        self.world.set_rng_seed(seed);
+        match self.world.policy.rng_scope() {
+            Scope::Local => {
+                let rng = self.local.rng.get_or_insert_with(|| LocalRng {
+                    seed: self.world.rng_seed(),
+                    previous_random: self.world.previous_random(),
+                });
+                rng.seed = seed;
+            }
+            Scope::World => self.world.set_rng_seed(seed),
+        }
     }
 
     #[inline]
     fn previous_random(&self) -> i32 {
-        self.world.previous_random()
+        match self.world.policy.rng_scope() {
+            Scope::Local => self
+                .local
+                .rng
+                .map_or_else(|| self.world.previous_random(), |rng| rng.previous_random),
+            Scope::World => self.world.previous_random(),
+        }
     }
 
     #[inline]
     fn set_previous_random(&mut self, val: i32) {
-        self.world.set_previous_random(val);
+        match self.world.policy.rng_scope() {
+            Scope::Local => {
+                let rng = self.local.rng.get_or_insert_with(|| LocalRng {
+                    seed: self.world.rng_seed(),
+                    previous_random: self.world.previous_random(),
+                });
+                rng.previous_random = val;
+            }
+            Scope::World => self.world.set_previous_random(val),
+        }
     }
 
     #[inline]
     fn next_random<R: StoryRng>(&self, seed: i32) -> i32 {
+        // Pure function of the explicit `seed` argument — not routed
+        // state, so this delegates to `World`'s implementation unchanged.
+        // The routed `rng_seed()` above is what call sites read to obtain
+        // `seed` in the first place.
         self.world.next_random::<R>(seed)
     }
 
@@ -638,5 +769,204 @@ mod policy_tests {
 
         let err = World::new(&program, &policy).expect_err("must fail");
         assert_eq!(err, PolicyError::UnknownName("nonexistent".to_owned()));
+    }
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+    use crate::link;
+
+    /// Compile a small ink story with the brink compiler and link it, for
+    /// resolving policies against a real `Program` symbol table.
+    fn compile(src: &str) -> Program {
+        let out = brink_compiler::compile("t.ink", |p| {
+            if p == "t.ink" {
+                Ok(src.to_string())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no such include",
+                ))
+            }
+        })
+        .expect("compile");
+        let (program, _line_tables) = link(&out.data).expect("link");
+        program
+    }
+
+    fn sample_program() -> Program {
+        compile(
+            "VAR gold = 0\n\
+             VAR mood = 0\n\
+             -> shrine\n\
+             === shrine ===\n\
+             At the shrine.\n\
+             -> END\n\
+             === cellar ===\n\
+             In the cellar.\n\
+             -> END\n",
+        )
+    }
+
+    /// `mood` is Local, `gold` stays World (the default). `shrine`/`cellar`
+    /// are left at the World default too, so visit counts there stay
+    /// shared — exercised separately below.
+    fn mixed_policy() -> WorldPolicy {
+        let mut overrides = BTreeMap::new();
+        overrides.insert("mood".to_owned(), Scope::Local);
+        WorldPolicy {
+            default: Scope::World,
+            overrides,
+            turn_index: Scope::World,
+            rng: Scope::World,
+        }
+    }
+
+    /// Writing a `Local`-scoped global in one flow must not affect another
+    /// flow's `ContextView` over the same `World`, nor the `World` itself.
+    /// Writing a `World`-scoped global in one flow must be immediately
+    /// visible through another flow's `ContextView`.
+    #[test]
+    fn local_write_isolated_world_write_shared() {
+        let program = sample_program();
+        let policy = mixed_policy();
+        let mut world = World::new(&program, &policy).expect("world builds");
+
+        let gold_slot = program.global_index("gold").expect("gold declared");
+        let mood_slot = program.global_index("mood").expect("mood declared");
+
+        let mut local_a = FlowLocal::new();
+        let mut local_b = FlowLocal::new();
+
+        // Flow A writes its Local `mood`.
+        {
+            let mut view_a = ContextView::new(&mut world, &mut local_a);
+            view_a.set_global(mood_slot, Value::Int(42));
+            assert_eq!(view_a.global(mood_slot), &Value::Int(42));
+        }
+
+        // Flow B's view over the same World must not see A's local write —
+        // it read-throughs to World's untouched default.
+        {
+            let view_b = ContextView::new(&mut world, &mut local_b);
+            assert_eq!(view_b.global(mood_slot), &Value::Int(0));
+            // World itself is untouched too.
+            assert_eq!(world.global(mood_slot), &Value::Int(0));
+        }
+
+        // Flow A writes its World-scoped `gold` — this must be immediately
+        // visible via Flow B's view (and via World directly).
+        {
+            let mut view_a = ContextView::new(&mut world, &mut local_a);
+            view_a.set_global(gold_slot, Value::Int(7));
+        }
+        {
+            let view_b = ContextView::new(&mut world, &mut local_b);
+            assert_eq!(view_b.global(gold_slot), &Value::Int(7));
+        }
+        assert_eq!(world.global(gold_slot), &Value::Int(7));
+    }
+
+    /// Local visit counts increment independently per flow, while a
+    /// World-scoped knot's visits are shared across flows.
+    #[test]
+    fn local_visits_independent_world_visits_shared() {
+        let program = sample_program();
+
+        // shrine: Local: cellar stays at the World default.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("shrine".to_owned(), Scope::Local);
+        let policy = WorldPolicy {
+            default: Scope::World,
+            overrides,
+            turn_index: Scope::World,
+            rng: Scope::World,
+        };
+        let mut world = World::new(&program, &policy).expect("world builds");
+
+        let shrine_id = program.find_path_target("shrine").expect("shrine exists");
+        let cellar_id = program.find_path_target("cellar").expect("cellar exists");
+
+        let mut local_a = FlowLocal::new();
+        let mut local_b = FlowLocal::new();
+
+        // Flow A visits `shrine` (Local) twice.
+        {
+            let mut view_a = ContextView::new(&mut world, &mut local_a);
+            view_a.increment_visit(shrine_id);
+            view_a.increment_visit(shrine_id);
+            assert_eq!(view_a.visit_count(shrine_id), 2);
+        }
+        // Flow B's local shrine count is independent — still 0.
+        {
+            let view_b = ContextView::new(&mut world, &mut local_b);
+            assert_eq!(view_b.visit_count(shrine_id), 0);
+        }
+        // World's own bookkeeping for a Local-scoped knot is never touched.
+        assert_eq!(world.visit_count(shrine_id), 0);
+
+        // `cellar` (World-scoped): Flow A's increment is visible to Flow B.
+        {
+            let mut view_a = ContextView::new(&mut world, &mut local_a);
+            view_a.increment_visit(cellar_id);
+        }
+        {
+            let view_b = ContextView::new(&mut world, &mut local_b);
+            assert_eq!(view_b.visit_count(cellar_id), 1);
+        }
+        assert_eq!(world.visit_count(cellar_id), 1);
+    }
+
+    /// A `Local`-scoped global reads through to World's current value until
+    /// the flow performs its first local write.
+    #[test]
+    fn local_read_through_returns_world_default_before_first_write() {
+        let program = sample_program();
+        let policy = mixed_policy();
+        let mut world = World::new(&program, &policy).expect("world builds");
+        let mood_slot = program.global_index("mood").expect("mood declared");
+
+        // World's `mood` starts at the program default (0). A later World
+        // write (e.g. host bootstrapping) should read through too, since A
+        // hasn't written its own local override yet.
+        world.set_global(mood_slot, Value::Int(99));
+
+        let mut local_a = FlowLocal::new();
+        let view_a = ContextView::new(&mut world, &mut local_a);
+        assert_eq!(view_a.global(mood_slot), &Value::Int(99));
+    }
+
+    /// Local visit-count increment is copy-on-write from the read-through
+    /// value: if World already has a nonzero count when Local is scoped
+    /// in, the flow's first local increment starts from that base, not 0.
+    #[test]
+    fn local_increment_is_cow_from_read_through_base() {
+        let program = sample_program();
+        let mut overrides = BTreeMap::new();
+        overrides.insert("shrine".to_owned(), Scope::Local);
+        let policy = WorldPolicy {
+            default: Scope::World,
+            overrides,
+            turn_index: Scope::World,
+            rng: Scope::World,
+        };
+        let mut world = World::new(&program, &policy).expect("world builds");
+        let shrine_id = program.find_path_target("shrine").expect("shrine exists");
+
+        // Seed World's bookkeeping directly (simulating pre-existing shared
+        // state before this knot was scoped Local for this flow).
+        world.increment_visit(shrine_id);
+        world.increment_visit(shrine_id);
+        assert_eq!(world.visit_count(shrine_id), 2);
+
+        let mut local_a = FlowLocal::new();
+        let mut view_a = ContextView::new(&mut world, &mut local_a);
+        // First local increment must start from World's base (2), not 0.
+        view_a.increment_visit(shrine_id);
+        assert_eq!(view_a.visit_count(shrine_id), 3);
+
+        // World's own count is untouched by the Local increment.
+        assert_eq!(world.visit_count(shrine_id), 2);
     }
 }
