@@ -317,10 +317,20 @@ facade). Instead:
 - **Extract** the shared orchestration — drive-to-terminal, `Line` assembly,
   replay recording, locale application — into primitive-level ops **both `Story`
   and bevy call**, killing the two-implementations-in-lockstep duplication.
-- `Story` **slims to a facade** over the core for web/cli/oracle, its
-  `default` / `instances` / `shared_instances` / `default_context` tangle
-  **dissolving into `WorldPolicy`** ("a `World` + flows over it"; isolated-vs-
-  shared is just policy).
+- `Story` **slims to a facade** over the core for web/cli/oracle. **Shared**
+  flows become `FlowLocal`s over the default `World` (`default: World` policy).
+  **Correction (2026-07-07, from F2):** the collapse is *partial*, not total.
+  Because **policy is per-`World`** and `World` is single-owner with no locks, a
+  *fully-isolated* flow (independent state) genuinely needs its **own** `World` —
+  it cannot be a `FlowLocal` over the shared world, since one per-world policy
+  can't make one flow private while another is shared. So isolated flows stay
+  own-`World` (a `Story` with truly-independent flows holds multiple `World`s, or
+  the consumer uses separate `Story`s). The original "isolated-vs-shared is *just*
+  policy / everything dissolves into one `World`" over-claimed. The genuine open
+  fork — **per-`World` vs per-flow policy** (the latter would let isolated flows
+  share a world, at the cost of flows disagreeing on a unit's scope) — is deferred
+  until a concrete consumer (F3 fork/spawn or bevy multi-entity) forces it; the
+  shipped model is **per-`World`**.
 - bevy **stops duplicating** and thins to ECS glue over the same ops; its
   fork-mode + commit (currently "designed, no API surface") come from the core.
 
@@ -396,11 +406,15 @@ Expected shape:
   exist; `Story` rides on them. (Planned F1.4 dissolved: the
   `instances`/`shared_instances` collapse moved to F2, the Layer-2 drive-op
   extraction to F6.)
-- **F2** `WorldPolicy` + `ResolvedPolicy` + policy-aware routing + **flat
-  `FlowLocal` storage** (boundary decision **A**, 2026-07-07: F2 owns a *flat*
-  per-flow override map so scoping is functional and testable on its own; F3
-  upgrades it to CoW). Single-flow (all-World default) stays byte-identical.
-  Includes the `instances`/`shared_instances` collapse into one flow collection.
+- **F2** ✅ **functionally DONE** (F2.1 #446, F2.2 #448) — `WorldPolicy` +
+  `ResolvedPolicy` + policy-aware routing + **flat `FlowLocal` storage**
+  (boundary decision **A**, 2026-07-07: F2 owns a *flat* per-flow override map so
+  scoping is functional and testable on its own; F3 upgrades it to CoW).
+  Single-flow (all-World default) stays byte-identical; scoping works end-to-end.
+  The **`instances`/`shared_instances` collapse (planned F2.3) is deferred** — it
+  hit the per-`World`-policy limit above (isolated flows need own `World`s, so
+  they don't collapse into one); the current structure is correct and nothing is
+  blocked. Revisit when a consumer forces the per-`World`-vs-per-flow decision.
 - **F3** Upgrade `FlowLocal` flat storage → **copy-on-write** (frozen-base
   snapshot chain) + spawn/fork/discard (+ `commit` deferred seam).
 - **F4** Sandbox mode + Tier-0 watch (invoke-existing) + externals policy.
