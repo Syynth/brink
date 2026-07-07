@@ -1175,3 +1175,103 @@ export interface DialogueDialect {
   /** Editor-overlay templates (picker key, blank-tab behavior, labels). */
   templates?: Templates;
 }
+
+// ── Speculative evaluation (F4.3, docs/speculative-eval-spec.md) ─────
+//
+// `WebSpeculation`'s wire shapes — a sandboxed, side-effect-proof fork of a
+// running story (`StoryRunnerHandle.speculate()`), driven by its own
+// composable verbs (`goToPath`/`advance`/`choose`/`evalFunction`/
+// `resumeFunctionEval`/…). `TypedValue` is the richer sibling of
+// `ExternalValue`: a binding argument only ever needs a scalar, but an
+// `evalFunction` result is useful information worth keeping structured
+// (a list's member names, a divert's destination) rather than collapsing
+// to `null` the way the binding boundary does.
+
+/** A structured ink value, richer than {@link ExternalValue} (which collapses
+ * lists and divert targets to `null`). Returned by `SpeculationHandle`'s
+ * `evalFunction`/`resumeFunctionEval` and the `evaluate()` convenience. */
+export type TypedValue =
+  | { type: "int"; value: number }
+  | { type: "float"; value: number }
+  | { type: "bool"; value: boolean }
+  | { type: "string"; value: string }
+  | { type: "null" }
+  | { type: "list"; items: ListMember[] }
+  | { type: "divert"; path?: string };
+
+/** One active member of a `"list"`-typed value. */
+export interface ListMember {
+  /** The origin list's declared name (e.g. `"Weekday"`). */
+  origin: string;
+  /** The item's unqualified display name (e.g. `"Monday"`). */
+  name: string;
+  /** The item's ordinal within its origin list. */
+  ordinal: number;
+}
+
+/** Outcome of `SpeculationHandle.evalFunction`/`resumeFunctionEval`. */
+export type SpeculationFunctionEval =
+  | { type: "returned"; value: TypedValue }
+  | { type: "awaiting_external"; name?: string };
+
+/** Which evaluation regime a speculation's external-kind tiering gates for
+ * (see `docs/speculative-eval-spec.md` §7 / `KindTieredHandler`). `"watch"`
+ * (default): `effect`-kind externals never fire live. `"eval"`: `effect`
+ * externals fire live only when `liveEffects` is also set. */
+export type SpeculationContext = "watch" | "eval";
+
+/** Per-external policy tiering a speculation gates its externals by. A name
+ * absent from this map is conservatively treated as `"effect"`. */
+export type SpeculationKinds = Record<string, "query" | "effect">;
+
+/** Options for `StoryRunnerHandle.speculate()`. All fields optional. */
+export interface SpeculationOptions {
+  /** VM step budget for a single `advance()` call. Default 100,000. */
+  steps?: number;
+  /** Total visible-line budget across this speculation's lifetime. Default 1,000. */
+  lines?: number;
+  /** Default `"watch"`. */
+  context?: SpeculationContext;
+  /** Arm `effect`-kind externals; only takes effect under `context: "eval"`.
+   * Default `false`. */
+  liveEffects?: boolean;
+  /** Per-external `"query"`/`"effect"` policy tiering. Default `{}` (every
+   * external conservatively treated as `"effect"`). */
+  kinds?: SpeculationKinds;
+}
+
+/** Which externals a speculation let through live versus fell back, across
+ * every verb call made on it so far. Diagnostic only. */
+export interface SpeculationExternalsReport {
+  live: string[];
+  fallback: string[];
+}
+
+/** One resolved transcript line from a speculation — `SpeculationHandle`'s
+ * own shape (no `type` discriminant, unlike {@link SessionLine}: a
+ * speculation's transcript is a plain resolved log, not a step outcome). */
+export interface SpeculationLine {
+  text: string;
+  tags: string[];
+}
+
+/** Result of the thin `evaluate()` convenience — composes `SpeculationHandle`'s
+ * verbs into a single call for the common cases (a knot path, or a function
+ * call with literal arguments). */
+export interface SpeculationResult {
+  /** Present when `source` was a function call. */
+  value?: TypedValue;
+  /** Resolved `(text, tags)` lines produced by the run. */
+  transcript: SpeculationLine[];
+  /** Present when the run stopped at a choice point. */
+  reachedChoices?: Choice[];
+  /** An abort (`opts.signal`) rejects the `evaluate()` promise instead of
+   * resolving with a stop value — there is no `"aborted"` variant here. */
+  stop: "completed" | "choices" | "step-budget" | "line-budget";
+  externals: SpeculationExternalsReport;
+  /** Non-empty only when `source` couldn't be parsed as a knot path or a
+   * literal-arg function call (the Tier-1/F5 boundary — see
+   * `docs/speculative-eval-spec.md`); `stop`/`transcript`/`value` are
+   * meaningless in that case. */
+  diagnostics: string[];
+}

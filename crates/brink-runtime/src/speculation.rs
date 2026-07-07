@@ -312,4 +312,20 @@ impl<R: StoryRng> Speculation<R> {
     pub fn transcript(&self) -> &[crate::output::OutputPart] {
         self.flow.transcript()
     }
+
+    /// [`transcript`](Self::transcript), resolved to `(text, tags)` pairs
+    /// against this speculation's own program and line tables — the
+    /// read-facing sibling for callers (e.g. brink-web's wasm binding) that
+    /// want rendered text rather than raw structural parts. Mirrors
+    /// [`crate::transcript::render_transcript`].
+    #[must_use]
+    pub fn rendered_transcript(&self) -> Vec<(String, Vec<String>)> {
+        crate::transcript::render_transcript(
+            self.flow.transcript(),
+            &self.program,
+            &self.line_tables,
+            None,
+            self.flow.fragments(),
+        )
+    }
 }
