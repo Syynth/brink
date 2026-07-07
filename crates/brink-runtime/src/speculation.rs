@@ -259,6 +259,36 @@ impl<R: StoryRng> Speculation<R> {
         )
     }
 
+    /// Resume a function evaluation on this speculation that paused on
+    /// [`FunctionEval::AwaitingExternal`], after the pending external has
+    /// been resolved via [`resolve_external`](Self::resolve_external) —
+    /// the speculative equivalent of
+    /// [`FlowInstance::resume_function_eval`].
+    ///
+    /// Closes the F4.1 gap: [`eval_function`](Self::eval_function) could
+    /// pause on a deferred external with no way to continue. The full
+    /// cycle is `eval_function` → `AwaitingExternal` →
+    /// `resolve_external(value)` → `resume_function_eval` →
+    /// `Returned(value)`.
+    ///
+    /// # Errors
+    /// [`RuntimeError::NotEvaluatingFunction`] if no evaluation is in
+    /// progress on this speculation; any error
+    /// [`FlowInstance::resume_function_eval`] itself can produce.
+    pub fn resume_function_eval(
+        &mut self,
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<FunctionEval, RuntimeError> {
+        let mut view = ContextView::new(&mut self.world, &mut self.local);
+        self.flow.resume_function_eval::<R>(
+            &self.program,
+            &self.line_tables,
+            &mut view,
+            handler,
+            None,
+        )
+    }
+
     /// Resolve a pending external call on this speculation by supplying
     /// its return value. No-op if none is pending. See
     /// [`FlowInstance::resolve_external`].
