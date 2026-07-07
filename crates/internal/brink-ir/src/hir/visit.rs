@@ -36,6 +36,26 @@ use super::types::{
     Knot, Sequence, Stitch, Stmt, StringPart,
 };
 
+/// Where a visited [`Content`] sits in the tree.
+///
+/// Some consumers are position-sensitive — e.g. folding processes the content
+/// of a statement body but deliberately not a choice's inline text (`* [a
+/// {x|y} b]`), so it can discriminate on this rather than re-deriving structure.
+/// This describes the content's *immediate* position; a consumer that needs a
+/// transitive notion ("anywhere inside choice inline text") must track it via
+/// its own state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentContext {
+    /// A `Stmt::Content` line within a block body.
+    Body,
+    /// A choice's text before `[` (appears in the choice list and the output).
+    ChoiceStart,
+    /// A choice's text inside `[...]` (appears only in the choice list).
+    ChoiceBracket,
+    /// A choice's text after `]` (appears only after selection).
+    ChoiceInner,
+}
+
 /// Read-only visitor over the HIR block tree.
 ///
 /// Every method defaults to a no-op; implement only the hooks you need and keep
@@ -63,9 +83,10 @@ pub trait HirVisitor {
     /// A statement and all its children have been walked.
     fn exit_stmt(&mut self, _stmt: &Stmt) {}
 
-    /// A content line is about to be walked. The full [`Content`] (including
-    /// its `tags`) is exposed; the walker does not descend into tags itself.
-    fn enter_content(&mut self, _content: &Content) {}
+    /// A content line is about to be walked. `ctx` gives its immediate position
+    /// (body vs a choice's inline slots). The full [`Content`] (including its
+    /// `tags`) is exposed; the walker does not descend into tags itself.
+    fn enter_content(&mut self, _content: &Content, _ctx: ContentContext) {}
 
     /// An expression node, in descent order — only called when
     /// [`HirVisitor::visit_exprs`] returns `true`.
@@ -107,7 +128,7 @@ pub fn walk_block(block: &Block, v: &mut impl HirVisitor) {
 fn walk_stmt(stmt: &Stmt, v: &mut impl HirVisitor) {
     v.enter_stmt(stmt);
     match stmt {
-        Stmt::Content(c) => walk_content(c, v),
+        Stmt::Content(c) => walk_content(c, ContentContext::Body, v),
         Stmt::Divert(d) => walk_target(&d.target, v),
         Stmt::TunnelCall(t) => {
             for target in &t.targets {
@@ -148,8 +169,8 @@ fn walk_target(target: &DivertTarget, v: &mut impl HirVisitor) {
     }
 }
 
-fn walk_content(content: &Content, v: &mut impl HirVisitor) {
-    v.enter_content(content);
+fn walk_content(content: &Content, ctx: ContentContext, v: &mut impl HirVisitor) {
+    v.enter_content(content, ctx);
     for part in &content.parts {
         match part {
             ContentPart::Interpolation(e) => walk_expr(e, v),
@@ -165,15 +186,14 @@ fn walk_choice_set(cs: &ChoiceSet, v: &mut impl HirVisitor) {
         if let Some(e) = &choice.condition {
             walk_expr(e, v);
         }
-        for content in [
-            &choice.start_content,
-            &choice.bracket_content,
-            &choice.inner_content,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            walk_content(content, v);
+        if let Some(c) = &choice.start_content {
+            walk_content(c, ContentContext::ChoiceStart, v);
+        }
+        if let Some(c) = &choice.bracket_content {
+            walk_content(c, ContentContext::ChoiceBracket, v);
+        }
+        if let Some(c) = &choice.inner_content {
+            walk_content(c, ContentContext::ChoiceInner, v);
         }
         walk_block(&choice.body, v);
     }
@@ -265,7 +285,7 @@ mod tests {
         fn enter_stmt(&mut self, _: &Stmt) {
             self.stmts += 1;
         }
-        fn enter_content(&mut self, _: &Content) {
+        fn enter_content(&mut self, _: &Content, _: ContentContext) {
             self.content += 1;
         }
         fn enter_expr(&mut self, _: &Expr) {
