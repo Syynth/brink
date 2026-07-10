@@ -13,17 +13,19 @@ navigation, and screenplay mode, all driven by `@brink-lang/web`.
   `EditorSession` query wired to the editor.
 - **Live player** — step through the compiled story with choice selection;
   playback state persists to `localStorage` and replays on reload.
-- **Screenplay mode** — character lines (`@Name:<>`) and parentheticals
-  (`(text)<>`) render with hidden sigils, name coloring, and depth indicators.
+- **Screenplay dialect** — character cues (`@Name: line`) render with hidden
+  sigils, name coloring, and depth indicators. This is the configurable
+  [dialogue dialect](../web/editor.md#the-dialogue-dialect), defaulting to the
+  `@Name:` convention; it's editor tooling and never reaches the runtime.
 - **Project navigation** — a binder tree of knots and stitches (function knots
   marked with a distinct icon) with drag-to-reorder and structural edits, plus
   file tabs (pinned/unpinned) and symbol tabs.
 - **Activity-bar sidebar** — a VS Code-style icon column that swaps the left
   dock between views; the binder is the first view, the state view the second.
-- **State view** — a read-only runtime debugger that surfaces the running
-  story's status, current position, call stack, globals, and pending choices,
-  refreshed as the story advances. (Interim raw dump; a structured,
-  name-resolved view is planned — see issue #62.)
+- **State view** — a read-only runtime debugger that renders the structured,
+  name-resolved [`DebugState`](../../toolchain/embedding/sessions.md#live-inspection)
+  snapshot: status, current location, globals (with changed values highlighted),
+  call stack, visit counts, and pending choices, refreshed as the story advances.
 - **Line-element switching** — convert a line between narrative, choice, sticky
   choice, gather, and divert via keyboard or UI.
 
@@ -36,8 +38,8 @@ capability lives in libraries, each independently testable.
 |---------|----------------|
 | `@brink-lang/studio` | app shell + entry point (Vite) |
 | `@brink/studio-ui` | React components: layout, activity bar, binder, state view, player, tabs, status bar |
-| `@brink/studio-store` | Zustand store — `editor` / `compile` / `tabs` / `player` / `binder` / `layout` slices |
-| `@brink-lang/editor` | the CodeMirror 6 editor, state management, IDE extensions, screenplay sigils |
+| `@brink/studio-store` | Zustand store — `editor` / `compile` / `documents` / `binder` / `session` / `search` / `conflict` / `output` / `symbol-menu` slices |
+| [`@brink-lang/editor`](../web/editor.md) | the CodeMirror 6 editor, IDE extensions, and the dialogue dialect |
 | `@brink/ink-operations` | pure line-editing functions (no CM6, React, or wasm) |
 | `@brink-lang/web` | ergonomic wrappers over the `brink-web` FFI |
 | `@brink/wasm-types` | shared TypeScript interfaces (zero runtime) — decouples everything from the FFI |
