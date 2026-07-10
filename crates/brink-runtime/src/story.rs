@@ -627,6 +627,25 @@ pub(crate) struct EvalState {
     pub choice_floor: usize,
 }
 
+/// Outcome of a single [`FlowInstance::drive`] call: either the drive
+/// reached a terminal line, or it paused on a deferred external mid-drive.
+/// Both variants carry every [`Line`] produced during *this* call — for
+/// `AwaitingExternal`, that's the (possibly empty) run of `Line::Text`
+/// produced before the pause; for `Terminal`, the terminal line is always
+/// the last element (see [`FlowInstance::drive`]).
+#[derive(Debug, Clone)]
+pub enum DriveOutcome {
+    /// Reached a terminal line ([`Line::Done`], [`Line::Choices`], or
+    /// [`Line::End`]) — always the last element of the `Vec`.
+    Terminal(Vec<Line>),
+    /// Paused on a deferred external
+    /// ([`ExternalResult::Pending`](crate::ExternalResult::Pending)).
+    /// Resolve it ([`FlowInstance::resolve_external`]) and call
+    /// [`FlowInstance::drive`] again — with the **same** `budget` — to
+    /// resume.
+    AwaitingExternal(Vec<Line>),
+}
+
 impl FlowInstance {
     /// Create a new flow instance starting at the program's root container,
     /// along with a fresh [`World`] initialized from the program's global
@@ -768,6 +787,69 @@ impl FlowInstance {
             }
             if lines.len() >= Self::LINE_LIMIT {
                 return Err(RuntimeError::LineLimitExceeded(Self::LINE_LIMIT));
+            }
+        }
+    }
+
+    /// The pausable Layer-2 "drive to terminal or external pause" op:
+    /// [`drive_to_terminal`](Self::drive_to_terminal)'s sibling for callers
+    /// (e.g. `bevy-brink`) whose external bindings need to pause mid-drive
+    /// for out-of-band (world-access) resolution rather than erroring.
+    ///
+    /// Steps via [`advance`](Self::advance) instead of
+    /// [`step_single_line`](Self::step_single_line): a deferred external
+    /// yields [`DriveOutcome::AwaitingExternal`] (carrying every line
+    /// produced so far this call) instead of
+    /// [`RuntimeError::UnresolvedExternalCall`]. Resolve it and call `drive`
+    /// again to continue — the drive is logically one operation spanning
+    /// however many pauses it takes.
+    ///
+    /// `budget` is the caller-owned line budget for that whole logical
+    /// operation: each line `drive` produces (whether the call ends in
+    /// `Terminal` or `AwaitingExternal`) decrements it by one, and it is
+    /// **not** reset between calls — the caller passes the same `&mut
+    /// usize` back in on resume, so a drive spanning many external pauses
+    /// still has exactly one bound on total output, not a fresh
+    /// [`Self::LINE_LIMIT`] per resume (see the "guard against unbounded
+    /// growth" rule). Start a fresh logical drive with a fresh
+    /// `budget = FlowInstance::LINE_LIMIT` (or any caller-chosen cap).
+    ///
+    /// Like `drive_to_terminal`, the terminal line is always the last
+    /// element of the returned `Vec` and every line before it is
+    /// [`Line::Text`].
+    ///
+    /// # Errors
+    /// Any error [`advance`](Self::advance) itself can produce, plus
+    /// [`RuntimeError::LineLimitExceeded`] if `budget` reaches zero before a
+    /// terminal line is produced.
+    pub fn drive<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        resolver: Option<&dyn PluralResolver>,
+        budget: &mut usize,
+    ) -> Result<DriveOutcome, RuntimeError> {
+        // Captured only to report a meaningful number on exhaustion: the
+        // remaining budget *this call* started with, not the (possibly
+        // already-partially-spent, across earlier resumes) original cap.
+        let starting_budget = *budget;
+        let mut lines = Vec::new();
+        loop {
+            if *budget == 0 {
+                return Err(RuntimeError::LineLimitExceeded(starting_budget));
+            }
+            match self.advance::<R>(program, line_tables, context, handler, resolver)? {
+                StepOutcome::AwaitingExternal => return Ok(DriveOutcome::AwaitingExternal(lines)),
+                StepOutcome::Line(line) => {
+                    let terminal = line.is_terminal();
+                    *budget -= 1;
+                    lines.push(line);
+                    if terminal {
+                        return Ok(DriveOutcome::Terminal(lines));
+                    }
+                }
             }
         }
     }
@@ -3217,6 +3299,125 @@ mod tests {
             }
             other => panic!("expected LineLimitExceeded, got {other:?}"),
         }
+    }
+
+    // ── FlowInstance::drive (F6.2 pausable Layer-2 drive op) ─────────────
+
+    /// Defers (`Pending`) its first call, then resolves — mirrors the
+    /// `DeferOnce` pattern used for the flow-level resume gap elsewhere in
+    /// the runtime's test suite (`tests/session.rs`, `tests/speculation.rs`).
+    struct DeferOnce {
+        deferred: std::cell::Cell<bool>,
+    }
+
+    impl ExternalFnHandler for DeferOnce {
+        fn call(&self, name: &str, _args: &[Value]) -> ExternalResult {
+            if name == "pause_once" && !self.deferred.get() {
+                self.deferred.set(true);
+                ExternalResult::Pending
+            } else {
+                ExternalResult::Resolved(Value::Int(2))
+            }
+        }
+    }
+
+    /// `drive` pauses cleanly (no error) on a deferred external, and resuming
+    /// after [`FlowInstance::resolve_external`] continues the *same* logical
+    /// drive to its terminal line — the pausable sibling of
+    /// `drive_to_terminal`, which instead errors on a deferred external.
+    #[test]
+    fn drive_pauses_on_awaiting_external_then_resumes() {
+        let (program, tables) = compile_source_for_flow(
+            "EXTERNAL pause_once(x)\nHello.\nWorld.\nValue: {pause_once(1)}.\n-> DONE\n",
+        );
+        let (mut flow, mut world) = FlowInstance::new_at_root(&program);
+        let mut local = FlowLocal::new();
+        let mut view = ContextView::new(&mut world, &mut local);
+        let handler = DeferOnce {
+            deferred: std::cell::Cell::new(false),
+        };
+        let mut budget = 10usize;
+
+        let outcome = flow
+            .drive::<FastRng>(&program, &tables, &mut view, &handler, None, &mut budget)
+            .expect("first drive call succeeds");
+        let paused_lines = match outcome {
+            DriveOutcome::AwaitingExternal(lines) => lines,
+            other @ DriveOutcome::Terminal(_) => panic!("expected AwaitingExternal, got {other:?}"),
+        };
+        let paused_text: String = paused_lines.iter().map(Line::text).collect();
+        assert!(
+            paused_text.contains("Hello"),
+            "text produced before the pause should include 'Hello.'; got {paused_text:?}"
+        );
+        assert!(
+            !paused_text.contains("Value"),
+            "the line calling the deferred external should not have completed yet; got {paused_text:?}"
+        );
+        assert_eq!(
+            budget,
+            10 - paused_lines.len(),
+            "budget should decrement by exactly the lines produced before the pause"
+        );
+
+        flow.resolve_external(Value::Int(2));
+        let outcome = flow
+            .drive::<FastRng>(&program, &tables, &mut view, &handler, None, &mut budget)
+            .expect("second drive call resumes and completes");
+        let resumed_lines = match outcome {
+            DriveOutcome::Terminal(lines) => lines,
+            other @ DriveOutcome::AwaitingExternal(_) => panic!("expected Terminal, got {other:?}"),
+        };
+        let resumed_text: String = resumed_lines.iter().map(Line::text).collect();
+        assert!(
+            resumed_text.contains("Value: 2"),
+            "the resolved external's value should be inlined; got {resumed_text:?}"
+        );
+        assert!(
+            matches!(resumed_lines.last(), Some(Line::Done { .. })),
+            "expected the drive to finish at Done, got {resumed_lines:?}"
+        );
+        assert_eq!(
+            budget,
+            10 - paused_lines.len() - resumed_lines.len(),
+            "budget must keep decrementing across the resume — not reset to a fresh cap \
+             (the whole point of the caller-owned budget: one bound per logical drive, not \
+             per resume)"
+        );
+    }
+
+    /// A knot that prints and re-diverts into itself forever never reaches a
+    /// terminal line. `drive` must give up when the caller's `budget` is
+    /// exhausted — which can be far smaller than
+    /// [`FlowInstance::LINE_LIMIT`] — rather than looping until the much
+    /// larger production default, proving the budget is a real per-call
+    /// parameter and not just a relabeling of the constant.
+    #[test]
+    fn drive_errors_when_caller_budget_exhausted() {
+        let (program, tables) =
+            compile_source_for_flow("-> spam\n\n=== spam ===\nLine.\n-> spam\n");
+        let (mut flow, mut world) = FlowInstance::new_at_root(&program);
+        let mut local = FlowLocal::new();
+        let mut view = ContextView::new(&mut world, &mut local);
+        let mut budget = 3usize;
+        let err = flow
+            .drive::<FastRng>(
+                &program,
+                &tables,
+                &mut view,
+                &FallbackHandler,
+                None,
+                &mut budget,
+            )
+            .expect_err("infinite content should hit the caller's small budget");
+        match err {
+            RuntimeError::LineLimitExceeded(n) => assert_eq!(
+                n, 3,
+                "reported limit should be the caller's budget, not the unrelated LINE_LIMIT constant"
+            ),
+            other => panic!("expected LineLimitExceeded, got {other:?}"),
+        }
+        assert_eq!(budget, 0, "budget should be fully consumed, not partially");
     }
 
     // ── free `save_state`/`load_state` (F6.1b) ───────────────────────────
