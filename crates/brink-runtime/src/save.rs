@@ -21,13 +21,14 @@
 //! can't hand back "every visited id" — it only answers point queries routed
 //! by scope), so the candidate id set for visits/turns comes from the
 //! `Program`'s own container definitions rather than map iteration. Every
-//! container the VM ever visit/turn-counts carries `CountingFlags::VISITS`
-//! (`vm.rs`'s `EnterContainer`/goto paths only ever call
+//! container the VM ever visit/turn-counts carries `CountingFlags::VISITS`:
+//! `vm.rs`'s `EnterContainer`/goto paths only ever call
 //! `increment_visit`/`set_turn_count` when that flag is set on the target
-//! container, and nothing in the compiler or converter ever sets
-//! `CountingFlags::TURNS` independently — it's a currently-unused bit), so
-//! containers with `VISITS` set are exactly the superset of ids that could
-//! have a visit *or* turn entry. Iterating `Program::containers` (a `Vec`,
+//! container. (The converter *does* set `CountingFlags::TURNS` independently,
+//! mirroring inklecate's container flags — but since every VM counting site
+//! gates on `VISITS` alone, a TURNS-only container can never accrue a runtime
+//! entry.) So containers with `VISITS` set are exactly the superset of ids
+//! that could have a visit *or* turn entry. Iterating `Program::containers` (a `Vec`,
 //! not a hash map) keeps enumeration order deterministic independent of
 //! `Program`'s internal id tables.
 //!
@@ -114,7 +115,11 @@ pub fn save_state<C: ContextAccess + ?Sized>(program: &Program, ctx: &C) -> Save
 /// [`LoadReport`] of anything that couldn't be applied. Globals are matched
 /// by name; visit/turn counts by id. Tolerant of story patches: unknown
 /// globals are reported, scopes the program no longer has retain their saved
-/// counts harmlessly.
+/// counts harmlessly in the live context. Note one deliberate change from the
+/// pre-F6.1b `Story` methods: such stale entries are **not re-emitted by a
+/// subsequent [`save_state`]** (which enumerates the *current* program's
+/// containers, not the live maps) — ghost counts from older program versions
+/// no longer round-trip through saves indefinitely.
 ///
 /// Writes go through [`ContextAccess`], so on a `ContextView` they route by
 /// scope exactly like any other write: a `World`-scoped unit lands in the
