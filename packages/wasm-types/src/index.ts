@@ -57,7 +57,11 @@ export type HirSpanKind =
   | "content"
   | "interpolation"
   | "tag"
-  | "include";
+  | "include"
+  | "divert_terminal"
+  | "logic"
+  | "conditional"
+  | "sequence";
 
 /**
  * One HIR span projected onto the source: 0-based lines, UTF-16 columns.

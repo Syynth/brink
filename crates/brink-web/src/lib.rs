@@ -5299,6 +5299,10 @@ fn span_kind_str(kind: brink_ide::hir_projection::SpanKind) -> &'static str {
         K::Interpolation => "interpolation",
         K::Tag => "tag",
         K::Include => "include",
+        K::DivertTerminal => "divert_terminal",
+        K::Logic => "logic",
+        K::Conditional => "conditional",
+        K::Sequence => "sequence",
     }
 }
 
