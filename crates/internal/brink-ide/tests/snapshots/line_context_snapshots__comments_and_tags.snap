@@ -1,0 +1,32 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n// A line comment\n/* a block\n   comment spanning\n   lines */\n/// doc line one\n/// doc line two\n=== start ===\n# standalone_tag\nNarrative with a trailing tag. # trailing\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |// A line comment| Comment w=0/TopLevel
+  1 |/* a block| Comment w=0/TopLevel bc
+  2 |   comment spanning| Comment w=0/TopLevel bc
+  3 |   lines */| Comment w=0/TopLevel bc
+  4 |/// doc line one| Comment w=0/TopLevel
+  5 |/// doc line two| Comment w=0/TopLevel
+  6 |=== start ===| KnotHeader w=0/TopLevel
+  7 |# standalone_tag| Tag w=0/TopLevel
+  8 |Narrative with a trailing tag. # trailing| Narrative w=0/TopLevel tags
+  9 |-> END| Divert w=0/TopLevel
+ 10 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |// A line comment| Comment w=0/TopLevel
+  1 |/* a block| Comment w=0/TopLevel bc
+  2 |   comment spanning| Comment w=0/TopLevel bc
+  3 |   lines */| Comment w=0/TopLevel bc
+  4 |/// doc line one| Comment w=0/TopLevel
+  5 |/// doc line two| Comment w=0/TopLevel
+  6 |=== start ===| KnotHeader w=0/TopLevel
+  7 |# standalone_tag| Tag w=0/TopLevel
+  8 |Narrative with a trailing tag. # trailing| Narrative w=0/TopLevel tags
+  9 |-> END| Divert w=0/TopLevel
+ 10 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+4..9 from_start=true kind=Structural text=None
+== RUNS (base) ==
+== RUNS (at-cue dialect) ==

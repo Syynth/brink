@@ -1,0 +1,31 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n* Choice\n  { lucky:\n  You win.\n  - else:\n  You lose.\n  }\n- done\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* Choice| Choice w=1/ChoiceLine(sticky=false)
+  2 |  { lucky:| Logic w=0/TopLevel
+  3 |  You win.| Narrative w=0/ConditionalBranch
+  4 |  - else:| Logic w=0/TopLevel
+  5 |  You lose.| Narrative w=0/ConditionalBranch
+  6 |  }| Logic w=0/TopLevel
+  7 |- done| Gather w=1/GatherContinuation
+  8 |-> END| Divert w=1/GatherContinuation
+  9 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* Choice| Choice w=1/ChoiceLine(sticky=false)
+  2 |  { lucky:| Logic w=0/TopLevel
+  3 |  You win.| Narrative w=0/ConditionalBranch
+  4 |  - else:| Logic w=0/TopLevel
+  5 |  You lose.| Narrative w=0/ConditionalBranch
+  6 |  }| Logic w=0/TopLevel
+  7 |- done| Gather w=1/GatherContinuation
+  8 |-> END| Divert w=1/GatherContinuation
+  9 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..8 from_start=false kind=Structural text=None
+2..6 from_start=false kind=Structural text=Some("{...}")
+== RUNS (base) ==
+== RUNS (at-cue dialect) ==

@@ -1,0 +1,35 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n-> hub\n=== hub ===\n-> tunnel ->\n<- threaded\n-> DONE\n=== tunnel ===\n->->\n=== threaded ===\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |-> hub| Divert w=0/TopLevel
+  2 |=== hub ===| KnotHeader w=0/TopLevel
+  3 |-> tunnel ->| Divert w=0/TopLevel
+  4 |<- threaded| Divert w=0/TopLevel
+  5 |-> DONE| Divert w=0/TopLevel
+  6 |=== tunnel ===| KnotHeader w=0/TopLevel
+  7 |->->| Blank w=0/TopLevel
+  8 |=== threaded ===| KnotHeader w=0/TopLevel
+  9 |-> END| Divert w=0/TopLevel
+ 10 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |-> hub| Divert w=0/TopLevel
+  2 |=== hub ===| KnotHeader w=0/TopLevel
+  3 |-> tunnel ->| Divert w=0/TopLevel
+  4 |<- threaded| Divert w=0/TopLevel
+  5 |-> DONE| Divert w=0/TopLevel
+  6 |=== tunnel ===| KnotHeader w=0/TopLevel
+  7 |->->| Blank w=0/TopLevel
+  8 |=== threaded ===| KnotHeader w=0/TopLevel
+  9 |-> END| Divert w=0/TopLevel
+ 10 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..1 from_start=false kind=Structural text=None
+2..5 from_start=false kind=Structural text=None
+6..7 from_start=false kind=Structural text=None
+8..9 from_start=false kind=Structural text=None
+== RUNS (base) ==
+== RUNS (at-cue dialect) ==

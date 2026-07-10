@@ -1,0 +1,35 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n{\n    - get_variable(16) == 2: -> leave\n    - else: -> busy\n}\n=== leave ===\n-> END\n=== busy ===\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |{| Logic w=0/TopLevel
+  2 |    - get_variable(16) == 2: -> leave| Divert w=0/ConditionalBranch
+  3 |    - else: -> busy| Divert w=0/ConditionalBranch
+  4 |}| Logic w=0/TopLevel
+  5 |=== leave ===| KnotHeader w=0/TopLevel
+  6 |-> END| Divert w=0/TopLevel
+  7 |=== busy ===| KnotHeader w=0/TopLevel
+  8 |-> END| Divert w=0/TopLevel
+  9 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |{| Logic w=0/TopLevel
+  2 |    - get_variable(16) == 2: -> leave| Divert w=0/ConditionalBranch
+  3 |    - else: -> busy| Divert w=0/ConditionalBranch
+  4 |}| Logic w=0/TopLevel
+  5 |=== leave ===| KnotHeader w=0/TopLevel
+  6 |-> END| Divert w=0/TopLevel
+  7 |=== busy ===| KnotHeader w=0/TopLevel
+  8 |-> END| Divert w=0/TopLevel
+  9 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..4 from_start=false kind=Structural text=None
+1..4 from_start=false kind=Structural text=Some("{...}")
+5..6 from_start=false kind=Structural text=None
+7..8 from_start=false kind=Structural text=None
+== RUNS (base) ==
+1..4 Machinery
+== RUNS (at-cue dialect) ==
+1..4 Machinery

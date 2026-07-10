@@ -1,8 +1,21 @@
-//! Per-line structural context derived from the HIR.
+//! Per-line structural context — a composition of layered facets (#463).
 //!
 //! `line_contexts()` returns one `LineContext` per source line, giving the
 //! editor authoritative information about element type, weave position,
 //! and inline structure — replacing the regex-based `classifyLine` in TS.
+//!
+//! Since #463 this module owns no HIR walk: it **composes**
+//! `docs/editor-hir-overlay-spec.md` §1a's layers —
+//!
+//! 1. the **trivia facet** ([`crate::trivia`]: comments, block comments,
+//!    tag lines — CST/source facts);
+//! 2. the **structural view** over the HIR projection
+//!    ([`crate::hir_projection::project_hir_structural`]), replayed span by
+//!    span in [`apply_structural_view`];
+//! 3. source-text patch passes for what the HIR under-covers
+//!    (`detect_gathers`, `apply_conditional_scaffold`,
+//!    `detect_sigil_logic_lines`);
+//! 4. the **dialect facet** (`apply_dialect`), layered last.
 //!
 //! `line_contexts_with_dialect()` (#368) layers a registered
 //! [`brink_ir::ResolvedDialect`] on top: it runs the same base pass, then a
@@ -16,12 +29,13 @@
 //! wins over any chain/blank-fill promotion (#413) — see
 //! `detect_sigil_logic_lines`.
 
-use brink_ir::{Block, ChoiceSetContext, Content, ContentPart, HirFile, ResolvedDialect, Stmt};
+use brink_ir::{HirFile, ResolvedDialect};
 use brink_syntax::SyntaxNode;
 use rowan::TextRange;
 use serde::Serialize;
 
 use crate::LineIndex;
+use crate::hir_projection::{ProjectedSpan, Projection, SpanKind};
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -151,68 +165,34 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
     let mut ctx = vec![LineContext::default(); actual_lines];
     let idx = LineIndex::new(source);
 
-    // ── Pass 1: classify from source text (comments, block comments) ──
-    detect_comments(source, &mut ctx);
-
-    // ── Pass 2: detect block comments from syntax tree ──
-    detect_block_comments(root, &idx, &mut ctx);
-
-    // ── Pass 3: walk HIR structure ──
-
-    // Top-level declarations
-    for var in &hir.variables {
-        set_element_at_range(&idx, var.ptr.text_range(), LineElement::VarDecl, &mut ctx);
-    }
-    for con in &hir.constants {
-        set_element_at_range(&idx, con.ptr.text_range(), LineElement::VarDecl, &mut ctx);
-    }
-    for list in &hir.lists {
-        set_element_at_range(&idx, list.ptr.text_range(), LineElement::VarDecl, &mut ctx);
-    }
-    for ext in &hir.externals {
-        set_element_at_range(&idx, ext.ptr.text_range(), LineElement::External, &mut ctx);
-    }
-    for inc in &hir.includes {
-        set_element_at_range(&idx, inc.ptr.text_range(), LineElement::Include, &mut ctx);
+    // ── Pass 1: apply the trivia facet (comments, block comments, tags) ──
+    // Computed standalone (`crate::trivia`) and composed here: comments win
+    // over a tag sigil; the structural passes below never reconsider a
+    // comment line (no statement can share it), and only a still-`Blank`
+    // line keeps a tag classification.
+    for (i, t) in crate::trivia::line_trivia(source, root, ctx.len())
+        .iter()
+        .enumerate()
+    {
+        if t.comment {
+            ctx[i].element = LineElement::Comment;
+        } else if t.tag && ctx[i].element == LineElement::Blank {
+            ctx[i].element = LineElement::Tag;
+        }
+        if t.block_comment {
+            ctx[i].block_comment = true;
+        }
     }
 
-    let top_level = WeavePosition {
-        depth: 0,
-        element: WeaveElement::TopLevel,
-    };
-
-    // Conditional/sequence block ranges collected during the walk below —
-    // consumed by pass 4b (scaffold + arm-descent) after all statement
-    // pointers have had their chance to claim a line.
+    // ── Pass 3: structural view over the HIR projection ──
+    // The structural facts come from `project_hir_structural` (#463): the
+    // spans are replayed in emission (walk) order with the hand-rolled
+    // walk's exact overwrite discipline — statement spans overwrite,
+    // content spans fill only still-`Blank` lines. `cond_ranges` (consumed
+    // by pass 4b) falls out of the projection's construct-extent spans.
+    let projection = crate::hir_projection::project_hir_structural(hir, source);
     let mut cond_ranges: Vec<(TextRange, WeaveElement)> = Vec::new();
-
-    // Root content block
-    walk_block(
-        &hir.root_content,
-        &idx,
-        &mut ctx,
-        top_level,
-        &mut cond_ranges,
-    );
-
-    // Knots and stitches
-    for knot in &hir.knots {
-        let knot_line = idx.line_col(knot.ptr.text_range().start()).0 as usize;
-        if knot_line < ctx.len() {
-            ctx[knot_line].element = LineElement::KnotHeader;
-        }
-
-        walk_block(&knot.body, &idx, &mut ctx, top_level, &mut cond_ranges);
-
-        for stitch in &knot.stitches {
-            let stitch_line = idx.line_col(stitch.ptr.text_range().start()).0 as usize;
-            if stitch_line < ctx.len() {
-                ctx[stitch_line].element = LineElement::StitchHeader;
-            }
-
-            walk_block(&stitch.body, &idx, &mut ctx, top_level, &mut cond_ranges);
-        }
-    }
+    apply_structural_view(&projection, &idx, &mut ctx, &mut cond_ranges);
 
     // ── Pass 4: detect gather lines from source text ──
     // The HIR only marks gathers via labeled blocks, but a bare `- text`
@@ -407,333 +387,324 @@ fn leading_ws_len(line: &str) -> u32 {
     (line.len() - line.trim_start_matches(' ').len()) as u32
 }
 
-// ── HIR walking ─────────────────────────────────────────────────────
+// ── Structural view over the HIR projection (#463) ─────────────────
 
-fn walk_block(
-    block: &Block,
+/// Replay the projection's spans onto per-line element/weave/tags with the
+/// old hand-rolled walk's exact overwrite discipline:
+///
+/// - statement spans (diverts, logic, temp decls) **overwrite** the line —
+///   emission order is walk order, so a body statement sharing its choice's
+///   physical line wins, exactly as the walk's nested `set_line` did;
+/// - content spans **fill** only still-`Blank` lines within their range
+///   (with the trailing-newline end-column backoff);
+/// - a **continuation** gather label overwrites its line *after* the replay
+///   (the walk applied it after walking the continuation body), while a
+///   **labeled block**'s label applies in order, so the block's own
+///   statements overwrite it — the walk's historical asymmetry, preserved;
+/// - reference spans (`Divert`/`VarRef`/`Call`) never classify lines: they
+///   also arise from expressions the walk never looked at.
+///
+/// Weave comes from the containing weave containers (by range containment,
+/// innermost = smallest): containment distinguishes narrative that merely
+/// *hosts* an inline `{...}` (not inside it — `TopLevel`) from statements
+/// genuinely inside a construct's branches.
+fn apply_structural_view(
+    projection: &Projection,
     idx: &LineIndex,
     ctx: &mut [LineContext],
-    weave: WeavePosition,
     cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
 ) {
-    for stmt in &block.stmts {
-        walk_stmt(stmt, idx, ctx, weave, cond_ranges);
-    }
-}
+    let containers: Vec<&ProjectedSpan> = projection
+        .spans
+        .iter()
+        .filter(|s| s.handle.is_some())
+        .collect();
 
-fn walk_stmt(
-    stmt: &Stmt,
-    idx: &LineIndex,
-    ctx: &mut [LineContext],
-    weave: WeavePosition,
-    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
-) {
-    match stmt {
-        Stmt::Content(content) => {
-            set_content_lines(
-                content,
-                idx,
-                ctx,
-                LineElement::Narrative,
-                weave,
-                cond_ranges,
-            );
-        }
-        Stmt::Divert(divert) => {
-            if let Some(ptr) = &divert.ptr {
-                set_line(
-                    idx,
+    // Continuation-label overwrites, applied after the replay.
+    let mut deferred_gathers: Vec<(usize, WeavePosition)> = Vec::new();
+    // The last content/choice span, for attributing Tag spans: a tag marks
+    // `has_tags` on its owner's start line (the walk read `content.tags` /
+    // `choice.tags` directly), and a tag with no owning span in range —
+    // e.g. inside ptr-less inline-branch content — marks nothing.
+    let mut tag_anchor: Option<(usize, TextRange)> = None;
+
+    for span in &projection.spans {
+        let start_line = idx.line_col(span.range.start()).0 as usize;
+        match span.kind {
+            SpanKind::VarDecl | SpanKind::ConstDecl | SpanKind::ListDecl => {
+                set_element(ctx, start_line, LineElement::VarDecl);
+            }
+            SpanKind::External => set_element(ctx, start_line, LineElement::External),
+            SpanKind::Include => set_element(ctx, start_line, LineElement::Include),
+            SpanKind::Knot if span.handle.is_some() => {
+                set_element(ctx, start_line, LineElement::KnotHeader);
+            }
+            SpanKind::Stitch if span.handle.is_some() => {
+                set_element(ctx, start_line, LineElement::StitchHeader);
+            }
+            SpanKind::Choice => {
+                if start_line < ctx.len() {
+                    ctx[start_line].element = LineElement::Choice;
+                    ctx[start_line].weave = WeavePosition {
+                        depth: span.weave_depth.unwrap_or(0),
+                        element: WeaveElement::ChoiceLine {
+                            sticky: span.sticky.unwrap_or(false),
+                        },
+                    };
+                }
+                tag_anchor = Some((start_line, span.range));
+            }
+            SpanKind::DivertStmt | SpanKind::DivertTerminal => {
+                set_element_weave(
                     ctx,
-                    ptr.text_range().start(),
+                    start_line,
                     LineElement::Divert,
-                    weave,
+                    derive_weave(&containers, span.range),
                 );
             }
-        }
-        Stmt::TunnelCall(tc) => {
-            set_line(
-                idx,
-                ctx,
-                tc.ptr.text_range().start(),
-                LineElement::Divert,
-                weave,
-            );
-        }
-        Stmt::ThreadStart(ts) => {
-            set_line(
-                idx,
-                ctx,
-                ts.ptr.text_range().start(),
-                LineElement::Divert,
-                weave,
-            );
-        }
-        Stmt::TempDecl(td) => {
-            set_line(
-                idx,
-                ctx,
-                td.ptr.text_range().start(),
-                LineElement::Logic,
-                weave,
-            );
-        }
-        Stmt::Assignment(a) => {
-            set_line(
-                idx,
-                ctx,
-                a.ptr.text_range().start(),
-                LineElement::Logic,
-                weave,
-            );
-        }
-        Stmt::Return(r) => {
-            if let Some(ptr) = &r.ptr {
-                set_line(
-                    idx,
+            SpanKind::TempDecl | SpanKind::Logic => {
+                set_element_weave(
                     ctx,
-                    ptr.text_range().start(),
+                    start_line,
                     LineElement::Logic,
-                    weave,
+                    derive_weave(&containers, span.range),
                 );
             }
-        }
-        Stmt::ChoiceSet(cs) => walk_choice_set(cs, idx, ctx, weave, cond_ranges),
-        Stmt::LabeledBlock(block) => walk_labeled_block(block, idx, ctx, weave, cond_ranges),
-        Stmt::Conditional(cond) => walk_conditional(cond, idx, ctx, weave, cond_ranges),
-        Stmt::Sequence(seq) => walk_sequence(seq, idx, ctx, weave, cond_ranges),
-        Stmt::ExprStmt(_) | Stmt::EndOfLine => {}
-    }
-}
-
-/// Walk a multiline `Conditional`'s branches, recording its own range in
-/// `cond_ranges` (#413 — consumed by `apply_conditional_scaffold` after the
-/// main walk, since branch-body content has no per-line `ptr` of its own).
-fn walk_conditional(
-    cond: &brink_ir::Conditional,
-    idx: &LineIndex,
-    ctx: &mut [LineContext],
-    weave: WeavePosition,
-    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
-) {
-    cond_ranges.push((cond.ptr.text_range(), WeaveElement::ConditionalBranch));
-    for branch in &cond.branches {
-        walk_block(
-            &branch.body,
-            idx,
-            ctx,
-            WeavePosition {
-                depth: weave.depth,
-                element: WeaveElement::ConditionalBranch,
-            },
-            cond_ranges,
-        );
-    }
-}
-
-/// Walk a multiline `Sequence`'s branches, recording its own range in
-/// `cond_ranges` (#413), mirroring [`walk_conditional`].
-fn walk_sequence(
-    seq: &brink_ir::Sequence,
-    idx: &LineIndex,
-    ctx: &mut [LineContext],
-    weave: WeavePosition,
-    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
-) {
-    cond_ranges.push((seq.ptr.text_range(), WeaveElement::SequenceBranch));
-    for branch in &seq.branches {
-        walk_block(
-            branch,
-            idx,
-            ctx,
-            WeavePosition {
-                depth: weave.depth,
-                element: WeaveElement::SequenceBranch,
-            },
-            cond_ranges,
-        );
-    }
-}
-
-fn walk_choice_set(
-    cs: &brink_ir::ChoiceSet,
-    idx: &LineIndex,
-    ctx: &mut [LineContext],
-    weave: WeavePosition,
-    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
-) {
-    let depth = if cs.context == ChoiceSetContext::Inline {
-        weave.depth
-    } else {
-        cs.depth
-    };
-
-    for choice in &cs.choices {
-        let choice_line = idx.line_col(choice.ptr.text_range().start()).0 as usize;
-        if choice_line < ctx.len() {
-            ctx[choice_line].element = LineElement::Choice;
-            ctx[choice_line].weave = WeavePosition {
-                depth,
-                element: WeaveElement::ChoiceLine {
-                    sticky: choice.is_sticky,
-                },
-            };
-            ctx[choice_line].has_tags = !choice.tags.is_empty();
-        }
-
-        walk_block(
-            &choice.body,
-            idx,
-            ctx,
-            WeavePosition {
-                depth,
-                element: WeaveElement::ChoiceBody,
-            },
-            cond_ranges,
-        );
-    }
-
-    // Continuation (gather)
-    if !cs.continuation.stmts.is_empty() || cs.continuation.label.is_some() {
-        walk_block(
-            &cs.continuation,
-            idx,
-            ctx,
-            WeavePosition {
-                depth,
-                element: WeaveElement::GatherContinuation,
-            },
-            cond_ranges,
-        );
-
-        if let Some(label) = &cs.continuation.label {
-            let line = idx.line_col(label.range.start()).0 as usize;
-            if line < ctx.len() {
-                ctx[line].element = LineElement::Gather;
-                ctx[line].weave = WeavePosition {
-                    depth,
-                    element: WeaveElement::GatherContinuation,
-                };
+            SpanKind::Content => {
+                fill_content_lines(span.range, idx, ctx, derive_weave(&containers, span.range));
+                tag_anchor = Some((start_line, span.range));
             }
+            SpanKind::Tag => {
+                if let Some((line, range)) = tag_anchor
+                    && range.contains_range(span.range)
+                    && line < ctx.len()
+                {
+                    // Historical quirk, preserved bug-for-bug: a tag on the
+                    // choice line itself never set `has_tags`. Lowering
+                    // leaves `Choice.tags` empty (choice-line tags are
+                    // distributed into the slot contents), and the old walk
+                    // never visited slot contents — so its
+                    // `!choice.tags.is_empty()` check was always false.
+                    // Fixing this is a deliberate behavior change to make
+                    // separately, not a refactor side effect.
+                    let on_choice_line = containing(&containers, SpanKind::Choice, span.range)
+                        .map(|c| idx.line_col(c.range.start()).0 as usize)
+                        == Some(line);
+                    // A tag inside a construct's extent belongs to ptr-less
+                    // branch content (`{mood: hi # tag}`) — the old walk's
+                    // `content.ptr` gate meant those never set `has_tags`.
+                    // Construct spans replay before their content's tags, so
+                    // `cond_ranges` is already populated here.
+                    let in_construct = cond_ranges
+                        .iter()
+                        .any(|(r, _)| r.contains_range(span.range));
+                    if !on_choice_line && !in_construct {
+                        ctx[line].has_tags = true;
+                    }
+                }
+            }
+            SpanKind::Label => {
+                apply_label_span(span, &containers, idx, ctx, &mut deferred_gathers);
+            }
+            SpanKind::Conditional => {
+                cond_ranges.push((span.range, WeaveElement::ConditionalBranch));
+            }
+            SpanKind::Sequence => {
+                cond_ranges.push((span.range, WeaveElement::SequenceBranch));
+            }
+            // References and expression-level spans never classify lines;
+            // container-only kinds contribute via `derive_weave`.
+            _ => {}
         }
     }
-}
 
-fn walk_labeled_block(
-    block: &Block,
-    idx: &LineIndex,
-    ctx: &mut [LineContext],
-    weave: WeavePosition,
-    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
-) {
-    if let Some(label) = &block.label {
-        let line = idx.line_col(label.range.start()).0 as usize;
+    for (line, weave) in deferred_gathers {
         if line < ctx.len() {
             ctx[line].element = LineElement::Gather;
             ctx[line].weave = weave;
         }
     }
-    walk_block(block, idx, ctx, weave, cond_ranges);
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────
-
-fn set_line(
+/// Apply a Label span: a continuation gather label (producer-stamped with
+/// its `weave_depth`; deferred overwrite — the walk applied it after walking
+/// the continuation body), a choice label (no element), or a labeled block's
+/// label (in-order; the block's own statements overwrite it).
+fn apply_label_span(
+    span: &ProjectedSpan,
+    containers: &[&ProjectedSpan],
     idx: &LineIndex,
     ctx: &mut [LineContext],
-    offset: rowan::TextSize,
+    deferred_gathers: &mut Vec<(usize, WeavePosition)>,
+) {
+    let start_line = idx.line_col(span.range.start()).0 as usize;
+    if let Some(depth) = span.weave_depth {
+        // Continuation label — nothing else stamps weave_depth on a Label.
+        deferred_gathers.push((
+            start_line,
+            WeavePosition {
+                depth,
+                element: WeaveElement::GatherContinuation,
+            },
+        ));
+        return;
+    }
+    let choice_first_line = containing(containers, SpanKind::Choice, span.range)
+        .map(|c| idx.line_col(c.range.start()).0 as usize);
+    if choice_first_line == Some(start_line) {
+        // Choice label: never classifies its line.
+    } else {
+        set_element_weave(
+            ctx,
+            start_line,
+            LineElement::Gather,
+            derive_weave(containers, span.range),
+        );
+    }
+}
+
+/// The innermost of `spans`: smallest range, ties resolved to the **last**
+/// emitted. Emission order is walk order — an outer container is emitted
+/// before the containers nested inside it, so when a branch/gather extent is
+/// byte-identical to the single choice that fills it, the choice (inner)
+/// wins, exactly as the old walk's lexical threading did.
+fn innermost<'a>(spans: impl Iterator<Item = &'a ProjectedSpan>) -> Option<&'a ProjectedSpan> {
+    let mut best: Option<&'a ProjectedSpan> = None;
+    for s in spans {
+        if best.is_none_or(|b| s.range.len() <= b.range.len()) {
+            best = Some(s);
+        }
+    }
+    best
+}
+
+/// The innermost container of `kind` containing `range`.
+fn containing<'a>(
+    containers: &[&'a ProjectedSpan],
+    kind: SpanKind,
+    range: TextRange,
+) -> Option<&'a ProjectedSpan> {
+    innermost(
+        containers
+            .iter()
+            .copied()
+            .filter(|c| c.kind == kind && c.range.contains_range(range)),
+    )
+}
+
+/// Derive a span's weave position from the containers that contain it.
+///
+/// Containment (not line coverage) is what reproduces the walk: narrative
+/// hosting an inline `{...}` is not *contained by* the construct's branch
+/// container (the construct is inside the content), so it stays at the
+/// outer weave; a statement inside a branch is contained and takes the
+/// branch's role. A statement on a choice's own line reports `ChoiceBody` —
+/// the walk classified body statements with the body weave even when they
+/// shared the choice's physical line (`* [Go] -> hub`); `ChoiceLine` is set
+/// only by the Choice container itself.
+fn derive_weave(containers: &[&ProjectedSpan], range: TextRange) -> WeavePosition {
+    let inner = innermost(
+        containers
+            .iter()
+            .copied()
+            .filter(|c| weave_container(c.kind) && c.range.contains_range(range)),
+    );
+    let Some(c) = inner else {
+        return WeavePosition {
+            depth: 0,
+            element: WeaveElement::TopLevel,
+        };
+    };
+    match c.kind {
+        SpanKind::Choice => WeavePosition {
+            depth: c.weave_depth.unwrap_or(0),
+            element: WeaveElement::ChoiceBody,
+        },
+        SpanKind::Gather => WeavePosition {
+            depth: c.weave_depth.unwrap_or(0),
+            element: WeaveElement::GatherContinuation,
+        },
+        SpanKind::ConditionalBranch | SpanKind::SequenceBranch => {
+            // Branches inherit the surrounding weave depth (the walk passed
+            // `weave.depth` through): the nearest enclosing choice/gather's.
+            let depth = innermost(containers.iter().copied().filter(|w| {
+                matches!(w.kind, SpanKind::Choice | SpanKind::Gather)
+                    && w.range.contains_range(range)
+            }))
+            .and_then(|w| w.weave_depth)
+            .unwrap_or(0);
+            WeavePosition {
+                depth,
+                element: if c.kind == SpanKind::ConditionalBranch {
+                    WeaveElement::ConditionalBranch
+                } else {
+                    WeaveElement::SequenceBranch
+                },
+            }
+        }
+        _ => WeavePosition {
+            depth: 0,
+            element: WeaveElement::TopLevel,
+        },
+    }
+}
+
+/// Container kinds that define a weave role (knots/stitches don't).
+fn weave_container(kind: SpanKind) -> bool {
+    matches!(
+        kind,
+        SpanKind::Choice
+            | SpanKind::Gather
+            | SpanKind::ConditionalBranch
+            | SpanKind::SequenceBranch
+    )
+}
+
+fn set_element(ctx: &mut [LineContext], line: usize, element: LineElement) {
+    if line < ctx.len() {
+        ctx[line].element = element;
+    }
+}
+
+fn set_element_weave(
+    ctx: &mut [LineContext],
+    line: usize,
     element: LineElement,
     weave: WeavePosition,
 ) {
-    let line = idx.line_col(offset).0 as usize;
     if line < ctx.len() {
         ctx[line].element = element;
         ctx[line].weave = weave;
     }
 }
 
-fn set_element_at_range(
-    idx: &LineIndex,
-    range: rowan::TextRange,
-    element: LineElement,
-    ctx: &mut [LineContext],
-) {
-    let line = idx.line_col(range.start()).0 as usize;
-    if line < ctx.len() {
-        ctx[line].element = element;
-    }
-}
-
-fn set_content_lines(
-    content: &Content,
+/// Fill a content span's still-`Blank` lines with `Narrative` + `weave`.
+fn fill_content_lines(
+    range: TextRange,
     idx: &LineIndex,
     ctx: &mut [LineContext],
-    element: LineElement,
     weave: WeavePosition,
-    cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
 ) {
-    if let Some(ptr) = &content.ptr {
-        let range = ptr.text_range();
-        let start_line = idx.line_col(range.start()).0 as usize;
-        let (end_line_raw, end_col) = idx.line_col(range.end());
-        // A `CONTENT_LINE` node's range commonly includes its trailing
-        // newline, so the exclusive end offset lands exactly at column 0 of
-        // the FOLLOWING physical line. Without this correction, that next
-        // line — which may be a completely different statement (e.g. a `~`
-        // logic line with no `ptr` of its own) — gets swept into this
-        // content's blank-fill promotion below. Only back off when the
-        // range actually spans past the start line (end_col == 0 on the
-        // start line itself would mean an empty range, which can't happen
-        // for a real content node).
-        let end_line = if end_col == 0 && end_line_raw as usize > start_line {
-            end_line_raw as usize - 1
-        } else {
-            end_line_raw as usize
-        };
-        for line in start_line..=end_line {
-            if line < ctx.len() && ctx[line].element == LineElement::Blank {
-                ctx[line].element = element;
-                ctx[line].weave = weave;
-            }
-        }
-        if !content.tags.is_empty() && start_line < ctx.len() {
-            ctx[start_line].has_tags = true;
-        }
-    }
-
-    // Recurse into inline content parts for nested conditionals/sequences
-    for part in &content.parts {
-        match part {
-            ContentPart::InlineConditional(cond) => {
-                cond_ranges.push((cond.ptr.text_range(), WeaveElement::ConditionalBranch));
-                for branch in &cond.branches {
-                    walk_block(
-                        &branch.body,
-                        idx,
-                        ctx,
-                        WeavePosition {
-                            depth: weave.depth,
-                            element: WeaveElement::ConditionalBranch,
-                        },
-                        cond_ranges,
-                    );
-                }
-            }
-            ContentPart::InlineSequence(seq) => {
-                cond_ranges.push((seq.ptr.text_range(), WeaveElement::SequenceBranch));
-                for branch in &seq.branches {
-                    walk_block(
-                        branch,
-                        idx,
-                        ctx,
-                        WeavePosition {
-                            depth: weave.depth,
-                            element: WeaveElement::SequenceBranch,
-                        },
-                        cond_ranges,
-                    );
-                }
-            }
-            _ => {}
+    let start_line = idx.line_col(range.start()).0 as usize;
+    let (end_line_raw, end_col) = idx.line_col(range.end());
+    // A `CONTENT_LINE` node's range commonly includes its trailing
+    // newline, so the exclusive end offset lands exactly at column 0 of
+    // the FOLLOWING physical line. Without this correction, that next
+    // line — which may be a completely different statement (e.g. a `~`
+    // logic line with no `ptr` of its own) — gets swept into this
+    // content's blank-fill promotion below. Only back off when the
+    // range actually spans past the start line (end_col == 0 on the
+    // start line itself would mean an empty range, which can't happen
+    // for a real content node).
+    let end_line = if end_col == 0 && end_line_raw as usize > start_line {
+        end_line_raw as usize - 1
+    } else {
+        end_line_raw as usize
+    };
+    for line in start_line..=end_line {
+        if line < ctx.len() && ctx[line].element == LineElement::Blank {
+            ctx[line].element = LineElement::Narrative;
+            ctx[line].weave = weave;
         }
     }
 }
@@ -939,45 +910,6 @@ fn detect_sigil_logic_lines(source: &str, ctx: &mut [LineContext]) {
         }
         if line.trim_start().starts_with('~') {
             ctx[i].element = LineElement::Logic;
-        }
-    }
-}
-
-/// Detect single-line comments and tag lines from source text.
-fn detect_comments(source: &str, ctx: &mut [LineContext]) {
-    for (i, line) in source.lines().enumerate() {
-        if i >= ctx.len() {
-            break;
-        }
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("//") {
-            ctx[i].element = LineElement::Comment;
-        } else if trimmed.starts_with('#')
-            && !trimmed.is_empty()
-            && ctx[i].element == LineElement::Blank
-        {
-            ctx[i].element = LineElement::Tag;
-        }
-    }
-}
-
-/// Detect block comments (`/* ... */`) from the syntax tree.
-fn detect_block_comments(root: &SyntaxNode, idx: &LineIndex, ctx: &mut [LineContext]) {
-    use brink_syntax::SyntaxKind;
-
-    for token in root.descendants_with_tokens() {
-        if let Some(token) = token.as_token()
-            && token.kind() == SyntaxKind::BLOCK_COMMENT
-        {
-            let range = token.text_range();
-            let start_line = idx.line_col(range.start()).0 as usize;
-            let end_line = idx.line_col(range.end()).0 as usize;
-            for line in start_line..=end_line {
-                if line < ctx.len() {
-                    ctx[line].element = LineElement::Comment;
-                    ctx[line].block_comment = true;
-                }
-            }
         }
     }
 }

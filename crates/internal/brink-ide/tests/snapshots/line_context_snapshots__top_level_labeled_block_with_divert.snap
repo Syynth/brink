@@ -1,0 +1,21 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n- (top) -> next\n=== next ===\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |- (top) -> next| Divert w=0/TopLevel
+  2 |=== next ===| KnotHeader w=0/TopLevel
+  3 |-> END| Divert w=0/TopLevel
+  4 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |- (top) -> next| Divert w=0/TopLevel
+  2 |=== next ===| KnotHeader w=0/TopLevel
+  3 |-> END| Divert w=0/TopLevel
+  4 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..1 from_start=false kind=Structural text=None
+2..3 from_start=false kind=Structural text=None
+== RUNS (base) ==
+== RUNS (at-cue dialect) ==

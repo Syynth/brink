@@ -77,6 +77,27 @@ pub enum SpanKind {
     Interpolation,
     Tag,
     Include,
+
+    // ── Statement / construct spans (inline, no identity) ──
+    /// A divert/tunnel/thread *statement* (whole `ptr` extent). Distinct
+    /// from the [`SpanKind::Divert`] target reference inside it: reference
+    /// spans also arise from divert-target *expressions* (`~ temp x = ->
+    /// hub`, choice conditions), which are not divert statements — line
+    /// views classify from the statement span only.
+    DivertStmt,
+    /// A `-> END` / `-> DONE` divert (terminal by design — distinct from
+    /// [`SpanKind::Divert`] so consumers never treat it as an unresolved
+    /// reference). Covers the whole divert statement.
+    DivertTerminal,
+    /// A logic statement without its own declaration/reference span:
+    /// assignments (`~ x = 1`) and returns (`~ return x`, `->->`).
+    Logic,
+    /// A whole conditional construct's extent (the HIR `ptr` range —
+    /// braces excluded, as lowered). Non-container: feeds line-view
+    /// scaffold classification, never the per-line stack/rails.
+    Conditional,
+    /// A whole sequence construct's extent; see [`SpanKind::Conditional`].
+    Sequence,
 }
 
 impl SpanKind {
@@ -110,6 +131,14 @@ pub struct ProjectedSpan {
     /// Walk-order id for container spans — identifies "the same block" (stable
     /// within a doc version, no stamping). `None` for non-containers.
     pub handle: Option<u32>,
+    /// For Choice containers: `+` (sticky) vs `*` (once-only).
+    pub sticky: Option<bool>,
+    /// Ink weave depth for Choice/Gather containers — the choice set's sigil
+    /// depth, with inline choice sets (inside conditional/sequence branches)
+    /// inheriting the surrounding weave depth, exactly as `line_context`'s
+    /// `WeavePosition.depth` reports it. Distinct from `depth`, which counts
+    /// all container nesting including knots/stitches.
+    pub weave_depth: Option<u32>,
 }
 
 /// One container covering a line, in the per-line stack.
@@ -159,12 +188,33 @@ pub fn project_hir(
         }
     }
 
+    project_with_maps(hir, source, &decl_ids, &ref_targets)
+}
+
+/// Project a file's HIR onto its source ranges without the analyzer identity
+/// join — every `def_id`/`target_id` is `None`. For structural consumers
+/// (the `line_context` view) that need spans and line stacks but no
+/// cross-file identity, and must not require an `AnalysisResult`.
+#[must_use]
+pub fn project_hir_structural(hir: &HirFile, source: &str) -> Projection {
+    project_with_maps(hir, source, &HashMap::new(), &HashMap::new())
+}
+
+fn project_with_maps(
+    hir: &HirFile,
+    source: &str,
+    decl_ids: &HashMap<TextRange, DefinitionId>,
+    ref_targets: &HashMap<TextRange, DefinitionId>,
+) -> Projection {
     let mut v = ProjectionVisitor {
-        decl_ids: &decl_ids,
-        ref_targets: &ref_targets,
+        decl_ids,
+        ref_targets,
         spans: Vec::new(),
         depth: 0,
         next_handle: 0,
+        cs_depths: Vec::new(),
+        continuation_labels: HashMap::new(),
+        slot_construct_ranges: Vec::new(),
     };
 
     // File-level declarations hang off HirFile directly, not the block tree —
@@ -201,9 +251,37 @@ struct ProjectionVisitor<'a> {
     spans: Vec<ProjectedSpan>,
     depth: u32,
     next_handle: u32,
+    /// Effective weave depth of each enclosing choice set, innermost last —
+    /// pushed at `enter_stmt(ChoiceSet)`, popped at `exit_stmt`. An inline
+    /// choice set (inside a conditional/sequence branch) inherits the
+    /// surrounding weave depth instead of its own `cs.depth`, mirroring
+    /// `line_context`'s `walk_choice_set`.
+    cs_depths: Vec<u32>,
+    /// Continuation-label ranges of every choice set seen, recorded at
+    /// `enter_stmt(ChoiceSet)` with the set's effective weave depth — so
+    /// `enter_block` can tell a gather continuation's own label apart from
+    /// a `LabeledBlock`'s (both arrive as `Block.label`), and stamp it.
+    continuation_labels: HashMap<TextRange, u32>,
+    /// Extents of inline constructs sitting in choice slot text (transitive,
+    /// via `ContentContext`) — statement spans inside them are suppressed:
+    /// a divert in `* [Go {ready: -> hub}]` is choice text, not a divert
+    /// statement line.
+    slot_construct_ranges: Vec<TextRange>,
 }
 
 impl ProjectionVisitor<'_> {
+    /// The weave depth of the innermost enclosing choice set (0 outside any).
+    fn current_weave_depth(&self) -> u32 {
+        self.cs_depths.last().copied().unwrap_or(0)
+    }
+
+    /// Whether `range` lies inside an inline construct in choice slot text.
+    fn in_slot_construct(&self, range: TextRange) -> bool {
+        self.slot_construct_ranges
+            .iter()
+            .any(|r| r.contains_range(range))
+    }
+
     /// Emit an inline declaration span, joining its `DefinitionId` by range.
     fn push_decl(&mut self, range: TextRange, kind: SpanKind) {
         let def_id = self.decl_ids.get(&range).copied();
@@ -214,6 +292,8 @@ impl ProjectionVisitor<'_> {
             def_id,
             target_id: None,
             handle: None,
+            sticky: None,
+            weave_depth: None,
         });
     }
 
@@ -227,6 +307,8 @@ impl ProjectionVisitor<'_> {
             def_id: None,
             target_id,
             handle: None,
+            sticky: None,
+            weave_depth: None,
         });
     }
 
@@ -239,12 +321,36 @@ impl ProjectionVisitor<'_> {
             def_id: None,
             target_id: None,
             handle: None,
+            sticky: None,
+            weave_depth: None,
         });
     }
 
-    /// Emit a container span over `range`, joining `def_id` if named. Returns
-    /// the assigned handle.
+    /// Emit a container span over `range`, joining `def_id` if named.
     fn push_container(&mut self, range: TextRange, kind: SpanKind, def_id: Option<DefinitionId>) {
+        self.push_container_full(range, kind, def_id, None, None);
+    }
+
+    /// Emit a weave container (Choice/Gather) carrying stickiness and the
+    /// ink weave depth.
+    fn push_weave_container(
+        &mut self,
+        range: TextRange,
+        kind: SpanKind,
+        sticky: Option<bool>,
+        weave_depth: u32,
+    ) {
+        self.push_container_full(range, kind, None, sticky, Some(weave_depth));
+    }
+
+    fn push_container_full(
+        &mut self,
+        range: TextRange,
+        kind: SpanKind,
+        def_id: Option<DefinitionId>,
+        sticky: Option<bool>,
+        weave_depth: Option<u32>,
+    ) {
         let handle = self.next_handle;
         self.next_handle += 1;
         self.spans.push(ProjectedSpan {
@@ -254,6 +360,8 @@ impl ProjectionVisitor<'_> {
             def_id,
             target_id: None,
             handle: Some(handle),
+            sticky,
+            weave_depth,
         });
     }
 
@@ -289,13 +397,29 @@ impl ProjectionVisitor<'_> {
     /// container over the whole construct (`ptr`) rather than per-branch — which
     /// is exactly the granularity `line_context` marks per line. References
     /// inside interpolations are covered by `enter_expr` (the walker descends).
-    fn project_content_extras(&mut self, content: &Content) {
+    ///
+    /// Construct-extent spans ([`SpanKind::Conditional`]/[`SpanKind::Sequence`])
+    /// are emitted only for body content (`ctx == Body`): inline logic in a
+    /// choice's start/bracket/inner text is choice text, never scaffold — the
+    /// same transitive gate both structural line-view consumers apply.
+    fn project_content_extras(&mut self, content: &Content, ctx: brink_ir::hir::ContentContext) {
+        let in_body = ctx == brink_ir::hir::ContentContext::Body;
         for part in &content.parts {
             match part {
                 ContentPart::InlineConditional(cond) => {
+                    if in_body {
+                        self.push_inline(cond.ptr.text_range(), SpanKind::Conditional);
+                    } else {
+                        self.slot_construct_ranges.push(cond.ptr.text_range());
+                    }
                     self.push_container(cond.ptr.text_range(), SpanKind::ConditionalBranch, None);
                 }
                 ContentPart::InlineSequence(seq) => {
+                    if in_body {
+                        self.push_inline(seq.ptr.text_range(), SpanKind::Sequence);
+                    } else {
+                        self.slot_construct_ranges.push(seq.ptr.text_range());
+                    }
                     self.push_container(seq.ptr.text_range(), SpanKind::SequenceBranch, None);
                 }
                 ContentPart::Text(_)
@@ -316,9 +440,23 @@ impl HirVisitor for ProjectionVisitor<'_> {
     }
 
     fn enter_block(&mut self, block: &Block) {
-        // Gather / labeled-block labels are `Block.label`, covered uniformly here.
+        // Gather / labeled-block labels are `Block.label`, covered uniformly
+        // here. A continuation's own label is stamped with the choice set's
+        // weave depth (recorded at `enter_stmt(ChoiceSet)`) so views can tell
+        // it from a `LabeledBlock`'s label — the two carry different
+        // overwrite semantics in `line_context`.
         if let Some(label) = &block.label {
-            self.push_decl(label.range, SpanKind::Label);
+            let def_id = self.decl_ids.get(&label.range).copied();
+            self.spans.push(ProjectedSpan {
+                range: label.range,
+                kind: SpanKind::Label,
+                depth: self.depth,
+                def_id,
+                target_id: None,
+                handle: None,
+                sticky: None,
+                weave_depth: self.continuation_labels.get(&label.range).copied(),
+            });
         }
     }
 
@@ -357,9 +495,18 @@ impl HirVisitor for ProjectionVisitor<'_> {
         if let Some(body) = block_extent(&choice.body) {
             extent = extent.cover(body);
         }
-        self.push_container(extent, SpanKind::Choice, None);
+        let weave_depth = self.current_weave_depth();
+        self.push_weave_container(
+            extent,
+            SpanKind::Choice,
+            Some(choice.is_sticky),
+            weave_depth,
+        );
         if let Some(label) = &choice.label {
             self.push_decl(label.range, SpanKind::Label);
+        }
+        for tag in &choice.tags {
+            self.push_inline(tag.ptr.text_range(), SpanKind::Tag);
         }
         self.depth += 1;
     }
@@ -370,30 +517,98 @@ impl HirVisitor for ProjectionVisitor<'_> {
 
     fn enter_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Divert(d) => self.push_divert_target(&d.target),
+            Stmt::Divert(d) => {
+                // The statement span first, then the target reference. A
+                // terminal divert (`-> END` / `-> DONE`) has no path to
+                // reference, so its statement span is the terminal kind.
+                // A divert inside an inline construct in choice slot text
+                // (`* [Go {ready: -> hub}]`) is choice text, not a divert
+                // statement line — no statement span (the target reference
+                // still projects).
+                if matches!(d.target.path, DivertPath::Done | DivertPath::End) {
+                    if let Some(ptr) = &d.ptr
+                        && !self.in_slot_construct(ptr.text_range())
+                    {
+                        self.push_inline(ptr.text_range(), SpanKind::DivertTerminal);
+                    }
+                } else {
+                    if let Some(ptr) = &d.ptr
+                        && !self.in_slot_construct(ptr.text_range())
+                    {
+                        self.push_inline(ptr.text_range(), SpanKind::DivertStmt);
+                    }
+                    self.push_divert_target(&d.target);
+                }
+            }
             Stmt::TunnelCall(t) => {
+                if !self.in_slot_construct(t.ptr.text_range()) {
+                    self.push_inline(t.ptr.text_range(), SpanKind::DivertStmt);
+                }
                 for target in &t.targets {
                     self.push_divert_target(target);
                 }
             }
-            Stmt::ThreadStart(t) => self.push_divert_target(&t.target),
+            Stmt::ThreadStart(t) => {
+                if !self.in_slot_construct(t.ptr.text_range()) {
+                    self.push_inline(t.ptr.text_range(), SpanKind::DivertStmt);
+                }
+                self.push_divert_target(&t.target);
+            }
             Stmt::TempDecl(t) => self.push_decl(t.name.range, SpanKind::TempDecl),
-            Stmt::ChoiceSet(cs) => {
-                if let Some(gather) = block_extent(&cs.continuation) {
-                    self.push_container(gather, SpanKind::Gather, None);
+            Stmt::Assignment(a) if !self.in_slot_construct(a.ptr.text_range()) => {
+                self.push_inline(a.ptr.text_range(), SpanKind::Logic);
+            }
+            Stmt::Return(r) => {
+                if let Some(ptr) = &r.ptr
+                    && !self.in_slot_construct(ptr.text_range())
+                {
+                    self.push_inline(ptr.text_range(), SpanKind::Logic);
                 }
             }
-            Stmt::Conditional(cond) => self.push_cond_branches(cond),
-            Stmt::Sequence(seq) => self.push_seq_branches(seq),
+            Stmt::ChoiceSet(cs) => {
+                // An inline choice set (inside a conditional/sequence branch)
+                // inherits the surrounding weave depth; a weave-folded one
+                // carries its own sigil depth.
+                let weave_depth = if cs.context == brink_ir::ChoiceSetContext::Inline {
+                    self.current_weave_depth()
+                } else {
+                    cs.depth
+                };
+                // `block_extent` includes the continuation label, so a bare
+                // labeled gather (`- (g)` with an empty continuation) still
+                // projects its container. Record the label so `enter_block`
+                // can stamp it as a continuation label.
+                if let Some(label) = &cs.continuation.label {
+                    self.continuation_labels.insert(label.range, weave_depth);
+                }
+                if let Some(ext) = block_extent(&cs.continuation) {
+                    self.push_weave_container(ext, SpanKind::Gather, None, weave_depth);
+                }
+                self.cs_depths.push(weave_depth);
+            }
+            Stmt::Conditional(cond) => {
+                self.push_inline(cond.ptr.text_range(), SpanKind::Conditional);
+                self.push_cond_branches(cond);
+            }
+            Stmt::Sequence(seq) => {
+                self.push_inline(seq.ptr.text_range(), SpanKind::Sequence);
+                self.push_seq_branches(seq);
+            }
             _ => {}
         }
     }
 
-    fn enter_content(&mut self, content: &Content, _ctx: brink_ir::hir::ContentContext) {
+    fn exit_stmt(&mut self, stmt: &Stmt) {
+        if matches!(stmt, Stmt::ChoiceSet(_)) {
+            self.cs_depths.pop();
+        }
+    }
+
+    fn enter_content(&mut self, content: &Content, ctx: brink_ir::hir::ContentContext) {
         if let Some(ptr) = &content.ptr {
             self.push_inline(ptr.text_range(), SpanKind::Content);
         }
-        self.project_content_extras(content);
+        self.project_content_extras(content, ctx);
     }
 
     fn enter_expr(&mut self, expr: &Expr) {
@@ -406,10 +621,14 @@ impl HirVisitor for ProjectionVisitor<'_> {
     }
 }
 
-/// The source extent of a block: the union of its statements' ranges, or `None`
-/// for an empty block. Recurses so a container's extent covers nested content.
+/// The source extent of a block: its label (if any) unioned with its
+/// statements' ranges, or `None` for an empty unlabeled block. Recurses so a
+/// container's extent covers nested content. The label matters twice over: a
+/// bare labeled gather (`- (g)`, no statements) still has an extent, and a
+/// nested `LabeledBlock`'s gather line — whose prose content is ptr-less —
+/// stays covered by the enclosing container, so views derive its weave.
 fn block_extent(block: &Block) -> Option<TextRange> {
-    let mut acc: Option<TextRange> = None;
+    let mut acc: Option<TextRange> = block.label.as_ref().map(|l| l.range);
     for stmt in &block.stmts {
         if let Some(r) = stmt_extent(stmt) {
             acc = Some(match acc {
@@ -612,5 +831,229 @@ Hello.
             .max()
             .unwrap_or(0);
         assert!(deepest >= 2, "a line should be inside knot + choice");
+    }
+
+    #[test]
+    fn choice_containers_carry_stickiness_and_weave_depth() {
+        let src = "\
+=== start ===
+* Once
+* * Nested once
++ Sticky
+- gathered
+-> END
+";
+        let p = project(src);
+        let choices: Vec<_> = p
+            .spans
+            .iter()
+            .filter(|s| s.kind == SpanKind::Choice)
+            .collect();
+        assert_eq!(choices.len(), 3);
+        assert_eq!(
+            (choices[0].sticky, choices[0].weave_depth),
+            (Some(false), Some(1))
+        );
+        assert_eq!(
+            (choices[1].sticky, choices[1].weave_depth),
+            (Some(false), Some(2)),
+            "nested choice carries its sigil depth"
+        );
+        assert_eq!(
+            (choices[2].sticky, choices[2].weave_depth),
+            (Some(true), Some(1)),
+            "`+` choice is sticky"
+        );
+        let gather = p
+            .spans
+            .iter()
+            .find(|s| s.kind == SpanKind::Gather)
+            .expect("gather container");
+        assert_eq!(gather.weave_depth, Some(1));
+    }
+
+    #[test]
+    fn inline_choice_set_inherits_surrounding_weave_depth() {
+        // Choices inside a conditional arm form an Inline choice set: they
+        // inherit the surrounding weave depth (0 at top level), not their
+        // own sigil depth — mirroring line_context's WeavePosition.depth.
+        let src = "\
+=== start ===
+{ ready:
+    * [Go now]
+    * [Wait]
+- else:
+    Not ready.
+}
+-> END
+";
+        let p = project(src);
+        let choices: Vec<_> = p
+            .spans
+            .iter()
+            .filter(|s| s.kind == SpanKind::Choice)
+            .collect();
+        assert_eq!(choices.len(), 2);
+        assert!(
+            choices.iter().all(|c| c.weave_depth == Some(0)),
+            "inline choice sets inherit the surrounding weave depth: {choices:?}"
+        );
+    }
+
+    #[test]
+    fn terminal_diverts_project_divert_terminal_spans() {
+        let src = "\
+=== start ===
+-> DONE
+=== other ===
+-> END
+";
+        let p = project(src);
+        let terminals: Vec<_> = p
+            .spans
+            .iter()
+            .filter(|s| s.kind == SpanKind::DivertTerminal)
+            .collect();
+        assert_eq!(
+            terminals.len(),
+            2,
+            "-> DONE and -> END each project a DivertTerminal span"
+        );
+        assert!(
+            !p.spans.iter().any(|s| s.kind == SpanKind::Divert),
+            "terminal diverts are not Divert reference spans"
+        );
+    }
+
+    #[test]
+    fn divert_statements_project_stmt_spans_but_expressions_do_not() {
+        // `-> hub` is a divert statement (DivertStmt + a Divert target ref);
+        // `~ temp x = -> hub` holds a divert-target *expression* — a Divert
+        // reference only, no statement span. Line views classify from the
+        // statement span, so the temp line stays logic, not a divert.
+        let src = "\
+=== start ===
+~ temp x = -> hub
+-> hub
+=== hub ===
+-> DONE
+";
+        let p = project(src);
+        assert_eq!(
+            p.spans
+                .iter()
+                .filter(|s| s.kind == SpanKind::DivertStmt)
+                .count(),
+            1,
+            "only the standalone divert is a statement span"
+        );
+        assert_eq!(
+            p.spans
+                .iter()
+                .filter(|s| s.kind == SpanKind::Divert)
+                .count(),
+            2,
+            "both the expression and the statement carry target references"
+        );
+    }
+
+    #[test]
+    fn assignments_and_returns_project_logic_spans() {
+        let src = "\
+VAR gold = 0
+=== start ===
+~ gold = 1
+-> DONE
+=== function f ===
+~ return 0
+";
+        let p = project(src);
+        let logic = p.spans.iter().filter(|s| s.kind == SpanKind::Logic).count();
+        assert_eq!(logic, 2, "one assignment + one return");
+    }
+
+    #[test]
+    fn choice_tags_project_tag_spans() {
+        let src = "\
+=== start ===
+* Choice # tagged
+-> DONE
+";
+        let p = project(src);
+        assert!(
+            p.spans.iter().any(|s| s.kind == SpanKind::Tag),
+            "choice-level tags project Tag spans"
+        );
+    }
+
+    #[test]
+    fn bare_labeled_gather_projects_its_container() {
+        // `- (g)` with an empty continuation: the label range alone is the
+        // gather extent (block_extent is None), so the container must still
+        // be emitted.
+        let src = "\
+=== start ===
+* Choice
+- (g)
+";
+        let p = project(src);
+        let gather = p
+            .spans
+            .iter()
+            .find(|s| s.kind == SpanKind::Gather)
+            .expect("bare labeled gather projects a container");
+        assert_eq!(gather.weave_depth, Some(1));
+    }
+
+    #[test]
+    fn construct_extent_spans_are_body_gated() {
+        // A statement-level conditional and a body inline sequence project
+        // construct-extent spans; an inline sequence in a choice's bracket
+        // text projects its container (rails) but NOT a construct span
+        // (never scaffold).
+        let src = "\
+=== start ===
+{ ready:
+Go.
+- else:
+Wait.
+}
+Take the {red|blue} pill.
+* [Take the {big|small} dose]
+-> DONE
+";
+        let p = project(src);
+        assert_eq!(
+            p.spans
+                .iter()
+                .filter(|s| s.kind == SpanKind::Conditional)
+                .count(),
+            1,
+            "the multiline conditional projects one construct-extent span"
+        );
+        assert_eq!(
+            p.spans
+                .iter()
+                .filter(|s| s.kind == SpanKind::Sequence)
+                .count(),
+            1,
+            "only the body inline sequence projects a construct span — the \
+             choice-bracket one is gated out"
+        );
+        assert_eq!(
+            p.spans
+                .iter()
+                .filter(|s| s.kind == SpanKind::SequenceBranch)
+                .count(),
+            2,
+            "both inline sequences still project rail containers"
+        );
+        // Construct spans are not containers: no handle, absent from stacks.
+        assert!(
+            p.spans
+                .iter()
+                .filter(|s| matches!(s.kind, SpanKind::Conditional | SpanKind::Sequence))
+                .all(|s| s.handle.is_none() && !s.kind.is_container())
+        );
     }
 }

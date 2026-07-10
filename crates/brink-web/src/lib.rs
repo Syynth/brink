@@ -3869,10 +3869,15 @@ impl EditorSession {
                 let (abs_end_line, end_char) = idx.line_col(s.range.end());
                 // Drop spans that end above the view; clamp ones straddling its
                 // start so partially-visible containers keep their rails.
+                // Non-containers straddling the start are dropped instead —
+                // clamping a multi-line inline span (a `{ cond: … }` construct
+                // extent, a multi-line content node) to (0, 0) would paint a
+                // mark from the view's top-left over unrelated text.
                 let end_line = Self::to_relative_line(view, abs_end_line)?;
                 let (start_line, start_char) = match Self::to_relative_line(view, abs_start_line) {
                     Some(l) => (l, start_char),
-                    None => (0, 0),
+                    None if s.kind.is_container() => (0, 0),
+                    None => return None,
                 };
                 Some(HirSpanJs {
                     start_line,
@@ -4544,8 +4549,11 @@ impl EditorSession {
                 }
                 None => brink_ide::line_context::line_contexts(hir, source, &root),
             };
+            let projection = brink_ide::hir_projection::project_hir_structural(hir, source);
             ranges.extend(brink_ide::folding::machinery_and_narrative_folds(
-                hir, source, &ctx,
+                &projection,
+                source,
+                &ctx,
             ));
         }
 
@@ -5299,6 +5307,11 @@ fn span_kind_str(kind: brink_ide::hir_projection::SpanKind) -> &'static str {
         K::Interpolation => "interpolation",
         K::Tag => "tag",
         K::Include => "include",
+        K::DivertStmt => "divert_stmt",
+        K::DivertTerminal => "divert_terminal",
+        K::Logic => "logic",
+        K::Conditional => "conditional",
+        K::Sequence => "sequence",
     }
 }
 
@@ -5835,6 +5848,36 @@ mod tests {
             .map(|c| c["depth"].as_u64().unwrap())
             .collect();
         assert!(depths.windows(2).all(|w| w[0] <= w[1]), "{depths:?}");
+    }
+
+    #[test]
+    fn hir_spans_view_drops_straddling_non_containers() {
+        // A multi-line construct span (`conditional`) starting above the
+        // view must be dropped, not clamped to (0, 0) — a clamped inline
+        // mark would paint from the view's top-left over unrelated text.
+        // Containers straddling the start keep the clamp (partial rails).
+        let src =
+            "=== start ===\n{ ready:\nGo now.\nSecond line.\n- else:\nWait here.\n}\n-> DONE\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", src);
+        assert!(s.set_active_file("main.ink"));
+        let start = src.find("Second line.").unwrap() as u32;
+        let doc = s.open_fragment("main.ink", start, src.len() as u32);
+
+        let json = s.hir_spans_doc(doc);
+        let p: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let spans = p["spans"].as_array().unwrap();
+        assert!(
+            !spans.iter().any(|s| s["kind"] == "conditional"),
+            "straddling non-container construct span must be dropped: {spans:?}"
+        );
+        assert!(
+            spans.iter().any(|s| s["kind"] == "knot"
+                && s["container"] == true
+                && s["start_line"] == 0
+                && s["start_char"] == 0),
+            "straddling knot container is clamped to the view start: {spans:?}"
+        );
     }
 
     #[test]

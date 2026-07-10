@@ -4,6 +4,7 @@ use brink_ir::{
 use rowan::TextRange;
 
 use crate::LineIndex;
+use crate::hir_projection::{Projection, SpanKind};
 use crate::line_context::LineContext;
 
 /// The fold's kind (#365 — Celeris §5.5): every fold the editor exposes is
@@ -431,58 +432,24 @@ fn line_natures(source: &str, ctx: &[LineContext], scaffold_lines: &[bool]) -> V
 
 /// Mark the opening/closing scaffold lines of every conditional and
 /// sequence: the `{ cond:` / `{` header line and the closing `}` line,
-/// located from the same HIR `ptr.text_range()` + brace-extension the
-/// `{...}` fold uses (`push_fold`'s brace search), so the two never
-/// disagree about where a conditional's braces sit. Only these two lines
-/// per construct are scaffold — intermediate branch separators (`- else:`)
-/// are left at their existing (structural) classification, since the HIR
-/// gives no reliable per-branch source span to anchor them to.
-fn mark_conditional_scaffold(hir: &HirFile, source: &str, idx: &LineIndex, out: &mut Vec<bool>) {
-    let mut marker = ScaffoldMarker { source, idx, out };
-    brink_ir::hir::visit::visit(hir, &mut marker);
-}
-
-/// Marks the opening/closing brace lines of every conditional and sequence via
-/// the shared HIR visitor. Inline conditionals/sequences are marked only in
-/// body content — not a choice's inline text — matching the pre-visitor walk.
-struct ScaffoldMarker<'a> {
-    source: &'a str,
-    idx: &'a LineIndex,
-    out: &'a mut Vec<bool>,
-}
-
-impl HirVisitor for ScaffoldMarker<'_> {
-    fn enter_stmt(&mut self, stmt: &Stmt) {
-        match stmt {
-            Stmt::Conditional(cond) => {
-                mark_brace_span_scaffold(cond.ptr.text_range(), self.source, self.idx, self.out);
-            }
-            Stmt::Sequence(seq) => {
-                mark_brace_span_scaffold(seq.ptr.text_range(), self.source, self.idx, self.out);
-            }
-            _ => {}
-        }
-    }
-
-    fn enter_content(&mut self, content: &Content, ctx: ContentContext) {
-        if ctx != ContentContext::Body {
-            return;
-        }
-        for part in &content.parts {
-            match part {
-                ContentPart::InlineConditional(cond) => {
-                    mark_brace_span_scaffold(
-                        cond.ptr.text_range(),
-                        self.source,
-                        self.idx,
-                        self.out,
-                    );
-                }
-                ContentPart::InlineSequence(seq) => {
-                    mark_brace_span_scaffold(seq.ptr.text_range(), self.source, self.idx, self.out);
-                }
-                _ => {}
-            }
+/// located from the projection's construct-extent spans
+/// ([`SpanKind::Conditional`]/[`SpanKind::Sequence`] — already Body-gated,
+/// so inline logic in a choice's own text is never scaffold) + the same
+/// brace-extension the `{...}` fold uses (`push_fold`'s brace search), so
+/// the two never disagree about where a conditional's braces sit. Only
+/// these two lines per construct are scaffold — intermediate branch
+/// separators (`- else:`) are left at their existing (structural)
+/// classification, since the HIR gives no reliable per-branch source span
+/// to anchor them to.
+fn mark_conditional_scaffold(
+    projection: &Projection,
+    source: &str,
+    idx: &LineIndex,
+    out: &mut Vec<bool>,
+) {
+    for span in &projection.spans {
+        if matches!(span.kind, SpanKind::Conditional | SpanKind::Sequence) {
+            mark_brace_span_scaffold(span.range, source, idx, out);
         }
     }
 }
@@ -537,20 +504,22 @@ fn mark_line(line: u32, out: &mut Vec<bool>) {
 }
 
 /// Compute the machinery and narrative fold runs (#365): maximal runs of
-/// `>= 2` consecutive same-nature lines. `ctx` should be produced by
+/// `>= 2` consecutive same-nature lines. `projection` is the file's HIR
+/// projection ([`crate::hir_projection::project_hir_structural`] suffices —
+/// no identity needed) and `ctx` should be produced by
 /// [`crate::line_context::line_contexts`] or
-/// [`crate::line_context::line_contexts_with_dialect`] for the same `hir`/
-/// `source`, so dialect-classified lines (when a dialect is registered)
-/// carry their declared `nature` into the run computation.
+/// [`crate::line_context::line_contexts_with_dialect`] for the same file,
+/// so dialect-classified lines (when a dialect is registered) carry their
+/// declared `nature` into the run computation.
 #[must_use]
 pub fn machinery_and_narrative_folds(
-    hir: &HirFile,
+    projection: &Projection,
     source: &str,
     ctx: &[LineContext],
 ) -> Vec<FoldRange> {
     let idx = LineIndex::new(source);
     let mut scaffold = vec![false; ctx.len()];
-    mark_conditional_scaffold(hir, source, &idx, &mut scaffold);
+    mark_conditional_scaffold(projection, source, &idx, &mut scaffold);
     let natures = line_natures(source, ctx, &scaffold);
 
     let mut ranges = Vec::new();
@@ -744,7 +713,8 @@ mod fold_kind_tests {
         let parsed = brink_syntax::parse(src);
         let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
         let ctx = line_contexts(&hir, src, &parsed.syntax());
-        machinery_and_narrative_folds(&hir, src, &ctx)
+        let projection = crate::hir_projection::project_hir_structural(&hir, src);
+        machinery_and_narrative_folds(&projection, src, &ctx)
             .into_iter()
             .map(|r| (r.start_line, r.end_line, r.kind))
             .collect()
@@ -947,10 +917,12 @@ Come on in, take a seat.
             .expect("at-cue preset compiles");
         let ctx =
             crate::line_context::line_contexts_with_dialect(&hir, src, &parsed.syntax(), &dialect);
-        let ranges: Vec<(u32, u32, FoldKind)> = machinery_and_narrative_folds(&hir, src, &ctx)
-            .into_iter()
-            .map(|r| (r.start_line, r.end_line, r.kind))
-            .collect();
+        let projection = crate::hir_projection::project_hir_structural(&hir, src);
+        let ranges: Vec<(u32, u32, FoldKind)> =
+            machinery_and_narrative_folds(&projection, src, &ctx)
+                .into_iter()
+                .map(|r| (r.start_line, r.end_line, r.kind))
+                .collect();
         assert!(ranges.contains(&(1, 2, FoldKind::Narrative)), "{ranges:?}");
     }
 }

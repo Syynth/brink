@@ -1,0 +1,28 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n* Choice one\n  First body line.\n\n  Second body line after a blank.\n* Choice two\n\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* Choice one| Choice w=1/ChoiceLine(sticky=false)
+  2 |  First body line.| Narrative w=1/ChoiceBody
+  3 || Blank w=0/TopLevel
+  4 |  Second body line after a blank.| Narrative w=1/ChoiceBody
+  5 |* Choice two| Choice w=1/ChoiceLine(sticky=false)
+  6 || Blank w=0/TopLevel
+  7 |-> END| Divert w=1/ChoiceBody
+  8 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* Choice one| Choice w=1/ChoiceLine(sticky=false)
+  2 |  First body line.| Narrative w=1/ChoiceBody
+  3 || Blank w=0/TopLevel
+  4 |  Second body line after a blank.| Narrative w=1/ChoiceBody
+  5 |* Choice two| Choice w=1/ChoiceLine(sticky=false)
+  6 || Blank w=0/TopLevel
+  7 |-> END| Divert w=1/ChoiceBody
+  8 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..7 from_start=false kind=Structural text=None
+== RUNS (base) ==
+== RUNS (at-cue dialect) ==

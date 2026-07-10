@@ -1,0 +1,33 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n{ ready:\n    * [Go now]\n      Body inside the arm.\n    * [Wait]\n- else:\n    Not ready yet.\n}\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |{ ready:| Logic w=0/TopLevel
+  2 |    * [Go now]| Choice w=0/ChoiceLine(sticky=false)
+  3 |      Body inside the arm.| Narrative w=0/ConditionalBranch
+  4 |    * [Wait]| Choice w=0/ChoiceLine(sticky=false)
+  5 |- else:| Logic w=0/TopLevel
+  6 |    Not ready yet.| Narrative w=0/ConditionalBranch
+  7 |}| Logic w=0/TopLevel
+  8 |-> END| Divert w=0/TopLevel
+  9 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |{ ready:| Logic w=0/TopLevel
+  2 |    * [Go now]| Choice w=0/ChoiceLine(sticky=false)
+  3 |      Body inside the arm.| Narrative w=0/ConditionalBranch
+  4 |    * [Wait]| Choice w=0/ChoiceLine(sticky=false)
+  5 |- else:| Logic w=0/TopLevel
+  6 |    Not ready yet.| Narrative w=0/ConditionalBranch
+  7 |}| Logic w=0/TopLevel
+  8 |-> END| Divert w=0/TopLevel
+  9 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..8 from_start=false kind=Structural text=None
+1..7 from_start=false kind=Structural text=Some("{...}")
+== RUNS (base) ==
+7..8 Machinery
+== RUNS (at-cue dialect) ==
+7..8 Machinery

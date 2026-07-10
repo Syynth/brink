@@ -1,0 +1,34 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n@Alice:<>\n(warmly)<>\nHello there.\nStill talking.\n\nAfter the blank, no chain.\n~ change_party_member(2, false)\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |@Alice:<>| Narrative w=0/TopLevel
+  2 |(warmly)<>| Narrative w=0/TopLevel
+  3 |Hello there.| Narrative w=0/TopLevel
+  4 |Still talking.| Narrative w=0/TopLevel
+  5 || Blank w=0/TopLevel
+  6 |After the blank, no chain.| Narrative w=0/TopLevel
+  7 |~ change_party_member(2, false)| Logic w=0/TopLevel
+  8 |-> END| Divert w=0/TopLevel
+  9 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |@Alice:<>| Narrative w=0/TopLevel dialect=character/Narrative[speaker=Alice]
+  2 |(warmly)<>| Narrative w=0/TopLevel dialect=parenthetical/Narrative[content=(warmly)]
+  3 |Hello there.| Narrative w=0/TopLevel dialect=dialogue/Narrative[speaker=Alice]
+  4 |Still talking.| Narrative w=0/TopLevel dialect=dialogue/Narrative[speaker=Alice]
+  5 || Blank w=0/TopLevel
+  6 |After the blank, no chain.| Narrative w=0/TopLevel
+  7 |~ change_party_member(2, false)| Logic w=0/TopLevel
+  8 |-> END| Divert w=0/TopLevel
+  9 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..8 from_start=false kind=Structural text=None
+== RUNS (base) ==
+1..4 Narrative
+7..8 Machinery
+== RUNS (at-cue dialect) ==
+1..4 Narrative
+7..8 Machinery
