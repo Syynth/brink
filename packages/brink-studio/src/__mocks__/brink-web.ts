@@ -611,6 +611,7 @@ export class EditorSession {
 
   line_contexts_doc(_doc: number): string { return "[]"; }
   semantic_tokens_doc(_doc: number): string { return "[]"; }
+  hir_spans_doc(_doc: number): string { return '{"spans":[],"lines":[]}'; }
   completions_doc(_doc: number, _offset: number): string { return "[]"; }
   hover_doc(_doc: number, _offset: number): string { return "null"; }
   goto_definition_doc(_doc: number, _offset: number): string { return "null"; }
