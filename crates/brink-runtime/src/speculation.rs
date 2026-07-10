@@ -45,8 +45,8 @@ use crate::world::{ContextView, FlowLocal, Mode, World};
 ///   production).
 /// - `lines` bounds the total number of visible lines a `Speculation` may
 ///   produce over its lifetime, across however many `advance` calls the
-///   caller makes (mirrors [`crate::Story`]'s private `LINE_LIMIT`, 10,000
-///   in production).
+///   caller makes (mirrors [`FlowInstance::LINE_LIMIT`], 10,000 in
+///   production).
 ///
 /// The [`Default`] is well under both production ceilings — a speculative
 /// probe is expected to be short-lived, so a runaway one should fail fast
