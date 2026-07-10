@@ -19,7 +19,7 @@ This emits an npm package at `crates/brink-web/www/pkg/` — the glue JS
 The package must be built **before** the JS workspace installs, because the
 ergonomic wrapper `@brink-lang/web` depends on it via a `file:` path.
 
-```ts
+```ts,no-check
 // raw module
 import init, { EditorSession, StoryRunner, compile } from "brink-web";
 await init();                       // one-time async load of the wasm
@@ -68,6 +68,11 @@ registered under that name to resolve it. Arguments arrive as native JS values
 (number / boolean / string / null) and the return is read back the same way —
 an integer-valued number becomes an ink int, otherwise a float:
 
+<!-- ts-hidden
+import { StoryRunnerHandle } from "@brink-lang/web";
+declare const bytes: Uint8Array;
+declare const audio: { play(id: string): void };
+-->
 ```ts
 const runner = new StoryRunnerHandle(bytes);
 runner.bindExternal("roll", (sides) => 1 + Math.floor(Math.random() * Number(sides)));
@@ -85,6 +90,10 @@ until it resolves (inline timing like `~ camera("bow") ~ wait(2.0) ~ wreck()`,
 a targeting UI awaiting a click, a `fetch`). Drive such a story with the async
 continue methods, which await and resume transparently:
 
+<!-- ts-hidden
+import { StoryRunnerHandle } from "@brink-lang/web";
+declare const runner: StoryRunnerHandle;
+-->
 ```ts
 runner.bindExternal("wait", (secs) => new Promise((r) => setTimeout(r, Number(secs) * 1000)));
 const lines = await runner.continueStoryAsync(); // suspends across the wait
@@ -128,7 +137,7 @@ full-file mode.
 
 ## A minimal client
 
-```ts
+```ts,no-check
 import init, { EditorSession, StoryRunner } from "brink-web";
 
 await init();

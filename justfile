@@ -73,6 +73,17 @@ book-test:
     export CARGO_MANIFEST_DIR="$PWD/crates/bevy-brink"
     mdbook test docs/book -L "$deps"
 
+# Type-check the book's TypeScript examples against the published @brink-lang
+# packages. The TS counterpart of `book-test`: mdbook only runs Rust doctests,
+# so this extracts the `ts`/`typescript` blocks and runs `tsc` over them. See
+# docs/book/ts-check/README.md.
+book-ts-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd docs/book/ts-check
+    npm install --no-audit --no-fund --silent
+    npm run check
+
 # Build the full brink-studio as a standalone static app and stage it into
 # docs/book/src/playground/ (the embedded book playground).
 book-assets:
