@@ -168,7 +168,7 @@ fn index_parsing() {
     write_inkb(&data, &mut buf);
 
     let index = read_inkb_index(&buf).unwrap();
-    assert_eq!(index.version, 2);
+    assert_eq!(index.version, 3);
     assert_eq!(index.file_size as usize, buf.len());
     assert_eq!(index.sections.len(), 10);
 
@@ -386,6 +386,7 @@ fn roundtrip_line_entry_with_audio_ref() {
             counting_flags: CountingFlags::empty(),
             path_hash: 0,
             param_count: 0,
+            local: false,
         }],
         line_tables: vec![ScopeLineTable {
             scope_id,

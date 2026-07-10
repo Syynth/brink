@@ -304,6 +304,7 @@ fn walk_container(
         // (`choose_path_string_with_args`) / `call_function`. Saturates — a
         // knot with >255 params is absurd and never legitimately occurs.
         param_count: u8::try_from(container.params.len()).unwrap_or(u8::MAX),
+        local: false,
     };
 
     state.containers.push(def);
@@ -398,6 +399,7 @@ fn build_globals(globals: &[lir::GlobalDef]) -> Vec<GlobalVarDef> {
             value_type: const_value_type(&g.default),
             default_value: const_to_value(&g.default),
             mutable: g.mutable,
+            local: false,
         })
         .collect()
 }

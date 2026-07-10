@@ -140,8 +140,9 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineT
         arb_counting_flags(),
         prop::collection::vec(arb_line_entry(), 0..4),
         any::<u8>(),
+        any::<bool>(),
     )
-        .prop_map(|(id, bytecode, counting_flags, lines, param_count)| {
+        .prop_map(|(id, bytecode, counting_flags, lines, param_count, local)| {
             let def = ContainerDef {
                 id,
                 scope_id: id,
@@ -150,6 +151,7 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineT
                 counting_flags,
                 path_hash: 0,
                 param_count,
+                local,
             };
             let lt = ScopeLineTable {
                 scope_id: id,
@@ -166,14 +168,16 @@ fn arb_global_var() -> impl Strategy<Value = GlobalVarDef> {
         arb_value_type(),
         arb_value(),
         any::<bool>(),
+        any::<bool>(),
     )
         .prop_map(
-            |(id, name, value_type, default_value, mutable)| GlobalVarDef {
+            |(id, name, value_type, default_value, mutable, local)| GlobalVarDef {
                 id,
                 name,
                 value_type,
                 default_value,
                 mutable,
+                local,
             },
         )
 }
@@ -265,7 +269,7 @@ proptest! {
         prop_assert_eq!(index.file_size as usize, buf.len());
 
         // Correct version.
-        prop_assert_eq!(index.version, 2);
+        prop_assert_eq!(index.version, 3);
 
         // Exactly 10 sections in canonical order.
         prop_assert_eq!(index.sections.len(), 10);

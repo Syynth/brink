@@ -305,12 +305,14 @@ fn decode_global_var(buf: &[u8], off: &mut usize) -> Result<GlobalVarDef, Decode
     let value_type = decode_value_type(buf, off)?;
     let default_value = decode_value(buf, off)?;
     let mutable = read_u8(buf, off)? != 0;
+    let local = read_u8(buf, off)? != 0;
     Ok(GlobalVarDef {
         id,
         name,
         value_type,
         default_value,
         mutable,
+        local,
     })
 }
 
@@ -449,6 +451,7 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
     let counting_flags = CountingFlags::from_bits(counting_bits).unwrap_or(CountingFlags::empty());
     let path_hash = read_i32(buf, off)?;
     let param_count = read_u8(buf, off)?;
+    let local = read_u8(buf, off)? != 0;
 
     let bytecode_len = read_u32(buf, off)? as usize;
     if *off + bytecode_len > buf.len() {
@@ -465,6 +468,7 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
         counting_flags,
         path_hash,
         param_count,
+        local,
     })
 }
 

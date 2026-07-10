@@ -696,6 +696,8 @@ pub fn process_container(
         // the reference pipeline doesn't host-direct parameterized entry, so
         // arity-checking simply isn't available for converter-built programs.
         param_count: 0,
+        // inklecate has no flow-private concept — always World scope.
+        local: false,
     };
 
     // Store element offsets for this container, keyed by DefinitionId.
@@ -800,6 +802,9 @@ pub fn extract_globals(
                     value_type: value.value_type(),
                     default_value: value,
                     mutable: true,
+                    // inklecate has no flow-private concept — converter
+                    // output is always shared/World scope.
+                    local: false,
                 });
             }
             // Don't clear pending_value on control commands (ev, /ev,

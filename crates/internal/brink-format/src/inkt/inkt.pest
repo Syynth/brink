@@ -14,8 +14,9 @@ name_entry = { integer ~ string }
 // ── Globals ─────────────────────────────────────────────────────────────────
 
 globals = { "(" ~ "globals" ~ global_entry* ~ ")" }
-global_entry = { "(" ~ "global" ~ def_id ~ ":" ~ type_name ~ value ~ mutable_flag? ~ "(" ~ "name" ~ integer ~ ")" ~ ")" }
+global_entry = { "(" ~ "global" ~ def_id ~ ":" ~ type_name ~ value ~ mutable_flag? ~ local_flag? ~ "(" ~ "name" ~ integer ~ ")" ~ ")" }
 mutable_flag = { "mutable" }
+local_flag = { "local" }
 type_name = { "int" | "float" | "bool" | "string" | "list" | "divert_target" | "var_pointer" | "null" }
 
 // ── Lists ───────────────────────────────────────────────────────────────────
@@ -52,7 +53,7 @@ list_literal_entry = { "(" ~ "list" ~ list_value_items ~ list_value_origins ~ ")
 
 // ── Containers ──────────────────────────────────────────────────────────────
 
-container = { "(" ~ "container" ~ def_id ~ hash_field? ~ scope_field? ~ container_name_field? ~ flags_field? ~ path_hash_field? ~ params_field? ~ lines_field? ~ code_field? ~ ")" }
+container = { "(" ~ "container" ~ def_id ~ hash_field? ~ scope_field? ~ container_name_field? ~ flags_field? ~ path_hash_field? ~ params_field? ~ local_flag? ~ lines_field? ~ code_field? ~ ")" }
 scope_field = { "(" ~ "scope" ~ def_id ~ ")" }
 container_name_field = { "(" ~ "name" ~ integer ~ ")" }
 path_hash_field = { "(" ~ "path_hash" ~ integer ~ ")" }
