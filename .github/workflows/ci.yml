@@ -100,23 +100,27 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      # bevy-brink's `bevy` dev-dependency (the book_flows example uses
-      # `bevy::prelude`) pulls in wayland-sys/winit/alsa; their build scripts
-      # need these system libs. Building the example below requires them.
+      # bevy-brink (built below for the Bevy doctests' -L path) transitively
+      # needs these system libs via its bevy_* deps' build scripts.
+      #
+      # No rust-cache here on purpose: the doctest deps go in a non-default
+      # target dir and are consumed by rustdoc, which rejects artifacts built by
+      # a different rustc (E0514) — a restored cache from an older toolchain
+      # breaks the run. The build below is always fresh.
+      #
+      # The Bevy *flows* page is `{{#include}}`d from crates/bevy-brink/examples/
+      # book_flows.rs and compile-checked by the `test` job (cargo test compiles
+      # examples), so it needs no step here.
       - name: Install Linux dependencies (bevy)
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo install mdbook --locked
       - run: mdbook build docs/book
-      # The Bevy flows page {{#include}}s its snippets from a compiled example;
-      # building it is what compile-checks that page.
-      - run: cargo build -p bevy-brink --example book_flows
-      # Compile the book's other Rust examples as doctests. Without this, a
-      # signature change can silently rot every example in the book — which is
-      # exactly what happened to `Story::new` across the Program → Arc refactor.
+      # Compile the book's Rust examples as doctests. Without this, a signature
+      # change can silently rot every example in the book — which is exactly
+      # what happened to `Story::new` across the Program → Arc refactor.
       #
       # One cargo invocation for the whole package set: rustdoc resolves the
       # examples off -L, and two builds of a crate with different hashes make
