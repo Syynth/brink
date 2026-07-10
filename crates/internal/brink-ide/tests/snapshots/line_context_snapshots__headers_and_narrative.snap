@@ -1,0 +1,25 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== my_knot ===\nSome narrative text.\n\n= my_stitch\nMore text here.\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== my_knot ===| KnotHeader w=0/TopLevel
+  1 |Some narrative text.| Narrative w=0/TopLevel
+  2 || Blank w=0/TopLevel
+  3 |= my_stitch| StitchHeader w=0/TopLevel
+  4 |More text here.| Narrative w=0/TopLevel
+  5 |-> END| Divert w=0/TopLevel
+  6 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== my_knot ===| KnotHeader w=0/TopLevel
+  1 |Some narrative text.| Narrative w=0/TopLevel
+  2 || Blank w=0/TopLevel
+  3 |= my_stitch| StitchHeader w=0/TopLevel
+  4 |More text here.| Narrative w=0/TopLevel
+  5 |-> END| Divert w=0/TopLevel
+  6 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..5 from_start=false kind=Structural text=None
+3..5 from_start=false kind=Structural text=None
+== RUNS (base) ==
+== RUNS (at-cue dialect) ==

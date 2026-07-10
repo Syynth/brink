@@ -1,0 +1,24 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\nTake the {red|blue} pill.\n{visited: You were here before.}\nYou have {gold}\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |Take the {red|blue} pill.| Narrative w=0/TopLevel
+  2 |{visited: You were here before.}| Narrative w=0/TopLevel
+  3 |You have {gold}| Narrative w=0/TopLevel
+  4 |-> END| Divert w=0/TopLevel
+  5 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |Take the {red|blue} pill.| Narrative w=0/TopLevel
+  2 |{visited: You were here before.}| Narrative w=0/TopLevel
+  3 |You have {gold}| Narrative w=0/TopLevel
+  4 |-> END| Divert w=0/TopLevel
+  5 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..4 from_start=false kind=Structural text=None
+== RUNS (base) ==
+1..3 Narrative
+== RUNS (at-cue dialect) ==
+1..3 Narrative

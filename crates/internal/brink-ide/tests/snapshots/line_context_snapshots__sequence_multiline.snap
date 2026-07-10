@@ -1,0 +1,29 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n{ stopping:\n- First visit text.\n- Second visit text.\n- Every other time.\n}\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |{ stopping:| Logic w=0/TopLevel
+  2 |- First visit text.| Gather w=1/GatherContinuation
+  3 |- Second visit text.| Gather w=1/GatherContinuation
+  4 |- Every other time.| Gather w=1/GatherContinuation
+  5 |}| Logic w=0/TopLevel
+  6 |-> END| Divert w=0/TopLevel
+  7 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |{ stopping:| Logic w=0/TopLevel
+  2 |- First visit text.| Gather w=1/GatherContinuation
+  3 |- Second visit text.| Gather w=1/GatherContinuation
+  4 |- Every other time.| Gather w=1/GatherContinuation
+  5 |}| Logic w=0/TopLevel
+  6 |-> END| Divert w=0/TopLevel
+  7 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..6 from_start=false kind=Structural text=None
+1..5 from_start=false kind=Structural text=Some("{...}")
+== RUNS (base) ==
+5..6 Machinery
+== RUNS (at-cue dialect) ==
+5..6 Machinery

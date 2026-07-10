@@ -1,0 +1,31 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\nVAR gold = 0\n=== start ===\n~ temp x = 1\n~ gold = gold + x\n~ do_thing()\n-> END\n=== function do_thing ===\n~ return 0\n\")"
+---
+== LINES (base) ==
+  0 |VAR gold = 0| VarDecl w=0/TopLevel
+  1 |=== start ===| KnotHeader w=0/TopLevel
+  2 |~ temp x = 1| Logic w=0/TopLevel
+  3 |~ gold = gold + x| Logic w=0/TopLevel
+  4 |~ do_thing()| Logic w=0/TopLevel
+  5 |-> END| Divert w=0/TopLevel
+  6 |=== function do_thing ===| KnotHeader w=0/TopLevel
+  7 |~ return 0| Logic w=0/TopLevel
+  8 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |VAR gold = 0| VarDecl w=0/TopLevel
+  1 |=== start ===| KnotHeader w=0/TopLevel
+  2 |~ temp x = 1| Logic w=0/TopLevel
+  3 |~ gold = gold + x| Logic w=0/TopLevel
+  4 |~ do_thing()| Logic w=0/TopLevel
+  5 |-> END| Divert w=0/TopLevel
+  6 |=== function do_thing ===| KnotHeader w=0/TopLevel
+  7 |~ return 0| Logic w=0/TopLevel
+  8 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+1..5 from_start=false kind=Structural text=None
+6..7 from_start=false kind=Structural text=None
+== RUNS (base) ==
+2..5 Machinery
+== RUNS (at-cue dialect) ==
+2..5 Machinery

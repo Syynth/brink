@@ -1,0 +1,32 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n* [Go back]\n- (labeled) Continuation text.\n* Another\n- bare gather text\n* Deeper\n* * Nested\n- - (deep) nested gather\n-\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* [Go back]| Choice w=1/ChoiceLine(sticky=false)
+  2 |- (labeled) Continuation text.| Gather w=1/GatherContinuation
+  3 |* Another| Choice w=1/ChoiceLine(sticky=false)
+  4 |- bare gather text| Gather w=1/GatherContinuation
+  5 |* Deeper| Choice w=1/ChoiceLine(sticky=false)
+  6 |* * Nested| Choice w=2/ChoiceLine(sticky=false)
+  7 |- - (deep) nested gather| Gather w=2/GatherContinuation
+  8 |-| Gather w=1/GatherContinuation
+  9 |-> END| Divert w=1/GatherContinuation
+ 10 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* [Go back]| Choice w=1/ChoiceLine(sticky=false)
+  2 |- (labeled) Continuation text.| Gather w=1/GatherContinuation
+  3 |* Another| Choice w=1/ChoiceLine(sticky=false)
+  4 |- bare gather text| Gather w=1/GatherContinuation
+  5 |* Deeper| Choice w=1/ChoiceLine(sticky=false)
+  6 |* * Nested| Choice w=2/ChoiceLine(sticky=false)
+  7 |- - (deep) nested gather| Gather w=2/GatherContinuation
+  8 |-| Gather w=1/GatherContinuation
+  9 |-> END| Divert w=1/GatherContinuation
+ 10 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..9 from_start=false kind=Structural text=None
+== RUNS (base) ==
+== RUNS (at-cue dialect) ==

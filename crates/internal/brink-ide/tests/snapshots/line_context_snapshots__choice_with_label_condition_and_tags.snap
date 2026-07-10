@@ -1,0 +1,20 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n* (opt) {true} Labeled choice # tagged\n  Body line.\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* (opt) {true} Labeled choice # tagged| Choice w=1/ChoiceLine(sticky=false)
+  2 |  Body line.| Narrative w=1/ChoiceBody
+  3 |-> END| Divert w=1/ChoiceBody
+  4 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* (opt) {true} Labeled choice # tagged| Choice w=1/ChoiceLine(sticky=false)
+  2 |  Body line.| Narrative w=1/ChoiceBody
+  3 |-> END| Divert w=1/ChoiceBody
+  4 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..3 from_start=false kind=Structural text=None
+== RUNS (base) ==
+== RUNS (at-cue dialect) ==

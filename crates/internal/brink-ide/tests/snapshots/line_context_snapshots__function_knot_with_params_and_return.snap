@@ -1,0 +1,20 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n== function damage(weapon, bonus) ==\n~ temp roll = weapon + bonus\n~ return roll\n\")"
+---
+== LINES (base) ==
+  0 |== function damage(weapon, bonus) ==| KnotHeader w=0/TopLevel
+  1 |~ temp roll = weapon + bonus| Logic w=0/TopLevel
+  2 |~ return roll| Logic w=0/TopLevel
+  3 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |== function damage(weapon, bonus) ==| KnotHeader w=0/TopLevel
+  1 |~ temp roll = weapon + bonus| Logic w=0/TopLevel
+  2 |~ return roll| Logic w=0/TopLevel
+  3 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..2 from_start=false kind=Structural text=None
+== RUNS (base) ==
+1..2 Machinery
+== RUNS (at-cue dialect) ==
+1..2 Machinery
