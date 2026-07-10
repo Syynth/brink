@@ -21,6 +21,7 @@ expression: "render_fixture(\"\\\n=== k ===\n* A\n- gather text\n- (opts)\nconte
   6 |- done| Gather w=1/GatherContinuation
   7 || Blank w=0/TopLevel
 == STRUCTURAL FOLDS ==
+3..5 from_start=false kind=Structural text=None
 0..6 from_start=false kind=Structural text=None
 == RUNS (base) ==
 == RUNS (at-cue dialect) ==

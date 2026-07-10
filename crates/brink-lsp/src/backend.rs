@@ -1342,7 +1342,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let domain_ranges = brink_ide::folding::folding_ranges(hir, source);
+        let projection = brink_ide::hir_projection::project_hir_structural(hir, source);
+        let domain_ranges = brink_ide::folding::folding_ranges(hir, source, &projection);
 
         let ranges = domain_ranges
             .into_iter()

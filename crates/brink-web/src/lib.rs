@@ -4535,8 +4535,12 @@ impl EditorSession {
             return "[]".to_owned();
         };
 
-        // Structural folds (#313 G et al.) — never auto-collapsed by a host.
-        let mut ranges = brink_ide::folding::folding_ranges(hir, source);
+        // One structural projection feeds both fold families (#476).
+        let projection = brink_ide::hir_projection::project_hir_structural(hir, source);
+
+        // Structural folds (#313 G, #476 weave folds) — never auto-collapsed
+        // by a host.
+        let mut ranges = brink_ide::folding::folding_ranges(hir, source, &projection);
 
         // Machinery/narrative fold runs (#365): computed from the same
         // per-line classification `line_contexts_impl` exposes, so a
@@ -4549,7 +4553,6 @@ impl EditorSession {
                 }
                 None => brink_ide::line_context::line_contexts(hir, source, &root),
             };
-            let projection = brink_ide::hir_projection::project_hir_structural(hir, source);
             ranges.extend(brink_ide::folding::machinery_and_narrative_folds(
                 &projection,
                 source,

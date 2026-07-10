@@ -27,6 +27,8 @@ expression: "render_fixture(\"\\\n=== start ===\n* [Go back]\n- (labeled) Contin
   9 |-> END| Divert w=1/GatherContinuation
  10 || Blank w=0/TopLevel
 == STRUCTURAL FOLDS ==
+2..9 from_start=false kind=Structural text=None
+5..7 from_start=false kind=Structural text=None
 0..9 from_start=false kind=Structural text=None
 == RUNS (base) ==
 == RUNS (at-cue dialect) ==

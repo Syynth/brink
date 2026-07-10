@@ -21,6 +21,7 @@ expression: "render_fixture(\"\\\n=== start ===\n* A\n-\n* B\n  -> hub\n=== hub 
   6 |-> END| Divert w=0/TopLevel
   7 || Blank w=0/TopLevel
 == STRUCTURAL FOLDS ==
+3..4 from_start=false kind=Structural text=None
 0..4 from_start=false kind=Structural text=None
 5..6 from_start=false kind=Structural text=None
 == RUNS (base) ==

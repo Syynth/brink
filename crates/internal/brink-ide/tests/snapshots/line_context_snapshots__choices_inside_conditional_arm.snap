@@ -25,8 +25,8 @@ expression: "render_fixture(\"\\\n=== start ===\n{ ready:\n    * [Go now]\n     
   8 |-> END| Divert w=0/TopLevel
   9 || Blank w=0/TopLevel
 == STRUCTURAL FOLDS ==
-0..8 from_start=false kind=Structural text=None
 1..7 from_start=false kind=Structural text=Some("{...}")
+0..8 from_start=false kind=Structural text=None
 == RUNS (base) ==
 7..8 Machinery
 == RUNS (at-cue dialect) ==

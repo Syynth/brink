@@ -23,8 +23,8 @@ expression: "render_fixture(\"\\\n=== start ===\n{ x > 5:\n~ y = 1\n- else:\n~ y
   7 |-> END| Divert w=0/TopLevel
   8 || Blank w=0/TopLevel
 == STRUCTURAL FOLDS ==
-0..7 from_start=false kind=Structural text=None
 1..5 from_start=false kind=Structural text=Some("{...}")
+0..7 from_start=false kind=Structural text=None
 == RUNS (base) ==
 1..5 Machinery
 == RUNS (at-cue dialect) ==

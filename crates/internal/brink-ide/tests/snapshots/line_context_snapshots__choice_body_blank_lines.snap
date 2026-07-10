@@ -23,6 +23,8 @@ expression: "render_fixture(\"\\\n=== start ===\n* Choice one\n  First body line
   7 |-> END| Divert w=1/ChoiceBody
   8 || Blank w=0/TopLevel
 == STRUCTURAL FOLDS ==
+1..4 from_start=false kind=Structural text=None
+5..7 from_start=false kind=Structural text=None
 0..7 from_start=false kind=Structural text=None
 == RUNS (base) ==
 == RUNS (at-cue dialect) ==

@@ -1,6 +1,4 @@
-use brink_ir::{
-    Block, Choice, Content, ContentContext, ContentPart, HirFile, HirVisitor, Stmt, walk_block,
-};
+use brink_ir::HirFile;
 use rowan::TextRange;
 
 use crate::LineIndex;
@@ -11,9 +9,10 @@ use crate::line_context::LineContext;
 /// tagged so hosts can select which kinds auto-collapse per view mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FoldKind {
-    /// Everything this module emitted before #365 (decls, doc comments,
-    /// conditionals, sequences, choice sets). User-invoked in every mode;
-    /// NEVER auto-collapsed by a host's mode entry.
+    /// Structure-anchored folds: decls, doc comments, INCLUDE blocks,
+    /// conditionals/sequences, and (since #476) choice branches and gather
+    /// continuations from the projection's container extents. User-invoked
+    /// in every mode; NEVER auto-collapsed by a host's mode entry.
     Structural,
     /// A maximal run of >=2 consecutive machinery-natured lines (logic `~`,
     /// VAR/CONST/LIST decls, standalone diverts, conditional/sequence
@@ -41,14 +40,20 @@ pub struct FoldRange {
     pub kind: FoldKind,
 }
 
-/// Compute folding ranges for a file from its HIR.
+/// Compute folding ranges for a file from its HIR and projection (#476).
+///
+/// `projection` supplies the weave and construct folds — Choice/Gather
+/// container extents and Conditional/Sequence construct extents
+/// ([`crate::hir_projection::project_hir_structural`] suffices; identity is
+/// not used). The HIR drives what the projection doesn't model as containers:
+/// the INCLUDE block and knot/stitch declaration folds (doc-block handling).
 ///
 /// All ranges from this pass are [`FoldKind::Structural`] — the
 /// machinery/narrative run-based folds are computed separately by
 /// [`machinery_and_narrative_folds`], since they require the per-line
 /// `nature` facet (base classification, or a registered dialect's) rather
 /// than HIR structure.
-pub fn folding_ranges(hir: &HirFile, source: &str) -> Vec<FoldRange> {
+pub fn folding_ranges(hir: &HirFile, source: &str, projection: &Projection) -> Vec<FoldRange> {
     let idx = LineIndex::new(source);
     let mut ranges = Vec::new();
 
@@ -69,8 +74,42 @@ pub fn folding_ranges(hir: &HirFile, source: &str) -> Vec<FoldRange> {
         });
     }
 
-    // Root-level block content
-    collect_block_folds(&hir.root_content, source, &idx, &mut ranges);
+    // Weave + construct folds from the projection (#476). A Choice
+    // container's extent is the full branch (choice line ∪ body, §5.1): the
+    // fold anchors at the end of the choice line and hides the branch. A
+    // Gather container folds its continuation from the gather line — but
+    // only when the extent actually anchors on a gather line: an unlabeled
+    // gather whose own line is prose has ptr-less line content, so its
+    // extent starts at the first *located* statement, which can be a
+    // different construct entirely (even a sibling choice line, where the
+    // stray fold would shadow the choice's own). Until lowering stamps ptrs
+    // on accumulated content, such gathers get no fold rather than a wrong
+    // one. Conditional/Sequence construct spans reproduce the pre-#476
+    // conditional folds exactly: same ptr ranges, same Body gating, and the
+    // "{...}" sentinel drives `push_fold`'s brace extension. Single-line
+    // extents fold nothing (bodiless choices, bare labeled gathers).
+    for span in &projection.spans {
+        match span.kind {
+            SpanKind::Choice if span.handle.is_some() => {
+                push_fold(span.range, None, source, &idx, &mut ranges);
+            }
+            SpanKind::Gather
+                if span.handle.is_some() && anchors_on_gather_line(span.range, source, &idx) =>
+            {
+                push_fold(span.range, None, source, &idx, &mut ranges);
+            }
+            SpanKind::Conditional | SpanKind::Sequence => {
+                push_fold(
+                    span.range,
+                    Some("{...}".to_owned()),
+                    source,
+                    &idx,
+                    &mut ranges,
+                );
+            }
+            _ => {}
+        }
+    }
 
     // Doc blocks consumed by a declaration fold (tracked by their first
     // line) — they must not also fold as standalone comment blocks.
@@ -89,7 +128,6 @@ pub fn folding_ranges(hir: &HirFile, source: &str) -> Vec<FoldRange> {
             &mut ranges,
             &mut consumed_doc_lines,
         );
-        collect_block_folds(&knot.body, source, &idx, &mut ranges);
 
         for (si, stitch) in knot.stitches.iter().enumerate() {
             let next_start = knot
@@ -105,13 +143,25 @@ pub fn folding_ranges(hir: &HirFile, source: &str) -> Vec<FoldRange> {
                 &mut ranges,
                 &mut consumed_doc_lines,
             );
-            collect_block_folds(&stitch.body, source, &idx, &mut ranges);
         }
     }
 
     collect_doc_comment_folds(source, &consumed_doc_lines, &mut ranges);
 
     ranges
+}
+
+/// Whether a Gather container's extent starts on an actual gather line
+/// (trimmed text starting with `-`, not `->`) — the guard that keeps a
+/// mis-anchored extent (ptr-less gather-line prose, see the caller's
+/// comment) from emitting a fold on some other construct's line.
+fn anchors_on_gather_line(range: TextRange, source: &str, idx: &LineIndex) -> bool {
+    let (line, _) = idx.line_col(range.start());
+    let Some(text) = source.split('\n').nth(line as usize) else {
+        return false;
+    };
+    let trimmed = text.trim_start();
+    trimmed.starts_with('-') && !trimmed.starts_with("->")
 }
 
 /// Push the fold for a knot/stitch declaration. A documented declaration
@@ -263,81 +313,6 @@ fn push_fold(
             from_line_start: false,
             kind: FoldKind::Structural,
         });
-    }
-}
-
-fn collect_block_folds(block: &Block, source: &str, idx: &LineIndex, out: &mut Vec<FoldRange>) {
-    let mut collector = FoldCollector { source, idx, out };
-    walk_block(block, &mut collector);
-}
-
-/// Emits a structural fold for every choice, conditional, and sequence via the
-/// shared HIR visitor. Inline conditionals/sequences fold only when they sit in
-/// body content — not in a choice's inline text — matching the pre-visitor
-/// walk, which never descended a choice's start/bracket/inner content.
-struct FoldCollector<'a> {
-    source: &'a str,
-    idx: &'a LineIndex,
-    out: &'a mut Vec<FoldRange>,
-}
-
-impl HirVisitor for FoldCollector<'_> {
-    fn enter_choice(&mut self, choice: &Choice) {
-        // Push each choice's fold as the choice is entered (before its body is
-        // walked), so header and body folds interleave exactly as the old
-        // per-choice walk did.
-        push_fold(
-            choice.ptr.text_range(),
-            None,
-            self.source,
-            self.idx,
-            self.out,
-        );
-    }
-
-    fn enter_stmt(&mut self, stmt: &Stmt) {
-        match stmt {
-            Stmt::Conditional(cond) => push_fold(
-                cond.ptr.text_range(),
-                Some("{...}".to_owned()),
-                self.source,
-                self.idx,
-                self.out,
-            ),
-            Stmt::Sequence(seq) => push_fold(
-                seq.ptr.text_range(),
-                Some("{...}".to_owned()),
-                self.source,
-                self.idx,
-                self.out,
-            ),
-            _ => {}
-        }
-    }
-
-    fn enter_content(&mut self, content: &Content, ctx: ContentContext) {
-        if ctx != ContentContext::Body {
-            return;
-        }
-        for part in &content.parts {
-            match part {
-                ContentPart::InlineConditional(cond) => push_fold(
-                    cond.ptr.text_range(),
-                    Some("{...}".to_owned()),
-                    self.source,
-                    self.idx,
-                    self.out,
-                ),
-                ContentPart::InlineSequence(seq) => push_fold(
-                    seq.ptr.text_range(),
-                    Some("{...}".to_owned()),
-                    self.source,
-                    self.idx,
-                    self.out,
-                ),
-                _ => {}
-            }
-        }
     }
 }
 
@@ -573,7 +548,8 @@ mod tests {
     fn ranges_for(src: &str) -> Vec<(u32, u32, bool)> {
         let parsed = brink_syntax::parse(src);
         let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
-        folding_ranges(&hir, src)
+        let projection = crate::hir_projection::project_hir_structural(&hir, src);
+        folding_ranges(&hir, src, &projection)
             .iter()
             .map(|r| (r.start_line, r.end_line, r.from_line_start))
             .collect()
@@ -661,7 +637,8 @@ text
     fn folds_with_text(src: &str) -> Vec<(u32, u32, Option<String>)> {
         let parsed = brink_syntax::parse(src);
         let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
-        super::folding_ranges(&hir, src)
+        let projection = crate::hir_projection::project_hir_structural(&hir, src);
+        super::folding_ranges(&hir, src, &projection)
             .into_iter()
             .map(|r| (r.start_line, r.end_line, r.collapsed_text))
             .collect()
@@ -694,11 +671,122 @@ text
         let src = "== hub ==\ntext\nmore\n";
         let parsed = brink_syntax::parse(src);
         let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
-        let ranges = super::folding_ranges(&hir, src);
+        let projection = crate::hir_projection::project_hir_structural(&hir, src);
+        let ranges = super::folding_ranges(&hir, src, &projection);
         assert!(!ranges.is_empty());
         assert!(
             ranges.iter().all(|r| r.kind == super::FoldKind::Structural),
             "every fold from folding_ranges() is Structural"
+        );
+    }
+
+    // ── Weave folds (#476) ──────────────────────────────────────────
+
+    #[test]
+    fn choice_branches_fold_from_their_choice_line() {
+        let src = "\
+=== start ===
+* Take the sword
+  The blade hums.
+  More body text.
+  -> armory
+* Leave it
+  You walk away.
+- done either way
+-> END
+=== armory ===
+-> END
+";
+        let ranges = ranges_for(src);
+        // Each choice folds from its own line to the end of its branch,
+        // keeping the choice line visible (from_line_start = false).
+        assert!(
+            ranges.contains(&(1, 4, false)),
+            "first choice folds its branch: {ranges:?}"
+        );
+        assert!(
+            ranges.contains(&(5, 6, false)),
+            "second choice folds its branch: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn labeled_gather_folds_its_continuation() {
+        let src = "\
+=== start ===
+* Choice
+  Body.
+- (done) either way
+Continuation prose.
+-> END
+";
+        let ranges = ranges_for(src);
+        assert!(
+            ranges.contains(&(3, 5, false)),
+            "labeled gather folds its continuation from the gather line: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn unlabeled_prose_gather_fold_anchors_late_known_limitation() {
+        // An unlabeled gather whose own line is prose has ptr-less line
+        // content, so its container extent — and therefore the fold — starts
+        // at the first *located* statement, not the gather line. Pinned as a
+        // known limitation (#476); the fix is upstream in lowering (stamping
+        // ptrs on accumulated content), not in folding.
+        let src = "\
+=== start ===
+* Choice
+  Body.
+- done either way
+Continuation prose.
+-> END
+";
+        let ranges = ranges_for(src);
+        assert!(
+            !ranges.iter().any(|&(s, _, _)| s == 3),
+            "no fold anchors on the unlabeled prose gather line (yet): {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn nested_choices_fold_nested() {
+        let src = "\
+=== start ===
+* Outer
+  * * Inner
+      Inner body.
+  * * Other inner
+- done
+";
+        let ranges = ranges_for(src);
+        assert!(
+            ranges.contains(&(1, 4, false)),
+            "outer choice folds through its nested weave: {ranges:?}"
+        );
+        assert!(
+            ranges.contains(&(2, 3, false)),
+            "inner choice folds its own body: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn bodiless_choice_does_not_fold() {
+        let src = "=== start ===\n* [Go] -> hub\n* [Stay]\n=== hub ===\n-> END\n";
+        let ranges = ranges_for(src);
+        assert!(
+            !ranges.iter().any(|&(s, _, _)| s == 1 || s == 2),
+            "single-line choices must not fold: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn bare_labeled_gather_does_not_fold() {
+        let src = "=== start ===\n* Choice\n  Body.\n- (g)\n";
+        let ranges = ranges_for(src);
+        assert!(
+            !ranges.iter().any(|&(s, _, _)| s == 3),
+            "a bare labeled gather is single-line — nothing to fold: {ranges:?}"
         );
     }
 }
