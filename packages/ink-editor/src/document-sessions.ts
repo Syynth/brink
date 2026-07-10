@@ -817,6 +817,8 @@ export class DocumentSessions {
       // the elementTypeField StateField (CM runs StateFields before decoration
       // facets), so every per-keystroke query just reads by DocId.
       getSemanticTokens: (_source) => slot.handle?.semanticTokens() ?? [],
+      getHirProjection: () =>
+        slot.handle?.hirProjection() ?? { spans: [], lines: [] },
       getTokenTypeNames,
       handleSlot: slot,
       getActiveFile: () => slot.path,

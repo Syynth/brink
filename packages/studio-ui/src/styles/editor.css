@@ -181,6 +181,44 @@
 .brink-studio .tok-parameter { color: var(--bs-syn-parameter); }
 .brink-studio .tok-decorator { color: var(--bs-syn-decorator); }
 .brink-studio .tok-label { color: var(--bs-syn-label); }
+
+/* HIR structural overlay (#454). The brink-hir-* inline marks are data
+   carriers (kind/identity data-* attributes) and deliberately have NO default
+   color — token color stays with tok-*, dialect styling stays with the
+   screenplay layer (spec §10: three layers must not fight over one span).
+   The default skin adds only the unambiguous affordances: unresolved
+   references, identity occurrences, and the rails gutter. */
+.brink-studio .brink-hir-unresolved {
+  text-decoration: underline wavy var(--bs-error);
+  text-underline-offset: 3px;
+}
+.brink-studio .brink-hir-occurrence {
+  background: rgb(var(--bs-accent-rgb) / 16%);
+  border-radius: 2px;
+}
+.brink-studio .brink-hir-occurrence-def {
+  background: rgb(var(--bs-accent-rgb) / 28%);
+}
+.brink-studio .brink-hir-rails {
+  display: inline-flex;
+  gap: 2px;
+  height: 100%;
+  align-items: stretch;
+  padding: 0 2px;
+}
+.brink-studio .brink-hir-rail {
+  width: 3px;
+  border-radius: 1px;
+  background: var(--bs-border);
+  opacity: 0.75;
+}
+.brink-studio .brink-hir-rail-knot { background: var(--bs-syn-namespace); }
+.brink-studio .brink-hir-rail-stitch { background: var(--bs-syn-function); }
+.brink-studio .brink-hir-rail-choice { background: var(--bs-syn-keyword); }
+.brink-studio .brink-hir-rail-gather { background: var(--bs-syn-label); }
+.brink-studio .brink-hir-rail-cond_branch { background: var(--bs-syn-operator); }
+.brink-studio .brink-hir-rail-seq_branch { background: var(--bs-syn-enum); }
+
 /* CM6 lint panel overrides */
 .brink-studio .cm-panel.cm-panel-lint {
   background: var(--bs-surface-bg);
