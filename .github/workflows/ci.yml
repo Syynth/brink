@@ -109,7 +109,7 @@ jobs:
       # One cargo invocation for the whole package set: rustdoc resolves the
       # examples off -L, and two builds of a crate with different hashes make
       # it bail with E0464. See the `book-test` recipe in the justfile.
-      - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p bevy-brink
+      - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink
         env:
           CARGO_TARGET_DIR: target/book-doctest
       # CARGO_MANIFEST_DIR: Bevy's derives resolve the `bevy` vs `bevy_ecs` crate
