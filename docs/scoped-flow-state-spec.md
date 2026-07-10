@@ -415,14 +415,79 @@ Expected shape:
   hit the per-`World`-policy limit above (isolated flows need own `World`s, so
   they don't collapse into one); the current structure is correct and nothing is
   blocked. Revisit when a consumer forces the per-`World`-vs-per-flow decision.
-- **F3** Upgrade `FlowLocal` flat storage → **copy-on-write** (frozen-base
-  snapshot chain) + spawn/fork/discard (+ `commit` deferred seam).
-- **F4** Sandbox mode + Tier-0 watch (invoke-existing) + externals policy.
-- **F5** Tier-1 fragment compile + overlay (the current speculative-eval-spec body).
-- **F6** bevy-brink thinning onto the shared ops.
+- **F3** ✅ **DONE** (F3.1 #450, F3.2 #451) — CoW `FlowLocal` (frozen-base
+  snapshot chain) + fork/sandbox/discard; `commit` shipped as a deferred
+  `NotImplemented` seam.
+- **F4** ✅ **DONE** (F4.1 #453, F4.2 #455, F4.3 #456) — `Speculation` +
+  `KindTieredHandler` + web binding (shipped in npm 0.9.0).
+- **F5** ✅ **DONE** (#461) — mechanism **B** per the speculative-eval-spec
+  amendment (synthetic-symbol recompile + cache, not the overlay).
+- **F6** bevy-brink thinning onto the shared ops — **see the F6 AMENDMENT
+  below** for the final rulings and F6.1–F6.3 slicing.
 
 F1 is the gate: nothing else starts until the decomposition is proven
 behavior-identical.
+
+## F6 AMENDMENT (2026-07-10) — final rulings and slicing
+
+Design round with Ben (decision-log 2026-07-10). Four rulings supersede or
+sharpen the corresponding sections above; #441's original text is stale in
+places (corrections below).
+
+**1. Policy stays per-World; scope is a property of the variable/knot.**
+Per-flow policy (policy supplied at spawn) was examined and **rejected**:
+per-entity privacy comes from each flow having its own `FlowLocal`, not its
+own policy. Spawning a flow is just `(entry) → FlowInstance + fresh
+FlowLocal` — no policy parameter. Exceptional per-entity behavior (a private
+counter raising a global flag) is written **in ink**, where it's visible.
+
+**2. Default is `World`; private is the marked, enumerated case.** This
+supersedes the "local-by-default per-entity NPC" row in §The policy as the
+*recommended* configuration: plain `VAR` must keep meaning shared (ink
+compatibility, oracle anchoring), so the language feature will mark the
+*private* case — and default-World is the only default that survives that
+transition without flipping. Hosts enumerate private names over a World
+default. Policy construction is shaped **base ⊕ host-overrides** from day
+one: base is empty today, compiler-emitted later (the language epic — a
+flow-private storage class for VARs + knot marking, scope bits carried in
+the compiled `Program`; the *only* place `brink-format` eventually changes).
+
+**3. Knot scope is subtree-inclusive.** `ResolvedPolicy::resolve` today maps
+an override name to exactly one `DefinitionId` — but sequence/cycle/stopping
+counters key **interior container ids**, and idiomatic per-entity memory is
+carried by visit counts (`{ Halt! | Back again? }`, `* {not intro} …`). A
+knot override must cover its whole definition subtree or the motivating
+use case silently half-breaks. Fixed in F6.1. The all-World fast path
+short-circuits before any of this — oracle-safe.
+
+**4. Entity durability is state-only via per-flow `SaveState`.** Each flow's
+durable state round-trips as an ordinary name-keyed `SaveState`
+(`save_state`/`load_state` lifted off `Story` to any flow's context); a save
+= one `SaveState` for the shared World + one per entity, composed host-side.
+No format change; a paused flow resumes from its knot entry, not mid-line.
+bevy's `commit_from`/`commit_progress`/`commit_globals_only` are **deleted,
+not promoted** — they compensated for the full-`World`-clone-per-flow model,
+which F6 removes; no absorb/merge machinery exists or is needed.
+
+**Slicing** (each PR oracle-gated where it touches `brink-runtime`):
+
+- **F6.1** (`brink-runtime`, oracle-gated): extract one shared
+  drive-to-terminal op replacing `Story::continue_maximally_impl`'s loop and
+  bevy's four duplicates; reconcile bevy's misnamed `STEP_LIMIT` (10_000
+  *lines*, `StepLimitExceeded`) onto core `LINE_LIMIT` semantics; lift
+  `save_state`/`load_state` off `Story`; subtree-inclusive knot-scope
+  resolution.
+- **F6.2** (bevy-only): `BrinkContext` holds `FlowLocal` (today a full
+  `World` clone); advance system builds `ContextView` over shared
+  `BrinkGlobals` + entity `FlowLocal`; policy installed at plugin setup
+  (base ⊕ overrides); delete the drive loops, `ReplayRecorder` drive
+  wiring duplicates, and `commit_*` helpers.
+- **F6.3** (bevy-only): per-entity `SaveState` save/load via the F6.1 lift.
+
+**#441 corrections:** `apply_locale` calls **stay** — the locale overlay is a
+pure line-table transform unrelated to scoped state, and the core offers no
+replacement; deleting them would delete localization. `BrinkGlobals` already
+wraps `World` — no change needed there.
 
 ## Decisions (to log on approval)
 
