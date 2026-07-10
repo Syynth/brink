@@ -41,6 +41,7 @@
   - [External Functions](./integrations/bevy/bindings.md)
   - [Localization & Saves](./integrations/bevy/localization.md)
 - [Web & WASM](./integrations/web/index.md)
+  - [The Editor](./integrations/web/editor.md)
   - [Playground](./integrations/web/playground.md)
 - [Studio](./integrations/studio/index.md)
 
