@@ -107,6 +107,26 @@ pub enum Scope {
 /// stitch path, the override resolves against the **variable**, never the
 /// knot — the knot path is not consulted once a variable of the same name
 /// is found.
+///
+/// **Knot/stitch overrides are subtree-inclusive** (F6.1c —
+/// `docs/scoped-flow-state-spec.md`'s F6 AMENDMENT, ruling 3): a knot
+/// override covers the knot's own visit/turn count, every stitch nested
+/// directly under it, and every interior container (weave/sequence/choice
+/// container) nested anywhere under the knot or one of its stitches — not
+/// just the knot's own `DefinitionId`. This matters because ink's
+/// sequence/cycle/stopping machinery (`{ Halt! | Back again? }`) keys its
+/// counter off the *sequence's own* interior container id, not the
+/// enclosing knot's id; without subtree inclusion, a knot marked `Local`
+/// would leave those interior counters silently `World`-scoped.
+///
+/// **Most-specific override wins.** If both a knot and one of its stitches
+/// appear in `overrides` (e.g. knot `a` is `Local`, stitch `a.b` is
+/// `World`), every interior container nested under `a.b` resolves `World`;
+/// the rest of `a`'s subtree (the knot's own id, its other stitches, and
+/// any interior container not under `a.b`) resolves `Local`. A stitch's
+/// override always wins over its enclosing knot's for the stitch's own
+/// subtree, regardless of which name appears earlier in `overrides` (see
+/// [`ResolvedPolicy::resolve`] for how this is implemented).
 #[derive(Debug, Clone, Default)]
 pub struct WorldPolicy {
     /// Scope for any variable or knot/stitch not named in `overrides`.
@@ -115,7 +135,9 @@ pub struct WorldPolicy {
     /// against `Program::global_index`'s name grammar) and knot/stitch
     /// paths (matched against `Program::find_path_target`'s path
     /// grammar). A name may appear in only one of the two — the resolver
-    /// tries variables first, then knot paths.
+    /// tries variables first, then knot paths. Knot/stitch overrides are
+    /// subtree-inclusive with most-specific-wins precedence — see the type
+    /// docs above.
     pub overrides: BTreeMap<String, Scope>,
     /// Scope of the turn index (a single scalar field).
     pub turn_index: Scope,
@@ -150,10 +172,21 @@ pub struct ResolvedPolicy {
     /// `Program::global_count()`). Populated with `default` for slots with
     /// no override, so lookups never need a fallback branch.
     global_scopes: Vec<Scope>,
-    /// Non-default scope for a knot/stitch, keyed by its defining
-    /// `DefinitionId` (the same id used for visit counting). Only
-    /// exceptions to `default` are stored — sparse, since most programs
-    /// have far more knots than overrides.
+    /// Non-default scope for a knot/stitch (or an interior weave/sequence/
+    /// choice container nested under one), keyed by its defining
+    /// `DefinitionId` (the same id `ContextAccess::visit_count` and friends
+    /// are called with — e.g. `vm.rs`'s `handle_sequence` keys a stopping/
+    /// cycle sequence's counter off the *sequence's own* interior container
+    /// id, not its enclosing knot's).
+    ///
+    /// **Subtree-inclusive (F6.1c):** an override on a knot/stitch name is
+    /// expanded at resolve time (see [`resolve`](Self::resolve)) to cover
+    /// its own id, every stitch nested directly under it (if it's a knot),
+    /// and every interior container nested anywhere under it or one of its
+    /// stitches — not just the literal `DefinitionId` the override name
+    /// resolved to. Only exceptions to `default` are stored — sparse, since
+    /// most programs have far more knots/interior containers than
+    /// overrides.
     knot_scopes: HashMap<DefinitionId, Scope>,
     /// Scope of the turn index.
     turn_index: Scope,
@@ -185,6 +218,22 @@ impl ResolvedPolicy {
     /// tried as a variable first, then as a knot/stitch path; a name
     /// matching neither is a [`PolicyError::UnknownName`].
     ///
+    /// **Subtree expansion (F6.1c).** Every knot/stitch override is
+    /// expanded here, once, into every `DefinitionId` in its definition
+    /// subtree — see [`expand_knot_scope`] for the containment mechanism
+    /// (`Program::scope_ids`, the nearest-enclosing-scope table every
+    /// interior container carries, plus `Program::address_by_path`'s
+    /// dotted knot/stitch grammar for the one-level knot→stitch link that
+    /// `scope_ids` alone doesn't carry). `overrides` is a `BTreeMap`, so
+    /// this loop's iteration order is deterministic (sorted by name) — and
+    /// because a knot's name is always a proper prefix of (and therefore
+    /// sorts lexicographically before) any of its stitches' names, a knot
+    /// override's subtree expansion always runs *before* a same-subtree
+    /// stitch override in this same pass, so the stitch override's own
+    /// `insert`s (which land later) win — implementing "most-specific
+    /// override wins" as a natural consequence of processing order, no
+    /// separate precedence pass needed.
+    ///
     /// The all-`World` default (empty `overrides`) resolves without any
     /// name lookups (see [`all_world`](Self::all_world)) — this is the
     /// fast path every existing construction path takes today.
@@ -199,6 +248,7 @@ impl ResolvedPolicy {
 
         let mut global_scopes = vec![policy.default; program.global_count() as usize];
         let mut knot_scopes = HashMap::new();
+        let interior_by_scope = interior_containers_by_scope(program);
 
         // `overrides` is a `BTreeMap`, so iteration order is deterministic
         // (sorted by name) — resolution never depends on hash-map order.
@@ -206,7 +256,14 @@ impl ResolvedPolicy {
             if let Some(slot) = program.global_index(name) {
                 global_scopes[slot as usize] = scope;
             } else if let Some(id) = program.find_path_target(name) {
-                knot_scopes.insert(id, scope);
+                expand_knot_scope(
+                    program,
+                    &interior_by_scope,
+                    &mut knot_scopes,
+                    name,
+                    id,
+                    scope,
+                );
             } else {
                 return Err(PolicyError::UnknownName(name.clone()));
             }
@@ -230,7 +287,11 @@ impl ResolvedPolicy {
             .unwrap_or(self.default)
     }
 
-    /// Scope of a knot/stitch by its defining `DefinitionId`.
+    /// Scope of a knot/stitch — or of an interior weave/sequence/choice
+    /// container nested under one — by its defining `DefinitionId`. See the
+    /// `knot_scopes` field docs and [`resolve`](Self::resolve) for how a
+    /// knot/stitch override is expanded, at resolve time, to cover every id
+    /// in its definition subtree.
     #[must_use]
     pub fn scope_of_knot(&self, id: DefinitionId) -> Scope {
         self.knot_scopes.get(&id).copied().unwrap_or(self.default)
@@ -246,6 +307,125 @@ impl ResolvedPolicy {
     #[must_use]
     pub fn rng_scope(&self) -> Scope {
         self.rng
+    }
+}
+
+// ── Subtree-inclusive knot scope (F6.1c) ────────────────────────────────
+//
+// Containment mechanism, verified against a compiled `Program` (see the
+// `subtree_scope_tests` module below and the investigation in the F6.1c
+// build log — not restated here):
+//
+// - `ContainerDef::scope_id` (preserved on `Program` as the parallel
+//   `scope_ids`/`scope_table_idx` tables) gives every container — knot,
+//   stitch, root, or an anonymous interior weave/sequence/choice
+//   container, at any nesting depth — the `DefinitionId` of its *nearest
+//   enclosing* knot/stitch/root scope, correctly propagated through
+//   arbitrarily deep nesting by the codegen's recursive walk. A container
+//   is itself a scope owner (a knot, stitch, or root) exactly when its own
+//   `scope_id` equals its own id — self-scoped, no parent. This gives an
+//   exact, structural (not name-based) map from any interior container to
+//   its owning knot/stitch: `interior_containers_by_scope`, below.
+// - `scope_id` does *not* link a stitch to its enclosing knot (a stitch is
+//   self-scoped, by the same rule above) — ink only nests stitches one
+//   level under a knot, and that one link has to come from
+//   `Program::address_by_path`'s dotted qualified-path grammar (the same
+//   table `find_address`/`find_path_target` already use): a knot named `N`
+//   knows its direct stitches are exactly the `address_by_path` entries
+//   `"N.<segment>"` with no further `.` in `<segment>`, whose target is
+//   itself a scope owner (ruling out an author-labeled gather directly in
+//   the knot, which shares the same two-segment path shape but is *not*
+//   self-scoped).
+//
+// Both of these are compile-time/link-time structural facts already
+// present on `Program` — no id arithmetic or heuristic string matching on
+// unstructured names.
+
+/// Group every non-scope-owning ("interior") container's own id by the
+/// `DefinitionId` of its nearest enclosing knot/stitch/root scope.
+///
+/// Built once per non-fast-path [`ResolvedPolicy::resolve`] call — this is
+/// resolve-time bookkeeping, not a hot-path lookup (the all-`World` fast
+/// path never calls this at all).
+fn interior_containers_by_scope(program: &Program) -> HashMap<DefinitionId, Vec<DefinitionId>> {
+    let mut by_scope: HashMap<DefinitionId, Vec<DefinitionId>> = HashMap::new();
+    for (idx, container) in program.containers.iter().enumerate() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "container count fits in u32"
+        )]
+        let idx = idx as u32;
+        let owner = program.scope_ids[program.scope_table_idx(idx) as usize];
+        if owner != container.id {
+            by_scope.entry(owner).or_default().push(container.id);
+        }
+    }
+    by_scope
+}
+
+/// Apply `scope` to `id` and every interior container `interior_by_scope`
+/// says is nested directly under it (i.e. `id`'s own subtree, one scope
+/// level — not a recursive walk, since ink knots/stitches never nest
+/// containers whose `scope_id` chain needs more than one enclosing-scope
+/// hop to resolve; see `interior_containers_by_scope`).
+fn apply_scope_to_subtree(
+    interior_by_scope: &HashMap<DefinitionId, Vec<DefinitionId>>,
+    knot_scopes: &mut HashMap<DefinitionId, Scope>,
+    id: DefinitionId,
+    scope: Scope,
+) {
+    knot_scopes.insert(id, scope);
+    if let Some(interior) = interior_by_scope.get(&id) {
+        for &child_id in interior {
+            knot_scopes.insert(child_id, scope);
+        }
+    }
+}
+
+/// Expand a single `WorldPolicy::overrides` knot/stitch entry (`name` →
+/// `id`, already resolved via `Program::find_path_target`) into every
+/// `DefinitionId` in its definition subtree, writing `scope` for each into
+/// `knot_scopes`.
+///
+/// Covers: `id`'s own subtree (its own id plus its direct interior
+/// containers), then — since a stitch override's own call to this function
+/// already covers everything a stitch can own, and ink never nests a
+/// stitch under another stitch — cascades once to `name`'s direct child
+/// stitches (found via `address_by_path`'s dotted grammar, see the module
+/// docs above) and covers each of *their* subtrees too. A child stitch
+/// that itself has a more specific override is still safe to cascade into
+/// here: `resolve`'s `BTreeMap` iteration order guarantees the stitch's own
+/// (later, more specific) entry is processed after `name`'s and overwrites
+/// whatever this cascade wrote — see `resolve`'s docs.
+fn expand_knot_scope(
+    program: &Program,
+    interior_by_scope: &HashMap<DefinitionId, Vec<DefinitionId>>,
+    knot_scopes: &mut HashMap<DefinitionId, Scope>,
+    name: &str,
+    id: DefinitionId,
+    scope: Scope,
+) {
+    apply_scope_to_subtree(interior_by_scope, knot_scopes, id, scope);
+
+    let prefix = format!("{name}.");
+    for (path, target) in &program.address_by_path {
+        let Some(rest) = path.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        if rest.is_empty() || rest.contains('.') {
+            continue; // Not a direct one-segment child of `name`.
+        }
+        if target.byte_offset != 0 {
+            continue; // Not a container's own primary address.
+        }
+        // Confirm the target is itself a scope-owning container (a real
+        // stitch), not an author-labeled gather directly in the knot that
+        // happens to share the same two-segment path shape.
+        let owner = program.scope_ids[program.scope_table_idx(target.container_idx) as usize];
+        if owner != target.id {
+            continue;
+        }
+        apply_scope_to_subtree(interior_by_scope, knot_scopes, target.id, scope);
     }
 }
 
@@ -1670,5 +1850,337 @@ mod save_load_tests {
             let view2 = ContextView::new(&mut world2, &mut local2);
             assert_eq!(view2.visit_count(shrine_id), 1);
         }
+    }
+}
+
+#[cfg(test)]
+mod subtree_scope_tests {
+    use super::*;
+    use crate::link;
+    use crate::rng::FastRng;
+    use crate::story::{FallbackHandler, FlowInstance, Line};
+
+    /// Compile a small ink story with the brink compiler and link it,
+    /// keeping the line tables `FlowInstance::drive_to_terminal` needs.
+    fn compile_for_flow(src: &str) -> (Program, Vec<Vec<brink_format::LineEntry>>) {
+        let out = brink_compiler::compile("t.ink", |p| {
+            if p == "t.ink" {
+                Ok(src.to_string())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no such include",
+                ))
+            }
+        })
+        .expect("compile");
+        link(&out.data).expect("link")
+    }
+
+    /// A knot `guard_talk` with its own top-level stopping sequence
+    /// (`{ Halt! | Back again? }`) plus a stitch `guard_talk.inner` with its
+    /// own stopping sequence, and an unrelated `other_knot` — the minimal
+    /// shape needed to exercise interior-container containment, the knot→
+    /// stitch cascade, and most-specific-wins precedence.
+    fn story_with_stitch_and_sequences() -> (Program, Vec<Vec<brink_format::LineEntry>>) {
+        compile_for_flow(
+            "VAR gold = 0\n\
+             -> guard_talk\n\
+             === guard_talk ===\n\
+             { stopping: Halt! | Back again? }\n\
+             -> inner\n\
+             = inner\n\
+             { stopping: A | B | C }\n\
+             -> DONE\n\
+             === other_knot ===\n\
+             Other.\n\
+             -> DONE\n",
+        )
+    }
+
+    /// Find the `DefinitionId` of the (single) interior container directly
+    /// owned by `scope_owner` that carries `CountingFlags::VISITS` — i.e.
+    /// the anonymous sequence container `handle_sequence` (`vm.rs`) keys its
+    /// counter off. Panics if there isn't exactly one, since every test
+    /// story here is built with exactly one stopping sequence per scope.
+    fn find_owned_sequence_id(program: &Program, scope_owner: DefinitionId) -> DefinitionId {
+        let mut found = None;
+        for (idx, container) in program.containers.iter().enumerate() {
+            #[expect(clippy::cast_possible_truncation, reason = "test fixture")]
+            let idx = idx as u32;
+            let owner = program.scope_ids[program.scope_table_idx(idx) as usize];
+            if owner == scope_owner
+                && container
+                    .counting_flags
+                    .contains(brink_format::CountingFlags::VISITS)
+            {
+                assert!(
+                    found.is_none(),
+                    "expected exactly one VISITS-counted interior container owned by {scope_owner:?}"
+                );
+                found = Some(container.id);
+            }
+        }
+        found.expect("expected a VISITS-counted interior container")
+    }
+
+    /// A knot marked `Local` must cover not just its own `DefinitionId` but
+    /// the interior sequence container nested directly under it — this is
+    /// the exact bug the F6 AMENDMENT (ruling 3) describes:
+    /// `handle_sequence` keys a stopping/cycle counter off the sequence's
+    /// *own* container id, not the enclosing knot's, so without subtree
+    /// expansion a `Local`-marked knot would silently leave that counter
+    /// `World`-scoped.
+    #[test]
+    fn marked_local_knot_covers_its_interior_sequence_container() {
+        let (program, _tables) = story_with_stitch_and_sequences();
+        let guard_talk_id = program
+            .find_path_target("guard_talk")
+            .expect("guard_talk exists");
+        let other_knot_id = program
+            .find_path_target("other_knot")
+            .expect("other_knot exists");
+        let sequence_id = find_owned_sequence_id(&program, guard_talk_id);
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert("guard_talk".to_owned(), Scope::Local);
+        let policy = WorldPolicy {
+            default: Scope::World,
+            overrides,
+            turn_index: Scope::World,
+            rng: Scope::World,
+        };
+        let resolved = ResolvedPolicy::resolve(&program, &policy).expect("resolves");
+
+        assert_eq!(resolved.scope_of_knot(guard_talk_id), Scope::Local);
+        assert_eq!(
+            resolved.scope_of_knot(sequence_id),
+            Scope::Local,
+            "the interior sequence container must inherit guard_talk's Local scope"
+        );
+        // An unrelated knot must stay at the World default — the expansion
+        // must not leak scope onto unrelated containers.
+        assert_eq!(resolved.scope_of_knot(other_knot_id), Scope::World);
+    }
+
+    /// Stitch-level override + most-specific-wins precedence: knot
+    /// `guard_talk` is `Local`, but its stitch `guard_talk.inner` is
+    /// explicitly `World`. Every container under `inner` (the stitch
+    /// itself, and its own interior sequence) must resolve `World`; the
+    /// rest of `guard_talk`'s subtree (the knot's own id and its own
+    /// interior sequence) must resolve `Local`.
+    #[test]
+    fn stitch_override_wins_over_enclosing_knot_for_its_own_subtree() {
+        let (program, _tables) = story_with_stitch_and_sequences();
+        let guard_talk_id = program
+            .find_path_target("guard_talk")
+            .expect("guard_talk exists");
+        let inner_id = program
+            .find_path_target("guard_talk.inner")
+            .expect("guard_talk.inner exists");
+        let guard_talk_sequence_id = find_owned_sequence_id(&program, guard_talk_id);
+        let inner_sequence_id = find_owned_sequence_id(&program, inner_id);
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert("guard_talk".to_owned(), Scope::Local);
+        overrides.insert("guard_talk.inner".to_owned(), Scope::World);
+        let policy = WorldPolicy {
+            default: Scope::World,
+            overrides,
+            turn_index: Scope::World,
+            rng: Scope::World,
+        };
+        let resolved = ResolvedPolicy::resolve(&program, &policy).expect("resolves");
+
+        assert_eq!(resolved.scope_of_knot(guard_talk_id), Scope::Local);
+        assert_eq!(resolved.scope_of_knot(guard_talk_sequence_id), Scope::Local);
+        assert_eq!(
+            resolved.scope_of_knot(inner_id),
+            Scope::World,
+            "the stitch's own explicit override must win over its enclosing knot's"
+        );
+        assert_eq!(
+            resolved.scope_of_knot(inner_sequence_id),
+            Scope::World,
+            "the stitch's interior sequence must follow the stitch's own override, \
+             not the enclosing knot's"
+        );
+
+        // And the reverse precedence: knot World (default), stitch Local —
+        // confirms precedence isn't just "whichever happens to be Local".
+        let mut overrides2 = BTreeMap::new();
+        overrides2.insert("guard_talk".to_owned(), Scope::World);
+        overrides2.insert("guard_talk.inner".to_owned(), Scope::Local);
+        let policy2 = WorldPolicy {
+            default: Scope::World,
+            overrides: overrides2,
+            turn_index: Scope::World,
+            rng: Scope::World,
+        };
+        let resolved2 = ResolvedPolicy::resolve(&program, &policy2).expect("resolves");
+        assert_eq!(resolved2.scope_of_knot(guard_talk_id), Scope::World);
+        assert_eq!(
+            resolved2.scope_of_knot(guard_talk_sequence_id),
+            Scope::World
+        );
+        assert_eq!(resolved2.scope_of_knot(inner_id), Scope::Local);
+        assert_eq!(resolved2.scope_of_knot(inner_sequence_id), Scope::Local);
+    }
+
+    /// The all-`World` default policy must still resolve via
+    /// `ResolvedPolicy::all_world`'s fast path — no per-slot/per-knot tables
+    /// populated — even against a program with stitches and sequences that
+    /// would otherwise drive subtree expansion. This is the oracle-anchored
+    /// path every existing single-flow construction path takes; it must
+    /// stay byte-identical.
+    #[test]
+    fn all_world_default_still_takes_fast_path() {
+        let (program, _tables) = story_with_stitch_and_sequences();
+        let resolved =
+            ResolvedPolicy::resolve(&program, &WorldPolicy::default()).expect("resolves");
+
+        // Fast path: no per-slot/per-knot table populated, matching
+        // `all_world()` exactly.
+        assert!(resolved.global_scopes.is_empty());
+        assert!(resolved.knot_scopes.is_empty());
+
+        let guard_talk_id = program
+            .find_path_target("guard_talk")
+            .expect("guard_talk exists");
+        assert_eq!(resolved.scope_of_knot(guard_talk_id), Scope::World);
+    }
+
+    /// An override name that resolves to neither a global nor a knot/
+    /// stitch path is still a `PolicyError::UnknownName` — subtree
+    /// expansion must not swallow or change this error path.
+    #[test]
+    fn unknown_override_name_still_errors() {
+        let (program, _tables) = story_with_stitch_and_sequences();
+        let mut overrides = BTreeMap::new();
+        overrides.insert("guard_talk.nonexistent_stitch".to_owned(), Scope::Local);
+        let policy = WorldPolicy {
+            default: Scope::World,
+            overrides,
+            turn_index: Scope::World,
+            rng: Scope::World,
+        };
+        let err = ResolvedPolicy::resolve(&program, &policy).expect_err("must fail");
+        assert_eq!(
+            err,
+            PolicyError::UnknownName("guard_talk.nonexistent_stitch".to_owned())
+        );
+    }
+
+    /// End-to-end (F6.1c's motivating "per-entity memory" case): two
+    /// `FlowInstance`s, each with its own `FlowLocal`, drive the *same*
+    /// `guard_talk` knot (a stopping sequence, `{ Halt! | Back again? }`)
+    /// over one shared `World` whose policy marks `guard_talk` `Local`.
+    /// Without subtree expansion, the sequence's own interior container id
+    /// isn't in `knot_scopes`, falls through to the `World` default, and
+    /// the two flows' visits collide on one shared counter — the second
+    /// flow would see "Back again?" on its very first encounter. With the
+    /// fix, each flow's first encounter is independently the first-visit
+    /// text.
+    #[test]
+    fn two_flows_over_shared_world_each_see_first_visit_text() {
+        let (program, tables) = compile_for_flow(
+            "VAR gold = 0\n\
+             -> guard_talk\n\
+             === guard_talk ===\n\
+             { stopping: Halt! | Back again? }\n\
+             -> DONE\n",
+        );
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert("guard_talk".to_owned(), Scope::Local);
+        let policy = WorldPolicy {
+            default: Scope::World,
+            overrides,
+            turn_index: Scope::World,
+            rng: Scope::World,
+        };
+        let mut world = World::new(&program, &policy).expect("world builds");
+
+        let drive = |flow: &mut FlowInstance, view: &mut ContextView<'_>| -> String {
+            let lines = flow
+                .drive_to_terminal::<FastRng>(&program, &tables, view, &FallbackHandler, None)
+                .expect("drive succeeds");
+            assert!(
+                matches!(lines.last(), Some(Line::Done { .. })),
+                "expected Done, got {lines:?}"
+            );
+            lines.iter().map(Line::text).collect::<String>()
+        };
+
+        // Flow A: first (and only, for this assertion) encounter.
+        let (mut flow_a, _discarded_world_a) = FlowInstance::new_at_root(&program);
+        let mut local_a = FlowLocal::new();
+        let first_visit_a = {
+            let mut view_a = ContextView::new(&mut world, &mut local_a);
+            drive(&mut flow_a, &mut view_a)
+        };
+
+        // Flow B: independent FlowLocal, same shared World. Its first
+        // encounter must read exactly like Flow A's — not "already
+        // visited" — proving the interior sequence container's visit count
+        // is Local per-flow, not accidentally shared through World.
+        let (mut flow_b, _discarded_world_b) = FlowInstance::new_at_root(&program);
+        let mut local_b = FlowLocal::new();
+        let first_visit_b = {
+            let mut view_b = ContextView::new(&mut world, &mut local_b);
+            drive(&mut flow_b, &mut view_b)
+        };
+
+        assert_eq!(
+            first_visit_a, first_visit_b,
+            "both flows' first encounter with guard_talk must produce identical \
+             (first-visit) text — each flow's visit count is independently local"
+        );
+
+        // Flow A, re-entered a second time (still its own FlowLocal): now
+        // it must progress to the *next* branch of the stopping sequence,
+        // proving Local scoping still lets a single flow's own state
+        // advance normally.
+        let second_visit_a = {
+            let mut view_a = ContextView::new(&mut world, &mut local_a);
+            flow_a
+                .choose_path_string(&program, &mut view_a, "guard_talk")
+                .expect("re-enter guard_talk");
+            drive(&mut flow_a, &mut view_a)
+        };
+        assert_ne!(
+            first_visit_a, second_visit_a,
+            "flow A's second encounter must progress past the first-visit branch"
+        );
+
+        // Flow B's own local state must still be untouched by flow A's
+        // second visit — driving B a second time reproduces A's *first*
+        // progression, not A's second.
+        let second_visit_b = {
+            let mut view_b = ContextView::new(&mut world, &mut local_b);
+            flow_b
+                .choose_path_string(&program, &mut view_b, "guard_talk")
+                .expect("re-enter guard_talk");
+            drive(&mut flow_b, &mut view_b)
+        };
+        assert_eq!(
+            second_visit_a, second_visit_b,
+            "flow B's second encounter must match flow A's second encounter — \
+             both progressed independently from the same (shared, untouched) \
+             World default"
+        );
+
+        // World's own bookkeeping for the Local-scoped knot must never have
+        // been touched by either flow.
+        let sequence_id = find_owned_sequence_id(&program, {
+            program
+                .find_path_target("guard_talk")
+                .expect("guard_talk exists")
+        });
+        assert_eq!(
+            world.visit_count(sequence_id),
+            0,
+            "World's own copy of the Local-scoped sequence's visit count must stay untouched"
+        );
     }
 }
