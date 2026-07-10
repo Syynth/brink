@@ -2,6 +2,11 @@
 export { brinkStudio, setDialect } from "./extensions.js";
 export type { BrinkStudioOptions } from "./extensions.js";
 
+// HIR structural overlay (#454): the extension plus identity-query helpers
+// for hosts building on the projection (spans at a position, symbol identity).
+export { hirOverlayExtension, hirSpansAt, hirIdentityAt } from "./hir-overlay.js";
+export type { HirOverlayOptions } from "./hir-overlay.js";
+
 // Dialogue dialect (#368): the pure-JSON schema, the at-cue preset, and
 // `extendDialect` for adding a kind without forking the preset. Classifier
 // internals (`ResolvedDialect`, `validateDialect`, `compileAffix`, …) are
