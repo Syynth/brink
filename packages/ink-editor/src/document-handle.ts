@@ -21,6 +21,7 @@ import type {
   DocumentChangeSpec,
   DocumentId,
   FoldRange,
+  HirProjection,
   HoverInfo,
   InlayHint,
   CallWidgetSite,
@@ -123,6 +124,11 @@ export class DocHandle {
 
   semanticTokens(): SemanticToken[] {
     return this.session.getSemanticTokensDoc(this.id);
+  }
+
+  /** The HIR structural projection (#454): spans + per-line container stack. */
+  hirProjection(): HirProjection {
+    return this.session.getHirSpansDoc(this.id);
   }
 
   completions(offset: number): CompletionItem[] {
