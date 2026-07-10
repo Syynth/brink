@@ -1106,7 +1106,8 @@ fn run_lines(file: Option<&str>, opts: &CommonOpts) -> Result<ExitCode, String> 
         .parse(file_id)
         .ok_or("no parse tree for that file")?
         .syntax();
-    let ctxs = line_contexts(hir, source, &root);
+    let projection = brink_ide::hir_projection::project_hir_structural(hir, source);
+    let ctxs = line_contexts(source, &root, &projection);
 
     let mut out = io::stdout().lock();
     match opts.format {

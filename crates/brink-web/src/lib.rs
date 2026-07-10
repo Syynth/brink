@@ -3825,19 +3825,24 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
-        let (Some(hir), Some(source), Some(root)) = (
-            self.session.hir(file_id),
+        let (Some(source), Some(root)) = (
             self.session.source(file_id),
             self.session.syntax_root(file_id),
         ) else {
             return "[]".to_owned();
         };
 
+        let Some(projection) = self.session.projection(file_id) else {
+            return "[]".to_owned();
+        };
         let contexts = match self.session.dialect() {
-            Some(dialect) => {
-                brink_ide::line_context::line_contexts_with_dialect(hir, source, &root, dialect)
-            }
-            None => brink_ide::line_context::line_contexts(hir, source, &root),
+            Some(dialect) => brink_ide::line_context::line_contexts_with_dialect(
+                source,
+                &root,
+                &projection,
+                dialect,
+            ),
+            None => brink_ide::line_context::line_contexts(source, &root, &projection),
         };
         if let Some(v) = view {
             let start = v.start_line as usize;
@@ -3873,7 +3878,10 @@ impl EditorSession {
             return EMPTY.to_owned();
         };
 
-        let projection = brink_ide::hir_projection::project_hir(hir, source, analysis, file_id);
+        let _ = (hir, analysis);
+        let Some(projection) = self.session.projection(file_id) else {
+            return EMPTY.to_owned();
+        };
         let idx = brink_ide::LineIndex::new(source);
 
         let spans: Vec<HirSpanJs> = projection
@@ -4550,8 +4558,10 @@ impl EditorSession {
             return "[]".to_owned();
         };
 
-        // One structural projection feeds both fold families (#476).
-        let projection = brink_ide::hir_projection::project_hir_structural(hir, source);
+        // One cached projection feeds both fold families (#476, #480).
+        let Some(projection) = self.session.projection(file_id) else {
+            return "[]".to_owned();
+        };
 
         // Structural folds (#313 G, #476 weave folds) — never auto-collapsed
         // by a host.
@@ -4566,10 +4576,13 @@ impl EditorSession {
             && let Some(root) = self.session.syntax_root(file_id)
         {
             let ctx = match self.session.dialect() {
-                Some(dialect) => {
-                    brink_ide::line_context::line_contexts_with_dialect(hir, source, &root, dialect)
-                }
-                None => brink_ide::line_context::line_contexts(hir, source, &root),
+                Some(dialect) => brink_ide::line_context::line_contexts_with_dialect(
+                    source,
+                    &root,
+                    &projection,
+                    dialect,
+                ),
+                None => brink_ide::line_context::line_contexts(source, &root, &projection),
             };
             ranges.extend(brink_ide::folding::machinery_and_narrative_folds(
                 &projection,
@@ -5329,6 +5342,8 @@ fn span_kind_str(kind: brink_ide::hir_projection::SpanKind) -> &'static str {
         K::Tag => "tag",
         K::Include => "include",
         K::DivertStmt => "divert_stmt",
+        K::TunnelStmt => "tunnel_stmt",
+        K::ThreadStmt => "thread_stmt",
         K::DivertTerminal => "divert_terminal",
         K::Logic => "logic",
         K::Conditional => "conditional",

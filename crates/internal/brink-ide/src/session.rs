@@ -4,9 +4,15 @@
 //! bridge. It owns the project database and caches analysis results,
 //! avoiding redundant reparsing on every query call.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use brink_analyzer::{AnalysisOptions, AnalysisResult, ExternalCheckSeverity};
 use brink_db::ProjectDb;
 use brink_ir::{FileId, HirFile, HostManifest, ResolvedDialect, SymbolManifest};
+
+use crate::hir_projection::{Projection, project_hir, project_hir_structural};
 
 /// A snapshot of analysis inputs, cloned out of the db for background analysis.
 pub struct IdeSnapshot {
@@ -49,6 +55,15 @@ pub struct IdeSession {
     /// re-analyze. `None` means no dialect is mounted (plain structural
     /// classification only).
     dialect: Option<ResolvedDialect>,
+    /// Per-file HIR projection cache (#480): the canonical structural model
+    /// is computed once per edit and shared by every per-line/per-span view
+    /// (`line_contexts`, folding, `hir_spans`). The flag records whether the
+    /// entry carries the analyzer identity join — a structural-only entry is
+    /// upgraded on first identity-needing access once analysis exists.
+    /// Invalidated on source updates and on every `apply_analysis` (the
+    /// identity join depends on it); the dialect never enters the
+    /// projection, so registering one keeps the cache.
+    projection_cache: RefCell<HashMap<FileId, (bool, Arc<Projection>)>>,
 }
 
 impl IdeSession {
@@ -61,6 +76,7 @@ impl IdeSession {
             host_values: crate::HostValues::new(),
             external_check: ExternalCheckSeverity::default(),
             dialect: None,
+            projection_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -129,13 +145,16 @@ impl IdeSession {
 
     /// Add or update a source file in the database.
     pub fn update_source(&mut self, path: &str, source: String) -> FileId {
-        self.db.update_file(path, source)
+        let file_id = self.db.update_file(path, source);
+        self.projection_cache.borrow_mut().remove(&file_id);
+        file_id
     }
 
     /// Remove a file from the project. Clears cached analysis.
     pub fn remove_file(&mut self, path: &str) {
         self.db.remove_file(path);
         self.analysis = None;
+        self.projection_cache.borrow_mut().clear();
     }
 
     /// Create a snapshot of current analysis inputs.
@@ -147,9 +166,36 @@ impl IdeSession {
         }
     }
 
-    /// Store a computed analysis result.
+    /// Store a computed analysis result. Clears the projection cache: the
+    /// range-keyed identity join is derived from analysis.
     pub fn apply_analysis(&mut self, result: AnalysisResult) {
         self.analysis = Some(result);
+        self.projection_cache.borrow_mut().clear();
+    }
+
+    /// The file's HIR projection — computed once per source/analysis
+    /// generation and shared by every structural view (#480). Carries the
+    /// analyzer identity join when analysis is available (a superset the
+    /// structural views simply ignore); a structural-only cached entry is
+    /// recomputed with identity the first time analysis-bearing access needs
+    /// it.
+    pub fn projection(&self, file: FileId) -> Option<Arc<Projection>> {
+        let want_identity = self.analysis.is_some();
+        if let Some((has_identity, p)) = self.projection_cache.borrow().get(&file)
+            && (*has_identity || !want_identity)
+        {
+            return Some(Arc::clone(p));
+        }
+        let hir = self.db.hir(file)?;
+        let source = self.db.source(file)?;
+        let projection = Arc::new(match self.analysis.as_ref() {
+            Some(analysis) => project_hir(hir, source, analysis, file),
+            None => project_hir_structural(hir, source),
+        });
+        self.projection_cache
+            .borrow_mut()
+            .insert(file, (want_identity, Arc::clone(&projection)));
+        Some(projection)
     }
 
     /// Convenience: update source, snapshot, analyze, and store the result.
@@ -290,6 +336,8 @@ impl Default for IdeSession {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use brink_ir::{
         BaseType, Constraint, DiagnosticCode, ExternalKind, HostManifest, ManifestExternal,
         ManifestParam, SemanticTypeDef, TypeRef,
@@ -369,5 +417,26 @@ mod tests {
         );
         // ...but enrichment is still built.
         assert!(!analysis.symbol_meta.is_empty(), "meta built even when Off");
+    }
+
+    #[test]
+    fn projection_cache_shares_and_invalidates() {
+        let mut s = IdeSession::new();
+        let file = s.update_and_analyze("main.ink", "=== a ===\n-> DONE\n".to_owned());
+
+        let p1 = s.projection(file).expect("projection");
+        let p2 = s.projection(file).expect("projection");
+        assert!(Arc::ptr_eq(&p1, &p2), "same generation → shared Arc");
+
+        // A source update invalidates: new Arc, new content.
+        let file = s.update_and_analyze("main.ink", "=== a ===\n=== b ===\n-> DONE\n".to_owned());
+        let p3 = s.projection(file).expect("projection");
+        assert!(!Arc::ptr_eq(&p1, &p3), "update → fresh projection");
+
+        // With analysis present the cached flavor carries identity.
+        assert!(
+            p3.spans.iter().any(|sp| sp.def_id.is_some()),
+            "identity-joined flavor cached when analysis exists"
+        );
     }
 }

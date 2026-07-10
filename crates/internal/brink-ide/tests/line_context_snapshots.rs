@@ -94,8 +94,10 @@ fn render_runs(source: &str, ctx: &[LineContext]) -> String {
 fn render_fixture(source: &str) -> String {
     let parsed = brink_syntax::parse(source);
     let (hir, _, _) = hir::lower(FileId(0), &parsed.tree());
-    let base = line_contexts(&hir, source, &parsed.syntax());
-    let dialect = line_contexts_with_dialect(&hir, source, &parsed.syntax(), &at_cue_dialect());
+    let projection = brink_ide::hir_projection::project_hir_structural(&hir, source);
+    let base = line_contexts(source, &parsed.syntax(), &projection);
+    let dialect =
+        line_contexts_with_dialect(source, &parsed.syntax(), &projection, &at_cue_dialect());
 
     let mut out = String::new();
     out.push_str("== LINES (base) ==\n");
@@ -530,8 +532,9 @@ content under opts
 "
 );
 
-// A tag inside ptr-less inline-branch content never sets has_tags (the
-// old walk's content.ptr gate); the host line's own trailing tag does.
+// Every line carrying an author-written tag sets has_tags — including
+// tags inside inline branches (decision 2026-07-10: the old walk's
+// content.ptr gate was an artifact, not semantics).
 snap!(
     tag_inside_inline_branch_content,
     "\

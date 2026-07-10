@@ -29,7 +29,7 @@
 //! wins over any chain/blank-fill promotion (#413) — see
 //! `detect_sigil_logic_lines`.
 
-use brink_ir::{HirFile, ResolvedDialect};
+use brink_ir::ResolvedDialect;
 use brink_syntax::SyntaxNode;
 use rowan::TextRange;
 use serde::Serialize;
@@ -97,6 +97,16 @@ pub struct LineContext {
     pub weave: WeavePosition,
     /// Whether this line has tags (from HIR).
     pub has_tags: bool,
+    /// For a `Divert` line: whether it is a *standalone* divert (`-> x` or
+    /// `-> END`/`-> DONE`) rather than a tunnel call or thread start (#480).
+    /// Structural fact from the projection's statement kinds — consumers
+    /// never re-sniff the text. `false` on non-divert lines.
+    pub standalone: bool,
+    /// Option identity (#480): the full lineage of zero-based option indices
+    /// through the weave, present on `ChoiceLine`/`ChoiceBody`-weave lines.
+    /// From the projection's per-choice option paths (real HIR nesting).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option_path: Option<Vec<u32>>,
     /// Whether this line is inside a block comment.
     pub block_comment: bool,
     /// Dialect classification for this line, if a dialect is registered and
@@ -142,6 +152,8 @@ impl Default for LineContext {
                 element: WeaveElement::TopLevel,
             },
             has_tags: false,
+            standalone: false,
+            option_path: None,
             block_comment: false,
             dialect: None,
         }
@@ -150,11 +162,15 @@ impl Default for LineContext {
 
 // ── Public API ──────────────────────────────────────────────────────
 
-/// Compute per-line context from the HIR and source text.
+/// Compute per-line context from the HIR, source text, and the file's
+/// projection (compute once via [`crate::hir_projection::project_hir_structural`]
+/// or take it from [`crate::session::IdeSession::projection`] — identity-joined
+/// projections work identically; the ids are ignored here).
 ///
 /// Returns one `LineContext` per source line. The `root` syntax node is
-/// used for block-comment detection; the HIR provides all structural info.
-pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<LineContext> {
+/// used for block-comment detection; the projection provides all structural
+/// info.
+pub fn line_contexts(source: &str, root: &SyntaxNode, projection: &Projection) -> Vec<LineContext> {
     let line_count = source.lines().count().max(1);
     // Handle trailing newline: if source ends with '\n', there's an extra empty line
     let actual_lines = if source.ends_with('\n') {
@@ -190,9 +206,8 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
     // walk's exact overwrite discipline — statement spans overwrite,
     // content spans fill only still-`Blank` lines. `cond_ranges` (consumed
     // by pass 4b) falls out of the projection's construct-extent spans.
-    let projection = crate::hir_projection::project_hir_structural(hir, source);
     let mut cond_ranges: Vec<(TextRange, WeaveElement)> = Vec::new();
-    apply_structural_view(&projection, source, &idx, &mut ctx, &mut cond_ranges);
+    apply_structural_view(projection, source, &idx, &mut ctx, &mut cond_ranges);
 
     // ── Pass 3c: blank lines in a choice body inherit its weave (#478) ──
     // A whitespace-only line following a ChoiceLine/ChoiceBody-weave line is
@@ -232,6 +247,33 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
     // the same "HIR under-covers this, patch from source text" idiom as
     // `detect_gathers`/`detect_comments` above.
     apply_conditional_scaffold(source, &idx, &cond_ranges, &mut ctx);
+
+    // ── Pass 4c: option identity (#480) ──
+    // Lines with ChoiceLine/ChoiceBody weave carry their innermost choice's
+    // option path (from the projection's per-choice table). Lines whose body
+    // weave was inherited past the container's extent (trailing blanks,
+    // pass 3c) chain the previous line's path, mirroring the weave chain.
+    for i in 0..ctx.len() {
+        if !matches!(
+            ctx[i].weave.element,
+            WeaveElement::ChoiceLine { .. } | WeaveElement::ChoiceBody
+        ) {
+            continue;
+        }
+        let from_stack = projection.lines.get(i).and_then(|stack| {
+            stack
+                .containers
+                .iter()
+                .rev()
+                .find(|c| c.kind == SpanKind::Choice)
+                .and_then(|c| projection.option_paths.get(&c.handle))
+        });
+        ctx[i].option_path = match from_stack {
+            Some(path) => Some(path.clone()),
+            None if i > 0 => ctx[i - 1].option_path.clone(),
+            None => None,
+        };
+    }
 
     // ── Pass 5: sigil logic lines win over any earlier promotion (#413) ──
     // A `~`-prefixed logic line (`Stmt::ExprStmt`, `TempDecl`, `Assignment`)
@@ -277,12 +319,12 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
 /// — conditional-arm narrative is still plain `Narrative` at the interpreter
 /// level (unlike `ChoiceBody`, it never gets a separate retyped kind).
 pub fn line_contexts_with_dialect(
-    hir: &HirFile,
     source: &str,
     root: &SyntaxNode,
+    projection: &Projection,
     dialect: &ResolvedDialect,
 ) -> Vec<LineContext> {
-    let mut ctx = line_contexts(hir, source, root);
+    let mut ctx = line_contexts(source, root, projection);
     apply_dialect(source, dialect, &mut ctx);
     ctx
 }
@@ -450,11 +492,6 @@ fn apply_structural_view(
 
     // Continuation-label overwrites, applied after the replay.
     let mut deferred_gathers: Vec<(usize, WeavePosition)> = Vec::new();
-    // The last content/choice span, for attributing Tag spans: a tag marks
-    // `has_tags` on its owner's start line (the walk read `content.tags` /
-    // `choice.tags` directly), and a tag with no owning span in range —
-    // e.g. inside ptr-less inline-branch content — marks nothing.
-    let mut tag_anchor: Option<(usize, TextRange)> = None;
 
     for span in &projection.spans {
         let start_line = idx.line_col(span.range.start()).0 as usize;
@@ -480,13 +517,15 @@ fn apply_structural_view(
                         },
                     };
                 }
-                tag_anchor = Some((start_line, span.range));
             }
             // #478: a body statement sharing its choice's physical line
             // (`* [Go] -> hub`) no longer reclassifies it — the line stays
             // Choice so Tab/Enter transitions keep working. The divert's
             // reference span still projects for the overlay.
-            SpanKind::DivertStmt | SpanKind::DivertTerminal
+            SpanKind::DivertStmt
+            | SpanKind::DivertTerminal
+            | SpanKind::TunnelStmt
+            | SpanKind::ThreadStmt
                 if !on_choice_first_line(&containers, idx, span.range) =>
             {
                 set_element_weave(
@@ -495,6 +534,13 @@ fn apply_structural_view(
                     LineElement::Divert,
                     derive_weave(&containers, span.range),
                 );
+                if start_line < ctx.len() {
+                    // Standalone = a plain/terminal divert; tunnels and
+                    // threads are not (#480) — a structural fact, replacing
+                    // the text sniffs in folding and the editor.
+                    ctx[start_line].standalone =
+                        matches!(span.kind, SpanKind::DivertStmt | SpanKind::DivertTerminal);
+                }
             }
             SpanKind::TempDecl | SpanKind::Logic
                 if !on_choice_first_line(&containers, idx, span.range) =>
@@ -508,35 +554,20 @@ fn apply_structural_view(
             }
             SpanKind::Content => {
                 fill_content_lines(span.range, idx, ctx, derive_weave(&containers, span.range));
-                tag_anchor = Some((start_line, span.range));
             }
             SpanKind::Tag => {
-                if let Some((line, range)) = tag_anchor
-                    && range.contains_range(span.range)
-                    && line < ctx.len()
-                {
-                    // Historical quirk, preserved bug-for-bug: a tag on the
-                    // choice line itself never set `has_tags`. Lowering
-                    // leaves `Choice.tags` empty (choice-line tags are
-                    // distributed into the slot contents), and the old walk
-                    // never visited slot contents — so its
-                    // `!choice.tags.is_empty()` check was always false.
-                    // Fixing this is a deliberate behavior change to make
-                    // separately, not a refactor side effect.
-                    let on_choice_line = containing(&containers, SpanKind::Choice, span.range)
-                        .map(|c| idx.line_col(c.range.start()).0 as usize)
-                        == Some(line);
-                    // A tag inside a construct's extent belongs to ptr-less
-                    // branch content (`{mood: hi # tag}`) — the old walk's
-                    // `content.ptr` gate meant those never set `has_tags`.
-                    // Construct spans replay before their content's tags, so
-                    // `cond_ranges` is already populated here.
-                    let in_construct = cond_ranges
-                        .iter()
-                        .any(|(r, _)| r.contains_range(span.range));
-                    if !on_choice_line && !in_construct {
-                        ctx[line].has_tags = true;
-                    }
+                // A tag marks its own physical line (decision 2026-07-10,
+                // "LineContext.has_tags is true for tagged choice lines"):
+                // any line carrying an author-written tag reports has_tags —
+                // choice lines (whatever slot the tag lowered into), lines
+                // inside inline/multiline conditional branches, everything.
+                // The old walk's choice-line and construct suppressions were
+                // artifacts of which HIR nodes it happened to visit; the C#
+                // reference surfaces choice-line tags at runtime and brink's
+                // compiler/runtime already conform — this was editor
+                // metadata lagging behind.
+                if start_line < ctx.len() {
+                    ctx[start_line].has_tags = true;
                 }
             }
             SpanKind::Label => {
@@ -991,7 +1022,8 @@ mod tests {
         let file_id = FileId(0);
         let ast = parse.tree();
         let (hir, _, _) = hir::lower(file_id, &ast);
-        line_contexts(&hir, source, &parse.syntax())
+        let projection = crate::hir_projection::project_hir_structural(&hir, source);
+        line_contexts(source, &parse.syntax(), &projection)
     }
 
     #[test]
@@ -1098,6 +1130,60 @@ mod tests {
     }
 
     #[test]
+    fn option_paths_follow_weave_lineage() {
+        // #480: option identity from real HIR nesting — indices are
+        // zero-based per set; a gather closes its group (the next choice
+        // starts a new set at index 0); body lines inherit their choice's
+        // path; nested options extend the lineage.
+        let source = "\
+=== start ===
+* First
+  First body.
+* Second
+* * Nested under second
+- (g)
+* After gather
+";
+        let ctx = make_contexts(source);
+        assert_eq!(ctx[1].option_path.as_deref(), Some(&[0u32][..]), "First");
+        assert_eq!(ctx[2].option_path.as_deref(), Some(&[0u32][..]), "body");
+        assert_eq!(ctx[3].option_path.as_deref(), Some(&[1u32][..]), "Second");
+        assert_eq!(
+            ctx[4].option_path.as_deref(),
+            Some(&[1u32, 0u32][..]),
+            "nested lineage"
+        );
+        assert_eq!(ctx[5].option_path, None, "gather line has no option path");
+        assert_eq!(
+            ctx[6].option_path.as_deref(),
+            Some(&[0u32][..]),
+            "gather closed the group — new set restarts at 0"
+        );
+    }
+
+    #[test]
+    fn standalone_is_a_structural_fact() {
+        let source = "\
+=== start ===
+-> hub
+=== hub ===
+-> tunnel ->
+<- threaded
+-> DONE
+=== tunnel ===
+->->
+=== threaded ===
+-> END
+";
+        let ctx = make_contexts(source);
+        assert!(ctx[1].standalone, "plain divert is standalone");
+        assert!(!ctx[3].standalone, "tunnel call is not");
+        assert!(!ctx[4].standalone, "thread start is not");
+        assert!(ctx[5].standalone, "-> DONE is standalone");
+        assert!(ctx[9].standalone, "-> END is standalone");
+    }
+
+    #[test]
     fn sticky_choice() {
         let source = "=== start ===\n+ Sticky choice\n";
         let ctx = make_contexts(source);
@@ -1127,7 +1213,8 @@ mod dialect_tests {
         let (hir, _, _) = hir::lower(file_id, &ast);
         let dialect = ResolvedDialect::compile(&brink_ir::DialogueDialect::default())
             .expect("at-cue preset compiles");
-        line_contexts_with_dialect(&hir, source, &parse.syntax(), &dialect)
+        let projection = crate::hir_projection::project_hir_structural(&hir, source);
+        line_contexts_with_dialect(source, &parse.syntax(), &projection, &dialect)
     }
 
     #[test]
@@ -1233,7 +1320,8 @@ mod dialect_tests {
         let file_id = FileId(0);
         let ast = parse.tree();
         let (hir, _, _) = hir::lower(file_id, &ast);
-        let ctx = line_contexts(&hir, source, &parse.syntax());
+        let projection = crate::hir_projection::project_hir_structural(&hir, source);
+        let ctx = line_contexts(source, &parse.syntax(), &projection);
         assert!(ctx[1].dialect.is_none());
     }
 

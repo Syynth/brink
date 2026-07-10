@@ -10,7 +10,7 @@ expression: "render_fixture(\"\\\n// A line comment\n/* a block\n   comment span
   4 |/// doc line one| Comment w=0/TopLevel
   5 |/// doc line two| Comment w=0/TopLevel
   6 |=== start ===| KnotHeader w=0/TopLevel
-  7 |# standalone_tag| Tag w=0/TopLevel
+  7 |# standalone_tag| Tag w=0/TopLevel tags
   8 |Narrative with a trailing tag. # trailing| Narrative w=0/TopLevel tags
   9 |-> END| Divert w=0/TopLevel
  10 || Blank w=0/TopLevel
@@ -22,7 +22,7 @@ expression: "render_fixture(\"\\\n// A line comment\n/* a block\n   comment span
   4 |/// doc line one| Comment w=0/TopLevel
   5 |/// doc line two| Comment w=0/TopLevel
   6 |=== start ===| KnotHeader w=0/TopLevel
-  7 |# standalone_tag| Tag w=0/TopLevel
+  7 |# standalone_tag| Tag w=0/TopLevel tags
   8 |Narrative with a trailing tag. # trailing| Narrative w=0/TopLevel tags
   9 |-> END| Divert w=0/TopLevel
  10 || Blank w=0/TopLevel
