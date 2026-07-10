@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/Syynth/brink/compare/brink-lsp-v0.0.9...brink-lsp-v0.0.10) - 2026-07-10
+
+### Added
+
+- *(ide)* weave folding from projection container extents ([#476](https://github.com/Syynth/brink/pull/476))
+
+### Other
+
+- Merge pull request #483 from Syynth/worktree-476-weave-folding
+
 ## [0.0.9](https://github.com/Syynth/brink/compare/brink-lsp-v0.0.8...brink-lsp-v0.0.9) - 2026-07-06
 
 ### Other

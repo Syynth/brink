@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.9...brink-runtime-v0.0.10) - 2026-07-10
+
+### Added
+
+- *(bevy-brink)* thin onto scoped-flow-state core — shared World, per-flow FlowLocal (F6.2, #441) ([#488](https://github.com/Syynth/brink/pull/488))
+- *(runtime)* subtree-inclusive knot scope in ResolvedPolicy (F6.1c, #441) ([#484](https://github.com/Syynth/brink/pull/484))
+- *(runtime)* lift save_state/load_state off Story to any flow's context (F6.1b, #441) ([#481](https://github.com/Syynth/brink/pull/481))
+- *(web)* speculation binding — composable verbs + evaluate + Value marshaling (F4.3) ([#456](https://github.com/Syynth/brink/pull/456))
+- *(runtime)* kind-tiered externals handler + Speculation resume_function_eval (F4.2) ([#455](https://github.com/Syynth/brink/pull/455))
+- *(runtime)* Speculation primitive — self-contained side-effect-proof speculative run (F4.1) ([#453](https://github.com/Syynth/brink/pull/453))
+- *(runtime)* fork + sandbox mode + discard (F3.2) ([#451](https://github.com/Syynth/brink/pull/451))
+- *(runtime)* flat FlowLocal storage + policy-aware ContextView routing (F2.2) ([#448](https://github.com/Syynth/brink/pull/448))
+- *(runtime)* WorldPolicy + ResolvedPolicy + resolution (F2.1) ([#446](https://github.com/Syynth/brink/pull/446))
+
+### Other
+
+- Merge pull request #477 from Syynth/bronch/book-audit-updates-e2fc23
+- *(runtime)* extract shared drive-to-terminal op onto FlowInstance (F6.1a) ([#475](https://github.com/Syynth/brink/pull/475))
+- *(runtime)* CoW FlowLocal — frozen-base read-through chain + freeze (F3.1) ([#450](https://github.com/Syynth/brink/pull/450))
+- *(runtime)* split Context into World + FlowLocal + routing view, all-World (F1.3) ([#445](https://github.com/Syynth/brink/pull/445))
+- *(runtime)* collapse duplicate Context API, route Story accessors through the seam (F1.2) ([#444](https://github.com/Syynth/brink/pull/444))
+- *(runtime)* Program → Arc, delete <'p> lifetime (F1.1) ([#442](https://github.com/Syynth/brink/pull/442))
+
 ## [0.0.9](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.7...brink-runtime-v0.0.9) - 2026-07-06
 
 ### Added

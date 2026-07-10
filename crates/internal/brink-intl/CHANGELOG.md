@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/Syynth/brink/compare/brink-intl-v0.0.9...brink-intl-v0.0.10) - 2026-07-10
+
+### Other
+
+- Story::new takes Arc<Program>, not &Program
+- *(runtime)* Program → Arc, delete <'p> lifetime (F1.1) ([#442](https://github.com/Syynth/brink/pull/442))
+
 ## [0.0.7](https://github.com/Syynth/brink/compare/brink-intl-v0.0.6...brink-intl-v0.0.7) - 2026-06-20
 
 ### Other

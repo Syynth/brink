@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/Syynth/brink/compare/brink-ir-v0.0.9...brink-ir-v0.0.10) - 2026-07-10
+
+### Other
+
+- Story::new takes Arc<Program>, not &Program
+- shared read-only HIR visitor + migrate 4 walkers ([#457](https://github.com/Syynth/brink/pull/457)) ([#464](https://github.com/Syynth/brink/pull/464))
+
 ## [0.0.9](https://github.com/Syynth/brink/compare/brink-ir-v0.0.8...brink-ir-v0.0.9) - 2026-07-06
 
 ### Added

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/Syynth/brink/compare/brink-syntax-v0.0.9...brink-syntax-v0.0.10) - 2026-07-10
+
+### Other
+
+- upgrade pinned Rust toolchain to 1.97.0
+- Story::new takes Arc<Program>, not &Program
+
 ## [0.0.7](https://github.com/Syynth/brink/compare/brink-syntax-v0.0.6...brink-syntax-v0.0.7) - 2026-06-20
 
 ### Other

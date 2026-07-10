@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/Syynth/brink/compare/bevy-brink-v0.0.9...bevy-brink-v0.0.10) - 2026-07-10
+
+### Added
+
+- *(bevy-brink)* per-entity SaveState durability (F6.3, #441) ([#490](https://github.com/Syynth/brink/pull/490))
+- *(bevy-brink)* thin onto scoped-flow-state core — shared World, per-flow FlowLocal (F6.2, #441) ([#488](https://github.com/Syynth/brink/pull/488))
+- *(runtime)* WorldPolicy + ResolvedPolicy + resolution (F2.1) ([#446](https://github.com/Syynth/brink/pull/446))
+
+### Other
+
+- Merge origin/main into book-audit-updates
+- re-export brink_runtime public-signature types + compile-check Bevy book examples ([#470](https://github.com/Syynth/brink/pull/470))
+- *(runtime)* split Context into World + FlowLocal + routing view, all-World (F1.3) ([#445](https://github.com/Syynth/brink/pull/445))
+- *(runtime)* Program → Arc, delete <'p> lifetime (F1.1) ([#442](https://github.com/Syynth/brink/pull/442))
+
 ## [0.0.7](https://github.com/Syynth/brink/compare/bevy-brink-v0.0.6...bevy-brink-v0.0.7) - 2026-06-20
 
 ### Other
