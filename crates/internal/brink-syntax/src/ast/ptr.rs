@@ -58,15 +58,15 @@ impl SyntaxNodePtr {
                     if n.text_range().start() < self.range.start() {
                         return None;
                     }
-                    match n.parent() {
-                        Some(parent) => node = rowan::NodeOrToken::Node(parent),
-                        None => return None,
+                    {
+                        let parent = n.parent()?;
+                        node = rowan::NodeOrToken::Node(parent);
                     }
                 }
-                rowan::NodeOrToken::Token(t) => match t.parent() {
-                    Some(parent) => node = rowan::NodeOrToken::Node(parent),
-                    None => return None,
-                },
+                rowan::NodeOrToken::Token(t) => {
+                    let parent = t.parent()?;
+                    node = rowan::NodeOrToken::Node(parent);
+                }
             }
         }
     }
@@ -176,15 +176,15 @@ impl<N: AstNode> AstPtr<N> {
                     if n.text_range().start() < self.range.start() {
                         return None;
                     }
-                    match n.parent() {
-                        Some(parent) => node = rowan::NodeOrToken::Node(parent),
-                        None => return None,
+                    {
+                        let parent = n.parent()?;
+                        node = rowan::NodeOrToken::Node(parent);
                     }
                 }
-                rowan::NodeOrToken::Token(t) => match t.parent() {
-                    Some(parent) => node = rowan::NodeOrToken::Node(parent),
-                    None => return None,
-                },
+                rowan::NodeOrToken::Token(t) => {
+                    let parent = t.parent()?;
+                    node = rowan::NodeOrToken::Node(parent);
+                }
             }
         }
     }

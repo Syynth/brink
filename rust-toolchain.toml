@@ -3,7 +3,7 @@
 # toolchain-install action (one fewer third-party action in the publish path).
 # Bump deliberately; there's no Dependabot ecosystem for this file.
 [toolchain]
-channel = "1.95.0"
+channel = "1.97.0"
 # Minimal profile + explicit components, so installing this pinned toolchain
 # doesn't try to pull a globally-configured `complete` profile (miri, cranelift)
 # that isn't available for every release.
