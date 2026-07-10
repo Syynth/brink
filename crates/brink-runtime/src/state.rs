@@ -30,12 +30,19 @@ pub trait ContextAccess {
 
     fn visit_count(&self, id: DefinitionId) -> u32;
     fn increment_visit(&mut self, id: DefinitionId);
+    /// Set a visit count directly, rather than incrementing it. Used by
+    /// [`crate::load_state`] to reconcile a durable save, whose entries carry
+    /// absolute counts rather than deltas.
+    fn set_visit_count(&mut self, id: DefinitionId, count: u32);
 
     fn turn_count(&self, id: DefinitionId) -> Option<u32>;
     fn set_turn_count(&mut self, id: DefinitionId, turn: u32);
 
     fn turn_index(&self) -> u32;
     fn increment_turn_index(&mut self);
+    /// Set the turn index directly, rather than incrementing it. Used by
+    /// [`crate::load_state`] to restore a saved turn index.
+    fn set_turn_index(&mut self, index: u32);
 
     fn rng_seed(&self) -> i32;
     fn set_rng_seed(&mut self, seed: i32);
@@ -58,8 +65,10 @@ pub trait ContextAccess {
 pub trait WriteObserver {
     fn on_set_global(&mut self, idx: u32, value: &Value) {}
     fn on_increment_visit(&mut self, id: DefinitionId, new_count: u32) {}
+    fn on_set_visit_count(&mut self, id: DefinitionId, count: u32) {}
     fn on_set_turn_count(&mut self, id: DefinitionId, turn: u32) {}
     fn on_increment_turn_index(&mut self, new_value: u32) {}
+    fn on_set_turn_index(&mut self, index: u32) {}
     fn on_set_rng_seed(&mut self, new_seed: i32) {}
     fn on_set_previous_random(&mut self, new_val: i32) {}
 }
@@ -111,6 +120,12 @@ impl<C: ContextAccess> ContextAccess for ObservedContext<'_, '_, C> {
     }
 
     #[inline]
+    fn set_visit_count(&mut self, id: DefinitionId, count: u32) {
+        self.context.set_visit_count(id, count);
+        self.observer.on_set_visit_count(id, count);
+    }
+
+    #[inline]
     fn turn_count(&self, id: DefinitionId) -> Option<u32> {
         self.context.turn_count(id)
     }
@@ -131,6 +146,12 @@ impl<C: ContextAccess> ContextAccess for ObservedContext<'_, '_, C> {
         self.context.increment_turn_index();
         self.observer
             .on_increment_turn_index(self.context.turn_index());
+    }
+
+    #[inline]
+    fn set_turn_index(&mut self, index: u32) {
+        self.context.set_turn_index(index);
+        self.observer.on_set_turn_index(index);
     }
 
     #[inline]

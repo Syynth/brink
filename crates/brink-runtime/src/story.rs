@@ -1841,6 +1841,14 @@ impl<R: StoryRng> Story<R> {
         &self.program
     }
 
+    /// Cheap `Arc` clone of the program, for callers (e.g. [`crate::save`])
+    /// that need a `&Program` alongside a disjoint mutable borrow of another
+    /// field — `self.program()` ties its `&Program` to all of `&self`, which
+    /// conflicts with a simultaneous `&mut self.default_context`.
+    pub(crate) fn program_arc(&self) -> Arc<Program> {
+        Arc::clone(&self.program)
+    }
+
     // ── Variable access (host-facing) ───────────────────────────────
 
     /// Read a global variable's current value by name. `None` if no global
@@ -3209,5 +3217,81 @@ mod tests {
             }
             other => panic!("expected LineLimitExceeded, got {other:?}"),
         }
+    }
+
+    // ── free `save_state`/`load_state` (F6.1b) ───────────────────────────
+
+    /// A `Story`-free save/load roundtrip: drive a bare `FlowInstance` +
+    /// `ContextView` (no `Story` anywhere), capture state via the lifted
+    /// `save_state` free function, mutate the live context, then restore via
+    /// `load_state` and confirm the mutation is undone. Proves the lifted
+    /// functions work for a consumer (e.g. `bevy-brink`) that never
+    /// constructs a `Story`.
+    #[test]
+    fn free_fn_save_load_roundtrip_without_story() {
+        let (program, tables) = compile_source_for_flow(
+            "VAR gold = 0\n\
+             -> shrine\n\
+             === shrine ===\n\
+             ~ gold = 5\n\
+             Shrine text.\n\
+             -> DONE\n\
+             === reader ===\n\
+             {READ_COUNT(-> shrine)}\n\
+             -> DONE\n",
+            // `reader` is never entered — it exists only so the compiler's
+            // counting-flags pass sees a visit-count read of `shrine` and
+            // sets `CountingFlags::VISITS` on it (a knot with no read of its
+            // own visit count anywhere in the program has counting disabled
+            // entirely, an existing compiler optimization).
+        );
+        let (mut flow, mut world) = FlowInstance::new_at_root(&program);
+        let mut local = FlowLocal::new();
+        {
+            let mut view = ContextView::new(&mut world, &mut local);
+            flow.drive_to_terminal::<FastRng>(&program, &tables, &mut view, &FallbackHandler, None)
+                .expect("drive succeeds");
+        }
+
+        let gold_slot = program.global_index("gold").expect("gold declared");
+        let shrine_id = program.find_path_target("shrine").expect("shrine exists");
+
+        let save = {
+            let view = ContextView::new(&mut world, &mut local);
+            crate::save_state(&program, &view)
+        };
+        assert_eq!(save.globals.get("gold"), Some(&Value::Int(5)));
+        assert_eq!(
+            save.visits
+                .iter()
+                .find(|e| e.id == shrine_id)
+                .map(|e| e.count),
+            Some(1),
+            "shrine should have a captured visit entry"
+        );
+
+        // Mutate the live context directly through the trait.
+        {
+            let mut view = ContextView::new(&mut world, &mut local);
+            view.set_global(gold_slot, Value::Int(999));
+            view.set_visit_count(shrine_id, 42);
+        }
+        {
+            let view = ContextView::new(&mut world, &mut local);
+            assert_eq!(view.global(gold_slot), &Value::Int(999));
+            assert_eq!(view.visit_count(shrine_id), 42);
+        }
+
+        // Restore via the lifted `load_state` and confirm the mutation is
+        // undone.
+        let report = {
+            let mut view = ContextView::new(&mut world, &mut local);
+            crate::load_state(&program, &mut view, &save)
+        };
+        assert!(report.unknown_globals.is_empty(), "clean load: {report:?}");
+
+        let view = ContextView::new(&mut world, &mut local);
+        assert_eq!(view.global(gold_slot), &Value::Int(5));
+        assert_eq!(view.visit_count(shrine_id), 1);
     }
 }
