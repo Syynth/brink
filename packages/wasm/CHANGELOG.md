@@ -1,5 +1,78 @@
 # @brink-lang/web
 
+## 0.10.0
+
+### Minor Changes
+
+- 73e2746: Line-classification fixes (#478) — deliberate behavior changes to the
+  `line_contexts` contract and `LineInfo`:
+
+  - A choice line with an inline divert (`* [Go] -> hub`) now classifies as
+    `choice` (was `divert`), so Tab/Enter smart-editing transitions work on
+    it again.
+  - Every gather-label line — continuation labels, `LabeledBlock` labels,
+    top-level labeled gathers — uniformly classifies as `gather` with
+    `gather_continuation` weave at its sigil depth. Previously a labeled
+    block with an inline divert showed `divert` while the visually identical
+    continuation form showed `gather`.
+  - Choices inside conditional/sequence branches report their sigil depth
+    (was 0), so depth-dependent transitions and gutter depth markers work
+    inside arms.
+  - Blank lines inside a choice body inherit the body weave (element stays
+    `blank`); the editor maps them to `ChoiceBody` so Tab works anywhere in
+    the body — replacing the old single-shape TS post-pass, and covering
+    deeper blank runs it missed.
+
+- 36bf266: Machinery/narrative fold runs are now opt-in (#479). `foldingRanges` /
+  `folding_ranges_doc` return structural folds only unless the host enables
+  run computation via the new session-level `setFoldRunsEnabled(true)`
+  (mirrors `setDialect`; also on `DocumentHandle`), and the editor's default
+  active fold kinds are `structural` only — hosts implementing prose/logic
+  view modes activate `machinery`/`narrative` with `setActiveFoldKinds` and
+  collapse with `foldAllOfKind`. Runs are additionally bounded by weave
+  containers (choice branches / gather continuations), so a run fold never
+  crosses weave structure; conditional scaffold + arms still fold as one
+  pure-routing region, and inline `{a|b}` alternatives don't fragment
+  narrative runs.
+- 973858f: Add the HIR structural projection to the editor session (#454 phase 2):
+  `getHirSpansDoc(doc)` returns nested semantic spans (kind, depth, resolved
+  `def_id`/`target_id` identity) plus a per-line container stack for rails, via
+  the new wasm `hir_spans_doc` export. New `HirSpan` / `HirLineContainer` /
+  `HirProjection` types.
+- 54c37df: Extend the HIR projection's coverage (#463): new span kinds
+  `divert_stmt` (whole divert/tunnel/thread statements, distinct from the
+  `divert` target reference inside them; suppressed for statements inside
+  inline logic in choice text), `divert_terminal` (`-> END` / `-> DONE` — no
+  longer unprojected, and never flagged unresolved), `logic` (assignments
+  and returns), and `conditional` / `sequence` (whole-construct extents,
+  non-container). Container extents now include gather/labeled-block labels,
+  so labeled gather lines (`- (g)`, `- (g) text`, nested labeled blocks) are
+  covered by their containers and render their rails. Multi-line
+  non-container spans that straddle a fragment view's start are dropped from
+  `getHirSpansDoc` instead of being clamped to the view's top-left.
+- 1bca37c: LineInfo on one shared projection (#480). The HIR projection is now
+  computed once per edit and cached on the session — `getLineContextsDoc`,
+  `getFoldingRangesDoc`, and `getHirSpansDoc` all share it instead of each
+  re-projecting. `LineContext` gains two additive fields the editor now
+  consumes instead of deriving: `option_path` (option identity from real HIR
+  nesting — the TS weave re-walk only serves the pre-wasm regex fallback)
+  and `standalone` (structural divert-vs-tunnel/thread fact — no more text
+  sniffing in the editor or fold-run natures). Span kinds `tunnel_stmt` and
+  `thread_stmt` split out of `divert_stmt`, which now means a simple
+  `-> target` statement only.
+  Also fixes `has_tags`: it is now true for **any** line carrying an
+  author-written tag — tagged choice lines (`* Choice # tag`), tags inside
+  inline conditional/sequence branches, and standalone `#` lines — where the
+  legacy walk under-reported (decision 2026-07-10; verified against the C#
+  reference, whose runtime surfaces choice-line tags).
+- 6289b0e: Weave structure is now foldable (#476): choice branches fold from their
+  choice line (full-branch extent) and gather continuations fold from their
+  gather line, derived from the HIR projection's container extents. Choice
+  folds were previously dead code (single-line CST ranges), so story weave
+  never folded at all. Conditional/sequence folds are unchanged. Known
+  limitation: an unlabeled gather whose own line is prose gets no fold yet
+  (ptr-less line content; upstream lowering gap).
+
 ## 0.9.0
 
 ### Minor Changes
