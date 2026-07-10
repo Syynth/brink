@@ -532,8 +532,9 @@ content under opts
 "
 );
 
-// A tag inside ptr-less inline-branch content never sets has_tags (the
-// old walk's content.ptr gate); the host line's own trailing tag does.
+// Every line carrying an author-written tag sets has_tags — including
+// tags inside inline branches (decision 2026-07-10: the old walk's
+// content.ptr gate was an artifact, not semantics).
 snap!(
     tag_inside_inline_branch_content,
     "\

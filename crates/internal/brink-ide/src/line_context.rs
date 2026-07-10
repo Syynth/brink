@@ -492,11 +492,6 @@ fn apply_structural_view(
 
     // Continuation-label overwrites, applied after the replay.
     let mut deferred_gathers: Vec<(usize, WeavePosition)> = Vec::new();
-    // The last content/choice span, for attributing Tag spans: a tag marks
-    // `has_tags` on its owner's start line (the walk read `content.tags` /
-    // `choice.tags` directly), and a tag with no owning span in range —
-    // e.g. inside ptr-less inline-branch content — marks nothing.
-    let mut tag_anchor: Option<(usize, TextRange)> = None;
 
     for span in &projection.spans {
         let start_line = idx.line_col(span.range.start()).0 as usize;
@@ -522,7 +517,6 @@ fn apply_structural_view(
                         },
                     };
                 }
-                tag_anchor = Some((start_line, span.range));
             }
             // #478: a body statement sharing its choice's physical line
             // (`* [Go] -> hub`) no longer reclassifies it — the line stays
@@ -560,35 +554,20 @@ fn apply_structural_view(
             }
             SpanKind::Content => {
                 fill_content_lines(span.range, idx, ctx, derive_weave(&containers, span.range));
-                tag_anchor = Some((start_line, span.range));
             }
             SpanKind::Tag => {
-                if let Some((line, range)) = tag_anchor
-                    && range.contains_range(span.range)
-                    && line < ctx.len()
-                {
-                    // Historical quirk, preserved bug-for-bug: a tag on the
-                    // choice line itself never set `has_tags`. Lowering
-                    // leaves `Choice.tags` empty (choice-line tags are
-                    // distributed into the slot contents), and the old walk
-                    // never visited slot contents — so its
-                    // `!choice.tags.is_empty()` check was always false.
-                    // Fixing this is a deliberate behavior change to make
-                    // separately, not a refactor side effect.
-                    let on_choice_line = containing(&containers, SpanKind::Choice, span.range)
-                        .map(|c| idx.line_col(c.range.start()).0 as usize)
-                        == Some(line);
-                    // A tag inside a construct's extent belongs to ptr-less
-                    // branch content (`{mood: hi # tag}`) — the old walk's
-                    // `content.ptr` gate meant those never set `has_tags`.
-                    // Construct spans replay before their content's tags, so
-                    // `cond_ranges` is already populated here.
-                    let in_construct = cond_ranges
-                        .iter()
-                        .any(|(r, _)| r.contains_range(span.range));
-                    if !on_choice_line && !in_construct {
-                        ctx[line].has_tags = true;
-                    }
+                // A tag marks its own physical line (decision 2026-07-10,
+                // "LineContext.has_tags is true for tagged choice lines"):
+                // any line carrying an author-written tag reports has_tags —
+                // choice lines (whatever slot the tag lowered into), lines
+                // inside inline/multiline conditional branches, everything.
+                // The old walk's choice-line and construct suppressions were
+                // artifacts of which HIR nodes it happened to visit; the C#
+                // reference surfaces choice-line tags at runtime and brink's
+                // compiler/runtime already conform — this was editor
+                // metadata lagging behind.
+                if start_line < ctx.len() {
+                    ctx[start_line].has_tags = true;
                 }
             }
             SpanKind::Label => {

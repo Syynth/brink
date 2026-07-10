@@ -4,15 +4,15 @@ expression: "render_fixture(\"\\\n=== start ===\nHe said {mood: hi # tag} there.
 ---
 == LINES (base) ==
   0 |=== start ===| KnotHeader w=0/TopLevel
-  1 |He said {mood: hi # tag} there.| Narrative w=0/TopLevel
-  2 |You have it {now # t2|later # t3}.| Narrative w=0/TopLevel
+  1 |He said {mood: hi # tag} there.| Narrative w=0/TopLevel tags
+  2 |You have it {now # t2|later # t3}.| Narrative w=0/TopLevel tags
   3 |Plain with tag. # real| Narrative w=0/TopLevel tags
   4 |-> END| Divert w=0/TopLevel
   5 || Blank w=0/TopLevel
 == LINES (at-cue dialect) ==
   0 |=== start ===| KnotHeader w=0/TopLevel
-  1 |He said {mood: hi # tag} there.| Narrative w=0/TopLevel
-  2 |You have it {now # t2|later # t3}.| Narrative w=0/TopLevel
+  1 |He said {mood: hi # tag} there.| Narrative w=0/TopLevel tags
+  2 |You have it {now # t2|later # t3}.| Narrative w=0/TopLevel tags
   3 |Plain with tag. # real| Narrative w=0/TopLevel tags
   4 |-> END| Divert w=0/TopLevel
   5 || Blank w=0/TopLevel
