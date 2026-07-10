@@ -203,14 +203,13 @@ function lineContextToLineInfo(ctx: LineContext, lineText: string): LineInfo {
   const depth = ctx.weave.depth;
   const sticky = isSticky(ctx.weave.element);
 
-  // Determine standalone for diverts (not a tunnel: "-> target ->")
-  let standalone = false;
-  if (type === ElementType.Divert) {
-    const trimmed = lineText.trimStart();
-    standalone = trimmed.startsWith("->") && !/^->.*->/.test(trimmed);
-  }
-
-  return { type, depth, sticky, standalone };
+  // Structural facts from the Rust classifier (#480) — no text sniffing,
+  // no TS weave re-walk. `lineText` is still used by callers for dialect
+  // geometry conversion.
+  void lineText;
+  const info: LineInfo = { type, depth, sticky, standalone: ctx.standalone };
+  if (ctx.option_path !== undefined) info.optionPath = ctx.option_path;
+  return info;
 }
 
 // ── Regex fallback for when session hasn't been updated yet ─────────
@@ -607,7 +606,12 @@ function computeLineInfos(state: EditorState): LineInfo[] {
       const line = state.doc.line(i + 1);
       infos.push(classifyLine(line.text));
     }
-    assignOptionPaths(infos);
+    // Option identity comes from the Rust classifier (#480) — the TS
+    // weave re-walk (`assignOptionPaths`) serves only regex-classified
+    // lines. A handle that yields no contexts at all (not attached yet, or
+    // a host mock) means every line above came from `classifyLine`, so the
+    // fallback walk still applies.
+    if (contexts.length === 0) assignOptionPaths(infos);
     return infos;
   }
 

@@ -791,6 +791,12 @@ export interface LineContext {
   element: LineElement;
   weave: WeavePosition;
   has_tags: boolean;
+  /** For a divert line: standalone (`-> x`, `-> END`) vs a tunnel call or
+   *  thread start (#480). Structural fact — never re-sniff the text. */
+  standalone: boolean;
+  /** Option identity (#480): the full lineage of zero-based option indices
+   *  through the weave, present on choice-line / choice-body lines. */
+  option_path?: number[];
   block_comment: boolean;
   /** Dialect classification for this line (#368), present only when a
    *  dialect is registered (`EditorSession.set_dialect`) and this line

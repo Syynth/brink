@@ -384,13 +384,13 @@ fn line_natures(source: &str, ctx: &[LineContext], scaffold_lines: &[bool]) -> V
                 LineElement::Narrative => LineNature::Narrative,
                 LineElement::Logic | LineElement::VarDecl => LineNature::Machinery,
                 LineElement::Divert => {
-                    let trimmed = line.trim_start();
-                    let is_tunnel_or_thread = trimmed.starts_with("<-")
-                        || (trimmed.starts_with("->") && trimmed.matches("->").count() > 1);
-                    if is_tunnel_or_thread {
-                        LineNature::Structural
-                    } else {
+                    // Standalone-ness is a structural fact on the context
+                    // (#480) — tunnels/threads are Structural, plain and
+                    // terminal diverts are Machinery.
+                    if c.standalone {
                         LineNature::Machinery
+                    } else {
+                        LineNature::Structural
                     }
                 }
                 _ => {
@@ -825,8 +825,8 @@ mod fold_kind_tests {
     fn kinds_for(src: &str) -> Vec<(u32, u32, FoldKind)> {
         let parsed = brink_syntax::parse(src);
         let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
-        let ctx = line_contexts(&hir, src, &parsed.syntax());
         let projection = crate::hir_projection::project_hir_structural(&hir, src);
+        let ctx = line_contexts(src, &parsed.syntax(), &projection);
         machinery_and_narrative_folds(&projection, src, &ctx)
             .into_iter()
             .map(|r| (r.start_line, r.end_line, r.kind))
@@ -1079,9 +1079,13 @@ Come on in, take a seat.
         let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
         let dialect = brink_ir::ResolvedDialect::compile(&brink_ir::DialogueDialect::default())
             .expect("at-cue preset compiles");
-        let ctx =
-            crate::line_context::line_contexts_with_dialect(&hir, src, &parsed.syntax(), &dialect);
         let projection = crate::hir_projection::project_hir_structural(&hir, src);
+        let ctx = crate::line_context::line_contexts_with_dialect(
+            src,
+            &parsed.syntax(),
+            &projection,
+            &dialect,
+        );
         let ranges: Vec<(u32, u32, FoldKind)> =
             machinery_and_narrative_folds(&projection, src, &ctx)
                 .into_iter()

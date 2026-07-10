@@ -79,12 +79,18 @@ pub enum SpanKind {
     Include,
 
     // ── Statement / construct spans (inline, no identity) ──
-    /// A divert/tunnel/thread *statement* (whole `ptr` extent). Distinct
-    /// from the [`SpanKind::Divert`] target reference inside it: reference
-    /// spans also arise from divert-target *expressions* (`~ temp x = ->
-    /// hub`, choice conditions), which are not divert statements — line
-    /// views classify from the statement span only.
+    /// A simple divert *statement* (`-> target`; whole `ptr` extent).
+    /// Distinct from the [`SpanKind::Divert`] target reference inside it:
+    /// reference spans also arise from divert-target *expressions* (`~ temp
+    /// x = -> hub`, choice conditions), which are not divert statements —
+    /// line views classify from the statement span only. Tunnels and
+    /// threads are their own kinds (#480) so "standalone divert" is a
+    /// structural fact, not a text sniff.
     DivertStmt,
+    /// A tunnel call statement (`-> knot ->`; whole `ptr` extent).
+    TunnelStmt,
+    /// A thread start statement (`<- knot`; whole `ptr` extent).
+    ThreadStmt,
     /// A `-> END` / `-> DONE` divert (terminal by design — distinct from
     /// [`SpanKind::Divert`] so consumers never treat it as an unresolved
     /// reference). Covers the whole divert statement.
@@ -163,6 +169,12 @@ pub struct Projection {
     pub spans: Vec<ProjectedSpan>,
     /// One entry per source line.
     pub lines: Vec<LineStack>,
+    /// Option identity (#480): each Choice container's full lineage of
+    /// zero-based option indices through the weave, keyed by the container's
+    /// `handle`. Derived from real HIR nesting (a new choice set restarts
+    /// its group at 0 — gathers close groups by construction). Side table,
+    /// not serialized with the spans.
+    pub option_paths: HashMap<u32, Vec<u32>>,
 }
 
 /// Project a file's HIR onto its source ranges.
@@ -216,6 +228,9 @@ fn project_with_maps(
         cs_depths: Vec::new(),
         continuation_labels: HashMap::new(),
         slot_construct_ranges: Vec::new(),
+        cs_child_counters: Vec::new(),
+        open_choices: Vec::new(),
+        option_paths: HashMap::new(),
     };
 
     // File-level declarations hang off HirFile directly, not the block tree —
@@ -242,8 +257,13 @@ fn project_with_maps(
     brink_ir::hir::visit::visit(hir, &mut v);
 
     let spans = v.spans;
+    let option_paths = v.option_paths;
     let lines = build_line_stacks(&spans, source);
-    Projection { spans, lines }
+    Projection {
+        spans,
+        lines,
+        option_paths,
+    }
 }
 
 struct ProjectionVisitor<'a> {
@@ -269,6 +289,12 @@ struct ProjectionVisitor<'a> {
     /// a divert in `* [Go {ready: -> hub}]` is choice text, not a divert
     /// statement line.
     slot_construct_ranges: Vec<TextRange>,
+    /// Per-choice-set next-option counter, innermost set last (#480).
+    cs_child_counters: Vec<u32>,
+    /// Open-choice lineage of option indices, outermost first (#480).
+    open_choices: Vec<u32>,
+    /// Choice handle → option path (the `Projection.option_paths` table).
+    option_paths: HashMap<u32, Vec<u32>>,
 }
 
 impl ProjectionVisitor<'_> {
@@ -330,19 +356,19 @@ impl ProjectionVisitor<'_> {
 
     /// Emit a container span over `range`, joining `def_id` if named.
     fn push_container(&mut self, range: TextRange, kind: SpanKind, def_id: Option<DefinitionId>) {
-        self.push_container_full(range, kind, def_id, None, None);
+        let _ = self.push_container_full(range, kind, def_id, None, None);
     }
 
     /// Emit a weave container (Choice/Gather) carrying stickiness and the
-    /// ink weave depth.
+    /// ink weave depth. Returns the assigned handle.
     fn push_weave_container(
         &mut self,
         range: TextRange,
         kind: SpanKind,
         sticky: Option<bool>,
         weave_depth: u32,
-    ) {
-        self.push_container_full(range, kind, None, sticky, Some(weave_depth));
+    ) -> u32 {
+        self.push_container_full(range, kind, None, sticky, Some(weave_depth))
     }
 
     fn push_container_full(
@@ -352,7 +378,7 @@ impl ProjectionVisitor<'_> {
         def_id: Option<DefinitionId>,
         sticky: Option<bool>,
         weave_depth: Option<u32>,
-    ) {
+    ) -> u32 {
         let handle = self.next_handle;
         self.next_handle += 1;
         self.spans.push(ProjectedSpan {
@@ -365,6 +391,7 @@ impl ProjectionVisitor<'_> {
             sticky,
             weave_depth,
         });
+        handle
     }
 
     /// Emit reference spans for a path-typed divert target.
@@ -505,12 +532,23 @@ impl HirVisitor for ProjectionVisitor<'_> {
         // in a single-line inline conditional).
         let weave_depth = choice_sigil_depth(self.source, choice.ptr.text_range().start())
             .unwrap_or_else(|| self.current_weave_depth());
-        self.push_weave_container(
+        let handle = self.push_weave_container(
             extent,
             SpanKind::Choice,
             Some(choice.is_sticky),
             weave_depth,
         );
+        // Option identity (#480): this choice's index within its set, under
+        // the open lineage. The counter was pushed at `enter_stmt(ChoiceSet)`.
+        let index = if let Some(counter) = self.cs_child_counters.last_mut() {
+            let i = *counter;
+            *counter += 1;
+            i
+        } else {
+            0
+        };
+        self.open_choices.push(index);
+        self.option_paths.insert(handle, self.open_choices.clone());
         if let Some(label) = &choice.label {
             self.push_decl(label.range, SpanKind::Label);
         }
@@ -522,6 +560,7 @@ impl HirVisitor for ProjectionVisitor<'_> {
 
     fn exit_choice(&mut self, _choice: &Choice) {
         self.depth = self.depth.saturating_sub(1);
+        self.open_choices.pop();
     }
 
     fn enter_stmt(&mut self, stmt: &Stmt) {
@@ -551,7 +590,7 @@ impl HirVisitor for ProjectionVisitor<'_> {
             }
             Stmt::TunnelCall(t) => {
                 if !self.in_slot_construct(t.ptr.text_range()) {
-                    self.push_inline(t.ptr.text_range(), SpanKind::DivertStmt);
+                    self.push_inline(t.ptr.text_range(), SpanKind::TunnelStmt);
                 }
                 for target in &t.targets {
                     self.push_divert_target(target);
@@ -559,7 +598,7 @@ impl HirVisitor for ProjectionVisitor<'_> {
             }
             Stmt::ThreadStart(t) => {
                 if !self.in_slot_construct(t.ptr.text_range()) {
-                    self.push_inline(t.ptr.text_range(), SpanKind::DivertStmt);
+                    self.push_inline(t.ptr.text_range(), SpanKind::ThreadStmt);
                 }
                 self.push_divert_target(&t.target);
             }
@@ -600,6 +639,7 @@ impl HirVisitor for ProjectionVisitor<'_> {
                     self.push_weave_container(ext, SpanKind::Gather, None, weave_depth);
                 }
                 self.cs_depths.push(weave_depth);
+                self.cs_child_counters.push(0);
             }
             Stmt::Conditional(cond) => {
                 self.push_inline(cond.ptr.text_range(), SpanKind::Conditional);
@@ -616,6 +656,7 @@ impl HirVisitor for ProjectionVisitor<'_> {
     fn exit_stmt(&mut self, stmt: &Stmt) {
         if matches!(stmt, Stmt::ChoiceSet(_)) {
             self.cs_depths.pop();
+            self.cs_child_counters.pop();
         }
     }
 

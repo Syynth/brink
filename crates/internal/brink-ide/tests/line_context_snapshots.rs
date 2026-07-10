@@ -94,8 +94,10 @@ fn render_runs(source: &str, ctx: &[LineContext]) -> String {
 fn render_fixture(source: &str) -> String {
     let parsed = brink_syntax::parse(source);
     let (hir, _, _) = hir::lower(FileId(0), &parsed.tree());
-    let base = line_contexts(&hir, source, &parsed.syntax());
-    let dialect = line_contexts_with_dialect(&hir, source, &parsed.syntax(), &at_cue_dialect());
+    let projection = brink_ide::hir_projection::project_hir_structural(&hir, source);
+    let base = line_contexts(source, &parsed.syntax(), &projection);
+    let dialect =
+        line_contexts_with_dialect(source, &parsed.syntax(), &projection, &at_cue_dialect());
 
     let mut out = String::new();
     out.push_str("== LINES (base) ==\n");

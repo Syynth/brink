@@ -46,7 +46,8 @@ pub fn convert_element(
     byte_offset: u32,
     target: ConvertTarget,
 ) -> Option<TextEdit> {
-    let contexts = line_context::line_contexts(hir, source, root);
+    let projection = crate::hir_projection::project_hir_structural(hir, source);
+    let contexts = line_context::line_contexts(source, root, &projection);
     let (line_idx, line_start, line_text) = line_at_offset(source, byte_offset as usize)?;
 
     let ctx = contexts.get(line_idx)?;

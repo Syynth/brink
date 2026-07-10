@@ -56,7 +56,8 @@ fn classify_case(
     let file_id = FileId(0);
     let ast = parse.tree();
     let (hir, _, _) = hir::lower(file_id, &ast);
-    let ctx = line_contexts_with_dialect(&hir, &source, &parse.syntax(), dialect);
+    let projection = brink_ide::hir_projection::project_hir_structural(&hir, &source);
+    let ctx = line_contexts_with_dialect(&source, &parse.syntax(), &projection, dialect);
 
     // The target line is always the last content line we appended.
     let Some(target) = ctx.last() else {
