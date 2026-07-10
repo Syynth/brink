@@ -4,7 +4,7 @@ expression: "render_fixture(\"\\\n=== start ===\n* [Go] -> hub\n* [Stay]\n  Fine
 ---
 == LINES (base) ==
   0 |=== start ===| KnotHeader w=0/TopLevel
-  1 |* [Go] -> hub| Divert w=1/ChoiceBody
+  1 |* [Go] -> hub| Choice w=1/ChoiceLine(sticky=false)
   2 |* [Stay]| Choice w=1/ChoiceLine(sticky=false)
   3 |  Fine.| Narrative w=1/ChoiceBody
   4 |=== hub ===| KnotHeader w=0/TopLevel
@@ -12,7 +12,7 @@ expression: "render_fixture(\"\\\n=== start ===\n* [Go] -> hub\n* [Stay]\n  Fine
   6 || Blank w=0/TopLevel
 == LINES (at-cue dialect) ==
   0 |=== start ===| KnotHeader w=0/TopLevel
-  1 |* [Go] -> hub| Divert w=1/ChoiceBody
+  1 |* [Go] -> hub| Choice w=1/ChoiceLine(sticky=false)
   2 |* [Stay]| Choice w=1/ChoiceLine(sticky=false)
   3 |  Fine.| Narrative w=1/ChoiceBody
   4 |=== hub ===| KnotHeader w=0/TopLevel

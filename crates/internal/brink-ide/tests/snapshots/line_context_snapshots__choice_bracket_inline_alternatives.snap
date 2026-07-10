@@ -7,13 +7,13 @@ expression: "render_fixture(\"\\\n=== start ===\n* [Take the {red|blue} pill]\n*
   1 |* [Take the {red|blue} pill]| Choice w=1/ChoiceLine(sticky=false)
   2 |* [Take the {big|small} dose]| Choice w=1/ChoiceLine(sticky=false)
   3 |-> END| Divert w=1/ChoiceBody
-  4 || Blank w=0/TopLevel
+  4 || Blank w=1/ChoiceBody
 == LINES (at-cue dialect) ==
   0 |=== start ===| KnotHeader w=0/TopLevel
   1 |* [Take the {red|blue} pill]| Choice w=1/ChoiceLine(sticky=false)
   2 |* [Take the {big|small} dose]| Choice w=1/ChoiceLine(sticky=false)
   3 |-> END| Divert w=1/ChoiceBody
-  4 || Blank w=0/TopLevel
+  4 || Blank w=1/ChoiceBody
 == STRUCTURAL FOLDS ==
 2..3 from_start=false kind=Structural text=None
 0..3 from_start=false kind=Structural text=None

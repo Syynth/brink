@@ -15,7 +15,7 @@ expression: "render_fixture(\"\\\n=== start ===\n* Choice\n  @Alice:<>\n  Choice
   9 |    Hello?| Narrative w=0/ConditionalBranch
  10 |}| Logic w=0/TopLevel
  11 |-> END| Divert w=1/ChoiceBody
- 12 || Blank w=0/TopLevel
+ 12 || Blank w=1/ChoiceBody
 == LINES (at-cue dialect) ==
   0 |=== start ===| KnotHeader w=0/TopLevel
   1 |* Choice| Choice w=1/ChoiceLine(sticky=false)
@@ -29,7 +29,7 @@ expression: "render_fixture(\"\\\n=== start ===\n* Choice\n  @Alice:<>\n  Choice
   9 |    Hello?| Narrative w=0/ConditionalBranch dialect=dialogue/Narrative[speaker=Solstice]
  10 |}| Logic w=0/TopLevel
  11 |-> END| Divert w=1/ChoiceBody
- 12 || Blank w=0/TopLevel
+ 12 || Blank w=1/ChoiceBody
 == STRUCTURAL FOLDS ==
 1..11 from_start=false kind=Structural text=None
 4..10 from_start=false kind=Structural text=Some("{...}")

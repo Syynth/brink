@@ -207,6 +207,7 @@ fn project_with_maps(
     ref_targets: &HashMap<TextRange, DefinitionId>,
 ) -> Projection {
     let mut v = ProjectionVisitor {
+        source,
         decl_ids,
         ref_targets,
         spans: Vec::new(),
@@ -246,6 +247,7 @@ fn project_with_maps(
 }
 
 struct ProjectionVisitor<'a> {
+    source: &'a str,
     decl_ids: &'a HashMap<TextRange, DefinitionId>,
     ref_targets: &'a HashMap<TextRange, DefinitionId>,
     spans: Vec<ProjectedSpan>,
@@ -495,7 +497,14 @@ impl HirVisitor for ProjectionVisitor<'_> {
         if let Some(body) = block_extent(&choice.body) {
             extent = extent.cover(body);
         }
-        let weave_depth = self.current_weave_depth();
+        // The choice's own sigil count is the ground truth for its weave
+        // depth — for weave-folded sets it equals `cs.depth`, and for inline
+        // sets (which don't weave-fold, so mixed sigil depths share one set)
+        // it is the only per-choice source (#478). Falls back to the set's
+        // depth when the line has no leading sigil (e.g. a choice mid-line
+        // in a single-line inline conditional).
+        let weave_depth = choice_sigil_depth(self.source, choice.ptr.text_range().start())
+            .unwrap_or_else(|| self.current_weave_depth());
         self.push_weave_container(
             extent,
             SpanKind::Choice,
@@ -566,11 +575,17 @@ impl HirVisitor for ProjectionVisitor<'_> {
                 }
             }
             Stmt::ChoiceSet(cs) => {
-                // An inline choice set (inside a conditional/sequence branch)
-                // inherits the surrounding weave depth; a weave-folded one
-                // carries its own sigil depth.
+                // A weave-folded choice set carries its own sigil depth. An
+                // inline one (inside a conditional/sequence branch) has
+                // `cs.depth == 0`, so its depth is read from the first
+                // choice's sigils in source (#478) — the depth Tab/Enter
+                // transitions need to rebuild the prefix — falling back to
+                // the surrounding weave depth if the line is unreadable.
                 let weave_depth = if cs.context == brink_ir::ChoiceSetContext::Inline {
-                    self.current_weave_depth()
+                    cs.choices
+                        .first()
+                        .and_then(|c| choice_sigil_depth(self.source, c.ptr.text_range().start()))
+                        .unwrap_or_else(|| self.current_weave_depth())
                 } else {
                     cs.depth
                 };
@@ -619,6 +634,31 @@ impl HirVisitor for ProjectionVisitor<'_> {
             _ => {}
         }
     }
+}
+
+/// The choice-sigil depth (`*`/`+` count) of the line containing `offset`,
+/// or `None` when the line doesn't start with a choice sigil (#478 — inline
+/// choice sets carry `cs.depth == 0`, so their weave depth comes from the
+/// literal sigils).
+fn choice_sigil_depth(source: &str, offset: rowan::TextSize) -> Option<u32> {
+    let start = usize::from(offset).min(source.len());
+    let line_start = source[..start].rfind('\n').map_or(0, |i| i + 1);
+    let line = source[line_start..].split('\n').next().unwrap_or("");
+    let mut depth = 0u32;
+    let mut chars = line.trim_start().chars().peekable();
+    while let Some(&c) = chars.peek() {
+        match c {
+            '*' | '+' => {
+                depth += 1;
+                chars.next();
+            }
+            ' ' => {
+                chars.next();
+            }
+            _ => break,
+        }
+    }
+    (depth > 0).then_some(depth)
 }
 
 /// The source extent of a block: its label (if any) unioned with its
@@ -873,15 +913,15 @@ Hello.
     }
 
     #[test]
-    fn inline_choice_set_inherits_surrounding_weave_depth() {
-        // Choices inside a conditional arm form an Inline choice set: they
-        // inherit the surrounding weave depth (0 at top level), not their
-        // own sigil depth — mirroring line_context's WeavePosition.depth.
+    fn inline_choice_set_reports_sigil_depth() {
+        // Choices inside a conditional arm form an Inline choice set with
+        // `cs.depth == 0` — their weave depth comes from the literal sigils
+        // (#478), the depth Tab/Enter transitions need to rebuild prefixes.
         let src = "\
 === start ===
 { ready:
     * [Go now]
-    * [Wait]
+    * * [Deeper]
 - else:
     Not ready.
 }
@@ -894,9 +934,15 @@ Hello.
             .filter(|s| s.kind == SpanKind::Choice)
             .collect();
         assert_eq!(choices.len(), 2);
-        assert!(
-            choices.iter().all(|c| c.weave_depth == Some(0)),
-            "inline choice sets inherit the surrounding weave depth: {choices:?}"
+        assert_eq!(
+            choices[0].weave_depth,
+            Some(1),
+            "single-sigil inline choice: {choices:?}"
+        );
+        assert_eq!(
+            choices[1].weave_depth,
+            Some(2),
+            "double-sigil inline choice: {choices:?}"
         );
     }
 

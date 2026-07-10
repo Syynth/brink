@@ -192,7 +192,33 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
     // by pass 4b) falls out of the projection's construct-extent spans.
     let projection = crate::hir_projection::project_hir_structural(hir, source);
     let mut cond_ranges: Vec<(TextRange, WeaveElement)> = Vec::new();
-    apply_structural_view(&projection, &idx, &mut ctx, &mut cond_ranges);
+    apply_structural_view(&projection, source, &idx, &mut ctx, &mut cond_ranges);
+
+    // ── Pass 3c: blank lines in a choice body inherit its weave (#478) ──
+    // A whitespace-only line following a ChoiceLine/ChoiceBody-weave line is
+    // still inside the body for editing purposes — Tab on it must know the
+    // depth. The element stays `Blank` (dialect chain-breaking and fold runs
+    // key on blankness); only the weave is inherited, chaining through blank
+    // runs. Subsumes the TS-side blank-after-choice patch, and covers deeper
+    // blank runs that patch missed.
+    let src_lines: Vec<&str> = source.split('\n').collect();
+    for i in 1..ctx.len() {
+        if ctx[i].element != LineElement::Blank
+            || !src_lines.get(i).is_none_or(|l| l.trim().is_empty())
+        {
+            continue;
+        }
+        let prev = ctx[i - 1].weave;
+        if matches!(
+            prev.element,
+            WeaveElement::ChoiceLine { .. } | WeaveElement::ChoiceBody
+        ) {
+            ctx[i].weave = WeavePosition {
+                depth: prev.depth,
+                element: WeaveElement::ChoiceBody,
+            };
+        }
+    }
 
     // ── Pass 4: detect gather lines from source text ──
     // The HIR only marks gathers via labeled blocks, but a bare `- text`
@@ -410,6 +436,7 @@ fn leading_ws_len(line: &str) -> u32 {
 /// genuinely inside a construct's branches.
 fn apply_structural_view(
     projection: &Projection,
+    source: &str,
     idx: &LineIndex,
     ctx: &mut [LineContext],
     cond_ranges: &mut Vec<(TextRange, WeaveElement)>,
@@ -419,6 +446,7 @@ fn apply_structural_view(
         .iter()
         .filter(|s| s.handle.is_some())
         .collect();
+    let src_lines: Vec<&str> = source.split('\n').collect();
 
     // Continuation-label overwrites, applied after the replay.
     let mut deferred_gathers: Vec<(usize, WeavePosition)> = Vec::new();
@@ -454,7 +482,13 @@ fn apply_structural_view(
                 }
                 tag_anchor = Some((start_line, span.range));
             }
-            SpanKind::DivertStmt | SpanKind::DivertTerminal => {
+            // #478: a body statement sharing its choice's physical line
+            // (`* [Go] -> hub`) no longer reclassifies it — the line stays
+            // Choice so Tab/Enter transitions keep working. The divert's
+            // reference span still projects for the overlay.
+            SpanKind::DivertStmt | SpanKind::DivertTerminal
+                if !on_choice_first_line(&containers, idx, span.range) =>
+            {
                 set_element_weave(
                     ctx,
                     start_line,
@@ -462,7 +496,9 @@ fn apply_structural_view(
                     derive_weave(&containers, span.range),
                 );
             }
-            SpanKind::TempDecl | SpanKind::Logic => {
+            SpanKind::TempDecl | SpanKind::Logic
+                if !on_choice_first_line(&containers, idx, span.range) =>
+            {
                 set_element_weave(
                     ctx,
                     start_line,
@@ -504,7 +540,7 @@ fn apply_structural_view(
                 }
             }
             SpanKind::Label => {
-                apply_label_span(span, &containers, idx, ctx, &mut deferred_gathers);
+                apply_label_span(span, &containers, &src_lines, idx, &mut deferred_gathers);
             }
             SpanKind::Conditional => {
                 cond_ranges.push((span.range, WeaveElement::ConditionalBranch));
@@ -526,41 +562,72 @@ fn apply_structural_view(
     }
 }
 
-/// Apply a Label span: a continuation gather label (producer-stamped with
-/// its `weave_depth`; deferred overwrite — the walk applied it after walking
-/// the continuation body), a choice label (no element), or a labeled block's
-/// label (in-order; the block's own statements overwrite it).
+/// Apply a Label span: a choice label (no element), or a gather label —
+/// continuation and `LabeledBlock` labels alike (#478): every gather-label
+/// line is `Gather` with `GatherContinuation` weave at its sigil depth,
+/// applied as a deferred overwrite so same-line statements (`- (g) -> next`)
+/// never reclassify it. This deliberately removes the legacy asymmetry where
+/// a `LabeledBlock`'s statements overwrote its label (→ `Divert`) while a
+/// continuation's didn't (→ `Gather`) — two visually identical lines with
+/// different Tab/Enter behavior. Depth is the sigil count (what transitions
+/// need to rebuild the prefix), matching `detect_gathers`' rule for bare
+/// gathers; a continuation label's producer-stamped `weave_depth` equals its
+/// sigil count by construction.
 fn apply_label_span(
     span: &ProjectedSpan,
     containers: &[&ProjectedSpan],
+    src_lines: &[&str],
     idx: &LineIndex,
-    ctx: &mut [LineContext],
     deferred_gathers: &mut Vec<(usize, WeavePosition)>,
 ) {
     let start_line = idx.line_col(span.range.start()).0 as usize;
-    if let Some(depth) = span.weave_depth {
-        // Continuation label — nothing else stamps weave_depth on a Label.
-        deferred_gathers.push((
-            start_line,
-            WeavePosition {
-                depth,
-                element: WeaveElement::GatherContinuation,
-            },
-        ));
-        return;
+    if span.weave_depth.is_none() {
+        // Not a continuation label: a choice label never classifies its line.
+        let choice_first_line = containing(containers, SpanKind::Choice, span.range)
+            .map(|c| idx.line_col(c.range.start()).0 as usize);
+        if choice_first_line == Some(start_line) {
+            return;
+        }
     }
-    let choice_first_line = containing(containers, SpanKind::Choice, span.range)
-        .map(|c| idx.line_col(c.range.start()).0 as usize);
-    if choice_first_line == Some(start_line) {
-        // Choice label: never classifies its line.
-    } else {
-        set_element_weave(
-            ctx,
-            start_line,
-            LineElement::Gather,
-            derive_weave(containers, span.range),
-        );
+    let depth = span.weave_depth.unwrap_or_else(|| {
+        src_lines
+            .get(start_line)
+            .map_or(0, |l| gather_sigil_depth(l.trim_start()))
+    });
+    deferred_gathers.push((
+        start_line,
+        WeavePosition {
+            depth,
+            element: WeaveElement::GatherContinuation,
+        },
+    ));
+}
+
+/// The gather-sigil depth of a trimmed line (`-` count, `->` excluded) —
+/// the same counting `detect_gathers` uses for bare gathers.
+fn gather_sigil_depth(trimmed: &str) -> u32 {
+    let mut depth = 0u32;
+    let bytes = trimmed.as_bytes();
+    let mut pos = 0;
+    while pos < bytes.len() && bytes[pos] == b'-' {
+        if bytes.get(pos + 1) == Some(&b'>') {
+            break;
+        }
+        depth += 1;
+        pos += 1;
+        while pos < bytes.len() && bytes[pos] == b' ' {
+            pos += 1;
+        }
     }
+    depth
+}
+
+/// Whether `range` sits on the first line of its innermost containing Choice
+/// container — i.e. on the choice's own physical line (#478: statements
+/// there never reclassify the line away from `Choice`).
+fn on_choice_first_line(containers: &[&ProjectedSpan], idx: &LineIndex, range: TextRange) -> bool {
+    containing(containers, SpanKind::Choice, range)
+        .is_some_and(|c| idx.line_col(c.range.start()).0 == idx.line_col(range.start()).0)
 }
 
 /// The innermost of `spans`: smallest range, ties resolved to the **last**
@@ -1012,14 +1079,22 @@ mod tests {
     }
 
     #[test]
-    fn choice_body_empty_indent_is_blank() {
-        // Just two spaces — no text content. The HIR correctly reports Blank
-        // with TopLevel weave. The *editor* post-pass in TS promotes this to
-        // ChoiceBody based on the preceding Choice line.
-        let source = "=== start ===\n* Choice one\n  \n";
+    fn choice_body_blank_line_inherits_body_weave() {
+        // Just two spaces — no text content. The element stays Blank, but
+        // the line inherits the body weave (#478) so Tab knows the depth —
+        // this used to be a TS-side post-pass covering only this exact
+        // shape; it now lives here and chains through blank runs.
+        let source = "=== start ===\n* Choice one\n  \n\n- done\n";
         let ctx = make_contexts(source);
         assert_eq!(ctx[2].element, LineElement::Blank);
-        assert_eq!(ctx[2].weave.element, WeaveElement::TopLevel);
+        assert_eq!(ctx[2].weave.element, WeaveElement::ChoiceBody);
+        assert_eq!(ctx[2].weave.depth, 1);
+        // The blank run chains: the next blank line inherits too.
+        assert_eq!(ctx[3].element, LineElement::Blank);
+        assert_eq!(ctx[3].weave.element, WeaveElement::ChoiceBody);
+        // The gather that closes the weave is unaffected.
+        assert_eq!(ctx[4].element, LineElement::Gather);
+        assert_eq!(ctx[4].weave.element, WeaveElement::GatherContinuation);
     }
 
     #[test]

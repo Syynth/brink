@@ -6,22 +6,22 @@ expression: "render_fixture(\"\\\n=== start ===\n* Choice one\n  First body line
   0 |=== start ===| KnotHeader w=0/TopLevel
   1 |* Choice one| Choice w=1/ChoiceLine(sticky=false)
   2 |  First body line.| Narrative w=1/ChoiceBody
-  3 || Blank w=0/TopLevel
+  3 || Blank w=1/ChoiceBody
   4 |  Second body line after a blank.| Narrative w=1/ChoiceBody
   5 |* Choice two| Choice w=1/ChoiceLine(sticky=false)
-  6 || Blank w=0/TopLevel
+  6 || Blank w=1/ChoiceBody
   7 |-> END| Divert w=1/ChoiceBody
-  8 || Blank w=0/TopLevel
+  8 || Blank w=1/ChoiceBody
 == LINES (at-cue dialect) ==
   0 |=== start ===| KnotHeader w=0/TopLevel
   1 |* Choice one| Choice w=1/ChoiceLine(sticky=false)
   2 |  First body line.| Narrative w=1/ChoiceBody
-  3 || Blank w=0/TopLevel
+  3 || Blank w=1/ChoiceBody
   4 |  Second body line after a blank.| Narrative w=1/ChoiceBody
   5 |* Choice two| Choice w=1/ChoiceLine(sticky=false)
-  6 || Blank w=0/TopLevel
+  6 || Blank w=1/ChoiceBody
   7 |-> END| Divert w=1/ChoiceBody
-  8 || Blank w=0/TopLevel
+  8 || Blank w=1/ChoiceBody
 == STRUCTURAL FOLDS ==
 1..4 from_start=false kind=Structural text=None
 5..7 from_start=false kind=Structural text=None

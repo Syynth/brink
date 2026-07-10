@@ -4,13 +4,13 @@ expression: "render_fixture(\"\\\n=== start ===\n- (top) -> next\n=== next ===\n
 ---
 == LINES (base) ==
   0 |=== start ===| KnotHeader w=0/TopLevel
-  1 |- (top) -> next| Divert w=0/TopLevel
+  1 |- (top) -> next| Gather w=1/GatherContinuation
   2 |=== next ===| KnotHeader w=0/TopLevel
   3 |-> END| Divert w=0/TopLevel
   4 || Blank w=0/TopLevel
 == LINES (at-cue dialect) ==
   0 |=== start ===| KnotHeader w=0/TopLevel
-  1 |- (top) -> next| Divert w=0/TopLevel
+  1 |- (top) -> next| Gather w=1/GatherContinuation
   2 |=== next ===| KnotHeader w=0/TopLevel
   3 |-> END| Divert w=0/TopLevel
   4 || Blank w=0/TopLevel
