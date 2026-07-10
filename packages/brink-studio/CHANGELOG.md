@@ -1,5 +1,17 @@
 # @brink-lang/studio
 
+## 0.8.2
+
+### Patch Changes
+
+- Updated dependencies [73e2746]
+- Updated dependencies [36bf266]
+- Updated dependencies [973858f]
+- Updated dependencies [54c37df]
+- Updated dependencies [1bca37c]
+- Updated dependencies [6289b0e]
+  - @brink-lang/web@0.10.0
+
 ## 0.8.1
 
 ### Patch Changes
