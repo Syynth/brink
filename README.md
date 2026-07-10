@@ -56,9 +56,11 @@ brink play story.ink                    # compile and play in the terminal
 
 ```rust
 // Load compiled StoryData, link it into a Program, and create a Story.
+use std::sync::Arc;
+
 let story_data = brink_format::read_inkb(&bytes)?;
 let (program, line_tables) = brink_runtime::link(&story_data)?;
-let mut story = brink_runtime::Story::new(&program, line_tables);
+let mut story = brink_runtime::Story::new(Arc::new(program), line_tables);
 
 use brink_runtime::Line;
 loop {

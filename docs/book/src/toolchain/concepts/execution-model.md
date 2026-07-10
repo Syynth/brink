@@ -7,9 +7,10 @@ foundation under every client — raw Rust, Bevy, the web runner all express the
 same model.
 
 ```rust,ignore
+use std::sync::Arc;
 use brink_runtime::{Line, Story};
 
-let mut story = Story::new(&program, line_tables);
+let mut story = Story::new(Arc::new(program), line_tables);
 
 loop {
     match story.continue_single()? {
@@ -31,7 +32,7 @@ loop {
 ```
 
 > `Story` is the mutable half of the [two-object model](../embedding/index.md#the-two-object-model):
-> it borrows an immutable `Program` and carries all the execution state.
+> it holds an `Arc<Program>` and carries all the execution state.
 
 ## `Line` variants
 

@@ -14,6 +14,7 @@ brink play story.inkb
 
 ```rust,ignore
 use std::path::Path;
+use std::sync::Arc;
 use brink_compiler::compile_path;
 use brink_runtime::{Line, Story};
 
@@ -27,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create a story instance and run it. `continue_single` returns the
     // next `Line`; the variant tells you what to do.
-    let mut story = Story::new(&program, line_tables);
+    let mut story = Story::new(Arc::new(program), line_tables);
 
     loop {
         match story.continue_single()? {
@@ -56,11 +57,12 @@ If you already have a compiled `.inkb` file, decode it directly instead of
 compiling:
 
 ```rust,ignore
+use std::sync::Arc;
 use brink_runtime::{Line, Story};
 
 let bytes = std::fs::read("story.inkb")?;
 let story_data = brink_format::read_inkb(&bytes)?;
 let (program, line_tables) = brink_runtime::link(&story_data)?;
-let mut story = Story::new(&program, line_tables);
+let mut story = Story::new(Arc::new(program), line_tables);
 // ... step loop as above
 ```

@@ -33,10 +33,12 @@ The linker resolves all `DefinitionId` references to compact runtime indices, va
 ## Creating stories
 
 ```rust,ignore
-let mut story = Story::new(&program, line_tables);
+use std::sync::Arc;
+
+let mut story = Story::new(Arc::new(program), line_tables);
 ```
 
-`Story` borrows from `Program` and owns the line tables it renders with. You can create multiple stories from the same program for parallel execution or replaying with different choices.
+`Story` holds an `Arc<Program>` and owns the line tables it renders with. Because the handle is refcounted rather than borrowed, a `Story` has no lifetime parameter and can be moved or stored freely. You can create multiple stories from the same program — clone the `Arc` — for parallel execution or replaying with different choices.
 
 ## Error cases
 

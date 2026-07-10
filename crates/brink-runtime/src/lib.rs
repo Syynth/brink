@@ -4,8 +4,10 @@
 //! links it into an immutable [`Program`], and executes it via [`Story`].
 //!
 //! ```ignore
+//! use std::sync::Arc;
+//!
 //! let (program, line_tables) = brink_runtime::link(&story_data)?;
-//! let mut story = brink_runtime::Story::new(&program, line_tables);
+//! let mut story = brink_runtime::Story::new(Arc::new(program), line_tables);
 //! loop {
 //!     match story.continue_single()? {
 //!         Line::Text { text, .. } => print!("{text}"),

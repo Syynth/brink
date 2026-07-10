@@ -16,16 +16,29 @@ is the one structural idea to internalize:
 - **`Program`** — the immutable bytecode, variable defaults, and metadata. Built
   once via `link()`, shareable across threads.
 - **`Story`** — all the mutable state: operand stack, call stack, globals, visit
-  counts, output buffer, and the line tables it renders with. It borrows from a
-  `Program`.
+  counts, output buffer, and the line tables it renders with. It holds an
+  `Arc<Program>`.
 
 Because `Program` is immutable, **many `Story` instances can run concurrently
 against one `Program`** — parallel playthroughs, or replaying with different
 choices, share the compiled data for free.
 
 ```rust,ignore
+use std::sync::Arc;
+
 let (program, line_tables) = brink_runtime::link(&story_data)?;
-let mut story = Story::new(&program, line_tables);
+let mut story = Story::new(Arc::new(program), line_tables);
+```
+
+`Story` owns a refcount, not a borrow, so it carries no lifetime — it can be
+moved into a thread, stored in a struct, or held in an ECS component without
+threading a `'p` parameter through your types. To fan out playthroughs, clone
+the `Arc` (cheap) and give each `Story` its own line tables:
+
+```rust,ignore
+let program = Arc::new(program);
+let mut a = Story::new(Arc::clone(&program), line_tables.clone());
+let mut b = Story::new(Arc::clone(&program), line_tables);
 ```
 
 ## The shape of embedding
