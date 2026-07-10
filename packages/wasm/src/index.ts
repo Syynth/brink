@@ -24,6 +24,7 @@ import init, {
 import type {
   CompileResult,
   SemanticToken,
+  HirProjection,
   CompletionItem,
   HoverInfo,
   Location,
@@ -330,6 +331,16 @@ export class EditorSessionHandle {
   getSemanticTokensDoc(doc: DocumentId): SemanticToken[] {
     const json = this.session.semantic_tokens_doc(doc);
     return JSON.parse(json) as SemanticToken[];
+  }
+
+  /**
+   * The HIR structural projection (#454) for a document: nested semantic spans
+   * plus the per-line container stack (rails view). Positions are 0-based
+   * lines / UTF-16 columns, same conventions as semantic tokens.
+   */
+  getHirSpansDoc(doc: DocumentId): HirProjection {
+    const json = this.session.hir_spans_doc(doc);
+    return JSON.parse(json) as HirProjection;
   }
 
   getCompletionsDoc(doc: DocumentId, offset: number): CompletionItem[] {

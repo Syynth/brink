@@ -2053,6 +2053,7 @@ dependencies = [
  "brink-compiler",
  "brink-db",
  "brink-fmt",
+ "brink-format",
  "brink-ir",
  "brink-runtime",
  "brink-syntax",

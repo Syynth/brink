@@ -2659,6 +2659,16 @@ impl EditorSession {
         self.semantic_tokens_impl(&d.path, d.view.as_ref())
     }
 
+    /// The HIR structural projection for a document handle (#454): a JSON
+    /// object `{ "spans": [...], "lines": [[...], ...] }` — nested semantic
+    /// spans plus the per-line container stack for rails.
+    pub fn hir_spans_doc(&self, doc: u32) -> String {
+        let Some(d) = self.docs.get(&doc) else {
+            return "{\"spans\":[],\"lines\":[]}".to_owned();
+        };
+        self.hir_spans_impl(&d.path, d.view.as_ref())
+    }
+
     /// Compute completions for a document handle at the given offset. Returns JSON array.
     pub fn completions_doc(&self, doc: u32, offset: u32) -> String {
         let Some(d) = self.docs.get(&doc) else {
@@ -3824,6 +3834,88 @@ impl EditorSession {
         } else {
             serde_json::to_string(&contexts).unwrap_or_default()
         }
+    }
+
+    /// The HIR structural projection for one file (#454 phase 2): spans with
+    /// UTF-16 line/char coordinates plus the per-line container stack, as one
+    /// JSON object `{ "spans": [...], "lines": [[...], ...] }`.
+    ///
+    /// Byte→line/UTF-16 conversion happens here (the producer returns byte
+    /// ranges). Under a view, span lines are remapped relative to the view's
+    /// start (spans entirely above it are dropped) and the `lines` array is
+    /// sliced to the view window — the same conventions as `semantic_tokens_impl`
+    /// and `line_contexts_impl`.
+    fn hir_spans_impl(&self, path: &str, view: Option<&ViewContext>) -> String {
+        const EMPTY: &str = "{\"spans\":[],\"lines\":[]}";
+        let Some(file_id) = self.session.file_id(path) else {
+            return EMPTY.to_owned();
+        };
+        let (Some(hir), Some(analysis), Some(source)) = (
+            self.session.hir(file_id),
+            self.session.analysis(),
+            self.session.source(file_id),
+        ) else {
+            return EMPTY.to_owned();
+        };
+
+        let projection = brink_ide::hir_projection::project_hir(hir, source, analysis, file_id);
+        let idx = brink_ide::LineIndex::new(source);
+
+        let spans: Vec<HirSpanJs> = projection
+            .spans
+            .iter()
+            .filter_map(|s| {
+                let (abs_start_line, start_char) = idx.line_col(s.range.start());
+                let (abs_end_line, end_char) = idx.line_col(s.range.end());
+                // Drop spans that end above the view; clamp ones straddling its
+                // start so partially-visible containers keep their rails.
+                let end_line = Self::to_relative_line(view, abs_end_line)?;
+                let (start_line, start_char) = match Self::to_relative_line(view, abs_start_line) {
+                    Some(l) => (l, start_char),
+                    None => (0, 0),
+                };
+                Some(HirSpanJs {
+                    start_line,
+                    start_char,
+                    end_line,
+                    end_char,
+                    kind: span_kind_str(s.kind),
+                    container: s.kind.is_container(),
+                    depth: s.depth,
+                    def_id: s.def_id,
+                    target_id: s.target_id,
+                    handle: s.handle,
+                })
+            })
+            .collect();
+
+        let lines: Vec<Vec<HirLineContainerJs>> = {
+            let all = &projection.lines;
+            let (start, end) = view.map_or((0, all.len()), |v| {
+                let start = v.start_line as usize;
+                let end = self
+                    .view_end_line(path, v)
+                    .map_or(all.len(), |l| l as usize);
+                (start.min(all.len()), end.min(all.len()))
+            });
+            all[start.min(end)..end]
+                .iter()
+                .map(|stack| {
+                    stack
+                        .containers
+                        .iter()
+                        .map(|c| HirLineContainerJs {
+                            kind: span_kind_str(c.kind),
+                            handle: c.handle,
+                            depth: c.depth,
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+
+        serde_json::to_string(&HirProjectionJs { spans, lines })
+            .unwrap_or_else(|_| EMPTY.to_owned())
     }
 
     fn semantic_tokens_impl(&self, path: &str, view: Option<&ViewContext>) -> String {
@@ -5148,6 +5240,68 @@ struct TokenJs {
     modifiers: u32,
 }
 
+/// One projected HIR span for the editor overlay (#454). Positions are
+/// 0-based lines with UTF-16 columns; `def_id`/`target_id` serialize as
+/// `DefinitionId` strings (`$tt_hash`), safe for JS equality.
+#[derive(Serialize)]
+struct HirSpanJs {
+    start_line: u32,
+    start_char: u32,
+    end_line: u32,
+    end_char: u32,
+    kind: &'static str,
+    container: bool,
+    depth: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    def_id: Option<brink_format::DefinitionId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_id: Option<brink_format::DefinitionId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handle: Option<u32>,
+}
+
+/// One entry of a line's container stack (outermost→innermost by depth).
+#[derive(Serialize)]
+struct HirLineContainerJs {
+    kind: &'static str,
+    handle: u32,
+    depth: u32,
+}
+
+/// The full projection payload: spans + per-line container stacks.
+#[derive(Serialize)]
+struct HirProjectionJs {
+    spans: Vec<HirSpanJs>,
+    lines: Vec<Vec<HirLineContainerJs>>,
+}
+
+fn span_kind_str(kind: brink_ide::hir_projection::SpanKind) -> &'static str {
+    use brink_ide::hir_projection::SpanKind as K;
+    match kind {
+        K::Knot => "knot",
+        K::Stitch => "stitch",
+        K::Choice => "choice",
+        K::Gather => "gather",
+        K::ConditionalBranch => "cond_branch",
+        K::SequenceBranch => "seq_branch",
+        K::Label => "label",
+        K::Param => "param",
+        K::VarDecl => "var_decl",
+        K::ConstDecl => "const_decl",
+        K::ListDecl => "list_decl",
+        K::ListMember => "list_member",
+        K::External => "external",
+        K::TempDecl => "temp_decl",
+        K::Divert => "divert",
+        K::VarRef => "var_ref",
+        K::Call => "call",
+        K::Content => "content",
+        K::Interpolation => "interpolation",
+        K::Tag => "tag",
+        K::Include => "include",
+    }
+}
+
 // ── Helper functions ────────────────────────────────────────────────
 
 fn symbol_kind_str(kind: brink_ir::SymbolKind) -> &'static str {
@@ -5622,6 +5776,66 @@ mod tests {
     // makes every byte offset past it 1 larger than its UTF-16 offset.
 
     use super::EditorSession;
+
+    #[test]
+    fn hir_spans_doc_projects_spans_and_line_stacks() {
+        // é in the content line shifts bytes vs UTF-16 by 1 for anything after it.
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "VAR name = \"x\"\n=== start ===\né {name} here.\n* [Go] -> hub\n=== hub ===\n-> DONE\n",
+        );
+        assert!(s.set_active_file("main.ink"));
+        let doc = s.open_document("main.ink");
+
+        let json = s.hir_spans_doc(doc);
+        let p: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let spans = p["spans"].as_array().unwrap();
+        assert!(!spans.is_empty(), "projection has spans");
+
+        // A knot container span with a handle and a def_id string.
+        let knot = spans
+            .iter()
+            .find(|s| s["kind"] == "knot" && s["container"] == true)
+            .expect("knot container span");
+        assert!(knot["handle"].is_u64());
+        // The knot's decl span carries a $-prefixed DefinitionId string.
+        assert!(
+            spans
+                .iter()
+                .any(|s| s["kind"] == "knot"
+                    && s["def_id"].as_str().is_some_and(|d| d.starts_with('$'))),
+            "knot decl carries a string def_id"
+        );
+        // The `-> hub` divert resolves: a divert span with a target_id string.
+        assert!(
+            spans.iter().any(|s| s["kind"] == "divert"
+                && s["target_id"].as_str().is_some_and(|d| d.starts_with('$'))),
+            "resolved divert carries target_id"
+        );
+
+        // The {name} var ref sits after the 2-byte é on line 2: its UTF-16
+        // start_char must be 3 (é=1 unit + space + '{'), not the byte offset 4.
+        let var_ref = spans
+            .iter()
+            .find(|s| s["kind"] == "var_ref" && s["start_line"] == 2)
+            .expect("var ref span on the é line");
+        assert_eq!(var_ref["start_char"].as_u64().unwrap(), 3, "UTF-16 column");
+
+        // Per-line stacks: line 3 (the choice) is inside knot + choice.
+        let lines = p["lines"].as_array().unwrap();
+        let choice_line = lines[3].as_array().unwrap();
+        assert!(
+            choice_line.len() >= 2,
+            "choice line inside knot + choice: {choice_line:?}"
+        );
+        // Depth-ordered outermost→innermost.
+        let depths: Vec<u64> = choice_line
+            .iter()
+            .map(|c| c["depth"].as_u64().unwrap())
+            .collect();
+        assert!(depths.windows(2).all(|w| w[0] <= w[1]), "{depths:?}");
+    }
 
     #[test]
     fn document_symbols_returns_utf16_offsets() {
