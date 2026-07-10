@@ -1,6 +1,5 @@
 ---
 "@brink-lang/editor": minor
-"@brink-lang/studio-ui": patch
 ---
 
 HIR structural overlay in the editor (#454 phases 3–5): a queryable projection

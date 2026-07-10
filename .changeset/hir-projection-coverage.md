@@ -1,6 +1,5 @@
 ---
 "@brink-lang/web": minor
-"@brink-lang/wasm-types": minor
 ---
 
 Extend the HIR projection's coverage (#463): new span kinds

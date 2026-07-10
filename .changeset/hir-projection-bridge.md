@@ -1,6 +1,5 @@
 ---
 "@brink-lang/web": minor
-"@brink-lang/wasm-types": minor
 ---
 
 Add the HIR structural projection to the editor session (#454 phase 2):
