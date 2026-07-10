@@ -733,6 +733,11 @@ impl ContextAccess for World {
     }
 
     #[inline]
+    fn set_visit_count(&mut self, id: DefinitionId, count: u32) {
+        self.visit_counts.insert(id, count);
+    }
+
+    #[inline]
     fn turn_count(&self, id: DefinitionId) -> Option<u32> {
         self.turn_counts.get(&id).copied()
     }
@@ -750,6 +755,11 @@ impl ContextAccess for World {
     #[inline]
     fn increment_turn_index(&mut self) {
         self.turn_index += 1;
+    }
+
+    #[inline]
+    fn set_turn_index(&mut self, index: u32) {
+        self.turn_index = index;
     }
 
     #[inline]
@@ -829,6 +839,16 @@ impl ContextAccess for ContextView<'_> {
     }
 
     #[inline]
+    fn set_visit_count(&mut self, id: DefinitionId, count: u32) {
+        match self.effective_scope(self.world.policy.scope_of_knot(id)) {
+            Scope::Local => {
+                self.local.visit_counts.insert(id, count);
+            }
+            Scope::World => self.world.set_visit_count(id, count),
+        }
+    }
+
+    #[inline]
     fn turn_count(&self, id: DefinitionId) -> Option<u32> {
         match self.effective_scope(self.world.policy.scope_of_knot(id)) {
             Scope::Local => self
@@ -868,6 +888,16 @@ impl ContextAccess for ContextView<'_> {
                 self.local.turn_index = Some(base + 1);
             }
             Scope::World => self.world.increment_turn_index(),
+        }
+    }
+
+    #[inline]
+    fn set_turn_index(&mut self, index: u32) {
+        match self.effective_scope(self.world.policy.turn_index_scope()) {
+            Scope::Local => {
+                self.local.turn_index = Some(index);
+            }
+            Scope::World => self.world.set_turn_index(index),
         }
     }
 
@@ -1503,5 +1533,142 @@ mod routing_tests {
         // World is still clean after the sandboxed child is gone.
         assert_eq!(world.global(gold_slot), &Value::Int(7));
         assert_eq!(world.visit_count(shrine_id), 3);
+    }
+}
+
+#[cfg(test)]
+mod save_load_tests {
+    use super::*;
+    use crate::link;
+    use crate::rng::FastRng;
+    use crate::story::{FallbackHandler, FlowInstance};
+    use crate::{load_state, save_state};
+
+    /// Compile a small ink story with the brink compiler and link it,
+    /// keeping the line tables `FlowInstance::drive_to_terminal` needs.
+    fn compile_for_flow(src: &str) -> (Program, Vec<Vec<brink_format::LineEntry>>) {
+        let out = brink_compiler::compile("t.ink", |p| {
+            if p == "t.ink" {
+                Ok(src.to_string())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no such include",
+                ))
+            }
+        })
+        .expect("compile");
+        link(&out.data).expect("link")
+    }
+
+    /// A scoped save/load roundtrip (F6.1b): `gold` (global) and `shrine`
+    /// (knot) are policy-scoped `Local`; `silver` (global) stays `World`
+    /// (the default). Driving the flow populates both layers; saving
+    /// through the routing view captures effective values regardless of
+    /// scope. Loading into a **fresh** `(World, FlowLocal)` pair through a
+    /// fresh view must land each unit back in the layer its policy
+    /// names — `Local` units in the new `FlowLocal`'s override maps (the new
+    /// `World`'s own copy stays untouched), `World` units directly in the
+    /// new `World` (the new `FlowLocal` contributes nothing for them).
+    #[test]
+    fn scoped_save_load_lands_each_unit_in_its_policy_layer() {
+        let (program, tables) = compile_for_flow(
+            "VAR gold = 0\n\
+             VAR silver = 0\n\
+             ~ silver = 7\n\
+             -> shrine\n\
+             === shrine ===\n\
+             ~ gold = 5\n\
+             At the shrine.\n\
+             -> DONE\n\
+             === reader ===\n\
+             {READ_COUNT(-> shrine)}\n\
+             -> DONE\n",
+            // `reader` is never entered — it exists only so the compiler's
+            // counting-flags pass sees a visit-count read of `shrine` and
+            // sets `CountingFlags::VISITS` on it (a knot whose visit count
+            // is never read anywhere in the program has counting disabled
+            // entirely — an existing compiler optimization).
+        );
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert("gold".to_owned(), Scope::Local);
+        overrides.insert("shrine".to_owned(), Scope::Local);
+        let policy = WorldPolicy {
+            default: Scope::World,
+            overrides,
+            turn_index: Scope::World,
+            rng: Scope::World,
+        };
+
+        let gold_slot = program.global_index("gold").expect("gold declared");
+        let silver_slot = program.global_index("silver").expect("silver declared");
+        let shrine_id = program.find_path_target("shrine").expect("shrine exists");
+
+        // Drive the flow against a World built from our policy — the
+        // `FlowInstance::new_at_root`-returned World is discarded; only the
+        // callstack/thread state it seeds matters here.
+        let mut world = World::new(&program, &policy).expect("world builds");
+        let mut local = FlowLocal::new();
+        let save = {
+            let (mut flow, _unused_default_world) = FlowInstance::new_at_root(&program);
+            let mut view = ContextView::new(&mut world, &mut local);
+            flow.drive_to_terminal::<FastRng>(&program, &tables, &mut view, &FallbackHandler, None)
+                .expect("drive succeeds");
+            save_state(&program, &view)
+        };
+
+        assert_eq!(save.globals.get("gold"), Some(&Value::Int(5)));
+        assert_eq!(save.globals.get("silver"), Some(&Value::Int(7)));
+        assert_eq!(
+            save.visits
+                .iter()
+                .find(|e| e.id == shrine_id)
+                .map(|e| e.count),
+            Some(1),
+            "shrine should have a captured visit entry"
+        );
+
+        // Load into a fresh (World, FlowLocal) pair, built from the same
+        // policy but with none of the driven state.
+        let mut world2 = World::new(&program, &policy).expect("world builds");
+        let mut local2 = FlowLocal::new();
+        let report = {
+            let mut view2 = ContextView::new(&mut world2, &mut local2);
+            load_state(&program, &mut view2, &save)
+        };
+        assert!(report.unknown_globals.is_empty(), "clean load: {report:?}");
+
+        // `gold` is Local-scoped: the load must land it in `local2`'s
+        // override map, leaving `world2`'s own copy at its untouched
+        // default. The routing view's effective read still sees 5.
+        assert_eq!(
+            world2.global(gold_slot),
+            &Value::Int(0),
+            "gold is Local-scoped; World's own copy must stay untouched"
+        );
+        {
+            let view2 = ContextView::new(&mut world2, &mut local2);
+            assert_eq!(view2.global(gold_slot), &Value::Int(5));
+        }
+
+        // `silver` is World-scoped: the load must land it directly in
+        // `world2`, readable without any FlowLocal involvement.
+        assert_eq!(
+            world2.global(silver_slot),
+            &Value::Int(7),
+            "silver is World-scoped; must land directly in World"
+        );
+
+        // `shrine`'s visit count is Local-scoped: same split as `gold`.
+        assert_eq!(
+            world2.visit_count(shrine_id),
+            0,
+            "shrine is Local-scoped; World's own visit count must stay untouched"
+        );
+        {
+            let view2 = ContextView::new(&mut world2, &mut local2);
+            assert_eq!(view2.visit_count(shrine_id), 1);
+        }
     }
 }

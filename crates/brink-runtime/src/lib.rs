@@ -54,6 +54,7 @@ pub use replay::{
     RECORDING_CAP, RecordedExternal, RecordingHandler, ReplayHandler, ReplayMode, ReplayRecorder,
 };
 pub use rng::{DotNetRng, FastRng, StoryRng};
+pub use save::{load_state, save_state};
 pub use session::{
     DivergenceFound, EventKind, ExternalReplayMode, FailReason, JournalEvent, ListDelta,
     ReplayOutcome, ReplayWarning, SESSION_JOURNAL_CAP, SESSION_JOURNAL_VERSION, SessionError,
