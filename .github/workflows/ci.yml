@@ -112,7 +112,11 @@ jobs:
       - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p bevy-brink
         env:
           CARGO_TARGET_DIR: target/book-doctest
+      # CARGO_MANIFEST_DIR: Bevy's derives resolve the `bevy` vs `bevy_ecs` crate
+      # path from the manifest, and rustdoc runs outside a cargo context.
       - run: mdbook test docs/book -L target/book-doctest/debug/deps
+        env:
+          CARGO_MANIFEST_DIR: ${{ github.workspace }}/crates/bevy-brink
 
   frontend:
     name: Frontend (brink-studio)

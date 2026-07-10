@@ -65,6 +65,12 @@ book-test:
     fi
 
     cargo build $pkgs
+
+    # Bevy's derives (Component/Event/Resource) resolve the `bevy` vs `bevy_ecs`
+    # crate path by reading CARGO_MANIFEST_DIR's Cargo.toml. rustdoc runs outside
+    # a cargo context, so without this they panic with "CARGO_MANIFEST_DIR is not
+    # defined". Point them at bevy-brink, which depends on the bevy_* subcrates.
+    export CARGO_MANIFEST_DIR="$PWD/crates/bevy-brink"
     mdbook test docs/book -L "$deps"
 
 # Build the full brink-studio as a standalone static app and stage it into

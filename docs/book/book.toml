@@ -1,3 +1,8 @@
 [book]
 title = "brink"
 src = "src"
+
+# Doctests default to edition 2015, where `async` is not a keyword and the
+# bind_brink_task example fails to parse. Match the workspace.
+[rust]
+edition = "2024"
