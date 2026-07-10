@@ -11,14 +11,8 @@ You don't construct a flow directly. You spawn an entity carrying a
 the plugin's `fulfill_flow_requests` system materializes the flow once the
 assets finish loading — no polling, no readiness latch:
 
-```rust,ignore
-commands.spawn(
-    BrinkFlowRequest::<()>::builder()
-        .story(assets.load("dialogue.inkb"))
-        .start(FlowStart::Address("intro_scene".into()))  // optional
-        .seed(ContextSeed::FromGlobals)                    // optional
-        .build(),
-);
+```rust
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:spawn_request}}
 ```
 
 On fulfillment the request component is **removed** and replaced with the live
@@ -56,12 +50,8 @@ Each flow has its **own** `Context` — globals are not auto-shared between
 concurrent flows. When a side conversation should contribute its changes back
 to the shared save, commit explicitly:
 
-```rust,ignore
-globals.commit_from(&flow_ctx);          // wholesale "save everything"
-globals.commit_progress(&flow_ctx);      // globals replace; visit/turn counts take the max
-globals.commit_globals_only(&flow_ctx);  // just variables; leave counts/RNG alone
-// "new game" reset:
-globals.commit_from(&program.initial_context);
+```rust
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:commit}}
 ```
 
 ## Driving a flow
@@ -79,26 +69,8 @@ entity, and `Commands`. They return `Advance`:
 | `Line(Line)` | a line was produced and its observer event fired |
 | `AwaitingQuery` | the flow paused on a world-access binding; the plugin resolver handles it — skip this flow and resume next frame |
 
-```rust,ignore
-fn drive(
-    mut flows: Query<(Entity, &mut BrinkFlow<()>, &mut BrinkContext<()>,
-                      &BrinkProgram<()>, &BrinkLocale<()>)>,
-    programs: Res<Assets<ProgramAsset>>,
-    tables: Res<Assets<LineTablesAsset>>,
-    bindings: Res<BrinkBindings<()>>,
-    mut commands: Commands,
-) {
-    for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
-        if flow.inner.has_pending_external() { continue; } // paused; resolver will resume it
-        let (Some(p), Some(t)) = (programs.get(&prog.handle), tables.get(&loc.handle))
-            else { continue; };
-        let handler = bindings.handler();
-        let _ = flow.advance_until_terminal(
-            &p.program, &t.tables, &mut ctx.inner, &handler, entity, &mut commands,
-        );
-        handler.flush(&mut commands); // emit any buffered command events
-    }
-}
+```rust
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:drive}}
 ```
 
 - `step_one` produces **one** line — for typewriter UIs that animate fragments.
@@ -106,7 +78,7 @@ fn drive(
   `End`), firing events for every line along the way — for click-to-continue
   dialogue. It's bounded by a 10,000-line safety cap.
 
-If you have no bindings, pass `&brink_runtime::FallbackHandler` instead of
+If you have no bindings, pass `&bevy_brink::FallbackHandler` instead of
 building one from `BrinkBindings`.
 
 ### From an exclusive system — `advance_flow`
@@ -121,17 +93,15 @@ and never yields `AwaitingQuery`. See [External Functions](./bindings.md).
 A `Line::Choices` (or a `BrinkChoicesPresented` event) means the flow is waiting
 for a pick. Select with `choose`:
 
-```rust,ignore
-flow.choose(&mut ctx.inner, index)?;
+```rust
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:choose}}
 ```
 
 For keyboard UIs, `digit_key_to_choice_index(&keys, choices.len())` maps
 `Digit1..=Digit9` to a 0-based choice index:
 
-```rust,ignore
-if let Some(idx) = digit_key_to_choice_index(&keys, choices.len()) {
-    flow.choose(&mut ctx.inner, idx)?;
-}
+```rust
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:digit_choose}}
 ```
 
 ## Observer events
@@ -148,12 +118,8 @@ care about (no `match` on a `Line`):
 | `BrinkStoryEnded<M>` | `Line::End` (`-> END`) | `text`, `tags` |
 | `BrinkFlowReset<M>` (dev) | a hot-reload is about to rebuild the flow | `entity` |
 
-```rust,ignore
-app.add_observer(|on: On<BrinkChoicesPresented<()>>| {
-    for (i, choice) in on.event().choices.iter().enumerate() {
-        println!("  [{}] {}", i + 1, choice.text);
-    }
-});
+```rust
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:observer}}
 ```
 
 Terminal lines bundle their accumulated text in their own `text` field — a
@@ -167,11 +133,8 @@ add a `BrinkTranscript<M>` component (opt-in) to a flow entity. The plugin
 re-renders it whenever the flow grows, the locale changes, or line tables
 hot-reload:
 
-```rust,ignore
-commands.entity(flow).insert(BrinkTranscript::<()>::default());
-// later:
-let text = transcript.text();              // all lines joined with '\n'
-let lines = &transcript.lines;             // Vec<(String, Vec<String>)> — (text, tags)
+```rust
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:transcript}}
 ```
 
 ## Hot-reload (dev)

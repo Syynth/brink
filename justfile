@@ -56,6 +56,15 @@ book-assets:
 book: book-assets
     mdbook build docs/book
 
+# Compile-check the book's code examples and verify the book renders.
+# The Bevy pages `{{#include}}` their snippets from compiled example files
+# (e.g. crates/bevy-brink/examples/book_flows.rs), so building the examples
+# is what guarantees the documented code still compiles; `mdbook build`
+# then confirms every include resolves.
+book-test:
+    cargo build -p bevy-brink --example book_flows
+    mdbook build docs/book
+
 # Run brink-studio dev server (builds wasm first)
 studio-dev: wasm
     cd packages/brink-studio && pnpm dev

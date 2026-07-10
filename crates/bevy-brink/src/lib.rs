@@ -71,12 +71,33 @@ pub use bindings::{
 /// authors) can name the ink runtime value type without depending on
 /// `brink-format` directly.
 pub use brink_format::Value;
+/// The whole runtime crate, re-exported as an escape hatch: any `brink_runtime`
+/// type that surfaces in a `bevy-brink` API but isn't individually re-exported
+/// below is reachable as `bevy_brink::runtime::…` — so a consumer never needs a
+/// direct `brink-runtime` Cargo dependency to name one.
+pub use brink_runtime as runtime;
 /// Re-exported so consumers can choose `Overlay`/`Strict` application without
 /// a direct `brink-runtime` dependency.
 pub use brink_runtime::LocaleMode;
+/// `brink_runtime::World` — the per-flow story-state layer carried by
+/// [`BrinkContext`] and [`BrinkGlobals`]. Aliased to avoid the glob-import
+/// collision with `bevy::prelude::World` (the ECS world): `use bevy::prelude::*;
+/// use bevy_brink::*;` would make a bare `World` ambiguous. Name story state
+/// `BrinkWorld` and the ECS world `World`.
+pub use brink_runtime::World as BrinkWorld;
 /// Re-exported so consumers can name the decoded-transcript type and its
 /// error without depending on `brink-runtime` directly.
 pub use brink_runtime::transcript::{TranscriptData, TranscriptError};
+/// The runtime types that appear in `bevy-brink`'s own public signatures,
+/// re-exported so consumers can name them without depending on `brink-runtime`:
+/// [`FlowInstance`](BrinkFlow::inner), [`Program`](crate::ProgramAsset::program),
+/// [`Choice`](crate::BrinkChoicesPresented::choices), [`Line`](advance_flow)'s
+/// return, [`RuntimeError`](BrinkFlow::choose)'s error, and
+/// [`FallbackHandler`] for the "no bindings" advance path.
+///
+/// `World` is deliberately absent here — it collides with `bevy::prelude::World`
+/// under a glob import, so it is re-exported under the alias [`BrinkWorld`].
+pub use brink_runtime::{Choice, FallbackHandler, FlowInstance, Line, Program, RuntimeError};
 pub use brkt::{
     BrktLoader, BrktLoaderError, TranscriptAsset, capture_transcript, render_transcript_asset,
 };
