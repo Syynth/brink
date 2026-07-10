@@ -17,3 +17,7 @@ test-results/
 .claude/
 packages/wasm/dist/
 packages/ink-editor/dist/
+
+# npm lockfile — this is a pnpm workspace (pnpm-lock.yaml); an npm
+# install at the root creates a stray package-lock.json.
+/package-lock.json
