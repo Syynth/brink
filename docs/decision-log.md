@@ -1192,3 +1192,19 @@
 - **SCOPE:** architectural
 - **WHAT:** F5 (Tier-1 speculative eval of arbitrary fragments) ships the `evaluate`-accepts-fragments capability on the **simplest correct mechanism (B)**: wrap the fragment in a synthetic symbol (`function $eval_<h>()` for an expression, `=== $eval_<h> ===` for content), recompile the project (cached by (live checksum, fragment source, kind)), and run it via the F4 `Speculation` over the recompiled `Program`, seeded from the live state via the name-keyed save/load path (robust — `DefinitionId`s are content-hashed). The bespoke fragment-compiler + `OverlayProgram`/`ProgramLike` overlay (the earlier 2026-07-06 "deep-layer build" ruling for #411) is **DROPPED**. Compilation performance — general **incremental codegen** (codegen/LIR/analysis are whole-project non-incremental today; only per-knot HIR is cached) — is a **separate, behind-the-API track**, invested in only if measurement shows recompile latency is a real problem.
 - **WHY:** The consumer API is mechanism-agnostic — celeris only ever calls `evaluate(source)`; A/B/C differ only in latency, which is a perf characteristic behind the API, not a shape it should bend around ("i don't want to design/assume we can't make this particular API fast enough… it shouldn't require that it's done in a different way"). So ship the simplest correct implementation and make it fast *at the right layer* (general incremental codegen benefits the whole toolchain) only when measured to need it — rather than a speculation-only bespoke overlay. Caching makes B viable regardless of raw compile speed: a compile is paid once per distinct fragment per project version, not per re-eval; the per-eval run is cheap. The earlier deep-build ruling was correct for the *state model* (F1–F4, genuinely reused) but over-applied to the fragment mechanism, and was made before we knew ids were content-hashed (which de-risks B's state migration).
+
+## bevy-brink re-exports all public-signature brink_runtime types; World aliased as BrinkWorld; whole crate re-exported as `runtime`
+- **WHEN:** 2026-07-10
+- **PROJECT:** brink
+- **SYSTEM:** bevy-brink
+- **SCOPE:** moderate
+- **WHAT:** bevy-brink re-exports every brink_runtime type that appears in its public API so consumers never need a direct brink-runtime Cargo dependency. Types get their own names (FlowInstance, Program, Choice, Line, RuntimeError, FallbackHandler) EXCEPT World, aliased as `BrinkWorld` to avoid the E0659 glob collision with `bevy::prelude::World`. Additionally the whole crate is re-exported as `pub use brink_runtime as runtime;` as a stable escape hatch for any type not individually re-exported.
+- **WHY:** The existing Value/LocaleMode/Transcript re-exports already establish 'no direct brink-runtime dep' as intent; coverage just lagged. Plain `pub use World` was rejected because it breaks the idiomatic `use bevy::prelude::*; use bevy_brink::*;` preamble (verified: E0659). The `runtime::` module escape hatch future-proofs against the same class of leak recurring.
+
+## Bevy book examples become compile-checked doctests (not `rust,ignore`), backed by a `book-test` recipe
+- **WHEN:** 2026-07-10
+- **PROJECT:** brink
+- **SYSTEM:** docs/book
+- **SCOPE:** moderate
+- **WHAT:** The Bevy book examples should be compile-checked doctests rather than ```rust,ignore``` fences, backed by a new `book-test` Justfile recipe. Motivating case: the `commit_from` example wouldn't compile against `bevy_brink::World`, which is what surfaced the missing re-export.
+- **WHY:** Ignored examples silently rot — the re-export gap existed precisely because nothing compiled the book's Bevy code. Compile-checking makes the docs a conformance test on the public API surface.
