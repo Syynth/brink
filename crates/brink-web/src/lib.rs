@@ -2374,6 +2374,11 @@ pub struct EditorSession {
     /// Next document-handle id. Starts at 1 — 0 is the "invalid handle"
     /// sentinel returned by `open_document`/`open_fragment` on failure.
     next_doc_id: u32,
+    /// Whether `folding_ranges`/`folding_ranges_doc` compute the
+    /// machinery/narrative fold runs (#479). Off by default: the runs only
+    /// matter to hosts that implement prose/logic view modes, and computing
+    /// them costs a full per-line classification on every folding query.
+    fold_runs_enabled: bool,
 }
 
 impl Default for EditorSession {
@@ -2393,6 +2398,7 @@ impl EditorSession {
             view: None,
             docs: BTreeMap::new(),
             next_doc_id: 1,
+            fold_runs_enabled: false,
         }
     }
 
@@ -2466,6 +2472,15 @@ impl EditorSession {
     /// structural classification.
     pub fn clear_dialect(&mut self) {
         self.session.clear_dialect();
+    }
+
+    /// Enable or disable the machinery/narrative fold runs (#479 — off by
+    /// default). Hosts that implement prose/logic view modes turn this on
+    /// (typically once at mount, alongside activating the fold kinds in the
+    /// editor); everyone else skips the per-query run computation entirely.
+    /// Session-wide, like `set_dialect`.
+    pub fn set_fold_runs_enabled(&mut self, enabled: bool) {
+        self.fold_runs_enabled = enabled;
     }
 
     /// Push the host's current values for `host`-source semantic types (Tier 3,
@@ -4545,8 +4560,11 @@ impl EditorSession {
         // Machinery/narrative fold runs (#365): computed from the same
         // per-line classification `line_contexts_impl` exposes, so a
         // registered dialect's declared `nature` (#368) flows into the fold
-        // computation exactly as it flows into `line_contexts`.
-        if let Some(root) = self.session.syntax_root(file_id) {
+        // computation exactly as it flows into `line_contexts`. Gated (#479):
+        // only hosts that opt in via `set_fold_runs_enabled` pay for it.
+        if self.fold_runs_enabled
+            && let Some(root) = self.session.syntax_root(file_id)
+        {
             let ctx = match self.session.dialect() {
                 Some(dialect) => {
                     brink_ide::line_context::line_contexts_with_dialect(hir, source, &root, dialect)
@@ -7156,8 +7174,9 @@ mod tests {
         // pre-existing pass) plus machinery/narrative fold runs computed
         // from the same `line_contexts` classification the editor already
         // consumes — a real user path (folding gutter), not a separate
-        // code path only a unit test reaches.
+        // code path only a unit test reaches. Runs are opt-in since #479.
         let mut s = EditorSession::new();
+        s.set_fold_runs_enabled(true);
         s.update_file(
             "main.ink",
             "=== start ===\n~ temp x = 1\n~ temp y = 2\nHello there.\nHow are you?\n",
@@ -7185,6 +7204,40 @@ mod tests {
     }
 
     #[test]
+    fn fold_runs_are_gated_off_by_default() {
+        // #479: machinery/narrative runs are computed only when the host
+        // opts in via set_fold_runs_enabled; the default folding output is
+        // structural-only.
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "=== start ===\n~ temp x = 1\n~ temp y = 2\nHello\n",
+        );
+        assert!(s.set_active_file("main.ink"));
+
+        let ranges = json(&s.folding_ranges());
+        assert!(
+            ranges
+                .as_array()
+                .expect("array")
+                .iter()
+                .all(|r| r["kind"] == "structural"),
+            "no run kinds without opt-in: {ranges}"
+        );
+
+        s.set_fold_runs_enabled(true);
+        let ranges = json(&s.folding_ranges());
+        assert!(
+            ranges
+                .as_array()
+                .expect("array")
+                .iter()
+                .any(|r| r["kind"] == "machinery"),
+            "machinery runs appear once enabled: {ranges}"
+        );
+    }
+
+    #[test]
     fn folding_ranges_respect_registered_dialect_nature() {
         // A dialect-classified cue+dialogue pair is Narrative-natured (the
         // at-cue preset) — the fold run must follow the registered dialect,
@@ -7196,6 +7249,7 @@ mod tests {
         let preset = serde_json::to_string(&brink_ir::DialogueDialect::default())
             .expect("preset serializes");
         s.set_dialect(&preset).expect("preset validates");
+        s.set_fold_runs_enabled(true);
 
         let ranges = json(&s.folding_ranges());
         let has_narrative_run = ranges

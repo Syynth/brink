@@ -273,6 +273,17 @@ export class DocHandle {
   clearDialect(): void {
     this.session.clearDialect();
   }
+
+  /**
+   * Enable or disable machinery/narrative fold runs (#479 — off by default)
+   * on this handle's shared wasm session. Hosts implementing prose/logic
+   * view modes turn this on alongside `setActiveFoldKinds`; without it,
+   * `foldingRanges()` returns structural folds only and the run computation
+   * is skipped entirely.
+   */
+  setFoldRunsEnabled(enabled: boolean): void {
+    this.session.setFoldRunsEnabled(enabled);
+  }
 }
 
 /**

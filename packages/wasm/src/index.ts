@@ -225,6 +225,18 @@ export class EditorSessionHandle {
   }
 
   /**
+   * Enable or disable the machinery/narrative fold runs (#479 — **off by
+   * default**). Hosts implementing prose/logic view modes turn this on
+   * (typically once at mount, alongside `setActiveFoldKinds` in the editor);
+   * everyone else skips the per-query run computation entirely. Session-wide,
+   * like `setDialect`.
+   */
+  setFoldRunsEnabled(enabled: boolean): void {
+    this.bump();
+    this.session.set_fold_runs_enabled(enabled);
+  }
+
+  /**
    * Push the host's current values for `host`-source semantic types (#174) —
    * a full snapshot keyed by semantic-type name that **replaces** the cache.
    * The attached host (e.g. RPG Maker MZ) calls this with its named switches /

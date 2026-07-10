@@ -51,7 +51,7 @@ const foldRangesField = StateField.define<FoldRange[]>({
   },
 });
 
-// ── Active fold kinds (#365 — Celeris §5.5) ─────────────────────────
+// ── Active fold kinds (#365 — Celeris §5.5; defaults tightened in #479) ──
 //
 // Which `FoldKind`s the fold service will actually fold. Live-reconfigurable
 // per view, mirroring `dialectFacet`'s own compartment/facet pattern
@@ -61,11 +61,13 @@ const foldRangesField = StateField.define<FoldRange[]>({
 // auto-collapses). Mode auto-collapse is host-invoked — the host runs
 // `foldAllOfKind(kind)` on mode entry; this facet only controls whether a
 // kind is foldABLE at all, it never forces a collapse itself.
-const DEFAULT_ACTIVE_KINDS: ReadonlySet<FoldKind> = new Set([
-  "structural",
-  "machinery",
-  "narrative",
-]);
+//
+// `machinery`/`narrative` are OPT-IN (#479): hosts activate them via
+// `setActiveFoldKinds` when entering a prose/logic view mode (and enable the
+// run computation session-side with `setFoldRunsEnabled`). Default-active
+// run kinds put a fold arrow on every 2+-line stretch of logic or prose —
+// pure gutter noise for hosts without those modes.
+const DEFAULT_ACTIVE_KINDS: ReadonlySet<FoldKind> = new Set(["structural"]);
 
 export const activeFoldKindsFacet = Facet.define<ReadonlySet<FoldKind>, ReadonlySet<FoldKind>>({
   combine: (values) => (values.length > 0 ? values[0] : DEFAULT_ACTIVE_KINDS),
