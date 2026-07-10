@@ -79,6 +79,12 @@ pub enum SpanKind {
     Include,
 
     // ── Statement / construct spans (inline, no identity) ──
+    /// A divert/tunnel/thread *statement* (whole `ptr` extent). Distinct
+    /// from the [`SpanKind::Divert`] target reference inside it: reference
+    /// spans also arise from divert-target *expressions* (`~ temp x = ->
+    /// hub`, choice conditions), which are not divert statements — line
+    /// views classify from the statement span only.
+    DivertStmt,
     /// A `-> END` / `-> DONE` divert (terminal by design — distinct from
     /// [`SpanKind::Divert`] so consumers never treat it as an unresolved
     /// reference). Covers the whole divert statement.
@@ -475,32 +481,30 @@ impl HirVisitor for ProjectionVisitor<'_> {
     fn enter_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Divert(d) => {
-                // A terminal divert (`-> END` / `-> DONE`) has no path to
-                // reference — cover the whole statement instead so the line
-                // still projects a span.
+                // The statement span first, then the target reference. A
+                // terminal divert (`-> END` / `-> DONE`) has no path to
+                // reference, so its statement span is the terminal kind.
                 if matches!(d.target.path, DivertPath::Done | DivertPath::End) {
                     if let Some(ptr) = &d.ptr {
                         self.push_inline(ptr.text_range(), SpanKind::DivertTerminal);
                     }
                 } else {
+                    if let Some(ptr) = &d.ptr {
+                        self.push_inline(ptr.text_range(), SpanKind::DivertStmt);
+                    }
                     self.push_divert_target(&d.target);
                 }
             }
             Stmt::TunnelCall(t) => {
+                self.push_inline(t.ptr.text_range(), SpanKind::DivertStmt);
                 for target in &t.targets {
                     self.push_divert_target(target);
                 }
-                // A tunnel chain whose targets are all terminal (`-> DONE ->`)
-                // would otherwise project nothing — same fallback as Divert.
-                if !t
-                    .targets
-                    .iter()
-                    .any(|target| matches!(target.path, DivertPath::Path(_)))
-                {
-                    self.push_inline(t.ptr.text_range(), SpanKind::DivertTerminal);
-                }
             }
-            Stmt::ThreadStart(t) => self.push_divert_target(&t.target),
+            Stmt::ThreadStart(t) => {
+                self.push_inline(t.ptr.text_range(), SpanKind::DivertStmt);
+                self.push_divert_target(&t.target);
+            }
             Stmt::TempDecl(t) => self.push_decl(t.name.range, SpanKind::TempDecl),
             Stmt::Assignment(a) => self.push_inline(a.ptr.text_range(), SpanKind::Logic),
             Stmt::Return(r) => {
@@ -861,6 +865,38 @@ Hello.
         assert!(
             !p.spans.iter().any(|s| s.kind == SpanKind::Divert),
             "terminal diverts are not Divert reference spans"
+        );
+    }
+
+    #[test]
+    fn divert_statements_project_stmt_spans_but_expressions_do_not() {
+        // `-> hub` is a divert statement (DivertStmt + a Divert target ref);
+        // `~ temp x = -> hub` holds a divert-target *expression* — a Divert
+        // reference only, no statement span. Line views classify from the
+        // statement span, so the temp line stays logic, not a divert.
+        let src = "\
+=== start ===
+~ temp x = -> hub
+-> hub
+=== hub ===
+-> DONE
+";
+        let p = project(src);
+        assert_eq!(
+            p.spans
+                .iter()
+                .filter(|s| s.kind == SpanKind::DivertStmt)
+                .count(),
+            1,
+            "only the standalone divert is a statement span"
+        );
+        assert_eq!(
+            p.spans
+                .iter()
+                .filter(|s| s.kind == SpanKind::Divert)
+                .count(),
+            2,
+            "both the expression and the statement carry target references"
         );
     }
 

@@ -58,6 +58,7 @@ export type HirSpanKind =
   | "interpolation"
   | "tag"
   | "include"
+  | "divert_stmt"
   | "divert_terminal"
   | "logic"
   | "conditional"
