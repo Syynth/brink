@@ -37,16 +37,35 @@ wasm:
 
 # Compile-check the book's Rust examples (mdbook test).
 #
-# Builds into a dedicated target dir: rustdoc resolves `extern crate` off the
-# -L search path, and a shared target/ mixes `cargo check` .rmeta with
-# `cargo build` .rlib for the same crate, which rustdoc rejects as "multiple
-# candidates".
+# Builds into a dedicated target dir. rustdoc resolves the examples' `extern
+# crate` declarations off the -L search path, and that path must hold exactly
+# one build of each crate: two artifacts with different hashes (a `cargo check`
+# .rmeta beside a `cargo build` .rlib, or two different feature unifications)
+# make rustdoc bail with E0464 "multiple candidates".
+#
+# So: always build the whole package set in ONE cargo invocation, and wipe the
+# dir if a stale artifact from some other invocation snuck in.
 book-test:
     #!/usr/bin/env bash
     set -euo pipefail
     export CARGO_TARGET_DIR=target/book-doctest
-    cargo build -p brink-runtime -p brink-compiler -p brink-format
-    mdbook test docs/book -L "$CARGO_TARGET_DIR/debug/deps"
+    deps="$CARGO_TARGET_DIR/debug/deps"
+    pkgs="-p brink-runtime -p brink-compiler -p brink-format -p bevy-brink"
+
+    # Self-heal: if any crate has more than one hash, the dir is polluted.
+    if [ -d "$deps" ]; then
+        for c in brink_format brink_runtime brink_compiler bevy_brink; do
+            n=$(ls "$deps" 2>/dev/null | sed -nE "s/^lib${c}-([0-9a-f]+)\.(rlib|rmeta)$/\1/p" | sort -u | wc -l | tr -d ' ')
+            if [ "$n" -gt 1 ]; then
+                echo "book-test: stale artifacts for ${c} (${n} hashes) — rebuilding clean"
+                rm -rf "$CARGO_TARGET_DIR"
+                break
+            fi
+        done
+    fi
+
+    cargo build $pkgs
+    mdbook test docs/book -L "$deps"
 
 # Build the full brink-studio as a standalone static app and stage it into
 # docs/book/src/playground/ (the embedded book playground).
