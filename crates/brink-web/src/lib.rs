@@ -4544,8 +4544,11 @@ impl EditorSession {
                 }
                 None => brink_ide::line_context::line_contexts(hir, source, &root),
             };
+            let projection = brink_ide::hir_projection::project_hir_structural(hir, source);
             ranges.extend(brink_ide::folding::machinery_and_narrative_folds(
-                hir, source, &ctx,
+                &projection,
+                source,
+                &ctx,
             ));
         }
 

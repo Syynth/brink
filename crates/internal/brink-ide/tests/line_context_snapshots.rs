@@ -74,8 +74,9 @@ fn render_structural_folds(source: &str) -> String {
 fn render_runs(source: &str, ctx: &[LineContext]) -> String {
     let parsed = brink_syntax::parse(source);
     let (hir, _, _) = hir::lower(FileId(0), &parsed.tree());
+    let projection = brink_ide::hir_projection::project_hir_structural(&hir, source);
     let mut out = String::new();
-    for r in machinery_and_narrative_folds(&hir, source, ctx) {
+    for r in machinery_and_narrative_folds(&projection, source, ctx) {
         let kind = match r.kind {
             FoldKind::Machinery => "Machinery",
             FoldKind::Narrative => "Narrative",
