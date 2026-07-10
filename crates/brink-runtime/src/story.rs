@@ -717,6 +717,61 @@ impl FlowInstance {
         }
     }
 
+    /// Maximum lines produced by a single [`drive_to_terminal`](Self::drive_to_terminal)
+    /// call before erroring. Safety net against infinite loops from
+    /// malformed bytecode.
+    pub const LINE_LIMIT: usize = 10_000;
+
+    /// Step this flow forward until the next terminal line (`Done`,
+    /// `Choices`, or `End`), collecting every [`Line`] produced along the
+    /// way.
+    ///
+    /// This is the single Layer-2 "drive to terminal" loop: [`Story`]'s
+    /// `continue_maximally*` family is a thin wrapper over it, and any other
+    /// holder of a `FlowInstance` (e.g. an engine integration like
+    /// `bevy-brink`) should reach for this instead of hand-rolling the same
+    /// loop. Semantics:
+    ///
+    /// - Steps via [`step_single_line`](Self::step_single_line): a deferred
+    ///   external ([`ExternalResult::Pending`]) is **not** paused on here —
+    ///   it errors with [`RuntimeError::UnresolvedExternalCall`], exactly as
+    ///   `step_single_line` does. Callers that need to pause on world-access
+    ///   externals mid-drive should drive [`advance`](Self::advance)
+    ///   themselves rather than use this method.
+    /// - Stops at the first [`Line`] for which [`Line::is_terminal`] returns
+    ///   `true`; that line is always the last element of the returned
+    ///   `Vec`, and every element before it is a [`Line::Text`].
+    /// - Bounded by [`Self::LINE_LIMIT`] (10,000) lines produced in a single
+    ///   call; exceeding it returns [`RuntimeError::LineLimitExceeded`]
+    ///   rather than looping forever.
+    ///
+    /// # Errors
+    /// Any error [`step_single_line`](Self::step_single_line) itself can
+    /// produce, plus [`RuntimeError::LineLimitExceeded`] if the drive
+    /// produces [`Self::LINE_LIMIT`] lines without reaching a terminal one.
+    pub fn drive_to_terminal<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Result<Vec<Line>, RuntimeError> {
+        let mut lines = Vec::new();
+        loop {
+            let line =
+                self.step_single_line::<R>(program, line_tables, context, handler, resolver)?;
+            let terminal = line.is_terminal();
+            lines.push(line);
+            if terminal {
+                return Ok(lines);
+            }
+            if lines.len() >= Self::LINE_LIMIT {
+                return Err(RuntimeError::LineLimitExceeded(Self::LINE_LIMIT));
+            }
+        }
+    }
+
     /// Like [`step_single_line`](Self::step_single_line), but surfaces a
     /// deferred external ([`ExternalResult::Pending`]) as
     /// [`StepOutcome::AwaitingExternal`] instead of an error — so a
@@ -2042,34 +2097,19 @@ impl<R: StoryRng> Story<R> {
         self.continue_maximally_impl(handler)
     }
 
-    /// Maximum lines per `continue_maximally` call. Safety net against
-    /// infinite loops from malformed bytecode.
-    const LINE_LIMIT: usize = 10_000;
-
     fn continue_maximally_impl(
         &mut self,
         handler: &dyn ExternalFnHandler,
     ) -> Result<Vec<Line>, RuntimeError> {
-        let mut lines = Vec::new();
+        let resolver = self.resolver.as_deref();
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
-        loop {
-            let resolver = self.resolver.as_deref();
-            let line = self.default.step_single_line::<R>(
-                &self.program,
-                &self.line_tables,
-                &mut view,
-                handler,
-                resolver,
-            )?;
-            let terminal = line.is_terminal();
-            lines.push(line);
-            if terminal {
-                return Ok(lines);
-            }
-            if lines.len() >= Self::LINE_LIMIT {
-                return Err(RuntimeError::LineLimitExceeded(Self::LINE_LIMIT));
-            }
-        }
+        self.default.drive_to_terminal::<R>(
+            &self.program,
+            &self.line_tables,
+            &mut view,
+            handler,
+            resolver,
+        )
     }
 
     /// Execute until the next yield point with a [`WriteObserver`] that
@@ -2081,25 +2121,14 @@ impl<R: StoryRng> Story<R> {
         use crate::state::ObservedContext;
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         let mut obs_ctx = ObservedContext::new(&mut view, observer);
-        let mut lines = Vec::new();
-        loop {
-            let resolver = self.resolver.as_deref();
-            let line = self.default.step_single_line::<R>(
-                &self.program,
-                &self.line_tables,
-                &mut obs_ctx,
-                &FallbackHandler,
-                resolver,
-            )?;
-            let terminal = line.is_terminal();
-            lines.push(line);
-            if terminal {
-                return Ok(lines);
-            }
-            if lines.len() >= Self::LINE_LIMIT {
-                return Err(RuntimeError::LineLimitExceeded(Self::LINE_LIMIT));
-            }
-        }
+        let resolver = self.resolver.as_deref();
+        self.default.drive_to_terminal::<R>(
+            &self.program,
+            &self.line_tables,
+            &mut obs_ctx,
+            &FallbackHandler,
+            resolver,
+        )
     }
 
     /// Select a choice by index, then resume with
@@ -2238,25 +2267,14 @@ impl<R: StoryRng> Story<R> {
             .get_mut(name)
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
         let mut view = ContextView::new(ctx, local);
-        let mut lines = Vec::new();
-        loop {
-            let resolver = self.resolver.as_deref();
-            let line = instance.step_single_line::<R>(
-                &self.program,
-                &self.line_tables,
-                &mut view,
-                handler,
-                resolver,
-            )?;
-            let terminal = line.is_terminal();
-            lines.push(line);
-            if terminal {
-                return Ok(lines);
-            }
-            if lines.len() >= Self::LINE_LIMIT {
-                return Err(RuntimeError::LineLimitExceeded(Self::LINE_LIMIT));
-            }
-        }
+        let resolver = self.resolver.as_deref();
+        instance.drive_to_terminal::<R>(
+            &self.program,
+            &self.line_tables,
+            &mut view,
+            handler,
+            resolver,
+        )
     }
 
     /// Select a choice in a named flow.
@@ -3093,6 +3111,103 @@ mod tests {
                 assert_eq!(choices.len(), 2, "expected 2 choices");
             }
             other => panic!("expected Choices, got {other:?}"),
+        }
+    }
+
+    // ── FlowInstance::drive_to_terminal (F6.1a shared drive-to-terminal op) ──
+
+    /// Compile `.ink` source directly into a linked `(Program, line_tables)`
+    /// pair, bypassing `Story` so tests can drive a bare `FlowInstance`
+    /// directly — the way a `Story`-free consumer (e.g. an engine
+    /// integration) would.
+    fn compile_source_for_flow(src: &str) -> (crate::Program, Vec<Vec<brink_format::LineEntry>>) {
+        let out = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned())).expect("compiles");
+        let mut bytes = Vec::new();
+        brink_format::write_inkb(&out.data, &mut bytes);
+        let data = brink_format::read_inkb(&bytes).expect("decode");
+        link(&data).expect("link")
+    }
+
+    #[test]
+    fn drive_to_terminal_stops_at_done() {
+        let (program, tables) = compile_source_for_flow("Hello.\n-> DONE\n");
+        let (mut flow, mut world) = FlowInstance::new_at_root(&program);
+        let mut local = FlowLocal::new();
+        let mut view = ContextView::new(&mut world, &mut local);
+        let lines = flow
+            .drive_to_terminal::<FastRng>(&program, &tables, &mut view, &FallbackHandler, None)
+            .expect("drive succeeds");
+        let (last, rest) = lines.split_last().expect("at least one line");
+        assert!(
+            matches!(last, Line::Done { .. }),
+            "expected Done, got {last:?}"
+        );
+        assert!(
+            rest.iter().all(|l| matches!(l, Line::Text { .. })),
+            "every line before the terminal one should be Text, got {rest:?}"
+        );
+    }
+
+    #[test]
+    fn drive_to_terminal_stops_at_choices() {
+        let (program, tables) =
+            compile_source_for_flow("Hello.\n* Pick me\n    Picked.\n    -> DONE\n");
+        let (mut flow, mut world) = FlowInstance::new_at_root(&program);
+        let mut local = FlowLocal::new();
+        let mut view = ContextView::new(&mut world, &mut local);
+        let lines = flow
+            .drive_to_terminal::<FastRng>(&program, &tables, &mut view, &FallbackHandler, None)
+            .expect("drive succeeds");
+        let (last, rest) = lines.split_last().expect("at least one line");
+        assert!(
+            matches!(last, Line::Choices { .. }),
+            "expected Choices, got {last:?}"
+        );
+        assert!(
+            rest.iter().all(|l| matches!(l, Line::Text { .. })),
+            "every line before the terminal one should be Text, got {rest:?}"
+        );
+    }
+
+    #[test]
+    fn drive_to_terminal_stops_at_end() {
+        let (program, tables) = compile_source_for_flow("Hello.\n-> END\n");
+        let (mut flow, mut world) = FlowInstance::new_at_root(&program);
+        let mut local = FlowLocal::new();
+        let mut view = ContextView::new(&mut world, &mut local);
+        let lines = flow
+            .drive_to_terminal::<FastRng>(&program, &tables, &mut view, &FallbackHandler, None)
+            .expect("drive succeeds");
+        let (last, rest) = lines.split_last().expect("at least one line");
+        assert!(
+            matches!(last, Line::End { .. }),
+            "expected End, got {last:?}"
+        );
+        assert!(
+            rest.iter().all(|l| matches!(l, Line::Text { .. })),
+            "every line before the terminal one should be Text, got {rest:?}"
+        );
+    }
+
+    /// A knot that prints and re-diverts into itself forever never reaches a
+    /// terminal line, so `drive_to_terminal` must give up at
+    /// `FlowInstance::LINE_LIMIT` rather than looping forever — proving the
+    /// extracted op kept `Story::continue_maximally_impl`'s safety cap.
+    #[test]
+    fn drive_to_terminal_errors_at_line_limit() {
+        let (program, tables) =
+            compile_source_for_flow("-> spam\n\n=== spam ===\nLine.\n-> spam\n");
+        let (mut flow, mut world) = FlowInstance::new_at_root(&program);
+        let mut local = FlowLocal::new();
+        let mut view = ContextView::new(&mut world, &mut local);
+        let err = flow
+            .drive_to_terminal::<FastRng>(&program, &tables, &mut view, &FallbackHandler, None)
+            .expect_err("infinite content should hit the line limit rather than hang");
+        match err {
+            RuntimeError::LineLimitExceeded(n) => {
+                assert_eq!(n, FlowInstance::LINE_LIMIT);
+            }
+            other => panic!("expected LineLimitExceeded, got {other:?}"),
         }
     }
 }
