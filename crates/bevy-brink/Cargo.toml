@@ -60,6 +60,9 @@ brink-runtime = { path = "../brink-runtime", features = ["testing"]  }
 # The locale example + tests build `.inkl` overlays via the intl pipeline
 # (export_lines + compile_locale).
 brink-intl = { path = "../internal/brink-intl" }
+# The `book_saves` example round-trips a composed save map through JSON to
+# prove `SaveState` really is Serialize/Deserialize end to end.
+serde_json = { workspace = true }
 
 [[example]]
 name = "play_story"

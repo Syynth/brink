@@ -1,9 +1,12 @@
 # Localization & Saves
 
-Two bevy-brink features build on the program/line-tables split: runtime locale
-switching (swap the rendering data) and `.brkt` transcript persistence (save and
-re-render the visible history). Both rely on line tables being independent of the
-immutable program — see the [Overview](./index.md#the-story-asset-bundle).
+Three bevy-brink features build on the split between the immutable program and
+per-flow/shared story state: runtime locale switching (swap the rendering
+data), `.brkt` transcript persistence (save and re-render the visible
+history), and per-entity `SaveState` durability (save and restore *game
+state* — the section below). Locale switching and transcripts rely on line
+tables being independent of the immutable program — see the
+[Overview](./index.md#the-story-asset-bundle).
 
 ## Locale switching
 
@@ -136,3 +139,82 @@ let lines = render_transcript_asset(
 Pass any locale's line tables and the saved history localizes too — capture in
 English, re-render in Spanish. Runnable demos:
 `cargo run --example locale_switch` and `cargo run --example transcript_save`.
+
+## Game-state saves (`SaveState`)
+
+`.brkt` (above) saves the *visible history* of a playthrough. This is the
+other half: **game state** — globals, visit/turn counts, turn index, RNG —
+the values a restored entity needs to behave correctly, independent of what
+was ever printed. It's the same [`SaveState`]/`save_state`/`load_state`
+mechanism `Story` uses on the non-Bevy path (see
+`docs/scoped-flow-state-spec.md`'s F6 amendment), lifted to work over any
+flow's context.
+
+**A save is one `SaveState` for the shared `World`, plus one per entity
+flow — composed by *you*.** `bevy-brink` doesn't invent a save-file format or
+a bundled "all saves" type; it hands back plain `SaveState` values (they
+`#[derive(Serialize, Deserialize)]`) and you collect them into whatever your
+game already uses for persistence — a `HashMap`, a save-slot struct, rows in
+a database.
+
+**State-only — not execution position.** A loaded entity does not resume
+mid-line: its call stack and program counter are never captured. You re-enter
+it at a knot of your choosing (typically `FlowStart::Address` on a fresh
+`BrinkFlowRequest`), and the restored state — a private "have I greeted them"
+visit count, a private mood variable — is what makes that re-entry pick up
+where the entity left off.
+
+| Item | Role |
+|------|------|
+| `BrinkGlobals::save_state` / `load_state` | the shared `World`, direct — no routing view needed |
+| `save_flow_state` / `load_flow_state` | one flow, routed through its `ContextView` — `Local`-scoped entries land in that flow's own `BrinkContext`; `World`-scoped entries land in the shared `World` |
+| `LoadReport` | what a load couldn't apply (e.g. a saved `VAR` the current program no longer declares) — surfaced, not silently dropped |
+
+### Saving
+
+Save the world once, then each entity you want to persist:
+
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_saves.rs:save_world}}
+```
+
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_saves.rs:save_entity}}
+```
+
+Compose the results into whatever your save file looks like — a plain
+`HashMap<String, SaveState>` keyed by `"world"` plus an id per entity is
+enough to round-trip through `serde_json` (or any other `serde` format).
+
+### Loading
+
+Load the world **first**, then each entity through its own view. Every
+entity snapshot taken at the same save moment carries *identical*
+`World`-scoped values, so loading them one after another idempotently
+rewrites the same shared values — not a conflict:
+
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_saves.rs:load_world}}
+```
+
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_saves.rs:load_entity}}
+```
+
+Each `load_flow_state` call returns a [`LoadReport`] — check
+`report.is_clean()` and surface `report.unknown_globals` if not (a story
+patch that renamed/removed a `VAR` since the save was taken).
+
+### Re-entering after load
+
+Spawn a fresh flow at the knot you want the restored entity to resume from —
+the same request-component pattern as any other flow (see
+[Spawning & Driving Flows](./flows.md)):
+
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_saves.rs:reenter}}
+```
+
+Runnable end-to-end demo (drives two flows, saves world + both entities to a
+JSON-round-tripped map, loads into a **fresh** `App`, and re-enters each at a
+knot): `cargo run --example book_saves`.

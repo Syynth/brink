@@ -19,6 +19,12 @@ currently parked." Update it when you make a change that lands.
 > (the core model) and its "F6 AMENDMENT" section (the bevy-specific
 > rulings) for the design; those sections below are kept as historical
 > record of the design that preceded it, not current behavior.
+>
+> **F6.3 landed** (per-entity `SaveState` durability): `BrinkGlobals::save_state`/
+> `load_state` and the free `save_flow_state`/`load_flow_state` compose a save as
+> one `SaveState` for the shared `World` plus one per entity flow, host-side — see
+> `docs/book/src/integrations/bevy/localization.md`'s "Game-state saves" section
+> and `crates/bevy-brink/examples/book_saves.rs`. F6 (#441) is now complete.
 
 ## Goal
 

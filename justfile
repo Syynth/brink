@@ -37,9 +37,10 @@ wasm:
 
 # Compile-check the book's Rust examples. Two mechanisms, by chapter:
 #
-#  - The Bevy "flows" page `{{#include}}`s its snippets from a compiled example
-#    (crates/bevy-brink/examples/book_flows.rs); `cargo build --example` is what
-#    checks that code, so those fences are `rust,ignore` for mdbook test.
+#  - The Bevy "flows" and "saves" pages `{{#include}}` their snippets from
+#    compiled examples (crates/bevy-brink/examples/book_flows.rs,
+#    book_saves.rs); `cargo build --example` is what checks that code, so
+#    those fences are `rust,ignore` for mdbook test.
 #  - Every other Rust example is a real doctest, run by `mdbook test`.
 #
 # mdbook test builds into a dedicated target dir. rustdoc resolves the examples'
@@ -53,8 +54,9 @@ book-test:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    # The Bevy flows page is checked by building its backing example.
+    # The Bevy flows/saves pages are checked by building their backing examples.
     cargo build -p bevy-brink --example book_flows
+    cargo build -p bevy-brink --example book_saves
 
     export CARGO_TARGET_DIR=target/book-doctest
     deps="$CARGO_TARGET_DIR/debug/deps"

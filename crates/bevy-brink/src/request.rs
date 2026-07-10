@@ -606,4 +606,460 @@ mod tests {
             "BrinkGlobals must never be created from a policy that fails to resolve"
         );
     }
+
+    // ── F6.3: per-entity SaveState durability ─────────────────────────────
+    //
+    // A save is one SaveState for the shared World + one per entity,
+    // composed host-side (see the F6 AMENDMENT ruling 4 and the
+    // "Save/load" section of globals.rs's module docs). These tests drive
+    // two flows to diverge their private state under a policy with a
+    // Local-marked VAR and a Local-marked knot, save world + both entities,
+    // then load into a completely FRESH app (fresh World, fresh
+    // FlowInstances re-entered at a knot) and check each flow recovers
+    // exactly its own private state while the shared VAR converges once.
+
+    use crate::globals::{load_flow_state, save_flow_state};
+    use bevy_ecs::system::SystemState;
+    use brink_format::Value;
+    use brink_runtime::{ContextAccess, Line};
+
+    /// The ink source shared by the F6.3 tests: `mood` (a private counter)
+    /// and the `greet` knot's own visit count (read via `READ_COUNT`, so
+    /// assertions don't depend on interpreting sequence-cycling text) are
+    /// marked `Local` by the test policy; `shared_count` stays `World` by
+    /// the (untouched) default. Printing numeric values rather than relying
+    /// on `{greet: A|B}`-style sequence text keeps the assertions exact and
+    /// independent of sequence-indexing semantics.
+    const SAVE_TEST_SRC: &str = "VAR shared_count = 0\nVAR mood = 0\n-> greet\n\
+         === greet ===\n\
+         ~ mood = mood + 1\n\
+         ~ shared_count = shared_count + 1\n\
+         Greeting mood={mood} visits={READ_COUNT(-> greet)} shared={shared_count}\n\
+         * [Again] -> greet\n\
+         * [Done] -> END\n";
+
+    /// `mood` + `greet`'s own visit count are private per flow; everything
+    /// else (including `shared_count`) stays World-scoped by default.
+    fn save_test_policy() -> WorldPolicy {
+        let mut policy = WorldPolicy::default();
+        policy.overrides.insert("mood".to_string(), Scope::Local);
+        policy.overrides.insert("greet".to_string(), Scope::Local);
+        policy
+    }
+
+    /// System-state shape shared by the driving/save/load helpers below:
+    /// every flow component plus the assets and shared globals needed to
+    /// build a [`flow_context_view`] and advance/save/load through it.
+    /// `'static` lifetimes here follow the same pattern as `flow.rs`'s
+    /// `ChooseState` — a type alias for a one-off `SystemState`, not a
+    /// generic query type.
+    type FlowQuery = SystemState<(
+        Query<
+            'static,
+            'static,
+            (
+                &'static mut BrinkFlow<()>,
+                &'static mut BrinkContext<()>,
+                &'static crate::BrinkProgram<()>,
+                &'static crate::BrinkLocale<()>,
+            ),
+        >,
+        ResMut<'static, BrinkGlobals<()>>,
+        Res<'static, Assets<ProgramAsset>>,
+        Res<'static, Assets<crate::LineTablesAsset>>,
+        Commands<'static, 'static>,
+    )>;
+
+    /// Drive one entity's flow to its next terminal line, via
+    /// `flow_context_view` exactly like a real advance system would build
+    /// it. Panics if the flow parks on a world-access external (none of
+    /// these tests use externals) or if any required asset/component is
+    /// missing.
+    fn drive_entity(app: &mut App, entity: Entity) -> Line {
+        let mut state: FlowQuery = SystemState::new(app.world_mut());
+        let (mut flows, mut globals, programs, tables, mut commands) =
+            state.get_mut(app.world_mut());
+        let (mut flow, mut ctx, prog, loc) = flows.get_mut(entity).expect("flow components");
+        let program = &programs.get(&prog.handle).expect("program asset").program;
+        let line_tables = &tables.get(&loc.handle).expect("line tables asset").tables;
+        let mut view = flow_context_view(&mut globals, &mut ctx);
+        let advance = flow
+            .advance_until_terminal(
+                program,
+                line_tables,
+                &mut view,
+                &brink_runtime::FallbackHandler,
+                entity,
+                &mut commands,
+            )
+            .expect("advance");
+        state.apply(app.world_mut());
+        match advance {
+            Advance::Line(line) => line,
+            // None of the F6.3 tests use externals, so a pause here can
+            // only be a bug in the test setup.
+            Advance::AwaitingQuery => unreachable!("unexpected pending external in F6.3 tests"),
+        }
+    }
+
+    /// Pick choice `index` on one entity's flow.
+    fn choose_entity(app: &mut App, entity: Entity, index: usize) {
+        let mut state: FlowQuery = SystemState::new(app.world_mut());
+        let (mut flows, mut globals, _programs, _tables, _commands) =
+            state.get_mut(app.world_mut());
+        let (mut flow, mut ctx, _prog, _loc) = flows.get_mut(entity).expect("flow components");
+        let mut view = flow_context_view(&mut globals, &mut ctx);
+        flow.choose(&mut view, index).expect("choose");
+        state.apply(app.world_mut());
+    }
+
+    /// Spawn a `BrinkFlowRequest` for `story` starting at `start` and run
+    /// one tick to fulfill it. Returns the entity.
+    fn spawn_fulfilled(app: &mut App, story: &Handle<BrinkStoryAsset>, start: FlowStart) -> Entity {
+        let entity = app
+            .world_mut()
+            .spawn(
+                BrinkFlowRequest::<()>::builder()
+                    .story(story.clone())
+                    .start(start)
+                    .build(),
+            )
+            .id();
+        app.update();
+        entity
+    }
+
+    /// A fresh app wired with `BrinkPlugin` under the F6.3 test policy.
+    fn app_with_save_policy() -> App {
+        let mut app = App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(crate::BrinkPlugin::<()>::default().with_policy(save_test_policy()));
+        app
+    }
+
+    /// (a) Full roundtrip: two flows diverge their private state (flow A
+    /// visits `greet` once, flow B twice — different `mood` values and
+    /// different `greet` visit counts) while sharing `shared_count`. Save
+    /// world + both entities, build a completely FRESH app (fresh
+    /// `Program` compile, fresh `World`, fresh `FlowInstance`s re-entered
+    /// at `greet` via `FlowStart::Address`), load world then each entity,
+    /// and check each flow's re-entry sees ITS OWN restored private state
+    /// — not the other flow's, not a fresh start — while the shared VAR is
+    /// the single converged value from both saves.
+    #[test]
+    #[expect(
+        clippy::similar_names,
+        reason = "the paired a/b entity naming is the point of the test"
+    )]
+    fn full_roundtrip_world_plus_two_entities() {
+        // ── App 1: drive two flows to diverge, then save. ──
+        let mut app1 = app_with_save_policy();
+        let (program1, tables1, ctx1) = compile_test_story(SAVE_TEST_SRC);
+        let story1 = add_story_assets(&mut app1, program1, tables1, ctx1);
+
+        let entity_a = spawn_fulfilled(&mut app1, &story1, FlowStart::Root);
+        let entity_b = spawn_fulfilled(&mut app1, &story1, FlowStart::Root);
+
+        // Flow A: one pass through `greet` (mood=1, greet visits=1).
+        let line_a = drive_entity(&mut app1, entity_a);
+        assert!(
+            line_a.text().contains("mood=1") && line_a.text().contains("visits=1"),
+            "flow A's first pass; got {:?}",
+            line_a.text()
+        );
+
+        // Flow B: two passes through `greet` (mood=2, greet visits=2).
+        let line_b1 = drive_entity(&mut app1, entity_b);
+        assert!(
+            line_b1.text().contains("mood=1") && line_b1.text().contains("visits=1"),
+            "flow B's first pass; got {:?}",
+            line_b1.text()
+        );
+        choose_entity(&mut app1, entity_b, 0); // "Again" -> greet
+        let line_b2 = drive_entity(&mut app1, entity_b);
+        assert!(
+            line_b2.text().contains("mood=2") && line_b2.text().contains("visits=2"),
+            "flow B's second pass; got {:?}",
+            line_b2.text()
+        );
+
+        // Capture saves — world once, then each entity — all reading the
+        // same settled state (no mutation happens between these calls).
+        let (world_save, save_a, save_b) = {
+            let mut state: FlowQuery = SystemState::new(app1.world_mut());
+            let (mut flows, mut globals, programs, _tables, _commands) =
+                state.get_mut(app1.world_mut());
+
+            let handle = flows.get(entity_a).expect("flow a").2.handle.clone();
+            let program = &programs.get(&handle).expect("program asset").program;
+
+            let world_save = globals.save_state(program);
+
+            let (_flow_a, mut ctx_a, _p, _l) = flows.get_mut(entity_a).expect("flow a");
+            let save_a = save_flow_state(&mut globals, &mut ctx_a, program);
+
+            let (_flow_b, mut ctx_b, _p, _l) = flows.get_mut(entity_b).expect("flow b");
+            let save_b = save_flow_state(&mut globals, &mut ctx_b, program);
+
+            (world_save, save_a, save_b)
+        };
+
+        // Sanity on what got captured before crossing into the fresh app.
+        assert_eq!(save_a.globals.get("mood"), Some(&Value::Int(1)));
+        assert_eq!(save_b.globals.get("mood"), Some(&Value::Int(2)));
+        // shared_count must be identical across world + both entity saves —
+        // the "same save moment" property `load_flow_state`'s idempotent
+        // World rewrite depends on.
+        assert_eq!(save_a.globals.get("shared_count"), Some(&Value::Int(3)));
+        assert_eq!(save_b.globals.get("shared_count"), Some(&Value::Int(3)));
+        assert_eq!(world_save.globals.get("shared_count"), Some(&Value::Int(3)));
+
+        // ── App 2: a completely fresh app — new compile, new World, new
+        // FlowInstances re-entered at `greet` (not resumed mid-line). ──
+        let mut app2 = app_with_save_policy();
+        let (program2, tables2, ctx2) = compile_test_story(SAVE_TEST_SRC);
+        let story2 = add_story_assets(&mut app2, program2, tables2, ctx2);
+
+        let entity_a2 =
+            spawn_fulfilled(&mut app2, &story2, FlowStart::Address("greet".to_string()));
+        let entity_b2 =
+            spawn_fulfilled(&mut app2, &story2, FlowStart::Address("greet".to_string()));
+
+        // Load world first, then each entity through its own view.
+        {
+            let mut state: FlowQuery = SystemState::new(app2.world_mut());
+            let (mut flows, mut globals, programs, _tables, _commands) =
+                state.get_mut(app2.world_mut());
+
+            let handle = flows.get(entity_a2).expect("flow a2").2.handle.clone();
+            let program = &programs.get(&handle).expect("program asset").program;
+
+            let world_report = globals.load_state(program, &world_save);
+            assert!(
+                world_report.is_clean(),
+                "world load should be clean: {world_report:?}"
+            );
+
+            let (_flow, mut ctx_a2, _p, _l) = flows.get_mut(entity_a2).expect("flow a2");
+            let report_a = load_flow_state(&mut globals, &mut ctx_a2, program, &save_a);
+            assert!(
+                report_a.is_clean(),
+                "entity A load should be clean: {report_a:?}"
+            );
+
+            let (_flow, mut ctx_b2, _p, _l) = flows.get_mut(entity_b2).expect("flow b2");
+            let report_b = load_flow_state(&mut globals, &mut ctx_b2, program, &save_b);
+            assert!(
+                report_b.is_clean(),
+                "entity B load should be clean: {report_b:?}"
+            );
+        }
+
+        // Re-enter each flow at `greet` (FlowStart::Address does NOT bump
+        // greet's own visit count — see `fulfillment_resolves_named_address`
+        // and its sibling comments above — so READ_COUNT still reflects the
+        // RESTORED count, not a fresh 0, proving state (not position) is
+        // what carries the resume forward).
+        let resumed_a = drive_entity(&mut app2, entity_a2);
+        assert!(
+            resumed_a.text().contains("mood=2") && resumed_a.text().contains("visits=1"),
+            "flow A2 should resume from its own restored state (mood 1->2, \
+             greet visits still 1, unbumped by address-entry); got {:?}",
+            resumed_a.text()
+        );
+        let resumed_b = drive_entity(&mut app2, entity_b2);
+        assert!(
+            resumed_b.text().contains("mood=3") && resumed_b.text().contains("visits=2"),
+            "flow B2 should resume from ITS OWN restored state (mood 2->3, \
+             greet visits still 2) — distinct from flow A2's; got {:?}",
+            resumed_b.text()
+        );
+    }
+
+    /// (b) Entity load routes by scope: loading a `SaveState` carrying both
+    /// a `Local`-marked `VAR` (`mood`) and a `World`-marked `VAR`
+    /// (`shared_count`) into one flow lands `mood` in that entity's own
+    /// `FlowLocal` — invisible through the shared `World` directly, and
+    /// invisible to any *other* flow's view — while `shared_count` lands in
+    /// the shared `World` exactly as saved (idempotent rewrite), visible
+    /// both through the raw `World` and through any flow's view.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scope-routing scenario checked from three vantage points"
+    )]
+    fn entity_load_routes_local_to_flow_local_and_world_stays_shared() {
+        let mut app = app_with_save_policy();
+        let (program, tables, ctx) = compile_test_story(SAVE_TEST_SRC);
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = spawn_fulfilled(&mut app, &story, FlowStart::Address("greet".to_string()));
+        // A second, untouched flow sharing the same BrinkGlobals — used to
+        // prove the loaded Local value is NOT visible globally.
+        let other = spawn_fulfilled(&mut app, &story, FlowStart::Address("greet".to_string()));
+
+        // Hand-built SaveState: mood (Local) = 42, shared_count (World) = 7.
+        let mut save = brink_runtime::SaveState {
+            version: brink_runtime::SAVE_FORMAT_VERSION,
+            globals: std::collections::BTreeMap::new(),
+            visits: Vec::new(),
+            turns: Vec::new(),
+            turn_index: 0,
+            rng_seed: 0,
+            previous_random: 0,
+        };
+        save.globals.insert("mood".to_string(), Value::Int(42));
+        save.globals
+            .insert("shared_count".to_string(), Value::Int(7));
+
+        {
+            let mut state: FlowQuery = SystemState::new(app.world_mut());
+            let (mut flows, mut globals, programs, _tables, _commands) =
+                state.get_mut(app.world_mut());
+            let handle = flows.get(entity).expect("flow").2.handle.clone();
+            let program = &programs.get(&handle).expect("program asset").program;
+            let (_flow, mut ctx, _p, _l) = flows.get_mut(entity).expect("flow");
+            let report = load_flow_state(&mut globals, &mut ctx, program, &save);
+            assert!(report.is_clean(), "load should be clean: {report:?}");
+        }
+
+        let mood_idx = {
+            let programs = app.world().resource::<Assets<ProgramAsset>>();
+            let handle = app
+                .world()
+                .entity(entity)
+                .get::<crate::BrinkProgram<()>>()
+                .expect("BrinkProgram")
+                .handle
+                .clone();
+            programs
+                .get(&handle)
+                .expect("program asset")
+                .program
+                .global_index("mood")
+                .expect("mood global")
+        };
+        let shared_idx = {
+            let programs = app.world().resource::<Assets<ProgramAsset>>();
+            let handle = app
+                .world()
+                .entity(entity)
+                .get::<crate::BrinkProgram<()>>()
+                .expect("BrinkProgram")
+                .handle
+                .clone();
+            programs
+                .get(&handle)
+                .expect("program asset")
+                .program
+                .global_index("shared_count")
+                .expect("shared_count global")
+        };
+
+        // The loaded entity's own EFFECTIVE view sees the restored mood.
+        {
+            let mut state: FlowQuery = SystemState::new(app.world_mut());
+            let (mut flows, mut globals, _programs, _tables, _commands) =
+                state.get_mut(app.world_mut());
+            let (_flow, mut ctx, _p, _l) = flows.get_mut(entity).expect("flow");
+            let view = flow_context_view(&mut globals, &mut ctx);
+            assert_eq!(
+                view.global(mood_idx),
+                &Value::Int(42),
+                "the loaded entity's own view should see the restored Local mood"
+            );
+            assert_eq!(
+                view.global(shared_idx),
+                &Value::Int(7),
+                "the loaded entity's own view should see the restored World shared_count"
+            );
+        }
+
+        // Raw World storage never received the Local write.
+        {
+            let globals = app.world().resource::<BrinkGlobals<()>>();
+            assert_ne!(
+                globals.inner.global(mood_idx),
+                &Value::Int(42),
+                "Local-scoped mood must NOT have been written into the shared World"
+            );
+            assert_eq!(
+                globals.inner.global(shared_idx),
+                &Value::Int(7),
+                "World-scoped shared_count should have rewritten the shared World directly"
+            );
+        }
+
+        // A completely different flow sharing the same BrinkGlobals does
+        // NOT see the loaded entity's private mood (proves it landed in
+        // THAT entity's own FlowLocal, not anywhere globally visible) but
+        // DOES see the shared shared_count (World-scoped, visible to all).
+        {
+            let mut state: FlowQuery = SystemState::new(app.world_mut());
+            let (mut flows, mut globals, _programs, _tables, _commands) =
+                state.get_mut(app.world_mut());
+            let (_flow, mut ctx, _p, _l) = flows.get_mut(other).expect("other flow");
+            let view = flow_context_view(&mut globals, &mut ctx);
+            assert_ne!(
+                view.global(mood_idx),
+                &Value::Int(42),
+                "a different flow must not see another entity's private mood"
+            );
+            assert_eq!(
+                view.global(shared_idx),
+                &Value::Int(7),
+                "a different flow should see the same shared shared_count"
+            );
+        }
+    }
+
+    /// (c) `LoadReport` surfaces unknown globals without erroring: a
+    /// `SaveState` naming a `VAR` the program doesn't declare loads
+    /// cleanly for every other entry, with the unknown name reported.
+    #[test]
+    fn load_report_surfaces_unknown_globals() {
+        let mut app = app_with_save_policy();
+        let (program, tables, ctx) = compile_test_story(SAVE_TEST_SRC);
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = spawn_fulfilled(&mut app, &story, FlowStart::Address("greet".to_string()));
+
+        let mut save = brink_runtime::SaveState {
+            version: brink_runtime::SAVE_FORMAT_VERSION,
+            globals: std::collections::BTreeMap::new(),
+            visits: Vec::new(),
+            turns: Vec::new(),
+            turn_index: 0,
+            rng_seed: 0,
+            previous_random: 0,
+        };
+        save.globals.insert("mood".to_string(), Value::Int(5));
+        save.globals
+            .insert("does_not_exist".to_string(), Value::Int(99));
+
+        let (report, mood_idx) = {
+            let mut state: FlowQuery = SystemState::new(app.world_mut());
+            let (mut flows, mut globals, programs, _tables, _commands) =
+                state.get_mut(app.world_mut());
+            let handle = flows.get(entity).expect("flow").2.handle.clone();
+            let program = &programs.get(&handle).expect("program asset").program;
+            let mood_idx = program.global_index("mood").expect("mood global");
+            let (_flow, mut ctx, _p, _l) = flows.get_mut(entity).expect("flow");
+            let report = load_flow_state(&mut globals, &mut ctx, program, &save);
+            (report, mood_idx)
+        };
+
+        assert!(!report.is_clean(), "report should not be clean: {report:?}");
+        assert_eq!(report.unknown_globals, vec!["does_not_exist".to_string()]);
+
+        // The known entry still applied despite the unknown one.
+        let mut state: FlowQuery = SystemState::new(app.world_mut());
+        let (mut flows, mut globals, _programs, _tables, _commands) =
+            state.get_mut(app.world_mut());
+        let (_flow, mut ctx, _p, _l) = flows.get_mut(entity).expect("flow");
+        let view = flow_context_view(&mut globals, &mut ctx);
+        assert_eq!(
+            view.global(mood_idx),
+            &Value::Int(5),
+            "the known global should still apply even though another was unknown"
+        );
+    }
 }
