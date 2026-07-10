@@ -6,11 +6,17 @@ until it reaches a yield point, then hands back a `Line`. The variant of that
 foundation under every client — raw Rust, Bevy, the web runner all express the
 same model.
 
-```rust,ignore
+```rust
+# extern crate brink_format;
+# extern crate brink_runtime;
+# use brink_format::{LineEntry, StoryData};
+# use brink_runtime::{Program, RuntimeError};
+# fn demo(program: Program, line_tables: Vec<Vec<LineEntry>>) -> Result<(), RuntimeError> {
+# let chosen_index = 0usize;
 use std::sync::Arc;
 use brink_runtime::{Line, Story};
 
-let mut story = Story::new(Arc::new(program), line_tables);
+let mut story: Story = Story::new(Arc::new(program), line_tables);
 
 loop {
     match story.continue_single()? {
@@ -29,6 +35,8 @@ loop {
         }
     }
 }
+# Ok(())
+# }
 ```
 
 > `Story` is the mutable half of the [two-object model](../embedding/index.md#the-two-object-model):
@@ -57,7 +65,10 @@ but `Text`).
   variant (`Done`, `Choices`, or `End`). Ideal for click-to-continue UIs that
   show a whole passage at once.
 
-```rust,ignore
+```rust
+# extern crate brink_runtime;
+# use brink_runtime::{Line, RuntimeError, Story};
+# fn demo(story: &mut Story) -> Result<(), RuntimeError> {
 loop {
     let lines = story.continue_maximally()?;
     for line in &lines {
@@ -69,6 +80,8 @@ loop {
         _ => {} // Done — loop again for the next turn.
     }
 }
+# Ok(())
+# }
 ```
 
 Both have `_with(&handler)` variants (`continue_single_with`,
@@ -80,13 +93,21 @@ Both have `_with(&handler)` variants (`continue_single_with`,
 When the story yields `Line::Choices`, execution is blocked until you select one
 with `story.choose(index)`:
 
-```rust,ignore
+```rust
+# extern crate brink_runtime;
+# use brink_runtime::{Line, RuntimeError, Story};
+# fn demo(story: &mut Story, line: Line, selected: usize) -> Result<(), RuntimeError> {
+# match line {
 Line::Choices { text, choices, .. } => {
     for choice in &choices {
         println!("{}: {}", choice.index + 1, choice.text);
     }
     story.choose(choices[selected].index)?;
 }
+# _ => {}
+# }
+# Ok(())
+# }
 ```
 
 Each `Choice` carries:
