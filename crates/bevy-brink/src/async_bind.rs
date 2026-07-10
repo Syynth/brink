@@ -260,12 +260,16 @@ mod tests {
             &BrinkProgram<()>,
             &BrinkLocale<()>,
         )>,
+        globals: Option<ResMut<crate::BrinkGlobals<()>>>,
         programs: Res<Assets<ProgramAsset>>,
         tables: Res<Assets<LineTablesAsset>>,
         bindings: Res<BrinkBindings<()>>,
         mut commands: Commands,
         mut out: ResMut<Lines>,
     ) {
+        let Some(mut globals) = globals else {
+            return;
+        };
         for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
             if flow.inner.has_pending_external() {
                 continue;
@@ -274,10 +278,11 @@ mod tests {
                 continue;
             };
             let handler = bindings.handler();
+            let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
             if let Ok(Advance::Line(line)) = flow.step_one(
                 &p.program,
                 &t.tables,
-                &mut ctx.inner,
+                &mut view,
                 &handler,
                 entity,
                 &mut commands,

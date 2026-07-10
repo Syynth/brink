@@ -22,8 +22,8 @@ use bevy::prelude::*;
 use bevy_brink::{
     BrinkBindings, BrinkBindingsAppExt, BrinkChoicesPresented, BrinkContext, BrinkFlow,
     BrinkFlowRequest, BrinkGlobals, BrinkLocale, BrinkPlugin, BrinkProgram, BrinkTranscript,
-    BrinkWorld, Choice, ContextSeed, FlowStart, LineTablesAsset, ProgramAsset, RuntimeError, Value,
-    digit_key_to_choice_index,
+    Choice, FlowStart, LineTablesAsset, ProgramAsset, RuntimeError, Scope, Value, WorldPolicy,
+    digit_key_to_choice_index, flow_context_view,
 };
 
 fn main() {
@@ -53,25 +53,35 @@ fn request_flow(mut commands: Commands, assets: Res<AssetServer>) {
         BrinkFlowRequest::<()>::builder()
             .story(assets.load("dialogue.inkb"))
             .start(FlowStart::Address("intro_scene".into())) // optional
-            .seed(ContextSeed::FromGlobals) // optional
             .build(),
     );
     // ANCHOR_END: spawn_request
 }
 
-/// Commit a side conversation's world back into the shared save data.
+/// Install a host policy marking a `VAR` and a knot private-per-flow —
+/// everything else (the default) stays `World`-scoped, shared live across
+/// every flow under the marker. Call this instead of `BrinkPlugin::default()`
+/// when you want per-entity private state (an NPC's own mood, its own
+/// "have I said this before" visit history) alongside shared globals.
 #[expect(
     dead_code,
     reason = "included verbatim into the Bevy book; not exercised here"
 )]
-fn save(globals: &mut BrinkGlobals<()>, flow_ctx: &BrinkWorld, program: &ProgramAsset) {
-    // ANCHOR: commit
-    globals.commit_from(flow_ctx); // wholesale "save everything"
-    globals.commit_progress(flow_ctx); // globals replace; visit/turn counts take the max
-    globals.commit_globals_only(flow_ctx); // just variables; leave counts/RNG alone
-    // "new game" reset:
-    globals.commit_from(&program.initial_context);
-    // ANCHOR_END: commit
+fn app_with_policy() -> App {
+    // ANCHOR: policy
+    let mut policy = WorldPolicy::default(); // default: every unit World-scoped
+    policy.overrides.insert("mood".to_string(), Scope::Local); // this VAR is private per flow
+    policy
+        .overrides
+        .insert("greeting".to_string(), Scope::Local); // this knot's visit count too
+
+    let mut app = App::new();
+    app.add_plugins((
+        AssetPlugin::default(),
+        BrinkPlugin::<()>::default().with_policy(policy),
+    ));
+    // ANCHOR_END: policy
+    app
 }
 
 /// Drive every non-paused flow to a terminal line from a normal system.
@@ -89,11 +99,15 @@ fn drive(
         &BrinkProgram<()>,
         &BrinkLocale<()>,
     )>,
+    globals: Option<ResMut<BrinkGlobals<()>>>,
     programs: Res<Assets<ProgramAsset>>,
     tables: Res<Assets<LineTablesAsset>>,
     bindings: Res<BrinkBindings<()>>,
     mut commands: Commands,
 ) {
+    let Some(mut globals) = globals else {
+        return; // no flow fulfilled yet
+    };
     for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
         if flow.inner.has_pending_external() {
             continue;
@@ -102,10 +116,14 @@ fn drive(
             continue;
         };
         let handler = bindings.handler();
+        // World-scoped units (the default) route to the shared `globals`;
+        // Local-scoped units (opted into via a policy override) route to
+        // this flow's own `ctx`.
+        let mut view = flow_context_view(&mut globals, &mut ctx);
         let _ = flow.advance_until_terminal(
             &p.program,
             &t.tables,
-            &mut ctx.inner,
+            &mut view,
             &handler,
             entity,
             &mut commands,
@@ -122,11 +140,13 @@ fn drive(
 )]
 fn pick(
     flow: &mut BrinkFlow<()>,
+    globals: &mut BrinkGlobals<()>,
     ctx: &mut BrinkContext<()>,
     index: usize,
 ) -> Result<(), RuntimeError> {
     // ANCHOR: choose
-    flow.choose(&mut ctx.inner, index)?;
+    let mut view = flow_context_view(globals, ctx);
+    flow.choose(&mut view, index)?;
     // ANCHOR_END: choose
     Ok(())
 }
@@ -141,11 +161,13 @@ fn keyboard_pick(
     keys: Res<ButtonInput<KeyCode>>,
     choices: &[Choice],
     flow: &mut BrinkFlow<()>,
+    globals: &mut BrinkGlobals<()>,
     ctx: &mut BrinkContext<()>,
 ) -> Result<(), RuntimeError> {
     // ANCHOR: digit_choose
     if let Some(idx) = digit_key_to_choice_index(&keys, choices.len()) {
-        flow.choose(&mut ctx.inner, idx)?;
+        let mut view = flow_context_view(globals, ctx);
+        flow.choose(&mut view, idx)?;
     }
     // ANCHOR_END: digit_choose
     Ok(())

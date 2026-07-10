@@ -306,6 +306,10 @@ fn on_flow_reset(
 // rendering." The transcript accumulates for the entire run — it's
 // only ever cleared on hot-reload (`BrinkFlowReset`).
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the shared BrinkGlobals param joins the driver params"
+)]
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut flows: Query<(
@@ -318,6 +322,7 @@ fn handle_input(
         &mut PendingChoices,
         &mut Banner,
     )>,
+    globals: Option<ResMut<bevy_brink::BrinkGlobals<()>>>,
     programs: Res<Assets<ProgramAsset>>,
     line_tables_assets: Res<Assets<LineTablesAsset>>,
     bindings: Res<BrinkBindings<()>>,
@@ -328,6 +333,10 @@ fn handle_input(
         exit.write(AppExit::Success);
         return;
     }
+
+    let Some(mut globals) = globals else {
+        return; // no flow fulfilled yet
+    };
 
     let Ok((
         entity,
@@ -358,7 +367,8 @@ fn handle_input(
     // suppressed choices (e.g. `* [Hello] -> ...`) don't.
     if !choices.0.is_empty() {
         if let Some(idx) = digit_key_to_choice_index(&keys, choices.0.len()) {
-            if let Err(err) = flow.choose_recording(&mut ctx.inner, &mut replay_log, idx) {
+            let mut view = bevy_brink::flow_context_view(&mut globals, &mut ctx);
+            if let Err(err) = flow.choose_recording(&mut view, &mut replay_log, idx) {
                 banner.0 = format!("choose error: {err}");
                 return;
             }
@@ -390,10 +400,11 @@ fn handle_input(
     // it (pure-fn bindings resolve inline; command bindings are buffered),
     // then flush the buffered command events into the world.
     let handler = bindings.handler();
+    let mut view = bevy_brink::flow_context_view(&mut globals, &mut ctx);
     let result = flow.step_one(
         &program_asset.program,
         &lt_asset.tables,
-        &mut ctx.inner,
+        &mut view,
         &handler,
         entity,
         &mut commands,

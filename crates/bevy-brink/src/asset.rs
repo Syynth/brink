@@ -14,12 +14,18 @@ use crate::line_tables::BrinkLocale;
 /// The immutable bytecode portion of a compiled story — what the VM
 /// actually executes — together with the fresh starting [`World`](brink_runtime::World)
 /// (globals seeded from `VAR`/`CONST`/`LIST` defaults; zero visit and
-/// turn counts).
+/// turn counts, all-`World` policy).
 ///
-/// `initial_context` is read-only "fresh start" state. Consumers use
-/// it to seed [`BrinkGlobals`](crate::BrinkGlobals) on first
-/// fulfillment, and can commit it back later for a "new game" reset
-/// (`globals.commit_from(&program.initial_context)`).
+/// `initial_context` is read-only "fresh start" state, exposed for
+/// consumers that want to compare against or reset toward program
+/// defaults. **It is not what seeds [`BrinkGlobals`](crate::BrinkGlobals)**
+/// — since F6.2, `fulfill_flow_requests` creates the shared `BrinkGlobals`
+/// `World` via [`brink_runtime::World::new`], resolving the host's
+/// [`WorldPolicy`](brink_runtime::WorldPolicy) (installed via
+/// [`BrinkPlugin::with_policy`](crate::BrinkPlugin::with_policy)) against
+/// this program's symbol table — `initial_context` (always the all-`World`
+/// policy) plays no part in that. There is no "commit back to reset"
+/// verb either; see [`BrinkGlobals`](crate::BrinkGlobals)'s docs.
 ///
 /// No execution happens to produce this — it's a pure function of the
 /// linked [`Program`]'s declarations. Stories with free-floating

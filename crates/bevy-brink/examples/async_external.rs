@@ -121,12 +121,16 @@ fn drive_flows(
         &BrinkProgram<()>,
         &BrinkLocale<()>,
     )>,
+    globals: Option<ResMut<bevy_brink::BrinkGlobals<()>>>,
     programs: Res<Assets<ProgramAsset>>,
     tables: Res<Assets<LineTablesAsset>>,
     bindings: Res<BrinkBindings<()>>,
     mut commands: Commands,
     mut finished: ResMut<Finished>,
 ) {
+    let Some(mut globals) = globals else {
+        return; // no flow fulfilled yet this tick
+    };
     for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
         if flow.inner.has_pending_external() || finished.0 {
             continue;
@@ -135,10 +139,11 @@ fn drive_flows(
             continue;
         };
         let handler = bindings.handler();
+        let mut view = bevy_brink::flow_context_view(&mut globals, &mut ctx);
         match flow.step_one(
             &p.program,
             &t.tables,
-            &mut ctx.inner,
+            &mut view,
             &handler,
             entity,
             &mut commands,

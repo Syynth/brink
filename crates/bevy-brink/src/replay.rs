@@ -17,23 +17,19 @@ use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::{Commands, Query, Res};
+use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_ecs::world::World;
 use bevy_log::{info, warn};
 use brink_format::LineEntry;
-// `brink_runtime::World` (the shared story-state layer) is aliased here to
-// avoid colliding with `bevy_ecs::world::World` (the ECS World), which this
-// file also uses extensively (`take_recorder`/`put_recorder`/`record_external`).
-use brink_runtime::World as BrinkWorld;
 use brink_runtime::{
-    ExternalFnHandler, FastRng, FlowInstance, Line, ReplayHandler, ReplayMode, ReplayRecorder,
-    RuntimeError,
+    ContextAccess, ExternalFnHandler, FastRng, FlowInstance, FlowLocal, ReplayHandler, ReplayMode,
+    ReplayRecorder, RuntimeError,
 };
 
 use crate::asset::{BrinkProgram, BrinkStoryAsset, LineTablesAsset, ProgramAsset};
 use crate::event::BrinkFlowReset;
 use crate::flow::BrinkFlow;
-use crate::globals::BrinkContext;
+use crate::globals::{BrinkContext, BrinkGlobals, flow_context_view};
 use crate::request::FlowStart;
 
 /// Global default [`ReplayMode`] for hot-reload replay (the shared
@@ -50,18 +46,31 @@ pub struct BrinkReplayConfig {
 #[derive(Component, Clone, Copy, Debug)]
 pub struct ReplayQueryModeOverride(pub ReplayMode);
 
-/// Per-flow snapshot used to reconstruct the flow on hot-reload.
+/// Per-flow log used to reconstruct the flow on hot-reload.
 ///
 /// Inserted alongside [`BrinkFlow<M>`] by the fulfillment system when
-/// the `dev` feature is enabled. Contains the per-flow `World`
-/// snapshot at the moment the flow was spawned, the start address, the
-/// story handle (so we can find the new program after reload), and the
-/// running list of choice selections.
+/// the `dev` feature is enabled. Contains the start address, the story
+/// handle (so we can find the new program after reload), and the running
+/// list of choice selections + recorded external results. There is no
+/// per-flow `World` snapshot to restore — every flow's `FlowLocal` starts
+/// fresh at spawn (see the F6 AMENDMENT in
+/// `docs/scoped-flow-state-spec.md`), so reconstruction resets the entity's
+/// [`BrinkContext`](crate::BrinkContext) to a fresh [`FlowLocal`] and
+/// re-walks against the (unreset, still-live) shared
+/// [`BrinkGlobals`](crate::BrinkGlobals) `World`.
+///
+/// **Known limitation (dev-only):** because the shared `World` is never
+/// reset, a `World`-scoped unit this flow already wrote during its original
+/// play (e.g. a visit count bumped by entering a knot) is *not* undone
+/// before the re-walk — the re-walk bumps it again. Under the all-`World`
+/// default this means repeated hot-reloads can drift `World`-scoped
+/// visit/turn counts upward each time. This is a real consequence of the
+/// shared-by-default model (the pre-F6.2 per-flow-private-`World` replay
+/// could safely reset-then-rewalk because nothing was shared); fully
+/// solving it (e.g. a per-flow world-write journal to undo) is out of scope
+/// for F6.2 — flag it if it becomes a practical problem.
 #[derive(Component)]
 pub struct BrinkReplayLog<M: Send + Sync + 'static = ()> {
-    /// Snapshot of the flow's [`BrinkContext`](crate::BrinkContext)
-    /// taken at fulfillment.
-    pub start_context: BrinkWorld,
     /// Where this flow began executing.
     pub start: FlowStart,
     /// The story this flow is bound to (for re-resolving the program
@@ -78,13 +87,8 @@ pub struct BrinkReplayLog<M: Send + Sync + 'static = ()> {
 }
 
 impl<M: Send + Sync + 'static> BrinkReplayLog<M> {
-    pub(crate) fn new(
-        start_context: BrinkWorld,
-        start: FlowStart,
-        story: Handle<BrinkStoryAsset>,
-    ) -> Self {
+    pub(crate) fn new(start: FlowStart, story: Handle<BrinkStoryAsset>) -> Self {
         Self {
-            start_context,
             start,
             story,
             choices_made: Vec::new(),
@@ -100,7 +104,9 @@ impl<M: Send + Sync + 'static> BrinkReplayLog<M> {
 ///
 /// Behavior:
 /// - For each entity with both `BrinkFlow<M>` and `BrinkReplayLog<M>`:
-///   1. Reset the entity's [`BrinkContext<M>`] from `log.start_context`.
+///   1. Reset the entity's [`BrinkContext<M>`] to a fresh, empty
+///      [`FlowLocal`] (the shared [`BrinkGlobals<M>`] `World` is left as-is
+///      — see [`BrinkReplayLog`]'s "known limitation" doc).
 ///   2. Resolve `log.start` against the new program; build fresh `FlowInstance`.
 ///   3. For each choice in `log.choices_made`: step until a `Choices` line
 ///      appears, then call `choose(idx)`. If anything fails (choice index
@@ -123,11 +129,15 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         &mut BrinkContext<M>,
         &mut BrinkReplayLog<M>,
     )>,
+    globals: Option<ResMut<BrinkGlobals<M>>>,
     programs: Res<Assets<ProgramAsset>>,
     stories: Res<Assets<BrinkStoryAsset>>,
     line_tables_assets: Res<Assets<LineTablesAsset>>,
     mut commands: Commands,
 ) {
+    let Some(mut globals) = globals else {
+        return; // no flow has ever been fulfilled for this marker
+    };
     // Drain events; we only care that *some* program changed. Per-flow
     // routing is handled by the BrinkProgram handle below.
     let mut any_modified = false;
@@ -184,8 +194,11 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
             continue;
         };
 
-        // Reset the per-flow World to the captured snapshot.
-        context.inner = log.start_context.clone();
+        // Reset the per-flow FlowLocal to fresh/empty — every flow's local
+        // layer starts empty at spawn, so a rebuild starts the same way.
+        // The shared World is deliberately left untouched (see
+        // `BrinkReplayLog`'s "known limitation" doc).
+        context.inner = FlowLocal::new();
 
         // Replace the in-place flow with the freshly-built one.
         flow.inner = new_flow;
@@ -208,11 +221,12 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         // state is whatever comes after the last choose.
         let mut replay_failed = false;
         for (i, &choice_idx) in log.choices_made.iter().enumerate() {
+            let mut view = flow_context_view(&mut globals, &mut context);
             if let Err(err) = step_to_next_choices(
                 &mut flow.inner,
                 &program_asset.program,
                 line_tables,
-                &mut context.inner,
+                &mut view,
                 &replay,
             ) {
                 warn!(
@@ -222,7 +236,8 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
                 replay_failed = true;
                 break;
             }
-            if let Err(err) = flow.inner.choose(&mut context.inner, choice_idx) {
+            let mut view = flow_context_view(&mut globals, &mut context);
+            if let Err(err) = flow.inner.choose(&mut view, choice_idx) {
                 warn!(
                     "replay: choose({choice_idx}) at step {i} for entity {entity:?}: {err}; \
                      stopping replay"
@@ -238,10 +253,11 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
 
         // Now advance until the next terminal *with* events firing, so
         // the UI sees the user's current page in the new program.
+        let mut view = flow_context_view(&mut globals, &mut context);
         match flow.advance_until_terminal(
             &program_asset.program,
             line_tables,
-            &mut context.inner,
+            &mut view,
             &replay,
             entity,
             &mut commands,
@@ -260,7 +276,8 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
     }
 }
 
-/// Step the flow forward silently until we land on a `Choices` line.
+/// Step the flow forward silently until we land on a terminal line
+/// (`Choices`, `Done`, or `End`).
 ///
 /// Used during replay reconstruction: we walk the new bytecode to each
 /// choice point so we can re-apply the recorded selection. No observer
@@ -268,26 +285,23 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
 /// the user's current state. The post-replay `advance_until_terminal`
 /// in [`replay_on_reload`] is what fires events for the actual current
 /// page.
+///
+/// Delegates to the shared Layer-2 [`FlowInstance::drive_to_terminal`] op
+/// (F6.2) — the produced `Line`s are discarded (this walk is silent by
+/// design), but the shared loop is what gives it the bounded
+/// [`FlowInstance::LINE_LIMIT`] safety cap instead of a hand-rolled one.
+/// `ReplayHandler` (the only handler this is ever called with) never
+/// defers, so `drive_to_terminal`'s "errors instead of pausing on a
+/// deferred external" behavior never actually triggers here.
 fn step_to_next_choices(
     flow: &mut FlowInstance,
     program: &brink_runtime::Program,
     line_tables: &[Vec<LineEntry>],
-    context: &mut BrinkWorld,
+    context: &mut (impl ContextAccess + ?Sized),
     handler: &dyn ExternalFnHandler,
 ) -> Result<(), RuntimeError> {
-    const STEP_LIMIT: usize = 10_000;
-    for _ in 0..STEP_LIMIT {
-        let line =
-            flow.step_single_line::<FastRng>(program, line_tables, context, handler, None)?;
-        match line {
-            // Choices: ready for the next replayed pick.
-            // Done / End: nothing to choose against; replay caller will
-            // notice and stop iterating.
-            Line::Choices { .. } | Line::Done { .. } | Line::End { .. } => return Ok(()),
-            Line::Text { .. } => {}
-        }
-    }
-    Err(RuntimeError::StepLimitExceeded(STEP_LIMIT as u64))
+    flow.drive_to_terminal::<FastRng>(program, line_tables, context, handler, None)?;
+    Ok(())
 }
 
 /// Take the flow's [`ReplayRecorder`] out of its [`BrinkReplayLog<M>`], leaving
