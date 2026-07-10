@@ -82,7 +82,11 @@ fn main() {
 /// Step every non-parked flow once per frame, logging each line. Flows parked
 /// on a pending external are left alone — `resolve_pending_externals` spawns
 /// the task and `poll_brink_tasks` resolves it; we resume on a later frame.
-#[expect(clippy::type_complexity, reason = "bevy driver query tuple")]
+#[expect(
+    clippy::type_complexity,
+    clippy::too_many_arguments,
+    reason = "bevy driver query tuple; the shared BrinkGlobals param joins the driver params"
+)]
 fn drive_flows(
     mut flows: Query<(
         Entity,
@@ -91,6 +95,7 @@ fn drive_flows(
         &BrinkProgram<()>,
         &BrinkLocale<()>,
     )>,
+    globals: Option<ResMut<bevy_brink::BrinkGlobals<()>>>,
     programs: Res<Assets<ProgramAsset>>,
     tables: Res<Assets<LineTablesAsset>>,
     bindings: Res<BrinkBindings<()>>,
@@ -99,6 +104,9 @@ fn drive_flows(
     // Announce the parked state once (the loop runs every frame while parked).
     mut announced: Local<bool>,
 ) {
+    let Some(mut globals) = globals else {
+        return; // no flow fulfilled yet this tick
+    };
     for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
         if flow.inner.has_pending_external() {
             if !*announced {
@@ -115,10 +123,11 @@ fn drive_flows(
             continue;
         };
         let handler = bindings.handler();
+        let mut view = bevy_brink::flow_context_view(&mut globals, &mut ctx);
         match flow.step_one(
             &p.program,
             &t.tables,
-            &mut ctx.inner,
+            &mut view,
             &handler,
             entity,
             &mut commands,

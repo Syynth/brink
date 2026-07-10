@@ -8,6 +8,18 @@ the source file with the running flow rebuilt against the new bytecode.
 This document is the source of truth for "where is the bevy-brink work
 currently parked." Update it when you make a change that lands.
 
+> **F6.2 superseded the per-flow-`World`-clone model described in several
+> sections below** (the "Globals = resource" bullet immediately following,
+> and "Fork mode for per-flow context" further down). As of F6.2, every
+> flow under a marker shares **one** `BrinkGlobals<M>` `World`; a flow's
+> `BrinkContext<M>` holds only a private `FlowLocal` override layer
+> (empty by default). What's shared vs. private is a per-`World` policy
+> (`WorldPolicy`, installed via `BrinkPlugin::with_policy`), not a
+> per-flow clone-or-share choice. See `docs/scoped-flow-state-spec.md`
+> (the core model) and its "F6 AMENDMENT" section (the bevy-specific
+> rulings) for the design; those sections below are kept as historical
+> record of the design that preceded it, not current behavior.
+
 ## Goal
 
 Make ink stories first-class Bevy assets:
@@ -332,9 +344,9 @@ Done since this list was written: the external-function binding facility
 (was "most important"), a pausable stepping primitive (`advance` /
 `StepOutcome`) superseding the proposed `step_until_terminal`, and
 async-task / defer-across-frames bindings (the former first item here).
-- **Fork / isolated context per flow** — design is decided (per-flow
-  `Context` on a Component instead of shared Resource), no API surface
-  yet.
+- ~~Fork / isolated context per flow~~ — done, but not as sketched here:
+  see the F6.2 note at the top of this document (a per-`World` policy +
+  per-flow `FlowLocal`, not a per-flow `Context` clone).
 
 ## Test status
 
@@ -481,7 +493,21 @@ continue" demo dialogue UI but probably wrong for a production
 external-function-heavy game. Marked for redesign once external bindings
 land.
 
-### Fork mode for per-flow context (seam, no API)
+### Fork mode for per-flow context (seam, no API) — superseded by F6.2
+
+**Resolved differently than sketched here** — see the F6.2 note at the top
+of this document. Per-entity privacy did *not* end up being "per-flow
+`Context` on a Component instead of a shared Resource" (that would have
+meant re-inventing full-clone isolation with a manual merge step, which is
+exactly what F6.2 removed). Instead: `BrinkGlobals<M>` stays the one
+shared `World` for every flow; a `WorldPolicy` installed once at plugin
+setup marks *which* variables/knots are `Local` (private per flow, via
+each flow's own `FlowLocal`) versus `World` (shared, the default).
+Speculative/sandboxed evaluation (the runtime's `Mode::Sandbox` on
+`FlowLocal`) is a separate, later mechanism for the "watch/eval" case —
+see `docs/scoped-flow-state-spec.md`'s "Sandbox mode" section — not
+something bevy-brink wires up yet. The rest of this section is kept
+verbatim as historical record of the design that was rejected.
 
 The shared-globals default (`BrinkGlobals<M>` resource) suits ~95% of
 games. For the remaining 5% — speculative dialogue preview, rollback,

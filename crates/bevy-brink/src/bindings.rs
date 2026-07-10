@@ -37,7 +37,8 @@
 //!
 //! ```ignore
 //! let handler = bindings.handler();
-//! let line = flow.step_one(program, tables, &mut ctx.inner, &handler, entity, &mut commands)?;
+//! let mut view = bevy_brink::flow_context_view(&mut globals, &mut ctx);
+//! let line = flow.step_one(program, tables, &mut view, &handler, entity, &mut commands)?;
 //! handler.flush(&mut commands);
 //! ```
 
@@ -52,7 +53,7 @@ use bevy_asset::Assets;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::event::Event;
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::{Commands, In, IntoSystem, Query, Res, SystemId, SystemState};
+use bevy_ecs::system::{Commands, In, IntoSystem, Query, Res, ResMut, SystemId, SystemState};
 use bevy_ecs::world::World;
 use bevy_log::warn;
 use bevy_tasks::{AsyncComputeTaskPool, TaskPool};
@@ -602,6 +603,7 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
             &mut BrinkFlow<M>,
             &mut BrinkContext<M>,
         )>,
+        Option<ResMut<crate::BrinkGlobals<M>>>,
         Res<Assets<ProgramAsset>>,
         Res<Assets<LineTablesAsset>>,
         Res<BrinkBindings<M>>,
@@ -609,7 +611,8 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
 
     // Begin the evaluation.
     let mut next = {
-        let (mut flows, programs, tables, bindings) = state.get_mut(world);
+        let (mut flows, globals, programs, tables, bindings) = state.get_mut(world);
+        let mut globals = globals.ok_or(BrinkCallError::NotAFlow)?;
         let (prog_c, loc_c, mut flow, mut ctx) = flows
             .get_mut(entity)
             .map_err(|_| BrinkCallError::NotAFlow)?;
@@ -626,10 +629,11 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
             .ok_or_else(|| BrinkCallError::FunctionNotFound(name.to_owned()))?
             .0;
         let handler = bindings.eval_handler();
+        let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
         let outcome = flow.inner.begin_function_eval::<FastRng>(
             program,
             line_tables,
-            &mut ctx.inner,
+            &mut view,
             &handler,
             idx,
             args,
@@ -648,7 +652,8 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
                     .run_system_with(system, (entity, qargs))
                     .map_err(|e| BrinkCallError::QueryFailed(format!("{e:?}")))?;
                 next = {
-                    let (mut flows, programs, tables, bindings) = state.get_mut(world);
+                    let (mut flows, globals, programs, tables, bindings) = state.get_mut(world);
+                    let mut globals = globals.ok_or(BrinkCallError::NotAFlow)?;
                     let (prog_c, loc_c, mut flow, mut ctx) = flows
                         .get_mut(entity)
                         .map_err(|_| BrinkCallError::NotAFlow)?;
@@ -662,10 +667,11 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
                         .tables;
                     let handler = bindings.eval_handler();
                     flow.inner.resolve_external(value);
+                    let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
                     let outcome = flow.inner.resume_function_eval::<FastRng>(
                         program,
                         line_tables,
-                        &mut ctx.inner,
+                        &mut view,
                         &handler,
                         None,
                     )?;
@@ -732,7 +738,7 @@ fn advance_recording<M: Send + Sync + 'static>(
     flow: &mut FlowInstance,
     program: &Program,
     line_tables: &[Vec<brink_format::LineEntry>],
-    context: &mut brink_runtime::World,
+    context: &mut (impl brink_runtime::ContextAccess + ?Sized),
     handler: &BrinkHandler<'_, M>,
     #[cfg(feature = "dev")] recorder: Option<&mut ReplayRecorder>,
 ) -> Result<StepOutcome, RuntimeError> {
@@ -755,8 +761,20 @@ fn advance_recording<M: Send + Sync + 'static>(
 /// events are flushed and the line's observer event is fired, exactly as
 /// `step_one` would.
 ///
+/// Bounded by a [`FlowInstance::LINE_LIMIT`] budget shared across every
+/// inline resume this call makes (each pending query resolved and each line
+/// produced decrements it by one) — reconciled onto the same
+/// `RuntimeError::LineLimitExceeded` convention
+/// [`FlowInstance::drive`]/`advance_until_terminal` use, rather than
+/// looping unboundedly if a story keeps calling inline-resolvable externals
+/// without ever producing a line (guard against unbounded growth).
+///
 /// # Errors
 /// See [`BrinkCallError`].
+#[expect(
+    clippy::too_many_lines,
+    reason = "the SystemState re-borrow dance around run_system_with doesn't split cleanly"
+)]
 pub fn advance_flow<M: Send + Sync + 'static>(
     world: &mut World,
     entity: Entity,
@@ -772,6 +790,7 @@ pub fn advance_flow<M: Send + Sync + 'static>(
             &mut BrinkFlow<M>,
             &mut BrinkContext<M>,
         )>,
+        Option<ResMut<crate::BrinkGlobals<M>>>,
         Res<Assets<ProgramAsset>>,
         Res<Assets<LineTablesAsset>>,
         Res<BrinkBindings<M>>,
@@ -789,9 +808,17 @@ pub fn advance_flow<M: Send + Sync + 'static>(
     #[cfg(feature = "dev")]
     let mut recorder: Option<ReplayRecorder> = crate::replay::take_recorder::<M>(world, entity);
 
+    let mut budget = FlowInstance::LINE_LIMIT;
+
     loop {
+        if budget == 0 {
+            return Err(RuntimeError::LineLimitExceeded(FlowInstance::LINE_LIMIT).into());
+        }
+        budget -= 1;
+
         let step = {
-            let (mut flows, programs, tables, bindings) = state.get_mut(world);
+            let (mut flows, globals, programs, tables, bindings) = state.get_mut(world);
+            let mut globals = globals.ok_or(BrinkCallError::NotAFlow)?;
             let (prog_c, loc_c, mut flow, mut ctx) = flows
                 .get_mut(entity)
                 .map_err(|_| BrinkCallError::NotAFlow)?;
@@ -804,6 +831,7 @@ pub fn advance_flow<M: Send + Sync + 'static>(
                 .ok_or(BrinkCallError::LineTablesNotLoaded)?
                 .tables;
             let handler = bindings.handler();
+            let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
             // Inline pure/command results are captured by `advance_recording`'s
             // RecordingHandler wrap (dev); out-of-band query results are recorded
             // at the resolve site below.
@@ -811,7 +839,7 @@ pub fn advance_flow<M: Send + Sync + 'static>(
                 &mut flow.inner,
                 program,
                 line_tables,
-                &mut ctx.inner,
+                &mut view,
                 &handler,
                 #[cfg(feature = "dev")]
                 recorder.as_mut(),
@@ -1486,11 +1514,15 @@ mod tests {
                 &BrinkProgram<()>,
                 &BrinkLocale<()>,
             )>,
+             globals: Option<ResMut<crate::BrinkGlobals<()>>>,
              programs: Res<Assets<ProgramAsset>>,
              tables: Res<Assets<LineTablesAsset>>,
              bindings: Res<BrinkBindings<()>>,
              mut commands: Commands,
              mut out: ResMut<Lines>| {
+                let Some(mut globals) = globals else {
+                    return;
+                };
                 for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
                     if flow.inner.has_pending_external() {
                         continue; // paused on a query; wait for the resolver
@@ -1500,10 +1532,11 @@ mod tests {
                         continue;
                     };
                     let handler = bindings.handler();
+                    let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
                     if let Ok(Advance::Line(line)) = flow.step_one(
                         &p.program,
                         &t.tables,
-                        &mut ctx.inner,
+                        &mut view,
                         &handler,
                         entity,
                         &mut commands,

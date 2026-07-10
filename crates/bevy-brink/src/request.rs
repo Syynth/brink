@@ -6,8 +6,7 @@
 //! story's sub-assets to load, builds a `FlowInstance`, replaces the
 //! request component with [`BrinkFlow<M>`](crate::BrinkFlow), the
 //! [`BrinkStory<M>`](crate::BrinkStory) bundle (program + locale
-//! handles), and a per-flow [`BrinkContext<M>`](crate::BrinkContext)
-//! seeded from [`BrinkGlobals<M>`](crate::BrinkGlobals).
+//! handles), and a fresh per-flow [`BrinkContext<M>`](crate::BrinkContext).
 //!
 //! No polling, no readiness latches: the user just spawns the request
 //! and lets the plugin fulfill it whenever assets become available.
@@ -20,11 +19,11 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::query::Without;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_log::{error, warn};
-use brink_runtime::{FlowInstance, World};
+use brink_runtime::{FlowInstance, FlowLocal, World};
 
 use crate::asset::{BrinkStory, BrinkStoryAsset, ProgramAsset};
 use crate::flow::BrinkFlow;
-use crate::globals::{BrinkContext, BrinkGlobals};
+use crate::globals::{BrinkContext, BrinkGlobals, BrinkWorldPolicy};
 
 /// Where a freshly-spawned flow should begin executing.
 #[derive(Default, Clone, Debug)]
@@ -36,25 +35,6 @@ pub enum FlowStart {
     /// Resolve a knot/stitch name to a starting position. Errors at
     /// fulfillment if the name is unknown.
     Address(String),
-}
-
-/// How a freshly-fulfilled flow should seed its
-/// [`BrinkContext<M>`](crate::BrinkContext) component.
-#[derive(Default, Clone, Debug)]
-pub enum ContextSeed {
-    /// Clone from the current [`BrinkGlobals<M>`](crate::BrinkGlobals)
-    /// resource — the consumer's "save data." Default: this is what
-    /// most flows want.
-    #[default]
-    FromGlobals,
-    /// Use the program's fresh starting state from
-    /// [`ProgramAsset::initial_context`](crate::ProgramAsset). Useful
-    /// for speculative-fork flows that should run independently of the
-    /// shared save state, or for testing.
-    FromInitial,
-    /// Use a caller-supplied `World`. For consumers that compute
-    /// custom seed state (e.g. mid-game branch from a snapshot).
-    Custom(World),
 }
 
 /// Marker component requesting that this entity become a flow once its
@@ -74,12 +54,14 @@ pub enum ContextSeed {
 ///
 /// The fulfillment system removes this component and inserts
 /// [`BrinkFlow<M>`](crate::BrinkFlow), the [`BrinkStory<M>`](crate::BrinkStory)
-/// bundle, and a per-flow [`BrinkContext<M>`](crate::BrinkContext)
-/// (seeded from [`BrinkGlobals<M>`](crate::BrinkGlobals), or from
-/// [`ProgramAsset::initial_context`](crate::ProgramAsset) on first
-/// fulfillment) once the program and line-tables subassets are loaded.
-/// Mutating the request after fulfillment is a no-op (in debug builds,
-/// a warning is emitted via [`warn_post_fulfillment_mutations`]).
+/// bundle, and a fresh per-flow [`BrinkContext<M>`](crate::BrinkContext)
+/// once the program and line-tables subassets are loaded. Spawning a flow
+/// takes no seed/policy parameter — its `FlowLocal` starts empty and its
+/// story-state routes World-vs-Local per the policy installed once at
+/// [`BrinkPlugin::with_policy`](crate::BrinkPlugin::with_policy) (see the F6
+/// AMENDMENT in `docs/scoped-flow-state-spec.md`). Mutating the request
+/// after fulfillment is a no-op (in debug builds, a warning is emitted via
+/// [`warn_post_fulfillment_mutations`]).
 #[derive(Component, bon::Builder)]
 pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
     /// The story to spawn this flow against.
@@ -87,11 +69,6 @@ pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
     /// Where to start. Defaults to `FlowStart::Root`.
     #[builder(default)]
     pub start: FlowStart,
-    /// How to seed this flow's [`BrinkContext`](crate::BrinkContext).
-    /// Defaults to `ContextSeed::FromGlobals` — clone from
-    /// [`BrinkGlobals<M>`](crate::BrinkGlobals).
-    #[builder(default)]
-    pub seed: ContextSeed,
     #[builder(skip)]
     _marker: PhantomData<fn() -> M>,
 }
@@ -104,14 +81,17 @@ pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
 ///
 /// - Skips requests whose `BrinkStoryAsset` (or any of its sub-assets)
 ///   isn't loaded yet — the request just waits.
-/// - On first fulfillment for marker `M`, inserts [`BrinkGlobals<M>`]
-///   seeded from [`ProgramAsset::initial_context`](crate::ProgramAsset)
-///   (the fresh starting `World` — globals from `VAR`/`CONST`/`LIST`
-///   defaults, zero visit/turn counts). Acts as the "save data" the
-///   flow's per-entity [`BrinkContext`] is cloned from.
-/// - Inserts the per-flow [`BrinkContext<M>`] component, seeded by
-///   cloning the current `BrinkGlobals<M>` resource. Each flow has its
-///   own `World`; globals are not auto-shared.
+/// - On first fulfillment for marker `M`, creates the single shared
+///   [`BrinkGlobals<M>`] `World` via [`World::new`], resolving the policy
+///   installed at [`BrinkPlugin::with_policy`](crate::BrinkPlugin::with_policy)
+///   against this program's symbol table. If the policy names an unknown
+///   variable or knot/stitch ([`PolicyError`](brink_runtime::PolicyError)),
+///   this is logged as a clear setup error (not a panic) and the request is
+///   removed — every later request for this marker will hit the same error
+///   until the host fixes its policy.
+/// - Inserts a fresh, empty per-flow [`BrinkContext<M>`] component — no
+///   seeding, no policy parameter (see the F6 AMENDMENT in
+///   `docs/scoped-flow-state-spec.md`).
 /// - Inserts the [`BrinkStory<M>`] bundle (program + locale handles).
 /// - Errors and removes the request if `FlowStart::Address` references
 ///   a name that isn't in the program.
@@ -128,18 +108,18 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
     stories: Res<Assets<BrinkStoryAsset>>,
     programs: Res<Assets<ProgramAsset>>,
     globals: Option<Res<BrinkGlobals<M>>>,
+    policy: Res<BrinkWorldPolicy<M>>,
     current_locale: Option<Res<crate::locale::BrinkCurrentLocale<M>>>,
     locales: Res<Assets<crate::locale::LocaleAsset>>,
     mut line_tables: ResMut<Assets<crate::asset::LineTablesAsset>>,
     mut cache: ResMut<crate::locale::LocalizedTablesCache<M>>,
     mut commands: Commands,
 ) {
-    // Snapshot of the current "save data" World. Used to seed flows
-    // whose request asks for ContextSeed::FromGlobals (the default).
-    // We capture this once at the top of the system call so multiple
-    // requests in the same batch see consistent state, even when the
-    // first request's fulfillment also creates the resource.
-    let mut globals_snapshot: Option<World> = globals.as_ref().map(|g| g.inner.clone());
+    // Whether BrinkGlobals<M> exists yet. Tracked separately from `globals`
+    // (an `Option<Res<_>>` snapshot from system start) so that once this
+    // batch creates it on the first request, later requests in the same
+    // batch don't try to create it again.
+    let mut globals_ready = globals.is_some();
 
     for (entity, req) in &requests {
         let Some(bundle) = stories.get(&req.story) else {
@@ -148,6 +128,23 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
         let Some(program_asset) = programs.get(&bundle.program) else {
             continue;
         };
+
+        if !globals_ready {
+            match World::new(&program_asset.program, &policy.policy) {
+                Ok(world) => {
+                    commands.insert_resource(BrinkGlobals::<M>::new(world));
+                    globals_ready = true;
+                }
+                Err(err) => {
+                    error!(
+                        "BrinkFlowRequest: world policy error creating BrinkGlobals: {err}; \
+                         removing request (fix the policy passed to BrinkPlugin::with_policy)"
+                    );
+                    commands.entity(entity).remove::<BrinkFlowRequest<M>>();
+                    continue;
+                }
+            }
+        }
 
         // Resolve start position.
         let flow = match &req.start {
@@ -164,26 +161,6 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
                 let (flow, _ctx) = FlowInstance::new_at(&program_asset.program, idx);
                 flow
             }
-        };
-
-        // Seed this flow's BrinkContext per the request's ContextSeed.
-        // FromGlobals: clone the resource snapshot. If BrinkGlobals
-        // doesn't exist yet, this is the first fulfillment for marker
-        // M — create it from program.initial_context, and use that as
-        // the snapshot for this flow and any later requests in this batch.
-        let starting_context = match &req.seed {
-            ContextSeed::FromGlobals => {
-                if let Some(ctx) = &globals_snapshot {
-                    ctx.clone()
-                } else {
-                    let ctx = program_asset.initial_context.clone();
-                    commands.insert_resource(BrinkGlobals::<M>::new(ctx.clone()));
-                    globals_snapshot = Some(ctx.clone());
-                    ctx
-                }
-            }
-            ContextSeed::FromInitial => program_asset.initial_context.clone(),
-            ContextSeed::Custom(ctx) => ctx.clone(),
         };
 
         // Resolve the flow's starting locale: base unless a global locale is
@@ -205,7 +182,7 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
         entity_cmds.remove::<BrinkFlowRequest<M>>();
         entity_cmds.insert((
             BrinkFlow::<M>::new(flow),
-            BrinkContext::<M>::new(starting_context.clone()),
+            BrinkContext::<M>::new(FlowLocal::new()),
             BrinkStory::<M>::new(bundle.program.clone(), active_handle),
             crate::locale::BrinkBaseLocale::<M>::new(base_handle),
         ));
@@ -214,7 +191,6 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
         // the flow and replay choices.
         #[cfg(feature = "dev")]
         entity_cmds.insert(crate::replay::BrinkReplayLog::<M>::new(
-            starting_context,
             req.start.clone(),
             req.story.clone(),
         ));
@@ -413,5 +389,221 @@ mod tests {
         // Single resource for the marker — both flows reference it via
         // the system's ResMut<BrinkGlobals<M>>.
         assert!(world.contains_resource::<BrinkGlobals<()>>());
+    }
+
+    // ── F6.2: scoped-flow-state semantics (shared-by-default World) ──────
+    //
+    // The pre-F6.2 model gave every flow its OWN full `World` clone —
+    // isolation was the default and had to be explicitly committed back.
+    // F6.2 flips that: one shared `World` per marker, private state is the
+    // opt-in case via `WorldPolicy` overrides. These three tests are the
+    // semantic anchor for that flip (see the F6 AMENDMENT in
+    // `docs/scoped-flow-state-spec.md`): (a) default policy shares live,
+    // (b) a `Local` override isolates just the named unit while the rest
+    // stays shared, (c) a bad override name fails cleanly, not a panic.
+
+    use crate::globals::flow_context_view;
+    use crate::{Advance, BrinkGlobals};
+    use bevy_app::{App, Update};
+    use brink_runtime::{Scope, StoryStatus, WorldPolicy};
+
+    #[derive(bevy_ecs::resource::Resource, Default)]
+    struct Texts(Vec<String>);
+
+    /// Drive every `Active` flow (skips ones already at a terminal status,
+    /// e.g. `Done` from an earlier pass in the same test) to its first
+    /// terminal line, recording the produced text. Shared by the three
+    /// tests below.
+    #[expect(
+        clippy::type_complexity,
+        clippy::needless_pass_by_value,
+        reason = "bevy systems take Res/Query by value and have complex query tuples"
+    )]
+    fn drive_all_active(
+        mut flows: Query<(
+            Entity,
+            &mut BrinkFlow<()>,
+            &mut BrinkContext<()>,
+            &crate::BrinkProgram<()>,
+            &crate::BrinkLocale<()>,
+        )>,
+        globals: Option<ResMut<BrinkGlobals<()>>>,
+        programs: Res<Assets<ProgramAsset>>,
+        tables: Res<Assets<crate::asset::LineTablesAsset>>,
+        mut texts: ResMut<Texts>,
+        mut commands: Commands,
+    ) {
+        let Some(mut globals) = globals else {
+            return; // nothing fulfilled yet this tick
+        };
+        for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
+            if flow.inner.status() != StoryStatus::Active {
+                continue;
+            }
+            let (Some(p), Some(t)) = (programs.get(&prog.handle), tables.get(&loc.handle)) else {
+                continue;
+            };
+            let mut view = flow_context_view(&mut globals, &mut ctx);
+            if let Ok(Advance::Line(line)) = flow.advance_until_terminal(
+                &p.program,
+                &t.tables,
+                &mut view,
+                &brink_runtime::FallbackHandler,
+                entity,
+                &mut commands,
+            ) {
+                texts.0.push(line.text().to_string());
+            }
+        }
+    }
+
+    /// (a) Default policy (`WorldPolicy::default()`, installed automatically
+    /// by `BrinkPlugin::default()`): two flows spawned over the same marker
+    /// share the one `BrinkGlobals<M>` `World` live. Each flow's `~ counter
+    /// = counter + 1` lands in the SAME shared slot, so the two flows'
+    /// outputs are "1" and "2" — not both "1", which is what independent
+    /// per-flow copies (the pre-F6.2 model) would have produced.
+    #[test]
+    fn default_policy_two_flows_share_one_world_global() {
+        let mut app = App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(crate::BrinkPlugin::<()>::default());
+        app.insert_resource(Texts::default());
+        app.add_systems(Update, drive_all_active);
+
+        let (program, tables, ctx) = compile_test_story(
+            "VAR counter = 0\n~ counter = counter + 1\nCounter is {counter}.\n-> DONE\n",
+        );
+        let story = add_story_assets(&mut app, program, tables, ctx);
+
+        app.world_mut().spawn(
+            BrinkFlowRequest::<()>::builder()
+                .story(story.clone())
+                .build(),
+        );
+        app.world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
+        app.update(); // fulfill both
+        app.update(); // drive both to Done in one pass
+
+        let mut texts = app.world().resource::<Texts>().0.clone();
+        texts.sort();
+        assert_eq!(
+            texts,
+            vec!["Counter is 1.\n".to_string(), "Counter is 2.\n".to_string()],
+            "two flows sharing the default (all-World) policy should observe \
+             cumulative shared state, not independent per-flow copies; got {texts:?}"
+        );
+    }
+
+    /// (b) A policy with a `Local`-scoped knot (`overrides: {"start":
+    /// Local}`) alongside the `World`-scoped default: each flow's visit
+    /// count for the `start` knot is its own, so both flows entering it for
+    /// their first time see the sequence's first branch ("Hello") — but the
+    /// plain `VAR shared_visits` stays `World`-scoped by the (untouched)
+    /// default, so it keeps counting across both flows.
+    #[test]
+    fn local_knot_override_isolates_visit_state_while_world_var_stays_shared() {
+        let mut app = App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        let mut policy = WorldPolicy::default();
+        policy.overrides.insert("start".to_string(), Scope::Local);
+        app.add_plugins(crate::BrinkPlugin::<()>::default().with_policy(policy));
+        app.insert_resource(Texts::default());
+        app.add_systems(Update, drive_all_active);
+
+        // Root diverts straight into `start` — a real `-> start` divert, so
+        // entering it goes through the normal goto machinery that bumps
+        // its visit count (starting a flow directly AT a knot via
+        // `FlowStart::Address` does not: only diverting *into* a knot
+        // counts as a visit).
+        let (program, tables, ctx) = compile_test_story(
+            "VAR shared_visits = 0\n-> start\n=== start ===\n\
+             ~ shared_visits = shared_visits + 1\n\
+             {start: Hello|Welcome back} (shared {shared_visits}).\n-> DONE\n",
+        );
+        let story = add_story_assets(&mut app, program, tables, ctx);
+
+        // Flow 1: spawn, fulfill, drive to its first Done in isolation so
+        // the shared-VAR assertion below has an unambiguous "after flow 1"
+        // checkpoint.
+        app.world_mut().spawn(
+            BrinkFlowRequest::<()>::builder()
+                .story(story.clone())
+                .build(),
+        );
+        app.update(); // fulfill flow 1
+        app.update(); // drive flow 1 to Done
+        let flow1_text = app.world_mut().resource_mut::<Texts>().0.remove(0);
+        assert!(
+            flow1_text.contains("Hello"),
+            "flow 1's first-ever visit to a Local-scoped knot should take \
+             the sequence's first branch; got {flow1_text:?}"
+        );
+        assert!(
+            flow1_text.contains("shared 1"),
+            "the World-scoped VAR should count flow 1's visit; got {flow1_text:?}"
+        );
+
+        // Flow 2: a fresh flow entering the SAME Local-scoped knot. If the
+        // knot's visit count were (incorrectly) World-scoped, flow 2 would
+        // see "Welcome back" (visit count already 1); because it's Local,
+        // flow 2's own count starts at 0 and it also sees "Hello".
+        app.world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
+        app.update(); // fulfill flow 2 (flow 1 no longer matches `Without<BrinkFlow<M>>`)
+        app.update(); // drive flow 2 to Done
+        let flow2_text = app.world_mut().resource_mut::<Texts>().0.remove(0);
+        assert!(
+            flow2_text.contains("Hello"),
+            "flow 2's own Local visit count should also start fresh, \
+             independent of flow 1's; got {flow2_text:?}"
+        );
+        assert!(
+            flow2_text.contains("shared 2"),
+            "the World-scoped VAR should keep counting across flows \
+             (flow 1's 1, then flow 2's 2); got {flow2_text:?}"
+        );
+    }
+
+    /// (c) A policy override naming a variable/knot the program doesn't
+    /// declare is a [`brink_runtime::PolicyError`] at `BrinkGlobals`
+    /// creation — `fulfill_flow_requests` must surface it as a logged
+    /// fulfillment error on the offending request (removed, not left
+    /// dangling), and — the actual point of this test — must not panic.
+    #[test]
+    fn unknown_policy_override_surfaces_as_fulfillment_error_not_panic() {
+        let mut app = App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        let mut policy = WorldPolicy::default();
+        policy
+            .overrides
+            .insert("does_not_exist".to_string(), Scope::Local);
+        app.add_plugins(crate::BrinkPlugin::<()>::default().with_policy(policy));
+
+        let (program, tables, ctx) = compile_test_story("Hello.\n-> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+
+        // The point of the test: this must not panic.
+        app.update();
+
+        assert!(
+            !app.world().entity(entity).contains::<BrinkFlow<()>>(),
+            "flow should not materialize when the policy fails to resolve"
+        );
+        assert!(
+            !app.world()
+                .entity(entity)
+                .contains::<BrinkFlowRequest<()>>(),
+            "the invalid request should be removed, not left pending forever"
+        );
+        assert!(
+            !app.world().contains_resource::<BrinkGlobals<()>>(),
+            "BrinkGlobals must never be created from a policy that fails to resolve"
+        );
     }
 }

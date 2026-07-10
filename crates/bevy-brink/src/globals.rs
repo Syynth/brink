@@ -1,26 +1,49 @@
-//! Story-wide and per-flow `World` state.
+//! Story-wide `World` (shared) and per-flow `FlowLocal` (private) state.
 //!
-//! - [`BrinkGlobals<M>`] is a `Resource` — the "save data" snapshot for
-//!   marker `M`. New flows seed their `World` from this; consumers
-//!   commit a flow's `World` back to it explicitly.
-//! - [`BrinkContext<M>`] is a `Component` — the in-flight `World` of
-//!   a single flow on its entity. The flow advances against this; it
-//!   only touches `BrinkGlobals` when explicitly committed.
+//! (F6.2 — see `docs/scoped-flow-state-spec.md`'s F6 AMENDMENT.) Every flow
+//! spawned under a marker `M` advances against the **same** shared
+//! [`World`], carried on [`BrinkGlobals<M>`] — a single `Resource`, not a
+//! per-flow clone. [`BrinkContext<M>`] holds a flow's own private
+//! [`FlowLocal`] override layer, fresh (empty) at spawn.
+//!
+//! Story-state is routed World-vs-Local per unit (globals, visit/turn
+//! counts, turn index, RNG) by the [`ResolvedPolicy`](brink_runtime::ResolvedPolicy)
+//! `BrinkGlobals`'s `World` was created with (see
+//! [`BrinkPlugin::with_policy`](crate::BrinkPlugin::with_policy) /
+//! [`BrinkWorldPolicy`]). The **default policy homes every unit to World** —
+//! byte-identical to plain ink, zero-surprise for the common single-flow
+//! case: reads and writes to a World-scoped unit are immediately visible to
+//! every flow sharing that `World`, with no "commit" step, because they were
+//! never forked in the first place.
+//!
+//! A flow's `FlowLocal` is that flow's own durable memory for the
+//! **Local**-scoped units a host opts into via policy overrides (see
+//! `docs/scoped-flow-state-spec.md`'s "The policy"): it persists for the
+//! flow's lifetime, is never auto-merged anywhere, and there is no
+//! `commit_from`/`commit_progress`/`commit_globals_only`-style verb — those
+//! compensated for the old full-`World`-clone-per-flow model, which this
+//! scoping removes outright. When private state needs to become shared
+//! (an NPC's private mood counter raising a global "hostile" flag), that
+//! promotion is written **in ink**, where it's visible, not bolted on as a
+//! Bevy-side merge helper.
+//!
+//! Build the per-step routing view with [`flow_context_view`].
 
 use std::marker::PhantomData;
 
 use bevy_ecs::component::Component;
 use bevy_ecs::resource::Resource;
-use brink_runtime::World;
+use brink_runtime::{ContextView, FlowLocal, World, WorldPolicy};
 
-/// The "save data" `World` for a story identified by marker `M`.
+/// The single shared [`World`] for a story identified by marker `M`.
 ///
-/// Holds globals, visit/turn counts, RNG seed — the canonical state
-/// new flows seed from. The plugin auto-inserts this on first
-/// fulfillment, seeded from [`ProgramAsset::initial_context`](crate::ProgramAsset).
-/// After that the plugin doesn't touch it during play; consumers commit
-/// changes from a flow's [`BrinkContext`] back into it explicitly via
-/// the `commit_*` helpers.
+/// Holds globals, visit/turn counts, RNG seed, and the
+/// [`ResolvedPolicy`](brink_runtime::ResolvedPolicy) that routes every unit
+/// World-vs-Local (resolved once, at creation, from the host's
+/// [`BrinkWorldPolicy<M>`]). The plugin auto-inserts this on first
+/// fulfillment (see [`fulfill_flow_requests`](crate::fulfill_flow_requests))
+/// and never replaces it afterward — every flow spawned under `M` advances
+/// against this same `World` for the app's lifetime.
 #[derive(Resource)]
 pub struct BrinkGlobals<M: Send + Sync + 'static = ()> {
     pub inner: World,
@@ -28,152 +51,81 @@ pub struct BrinkGlobals<M: Send + Sync + 'static = ()> {
 }
 
 impl<M: Send + Sync + 'static> BrinkGlobals<M> {
-    /// Wrap a freshly-created [`World`] (e.g. from
-    /// [`FlowInstance::new_at_root`](brink_runtime::FlowInstance::new_at_root))
+    /// Wrap an already-created [`World`] (e.g. from
+    /// [`brink_runtime::World::new`], resolved against a program + policy)
     /// in a Bevy `Resource`.
     #[must_use]
-    pub fn new(context: World) -> Self {
+    pub fn new(world: World) -> Self {
         Self {
-            inner: context,
+            inner: world,
             _marker: PhantomData,
         }
     }
+}
 
-    /// Wholesale replace the "save data" with a clone of `flow_ctx`.
-    ///
-    /// Use this for "save the entire game state" — typically when a
-    /// scene ends and you want the main story state to mirror exactly
-    /// what the in-flight flow produced.
-    ///
-    /// Also the right verb for a "new game" reset:
-    /// `globals.commit_from(&program.initial_context)`.
-    pub fn commit_from(&mut self, flow_ctx: &World) {
-        self.inner = flow_ctx.clone();
-    }
+/// Host-supplied [`WorldPolicy`] for marker `M`'s shared [`BrinkGlobals`]
+/// `World`, installed once at plugin setup via
+/// [`BrinkPlugin::with_policy`](crate::BrinkPlugin::with_policy) and read by
+/// [`fulfill_flow_requests`](crate::fulfill_flow_requests) when it creates
+/// `BrinkGlobals<M>` on first fulfillment.
+///
+/// **Base ⊕ host-overrides, from day one:** base is an empty `WorldPolicy`
+/// today (`WorldPolicy::default()` — every unit `World`-scoped); a
+/// compiler-emitted base (a flow-private storage class for `VAR`s + knot
+/// marking) is future work (#473) — the *only* place `brink-format` would
+/// change for it. Until then this resource's `policy` field **is** the
+/// whole installed policy.
+#[derive(Resource, Clone, Default)]
+pub struct BrinkWorldPolicy<M: Send + Sync + 'static = ()> {
+    pub policy: WorldPolicy,
+    _marker: PhantomData<fn() -> M>,
+}
 
-    /// Merge "progress" from the flow's `World` into the save data:
-    /// globals are wholesale replaced; visit and turn counts take the
-    /// elementwise max; the turn index takes the max; RNG state is
-    /// pulled from the flow (most recent).
-    ///
-    /// Use this when a side conversation should contribute its world
-    /// changes (variables, visit history, advancement) back to the
-    /// shared save state without overwriting state the side
-    /// conversation didn't touch.
-    pub fn commit_progress(&mut self, flow_ctx: &World) {
-        self.inner.globals.clone_from(&flow_ctx.globals);
-        for (id, count) in &flow_ctx.visit_counts {
-            let entry = self.inner.visit_counts.entry(*id).or_insert(0);
-            *entry = (*entry).max(*count);
+impl<M: Send + Sync + 'static> BrinkWorldPolicy<M> {
+    #[must_use]
+    pub(crate) fn new(policy: WorldPolicy) -> Self {
+        Self {
+            policy,
+            _marker: PhantomData,
         }
-        for (id, turn) in &flow_ctx.turn_counts {
-            let entry = self.inner.turn_counts.entry(*id).or_insert(0);
-            *entry = (*entry).max(*turn);
-        }
-        self.inner.turn_index = self.inner.turn_index.max(flow_ctx.turn_index);
-        self.inner.rng_seed = flow_ctx.rng_seed;
-        self.inner.previous_random = flow_ctx.previous_random;
-    }
-
-    /// Replace just the named globals — leave visit/turn counts, turn
-    /// index, and RNG state untouched.
-    ///
-    /// Use this when a flow may have changed inventory or flag-style
-    /// variables but didn't progress the main plot.
-    pub fn commit_globals_only(&mut self, flow_ctx: &World) {
-        self.inner.globals.clone_from(&flow_ctx.globals);
     }
 }
 
-/// The in-flight `World` of a single flow on its entity.
+/// A single flow's private override layer over the shared
+/// [`BrinkGlobals<M>`] `World`.
 ///
-/// Inserted by `fulfill_flow_requests` alongside [`BrinkFlow`](crate::BrinkFlow).
-/// The flow's `step_one`/`advance_until_terminal`/`choose` methods read
-/// and write this `World` directly. Multiple concurrent flows each
-/// have their own — globals are NOT auto-shared. Use
-/// [`BrinkGlobals::commit_*`] to merge a flow's changes back into the
-/// shared "save data" resource.
-#[derive(Component)]
+/// Inserted by `fulfill_flow_requests` alongside [`BrinkFlow`](crate::BrinkFlow),
+/// always fresh (empty) — spawning a flow takes no policy or seed parameter;
+/// see the F6 AMENDMENT ruling 1 in `docs/scoped-flow-state-spec.md`. Reads
+/// of a `Local`-scoped unit fall through to `World`'s value until this
+/// flow's first local write; writes to a `World`-scoped unit always land in
+/// the shared `World`, immediately visible to every other flow sharing it.
+#[derive(Component, Default)]
 pub struct BrinkContext<M: Send + Sync + 'static = ()> {
-    pub inner: World,
+    pub inner: FlowLocal,
     _marker: PhantomData<fn() -> M>,
 }
 
 impl<M: Send + Sync + 'static> BrinkContext<M> {
     #[must_use]
-    pub fn new(context: World) -> Self {
+    pub fn new(local: FlowLocal) -> Self {
         Self {
-            inner: context,
+            inner: local,
             _marker: PhantomData,
         }
     }
 }
 
-#[cfg(test)]
-mod commit_tests {
-    use super::*;
-    use brink_format::{DefinitionId, DefinitionTag, Value};
-    use brink_runtime::World;
-    use std::collections::HashMap;
-
-    fn ctx_with(globals: Vec<Value>, visits: &[(u64, u32)], turn_index: u32) -> World {
-        let mut visit_counts = HashMap::new();
-        for (id, count) in visits {
-            visit_counts.insert(DefinitionId::new(DefinitionTag::Address, *id), *count);
-        }
-        World::new_for_testing(globals, visit_counts, HashMap::new(), turn_index, 0, 0)
-    }
-
-    #[test]
-    fn commit_from_replaces_wholesale() {
-        let mut globals =
-            BrinkGlobals::<()>::new(ctx_with(vec![Value::Int(1), Value::Int(2)], &[(0, 5)], 10));
-        let flow_ctx = ctx_with(vec![Value::Int(99), Value::Int(100)], &[(0, 1)], 3);
-        globals.commit_from(&flow_ctx);
-        assert!(matches!(globals.inner.globals[0], Value::Int(99)));
-        assert_eq!(
-            globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 0)],
-            1
-        );
-        assert_eq!(globals.inner.turn_index, 3);
-    }
-
-    #[test]
-    fn commit_progress_takes_max_of_counts() {
-        let mut globals =
-            BrinkGlobals::<()>::new(ctx_with(vec![Value::Int(1)], &[(0, 5), (1, 2)], 10));
-        let flow_ctx = ctx_with(vec![Value::Int(99)], &[(0, 3), (2, 7)], 4);
-        globals.commit_progress(&flow_ctx);
-        // Globals: replaced from flow.
-        assert!(matches!(globals.inner.globals[0], Value::Int(99)));
-        // Visit counts: max per id; ids only in self stay; ids only
-        // in flow added.
-        assert_eq!(
-            globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 0)],
-            5
-        );
-        assert_eq!(
-            globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 1)],
-            2
-        );
-        assert_eq!(
-            globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 2)],
-            7
-        );
-        // Turn index: max.
-        assert_eq!(globals.inner.turn_index, 10);
-    }
-
-    #[test]
-    fn commit_globals_only_leaves_counts_alone() {
-        let mut globals = BrinkGlobals::<()>::new(ctx_with(vec![Value::Int(1)], &[(0, 5)], 10));
-        let flow_ctx = ctx_with(vec![Value::Int(99)], &[(0, 99)], 99);
-        globals.commit_globals_only(&flow_ctx);
-        assert!(matches!(globals.inner.globals[0], Value::Int(99)));
-        assert_eq!(
-            globals.inner.visit_counts[&DefinitionId::new(DefinitionTag::Address, 0)],
-            5
-        );
-        assert_eq!(globals.inner.turn_index, 10);
-    }
+/// Build the [`ContextView`] routing view for one flow's step: `World`-scoped
+/// units go straight to the shared `globals`; `Local`-scoped units read
+/// through / write to `ctx`'s own override layer (see
+/// `docs/scoped-flow-state-spec.md`).
+///
+/// Construct fresh for each step/call — it's a transient, step-scoped borrow
+/// of both `&mut World` and `&mut FlowLocal`, never stored.
+pub fn flow_context_view<'a, M: Send + Sync + 'static>(
+    globals: &'a mut BrinkGlobals<M>,
+    ctx: &'a mut BrinkContext<M>,
+) -> ContextView<'a> {
+    ContextView::new(&mut globals.inner, &mut ctx.inner)
 }

@@ -5,8 +5,10 @@ use std::marker::PhantomData;
 use bevy_app::{App, Plugin, Update};
 use bevy_asset::AssetApp;
 use bevy_ecs::schedule::IntoScheduleConfigs as _;
+use brink_runtime::WorldPolicy;
 
 use crate::asset::{BrinkStoryAsset, InkbLoader, LineTablesAsset, ProgramAsset};
+use crate::globals::BrinkWorldPolicy;
 use crate::request::fulfill_flow_requests;
 
 /// A Bevy plugin that registers brink story types, messages, and asset
@@ -31,14 +33,39 @@ use crate::request::fulfill_flow_requests;
 /// app.add_systems(Update, advance_flows::<MyStory>);
 /// ```
 pub struct BrinkPlugin<M: Send + Sync + 'static = ()> {
+    policy: WorldPolicy,
     _marker: PhantomData<fn() -> M>,
 }
 
 impl<M: Send + Sync + 'static> Default for BrinkPlugin<M> {
     fn default() -> Self {
         Self {
+            policy: WorldPolicy::default(),
             _marker: PhantomData,
         }
+    }
+}
+
+impl<M: Send + Sync + 'static> BrinkPlugin<M> {
+    /// Install a host-supplied [`WorldPolicy`] for this marker's shared
+    /// [`BrinkGlobals<M>`](crate::BrinkGlobals) `World` — resolved once,
+    /// against the first-fulfilled flow's program, when
+    /// [`fulfill_flow_requests`](crate::fulfill_flow_requests) creates it.
+    ///
+    /// Default (if this is never called): `WorldPolicy::default()` — every
+    /// unit homed to `World`, byte-identical to plain ink. Per the F6
+    /// AMENDMENT (`docs/scoped-flow-state-spec.md`): the plain-ink default
+    /// stays `World`; hosts opt a per-entity NPC into private state by
+    /// enumerating `Local` overrides on top, not by flipping the default.
+    ///
+    /// A [`PolicyError`](brink_runtime::PolicyError) (an override names a
+    /// variable or knot/stitch the program doesn't declare) surfaces as a
+    /// logged fulfillment error on the offending request, not a panic — see
+    /// `fulfill_flow_requests`.
+    #[must_use]
+    pub fn with_policy(mut self, policy: WorldPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 }
 
@@ -47,6 +74,7 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         if !app.is_plugin_added::<BrinkAssetsPlugin>() {
             app.add_plugins(BrinkAssetsPlugin);
         }
+        app.insert_resource(BrinkWorldPolicy::<M>::new(self.policy.clone()));
         app.add_systems(Update, fulfill_flow_requests::<M>);
         // Auto-render BrinkTranscript<M> for any flow that has it.
         // No-op for flows that don't (the query just yields nothing).
