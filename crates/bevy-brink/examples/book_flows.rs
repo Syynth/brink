@@ -82,20 +82,33 @@ fn save(globals: &mut BrinkGlobals<()>, flow_ctx: &BrinkWorld, program: &Program
 )]
 // ANCHOR: drive
 fn drive(
-    mut flows: Query<(Entity, &mut BrinkFlow<()>, &mut BrinkContext<()>,
-                      &BrinkProgram<()>, &BrinkLocale<()>)>,
+    mut flows: Query<(
+        Entity,
+        &mut BrinkFlow<()>,
+        &mut BrinkContext<()>,
+        &BrinkProgram<()>,
+        &BrinkLocale<()>,
+    )>,
     programs: Res<Assets<ProgramAsset>>,
     tables: Res<Assets<LineTablesAsset>>,
     bindings: Res<BrinkBindings<()>>,
     mut commands: Commands,
 ) {
     for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
-        if flow.inner.has_pending_external() { continue; } // paused; resolver will resume it
-        let (Some(p), Some(t)) = (programs.get(&prog.handle), tables.get(&loc.handle))
-            else { continue; };
+        if flow.inner.has_pending_external() {
+            continue;
+        } // paused; resolver will resume it
+        let (Some(p), Some(t)) = (programs.get(&prog.handle), tables.get(&loc.handle)) else {
+            continue;
+        };
         let handler = bindings.handler();
         let _ = flow.advance_until_terminal(
-            &p.program, &t.tables, &mut ctx.inner, &handler, entity, &mut commands,
+            &p.program,
+            &t.tables,
+            &mut ctx.inner,
+            &handler,
+            entity,
+            &mut commands,
         );
         handler.flush(&mut commands); // emit any buffered command events
     }
@@ -156,7 +169,9 @@ fn register_choice_logger(app: &mut App) {
 )]
 fn show_transcript(mut commands: Commands, flow: Entity, transcript: &BrinkTranscript<()>) {
     // ANCHOR: transcript
-    commands.entity(flow).insert(BrinkTranscript::<()>::default());
+    commands
+        .entity(flow)
+        .insert(BrinkTranscript::<()>::default());
     // later, from a system that reads the component:
     let text = transcript.text(); // all lines joined with '\n'
     let lines = &transcript.lines; // Vec<(String, Vec<String>)> — (text, tags)
