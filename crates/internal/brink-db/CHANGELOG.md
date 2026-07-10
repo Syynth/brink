@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/Syynth/brink/compare/brink-db-v0.0.9...brink-db-v0.0.10) - 2026-07-10
+
+### Other
+
+- Story::new takes Arc<Program>, not &Program
+
 ## [0.0.8](https://github.com/Syynth/brink/compare/brink-db-v0.0.7...brink-db-v0.0.8) - 2026-07-01
 
 ### Other

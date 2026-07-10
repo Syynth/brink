@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/Syynth/brink/compare/brink-ide-v0.0.9...brink-ide-v0.0.10) - 2026-07-10
+
+### Added
+
+- *(ide)* machinery/narrative fold runs — weave-bounded, opt-in, gated ([#479](https://github.com/Syynth/brink/pull/479))
+- *(ide)* weave folding from projection container extents ([#476](https://github.com/Syynth/brink/pull/476))
+- HIR structural projection producer — project_hir (#454 phase 1) ([#465](https://github.com/Syynth/brink/pull/465))
+
+### Fixed
+
+- *(ide)* line-classification fixes for the embedder contract ([#478](https://github.com/Syynth/brink/pull/478))
+
+### Other
+
+- LineInfo on one shared projection: cache, option_path, standalone ([#480](https://github.com/Syynth/brink/pull/480)) ([#489](https://github.com/Syynth/brink/pull/489))
+- Merge pull request #483 from Syynth/worktree-476-weave-folding
+- line_context + folding as views over the HIR projection ([#463](https://github.com/Syynth/brink/pull/463)) ([#471](https://github.com/Syynth/brink/pull/471))
+- shared read-only HIR visitor + migrate 4 walkers ([#457](https://github.com/Syynth/brink/pull/457)) ([#464](https://github.com/Syynth/brink/pull/464))
+- *(runtime)* Program → Arc, delete <'p> lifetime (F1.1) ([#442](https://github.com/Syynth/brink/pull/442))
+
 ## [0.0.9](https://github.com/Syynth/brink/compare/brink-ide-v0.0.7...brink-ide-v0.0.9) - 2026-07-06
 
 ### Added

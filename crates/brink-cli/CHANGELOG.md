@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10](https://github.com/Syynth/brink/compare/brink-cli-v0.0.9...brink-cli-v0.0.10) - 2026-07-10
+
+### Other
+
+- LineInfo on one shared projection: cache, option_path, standalone ([#480](https://github.com/Syynth/brink/pull/480)) ([#489](https://github.com/Syynth/brink/pull/489))
+- Story::new takes Arc<Program>, not &Program
+- *(runtime)* Program → Arc, delete <'p> lifetime (F1.1) ([#442](https://github.com/Syynth/brink/pull/442))
+
 ## [0.0.9](https://github.com/Syynth/brink/compare/brink-cli-v0.0.7...brink-cli-v0.0.9) - 2026-07-06
 
 ### Added
