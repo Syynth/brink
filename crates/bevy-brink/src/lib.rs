@@ -93,17 +93,20 @@ pub use brink_runtime::transcript::{TranscriptData, TranscriptError};
 /// [`FlowInstance`](BrinkFlow::inner), [`Program`](crate::ProgramAsset::program),
 /// [`Choice`](crate::BrinkChoicesPresented::choices), [`Line`](advance_flow)'s
 /// return, [`RuntimeError`](BrinkFlow::choose)'s error,
-/// [`FallbackHandler`] for the "no bindings" advance path, and the scoped
+/// [`FallbackHandler`] for the "no bindings" advance path, the scoped
 /// story-state types a host needs to build a policy and a per-step routing
 /// view (see `docs/scoped-flow-state-spec.md`): [`WorldPolicy`], [`Scope`],
 /// [`PolicyError`], and [`ContextView`] (usually built via
-/// [`flow_context_view`] instead of by hand).
+/// [`flow_context_view`] instead of by hand) — and the per-entity durability
+/// types produced/consumed by [`BrinkGlobals::save_state`]/`load_state` and
+/// [`save_flow_state`]/[`load_flow_state`] (F6.3, see the `globals` module's
+/// "Save/load" docs): [`SaveState`] and [`LoadReport`].
 ///
 /// `World` is deliberately absent here — it collides with `bevy::prelude::World`
 /// under a glob import, so it is re-exported under the alias [`BrinkWorld`].
 pub use brink_runtime::{
-    Choice, ContextView, FallbackHandler, FlowInstance, FlowLocal, Line, PolicyError, Program,
-    RuntimeError, Scope, WorldPolicy,
+    Choice, ContextView, FallbackHandler, FlowInstance, FlowLocal, Line, LoadReport, PolicyError,
+    Program, RuntimeError, SaveState, Scope, WorldPolicy,
 };
 pub use brkt::{
     BrktLoader, BrktLoaderError, TranscriptAsset, capture_transcript, render_transcript_asset,
@@ -116,7 +119,10 @@ pub use call::{
 pub use event::BrinkFlowReset;
 pub use event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 pub use flow::{Advance, BrinkFlow};
-pub use globals::{BrinkContext, BrinkGlobals, BrinkWorldPolicy, flow_context_view};
+pub use globals::{
+    BrinkContext, BrinkGlobals, BrinkWorldPolicy, flow_context_view, load_flow_state,
+    save_flow_state,
+};
 pub use input::digit_key_to_choice_index;
 pub use line_tables::BrinkLocale;
 pub use locale::{
