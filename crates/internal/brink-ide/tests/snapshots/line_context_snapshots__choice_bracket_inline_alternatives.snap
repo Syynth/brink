@@ -15,6 +15,7 @@ expression: "render_fixture(\"\\\n=== start ===\n* [Take the {red|blue} pill]\n*
   3 |-> END| Divert w=1/ChoiceBody
   4 || Blank w=0/TopLevel
 == STRUCTURAL FOLDS ==
+2..3 from_start=false kind=Structural text=None
 0..3 from_start=false kind=Structural text=None
 == RUNS (base) ==
 == RUNS (at-cue dialect) ==

@@ -60,8 +60,9 @@ fn render_lines(source: &str, ctx: &[LineContext]) -> String {
 fn render_structural_folds(source: &str) -> String {
     let parsed = brink_syntax::parse(source);
     let (hir, _, _) = hir::lower(FileId(0), &parsed.tree());
+    let projection = brink_ide::hir_projection::project_hir_structural(&hir, source);
     let mut out = String::new();
-    for r in folding_ranges(&hir, source) {
+    for r in folding_ranges(&hir, source, &projection) {
         let _ = writeln!(
             out,
             "{}..{} from_start={} kind={:?} text={:?}",
