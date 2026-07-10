@@ -128,9 +128,17 @@ jobs:
       - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink
         env:
           CARGO_TARGET_DIR: target/book-doctest
+      # Run mdbook under the pinned toolchain (rust-toolchain.toml). `cargo
+      # build` above honors the pin, but mdbook's rustdoc subprocess otherwise
+      # picks up the runner's default toolchain — a rustc-version mismatch that
+      # makes rustdoc reject the freshly-built deps (E0514).
+      #
       # CARGO_MANIFEST_DIR: Bevy's derives resolve the `bevy` vs `bevy_ecs` crate
       # path from the manifest, and rustdoc runs outside a cargo context.
-      - run: mdbook test docs/book -L target/book-doctest/debug/deps
+      - name: mdbook test (doctests)
+        run: |
+          channel=$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | cut -d'"' -f2)
+          rustup run "$channel" mdbook test docs/book -L target/book-doctest/debug/deps
         env:
           CARGO_MANIFEST_DIR: ${{ github.workspace }}/crates/bevy-brink
       # Type-check the book's TypeScript examples against the published

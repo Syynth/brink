@@ -79,7 +79,12 @@ book-test:
     # a cargo context, so without this they panic with "CARGO_MANIFEST_DIR is not
     # defined". Point them at bevy-brink, which depends on the bevy_* subcrates.
     export CARGO_MANIFEST_DIR="$PWD/crates/bevy-brink"
-    mdbook test docs/book -L "$deps"
+
+    # Run mdbook under the pinned toolchain so its rustdoc matches the rustc
+    # that built the deps above — otherwise a differing default toolchain makes
+    # rustdoc reject them (E0514).
+    channel=$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | cut -d'"' -f2)
+    rustup run "$channel" mdbook test docs/book -L "$deps"
 
 # Type-check the book's TypeScript examples against the published @brink-lang
 # packages. The TS counterpart of `book-test`: mdbook only runs Rust doctests,
