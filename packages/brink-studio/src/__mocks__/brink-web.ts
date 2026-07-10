@@ -450,6 +450,7 @@ export class EditorSession {
   // to populate either way. Mirrors the host-manifest no-op pattern above.
   set_dialect(_json: string): void { /* no-op */ }
   clear_dialect(): void { /* no-op */ }
+  set_fold_runs_enabled(_enabled: boolean): void { /* no-op */ }
 
   project_outline(): string {
     const outline = [];

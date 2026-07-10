@@ -497,11 +497,35 @@ pub fn machinery_and_narrative_folds(
     mark_conditional_scaffold(projection, source, &idx, &mut scaffold);
     let natures = line_natures(source, ctx, &scaffold);
 
-    let mut ranges = Vec::new();
-    let mut run_start: Option<(u32, LineNature)> = None;
+    // A run is additionally bounded by weave containers (#479): a fold never
+    // crosses into or out of a choice branch or gather continuation, keeping
+    // run folds aligned with the rails. Only Choice/Gather bound —
+    // conditional/sequence branch containers deliberately do NOT: a
+    // pure-routing conditional's scaffold + arms must fold as one machinery
+    // region (the #365 key case), and an inline construct's single-line
+    // container must not fragment the narrative run hosting it. In practice
+    // weave transition lines are Structural (choice/gather lines) and break
+    // runs anyway; the bound is the safety net that keeps that true by
+    // construction rather than by coincidence.
+    let weave_bounds: Vec<Option<u32>> = projection
+        .lines
+        .iter()
+        .map(|stack| {
+            stack
+                .containers
+                .iter()
+                .rev()
+                .find(|c| matches!(c.kind, SpanKind::Choice | SpanKind::Gather))
+                .map(|c| c.handle)
+        })
+        .collect();
+    let bound_at = |i: usize| weave_bounds.get(i).copied().flatten();
 
-    let mut flush = |run_start: &mut Option<(u32, LineNature)>, end_line: u32| {
-        if let Some((start, nature)) = run_start.take()
+    let mut ranges = Vec::new();
+    let mut run_start: Option<(u32, LineNature, Option<u32>)> = None;
+
+    let mut flush = |run_start: &mut Option<(u32, LineNature, Option<u32>)>, end_line: u32| {
+        if let Some((start, nature, _)) = run_start.take()
             && end_line > start
         {
             let kind = match nature {
@@ -521,15 +545,16 @@ pub fn machinery_and_narrative_folds(
 
     for (i, nature) in natures.iter().enumerate() {
         let line_no = u32::try_from(i).unwrap_or(u32::MAX);
+        let bound = bound_at(i);
         match (*nature, run_start) {
             (LineNature::Structural, _) => {
                 flush(&mut run_start, line_no.saturating_sub(1));
                 run_start = None;
             }
-            (n, Some((_, current))) if n == current => {}
+            (n, Some((_, current, b))) if n == current && bound == b => {}
             (n, _) => {
                 flush(&mut run_start, line_no.saturating_sub(1));
-                run_start = Some((line_no, n));
+                run_start = Some((line_no, n, bound));
             }
         }
     }
@@ -990,6 +1015,57 @@ Come on in, take a seat.
         assert!(
             !ranges.iter().any(|&(_, _, k)| k == FoldKind::Machinery),
             "nested inline logic in choice text must not fold as machinery: {ranges:?}"
+        );
+    }
+
+    // ── #479 weave bounding: what it must NOT change ────────────────
+
+    #[test]
+    fn pure_routing_conditional_still_folds_across_branches() {
+        // The weave bound (#479) covers Choice/Gather containers only —
+        // conditional branch containers must NOT bound runs, or the #365
+        // key case (a pure-routing block folding as one machinery region,
+        // scaffold + arms together) regresses.
+        let src = "=== start ===\n{ x > 5:\n~ y = 1\n- else:\n~ y = 2\n}\nHello.\n";
+        let ranges = kinds_for(src);
+        assert!(
+            ranges.contains(&(1, 5, FoldKind::Machinery)),
+            "scaffold + arms fold as one machinery run: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn inline_alternative_does_not_fragment_a_narrative_run() {
+        // An inline `{a|b}` puts a single-line SequenceBranch container on
+        // its host line — the weave bound must ignore it (Choice/Gather
+        // only), or every inline alternative would split the narrative run
+        // hosting it.
+        let src = "=== start ===\nFirst prose line.\nHas {red|blue} inline.\nLast prose line.\n";
+        let ranges = kinds_for(src);
+        assert!(
+            ranges.contains(&(1, 3, FoldKind::Narrative)),
+            "one unbroken narrative run across the inline alternative: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn machinery_run_does_not_cross_out_of_a_choice_body() {
+        // The weave bound proper: machinery inside a choice body and
+        // machinery in the gather continuation never join, even when the
+        // line between them is somehow not a break. (Today the gather line
+        // itself is Structural and already breaks the run — this pins the
+        // bound so that stays true by construction.)
+        let src = "=== start ===\n* [Go]\n  ~ temp a = 1\n  ~ temp b = 2\n- (g)\n~ temp c = 3\n~ temp d = 4\n-> END\n";
+        let ranges = kinds_for(src);
+        assert!(
+            ranges.contains(&(2, 3, FoldKind::Machinery)),
+            "body machinery folds within the body: {ranges:?}"
+        );
+        assert!(
+            !ranges
+                .iter()
+                .any(|&(s, e, k)| k == FoldKind::Machinery && s <= 3 && e >= 5),
+            "no run spans from the body into the continuation: {ranges:?}"
         );
     }
 

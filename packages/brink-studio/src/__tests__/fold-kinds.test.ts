@@ -29,11 +29,20 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function mountFolding(doc: string, getFoldingRanges: (source: string) => FoldRange[]): EditorView {
+/** All kinds, as a host's prose/logic view mode would activate them (#479:
+ *  the DEFAULT is structural-only; run kinds are opt-in). */
+const ALL_KINDS = new Set(["structural", "machinery", "narrative"] as const);
+
+function mountFolding(
+  doc: string,
+  getFoldingRanges: (source: string) => FoldRange[],
+  kinds: ReadonlySet<"structural" | "machinery" | "narrative"> = ALL_KINDS,
+): EditorView {
   view = new EditorView({
     state: EditorState.create({ doc, extensions: [foldingExtension({ getFoldingRanges })] }),
     parent: document.body,
   });
+  setActiveFoldKinds(view, kinds);
   return view;
 }
 
@@ -49,9 +58,18 @@ describe("FoldKind — active-kinds gating", () => {
   const MACHINERY_SRC = "~ temp x = 1\n~ temp y = 2\nHello there.\n";
   const machineryRanges: FoldRange[] = [{ start_line: 0, end_line: 1, kind: "machinery" }];
 
-  it("defaults to all three kinds active — a machinery fold is foldable", () => {
-    const v = mountFolding(MACHINERY_SRC, () => machineryRanges);
-    expect(foldLine(v, 0)).not.toBeNull();
+  it("defaults to structural-only (#479) — a machinery fold needs activation", () => {
+    // Mount WITHOUT the test helper's activation to pin the real default.
+    view = new EditorView({
+      state: EditorState.create({
+        doc: MACHINERY_SRC,
+        extensions: [foldingExtension({ getFoldingRanges: () => machineryRanges })],
+      }),
+      parent: document.body,
+    });
+    expect(foldLine(view, 0)).toBeNull();
+    setActiveFoldKinds(view, ALL_KINDS);
+    expect(foldLine(view, 0)).not.toBeNull();
   });
 
   it("removing 'machinery' from the active set makes the fold un-foldable", () => {
@@ -195,6 +213,7 @@ describe("narrative pill cast — via dialect speaker attr, not characterName()"
       true,
     );
 
+    setActiveFoldKinds(view, ALL_KINDS);
     foldLine(view, 1);
     const summary = view.dom.querySelector(".brink-fold-pill-summary")?.textContent ?? "";
     expect(summary).toContain("Alice");
@@ -252,6 +271,7 @@ describe("narrative pill cast — via dialect speaker attr, not characterName()"
       infos[1].dialect?.attrs.some(([k, val]) => k === "narrator" && val === "Radio"),
     ).toBe(true);
 
+    setActiveFoldKinds(view, ALL_KINDS);
     foldLine(view, 1);
     const summary = view.dom.querySelector(".brink-fold-pill-summary")?.textContent ?? "";
     expect(summary).toContain("Radio");
