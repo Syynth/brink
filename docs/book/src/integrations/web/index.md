@@ -19,7 +19,7 @@ This emits an npm package at `crates/brink-web/www/pkg/` — the glue JS
 The package must be built **before** the JS workspace installs, because the
 ergonomic wrapper `@brink-lang/web` depends on it via a `file:` path.
 
-```ts
+```ts,no-check
 // raw module
 import init, { EditorSession, StoryRunner, compile } from "brink-web";
 await init();                       // one-time async load of the wasm
@@ -68,6 +68,11 @@ registered under that name to resolve it. Arguments arrive as native JS values
 (number / boolean / string / null) and the return is read back the same way —
 an integer-valued number becomes an ink int, otherwise a float:
 
+<!-- ts-hidden
+import { StoryRunnerHandle } from "@brink-lang/web";
+declare const bytes: Uint8Array;
+declare const audio: { play(id: string): void };
+-->
 ```ts
 const runner = new StoryRunnerHandle(bytes);
 runner.bindExternal("roll", (sides) => 1 + Math.floor(Math.random() * Number(sides)));
@@ -85,6 +90,10 @@ until it resolves (inline timing like `~ camera("bow") ~ wait(2.0) ~ wreck()`,
 a targeting UI awaiting a click, a `fetch`). Drive such a story with the async
 continue methods, which await and resume transparently:
 
+<!-- ts-hidden
+import { StoryRunnerHandle } from "@brink-lang/web";
+declare const runner: StoryRunnerHandle;
+-->
 ```ts
 runner.bindExternal("wait", (secs) => new Promise((r) => setTimeout(r, Number(secs) * 1000)));
 const lines = await runner.continueStoryAsync(); // suspends across the wait
@@ -93,6 +102,65 @@ const lines = await runner.continueStoryAsync(); // suspends across the wait
 A rejected Promise unsticks the flow (resolves `null`) and rethrows. The
 synchronous `continueStory`/`continueSingle` error on a suspending binding — use
 `continueStoryAsync`/`continueSingleAsync` when bindings may be async.
+
+### Host-directed entry
+
+`runner.goToPath(path, ...args)` moves the play head to a knot or stitch by name,
+optionally passing arguments to a parameterized one — the JS face of the runtime's
+[host-directed entry](../../toolchain/reference/errors.md). `programChecksum(bytes)`
+returns a stable checksum of a compiled story, for detecting when a save was made
+against a different build.
+
+### Speculation
+
+`runner.speculate()` forks a `SpeculationHandle` — a throwaway run over the
+story's current state that never touches the live runner. It's the JS binding for
+the runtime's [speculation](../../toolchain/embedding/speculation.md) primitive:
+drive it with the same verbs (`advance`, `choose`, `goToPath`, `evalFunction`),
+read what it produces, and drop it.
+
+<!-- ts-hidden
+import { StoryRunnerHandle } from "@brink-lang/web";
+declare const runner: StoryRunnerHandle;
+-->
+```ts
+// "What lines would jumping to `cellar` produce, without going there?"
+const spec = runner.speculate();
+spec.goToPath("cellar");
+const preview = spec.advance();   // a Line; the live runner is untouched
+```
+
+For the common "evaluate this fragment" case, `runner.evaluate(source)` composes
+`speculate()` with a compile step so you can run an arbitrary expression or
+snippet against current state and read back its value and output in one call.
+
+### Sessions
+
+`StorySessionHandle` wraps a story with a journal — the JS binding for
+[sessions & replay](../../toolchain/embedding/sessions.md). It drives like the
+runner but records every input, so you can snapshot and diff state, persist a
+save, and restore or replay it.
+
+<!-- ts-hidden
+import { StorySessionHandle } from "@brink-lang/web";
+declare const bytes: Uint8Array;
+-->
+```ts
+const session = new StorySessionHandle(bytes, 42);   // optional seed
+
+const before = session.snapshot();
+session.continueSingle();
+const delta = session.diff(before, session.snapshot());   // typed StateDiff
+
+const journal = session.exportJournal();   // serde-serializable save artifact
+// later: StorySessionHandle.restore(bytes, journal) → { session, outcome }
+```
+
+`session.snapshot()` returns the typed `StateSnapshot` (globals with real values,
+visit counts, call stack) for serialize-and-compare; `session.debugSnapshot()`
+returns a name-resolved `DebugState` for a live inspector UI — the same two-view
+distinction the [sessions chapter](../../toolchain/embedding/sessions.md) draws.
+`onJournalDirty` registers a listener for debounced persistence.
 
 ### `EditorSession` — IDE queries
 
@@ -128,7 +196,7 @@ full-file mode.
 
 ## A minimal client
 
-```ts
+```ts,no-check
 import init, { EditorSession, StoryRunner } from "brink-web";
 
 await init();

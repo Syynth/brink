@@ -2,7 +2,7 @@
 
 The compiler transforms `.ink` source files into bytecode through six phases:
 
-```
+```text
 Phase 1: Discovery + Parse    (brink-db, brink-syntax)    per-file    -> CST -> AST
 Phase 2: HIR Lowering          (brink-ir::hir)             per-file    -> HIR
 Phase 3: Analysis              (brink-analyzer)            cross-file  -> symbol resolution, types

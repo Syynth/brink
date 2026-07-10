@@ -6,10 +6,9 @@ brink is organized as a Cargo workspace with strict dependency rules. The centra
 
 | Crate | Path | Purpose |
 |-------|------|---------|
-| `brink` | `crates/brink/` | Public API — re-exports from compiler and runtime |
 | `brink-compiler` | `crates/brink-compiler/` | Pipeline driver: `.ink` to `StoryData` |
 | `brink-runtime` | `crates/brink-runtime/` | Bytecode VM for executing compiled stories |
-| `brink-cli` | `crates/brink-cli/` | CLI tool: compile, convert, play, export-xliff, compile-locale, regenerate-xliff, fmt, replay |
+| `brink-cli` | `crates/brink-cli/` | CLI tool: compile, convert, play, replay, ide, export-xliff, compile-locale, regenerate-xliff, fmt |
 | `brink-lsp` | `crates/brink-lsp/` | Language server for ink files |
 | `brink-web` | `crates/brink-web/` | WASM bindings for the IDE + runtime; powers the web playground |
 | `bevy-brink` | `crates/bevy-brink/` | Bevy 0.18 integration: plugin, assets, components, external-function bindings |
@@ -36,6 +35,10 @@ brink is organized as a Cargo workspace with strict dependency rules. The centra
 | `brink-test-harness` | `crates/internal/brink-test-harness/` | Episode-based behavioral testing (oracle corpus) |
 
 Internal crates have `publish = false` and are not published to crates.io.
+
+`crates/brink/` is an empty umbrella crate — it holds the `brink` name on
+crates.io and ships no code. There is no facade re-exporting the compiler and
+runtime; depend on `brink-compiler` and `brink-runtime` directly.
 
 ## Editor plugins
 

@@ -19,10 +19,18 @@ and a single command changes it everywhere.
 
 A `.inkl` overlay loads as a `LocaleAsset`. Switch with the command:
 
-```rust,ignore
+```rust
+# extern crate bevy_asset;
+# extern crate bevy_brink;
+# extern crate bevy_ecs;
+# use bevy_asset::{AssetServer, Handle};
+# use bevy_ecs::prelude::Commands;
+# use bevy_brink::{LocaleAsset, SetBrinkLocale};
+# fn demo(commands: &mut Commands, assets: &AssetServer) {
 let spanish: Handle<LocaleAsset> = assets.load("dialogue.es.inkl");
 commands.set_brink_locale::<()>(Some(spanish));   // switch
 commands.set_brink_locale::<()>(None);            // revert to base
+# }
 ```
 
 Every non-override flow's `BrinkLocale` is reconciled to point at the localized
@@ -41,13 +49,35 @@ reverting restores it exactly.
 Add `BrinkLocaleOverride<M>` to exclude a flow from the global switch, then set
 its `BrinkLocale` manually with the `apply_locale_overlay` helper:
 
-```rust,ignore
+```rust
+# extern crate bevy_asset;
+# extern crate bevy_brink;
+# extern crate bevy_ecs;
+# extern crate brink_runtime;
+# use bevy_asset::Assets;
+# use bevy_ecs::prelude::{Commands, Entity};
+# use bevy_brink::{
+#     apply_locale_overlay, BrinkLocaleOverride, LineTablesAsset, LocaleAsset,
+#     LocaleMode, ProgramAsset,
+# };
+# use brink_runtime::RuntimeError;
+# fn demo(
+#     commands: &mut Commands,
+#     npc_flow: Entity,
+#     program: &ProgramAsset,
+#     base_tables: &LineTablesAsset,
+#     locale_asset: &LocaleAsset,
+#     mut line_tables: Assets<LineTablesAsset>,
+# ) -> Result<(), RuntimeError> {
 commands.entity(npc_flow).insert(BrinkLocaleOverride::<()>::default());
 
 let handle = apply_locale_overlay(
     program, base_tables, locale_asset, LocaleMode::Overlay, &mut line_tables,
 )?;
 // point that flow's BrinkLocale at `handle`
+# let _ = handle;
+# Ok(())
+# }
 ```
 
 `LocaleMode::Overlay` falls back to base text for untranslated lines;
@@ -63,9 +93,14 @@ capture, and the visible-history half of a save file.
 
 ### Capturing
 
-```rust,ignore
+```rust
+# extern crate bevy_brink;
+# use bevy_brink::{capture_transcript, BrinkFlow, ProgramAsset};
+# fn demo(flow: &BrinkFlow<()>, program: &ProgramAsset) {
 let bytes: Vec<u8> = capture_transcript::<()>(flow, program);
 // write `bytes` into your save file
+# let _ = bytes;
+# }
 ```
 
 The bytes embed the program's `source_checksum`, so a later load can detect a
@@ -78,11 +113,24 @@ Load saved bytes through the `.brkt` asset loader (→ `TranscriptAsset`) or
 locale — checksum-validated, so a wrong-story render errors instead of producing
 garbage:
 
-```rust,ignore
+```rust
+# extern crate bevy_brink;
+# use bevy_brink::{
+#     render_transcript_asset, LineTablesAsset, ProgramAsset, TranscriptAsset,
+#     TranscriptError,
+# };
+# fn demo(
+#     transcript_asset: TranscriptAsset,
+#     program: &ProgramAsset,
+#     line_tables: &LineTablesAsset,
+# ) -> Result<(), TranscriptError> {
 let lines = render_transcript_asset(
     &transcript_asset, program, line_tables, /* plural resolver */ None,
 )?;
 // each entry is (text, tags) for one resolved line
+# let _ = lines;
+# Ok(())
+# }
 ```
 
 Pass any locale's line tables and the saved history localizes too — capture in

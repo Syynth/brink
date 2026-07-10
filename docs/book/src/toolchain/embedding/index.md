@@ -16,16 +16,45 @@ is the one structural idea to internalize:
 - **`Program`** — the immutable bytecode, variable defaults, and metadata. Built
   once via `link()`, shareable across threads.
 - **`Story`** — all the mutable state: operand stack, call stack, globals, visit
-  counts, output buffer, and the line tables it renders with. It borrows from a
-  `Program`.
+  counts, output buffer, and the line tables it renders with. It holds an
+  `Arc<Program>`.
 
 Because `Program` is immutable, **many `Story` instances can run concurrently
 against one `Program`** — parallel playthroughs, or replaying with different
 choices, share the compiled data for free.
 
-```rust,ignore
+```rust
+# extern crate brink_format;
+# extern crate brink_runtime;
+# use brink_format::StoryData;
+# use brink_runtime::{RuntimeError, Story};
+# fn demo(story_data: StoryData) -> Result<(), RuntimeError> {
+use std::sync::Arc;
+
 let (program, line_tables) = brink_runtime::link(&story_data)?;
-let mut story = Story::new(&program, line_tables);
+let mut story: Story = Story::new(Arc::new(program), line_tables);
+# let _ = &mut story;
+# Ok(())
+# }
+```
+
+`Story` owns a refcount, not a borrow, so it carries no lifetime — it can be
+moved into a thread, stored in a struct, or held in an ECS component without
+threading a `'p` parameter through your types. To fan out playthroughs, clone
+the `Arc` (cheap) and give each `Story` its own line tables:
+
+```rust
+# extern crate brink_format;
+# extern crate brink_runtime;
+# use std::sync::Arc;
+# use brink_format::LineEntry;
+# use brink_runtime::{Program, Story};
+# fn demo(program: Program, line_tables: Vec<Vec<LineEntry>>) {
+let program = Arc::new(program);
+let mut a: Story = Story::new(Arc::clone(&program), line_tables.clone());
+let mut b: Story = Story::new(Arc::clone(&program), line_tables);
+# let _ = (&mut a, &mut b);
+# }
 ```
 
 ## The shape of embedding
@@ -39,11 +68,18 @@ let mut story = Story::new(&program, line_tables);
    into your code (`EXTERNAL` functions), synchronously or deferred.
 4. **[Named Flows](./named-flows.md)** — run parallel execution contexts within
    one story.
+5. **[Sessions & Replay](./sessions.md)** — journal a playthrough for a save
+   file, deterministic replay, and state snapshots/diffs.
+6. **[Speculation](./speculation.md)** — run the story forward from its current
+   state without committing to it, then discard the run.
 
 A minimal driver looks like this — see the execution-model page for what each
 arm means:
 
-```rust,ignore
+```rust
+# extern crate brink_runtime;
+# use brink_runtime::{Line, RuntimeError, Story};
+# fn demo(story: &mut Story) -> Result<(), RuntimeError> {
 loop {
     match story.continue_single()? {
         Line::Text { text, .. } | Line::Done { text, .. } => print!("{text}"),
@@ -54,4 +90,6 @@ loop {
         Line::End { text, .. } => { print!("{text}"); break; }
     }
 }
+# Ok(())
+# }
 ```

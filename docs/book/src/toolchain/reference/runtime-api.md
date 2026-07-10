@@ -19,12 +19,25 @@ see [Embedding the Runtime](../embedding/index.md).
 
 `link()` returns the immutable `Program` **and** the story's line tables
 (`Vec<Vec<LineEntry>>`) — the swappable rendering data. Hand both to
-`Story::new(&program, line_tables)`.
+`Story::new(Arc::new(program), line_tables)`.
 
-```rust,ignore
+```rust
+# extern crate brink_format;
+# extern crate brink_runtime;
+# use brink_format::StoryData;
+# use brink_runtime::{RuntimeError, Story};
+# fn demo(story_data: StoryData) -> Result<(), RuntimeError> {
+use std::sync::Arc;
+
 let (program, line_tables) = brink_runtime::link(&story_data)?;
-let mut story = Story::new(&program, line_tables);
+let mut story: Story = Story::new(Arc::new(program), line_tables);
+# let _ = &mut story;
+# Ok(())
+# }
 ```
+
+`Story` takes the program by `Arc`, not by reference, so it carries no lifetime
+parameter — clone the `Arc` to run many stories against one `Program`.
 
 ## Stepping
 

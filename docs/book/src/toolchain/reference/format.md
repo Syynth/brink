@@ -71,7 +71,7 @@ This is separate from **save files**, which *are* designed to survive toolchain 
 
 The textual format is a human-readable disassembly of `.inkb`. Container paths appear as labels, opcodes as mnemonics with operands. Useful for debugging compiler output and diffing two compilations side-by-side.
 
-```
+```text
 === container $01_abcdef1234567 (my_knot) ===
   0000: PushInt 42
   0004: SetGlobal $02_1234567abcdef

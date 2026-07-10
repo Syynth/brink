@@ -100,8 +100,56 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+      # bevy-brink (built below for the Bevy doctests' -L path) transitively
+      # needs these system libs via its bevy_* deps' build scripts.
+      #
+      # No rust-cache here on purpose: the doctest deps go in a non-default
+      # target dir and are consumed by rustdoc, which rejects artifacts built by
+      # a different rustc (E0514) — a restored cache from an older toolchain
+      # breaks the run. The build below is always fresh.
+      #
+      # The Bevy *flows* page is `{{#include}}`d from crates/bevy-brink/examples/
+      # book_flows.rs and compile-checked by the `test` job (cargo test compiles
+      # examples), so it needs no step here.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
       - run: cargo install mdbook --locked
       - run: mdbook build docs/book
+      # Compile the book's Rust examples as doctests. Without this, a signature
+      # change can silently rot every example in the book — which is exactly
+      # what happened to `Story::new` across the Program → Arc refactor.
+      #
+      # One cargo invocation for the whole package set: rustdoc resolves the
+      # examples off -L, and two builds of a crate with different hashes make
+      # it bail with E0464. See the `book-test` recipe in the justfile.
+      - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink
+        env:
+          CARGO_TARGET_DIR: target/book-doctest
+      # Run mdbook under the pinned toolchain (rust-toolchain.toml). `cargo
+      # build` above honors the pin, but mdbook's rustdoc subprocess otherwise
+      # picks up the runner's default toolchain — a rustc-version mismatch that
+      # makes rustdoc reject the freshly-built deps (E0514).
+      #
+      # CARGO_MANIFEST_DIR: Bevy's derives resolve the `bevy` vs `bevy_ecs` crate
+      # path from the manifest, and rustdoc runs outside a cargo context.
+      - name: mdbook test (doctests)
+        run: |
+          channel=$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | cut -d'"' -f2)
+          rustup run "$channel" mdbook test docs/book -L target/book-doctest/debug/deps
+        env:
+          CARGO_MANIFEST_DIR: ${{ github.workspace }}/crates/bevy-brink
+      # Type-check the book's TypeScript examples against the published
+      # @brink-lang packages (the TS counterpart of `mdbook test`).
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+        working-directory: docs/book/ts-check
+      - run: npm run check
+        working-directory: docs/book/ts-check
 
   frontend:
     name: Frontend (brink-studio)

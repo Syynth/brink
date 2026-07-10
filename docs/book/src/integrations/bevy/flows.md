@@ -11,7 +11,7 @@ You don't construct a flow directly. You spawn an entity carrying a
 the plugin's `fulfill_flow_requests` system materializes the flow once the
 assets finish loading — no polling, no readiness latch:
 
-```rust
+```rust,ignore
 {{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:spawn_request}}
 ```
 
@@ -50,7 +50,7 @@ Each flow has its **own** `Context` — globals are not auto-shared between
 concurrent flows. When a side conversation should contribute its changes back
 to the shared save, commit explicitly:
 
-```rust
+```rust,ignore
 {{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:commit}}
 ```
 
@@ -69,7 +69,7 @@ entity, and `Commands`. They return `Advance`:
 | `Line(Line)` | a line was produced and its observer event fired |
 | `AwaitingQuery` | the flow paused on a world-access binding; the plugin resolver handles it — skip this flow and resume next frame |
 
-```rust
+```rust,ignore
 {{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:drive}}
 ```
 
@@ -93,14 +93,14 @@ and never yields `AwaitingQuery`. See [External Functions](./bindings.md).
 A `Line::Choices` (or a `BrinkChoicesPresented` event) means the flow is waiting
 for a pick. Select with `choose`:
 
-```rust
+```rust,ignore
 {{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:choose}}
 ```
 
 For keyboard UIs, `digit_key_to_choice_index(&keys, choices.len())` maps
 `Digit1..=Digit9` to a 0-based choice index:
 
-```rust
+```rust,ignore
 {{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:digit_choose}}
 ```
 
@@ -118,7 +118,7 @@ care about (no `match` on a `Line`):
 | `BrinkStoryEnded<M>` | `Line::End` (`-> END`) | `text`, `tags` |
 | `BrinkFlowReset<M>` (dev) | a hot-reload is about to rebuild the flow | `entity` |
 
-```rust
+```rust,ignore
 {{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:observer}}
 ```
 
@@ -133,7 +133,7 @@ add a `BrinkTranscript<M>` component (opt-in) to a flow entity. The plugin
 re-renders it whenever the flow grows, the locale changes, or line tables
 hot-reload:
 
-```rust
+```rust,ignore
 {{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:transcript}}
 ```
 

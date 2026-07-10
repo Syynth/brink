@@ -9,6 +9,11 @@ observer events, and ink `EXTERNAL` functions bind to engine systems.
 cargo add bevy-brink
 ```
 
+<!-- Not compile-checked: uses the `bevy` umbrella crate + DefaultPlugins, which
+     bevy-brink does not depend on (it pulls the bevy_* subcrates directly).
+     Rewriting this to bevy_ecs::prelude would compile but would misrepresent
+     what a consumer actually writes. -->
+
 ```rust,ignore
 use bevy::prelude::*;
 use bevy_brink::{BrinkPlugin, BrinkFlowRequest};
@@ -49,7 +54,12 @@ Every type is generic over a `Send + Sync + 'static` marker `M` (default
 `()`). The marker monomorphizes the resources and components to distinct Bevy
 types with no runtime cost, so independent stories coexist in one app:
 
-```rust,ignore
+```rust
+# extern crate bevy_app;
+# extern crate bevy_brink;
+# use bevy_app::App;
+# use bevy_brink::BrinkPlugin;
+# fn demo(app: &mut App) {
 struct MainStory;
 struct DreamSequence;
 
@@ -57,6 +67,7 @@ app.add_plugins((
     BrinkPlugin::<MainStory>::default(),
     BrinkPlugin::<DreamSequence>::default(),
 ));
+# }
 ```
 
 Each marker gets its own `BrinkGlobals<M>` resource and

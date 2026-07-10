@@ -35,6 +35,68 @@ cross-language-benchmark:
 wasm:
     wasm-pack build crates/brink-web --target web --out-dir www/pkg
 
+# Compile-check the book's Rust examples. Two mechanisms, by chapter:
+#
+#  - The Bevy "flows" page `{{#include}}`s its snippets from a compiled example
+#    (crates/bevy-brink/examples/book_flows.rs); `cargo build --example` is what
+#    checks that code, so those fences are `rust,ignore` for mdbook test.
+#  - Every other Rust example is a real doctest, run by `mdbook test`.
+#
+# mdbook test builds into a dedicated target dir. rustdoc resolves the examples'
+# `extern crate` declarations off the -L search path, and that path must hold
+# exactly one build of each crate: two artifacts with different hashes (a
+# `cargo check` .rmeta beside a `cargo build` .rlib, or two different feature
+# unifications) make rustdoc bail with E0464 "multiple candidates". So: always
+# build the whole package set in ONE cargo invocation, and wipe the dir if a
+# stale artifact from some other invocation snuck in.
+book-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # The Bevy flows page is checked by building its backing example.
+    cargo build -p bevy-brink --example book_flows
+
+    export CARGO_TARGET_DIR=target/book-doctest
+    deps="$CARGO_TARGET_DIR/debug/deps"
+    pkgs="-p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink"
+
+    # Self-heal: if any crate has more than one hash, the dir is polluted.
+    if [ -d "$deps" ]; then
+        for c in brink_format brink_runtime brink_compiler brink_intl bevy_brink; do
+            n=$(ls "$deps" 2>/dev/null | sed -nE "s/^lib${c}-([0-9a-f]+)\.(rlib|rmeta)$/\1/p" | sort -u | wc -l | tr -d ' ')
+            if [ "$n" -gt 1 ]; then
+                echo "book-test: stale artifacts for ${c} (${n} hashes) — rebuilding clean"
+                rm -rf "$CARGO_TARGET_DIR"
+                break
+            fi
+        done
+    fi
+
+    cargo build $pkgs
+
+    # Bevy's derives (Component/Event/Resource) resolve the `bevy` vs `bevy_ecs`
+    # crate path by reading CARGO_MANIFEST_DIR's Cargo.toml. rustdoc runs outside
+    # a cargo context, so without this they panic with "CARGO_MANIFEST_DIR is not
+    # defined". Point them at bevy-brink, which depends on the bevy_* subcrates.
+    export CARGO_MANIFEST_DIR="$PWD/crates/bevy-brink"
+
+    # Run mdbook under the pinned toolchain so its rustdoc matches the rustc
+    # that built the deps above — otherwise a differing default toolchain makes
+    # rustdoc reject them (E0514).
+    channel=$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | cut -d'"' -f2)
+    rustup run "$channel" mdbook test docs/book -L "$deps"
+
+# Type-check the book's TypeScript examples against the published @brink-lang
+# packages. The TS counterpart of `book-test`: mdbook only runs Rust doctests,
+# so this extracts the `ts`/`typescript` blocks and runs `tsc` over them. See
+# docs/book/ts-check/README.md.
+book-ts-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd docs/book/ts-check
+    npm install --no-audit --no-fund --silent
+    npm run check
+
 # Build the full brink-studio as a standalone static app and stage it into
 # docs/book/src/playground/ (the embedded book playground).
 book-assets:
@@ -54,15 +116,6 @@ book-assets:
 
 # Build the book with the embedded playground
 book: book-assets
-    mdbook build docs/book
-
-# Compile-check the book's code examples and verify the book renders.
-# The Bevy pages `{{#include}}` their snippets from compiled example files
-# (e.g. crates/bevy-brink/examples/book_flows.rs), so building the examples
-# is what guarantees the documented code still compiles; `mdbook build`
-# then confirms every include resolves.
-book-test:
-    cargo build -p bevy-brink --example book_flows
     mdbook build docs/book
 
 # Run brink-studio dev server (builds wasm first)

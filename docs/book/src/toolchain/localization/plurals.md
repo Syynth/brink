@@ -38,7 +38,10 @@ Stories without localization don't need a resolver. When no resolver is provided
 
 Implement `PluralResolver` for your own type to provide locale-aware plural handling:
 
-```rust,ignore
+```rust
+# extern crate brink_format;
+use brink_format::{PluralCategory, PluralResolver};
+
 struct EnglishPlurals;
 
 impl PluralResolver for EnglishPlurals {
@@ -64,8 +67,13 @@ The `brink-intl` crate ships two ready-made resolvers so you don't have to hand-
 - **`IcuPluralResolver`** — backed by ICU4X with CLDR baked data (~50 KB), correct for every CLDR locale.
 - **`DefaultPluralResolver`** — a minimal English-only resolver for stories that don't localize.
 
-```rust,ignore
+```rust
+# extern crate brink_intl;
+# fn demo() -> Result<(), brink_intl::IntlError> {
 use brink_intl::IcuPluralResolver;
-let resolver = IcuPluralResolver::new();
+let resolver = IcuPluralResolver::new("en")?;   // BCP 47 locale tag
 // pass `Some(&resolver)` to render_transcript / apply_locale rendering
+# let _ = resolver;
+# Ok(())
+# }
 ```

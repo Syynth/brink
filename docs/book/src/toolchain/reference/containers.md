@@ -4,7 +4,7 @@
 
 All named things in brink use a single `DefinitionId(u64)` type. The high 8 bits are a type tag; the low 56 bits are a hash of the fully qualified ink path.
 
-```
+```text
 DefinitionId (u64):
 +-----------+------------------------------------------------------+
 | tag (8)   |                    hash (56)                          |
@@ -33,12 +33,32 @@ Containers are the fundamental unit of bytecode execution. At the source level, 
 ```rust,ignore
 struct ContainerDef {
     id: DefinitionId,
+    scope_id: DefinitionId,       // Enclosing knot/stitch; == id for scopes
+    name: Option<NameId>,         // Set for root/knot/stitch, None for children
     bytecode: Vec<u8>,
-    content_hash: u64,
     counting_flags: CountingFlags,
     path_hash: i32,               // Seed for shuffle RNG
+    param_count: u8,              // Declared parameters (0 for most containers)
 }
 ```
+
+`scope_id` names the lexical scope a container belongs to. For a scope-owning
+container (root, knot, stitch) it equals `id`; for a child container (a gather,
+a choice target, a sequence) it points at the enclosing scope. Line tables are
+keyed by scope, so this is what lets a locale overlay swap the rendering data
+for one knot without touching its children's bytecode — see
+[Line Templates](./line-templates.md).
+
+`param_count` is the number of parameters the container declares — two, for
+`=== call(action, present) ===`. The container's prologue binds them with that
+many leading `DeclareTemp`s, and the runtime uses the count to arity-check a
+host-directed entry (`choose_path_string_with_args`) or a `call_function`. It is
+`0` for the vast majority of containers, and the converter reference pipeline
+always leaves it `0`, because inklecate's JSON doesn't expose it.
+
+> `content_hash` is a free function in `brink-format` (`content_hash(&str) -> u64`),
+> used to derive `DefinitionId`s from ink paths. It is not a field on
+> `ContainerDef`.
 
 ### Container hierarchy
 
