@@ -1,0 +1,26 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== k ===\n* A\n- gather text\n- (opts)\ncontent under opts\n* B\n- done\n\")"
+---
+== LINES (base) ==
+  0 |=== k ===| KnotHeader w=0/TopLevel
+  1 |* A| Choice w=1/ChoiceLine(sticky=false)
+  2 |- gather text| Gather w=1/GatherContinuation
+  3 |- (opts)| Gather w=1/GatherContinuation
+  4 |content under opts| Narrative w=1/GatherContinuation
+  5 |* B| Choice w=1/ChoiceLine(sticky=false)
+  6 |- done| Gather w=1/GatherContinuation
+  7 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== k ===| KnotHeader w=0/TopLevel
+  1 |* A| Choice w=1/ChoiceLine(sticky=false)
+  2 |- gather text| Gather w=1/GatherContinuation
+  3 |- (opts)| Gather w=1/GatherContinuation
+  4 |content under opts| Narrative w=1/GatherContinuation
+  5 |* B| Choice w=1/ChoiceLine(sticky=false)
+  6 |- done| Gather w=1/GatherContinuation
+  7 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..6 from_start=false kind=Structural text=None
+== RUNS (base) ==
+== RUNS (at-cue dialect) ==

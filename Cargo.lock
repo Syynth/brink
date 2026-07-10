@@ -2057,6 +2057,7 @@ dependencies = [
  "brink-ir",
  "brink-runtime",
  "brink-syntax",
+ "insta",
  "rowan",
  "serde",
  "serde_json",

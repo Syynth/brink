@@ -1,0 +1,31 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n{ x > 5:\n~ y = 1\n- else:\n~ y = 2\n}\nHello.\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |{ x > 5:| Logic w=0/TopLevel
+  2 |~ y = 1| Logic w=0/ConditionalBranch
+  3 |- else:| Logic w=0/TopLevel
+  4 |~ y = 2| Logic w=0/ConditionalBranch
+  5 |}| Logic w=0/TopLevel
+  6 |Hello.| Narrative w=0/TopLevel
+  7 |-> END| Divert w=0/TopLevel
+  8 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |{ x > 5:| Logic w=0/TopLevel
+  2 |~ y = 1| Logic w=0/ConditionalBranch
+  3 |- else:| Logic w=0/TopLevel
+  4 |~ y = 2| Logic w=0/ConditionalBranch
+  5 |}| Logic w=0/TopLevel
+  6 |Hello.| Narrative w=0/TopLevel
+  7 |-> END| Divert w=0/TopLevel
+  8 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..7 from_start=false kind=Structural text=None
+1..5 from_start=false kind=Structural text=Some("{...}")
+== RUNS (base) ==
+1..5 Machinery
+== RUNS (at-cue dialect) ==
+1..5 Machinery

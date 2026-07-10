@@ -23,6 +23,7 @@ thiserror.workspace = true
 [dev-dependencies]
 brink-compiler = { path = "../../brink-compiler" }
 brink-runtime = { path = "../../brink-runtime" }
+insta.workspace = true
 serde_json.workspace = true
 
 [lints]

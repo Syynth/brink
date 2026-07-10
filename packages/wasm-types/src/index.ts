@@ -33,6 +33,73 @@ export interface SemanticToken {
   token_modifiers: number;
 }
 
+// ── HIR structural projection (#454) ────────────────────────────
+
+/** The kind of a projected HIR span. */
+export type HirSpanKind =
+  | "knot"
+  | "stitch"
+  | "choice"
+  | "gather"
+  | "cond_branch"
+  | "seq_branch"
+  | "label"
+  | "param"
+  | "var_decl"
+  | "const_decl"
+  | "list_decl"
+  | "list_member"
+  | "external"
+  | "temp_decl"
+  | "divert"
+  | "var_ref"
+  | "call"
+  | "content"
+  | "interpolation"
+  | "tag"
+  | "include"
+  | "divert_stmt"
+  | "divert_terminal"
+  | "logic"
+  | "conditional"
+  | "sequence";
+
+/**
+ * One HIR span projected onto the source: 0-based lines, UTF-16 columns.
+ * `def_id`/`target_id` are opaque `DefinitionId` strings (`$tt_hash`) — compare
+ * by equality (a reference's `target_id` equals its declaration's `def_id`).
+ */
+export interface HirSpan {
+  start_line: number;
+  start_char: number;
+  end_line: number;
+  end_char: number;
+  kind: HirSpanKind;
+  /** Block-level container (participates in rails / the per-line stack). */
+  container: boolean;
+  depth: number;
+  def_id?: string;
+  target_id?: string;
+  /** Stable-within-doc container id; absent on non-containers. */
+  handle?: number;
+}
+
+/** One entry of a line's container stack. */
+export interface HirLineContainer {
+  kind: HirSpanKind;
+  handle: number;
+  depth: number;
+}
+
+/**
+ * The structural projection of one document: nested spans plus, per line, the
+ * stack of containers covering it (outermost→innermost) — the rails view.
+ */
+export interface HirProjection {
+  spans: HirSpan[];
+  lines: HirLineContainer[][];
+}
+
 // ── Runtime ─────────────────────────────────────────────────────
 
 export type LineType =

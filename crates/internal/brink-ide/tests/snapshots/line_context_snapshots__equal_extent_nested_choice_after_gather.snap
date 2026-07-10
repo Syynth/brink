@@ -1,0 +1,27 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n* A\n-\n* B\n  -> hub\n=== hub ===\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* A| Choice w=1/ChoiceLine(sticky=false)
+  2 |-| Gather w=1/GatherContinuation
+  3 |* B| Choice w=1/ChoiceLine(sticky=false)
+  4 |  -> hub| Divert w=1/ChoiceBody
+  5 |=== hub ===| KnotHeader w=0/TopLevel
+  6 |-> END| Divert w=0/TopLevel
+  7 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* A| Choice w=1/ChoiceLine(sticky=false)
+  2 |-| Gather w=1/GatherContinuation
+  3 |* B| Choice w=1/ChoiceLine(sticky=false)
+  4 |  -> hub| Divert w=1/ChoiceBody
+  5 |=== hub ===| KnotHeader w=0/TopLevel
+  6 |-> END| Divert w=0/TopLevel
+  7 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..4 from_start=false kind=Structural text=None
+5..6 from_start=false kind=Structural text=None
+== RUNS (base) ==
+== RUNS (at-cue dialect) ==

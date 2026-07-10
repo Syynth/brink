@@ -1,0 +1,33 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\nINCLUDE a.ink\nINCLUDE b.ink\nVAR health = 100\nCONST MAX = 10\nLIST moods = happy, sad,\n    angry\nEXTERNAL play_sound(name)\n=== start ===\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |INCLUDE a.ink| Include w=0/TopLevel
+  1 |INCLUDE b.ink| Include w=0/TopLevel
+  2 |VAR health = 100| VarDecl w=0/TopLevel
+  3 |CONST MAX = 10| VarDecl w=0/TopLevel
+  4 |LIST moods = happy, sad,| VarDecl w=0/TopLevel
+  5 |    angry| Narrative w=0/TopLevel
+  6 |EXTERNAL play_sound(name)| External w=0/TopLevel
+  7 |=== start ===| KnotHeader w=0/TopLevel
+  8 |-> END| Divert w=0/TopLevel
+  9 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |INCLUDE a.ink| Include w=0/TopLevel
+  1 |INCLUDE b.ink| Include w=0/TopLevel
+  2 |VAR health = 100| VarDecl w=0/TopLevel
+  3 |CONST MAX = 10| VarDecl w=0/TopLevel
+  4 |LIST moods = happy, sad,| VarDecl w=0/TopLevel
+  5 |    angry| Narrative w=0/TopLevel
+  6 |EXTERNAL play_sound(name)| External w=0/TopLevel
+  7 |=== start ===| KnotHeader w=0/TopLevel
+  8 |-> END| Divert w=0/TopLevel
+  9 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..1 from_start=false kind=Structural text=Some("INCLUDE … (2 files)")
+7..8 from_start=false kind=Structural text=None
+== RUNS (base) ==
+2..4 Machinery
+== RUNS (at-cue dialect) ==
+2..4 Machinery

@@ -1,6 +1,6 @@
 import { Compartment, type Extension } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import type { CompileResult, SemanticToken, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult, AutoImportResult, DialogueDialect } from "@brink/wasm-types";
+import type { CompileResult, SemanticToken, HirProjection, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult, AutoImportResult, DialogueDialect } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
@@ -29,12 +29,19 @@ import {
 } from "./extract-actions.js";
 import { playFromHereExtension } from "./play-from-here.js";
 import { hostGutterExtension, type HostGutterMarker } from "./host-gutter.js";
+import { hirOverlayExtension } from "./hir-overlay.js";
 
 export interface BrinkStudioOptions {
   compile: (source: string) => CompileResult;
   getSemanticTokens: (source: string) => SemanticToken[];
   getTokenTypeNames: () => string[];
   onCompile?: (result: CompileResult) => void;
+
+  /** The HIR structural projection for this document (#454). When provided,
+   *  the editor renders the structural overlay: `brink-hir-*` inline marks
+   *  with `data-*` identity, per-line rail attributes + the rails gutter, and
+   *  identity-keyed occurrence highlighting. Omit for no overlay. */
+  getHirProjection?: () => HirProjection;
 
   /** The editor's skin (#363 headless-ready). Defaults to `brinkTheme` (the
    *  `--bs-*`-token CM theme brink-studio uses). Pass `false` for a headless
@@ -360,6 +367,11 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       getSemanticTokens: options.getSemanticTokens,
       getTokenTypeNames: options.getTokenTypeNames,
     }),
+    // The HIR structural overlay (#454) — an independent layer on top of (not
+    // replacing) the tok-* token highlight above.
+    options.getHirProjection
+      ? hirOverlayExtension({ getHirProjection: options.getHirProjection })
+      : [],
     diagnosticsExtension({
       compile: options.compile,
       onCompile: options.onCompile,

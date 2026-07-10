@@ -1,18 +1,8 @@
 # Spawning & Driving Flows
 
-A *flow* is one live conversation — a `FlowInstance` and its story state,
-attached to an entity. You spawn flows with a request component and advance them
-from your own systems.
-
-> **A note on `World`.** The runtime's story state is `brink_runtime::World` —
-> globals, visit counts, turn counts, RNG. It has nothing to do with
-> `bevy::prelude::World`, which it unfortunately shares a name with. Everywhere
-> below, an unqualified `World` means the brink one. Earlier versions of this
-> API called it `Context`; that type no longer exists.
->
-> `bevy-brink` re-exports `Value` and `LocaleMode` but **not** `World`, so
-> naming it — which you must, to write a function over `BrinkContext::inner` —
-> needs a direct `brink-runtime` dependency alongside `bevy-brink`.
+A *flow* is one live conversation — a `FlowInstance` and its `Context`, attached
+to an entity. You spawn flows with a request component and advance them from
+your own systems.
 
 ## The request-component pattern
 
@@ -21,22 +11,8 @@ You don't construct a flow directly. You spawn an entity carrying a
 the plugin's `fulfill_flow_requests` system materializes the flow once the
 assets finish loading — no polling, no readiness latch:
 
-```rust
-# extern crate bevy_asset;
-# extern crate bevy_brink;
-# extern crate bevy_ecs;
-# use bevy_asset::AssetServer;
-# use bevy_ecs::prelude::Commands;
-# use bevy_brink::{BrinkFlowRequest, ContextSeed, FlowStart};
-# fn demo(commands: &mut Commands, assets: &AssetServer) {
-commands.spawn(
-    BrinkFlowRequest::<()>::builder()
-        .story(assets.load("dialogue.inkb"))
-        .start(FlowStart::Address("intro_scene".into()))  // optional
-        .seed(ContextSeed::FromGlobals)                    // optional
-        .build(),
-);
-# }
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:spawn_request}}
 ```
 
 On fulfillment the request component is **removed** and replaced with the live
@@ -56,7 +32,7 @@ build warns); to restart, despawn the entity and spawn a fresh request.
 |---------|---------|
 | `FromGlobals` (default) | Clone the shared `BrinkGlobals<M>` "save data". |
 | `FromInitial` | Use the program's fresh starting state — an independent flow that ignores the shared save. |
-| `Custom(World)` | A caller-supplied `brink_runtime::World` (e.g. a mid-game branch from a snapshot). |
+| `Custom(Context)` | A caller-supplied `Context` (e.g. a mid-game branch from a snapshot). |
 
 ## Flow components & resources
 
@@ -65,27 +41,17 @@ After fulfillment the entity carries:
 | Type | Kind | Holds |
 |------|------|-------|
 | `BrinkFlow<M>` | Component | the `FlowInstance` (`.inner`) — call stacks, output buffer, pending choices, transcript |
-| `BrinkContext<M>` | Component | this flow's in-flight `World` (`.inner`) — globals, visit/turn counts, RNG |
+| `BrinkContext<M>` | Component | this flow's in-flight `Context` (`.inner`) — globals, visit/turn counts, RNG |
 | `BrinkProgram<M>` | Component | `Handle<ProgramAsset>` the flow runs against |
 | `BrinkLocale<M>` | Component | `Handle<LineTablesAsset>` the flow renders with |
-| `BrinkGlobals<M>` | Resource | the shared "save data" `World` (`.inner`); auto-inserted on first fulfillment |
+| `BrinkGlobals<M>` | Resource | the shared "save data" `Context`; auto-inserted on first fulfillment |
 
-Each flow has its **own** `World` — globals are not auto-shared between
+Each flow has its **own** `Context` — globals are not auto-shared between
 concurrent flows. When a side conversation should contribute its changes back
 to the shared save, commit explicitly:
 
-```rust
-# extern crate bevy_brink;
-# extern crate brink_runtime;
-# use bevy_brink::{BrinkGlobals, ProgramAsset};
-# use brink_runtime::World;
-# fn demo(globals: &mut BrinkGlobals<()>, flow_ctx: &World, program: &ProgramAsset) {
-globals.commit_from(&flow_ctx);          // wholesale "save everything"
-globals.commit_progress(&flow_ctx);      // globals replace; visit/turn counts take the max
-globals.commit_globals_only(&flow_ctx);  // just variables; leave counts/RNG alone
-// "new game" reset:
-globals.commit_from(&program.initial_context);
-# }
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:commit}}
 ```
 
 ## Driving a flow
@@ -95,7 +61,7 @@ Two ways to advance, depending on whether you have `&mut World`.
 ### From a normal system — `step_one` / `advance_until_terminal`
 
 These take the program + line tables (looked up from the assets via the
-entity's handles), the flow's `&mut World`, an `ExternalFnHandler`, the
+entity's handles), the flow's `&mut Context`, an `ExternalFnHandler`, the
 entity, and `Commands`. They return `Advance`:
 
 | `Advance` | Meaning |
@@ -103,35 +69,8 @@ entity, and `Commands`. They return `Advance`:
 | `Line(Line)` | a line was produced and its observer event fired |
 | `AwaitingQuery` | the flow paused on a world-access binding; the plugin resolver handles it — skip this flow and resume next frame |
 
-```rust
-# extern crate bevy_asset;
-# extern crate bevy_brink;
-# extern crate bevy_ecs;
-# use bevy_asset::Assets;
-# use bevy_ecs::prelude::{Commands, Entity, Query, Res};
-# use bevy_brink::{
-#     BrinkBindings, BrinkContext, BrinkFlow, BrinkLocale, BrinkProgram,
-#     LineTablesAsset, ProgramAsset,
-# };
-fn drive(
-    mut flows: Query<(Entity, &mut BrinkFlow<()>, &mut BrinkContext<()>,
-                      &BrinkProgram<()>, &BrinkLocale<()>)>,
-    programs: Res<Assets<ProgramAsset>>,
-    tables: Res<Assets<LineTablesAsset>>,
-    bindings: Res<BrinkBindings<()>>,
-    mut commands: Commands,
-) {
-    for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
-        if flow.inner.has_pending_external() { continue; } // paused; resolver will resume it
-        let (Some(p), Some(t)) = (programs.get(&prog.handle), tables.get(&loc.handle))
-            else { continue; };
-        let handler = bindings.handler();
-        let _ = flow.advance_until_terminal(
-            &p.program, &t.tables, &mut ctx.inner, &handler, entity, &mut commands,
-        );
-        handler.flush(&mut commands); // emit any buffered command events
-    }
-}
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:drive}}
 ```
 
 - `step_one` produces **one** line — for typewriter UIs that animate fragments.
@@ -139,7 +78,7 @@ fn drive(
   `End`), firing events for every line along the way — for click-to-continue
   dialogue. It's bounded by a 10,000-line safety cap.
 
-If you have no bindings, pass `&brink_runtime::FallbackHandler` instead of
+If you have no bindings, pass `&bevy_brink::FallbackHandler` instead of
 building one from `BrinkBindings`.
 
 ### From an exclusive system — `advance_flow`
@@ -154,33 +93,15 @@ and never yields `AwaitingQuery`. See [External Functions](./bindings.md).
 A `Line::Choices` (or a `BrinkChoicesPresented` event) means the flow is waiting
 for a pick. Select with `choose`:
 
-```rust
-# extern crate bevy_brink;
-# extern crate brink_runtime;
-# use bevy_brink::{BrinkContext, BrinkFlow};
-# use brink_runtime::RuntimeError;
-# fn demo(flow: &mut BrinkFlow<()>, ctx: &mut BrinkContext<()>, index: usize) -> Result<(), RuntimeError> {
-flow.choose(&mut ctx.inner, index)?;
-# Ok(())
-# }
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:choose}}
 ```
 
 For keyboard UIs, `digit_key_to_choice_index(&keys, choices.len())` maps
 `Digit1..=Digit9` to a 0-based choice index:
 
-```rust
-# extern crate bevy_brink;
-# extern crate bevy_input;
-# extern crate brink_runtime;
-# use bevy_brink::{digit_key_to_choice_index, BrinkContext, BrinkFlow};
-# use bevy_input::{keyboard::KeyCode, ButtonInput};
-# use brink_runtime::{Choice, RuntimeError};
-# fn demo(flow: &mut BrinkFlow<()>, ctx: &mut BrinkContext<()>, keys: ButtonInput<KeyCode>, choices: Vec<Choice>) -> Result<(), RuntimeError> {
-if let Some(idx) = digit_key_to_choice_index(&keys, choices.len()) {
-    flow.choose(&mut ctx.inner, idx)?;
-}
-# Ok(())
-# }
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:digit_choose}}
 ```
 
 ## Observer events
@@ -197,20 +118,8 @@ care about (no `match` on a `Line`):
 | `BrinkStoryEnded<M>` | `Line::End` (`-> END`) | `text`, `tags` |
 | `BrinkFlowReset<M>` (dev) | a hot-reload is about to rebuild the flow | `entity` |
 
-```rust
-# extern crate bevy_app;
-# extern crate bevy_brink;
-# extern crate bevy_ecs;
-# use bevy_app::App;
-# use bevy_ecs::observer::On;
-# use bevy_brink::BrinkChoicesPresented;
-# fn demo(app: &mut App) {
-app.add_observer(|on: On<BrinkChoicesPresented<()>>| {
-    for (i, choice) in on.event().choices.iter().enumerate() {
-        println!("  [{}] {}", i + 1, choice.text);
-    }
-});
-# }
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:observer}}
 ```
 
 Terminal lines bundle their accumulated text in their own `text` field — a
@@ -224,18 +133,8 @@ add a `BrinkTranscript<M>` component (opt-in) to a flow entity. The plugin
 re-renders it whenever the flow grows, the locale changes, or line tables
 hot-reload:
 
-```rust
-# extern crate bevy_brink;
-# extern crate bevy_ecs;
-# use bevy_ecs::prelude::{Commands, Entity};
-# use bevy_brink::BrinkTranscript;
-# fn demo(commands: &mut Commands, flow: Entity, transcript: &BrinkTranscript<()>) {
-commands.entity(flow).insert(BrinkTranscript::<()>::default());
-// later:
-let text = transcript.text();              // all lines joined with '\n'
-let lines = &transcript.lines;             // Vec<(String, Vec<String>)> — (text, tags)
-# let _ = (text, lines);
-# }
+```rust,ignore
+{{#include ../../../../../crates/bevy-brink/examples/book_flows.rs:transcript}}
 ```
 
 ## Hot-reload (dev)

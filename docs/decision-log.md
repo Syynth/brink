@@ -1200,3 +1200,51 @@
 - **SCOPE:** moderate
 - **WHAT:** The book's Rust examples stop being ```rust,ignore``` and become real doctests (hidden setup lines where needed), with `mdbook test` added to CI alongside the existing `mdbook build`. Where an example genuinely cannot compile in isolation, `ignore` stays but must be a deliberate, justified exception rather than the default.
 - **WHY:** All 48 Rust blocks were `ignore`, so CI compiled none of them and the book silently rotted through an API change — `Story::new(&program, …)` survived the `Program → Arc` refactor (ac3619d4) in two chapters and in brink-runtime's own crate doc comment. Prose can only be kept honest by review; code can be kept honest by the compiler. Making the examples executable converts a recurring manual audit into a build failure.
+
+## bevy-brink re-exports all public-signature brink_runtime types; World aliased as BrinkWorld; whole crate re-exported as `runtime`
+- **WHEN:** 2026-07-10
+- **PROJECT:** brink
+- **SYSTEM:** bevy-brink
+- **SCOPE:** moderate
+- **WHAT:** bevy-brink re-exports every brink_runtime type that appears in its public API so consumers never need a direct brink-runtime Cargo dependency. Types get their own names (FlowInstance, Program, Choice, Line, RuntimeError, FallbackHandler) EXCEPT World, aliased as `BrinkWorld` to avoid the E0659 glob collision with `bevy::prelude::World`. Additionally the whole crate is re-exported as `pub use brink_runtime as runtime;` as a stable escape hatch for any type not individually re-exported.
+- **WHY:** The existing Value/LocaleMode/Transcript re-exports already establish 'no direct brink-runtime dep' as intent; coverage just lagged. Plain `pub use World` was rejected because it breaks the idiomatic `use bevy::prelude::*; use bevy_brink::*;` preamble (verified: E0659). The `runtime::` module escape hatch future-proofs against the same class of leak recurring.
+
+## Bevy book examples become compile-checked doctests (not `rust,ignore`), backed by a `book-test` recipe
+- **WHEN:** 2026-07-10
+- **PROJECT:** brink
+- **SYSTEM:** docs/book
+- **SCOPE:** moderate
+- **WHAT:** The Bevy book examples should be compile-checked doctests rather than ```rust,ignore``` fences, backed by a new `book-test` Justfile recipe. Motivating case: the `commit_from` example wouldn't compile against `bevy_brink::World`, which is what surfaced the missing re-export.
+- **WHY:** Ignored examples silently rot — the re-export gap existed precisely because nothing compiled the book's Bevy code. Compile-checking makes the docs a conformance test on the public API surface.
+
+## Flow-private state: runtime capability first, language feature later
+- **WHEN:** 2026-07-10
+- **PROJECT:** brink
+- **SYSTEM:** cross-system (runtime + compiler)
+- **SCOPE:** architectural
+- **WHAT:** F6 lands the runtime capability with host-authored (imperative) policies. A language storage class for flow-private vs shared vars is a separate later epic: the compiler will emit a default policy that World creation merges with host overrides — so F6's policy API is shaped as compiled-defaults ⊕ host-overrides even while the compiled side is empty. (The language epic is the one place `brink-format` eventually changes — scope bits carried in the compiled `Program`; F6 itself touches no format.)
+- **WHY:** ink has only global `VAR` and `temp` — no flow-private persistent storage class — and the compiled `Program` keeps no file provenance, so natural authoring ultimately needs the language change. But the runtime substrate is unblocked now, and the language feature layers on cleanly by generating the same policy the runtime already consumes.
+
+## Entity flows persist state-only via per-flow SaveState
+- **WHEN:** 2026-07-10
+- **PROJECT:** brink
+- **SYSTEM:** scoped-flow-state (brink-runtime / bevy-brink)
+- **SCOPE:** moderate
+- **WHAT:** Entity flows must survive save/load. Each flow's durable state round-trips as an ordinary name-keyed `SaveState` (`save_state`/`load_state` lifted off `Story` to work over any flow's context); a save = one `SaveState` for the shared World + one per entity, composed host-side (bevy). No `brink-format` change; `SAVE_FORMAT_VERSION` stays 1. State-only: a paused flow resumes from its knot entry with state intact, not mid-line.
+- **WHY:** `FlowLocal`'s persistable content matches `SaveState`'s shape one-to-one, and name-keying gives recompile safety. Narrative delivery is essentially serial, so mid-line resume of background flows isn't needed — resume-from-entry is acceptable, even ideal.
+
+## Scoped-state policy model (final): per-World, default World, subtree-inclusive knot scope
+- **WHEN:** 2026-07-10
+- **PROJECT:** brink
+- **SYSTEM:** scoped-flow-state (brink-runtime)
+- **SCOPE:** architectural
+- **WHAT:** `WorldPolicy` stays per-World, installed once at World creation — host-authored at plugin setup now, compiler-emitted later and merged as base ⊕ host-overrides. Default is **World**; private (Local) units are the enumerated, marked case. Spawning a flow is just (entry) → `FlowInstance` + fresh `FlowLocal` — no policy parameter. A knot override applies to its **whole definition subtree** (interior sequence/weave containers included). Per-flow policy and absorb/merge machinery are explicitly rejected; promotion of private state to world state is written in ink.
+- **WHY:** Scope is a property of the variable/knot, declared once and true for every flow. Plain `VAR` must keep meaning shared (ink compatibility + oracle anchoring), so private is the marked case — and default-World is the only default that survives the language transition without flipping. Per-entity privacy comes from each flow's own `FlowLocal`. Subtree ruling: sequence/cycle counters key interior container ids and idiomatic per-entity memory is carried by visit counts (stopping/cycle greetings, `{not knot}` choice gates), so non-subtree knot scoping silently half-breaks the motivating use case.
+
+## F6 slicing — value now, language later, no rework
+- **WHEN:** 2026-07-10
+- **PROJECT:** brink
+- **SYSTEM:** scoped-flow-state / bevy-brink
+- **SCOPE:** moderate
+- **WHAT:** **F6.1** (brink-runtime, oracle-gated): extract one shared drive-to-terminal op replacing `Story`'s loop + bevy's four duplicates; reconcile bevy's misnamed `STEP_LIMIT` onto core `LINE_LIMIT` semantics; lift `save_state`/`load_state` off `Story` to any flow's context; subtree-inclusive knot-scope resolution in `ResolvedPolicy`. **F6.2** (bevy-only): `BrinkContext` `World` → `FlowLocal`; advance system builds `ContextView`; policy installed at plugin setup in base ⊕ overrides shape; delete drive loops + `commit_*` helpers. **F6.3** (bevy-only): per-entity `SaveState` durability. The language storage class is a separate later epic — issue filed, not started. Stale #441 items corrected: `apply_locale` calls STAY (locale overlay is unrelated to scoped state); `BrinkGlobals` already wraps `World`.
+- **WHY:** Every F6 piece is invariant under the language feature landing — it changes only where the private-name list comes from. That's what delivers the value now without a rework or a default-flip later.

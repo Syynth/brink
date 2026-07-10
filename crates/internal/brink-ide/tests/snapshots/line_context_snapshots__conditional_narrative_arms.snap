@@ -1,0 +1,29 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n{ busy:\nSorry, I'm quite busy today.\n- else:\nCome on in, take a seat.\n}\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |{ busy:| Logic w=0/TopLevel
+  2 |Sorry, I'm quite busy today.| Narrative w=0/ConditionalBranch
+  3 |- else:| Logic w=0/TopLevel
+  4 |Come on in, take a seat.| Narrative w=0/ConditionalBranch
+  5 |}| Logic w=0/TopLevel
+  6 |-> END| Divert w=0/TopLevel
+  7 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |{ busy:| Logic w=0/TopLevel
+  2 |Sorry, I'm quite busy today.| Narrative w=0/ConditionalBranch
+  3 |- else:| Logic w=0/TopLevel
+  4 |Come on in, take a seat.| Narrative w=0/ConditionalBranch
+  5 |}| Logic w=0/TopLevel
+  6 |-> END| Divert w=0/TopLevel
+  7 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..6 from_start=false kind=Structural text=None
+1..5 from_start=false kind=Structural text=Some("{...}")
+== RUNS (base) ==
+5..6 Machinery
+== RUNS (at-cue dialect) ==
+5..6 Machinery

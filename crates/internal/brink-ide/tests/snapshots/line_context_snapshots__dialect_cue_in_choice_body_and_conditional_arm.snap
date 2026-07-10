@@ -1,0 +1,45 @@
+---
+source: crates/internal/brink-ide/tests/line_context_snapshots.rs
+expression: "render_fixture(\"\\\n=== start ===\n* Choice\n  @Alice:<>\n  Choice-body line must not chain.\n{ get_variable(17) >= 1:\n    @Solstice:<>\n    Hello, this is Sols.\n- else:\n    @Solstice:<>\n    Hello?\n}\n-> END\n\")"
+---
+== LINES (base) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* Choice| Choice w=1/ChoiceLine(sticky=false)
+  2 |  @Alice:<>| Narrative w=1/ChoiceBody
+  3 |  Choice-body line must not chain.| Narrative w=1/ChoiceBody
+  4 |{ get_variable(17) >= 1:| Logic w=0/TopLevel
+  5 |    @Solstice:<>| Narrative w=0/ConditionalBranch
+  6 |    Hello, this is Sols.| Narrative w=0/ConditionalBranch
+  7 |- else:| Logic w=0/TopLevel
+  8 |    @Solstice:<>| Narrative w=0/ConditionalBranch
+  9 |    Hello?| Narrative w=0/ConditionalBranch
+ 10 |}| Logic w=0/TopLevel
+ 11 |-> END| Divert w=1/ChoiceBody
+ 12 || Blank w=0/TopLevel
+== LINES (at-cue dialect) ==
+  0 |=== start ===| KnotHeader w=0/TopLevel
+  1 |* Choice| Choice w=1/ChoiceLine(sticky=false)
+  2 |  @Alice:<>| Narrative w=1/ChoiceBody dialect=character/Narrative[speaker=Alice]
+  3 |  Choice-body line must not chain.| Narrative w=1/ChoiceBody
+  4 |{ get_variable(17) >= 1:| Logic w=0/TopLevel
+  5 |    @Solstice:<>| Narrative w=0/ConditionalBranch dialect=character/Narrative[speaker=Solstice]
+  6 |    Hello, this is Sols.| Narrative w=0/ConditionalBranch dialect=dialogue/Narrative[speaker=Solstice]
+  7 |- else:| Logic w=0/TopLevel
+  8 |    @Solstice:<>| Narrative w=0/ConditionalBranch dialect=character/Narrative[speaker=Solstice]
+  9 |    Hello?| Narrative w=0/ConditionalBranch dialect=dialogue/Narrative[speaker=Solstice]
+ 10 |}| Logic w=0/TopLevel
+ 11 |-> END| Divert w=1/ChoiceBody
+ 12 || Blank w=0/TopLevel
+== STRUCTURAL FOLDS ==
+0..11 from_start=false kind=Structural text=None
+4..10 from_start=false kind=Structural text=Some("{...}")
+== RUNS (base) ==
+2..3 Narrative
+5..6 Narrative
+8..9 Narrative
+10..11 Machinery
+== RUNS (at-cue dialect) ==
+2..3 Narrative
+5..6 Narrative
+8..9 Narrative
+10..11 Machinery
