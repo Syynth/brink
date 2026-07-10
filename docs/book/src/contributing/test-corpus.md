@@ -4,7 +4,7 @@ The repository includes a test corpus at `tests/` organized into tiers.
 
 ## Corpus structure
 
-```
+```text
 tests/
   tier1/          # Basic ink features (text, choices, diverts, knots, variables)
   tier2/          # Intermediate features (tunnels, threads, lists, logic)

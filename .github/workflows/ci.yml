@@ -102,6 +102,13 @@ jobs:
           persist-credentials: false
       - run: cargo install mdbook --locked
       - run: mdbook build docs/book
+      # Compile the book's Rust examples. Without this, a signature change can
+      # silently rot every example in the book — which is exactly what happened
+      # to `Story::new` across the Program → Arc refactor.
+      - run: cargo build -p brink-runtime -p brink-compiler -p brink-format
+        env:
+          CARGO_TARGET_DIR: target/book-doctest
+      - run: mdbook test docs/book -L target/book-doctest/debug/deps
 
   frontend:
     name: Frontend (brink-studio)

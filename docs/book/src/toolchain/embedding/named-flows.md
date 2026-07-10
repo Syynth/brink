@@ -5,14 +5,23 @@ A single `Story` can run several independent execution contexts at once —
 sharing the story's globals and visit counts. They're how you model a background
 conversation, a parallel subplot, or a side channel that advances on its own.
 
-```rust,ignore
-story.spawn_flow("background", entry_point_id)?;     // start a flow at an address
+```rust
+# extern crate brink_format;
+# extern crate brink_runtime;
+# use brink_format::DefinitionId;
+# use brink_runtime::{RuntimeError, Story};
+# fn demo(story: &mut Story, entry_point: DefinitionId, index: usize) -> Result<(), RuntimeError> {
+story.spawn_flow("background", entry_point)?;              // start a flow at an address
 let lines = story.continue_flow_maximally("background")?;  // -> Vec<Line>
-story.choose_flow("background", index)?;             // pick a choice in that flow
-story.destroy_flow("background")?;                   // tear it down
+story.choose_flow("background", index)?;                   // pick a choice in that flow
+story.destroy_flow("background")?;                         // tear it down
+# let _ = lines;
+# Ok(())
+# }
 ```
 
-`flow_names()` lists the currently active named flows.
+`spawn_flow` takes a `DefinitionId` — the compiled address of a knot or stitch,
+not a name. `flow_names()` lists the currently active named flows.
 
 The default, unnamed flow is the one driven by `continue_single` /
 `continue_maximally` / `choose`. The `*_flow` variants target a flow by name and

@@ -4,7 +4,7 @@
 
 All named things in brink use a single `DefinitionId(u64)` type. The high 8 bits are a type tag; the low 56 bits are a hash of the fully qualified ink path.
 
-```
+```text
 DefinitionId (u64):
 +-----------+------------------------------------------------------+
 | tag (8)   |                    hash (56)                          |

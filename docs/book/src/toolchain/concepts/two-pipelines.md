@@ -7,7 +7,7 @@ identical regardless of which produced it.
 
 ## Native compiler — what you use
 
-```
+```text
 .ink source → parse → HIR → analyze → LIR → bytecode codegen → StoryData
 ```
 
@@ -18,7 +18,7 @@ the converter.
 
 ## Converter — the reference pipeline
 
-```
+```text
 .ink.json (inklecate output) → parse → convert → StoryData
 ```
 

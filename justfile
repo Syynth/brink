@@ -35,6 +35,19 @@ cross-language-benchmark:
 wasm:
     wasm-pack build crates/brink-web --target web --out-dir www/pkg
 
+# Compile-check the book's Rust examples (mdbook test).
+#
+# Builds into a dedicated target dir: rustdoc resolves `extern crate` off the
+# -L search path, and a shared target/ mixes `cargo check` .rmeta with
+# `cargo build` .rlib for the same crate, which rustdoc rejects as "multiple
+# candidates".
+book-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export CARGO_TARGET_DIR=target/book-doctest
+    cargo build -p brink-runtime -p brink-compiler -p brink-format
+    mdbook test docs/book -L "$CARGO_TARGET_DIR/debug/deps"
+
 # Build the full brink-studio as a standalone static app and stage it into
 # docs/book/src/playground/ (the embedded book playground).
 book-assets:
