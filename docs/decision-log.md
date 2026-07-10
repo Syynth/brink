@@ -1208,3 +1208,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The Bevy book examples should be compile-checked doctests rather than ```rust,ignore``` fences, backed by a new `book-test` Justfile recipe. Motivating case: the `commit_from` example wouldn't compile against `bevy_brink::World`, which is what surfaced the missing re-export.
 - **WHY:** Ignored examples silently rot — the re-export gap existed precisely because nothing compiled the book's Bevy code. Compile-checking makes the docs a conformance test on the public API surface.
+
+## LineContext.has_tags is true for tagged choice lines
+- **WHEN:** 2026-07-10
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui (brink-ide line_context)
+- **SCOPE:** minor/local
+- **WHAT:** `LineContext.has_tags` must be true for any line carrying an author-written tag, including choice lines (`* Choice # tag`), regardless of tag region (start/bracket/inner). The historical suppression in the line_context walk is a bug to remove, not behavior to preserve.
+- **WHY:** Verified in the C# reference implementation, not just docs: runtime `Choice.cs` carries `List<string> tags`, populated in `Story.ProcessChoice` by popping tags from the evaluated choice content streams — i.e., choice-line tags always surface at runtime, routed by region (both/choice-only/content-only). The oracle records per-choice tags and brink passes all choice-tag cases (tagsInChoice 4/4 episodes, tagsInChoiceDynamic, I100), so brink's compiler+runtime are already correct; the gap is editor-metadata-only, and HIR `Choice.tags` being empty is a modeling artifact of the (correct) slot distribution.
