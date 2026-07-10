@@ -190,8 +190,14 @@ function makeByteToUtf16(text: string): (byteOffset: number) => number {
 
 function lineContextToLineInfo(ctx: LineContext, lineText: string): LineInfo {
   let type = lineElementToType(ctx.element);
-  // Narrative inside a choice body is "choice body", not plain narrative
-  if (type === ElementType.NarrativeText && ctx.weave.element === "choice_body") {
+  // Narrative inside a choice body is "choice body", not plain narrative.
+  // Blank lines inside a body carry the body weave too (#478 — the Rust
+  // classifier inherits it through blank runs), so Tab works anywhere in
+  // the body; this replaces the old TS blank-after-choice post-pass.
+  if (
+    (type === ElementType.NarrativeText || type === ElementType.Blank) &&
+    ctx.weave.element === "choice_body"
+  ) {
     type = ElementType.ChoiceBody;
   }
   const depth = ctx.weave.depth;
@@ -601,19 +607,6 @@ function computeLineInfos(state: EditorState): LineInfo[] {
       const line = state.doc.line(i + 1);
       infos.push(classifyLine(line.text));
     }
-    // Post-pass: blank/whitespace-only lines immediately after a Choice or
-    // ChoiceBody are still inside the choice body — promote them so Tab works.
-    // Only promote lines that are truly blank (no sigils in the text).
-    for (let i = 1; i < infos.length; i++) {
-      if (infos[i].type !== ElementType.Blank) continue;
-      const lineText = state.doc.line(i + 1).text.trimStart();
-      if (lineText !== "" && /^[*+\-]/.test(lineText)) continue;
-      const prev = infos[i - 1];
-      if (prev.type === ElementType.Choice || prev.type === ElementType.ChoiceBody) {
-        infos[i] = { type: ElementType.ChoiceBody, depth: prev.depth, sticky: false, standalone: false };
-      }
-    }
-
     assignOptionPaths(infos);
     return infos;
   }

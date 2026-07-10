@@ -6,7 +6,7 @@ expression: "render_fixture(\"\\\n=== start ===\n* A\n- (g) text\n- (h) -> hub\n
   0 |=== start ===| KnotHeader w=0/TopLevel
   1 |* A| Choice w=1/ChoiceLine(sticky=false)
   2 |- (g) text| Gather w=1/GatherContinuation
-  3 |- (h) -> hub| Divert w=1/GatherContinuation
+  3 |- (h) -> hub| Gather w=1/GatherContinuation
   4 |=== hub ===| KnotHeader w=0/TopLevel
   5 |-> END| Divert w=0/TopLevel
   6 || Blank w=0/TopLevel
@@ -14,7 +14,7 @@ expression: "render_fixture(\"\\\n=== start ===\n* A\n- (g) text\n- (h) -> hub\n
   0 |=== start ===| KnotHeader w=0/TopLevel
   1 |* A| Choice w=1/ChoiceLine(sticky=false)
   2 |- (g) text| Gather w=1/GatherContinuation
-  3 |- (h) -> hub| Divert w=1/GatherContinuation
+  3 |- (h) -> hub| Gather w=1/GatherContinuation
   4 |=== hub ===| KnotHeader w=0/TopLevel
   5 |-> END| Divert w=0/TopLevel
   6 || Blank w=0/TopLevel
