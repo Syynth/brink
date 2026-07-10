@@ -13,3 +13,8 @@ and `standalone` (structural divert-vs-tunnel/thread fact — no more text
 sniffing in the editor or fold-run natures). Span kinds `tunnel_stmt` and
 `thread_stmt` split out of `divert_stmt`, which now means a simple
 `-> target` statement only.
+Also fixes `has_tags`: it is now true for **any** line carrying an
+author-written tag — tagged choice lines (`* Choice # tag`), tags inside
+inline conditional/sequence branches, and standalone `#` lines — where the
+legacy walk under-reported (decision 2026-07-10; verified against the C#
+reference, whose runtime surfaces choice-line tags).
