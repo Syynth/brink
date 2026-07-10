@@ -151,11 +151,24 @@ pub fn line_contexts(hir: &HirFile, source: &str, root: &SyntaxNode) -> Vec<Line
     let mut ctx = vec![LineContext::default(); actual_lines];
     let idx = LineIndex::new(source);
 
-    // ── Pass 1: classify from source text (comments, block comments) ──
-    detect_comments(source, &mut ctx);
-
-    // ── Pass 2: detect block comments from syntax tree ──
-    detect_block_comments(root, &idx, &mut ctx);
+    // ── Pass 1: apply the trivia facet (comments, block comments, tags) ──
+    // Computed standalone (`crate::trivia`) and composed here: comments win
+    // over a tag sigil; the structural passes below never reconsider a
+    // comment line (no statement can share it), and only a still-`Blank`
+    // line keeps a tag classification.
+    for (i, t) in crate::trivia::line_trivia(source, root, ctx.len())
+        .iter()
+        .enumerate()
+    {
+        if t.comment {
+            ctx[i].element = LineElement::Comment;
+        } else if t.tag && ctx[i].element == LineElement::Blank {
+            ctx[i].element = LineElement::Tag;
+        }
+        if t.block_comment {
+            ctx[i].block_comment = true;
+        }
+    }
 
     // ── Pass 3: walk HIR structure ──
 
@@ -939,45 +952,6 @@ fn detect_sigil_logic_lines(source: &str, ctx: &mut [LineContext]) {
         }
         if line.trim_start().starts_with('~') {
             ctx[i].element = LineElement::Logic;
-        }
-    }
-}
-
-/// Detect single-line comments and tag lines from source text.
-fn detect_comments(source: &str, ctx: &mut [LineContext]) {
-    for (i, line) in source.lines().enumerate() {
-        if i >= ctx.len() {
-            break;
-        }
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("//") {
-            ctx[i].element = LineElement::Comment;
-        } else if trimmed.starts_with('#')
-            && !trimmed.is_empty()
-            && ctx[i].element == LineElement::Blank
-        {
-            ctx[i].element = LineElement::Tag;
-        }
-    }
-}
-
-/// Detect block comments (`/* ... */`) from the syntax tree.
-fn detect_block_comments(root: &SyntaxNode, idx: &LineIndex, ctx: &mut [LineContext]) {
-    use brink_syntax::SyntaxKind;
-
-    for token in root.descendants_with_tokens() {
-        if let Some(token) = token.as_token()
-            && token.kind() == SyntaxKind::BLOCK_COMMENT
-        {
-            let range = token.text_range();
-            let start_line = idx.line_col(range.start()).0 as usize;
-            let end_line = idx.line_col(range.end()).0 as usize;
-            for line in start_line..=end_line {
-                if line < ctx.len() {
-                    ctx[line].element = LineElement::Comment;
-                    ctx[line].block_comment = true;
-                }
-            }
         }
     }
 }
