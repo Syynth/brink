@@ -42,12 +42,19 @@ shared HIR visitor  (traversal primitive, #457)
 Why this matters here: `line_context.rs`'s `WeaveElement`
 (`ChoiceLine`/`ChoiceBody`/`GatherContinuation`/`ConditionalBranch`/`SequenceBranch`) *is*
 the projection's per-line container stack (R7), and `folding`'s scaffold/nature classification is
-another per-line structural view. Both today hand-roll partial, overlapping structural walks,
-conflated with trivia/dialect (line_context is ~1361 lines doing all three). They are **not**
-migrated onto the visitor as bespoke walks; they are **re-expressed as views over this
-projection** once it lands and is proven (follow-up; they are not rewritten now). Consequently the
-projection's per-line weave/element output (§8, R7) is a **first-class deliverable**, sized to
-serve `line_context` and `folding`, not a rails-only detail.
+another per-line structural view. Consequently the projection's per-line weave/element output
+(§8, R7) is a **first-class deliverable**, sized to serve `line_context` and `folding`, not a
+rails-only detail.
+
+> **Status (#463, shipped):** this re-expression landed. `line_context` owns no HIR walk — it
+> composes the trivia facet (`brink-ide::trivia`), a span-replay view over
+> `project_hir_structural`, source-text patch passes for HIR under-coverage, and the dialect
+> facet; `folding`'s scaffold marks read the projection's `Conditional`/`Sequence`
+> construct-extent spans (its bespoke `ScaffoldMarker` walk is gone). The producer grew
+> view-serving coverage for this: `sticky`/`weave_depth` on Choice/Gather containers,
+> `DivertStmt`/`DivertTerminal`/`Logic` statement spans, choice-tag spans, construct extents
+> (Body-gated), and label-inclusive gather extents. Behavior was pinned byte-identical by
+> `brink-ide/tests/line_context_snapshots.rs` before the refactor.
 
 ## 2. Consumers (the projection is designed from these)
 
@@ -57,8 +64,8 @@ serve `line_context` and `folding`, not a rails-only detail.
 | Interactions (hover card, click-to-navigate, highlight-all-refs) | resolved symbol identity | `def_id` on decls, `target_id` on refs; queryable StateField |
 | Tooling / inspectability (tests, devtools, binder/story-graph overlays) | stable, queryable DOM markers | rendered `data-*` attributes |
 | Rails (concentric block bars in both margins) | per-line nested container stack | derived from container spans (kind + depth + handle) |
-| **`line_context` element/weave** (future view) | per-line structural element + `WeaveElement`-equivalent + depth | the per-line weave/element output (§8) — trivia (comments) + dialect layered on separately |
-| **`folding` scaffold/nature** (future view) | per-line container kind for machinery/narrative runs + scaffold | same per-line output; no bespoke scaffold walk |
+| **`line_context` element/weave** (view, shipped in #463) | per-line structural element + `WeaveElement`-equivalent + depth | the per-line weave/element output (§8) — trivia (comments) + dialect layered on separately |
+| **`folding` scaffold/nature** (view, shipped in #463) | per-line container kind for machinery/narrative runs + scaffold | same per-line output; no bespoke scaffold walk |
 
 ## 3. Requirements
 
