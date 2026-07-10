@@ -68,6 +68,10 @@ let mut b: Story = Story::new(Arc::clone(&program), line_tables);
    into your code (`EXTERNAL` functions), synchronously or deferred.
 4. **[Named Flows](./named-flows.md)** — run parallel execution contexts within
    one story.
+5. **[Sessions & Replay](./sessions.md)** — journal a playthrough for a save
+   file, deterministic replay, and state snapshots/diffs.
+6. **[Speculation](./speculation.md)** — run the story forward from its current
+   state without committing to it, then discard the run.
 
 A minimal driver looks like this — see the execution-model page for what each
 arm means:

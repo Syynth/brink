@@ -15,6 +15,8 @@
   - [Loading & Linking](./toolchain/embedding/loading.md)
   - [External Functions](./toolchain/embedding/external-functions.md)
   - [Named Flows](./toolchain/embedding/named-flows.md)
+  - [Sessions & Replay](./toolchain/embedding/sessions.md)
+  - [Speculation](./toolchain/embedding/speculation.md)
 - [Localization](./toolchain/localization/overview.md)
   - [XLIFF Workflow](./toolchain/localization/xliff.md)
   - [Plurals](./toolchain/localization/plurals.md)
