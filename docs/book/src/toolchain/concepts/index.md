@@ -10,6 +10,9 @@ still get a story running, you just won't know *why*.
 - **[The Execution Model](./execution-model.md)** — how a compiled story runs:
   the `Program`/`Story` split, the step loop, `Line`, and choices. The shared
   foundation every client (raw Rust, Bevy, web) builds on.
+- **[The State Model](./state-model.md)** — where a running story's state lives:
+  the `World`/`FlowLocal` split, per-unit world/local scoping, and the sandbox
+  primitive behind speculative evaluation.
 - **[Architecture & the Firewall](./architecture.md)** — how the crates are
   split so the runtime never links the compiler.
 - **[The Compilation Pipeline](./pipeline.md)** — the six phases that turn

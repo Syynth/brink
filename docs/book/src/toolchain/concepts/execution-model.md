@@ -40,7 +40,9 @@ loop {
 ```
 
 > `Story` is the mutable half of the [two-object model](../embedding/index.md#the-two-object-model):
-> it holds an `Arc<Program>` and carries all the execution state.
+> it holds an `Arc<Program>` and carries all the execution state. How that state
+> is partitioned — and how it can be shared across flows or kept private — is
+> the subject of [The State Model](./state-model.md).
 
 ## `Line` variants
 

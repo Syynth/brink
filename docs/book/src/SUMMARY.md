@@ -21,6 +21,7 @@
 - [Concepts](./toolchain/concepts/index.md)
   - [The Two Pipelines](./toolchain/concepts/two-pipelines.md)
   - [The Execution Model](./toolchain/concepts/execution-model.md)
+  - [The State Model](./toolchain/concepts/state-model.md)
   - [Architecture & the Firewall](./toolchain/concepts/architecture.md)
   - [The Compilation Pipeline](./toolchain/concepts/pipeline.md)
 - [Reference](./toolchain/reference/index.md)
