@@ -428,6 +428,120 @@ snap!(
 "
 );
 
+// ── Adversarial-review regressions (#463) ───────────────────────────
+// Shapes where the span-replay initially diverged from the old walk;
+// pinned at the old walk's output (verified by executing 9717e407's
+// implementation side by side during review).
+
+// Equal-extent tie: the conditional branch's extent is byte-identical to
+// the single choice filling it — the choice (inner, emitted later) must
+// win weave derivation: the divert is ChoiceBody, not ConditionalBranch.
+snap!(
+    equal_extent_choice_in_conditional_arm,
+    "\
+=== start ===
+{ ready:
+    * [Go] -> hub
+}
+=== hub ===
+-> END
+"
+);
+
+// Same tie via a gather: the continuation's extent collapses to exactly
+// the nested choice set (`-` has no located content) — the body divert is
+// ChoiceBody d1, not GatherContinuation.
+snap!(
+    equal_extent_nested_choice_after_gather,
+    "\
+=== start ===
+* A
+-
+* B
+  -> hub
+=== hub ===
+-> END
+"
+);
+
+// A divert inside an inline conditional in choice bracket text is choice
+// text: the choice line must stay Choice, not become Divert.
+snap!(
+    slot_inline_conditional_divert,
+    "\
+=== start ===
+* [Go {ready: -> hub}]
+=== hub ===
+-> END
+"
+);
+
+// A labeled gather following another is lowered as a LabeledBlock inside
+// the first's continuation: its label applies in order, so the inline
+// divert overwrites it (Divert), unlike a true continuation label.
+snap!(
+    labeled_block_in_continuation_with_divert,
+    "\
+=== start ===
+* A
+- (g) text
+- (h) -> hub
+=== hub ===
+-> END
+"
+);
+
+// Gather-line prose is ptr-less, so extents must still cover nested
+// labels (block_extent includes Block.label): these keep their lexical
+// weave (ChoiceBody d1 / GatherContinuation d1), never TopLevel d0.
+snap!(
+    nested_labeled_gather_inside_choice_body,
+    "\
+=== start ===
+* A
+- - (g1) deep gather
+- (g2) shallow
+-> END
+"
+);
+
+snap!(
+    labeled_block_after_bare_gather_text,
+    "\
+=== start ===
+* A
+- g text
+- (h) more text
+-> END
+"
+);
+
+snap!(
+    labeled_gather_between_gathers_weave,
+    "\
+=== k ===
+* A
+- gather text
+- (opts)
+content under opts
+* B
+- done
+"
+);
+
+// A tag inside ptr-less inline-branch content never sets has_tags (the
+// old walk's content.ptr gate); the host line's own trailing tag does.
+snap!(
+    tag_inside_inline_branch_content,
+    "\
+=== start ===
+He said {mood: hi # tag} there.
+You have it {now # t2|later # t3}.
+Plain with tag. # real
+-> END
+"
+);
+
 // ── Dialect (at-cue preset) ─────────────────────────────────────────
 
 snap!(

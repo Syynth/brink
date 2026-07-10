@@ -1,8 +1,21 @@
-//! Per-line structural context derived from the HIR.
+//! Per-line structural context — a composition of layered facets (#463).
 //!
 //! `line_contexts()` returns one `LineContext` per source line, giving the
 //! editor authoritative information about element type, weave position,
 //! and inline structure — replacing the regex-based `classifyLine` in TS.
+//!
+//! Since #463 this module owns no HIR walk: it **composes**
+//! `docs/editor-hir-overlay-spec.md` §1a's layers —
+//!
+//! 1. the **trivia facet** ([`crate::trivia`]: comments, block comments,
+//!    tag lines — CST/source facts);
+//! 2. the **structural view** over the HIR projection
+//!    ([`crate::hir_projection::project_hir_structural`]), replayed span by
+//!    span in [`apply_structural_view`];
+//! 3. source-text patch passes for what the HIR under-covers
+//!    (`detect_gathers`, `apply_conditional_scaffold`,
+//!    `detect_sigil_logic_lines`);
+//! 4. the **dialect facet** (`apply_dialect`), layered last.
 //!
 //! `line_contexts_with_dialect()` (#368) layers a registered
 //! [`brink_ir::ResolvedDialect`] on top: it runs the same base pass, then a
@@ -477,7 +490,15 @@ fn apply_structural_view(
                     let on_choice_line = containing(&containers, SpanKind::Choice, span.range)
                         .map(|c| idx.line_col(c.range.start()).0 as usize)
                         == Some(line);
-                    if !on_choice_line {
+                    // A tag inside a construct's extent belongs to ptr-less
+                    // branch content (`{mood: hi # tag}`) — the old walk's
+                    // `content.ptr` gate meant those never set `has_tags`.
+                    // Construct spans replay before their content's tags, so
+                    // `cond_ranges` is already populated here.
+                    let in_construct = cond_ranges
+                        .iter()
+                        .any(|(r, _)| r.contains_range(span.range));
+                    if !on_choice_line && !in_construct {
                         ctx[line].has_tags = true;
                     }
                 }
@@ -505,10 +526,10 @@ fn apply_structural_view(
     }
 }
 
-/// Apply a Label span: a choice label (no element), a continuation gather
-/// label (deferred overwrite — the walk applied it after walking the
-/// continuation body), or a labeled block's label (in-order; the block's own
-/// statements overwrite it) — told apart by which container holds it.
+/// Apply a Label span: a continuation gather label (producer-stamped with
+/// its `weave_depth`; deferred overwrite — the walk applied it after walking
+/// the continuation body), a choice label (no element), or a labeled block's
+/// label (in-order; the block's own statements overwrite it).
 fn apply_label_span(
     span: &ProjectedSpan,
     containers: &[&ProjectedSpan],
@@ -517,18 +538,21 @@ fn apply_label_span(
     deferred_gathers: &mut Vec<(usize, WeavePosition)>,
 ) {
     let start_line = idx.line_col(span.range.start()).0 as usize;
+    if let Some(depth) = span.weave_depth {
+        // Continuation label — nothing else stamps weave_depth on a Label.
+        deferred_gathers.push((
+            start_line,
+            WeavePosition {
+                depth,
+                element: WeaveElement::GatherContinuation,
+            },
+        ));
+        return;
+    }
     let choice_first_line = containing(containers, SpanKind::Choice, span.range)
         .map(|c| idx.line_col(c.range.start()).0 as usize);
     if choice_first_line == Some(start_line) {
         // Choice label: never classifies its line.
-    } else if let Some(g) = containing(containers, SpanKind::Gather, span.range) {
-        deferred_gathers.push((
-            start_line,
-            WeavePosition {
-                depth: g.weave_depth.unwrap_or(0),
-                element: WeaveElement::GatherContinuation,
-            },
-        ));
     } else {
         set_element_weave(
             ctx,
@@ -539,17 +563,33 @@ fn apply_label_span(
     }
 }
 
-/// The innermost (smallest-range) container of `kind` containing `range`.
+/// The innermost of `spans`: smallest range, ties resolved to the **last**
+/// emitted. Emission order is walk order — an outer container is emitted
+/// before the containers nested inside it, so when a branch/gather extent is
+/// byte-identical to the single choice that fills it, the choice (inner)
+/// wins, exactly as the old walk's lexical threading did.
+fn innermost<'a>(spans: impl Iterator<Item = &'a ProjectedSpan>) -> Option<&'a ProjectedSpan> {
+    let mut best: Option<&'a ProjectedSpan> = None;
+    for s in spans {
+        if best.is_none_or(|b| s.range.len() <= b.range.len()) {
+            best = Some(s);
+        }
+    }
+    best
+}
+
+/// The innermost container of `kind` containing `range`.
 fn containing<'a>(
     containers: &[&'a ProjectedSpan],
     kind: SpanKind,
     range: TextRange,
 ) -> Option<&'a ProjectedSpan> {
-    containers
-        .iter()
-        .filter(|c| c.kind == kind && c.range.contains_range(range))
-        .min_by_key(|c| c.range.len())
-        .copied()
+    innermost(
+        containers
+            .iter()
+            .copied()
+            .filter(|c| c.kind == kind && c.range.contains_range(range)),
+    )
 }
 
 /// Derive a span's weave position from the containers that contain it.
@@ -563,11 +603,13 @@ fn containing<'a>(
 /// shared the choice's physical line (`* [Go] -> hub`); `ChoiceLine` is set
 /// only by the Choice container itself.
 fn derive_weave(containers: &[&ProjectedSpan], range: TextRange) -> WeavePosition {
-    let innermost = containers
-        .iter()
-        .filter(|c| weave_container(c.kind) && c.range.contains_range(range))
-        .min_by_key(|c| c.range.len());
-    let Some(c) = innermost else {
+    let inner = innermost(
+        containers
+            .iter()
+            .copied()
+            .filter(|c| weave_container(c.kind) && c.range.contains_range(range)),
+    );
+    let Some(c) = inner else {
         return WeavePosition {
             depth: 0,
             element: WeaveElement::TopLevel,
@@ -585,15 +627,12 @@ fn derive_weave(containers: &[&ProjectedSpan], range: TextRange) -> WeavePositio
         SpanKind::ConditionalBranch | SpanKind::SequenceBranch => {
             // Branches inherit the surrounding weave depth (the walk passed
             // `weave.depth` through): the nearest enclosing choice/gather's.
-            let depth = containers
-                .iter()
-                .filter(|w| {
-                    matches!(w.kind, SpanKind::Choice | SpanKind::Gather)
-                        && w.range.contains_range(range)
-                })
-                .min_by_key(|w| w.range.len())
-                .and_then(|w| w.weave_depth)
-                .unwrap_or(0);
+            let depth = innermost(containers.iter().copied().filter(|w| {
+                matches!(w.kind, SpanKind::Choice | SpanKind::Gather)
+                    && w.range.contains_range(range)
+            }))
+            .and_then(|w| w.weave_depth)
+            .unwrap_or(0);
             WeavePosition {
                 depth,
                 element: if c.kind == SpanKind::ConditionalBranch {
