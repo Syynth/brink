@@ -91,6 +91,79 @@ fn journal_roundtrips_with_tagged_list_value() {
     }
 }
 
+// ── Journal round-trip with collection values (T1a-3 / #525) ─────────────────
+//
+// The journal is the durable replay artifact: an external that returns a
+// collection, a host `set_var` of a collection, and a checkpoint `SaveState`
+// holding a collection global must all survive serialization as trees. No
+// opcode emits a collection yet, so this uses hand-constructed values (the
+// value-model spec's discipline for the inert-opcode phase) — the point is
+// that when T1b *does* emit them, the journal path is already lossless.
+#[test]
+fn journal_roundtrips_with_collection_values() {
+    use brink_format::{MapKey, OrderedMap};
+
+    let mut journal = SessionJournal::new(0xFEED_FACE, None);
+
+    // An external that returns a map (e.g. a world query yielding a record).
+    let stats: OrderedMap = [
+        (MapKey::from("hp"), Value::Int(30)),
+        (MapKey::from("mp"), Value::Int(12)),
+    ]
+    .into_iter()
+    .collect();
+    let stats_value = Value::map(stats);
+    journal
+        .events
+        .push(brink_runtime::JournalEvent::new(EventKind::External {
+            name: "query_stats".to_owned(),
+            args: vec![Value::from("hero")],
+            result: stats_value.clone(),
+        }));
+
+    // A host set_var of an array.
+    let party = Value::array(vec![Value::from("hero"), Value::from("mage")]);
+    journal
+        .events
+        .push(brink_runtime::JournalEvent::new(EventKind::SetVar {
+            name: "party".to_owned(),
+            value: party.clone(),
+        }));
+
+    // A checkpoint SaveState whose globals hold a nested collection.
+    let mut globals = std::collections::BTreeMap::new();
+    globals.insert("party".to_owned(), party.clone());
+    globals.insert("stats".to_owned(), stats_value.clone());
+    journal.checkpoint = Some(SaveState {
+        version: brink_format::SAVE_FORMAT_VERSION,
+        globals,
+        visits: vec![],
+        turns: vec![],
+        turn_index: 3,
+        rng_seed: 1,
+        previous_random: 0,
+    });
+
+    let json = serde_json::to_string(&journal).unwrap();
+    assert!(
+        json.contains("Map"),
+        "map value must serialize tagged: {json}"
+    );
+    assert!(
+        json.contains("Array"),
+        "array value must serialize tagged: {json}"
+    );
+    let back: SessionJournal = serde_json::from_str(&json).unwrap();
+    // Whole-journal structural equality proves every tree round-tripped,
+    // including the checkpoint globals.
+    assert_eq!(back, journal);
+    if let EventKind::External { result, .. } = &back.events[0].kind {
+        assert_eq!(result, &stats_value);
+    } else {
+        panic!("expected External event");
+    }
+}
+
 /// `ReplayOutcome`/`FailReason` must actually be JSON-serializable (#387: the
 /// wasm binding round-trips them through `serde_json::to_string` verbatim).
 /// serde's internally-tagged representation can't serialize a newtype variant

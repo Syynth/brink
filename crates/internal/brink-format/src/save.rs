@@ -76,3 +76,48 @@ impl LoadReport {
         self.unknown_globals.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::value::{MapKey, OrderedMap};
+
+    /// A `SaveState` whose globals hold collection values must round-trip
+    /// through serde as full trees — no lossy fold to null (T1a-3 / #525). The
+    /// `globals` map is a `BTreeMap` (name-keyed, deterministic order), and
+    /// each `Value` serializes through its own derived tree encoding, so a
+    /// map-of-array global survives a save/load byte-for-byte.
+    #[test]
+    fn save_state_round_trips_collection_globals() {
+        let inventory: OrderedMap = [
+            (
+                MapKey::from("weapons"),
+                Value::array(vec![Value::from("sword"), Value::from("bow")]),
+            ),
+            (MapKey::from("gold"), Value::Int(42)),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut globals = BTreeMap::new();
+        globals.insert(String::from("inventory"), Value::map(inventory));
+        globals.insert(
+            String::from("scores"),
+            Value::array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+
+        let save = SaveState {
+            version: SAVE_FORMAT_VERSION,
+            globals,
+            visits: Vec::new(),
+            turns: Vec::new(),
+            turn_index: 0,
+            rng_seed: 7,
+            previous_random: 0,
+        };
+
+        let json = serde_json::to_string(&save).expect("serialize save");
+        let back: SaveState = serde_json::from_str(&json).expect("deserialize save");
+        assert_eq!(back, save);
+    }
+}

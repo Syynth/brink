@@ -254,11 +254,20 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         ValueType::VariablePointer => VAL_VAR_POINTER,
         // TempPointer is runtime-only and should never appear in .inkb files.
         ValueType::FragmentRef => VAL_FRAGMENT_REF,
+        ValueType::TempPointer | ValueType::Null => VAL_NULL,
         // `Array`/`Map` gain their `.inkb` literal-pool encoding in T1a-4
         // (#526). No opcode emits a collection literal yet, so a var can never
-        // be declared with one of these types in this format version; they
-        // fold to `VAL_NULL` alongside the runtime-only `TempPointer`.
-        ValueType::TempPointer | ValueType::Null | ValueType::Array | ValueType::Map => VAL_NULL,
+        // be declared with one of these types in this format version. Reaching
+        // here would be a silent data drop, so trip a debug assertion; release
+        // builds still fold to `VAL_NULL` to keep the writer total.
+        ValueType::Array | ValueType::Map => {
+            debug_assert!(
+                false,
+                "collection var type has no .inkb encoding until #526 (T1a-4); \
+                 no opcode should have produced one in this format version"
+            );
+            VAL_NULL
+        }
     };
     write_u8(buf, tag);
 }
@@ -306,10 +315,19 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u32(buf, *idx);
         }
         // TempPointer is runtime-only and should never appear in .inkb files.
+        Value::TempPointer { .. } | Value::Null => {
+            write_u8(buf, VAL_NULL);
+        }
         // Array/Map get their literal-pool encoding in T1a-4 (#526); no opcode
         // emits a collection literal yet, so neither can reach this writer in
-        // this format version.
-        Value::TempPointer { .. } | Value::Null | Value::Array(_) | Value::Map(_) => {
+        // this format version. Fold to `VAL_NULL` for totality, but trip a
+        // debug assertion so a future silent drop surfaces loudly.
+        Value::Array(_) | Value::Map(_) => {
+            debug_assert!(
+                false,
+                "collection value has no .inkb encoding until #526 (T1a-4); \
+                 no opcode should have produced one in this format version"
+            );
             write_u8(buf, VAL_NULL);
         }
     }

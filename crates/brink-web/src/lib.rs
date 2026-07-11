@@ -1115,13 +1115,51 @@ fn value_to_js(v: &Value) -> JsValue {
         Value::Float(f) => JsValue::from_f64(f64::from(*f)),
         Value::Bool(b) => JsValue::from_bool(*b),
         Value::String(s) => JsValue::from_str(s),
+        // Collections marshal to native JS structures (value-model-spec §8: the
+        // wasm boundary serializes trees; the host may never retain a handle
+        // into script state — a JS array/object is an independent copy). Arrays
+        // are lossless. A `Map` becomes a plain object with string keys: this
+        // is the ergonomic native form, and — like ink's scalar coercions at
+        // this boundary — it is deliberately lossy on key *type* and on the
+        // ordering of integer-like keys (JS object rules). The lossless form is
+        // `TypedValueJs` (the `eval_function` JSON boundary).
+        Value::Array(items) => {
+            let arr = js_sys::Array::new();
+            for item in items.iter() {
+                arr.push(&value_to_js(item));
+            }
+            arr.into()
+        }
+        Value::Map(map) => {
+            let obj = js_sys::Object::new();
+            for (k, val) in map.iter() {
+                // `Reflect::set` on a fresh, extensible object cannot fail;
+                // discard the `Result` rather than unwrap it.
+                let _ = js_sys::Reflect::set(&obj, &map_key_to_js(k), &value_to_js(val));
+            }
+            obj.into()
+        }
         _ => JsValue::NULL,
+    }
+}
+
+/// Stringify a [`Value::Map`] key for the native-JS-object boundary. JS object
+/// keys are strings, so `int`/`bool` keys are rendered to their canonical
+/// string form (the lossy leg documented on [`value_to_js`]).
+fn map_key_to_js(key: &brink_format::MapKey) -> JsValue {
+    match key {
+        brink_format::MapKey::Int(n) => JsValue::from_str(&n.to_string()),
+        brink_format::MapKey::Str(s) => JsValue::from_str(s),
+        brink_format::MapKey::Bool(b) => JsValue::from_str(if *b { "true" } else { "false" }),
     }
 }
 
 /// Read a JS value returned from a binding back into an ink [`Value`].
 /// `null`/`undefined` → `Null`; booleans → `Bool`; an integer-valued finite
-/// number → `Int`, otherwise `Float`; strings → `String`. Anything else → `Null`.
+/// number → `Int`, otherwise `Float`; strings → `String`. A JS array becomes a
+/// [`Value::Array`] and a plain object a [`Value::Map`] (string keys, in JS
+/// property order — value-model-spec §8), each converted recursively.
+/// Functions and other exotic objects → `Null`.
 fn js_to_value(js: &JsValue) -> Value {
     if js.is_null() || js.is_undefined() {
         return Value::Null;
@@ -1145,6 +1183,29 @@ fn js_to_value(js: &JsValue) -> Value {
     }
     if let Some(s) = js.as_string() {
         return Value::String(Arc::from(s));
+    }
+    // Array before the generic-object case: a JS array *is* an object.
+    if js_sys::Array::is_array(js) {
+        let arr = js_sys::Array::from(js);
+        let items: Vec<Value> = arr.iter().map(|el| js_to_value(&el)).collect();
+        return Value::array(items);
+    }
+    // A plain object → Map with string keys, in JS own-property order (integer
+    // indices ascending, then string keys in insertion order — deterministic).
+    // Functions are objects too, but carry no data — they fold to Null.
+    if js.is_object() && !js.is_function() {
+        let obj: &js_sys::Object = js.unchecked_ref();
+        let mut map = brink_format::OrderedMap::new();
+        for entry in js_sys::Object::entries(obj).iter() {
+            let pair = js_sys::Array::from(&entry);
+            if let Some(k) = pair.get(0).as_string() {
+                map.insert(
+                    brink_format::MapKey::Str(Arc::from(k)),
+                    js_to_value(&pair.get(1)),
+                );
+            }
+        }
+        return Value::map(map);
     }
     Value::Null
 }
@@ -1456,13 +1517,38 @@ enum FunctionEvalJs {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum TypedValueJs {
-    Int { value: i32 },
-    Float { value: f32 },
-    Bool { value: bool },
-    String { value: String },
+    Int {
+        value: i32,
+    },
+    Float {
+        value: f32,
+    },
+    Bool {
+        value: bool,
+    },
+    String {
+        value: String,
+    },
     Null,
-    List { items: Vec<ListMemberJs> },
-    Divert { path: Option<String> },
+    List {
+        items: Vec<ListMemberJs>,
+    },
+    Divert {
+        path: Option<String>,
+    },
+    /// A collection value ([`Value::Array`]) as a lossless, recursive tree of
+    /// typed elements. The wasm boundary serializes trees rather than sharing
+    /// Arc snapshots (value-model-spec §8) — sharing is not observable here.
+    Array {
+        items: Vec<TypedValueJs>,
+    },
+    /// A collection value ([`Value::Map`]) as an ordered list of typed
+    /// key/value entries. Insertion order is preserved (the ratified §4 order),
+    /// and each key retains its scalar type (`int`/`string`/`bool`) — the
+    /// lossless counterpart to the native-JS-object mapping in [`value_to_js`].
+    Map {
+        entries: Vec<TypedMapEntryJs>,
+    },
 }
 
 #[derive(Serialize)]
@@ -1470,6 +1556,33 @@ struct ListMemberJs {
     origin: String,
     name: String,
     ordinal: i32,
+}
+
+/// One `key: value` entry of a [`TypedValueJs::Map`], key type preserved.
+#[derive(Serialize)]
+struct TypedMapEntryJs {
+    key: TypedMapKeyJs,
+    value: TypedValueJs,
+}
+
+/// A [`Value::Map`] key rendered with its scalar type preserved, so the JSON
+/// boundary is lossless (an `Int` key never collapses into a string key).
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TypedMapKeyJs {
+    Int { value: i32 },
+    String { value: String },
+    Bool { value: bool },
+}
+
+fn map_key_to_typed_js(key: &brink_format::MapKey) -> TypedMapKeyJs {
+    match key {
+        brink_format::MapKey::Int(n) => TypedMapKeyJs::Int { value: *n },
+        brink_format::MapKey::Str(s) => TypedMapKeyJs::String {
+            value: s.to_string(),
+        },
+        brink_format::MapKey::Bool(b) => TypedMapKeyJs::Bool { value: *b },
+    }
 }
 
 fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJs {
@@ -1494,15 +1607,29 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
         Value::DivertTarget(id) => TypedValueJs::Divert {
             path: program.divert_target_path(*id),
         },
-        // Array/Map gain a typed-JS mapping when T1b emits their opcodes; no
-        // opcode produces a collection yet, so these are unreachable and add no
-        // JS-observable behavior (hence no changeset).
+        // Collections serialize as lossless recursive trees (value-model-spec
+        // §8 host boundary). No opcode emits a collection yet, but a JS binding
+        // *return* can already carry one through `js_to_value`, so this arm is
+        // reachable and JS-observable — hence the `@brink-lang/web` changeset.
+        Value::Array(items) => TypedValueJs::Array {
+            items: items
+                .iter()
+                .map(|item| value_to_typed_js(item, program))
+                .collect(),
+        },
+        Value::Map(map) => TypedValueJs::Map {
+            entries: map
+                .iter()
+                .map(|(k, val)| TypedMapEntryJs {
+                    key: map_key_to_typed_js(k),
+                    value: value_to_typed_js(val, program),
+                })
+                .collect(),
+        },
         Value::Null
         | Value::VariablePointer(_)
         | Value::TempPointer { .. }
-        | Value::FragmentRef(_)
-        | Value::Array(_)
-        | Value::Map(_) => TypedValueJs::Null,
+        | Value::FragmentRef(_) => TypedValueJs::Null,
     }
 }
 
@@ -7497,6 +7624,84 @@ mod compile_fragment_tests {
     }
 }
 
+// ── Typed-value JSON boundary (T1a-3 / #525) ─────────────────────────
+//
+// `value_to_typed_js` is the lossless JSON marshaling used for `eval_function`
+// results. It takes `&Value`/`&Program` (no `JsValue`), so it is plain-Rust
+// testable on the host — no wasm32 needed. These tests lock the collection
+// tree encoding: recursion, insertion order, and key-type preservation.
+#[cfg(test)]
+mod typed_value_tests {
+    use super::value_to_typed_js;
+    use brink_format::{MapKey, OrderedMap, Value};
+
+    /// A trivial linked program — `value_to_typed_js` only consults the program
+    /// for `List`/`Divert`, so any program suffices for the collection arms.
+    fn program() -> brink_runtime::Program {
+        let out =
+            brink_compiler::compile("m.ink", |_p| Ok::<_, std::io::Error>("-> END\n".to_owned()))
+                .expect("compile");
+        let (program, _tables) = brink_runtime::link(&out.data).expect("link");
+        program
+    }
+
+    fn typed_json(v: &Value) -> serde_json::Value {
+        let p = program();
+        let s = serde_json::to_string(&value_to_typed_js(v, &p)).expect("serialize typed value");
+        serde_json::from_str(&s).expect("valid json")
+    }
+
+    #[test]
+    fn array_is_recursive_typed_tree() {
+        let v = Value::array(vec![Value::Int(1), Value::from("x"), Value::Bool(true)]);
+        let j = typed_json(&v);
+        assert_eq!(j["type"], "array");
+        assert_eq!(j["items"][0]["type"], "int");
+        assert_eq!(j["items"][0]["value"], 1);
+        assert_eq!(j["items"][1]["type"], "string");
+        assert_eq!(j["items"][1]["value"], "x");
+        assert_eq!(j["items"][2]["type"], "bool");
+        assert_eq!(j["items"][2]["value"], true);
+    }
+
+    #[test]
+    fn map_preserves_insertion_order_and_key_types() {
+        let m: OrderedMap = [
+            (MapKey::from("z"), Value::Int(1)),
+            (MapKey::from(10), Value::from("ten")),
+            (MapKey::from(true), Value::Bool(false)),
+        ]
+        .into_iter()
+        .collect();
+        let j = typed_json(&Value::map(m));
+        assert_eq!(j["type"], "map");
+        let entries = j["entries"].as_array().expect("entries array");
+        assert_eq!(entries.len(), 3);
+        // Insertion order preserved: z, 10, true.
+        assert_eq!(entries[0]["key"]["type"], "string");
+        assert_eq!(entries[0]["key"]["value"], "z");
+        assert_eq!(entries[0]["value"]["value"], 1);
+        assert_eq!(entries[1]["key"]["type"], "int");
+        assert_eq!(entries[1]["key"]["value"], 10);
+        assert_eq!(entries[1]["value"]["value"], "ten");
+        assert_eq!(entries[2]["key"]["type"], "bool");
+        assert_eq!(entries[2]["key"]["value"], true);
+        assert_eq!(entries[2]["value"]["value"], false);
+    }
+
+    #[test]
+    fn nested_collection_tree() {
+        let inner: OrderedMap = [(MapKey::from("hp"), Value::Int(9))].into_iter().collect();
+        let v = Value::array(vec![Value::map(inner), Value::array(vec![Value::Null])]);
+        let j = typed_json(&v);
+        assert_eq!(j["type"], "array");
+        assert_eq!(j["items"][0]["type"], "map");
+        assert_eq!(j["items"][0]["entries"][0]["key"]["value"], "hp");
+        assert_eq!(j["items"][1]["type"], "array");
+        assert_eq!(j["items"][1]["items"][0]["type"], "null");
+    }
+}
+
 // ── External-binding wasm tests ──────────────────────────────────────
 //
 // Exercise the ink↔JS external-binding boundary end-to-end through the real
@@ -8469,5 +8674,75 @@ mod websession_wasm_tests {
 
         let snap = s.flow_debug_snapshot("f").expect("flow_debug_snapshot");
         assert!(snap.contains("\"status\""), "{snap}");
+    }
+}
+
+// ── Value ↔ native-JS boundary (T1a-3 / #525) ────────────────────────
+//
+// `value_to_js`/`js_to_value` are the native-JS external-binding boundary.
+// They construct/inspect `JsValue`s (which panic off wasm32), so these tests
+// are wasm32-gated and run under `wasm-pack test --node`. They lock the
+// collection marshaling: arrays round-trip losslessly; a map round-trips with
+// the documented string-key coercion (the lossless form is `TypedValueJs`).
+#[cfg(all(test, target_arch = "wasm32"))]
+mod value_marshal_wasm_tests {
+    use super::{js_to_value, value_to_js};
+    use brink_format::{MapKey, OrderedMap, Value};
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn array_round_trips_losslessly() {
+        let original = Value::array(vec![
+            Value::Int(1),
+            Value::from("two"),
+            Value::Bool(true),
+            Value::array(vec![Value::Int(9)]),
+        ]);
+        let js = value_to_js(&original);
+        assert!(js_sys::Array::is_array(&js), "array marshals to a JS array");
+        let back = js_to_value(&js);
+        assert_eq!(back, original, "array round-trips through the JS boundary");
+    }
+
+    #[wasm_bindgen_test]
+    fn plain_object_becomes_a_map_with_string_keys() {
+        // Build `{ name: "goblin", hp: 12 }` in JS and read it as a Map.
+        let obj = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("name"),
+            &JsValue::from_str("goblin"),
+        );
+        let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("hp"), &JsValue::from_f64(12.0));
+        let v = js_to_value(&obj);
+        let map = v.as_map().expect("object marshals to a Map");
+        assert_eq!(map.get(&MapKey::from("name")), Some(&Value::from("goblin")));
+        assert_eq!(map.get(&MapKey::from("hp")), Some(&Value::Int(12)));
+    }
+
+    #[wasm_bindgen_test]
+    fn map_round_trips_with_string_key_coercion() {
+        // Int/bool keys stringify at the native boundary; on the way back they
+        // are string keys. Values (including nesting) survive.
+        let m: OrderedMap = [
+            (MapKey::from("s"), Value::Int(1)),
+            (MapKey::from(2), Value::from("two")),
+        ]
+        .into_iter()
+        .collect();
+        let js = value_to_js(&Value::map(m));
+        let back = js_to_value(&js);
+        let map = back.as_map().expect("map");
+        assert_eq!(map.get(&MapKey::from("s")), Some(&Value::Int(1)));
+        // The int key `2` came back as the string key "2".
+        assert_eq!(map.get(&MapKey::from("2")), Some(&Value::from("two")));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_function_folds_to_null_not_a_map() {
+        // Functions are objects but carry no data — they must not become maps.
+        let f = js_sys::Function::new_no_args("return 1");
+        assert_eq!(js_to_value(&f), Value::Null);
     }
 }
