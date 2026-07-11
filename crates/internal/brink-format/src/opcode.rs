@@ -139,6 +139,22 @@ const CALL_EXTERNAL: u8 = 0xA0;
 // projections, records) are named in the RFC but out of this reservation —
 // each gets its own contiguous block, numbered when its own issue lands.
 
+// Reserved v4 sharing-discipline opcodes (`docs/format-v4-rfc.md` §3
+// "Sharing discipline (T1a)"; semantics in `docs/value-model-spec.md` §6)
+// — numeric assignments frozen by the §9 one-bump rule, contiguous and
+// adjacent to the collection block above. Same discipline: comments only,
+// no `Opcode` variants, so `decode`'s catch-all keeps rejecting every byte
+// in the block (`UnknownOpcode`) until T1a's compiler surface emits them.
+//   0xCA TakeVar(slot)       0xCB StoreVarIfNew     0xCC EqVars(a, b)
+// `TakeVar(slot)` moves the slot's value out and leaves `Null` behind — the
+// last-use elision target (spec §9). `StoreVarIfNew` and `EqVars` are the
+// optional ref-collapsing sites from spec §6 (store-time keep-old-Arc
+// cutoff; fused compare with optional collapse on structural equality) —
+// pure peephole optimizations over `LoadVar`/`Eq`, never required for
+// correctness. Later Tier-1 groups (functions, handles, projections,
+// records) remain named in the RFC but out of this reservation — each gets
+// its own contiguous block, numbered when its own issue lands.
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -1193,6 +1209,20 @@ mod tests {
     #[test]
     fn decode_reserved_collection_opcodes_still_rejected() {
         for disc in 0xBEu8..=0xC9u8 {
+            let buf = [disc];
+            let mut offset = 0;
+            let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+            assert_eq!(err, DecodeError::UnknownOpcode(disc));
+        }
+    }
+
+    /// Reserved v4 sharing-discipline opcode block (`0xCA`-`0xCC`,
+    /// `docs/format-v4-rfc.md` §3 "Sharing discipline (T1a)") is numbered
+    /// but deliberately not wired into `Opcode` — the strict reader must
+    /// keep rejecting every byte in the block until the T1a milestone lands.
+    #[test]
+    fn decode_reserved_sharing_discipline_opcodes_still_rejected() {
+        for disc in 0xCAu8..=0xCCu8 {
             let buf = [disc];
             let mut offset = 0;
             let err = Opcode::decode(&buf, &mut offset).unwrap_err();
