@@ -205,26 +205,73 @@ collapse/compaction are invisible to all of the above. The only place
 resumability could have leaked — foreign identity inside values — is
 closed by §8's token design.
 
-## 11. Functions as values, closures — OPEN
+## 11. Functions as values, closures — PROPOSED
 
-*Held open for the design round's remaining discussion; nothing below
-is even proposed yet, it is the option space.*
+- **Function references**: symbolic tokens (`DefinitionId`, the divert-
+  target move) — serializable, replayable, compared by token.
+- **Closures are values**: `{fn: token, env: row}`. The environment is
+  a row of entries, each **`val` (snapshot, the default) or `ref`
+  (explicit opt-in per name, capture-list style)** — brink already
+  spells aliasing `ref`, so this is the house accent.
+- **`ref` captures are restricted to durable cells** (VARs/flow state;
+  compile error on temps — the analyzer knows storage classes). This
+  deletes the upvalue problem outright: no heap-promoted cells, no
+  closure-outlives-frame machinery, no identity objects.
+- **The row is analyzer-transparent, author-opaque**: the type/effect
+  system sees `{gold: ref<int>, cfg: val<map>}`; the program can never
+  reflect on, index, or compare environments (else the env becomes an
+  identity-bearing table).
+- **Effects**: `ref` generally needs effect polymorphism (a row
+  variable bound at the call site — ink's existing `ref` params need
+  this anyway); closures bind their row variables at **creation site**,
+  so every closure value has a fully concrete effect row. A closure
+  handed to the host as a callback carries a knowable access set
+  (§11b).
+- **Serialization**: env rows serialize symbolically (values as trees,
+  refs as cell names); closures live in saves and journals like any
+  value.
+- RULING NEEDED: a `ref`-captured `#@local` cell crossing flows —
+  resolve through the *executing* flow's scope view (late binding;
+  consistent with names-not-identities; proposed) vs pinned to the
+  creating flow (requires flow identity inside a value; disfavored).
 
-- **Function references** are cheap and fit the model natively: a
-  function value is a symbolic token (`DefinitionId` — the same move
-  as divert targets), serializable, replayable, comparable by token.
-  #397 sized these as "cheap"; nothing in this spec resists them.
-- **Closures** are the real fork. Capture-by-value (snapshot the
-  captured cells at closure creation) keeps every guarantee — the
-  closure is a value: token + captured tree — but diverges from the
-  Lua/JS intuition that captured variables stay live. Capture-by-cell
-  (the closure holds cell references) reintroduces cell lifetime
-  questions (a closure outliving the temp it captured) and makes
-  closures identity-adjacent. Middle grounds exist (capture temps by
-  value, globals by name). Journal/replay, SaveState shape, host
-  callback lifetimes (a closure handed to bevy as a callback) all hang
-  off this choice.
-- To be resolved in-round before Tier-1 grammar work.
+## 11b. Effects & ECS scheduling — OPEN (sketch)
+
+After §2, effects are syntactically total: state changes only via cell
+writes, declared `ref`s, and declared externals. So the compiler can
+infer a per-definition **effect row** — `{cell reads, cell writes,
+external calls by kind}` — by transitive closure over the call/divert
+graph: an `effects(def)` salsa query with Eq cutoff, next to
+`signature(def)`. Function values stay analyzable because they are
+tokens (§11); closure env refs bind at creation site.
+
+The ECS join: the Track-B capability manifest declares what each
+external *touches* in ECS terms (component/resource access); bevy-brink
+joins effect rows × manifest into a per-entry-point Bevy access set,
+known before the flow runs. Payoffs in ascending ambition: (1) parallel
+flow scheduling from access-disjoint batches; (2) prefetch/batched
+world-query resolution collapsing park/resume round-trips; (3)
+**reactive sleep** — a parked flow's condition dependencies tell the
+host exactly which change-detection wakes it; ambient NPC flows become
+near-free.
+
+Stability tension (same shape as the type firewall): inferred rows
+drift with bodies; hosts want stable contracts. Proposed: inferred
+everywhere internally, **declared/frozen at flow entry points** via the
+`#@` channel, checked against inference, error on drift. Annotation =
+firewall, absence = inferred.
+
+## 11c. Error handling — OPEN (position sketch)
+
+Belongs to this round because it interlocks: "may fail" is an effect
+(§11b); dead handles (§8) and invalid projections (§7) need defined
+mid-callback behavior; the journal needs errors to be deterministic,
+recorded events (replays must fail identically). Starting position: no
+exceptions/unwinding — runtime errors are turn-terminating,
+diagnostic-carrying, host-surfaced events (ink lineage), over a
+substrate of total operations with defined failure values; a
+Result-shaped recoverable form is a later, demand-driven addition.
+To be argued, not yet proposed.
 
 ## 12. Rulings needed (round checklist)
 
@@ -234,8 +281,12 @@ is even proposed yet, it is the option space.*
 4. Host boundary contract + Handle design (§8) — including the
    rehydration hook's shape in bevy-brink.
 5. The compiler guarantees contract (§9) as standing law.
-6. Functions/closures (§11) — after discussion.
-7. v1 scope line: which of §6's optimizations ship v1 (proposed:
+6. Functions/closures (§11): ratify the val/ref env-row design +
+   the cross-flow `ref`-capture binding question.
+7. Effects (§11b): effect rows, the manifest join, and the
+   declared-at-entry firewall.
+8. Error handling (§11c): the no-unwinding/turn-terminating position.
+9. v1 scope line: which of §6's optimizations ship v1 (proposed:
    `ptr_eq` only) vs specified-for-later.
 
 ## 13. Non-goals
