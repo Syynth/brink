@@ -602,9 +602,21 @@ function computeLineInfos(state: EditorState): LineInfo[] {
       infos.push(info);
     }
     // Fill remaining lines with regex fallback (shouldn't happen normally)
+    const contextCount = infos.length;
     for (let i = infos.length; i < state.doc.lines; i++) {
       const line = state.doc.line(i + 1);
       infos.push(classifyLine(line.text));
+    }
+    // A handle that yields fewer contexts than lines — not attached yet, not
+    // synced, or a host mock (`line_contexts_doc` returning `[]`) — means the
+    // tail lines above came from bare `classifyLine`, with no dialect
+    // classification applied. Without this, dialect classes silently vanish
+    // for those lines (#426). Run the same TS dialect fallback interpreter
+    // used on the no-handle path below so the drop doesn't happen silently.
+    if (contextCount < state.doc.lines) {
+      const lineTexts: string[] = [];
+      for (let i = 1; i <= state.doc.lines; i++) lineTexts.push(state.doc.line(i).text);
+      applyDialectFallback(state.facet(dialectFacet), infos, lineTexts);
     }
     // Option identity comes from the Rust classifier (#480) — the TS
     // weave re-walk (`assignOptionPaths`) serves only regex-classified
